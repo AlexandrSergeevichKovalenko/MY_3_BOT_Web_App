@@ -8071,6 +8071,103 @@ def ensure_webapp_tables() -> None:
                 ALTER TABLE bt_3_webapp_dictionary_queries
                 ADD COLUMN IF NOT EXISTS user_notes JSONB;
             """)
+            # ── Правила, которые стережёт САМА БАЗА ────────────────────────────
+            # До 06.08.2026 у этих двух таблиц не было НИ ОДНОГО правила, кроме
+            # первичного ключа. При этом пишут в них пять разных путей: сохранение
+            # человеком, ночной добор, импорт подписки, массовые сборки и разовые
+            # скрипты. Проверка в коде одного пути остальных не касается — отсюда и
+            # взялись записи, которые мы потом ловили и правили задним числом.
+            #
+            # Всё перечисленное замерено на живой базе и уже соблюдается: ограничения
+            # ничего не чинят, они не дают сломать впредь.
+            #
+            # Правила НЕ привязаны к паре языков — «стороны разноязычные» и «немецкая
+            # сторона на латинице» одинаково верны для немецко-русской и для будущей
+            # немецко-английской пары.
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                   WHERE conname = 'chk_wdq_owner_set') THEN
+                        ALTER TABLE bt_3_webapp_dictionary_queries
+                            ADD CONSTRAINT chk_wdq_owner_set
+                            CHECK (user_id IS NOT NULL AND user_id > 0);
+                    END IF;
+                    -- Карточка без единой стороны слова не показывается нигде, но
+                    -- занимает место в библиотеке и попадает в наборы тренажёров.
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                   WHERE conname = 'chk_wdq_has_a_side') THEN
+                        ALTER TABLE bt_3_webapp_dictionary_queries
+                            ADD CONSTRAINT chk_wdq_has_a_side
+                            CHECK (BTRIM(COALESCE(word_de, '')) <> ''
+                                   OR BTRIM(COALESCE(word_ru, '')) <> '');
+                    END IF;
+                    -- Русский текст в немецкой колонке — по нему потом строится
+                    -- таблица спряжения, и человек видит «ich Понос».
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                   WHERE conname = 'chk_wdq_german_side_is_latin') THEN
+                        ALTER TABLE bt_3_webapp_dictionary_queries
+                            ADD CONSTRAINT chk_wdq_german_side_is_latin
+                            CHECK (COALESCE(word_de, '') = ''
+                                   OR word_de ~ '[A-Za-zÄÖÜäöüß]');
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                   WHERE conname = 'chk_wdq_pair_is_two_languages') THEN
+                        ALTER TABLE bt_3_webapp_dictionary_queries
+                            ADD CONSTRAINT chk_wdq_pair_is_two_languages
+                            CHECK (COALESCE(source_lang, '') = ''
+                                   OR COALESCE(target_lang, '') = ''
+                                   OR source_lang <> target_lang);
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                   WHERE conname = 'chk_wdq_response_is_object') THEN
+                        ALTER TABLE bt_3_webapp_dictionary_queries
+                            ADD CONSTRAINT chk_wdq_response_is_object
+                            CHECK (response_json IS NULL
+                                   OR jsonb_typeof(response_json) = 'object');
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                   WHERE conname = 'chk_wdq_notes_is_array') THEN
+                        ALTER TABLE bt_3_webapp_dictionary_queries
+                            ADD CONSTRAINT chk_wdq_notes_is_array
+                            CHECK (user_notes IS NULL
+                                   OR jsonb_typeof(user_notes) = 'array');
+                    END IF;
+                END $$;
+            """)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                   WHERE conname = 'chk_pool_texts_filled') THEN
+                        ALTER TABLE bt_3_dictionary_entries
+                            ADD CONSTRAINT chk_pool_texts_filled
+                            CHECK (BTRIM(source_text) <> '' AND BTRIM(target_text) <> '');
+                    END IF;
+                    -- Ненормализованный ключ не находится по своему же тексту:
+                    -- запрос нормализуют, а в базе лежит как есть.
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                   WHERE conname = 'chk_pool_keys_normalized') THEN
+                        ALTER TABLE bt_3_dictionary_entries
+                            ADD CONSTRAINT chk_pool_keys_normalized
+                            CHECK (source_text_norm = LOWER(BTRIM(source_text_norm))
+                                   AND BTRIM(source_text_norm) <> '');
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                   WHERE conname = 'chk_pool_pair_is_two_languages') THEN
+                        ALTER TABLE bt_3_dictionary_entries
+                            ADD CONSTRAINT chk_pool_pair_is_two_languages
+                            CHECK (source_lang <> target_lang);
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                   WHERE conname = 'chk_pool_response_is_object') THEN
+                        ALTER TABLE bt_3_dictionary_entries
+                            ADD CONSTRAINT chk_pool_response_is_object
+                            CHECK (response_json IS NULL
+                                   OR jsonb_typeof(response_json) = 'object');
+                    END IF;
+                END $$;
+            """)
             cursor.execute("""
                 ALTER TABLE bt_3_webapp_dictionary_queries
                 ALTER COLUMN word_ru DROP NOT NULL;

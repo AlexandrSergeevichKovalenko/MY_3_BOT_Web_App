@@ -55,6 +55,50 @@ BEGIN
     END IF;
 END $$;
 
+-- ── Правила, которые стережёт САМА БАЗА ────────────────────────────────────────
+-- Всё, что здесь перечислено, замерено на живой базе 06.08.2026 и уже соблюдается.
+-- Смысл ограничений не в том, чтобы что-то починить, а в том, чтобы это НЕ СЛОМАЛОСЬ
+-- впредь: пишут в эти таблицы пять разных путей (сохранение человеком, ночной добор,
+-- импорт подписки, массовые сборки, разовые скрипты), и проверка в коде одного из них
+-- остальных не касается.
+--
+-- Язык проверяется как «две строчные буквы», а не списком: пара немецкий-английский
+-- заработает без правки этого файла.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_lex_units_kind') THEN
+        ALTER TABLE bt_3_lex_units ADD CONSTRAINT chk_lex_units_kind
+            CHECK (kind IN ('word', 'collocation', 'sentence'));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_lex_units_lang_code') THEN
+        ALTER TABLE bt_3_lex_units ADD CONSTRAINT chk_lex_units_lang_code
+            CHECK (lang ~ '^[a-z]{2}$');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_lex_units_names_filled') THEN
+        ALTER TABLE bt_3_lex_units ADD CONSTRAINT chk_lex_units_names_filled
+            CHECK (BTRIM(display) <> '' AND BTRIM(lemma) <> '' AND BTRIM(lemma_key) <> '');
+    END IF;
+    -- Ключ опознания с заглавной буквой или пробелом по краям не найдётся никогда:
+    -- поиск нормализует запрос, а в базе лежит ненормализованное.
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_lex_units_key_normalized') THEN
+        ALTER TABLE bt_3_lex_units ADD CONSTRAINT chk_lex_units_key_normalized
+            CHECK (lemma_key = LOWER(BTRIM(lemma_key)));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_lex_units_gender_values') THEN
+        ALTER TABLE bt_3_lex_units ADD CONSTRAINT chk_lex_units_gender_values
+            CHECK (gender IS NULL OR gender IN ('der', 'die', 'das'));
+    END IF;
+    -- Род у нерусского слова — признак перепутанных сторон, а не опечатка.
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_lex_units_gender_german_only') THEN
+        ALTER TABLE bt_3_lex_units ADD CONSTRAINT chk_lex_units_gender_german_only
+            CHECK (gender IS NULL OR lang = 'de');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_lex_units_card_is_object') THEN
+        ALTER TABLE bt_3_lex_units ADD CONSTRAINT chk_lex_units_card_is_object
+            CHECK (card IS NULL OR jsonb_typeof(card) = 'object');
+    END IF;
+END $$;
+
 -- Опознание слова = лемма + часть речи + род. Именно род разводит омографы:
 -- «der Kiefer» (челюсть) и «die Kiefer» (сосна) — разные единицы, а «Rüpel» и
 -- «der Rüpel» — одна. COALESCE, потому что в уникальном индексе NULL не совпадает
@@ -75,6 +119,25 @@ CREATE TABLE IF NOT EXISTS bt_3_lex_surfaces (
 );
 CREATE INDEX IF NOT EXISTS idx_lex_surfaces_lookup
     ON bt_3_lex_surfaces (lang, surface_key);
+
+-- Написание с заглавной буквой или пробелом по краям не найдётся: поиск нормализует
+-- запрос, а в базе лежало бы ненормализованное.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_lex_surfaces_key_normalized') THEN
+        ALTER TABLE bt_3_lex_surfaces ADD CONSTRAINT chk_lex_surfaces_key_normalized
+            CHECK (surface_key = LOWER(BTRIM(surface_key)) AND BTRIM(surface_key) <> '');
+    END IF;
+    -- Написание обязано быть на языке своего слова. Проверкой одной строки это не
+    -- выразить — язык лежит в соседней таблице, поэтому ссылка идёт ПАРОЙ (слово, язык).
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_lex_units_id_lang') THEN
+        ALTER TABLE bt_3_lex_units ADD CONSTRAINT uq_lex_units_id_lang UNIQUE (id, lang);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_lex_surfaces_unit_lang') THEN
+        ALTER TABLE bt_3_lex_surfaces ADD CONSTRAINT fk_lex_surfaces_unit_lang
+            FOREIGN KEY (unit_id, lang) REFERENCES bt_3_lex_units (id, lang) ON DELETE CASCADE;
+    END IF;
+END $$;
 
 -- ── 3. Переводы: связь ЕДИНИЦЫ с ЕДИНИЦЕЙ, а не текста с текстом ───────────────
 -- Отсюда обратное направление работает само: «враг» — единица, у неё связь с
@@ -131,3 +194,18 @@ CREATE INDEX IF NOT EXISTS idx_lex_senses_unit ON bt_3_lex_senses (unit_id, sens
 ALTER TABLE bt_3_lex_links ADD COLUMN IF NOT EXISTS sense_id BIGINT
     REFERENCES bt_3_lex_senses(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_lex_links_sense ON bt_3_lex_links (sense_id);
+
+
+-- Связь-перевод: слово не переводит само себя, а ранг не бывает отрицательным —
+-- отрицательный обошёл бы любой приоритет и встал первым.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_lex_links_not_self') THEN
+        ALTER TABLE bt_3_lex_links ADD CONSTRAINT chk_lex_links_not_self
+            CHECK (from_unit <> to_unit);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_lex_links_rank_sane') THEN
+        ALTER TABLE bt_3_lex_links ADD CONSTRAINT chk_lex_links_rank_sane
+            CHECK (rank >= 0);
+    END IF;
+END $$;
