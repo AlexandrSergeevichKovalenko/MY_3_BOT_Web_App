@@ -22111,6 +22111,269 @@ def get_quarantined_pool_entries(limit: int = 1000) -> list[dict]:
 # A session snapshots the candidate list (so labels don't shift under the admin) and
 # tracks which entries the admin UNCHECKED (kept). Default = delete everything.
 # --------------------------------------------------------------------------- #
+# ── Ночная проверка грамматики фраз ────────────────────────────────────────────────
+# Слова проверяются справочником родов бесплатно, а фразам справочника нет: их грамматику
+# может рассудить только язык. Поэтому фразы общего словаря проверяются ночью партиями,
+# и результат хранится здесь, чтобы одну и ту же фразу не спрашивать дважды.
+
+def _ensure_phrase_check_tables(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bt_3_phrase_check (
+            unit_id     BIGINT PRIMARY KEY REFERENCES bt_3_lex_units(id) ON DELETE CASCADE,
+            text_hash   TEXT NOT NULL,           -- проверяли ИМЕННО этот текст
+            verdict     TEXT NOT NULL,           -- ok | fixed | doubt
+            checked_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bt_3_phrase_review (
+            id          BIGSERIAL PRIMARY KEY,
+            unit_id     BIGINT NOT NULL REFERENCES bt_3_lex_units(id) ON DELETE CASCADE,
+            text        TEXT NOT NULL,
+            translation TEXT NOT NULL DEFAULT '',
+            judges      JSONB NOT NULL,          -- [{verdict, category, corrected, why}, …]
+            status      TEXT NOT NULL DEFAULT 'open',   -- open | accepted | deleted | replaced
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    )
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_phrase_review_open "
+        "ON bt_3_phrase_review (unit_id) WHERE status = 'open';"
+    )
+
+
+def phrase_check_text_hash(text: str) -> str:
+    return hashlib.sha1(str(text or "").strip().encode("utf-8", "ignore")).hexdigest()[:16]
+
+
+def pick_phrases_for_grammar_check(limit: int) -> list[dict]:
+    """Фразы общего словаря, которые ещё не проверяли (или проверяли ДРУГОЙ текст).
+
+    Берём только то, что человек реально видит в поиске: у фразы должен быть перевод.
+    Порядок — по востребованности: сначала то, на что ссылаются карточки людей."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                """
+                SELECT u.id, u.kind, u.display,
+                       (SELECT v.display FROM bt_3_lex_links l
+                          JOIN bt_3_lex_units v ON v.id = l.to_unit
+                         WHERE l.from_unit = u.id AND v.lang = 'ru'
+                         ORDER BY l.rank LIMIT 1) AS translation,
+                       (SELECT count(*) FROM bt_3_webapp_dictionary_queries q
+                         WHERE q.lex_unit_id = u.id) AS saves
+                FROM bt_3_lex_units u
+                LEFT JOIN bt_3_phrase_check c ON c.unit_id = u.id
+                WHERE u.lang = 'de'
+                  AND u.kind IN ('sentence', 'collocation')
+                  AND length(u.display) <= 200
+                  AND EXISTS (SELECT 1 FROM bt_3_lex_links l JOIN bt_3_lex_units v ON v.id = l.to_unit
+                              WHERE l.from_unit = u.id AND v.lang = 'ru')
+                  AND (c.unit_id IS NULL OR c.text_hash <> %s)
+                ORDER BY saves DESC, u.id
+                LIMIT %s;
+                """,
+                ("", int(limit)),
+            )
+            rows = cursor.fetchall()
+    out = []
+    for uid, kind, display, translation, saves in rows:
+        out.append({"unit_id": int(uid), "kind": kind, "text": display,
+                    "translation": translation or "", "saves": int(saves or 0)})
+    return out
+
+
+def count_phrases_left_for_grammar_check() -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                """
+                SELECT count(*) FROM bt_3_lex_units u
+                LEFT JOIN bt_3_phrase_check c ON c.unit_id = u.id
+                WHERE u.lang = 'de' AND u.kind IN ('sentence', 'collocation')
+                  AND length(u.display) <= 200
+                  AND EXISTS (SELECT 1 FROM bt_3_lex_links l JOIN bt_3_lex_units v ON v.id = l.to_unit
+                              WHERE l.from_unit = u.id AND v.lang = 'ru')
+                  AND c.unit_id IS NULL;
+                """
+            )
+            return int((cursor.fetchone() or [0])[0])
+
+
+def mark_phrase_checked(unit_id: int, text: str, verdict: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                """
+                INSERT INTO bt_3_phrase_check (unit_id, text_hash, verdict, checked_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (unit_id) DO UPDATE
+                  SET text_hash = EXCLUDED.text_hash,
+                      verdict = EXCLUDED.verdict,
+                      checked_at = NOW();
+                """,
+                (int(unit_id), phrase_check_text_hash(text), str(verdict or "ok")[:16]),
+            )
+        conn.commit()
+
+
+def queue_phrase_for_review(*, unit_id: int, text: str, translation: str, judges: list) -> None:
+    """Спорная фраза — владельцу на решение. Один открытый вопрос на фразу: повторная
+    проверка не должна плодить дубли в утреннем отчёте."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                """
+                INSERT INTO bt_3_phrase_review (unit_id, text, translation, judges)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (unit_id) WHERE status = 'open' DO UPDATE
+                  SET text = EXCLUDED.text, translation = EXCLUDED.translation,
+                      judges = EXCLUDED.judges, created_at = NOW();
+                """,
+                (int(unit_id), str(text or ""), str(translation or ""),
+                 json.dumps(judges or [], ensure_ascii=False)),
+            )
+        conn.commit()
+
+
+def list_open_phrase_reviews(limit: int = 200) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                """SELECT id, unit_id, text, translation, judges FROM bt_3_phrase_review
+                   WHERE status = 'open' ORDER BY id LIMIT %s;""",
+                (int(limit),),
+            )
+            rows = cursor.fetchall()
+    return [{"id": int(r[0]), "unit_id": int(r[1]), "text": r[2],
+             "translation": r[3] or "", "judges": r[4] if isinstance(r[4], list) else []}
+            for r in rows]
+
+
+def count_open_phrase_reviews() -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute("SELECT count(*) FROM bt_3_phrase_review WHERE status = 'open';")
+            return int((cursor.fetchone() or [0])[0])
+
+
+def close_phrase_review(review_id: int, status: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "UPDATE bt_3_phrase_review SET status = %s WHERE id = %s;",
+                (str(status or "closed")[:16], int(review_id)),
+            )
+        conn.commit()
+
+
+def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = "") -> dict:
+    """Решение владельца по спорной фразе: принять правку, удалить или вписать свою.
+
+    Правило удаления, согласованное 06.08.2026. Фраза уходит из общего словаря, и вместе
+    с ней — ПОДПИСНЫЕ карточки людей, но только те, куда человек не вписал своих полей
+    («Моё»). Подписка это ссылка на общее слово: забраковали слово — забраковали и ссылку.
+    А карточку, которую человек завёл СЕБЕ сам, не трогаем никогда: он сохранил её такой,
+    какой захотел, и это его право. Есть свои поля — тоже не трогаем: там его труд.
+
+    Свой текст владельца становится новым написанием, а разбор помечается на пересборку:
+    у другой фразы и разбор другой.
+    """
+    result = {"decision": decision, "unit_id": 0, "cards_removed": 0, "text": ""}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "SELECT unit_id, text, judges FROM bt_3_phrase_review WHERE id = %s AND status = 'open';",
+                (int(review_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return result
+            unit_id, old_text, judges = int(row[0]), row[1], (row[2] if isinstance(row[2], list) else [])
+            result["unit_id"] = unit_id
+
+            if decision == "delete":
+                cursor.execute(
+                    """DELETE FROM bt_3_webapp_dictionary_queries q
+                       WHERE q.lex_unit_id = %s
+                         AND q.origin_process = 'subscription'
+                         AND (q.user_notes IS NULL
+                              OR jsonb_typeof(q.user_notes) <> 'array'
+                              OR jsonb_array_length(q.user_notes) = 0);""",
+                    (unit_id,),
+                )
+                result["cards_removed"] = cursor.rowcount or 0
+                cursor.execute("DELETE FROM bt_3_lex_units WHERE id = %s;", (unit_id,))
+                cursor.execute(
+                    "UPDATE bt_3_phrase_review SET status = 'deleted' WHERE id = %s;", (int(review_id),)
+                )
+                conn.commit()
+                return result
+
+            if decision == "accept":
+                new_text = next((str(j.get("corrected") or "").strip()
+                                 for j in judges if j.get("corrected")), "")
+            else:
+                new_text = str(own_text or "").strip()
+            if not new_text or new_text == old_text:
+                cursor.execute(
+                    "UPDATE bt_3_phrase_review SET status = 'closed' WHERE id = %s;", (int(review_id),)
+                )
+                conn.commit()
+                return result
+
+            from backend.dictionary_intake import clean_text
+            new_text = clean_text(new_text)
+            key = _phrase_review_key(new_text)
+            cursor.execute(
+                "SELECT id FROM bt_3_lex_units WHERE lang='de' AND lemma_key=%s AND id<>%s LIMIT 1;",
+                (key, unit_id),
+            )
+            if cursor.fetchone():
+                cursor.execute(
+                    "UPDATE bt_3_phrase_review SET status = 'closed' WHERE id = %s;", (int(review_id),)
+                )
+                conn.commit()
+                result["text"] = ""
+                return result
+            cursor.execute(
+                "UPDATE bt_3_lex_units SET display=%s, lemma=%s, lemma_key=%s WHERE id=%s;",
+                (new_text, new_text, key, unit_id),
+            )
+            cursor.execute(
+                """INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
+                   VALUES ('de', %s, %s, 'exact') ON CONFLICT DO NOTHING;""",
+                (key, unit_id),
+            )
+            # Текст другой — значит и разбор к нему другой. Снимаем метку проверки,
+            # чтобы ночь посмотрела фразу заново уже в новом виде.
+            cursor.execute("DELETE FROM bt_3_phrase_check WHERE unit_id = %s;", (unit_id,))
+            cursor.execute(
+                "UPDATE bt_3_phrase_review SET status = %s WHERE id = %s;",
+                ("accepted" if decision == "accept" else "replaced", int(review_id)),
+            )
+        conn.commit()
+    result["text"] = new_text
+    return result
+
+
+def _phrase_review_key(text: str) -> str:
+    from backend.lex_units import normalize_query
+    return normalize_query(text)
+
+
 def _ensure_pool_quarantine_review_table(cursor) -> None:
     cursor.execute(
         """
