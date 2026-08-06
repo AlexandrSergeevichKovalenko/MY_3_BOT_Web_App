@@ -4685,6 +4685,71 @@ async def _drip_delivery_job(context: CallbackContext) -> None:
         logging.info("drip_tick windowed=%d delivered=%d", len(users), delivered)
 
 
+# ── Вечерний добор для тех, кого ведут слоты ─────────────────────────────────
+# Замер по проду 05.08.2026: «редко» (свои часы, капля) дало ровно 8 из 8 и восемь
+# разных типов, а слотовая рассылка обещание не сдержала — «обычно» 11 из 12 при
+# семи разных типах, «интенсив» 18 из 20 при одиннадцати. Причин две, и обе слотовому
+# пути не по силам: если у слота пуст пул, место дня просто теряется (догонять
+# некому), а тип с двумя слотами в сутках занимает два места из нормы, пока типы,
+# не попавшие в сегодняшнюю ротацию, не приходят вовсе.
+# Добор берёт готовое правило капли (сперва то, чего сегодня не было) и вечером
+# доводит человека до его нормы. Слоты не трогаются: добор включается только там,
+# где до нормы не дотянули.
+DAILY_TOPUP_START_HOUR = max(0, min(23, int((os.getenv("DAILY_TOPUP_START_HOUR") or "20").strip() or "20")))
+DAILY_TOPUP_END_HOUR = max(0, min(23, int((os.getenv("DAILY_TOPUP_END_HOUR") or "21").strip() or "21")))
+DAILY_TOPUP_TICK_MINUTES = max(5, int((os.getenv("DAILY_TOPUP_TICK_MINUTES") or "20").strip() or "20"))
+
+
+def _daily_topup_enabled() -> bool:
+    return (os.getenv("DAILY_TOPUP_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _daily_topup_job(context: CallbackContext) -> None:
+    """Довести до дневной нормы тех, кого обслуживают слоты.
+
+    По одному заданию за заход — чтобы недобор в несколько штук не свалился пачкой,
+    а разошёлся по вечеру. Людей со своими часами не трогаем: их ведёт капля, у неё
+    свой счёт и свой темп.
+    """
+    if not _daily_topup_enabled() or _is_quiet_hours_now():
+        return
+    now = _get_quiz_schedule_now()
+    since_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        uids = await _collect_scheduler_candidate_user_ids(
+            lookback_days=30, include_allowed=True, include_admins=True)
+        active_recent = set(await _collect_scheduler_candidate_user_ids(
+            lookback_days=FREE_INACTIVE_SUPPRESS_DAYS, include_allowed=False, include_admins=True))
+        prefs_map = await asyncio.to_thread(get_user_prefs_bulk, tuple(uids))
+    except Exception:
+        logging.warning("daily_topup: список получателей собрать не вышло", exc_info=True)
+        return
+    served, delivered = 0, 0
+    for raw_uid in uids:
+        try:
+            uid = int(raw_uid)
+            if uid <= 0 or _is_synthetic_telegram_user_id(uid):
+                continue
+            prefs = prefs_map.get(uid) or {}
+            is_pro = _is_user_pro_cached(uid)
+            if _drip_delivery_enabled() and bool(prefs.get("schedule")) and is_pro:
+                continue  # свои часы → его ведёт капля
+            budget = _user_send_budget(uid, is_pro=is_pro, active_recent=active_recent,
+                                       preset=prefs.get("preset"))
+            if budget <= 0:
+                continue  # тишина или давно не заходил — добор молчит вместе с рассылкой
+            served += 1
+            count, _last = await asyncio.to_thread(get_inbox_delivery_stats_today, uid, since_ts)
+            if count >= budget:
+                continue
+            if await _drip_deliver_one(context, uid, count, now):
+                delivered += 1
+        except Exception:
+            logging.warning("daily_topup: сбой у uid=%s", raw_uid, exc_info=True)
+    if served:
+        logging.info("daily_topup served=%d delivered=%d", served, delivered)
+
+
 async def _release_windowed_inbox_job(context: CallbackContext) -> None:
     """Этап 3f: when a windowed user's active hours open, deliver everything we HELD
     for them (tasks that fired while they were "off") as ONE batch card. Tasks that
@@ -43534,6 +43599,15 @@ def main():
             "cron",
             hour=5,
             minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Вечерний добор: у кого слоты не дотянули до его нормы — доводим по одному
+        #    заданию за заход, до начала тишины. Людей со своими часами ведёт капля. --
+        scheduler.add_job(
+            lambda: submit_async(_daily_topup_job, CallbackContext(application=application)),
+            "cron",
+            hour=f"{DAILY_TOPUP_START_HOUR}-{DAILY_TOPUP_END_HOUR}",
+            minute=f"*/{DAILY_TOPUP_TICK_MINUTES}",
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- DAU streaks (Этап 4): roll yesterday's activity + reward Pro-days (08:00) --
