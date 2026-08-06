@@ -198,6 +198,7 @@ from backend.german_grammar_tables import build_grammar_tables
 from backend.dictionary_pool_reverse import build_reverse_pool_item
 from backend import lex_units
 from backend import lex_senses
+from backend import dictionary_intake
 from backend.reader_audio_singleflight import (
     acquire_reader_audio_singleflight_slot,
     release_reader_audio_singleflight_slot,
@@ -47135,7 +47136,10 @@ Output ONLY valid json: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
 
 
 def _shortcut_normalize_unit_text(text: str) -> str:
-    cleaned = str(text or "").replace("\u00a0", " ").strip()
+    # Общая дверь идёт ПЕРВОЙ: невидимые знаки, буквы-двойники, кавычки, нумерация —
+    # это грязь копипаста, одинаковая для всех входов. Ниже остаётся только то, что
+    # присуще именно «Ярлыку»: мусор из скриншотов социальных сетей.
+    cleaned = dictionary_intake.clean_text(text)
     cleaned = cleaned.replace("…", "...")
     cleaned = re.sub(r"(?<=\S)\s*(?:\.{3,})\s*(?=\S)", " ", cleaned)
     cleaned = re.sub(r"\s*\+\s*", " + ", cleaned)

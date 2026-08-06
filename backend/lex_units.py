@@ -26,6 +26,7 @@ from backend.database import (
     CARD_CONTENT_KEYS,
     card_content_score,
 )
+from backend.dictionary_intake import clean_text
 from backend.lex_senses import split_translation
 
 _SPACE_RE = re.compile(r"\s+")
@@ -374,7 +375,12 @@ def ensure_unit(text: str, lang: str) -> int | None:
 
     Нужно на сохранении: слово, которое человек только что положил себе в словарь,
     обязано сразу иметь дом в слое. Иначе указатель у карточки остаётся пустым, и
-    разрыв растёт с каждым новым сохранением."""
+    разрыв растёт с каждым новым сохранением.
+
+    Механическая чистка здесь — последний заслон: единицы заводят и живой путь, и
+    разовые скрипты, и массовые сборки. Слово с невидимым знаком внутри выглядит
+    правильным, но заводит ВТОРУЮ единицу, которую поиск не найдёт никогда."""
+    text = clean_text(text)
     key = normalize_query(text)
     kind = _kind_for_text(text)
     if not key or not kind or not lang:
