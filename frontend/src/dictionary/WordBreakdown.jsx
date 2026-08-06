@@ -632,20 +632,19 @@ function SaveChip({ text, className, label, saved, onSave }) {
 }
 
 // Gender → color class (der=blue, die=red, das=green).
-// Отделять ли первое слово как АРТИКЛЬ. Заголовок «das Haus» — да, артикль там и есть.
-// А «Das viele Geld kommt nicht von ungefähr.» — предложение, и «Das» в нём просто первое
-// слово: вырывать его в цветную плашку значит рвать фразу пополам и ставить одно слово
-// отдельной строкой. Владелец увидел это в карточке 06.08.2026.
+// Отделить артикль в начале заголовка, чтобы показать его цветом рода.
 //
-// Правило: отделяем, только если после артикля стоит ОДНО-ДВА слова и нет знака конца
-// предложения. «die Vereinigten Staaten» проходит, «Das viele Geld kommt…» — нет.
+// Отделяем ВСЕГДА, когда текст начинается с der/die/das — и у слова «das Haus», и у
+// фразы «Das viele Geld kommt nicht von ungefähr»: там это тоже артикль, просто у
+// существительного внутри фразы. Цвет рода полезен в обоих случаях.
+//
+// Разрыв строки, который владелец увидел 06.08.2026 («Das» отдельно, остальное ниже),
+// шёл не отсюда, а из вёрстки: строка заголовка была flex-контейнером, и текст после
+// плашки становился отдельным блоком, переносившимся сам под себя. Починено в CSS.
 export function splitLeadingArticle(text) {
   const value = String(text || '').trim();
   const m = /^(der|die|das)\s+(.+)$/i.exec(value);
   if (!m) return null;
-  const rest = m[2].trim();
-  if (/[.!?]/.test(rest)) return null;
-  if (rest.split(/\s+/).length > 2) return null;
   return { article: value.slice(0, m[1].length), rest: value.slice(m[1].length) };
 }
 

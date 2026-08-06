@@ -8863,10 +8863,20 @@ body:has(.webapp-page.is-theme-light),
   display: grid;
   gap: 6px;
 }
+/* Точка состояния внутри заголовка карточки: раз строка теперь не flex, точка обязана
+   вести себя как значок в тексте, а не как элемент раскладки. */
+.vocab-word-fullscreen-word .vocab-srs-dot {
+  display: inline-block;
+  vertical-align: 0.15em;
+  margin-right: 9px;
+}
 .vocab-word-fullscreen-word {
-  display: flex;
-  align-items: center;
-  gap: 9px;
+  /* НЕ flex. Внутри строки лежат точка состояния, цветной артикль и остальной текст.
+     У flex-контейнера голый текст становится ОТДЕЛЬНЫМ элементом и переносится сам под
+     себя — заголовок «Das viele Geld kommt nicht von ungefähr.» рвался пополам: «Das»
+     оставалось слева, остальное уезжало на строку ниже (замечено владельцем 06.08.2026).
+     Обычный поток строки переносит текст как текст, а точка стоит перед ним значком. */
+  display: block;
   font-size: 22px;
   font-weight: 800;
   letter-spacing: -0.02em;
