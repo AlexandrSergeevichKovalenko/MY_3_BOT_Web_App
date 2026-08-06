@@ -81,6 +81,30 @@ def looks_like_example_not_translation(text: str) -> bool:
     return bool(_CYRILLIC_CAPITAL_FIRST.match(body)) and len(body.split()) >= 3
 
 
+_LATIN_ANY_RE = re.compile(r"[A-Za-zÄÖÜäöüß]")
+
+
+def text_matches_language(text: str | None, lang: str | None) -> bool:
+    """Написано ли слово своим алфавитом.
+
+    Русский текст в немецкой единице — это перепутанные стороны, а не опечатка: карточка
+    после такого указывает на чужое слово, разбор к ней не приезжает, поиск её не находит.
+    Замер 05.08.2026: 124 немецких единицы с русским текстом, 350 русских с немецким —
+    и почти все от кода, который писал в обход проверок.
+
+    Тот же запрет стоит в самой базе (`chk_lex_units_script_matches_lang`). Здесь он
+    нужен, чтобы отказать понятно и заранее, а не ловить ошибку записи."""
+    body = str(text or "").strip()
+    if not body:
+        return False
+    code = str(lang or "").strip().lower()
+    if code == "de":
+        return bool(_LATIN_ANY_RE.search(body))
+    if code == "ru":
+        return bool(_CYRILLIC_ANY_RE.search(body))
+    return True
+
+
 def normalize_query(text: str) -> str:
     """Ключ поиска: без лишних пробелов, без артикля, в нижнем регистре.
 
@@ -354,6 +378,11 @@ def ensure_unit(text: str, lang: str) -> int | None:
     key = normalize_query(text)
     kind = _kind_for_text(text)
     if not key or not kind or not lang:
+        return None
+    if not text_matches_language(text, lang):
+        # Слово чужого алфавита — это перепутанные стороны. Молча завести такую единицу
+        # значит спрятать ошибку в базе: карточка будет указывать на чужое слово.
+        logging.warning("единица не заведена: %r не похоже на язык %r", str(text)[:60], lang)
         return None
     body = _ANY_ARTICLE_RE.sub("", _SPACE_RE.sub(" ", str(text).strip())).strip()
     display = _SPACE_RE.sub(" ", str(text).strip()) if kind != "word" else body
