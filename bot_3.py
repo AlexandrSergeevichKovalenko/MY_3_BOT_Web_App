@@ -6870,6 +6870,40 @@ async def handle_describe_new_callback(update: Update, context: CallbackContext)
     await query.answer()
 
 
+async def handle_phrase_review_own_input(update: Update, context: CallbackContext) -> None:
+    """Свой вариант фразы после «✏️ Вписать свою». Ранняя группа обработчиков; сообщение
+    забираем ТОЛЬКО у того владельца, который сейчас этого варианта ждёт."""
+    if not update.message or not (update.message.text or ""):
+        return
+    user = update.effective_user
+    if not user or int(user.id) not in _PHRASE_REVIEW_PENDING_INPUT:
+        return
+    txt = (update.message.text or "").strip()
+    if txt.startswith("/"):
+        return  # настоящие команды пропускаем, ожидание не сбрасываем
+    review_id = _PHRASE_REVIEW_PENDING_INPUT.pop(int(user.id))
+    from backend.database import apply_phrase_review_decision, list_open_phrase_reviews
+    try:
+        res = await asyncio.to_thread(apply_phrase_review_decision, int(review_id), "replace", txt)
+    except Exception as exc:
+        logging.exception("phrase review own text failed id=%s", review_id)
+        await update.message.reply_text(f"❌ Не получилось записать: {exc}")
+        return
+    if not res.get("text"):
+        await update.message.reply_text(
+            "⚠️ Не записал: такая фраза в словаре уже есть или текст пустой. "
+            "Фраза снята с разбора.")
+    else:
+        await update.message.reply_text(
+            f"✅ Записал: <code>{res['text']}</code>\nРазбор к ней соберётся ночью.",
+            parse_mode="HTML")
+    items = await asyncio.to_thread(list_open_phrase_reviews, 200)
+    if items:
+        text, markup = _build_phrase_review(items, 0)
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup,
+                                        disable_web_page_preview=True)
+
+
 async def handle_describe_custom_input(update: Update, context: CallbackContext) -> None:
     """Catch the admin's typed custom description after «✏️ Своё» and save it approved.
     Runs in an early handler group; only consumes the message when that admin is pending."""
@@ -9566,6 +9600,86 @@ def _run_pool_night_enrichment_safe() -> None:
         _record_sched_heartbeat("pool_night_enrichment", "failed", {"error": str(exc)[:300]})
 
 
+def _run_phrase_night_check_safe() -> None:
+    """Ночная проверка грамматики фраз общего словаря (03:40 Вена — после добора слов).
+    Крутится в потоке BackgroundScheduler → обязан быть синхронным. Тратит GPT, поэтому
+    потолок жёсткий: PHRASE_NIGHT_CHECK_CAP фраз за ночь."""
+    try:
+        from backend.phrase_night_check import run_phrase_night_check
+        stats = run_phrase_night_check()
+        _record_sched_heartbeat("phrase_night_check", "completed", stats)
+        logging.info("phrase night check result=%s", stats)
+    except Exception as exc:
+        logging.exception("phrase night check failed")
+        _record_sched_heartbeat("phrase_night_check", "failed", {"error": str(exc)[:300]})
+
+
+def _send_phrase_check_morning_report() -> None:
+    """Утренний отчёт о ночной проверке фраз. Формат согласован с владельцем 06.08.2026:
+    только цифры, без списка молча исправленного — список нужен лишь по спорным, и он
+    живёт в /admin_phrase_review, где по каждой фразе три решения."""
+    try:
+        from backend.database import get_admin_telegram_ids, get_latest_scheduler_run_guard
+        row = get_latest_scheduler_run_guard(job_key="phrase_night_check")
+        meta = (row or {}).get("metadata") or {}
+        status = str((row or {}).get("status") or "").lower()
+        finished_at = (row or {}).get("finished_at")
+        stamp = finished_at.astimezone(ZoneInfo("Europe/Vienna")).strftime("%d.%m %H:%M") if finished_at else "—"
+        if not row:
+            text = ("🔤 <b>Ночная проверка фраз</b>\n\n"
+                    "⚠️ Записей о запуске нет — работа ни разу не отрабатывала.")
+        elif status == "failed":
+            text = (f"🔤 <b>Ночная проверка фраз</b> — {stamp}\n\n"
+                    f"❌ Упала. {meta.get('error') or 'Подробности в логах.'}")
+        else:
+            picked = int(meta.get("picked") or 0)
+            checked = int(meta.get("checked") or 0)
+            fixed = int(meta.get("fixed") or 0)
+            doubt = int(meta.get("doubt") or 0)
+            errors = int(meta.get("errors") or 0)
+            left = int(meta.get("left") or 0)
+            open_reviews = int(meta.get("open_reviews") or 0)
+            cap = int(meta.get("cap") or 0) or 1
+            nights = (left + cap - 1) // cap
+            names = {"rechtschreibung": "опечатка", "kongruenz": "согласование",
+                     "kasus": "падеж", "praeposition": "предлог"}
+            by = meta.get("by_category") or {}
+            cat_lines = "".join(
+                f"   • {names.get(k, k)} — {int(v)}\n" for k, v in sorted(by.items(), key=lambda x: -int(x[1]))
+            )
+            text = (
+                f"🔤 <b>Ночная проверка фраз</b> — {stamp}\n\n"
+                f"Отправлено:  <b>{picked}</b>\n"
+                f"Проверено:   <b>{checked}</b>\n"
+                f"Ошибок связи: {errors}\n\n"
+                f"Исправлено молча: <b>{fixed}</b>\n"
+                + (cat_lines or "")
+                + f"\nПод сомнением: <b>{doubt}</b>"
+                + (f" (всего ждут решения: {open_reviews})" if open_reviews else "")
+                + "\n"
+                + (f"Осталось проверить: <b>{left}</b> (≈{nights} ноч"
+                   f"{'ь' if nights == 1 else 'и' if nights < 5 else 'ей'} по {cap})\n"
+                   if left else "✅ Все фразы проверены.\n")
+                + (f"\nРазобрать спорные: /admin_phrase_review" if open_reviews else "")
+            )
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
+        if not token or not admin_ids:
+            return
+        import requests
+        for admin_id in admin_ids:
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": admin_id, "text": text, "parse_mode": "HTML"},
+                    timeout=15,
+                )
+            except Exception:
+                logging.debug("phrase check report send failed admin=%s", admin_id, exc_info=True)
+    except Exception:
+        logging.exception("phrase check morning report failed")
+
+
 def _run_dictionary_pool_report_safe() -> None:
     """Пн/Пт отчёт «Словарь: база и экономия». Крутится в потоке BackgroundScheduler →
     обязан быть синхронным. force=True: от повторов уже защищают coalesce + max_instances,
@@ -11804,6 +11918,117 @@ def _build_quarantine_review(session: dict, sid: str, page: int) -> tuple[str, "
     rows_kb.append([InlineKeyboardButton(f"🗑 Удалить отмеченные ({to_delete})", callback_data=f"qz:del:{sid}")])
     rows_kb.append([InlineKeyboardButton("✖ Закрыть", callback_data=f"qz:x:{sid}")])
     return "\n".join(head), InlineKeyboardMarkup(rows_kb)
+
+
+_PHRASE_REVIEW_PENDING_INPUT: dict = {}   # admin_id -> review_id, ждём свой текст
+
+
+def _build_phrase_review(items: list, idx: int) -> tuple:
+    """Одна спорная фраза на экран и три решения. По одной, а не списком: решение здесь
+    не «отметить галочкой», а выбрать одно из трёх, и каждое надо обдумать."""
+    from html import escape as _esc
+    total = len(items)
+    idx = max(0, min(idx, total - 1))
+    it = items[idx]
+    judges = it.get("judges") or []
+    names = {"rechtschreibung": "опечатка", "kongruenz": "согласование", "kasus": "падеж",
+             "praeposition": "предлог", "wortstellung": "порядок слов", "stil": "стиль"}
+    lines = [f"<b>{idx + 1} из {total}</b>\n",
+             f"<code>{_esc(it.get('text') or '')}</code>"]
+    if it.get("translation"):
+        lines.append(f"<i>{_esc(it['translation'])}</i>")
+    lines.append("")
+    for n, j in enumerate(judges, 1):
+        verdict = str(j.get("verdict") or "")
+        cat = names.get(str(j.get("category") or ""), j.get("category") or "")
+        if verdict == "error":
+            head = f"Судья {n} · {cat}" if cat else f"Судья {n} · ошибка"
+        elif verdict == "context":
+            head = f"Судья {n} · зависит от контекста"
+        elif verdict == "style":
+            head = f"Судья {n} · вопрос вкуса"
+        else:
+            head = f"Судья {n} · ошибки нет"
+        lines.append(head)
+        if j.get("corrected"):
+            lines.append(f"    <code>{_esc(j['corrected'])}</code>")
+        if j.get("why"):
+            lines.append(f"    <i>{_esc(j['why'])}</i>")
+    accept = next((str(j.get("corrected") or "") for j in judges if j.get("corrected")), "")
+    buttons = []
+    if accept:
+        buttons.append(InlineKeyboardButton("✅ Принять", callback_data=f"pr:ok:{it['id']}:{idx}"))
+    buttons.append(InlineKeyboardButton("🗑 Удалить", callback_data=f"pr:del:{it['id']}:{idx}"))
+    buttons.append(InlineKeyboardButton("✏️ Вписать свою", callback_data=f"pr:own:{it['id']}:{idx}"))
+    nav = []
+    if idx > 0:
+        nav.append(InlineKeyboardButton("‹ назад", callback_data=f"pr:nav:0:{idx - 1}"))
+    nav.append(InlineKeyboardButton("Пропустить ›", callback_data=f"pr:nav:0:{idx + 1}"))
+    return "\n".join(lines), InlineKeyboardMarkup([buttons, nav])
+
+
+async def admin_phrase_review_command(update: Update, context: CallbackContext):
+    """Спорные фразы ночной проверки: по одной, три решения — принять правку судьи,
+    удалить фразу из общего словаря или вписать свою. /admin_phrase_review"""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    from backend.database import list_open_phrase_reviews
+    items = await asyncio.to_thread(list_open_phrase_reviews, 200)
+    if not items:
+        await message.reply_text("✅ Спорных фраз нет — ночная проверка ничего не отложила.")
+        return
+    text, markup = _build_phrase_review(items, 0)
+    await message.reply_text(text, parse_mode="HTML", reply_markup=markup,
+                             disable_web_page_preview=True)
+
+
+async def handle_phrase_review_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    if not _is_admin_user(user.id):
+        await query.answer("Только для администратора.", show_alert=True)
+        return
+    parts = str(query.data or "").split(":")       # pr:<action>:<review_id>:<idx>
+    action = parts[1] if len(parts) > 1 else ""
+    review_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+    idx = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+
+    from backend.database import (
+        close_phrase_review, list_open_phrase_reviews, apply_phrase_review_decision,
+    )
+    if action == "own":
+        _PHRASE_REVIEW_PENDING_INPUT[int(user.id)] = review_id
+        await query.answer()
+        await query.edit_message_text(
+            "✏️ Пришлите свой вариант фразы одним сообщением.\n"
+            "Он заменит фразу в общем словаре и уйдёт на разбор следующей ночью.",
+            parse_mode="HTML")
+        return
+    if action in ("ok", "del"):
+        try:
+            await asyncio.to_thread(apply_phrase_review_decision, review_id,
+                                    "accept" if action == "ok" else "delete", "")
+        except Exception as exc:
+            logging.exception("phrase review decision failed id=%s", review_id)
+            await query.answer(f"Не получилось: {exc}", show_alert=True)
+            return
+        await query.answer("Принято" if action == "ok" else "Удалено")
+    else:
+        await query.answer()
+    items = await asyncio.to_thread(list_open_phrase_reviews, 200)
+    if not items:
+        await query.edit_message_text("✅ Спорные фразы разобраны — больше ничего не ждёт.")
+        return
+    text, markup = _build_phrase_review(items, min(idx, len(items) - 1))
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup,
+                                  disable_web_page_preview=True)
 
 
 async def admin_pool_quarantine_command(update: Update, context: CallbackContext):
@@ -42139,6 +42364,8 @@ def main():
     application.add_handler(CommandHandler("admin_resweep_units", admin_resweep_units_command))
     application.add_handler(CommandHandler("admin_pool_quarantine", admin_pool_quarantine_command))
     application.add_handler(CallbackQueryHandler(handle_quarantine_callback, pattern=r"^qz:"))
+    application.add_handler(CommandHandler("admin_phrase_review", admin_phrase_review_command))
+    application.add_handler(CallbackQueryHandler(handle_phrase_review_callback, pattern=r"^pr:"))
     application.add_handler(CommandHandler("videopoolreport", admin_video_pool_report_command))
     application.add_handler(CommandHandler("fix_translation_sessions", admin_fix_translation_sessions_command))
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
@@ -42255,6 +42482,7 @@ def main():
     # и этот обработчик там не срабатывал вообще — набранное админом описание уходило в
     # переводчик. Одна группа = один обработчик, поэтому и не -3: там уже занято.
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_describe_custom_input), group=-4)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phrase_review_own_input), group=-4)
     application.add_handler(CallbackQueryHandler(handle_tts_prewarm_quota_callback, pattern=r"^ttsprewarmquota:"))
     application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_question_cancel_callback, pattern=r"^quizaskcancel$"))
@@ -42849,6 +43077,30 @@ def main():
             "cron",
             hour=int((os.getenv("POOL_ENRICH_REPORT_HOUR") or "7").strip() or "7"),
             minute=int((os.getenv("POOL_ENRICH_REPORT_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Ночная проверка грамматики ФРАЗ (03:40 Вена, после добора слов) --
+        # У слов род сверяется со справочником бесплатно, у фраз справочника нет:
+        # их грамматику судит модель, а это деньги — отсюда жёсткий потолок за ночь.
+        scheduler.add_job(
+            _run_phrase_night_check_safe,
+            "cron",
+            hour=int((os.getenv("PHRASE_NIGHT_CHECK_HOUR") or "3").strip() or "3"),
+            minute=int((os.getenv("PHRASE_NIGHT_CHECK_MINUTE") or "40").strip() or "40"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Утренний отчёт о проверке фраз (07:05 Вена, сразу за отчётом о доборе) --
+        scheduler.add_job(
+            _send_phrase_check_morning_report,
+            "cron",
+            hour=int((os.getenv("PHRASE_CHECK_REPORT_HOUR") or "7").strip() or "7"),
+            minute=int((os.getenv("PHRASE_CHECK_REPORT_MINUTE") or "5").strip() or "5"),
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,

@@ -8622,6 +8622,97 @@ def run_quick_correct(*, text: str, source_lang: str = "") -> str:
     return corrected
 
 
+PHRASE_HARD_ERRORS = {"rechtschreibung", "kongruenz", "kasus", "praeposition"}
+
+
+def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence") -> dict:
+    """Грамматический вердикт по немецкой ФРАЗЕ — с учётом того, ЧЕМ она является.
+
+    Зачем отдельно от `run_quick_correct`. Тот спрашивает «исправь слово» и на фразе
+    начинает править стиль. А главное — он не знает, целое перед ним предложение или
+    кусок. От этого зависит грамматика: «Was Sie sich dadurch erhoffen?» как
+    самостоятельный вопрос требует глагол на втором месте, а как придаточное написано
+    верно. Одна и та же строка, разный вердикт.
+
+    Поэтому сюда передаётся `kind` из слоя слов:
+      "sentence"    — судим как самостоятельное предложение (порядок слов применим);
+      "collocation" — судим как оборот (порядок слов НЕ применим, но падеж,
+                      согласование и предлог применимы).
+
+    Возвращает {"verdict","category","corrected","why"}:
+      verdict  — "ok" | "error" | "context" (зависит от того, откуда фраза вырвана)
+                 | "style" (вопрос вкуса, не ошибка);
+      why      — одна строка по-русски, для отчёта владельцу.
+
+    «context» и «style» — это отказ трогать.
+    """
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    t = str(text or "").strip()
+    if not api_key or not t or len(t) > 300:
+        return {"verdict": "ok", "category": "", "corrected": "", "why": ""}
+    as_what = ("a COMPLETE standalone German sentence"
+               if str(kind or "").lower() == "sentence"
+               else "a German phrase / fragment (NOT a full sentence)")
+    system = (
+        "You are a strict German grammar examiner. You are given " + as_what + " that a "
+        "learner saved into a dictionary. Decide whether it is grammatically correct AS SUCH.\n"
+        "- Judge grammar only: spelling, agreement, case, prepositions, and - for a "
+        "standalone sentence - verb position. Never judge style, register or word choice.\n"
+        "- If the text is a fragment and the only complaint would be word order, answer "
+        "verdict=\"context\": a fragment torn out of a sentence may look reordered.\n"
+        "- If it is merely a matter of preference or a different but equally correct "
+        "wording, answer verdict=\"style\".\n"
+        "- Colloquial but attested German is CORRECT. Do not standardise it.\n"
+        "- Keep the learner's words: `corrected` may fix endings, articles, prepositions, "
+        "punctuation and word order, but must not swap in synonyms or add/remove content.\n"
+        "Answer STRICT JSON only: {\"verdict\":\"ok|error|context|style\","
+        "\"category\":\"rechtschreibung|kongruenz|kasus|praeposition|wortstellung|stil|\","
+        "\"corrected\":\"<fixed text or empty>\",\"why\":\"<one short sentence in RUSSIAN>\"}"
+    )
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=15)
+        resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps({"text": t, "kind": kind}, ensure_ascii=False)},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        logging.warning("run_phrase_grammar_verdict failed text=%s", t[:64], exc_info=True)
+        return {"verdict": "ok", "category": "", "corrected": "", "why": ""}
+    try:
+        u = getattr(resp, "usage", None)
+        if u:
+            _LAST_LLM_USAGE.set({
+                "model": "gpt-4.1-mini",
+                "prompt_tokens": int(getattr(u, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(u, "total_tokens", 0) or 0),
+            })
+    except Exception:
+        pass
+    try:
+        data = json.loads(resp.choices[0].message.content or "{}") or {}
+    except Exception:
+        return {"verdict": "ok", "category": "", "corrected": "", "why": ""}
+    out = {
+        "verdict": str(data.get("verdict") or "ok").strip().lower(),
+        "category": str(data.get("category") or "").strip().lower(),
+        "corrected": str(data.get("corrected") or "").strip(),
+        "why": str(data.get("why") or "").strip(),
+    }
+    # Ответ не в том алфавите — модель перевела вместо разбора; такому верить нельзя.
+    if out["corrected"] and _has_cyrillic(out["corrected"]):
+        return {"verdict": "ok", "category": "", "corrected": "", "why": ""}
+    if out["corrected"] == t:
+        out["corrected"] = ""
+    return out
+
+
 def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", forbid: str = "",
                       sibling: str = "", sibling_meaning: str = "", stands_for: str = "",
                       mime: str = "image/png") -> dict:
