@@ -830,8 +830,24 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
   const register = registerLabel(item);
   const homographs = homographList(item);
 
+  // Подсказка о вводе. Показываем ТОЛЬКО когда разбор прямо сказал «в том, что человек
+  // написал, есть ошибка» — это отдельное поле, а не словарная форма. Старое поле
+  // corrected_form отвечало сразу на два вопроса: у верного предложения «Sie kollabierte
+  // vor den Augen ihrer Freunde.» в нём лежит «kollabieren», и показывать это как «вы
+  // имели в виду» значило бы врать человеку про его же правильный текст.
+  // Текст карточки НЕ меняем: он сохранён так, как человек захотел. Только показываем.
+  const inputCorrection = (item.input_is_correct === false && clean(item.input_correction)) || '';
+  const inputCorrectionWhy = inputCorrection ? clean(item.input_correction_reason) : '';
+
   return (
     <>
+      {inputCorrection && (
+        <div className="dq-input-hint">
+          <span className="dq-input-hint-label">Возможно, вы имели в виду</span>
+          <span className="dq-input-hint-text">{inputCorrection}</span>
+          {inputCorrectionWhy && <span className="dq-input-hint-why">{inputCorrectionWhy}</span>}
+        </div>
+      )}
       {(posLabel || pron || level || freqLabel || register) && (
         <div className="dq-meta">
           {posLabel && <span className="dq-pos-chip">{posLabel}</span>}
