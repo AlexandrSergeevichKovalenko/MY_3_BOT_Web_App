@@ -7201,14 +7201,10 @@ function AppInner() {
   const hasSelectedTranslationLevel = ['a1', 'a2', 'b1', 'b2', 'c1', 'c2'].includes(String(selectedLevel || '').trim().toLowerCase());
   const FLASHCARDS_LOAD_DEDUP_WINDOW_MS = 900;
   const SRS_NEXT_DEDUP_WINDOW_MS = 900;
-  const SRS_EASY_LOCK_AFTER_SEC = 5;
-  const SRS_GOOD_LOCK_AFTER_SEC = 7;
   // Front side (source text) auto-flips to the answer after this think-time if the
   // learner hasn't pressed "Show Answer" yet.
   const SRS_AUTO_REVEAL_AFTER_SEC = 5;
   const QUICK_TRANSLATE_CACHE_TTL_MS = 5 * 60 * 1000;
-  const srsEasyLocked = srsRevealAnswer && srsRevealElapsedSec >= SRS_EASY_LOCK_AFTER_SEC;
-  const srsGoodLocked = srsRevealAnswer && srsRevealElapsedSec >= SRS_GOOD_LOCK_AFTER_SEC;
 
   const dictionaryRef = useRef(null);
   const dictionaryResultRef = useRef(null);
@@ -13062,8 +13058,6 @@ function AppInner() {
     // (same clamped accumulator shown as "Response time"), NOT a raw wall-clock delta
     // — otherwise a card left open in the background would report tens of minutes.
     const responseMs = Math.max(0, Math.round(Number(srsRevealActiveMsRef.current || 0)));
-    if (ratingValue === 'EASY' && srsEasyLocked) return;
-    if (ratingValue === 'GOOD' && srsGoodLocked) return;
 
     // ── Offline path ─────────────────────────────────────────────────────────
     const srsUserId = webappUser?.id ? Number(webappUser.id) : null;
@@ -40026,13 +40020,13 @@ function AppInner() {
                                         <small className="fsrs-rate-hint">{getSrsRatingHint('HARD')}</small>
                                       </div>
                                       <div className="fsrs-rate-cell">
-                                        <button type="button" className="fsrs-rate-btn good" onClick={() => submitSrsReview('GOOD')} disabled={srsSubmitting || srsGoodLocked}>
+                                        <button type="button" className="fsrs-rate-btn good" onClick={() => submitSrsReview('GOOD')} disabled={srsSubmitting}>
                                           <span>{tr('Хорошо', 'Gut')}</span>
                                         </button>
                                         <small className="fsrs-rate-hint">{getSrsRatingHint('GOOD')}</small>
                                       </div>
                                       <div className="fsrs-rate-cell">
-                                        <button type="button" className="fsrs-rate-btn easy" onClick={() => submitSrsReview('EASY')} disabled={srsSubmitting || srsEasyLocked}>
+                                        <button type="button" className="fsrs-rate-btn easy" onClick={() => submitSrsReview('EASY')} disabled={srsSubmitting}>
                                           <span>{tr('Легко', 'Leicht')}</span>
                                         </button>
                                         <small className="fsrs-rate-hint">{getSrsRatingHint('EASY')}</small>
