@@ -169,6 +169,14 @@ def clean_text(text) -> str:
     return value[:MAX_INTAKE_CHARS].strip()
 
 
+def has_latin(text) -> bool:
+    return bool(_LATIN_RE.search(str(text or "")))
+
+
+def has_cyrillic(text) -> bool:
+    return bool(_CYRILLIC_RE.search(str(text or "")))
+
+
 def clean_all(*values) -> tuple:
     """Чистка нескольких полей разом — чтобы у двери не забыли ни одно."""
     return tuple(clean_text(v) if isinstance(v, str) or v is None else v for v in values)

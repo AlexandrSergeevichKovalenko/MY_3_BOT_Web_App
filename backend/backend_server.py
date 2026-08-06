@@ -9149,6 +9149,78 @@ def _attach_saved_entry_to_lex_unit(entry_id, kwargs: dict) -> None:
         logging.debug("перенос готового разбора в новую карточку не удался", exc_info=True)
 
 
+def _db_rule_that_refused(exc) -> str:
+    """Имя правила базы, которое отказало. Пусто — отказ не от правила."""
+    text = str(exc or "")
+    if "violates check constraint" not in text and "нарушает ограничение-проверку" not in text:
+        return ""
+    for part in text.replace('"', " ").replace("«", " ").replace("»", " ").split():
+        if part.startswith(("chk_wdq_", "chk_pool_")):
+            return part
+    return ""
+
+
+def _repair_dictionary_kwargs_for_db_rule(kwargs: dict, rule: str) -> dict | None:
+    """Починить сохранение, которое база отказалась принять. Возвращает исправленный
+    набор полей или None, если починить нечем.
+
+    Человеку до наших правил дела нет: он отправил фразу и ждёт, что она сохранится.
+    Поэтому отказ базы — это не ошибка для показа, а сигнал нам: разобраться, что не
+    так, и записать правильно. Сама фраза у нас есть, остальное — наша работа."""
+    fixed = dict(kwargs)
+    word_de = str(fixed.get("word_de") or "")
+    word_ru = str(fixed.get("word_ru") or "")
+
+    if rule in ("chk_wdq_german_side_is_latin", "chk_pool_pair_is_two_languages",
+                "chk_wdq_pair_is_two_languages"):
+        # Немецкая колонка без единой латинской буквы = стороны перепутаны местами.
+        if dictionary_intake.has_cyrillic(word_de) and dictionary_intake.has_latin(word_ru):
+            fixed["word_de"], fixed["word_ru"] = word_ru, word_de
+            fixed["translation_de"], fixed["translation_ru"] = (
+                fixed.get("translation_ru"), fixed.get("translation_de"),
+            )
+            fixed["source_lang"], fixed["target_lang"] = (
+                fixed.get("target_lang"), fixed.get("source_lang"),
+            )
+            return fixed
+    if rule == "chk_wdq_german_side_is_latin":
+        # Латыни нет ни с одной стороны — немецкую колонку не выдумываем, оставляем
+        # карточку на одной стороне: слово человека сохранится, а не пропадёт.
+        if word_ru.strip():
+            fixed["word_de"] = None
+            fixed["translation_de"] = None
+            return fixed
+        return None
+    if rule in ("chk_wdq_pair_is_two_languages", "chk_pool_pair_is_two_languages"):
+        # Одинаковая пара языков — определяем по алфавиту того, что реально записано.
+        if dictionary_intake.has_latin(word_de) and dictionary_intake.has_cyrillic(word_ru):
+            fixed["source_lang"], fixed["target_lang"] = "de", "ru"
+            return fixed
+        fixed["source_lang"] = None
+        fixed["target_lang"] = None
+        return fixed
+    if rule == "chk_wdq_response_is_object":
+        fixed["response_json"] = {}
+        return fixed
+    if rule in ("chk_wdq_has_a_side", "chk_pool_texts_filled"):
+        return None  # нечего сохранять: обе стороны пусты
+    return None
+
+
+def _kwargs_repaired_for_db_rule(kwargs: dict, exc) -> dict:
+    """Одна попытка починки перед повтором сохранения. Не наше правило или чинить нечем —
+    поднимаем исходную ошибку дальше: тихо терять слово человека нельзя."""
+    rule = _db_rule_that_refused(exc)
+    if not rule:
+        raise exc
+    repaired = _repair_dictionary_kwargs_for_db_rule(kwargs, rule)
+    if repaired is None:
+        logging.error("сохранение отклонено правилом %s и починить нечем: %s", rule, exc)
+        raise exc
+    logging.warning("сохранение отклонено правилом %s — починили и повторяем", rule)
+    return repaired
+
+
 def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
     kwargs = _fix_swapped_sides_before_save(kwargs)
     kwargs = _fix_headword_case_before_save(kwargs)
@@ -9157,13 +9229,14 @@ def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
         _attach_saved_entry_to_lex_unit(entry_id, kwargs)
         return entry_id
     except Exception as exc:
-        if not _is_missing_dictionary_schema_error(exc):
-            raise
-        logging.warning(
-            "Dictionary save hit missing schema; running ensure_webapp_tables and retrying once: error=%s",
-            exc,
-        )
-        ensure_webapp_tables()
+        if _is_missing_dictionary_schema_error(exc):
+            logging.warning(
+                "Dictionary save hit missing schema; running ensure_webapp_tables and retrying once: error=%s",
+                exc,
+            )
+            ensure_webapp_tables()
+        else:
+            kwargs = _kwargs_repaired_for_db_rule(kwargs, exc)
     entry_id = save_webapp_dictionary_query_returning_id(**kwargs)
     _attach_saved_entry_to_lex_unit(entry_id, kwargs)
     return entry_id
@@ -9177,13 +9250,14 @@ def _save_dictionary_entry_with_inserted_schema_retry(**kwargs) -> tuple[int, bo
         _attach_saved_entry_to_lex_unit((result or (None,))[0], kwargs)
         return result
     except Exception as exc:
-        if not _is_missing_dictionary_schema_error(exc):
-            raise
-        logging.warning(
-            "Dictionary save hit missing schema; running ensure_webapp_tables and retrying once: error=%s",
-            exc,
-        )
-        ensure_webapp_tables()
+        if _is_missing_dictionary_schema_error(exc):
+            logging.warning(
+                "Dictionary save hit missing schema; running ensure_webapp_tables and retrying once: error=%s",
+                exc,
+            )
+            ensure_webapp_tables()
+        else:
+            kwargs = _kwargs_repaired_for_db_rule(kwargs, exc)
     result = save_webapp_dictionary_query_returning_id_with_inserted(**kwargs)
     _attach_saved_entry_to_lex_unit((result or (None,))[0], kwargs)
     return result
