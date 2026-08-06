@@ -198,6 +198,7 @@ from backend.german_grammar_tables import build_grammar_tables
 from backend.dictionary_pool_reverse import build_reverse_pool_item
 from backend import lex_units
 from backend import lex_senses
+from backend import dictionary_intake
 from backend.reader_audio_singleflight import (
     acquire_reader_audio_singleflight_slot,
     release_reader_audio_singleflight_slot,
@@ -7153,9 +7154,10 @@ def _set_cached_quick_correct(cache_key: str, corrected: str) -> None:
                 _QUICK_CORRECT_CACHE.pop(stale_key, None)
 
 
-def _proofread_dictionary_source_for_save(text: str, *, source_lang: str, user_id: int | None) -> str:
+def _proofread_dictionary_phrase(text: str, *, source_lang: str, user_id: int | None) -> str:
     """Server-side twin of the /api/translate/quick/correct route, called from the dictionary
-    SAVE endpoints so a typed phrase is proofread no matter WHICH surface saved it. The
+    SAVE endpoints AND from the lookup routes so a typed phrase is proofread no matter WHICH
+    surface it came from — see `_dictionary_hit_or_corrected_word` for the lookup side. The
     client-side proofread only covers the quick-dictionary overlay; wiring it here means every
     manual-entry surface (in-app dictionary, reader, YouTube, world-news, deep analysis, ask/
     answer overlays, …) is corrected too — the mechanism must be origin-independent.
@@ -7203,7 +7205,7 @@ def _apply_dictionary_source_proofread(
     side only (never the translation side, which is the other language). Returns the possibly-
     updated (source_text, word_ru, word_de, translation_ru, translation_de) tuple; a no-op when
     there is nothing to fix."""
-    corrected = _proofread_dictionary_source_for_save(source_text, source_lang=source_lang, user_id=user_id)
+    corrected = _proofread_dictionary_phrase(source_text, source_lang=source_lang, user_id=user_id)
     original = source_text
     if corrected and corrected != original:
         source_text = corrected
@@ -7494,6 +7496,38 @@ def _store_quick_translate_in_pool(
         )
     except Exception as exc:
         logging.debug("quick translate → pool skipped: %s", exc)
+
+
+def _dictionary_hit_or_corrected_word(
+    *, word: str, source_lang: str, target_lang: str, user_id: int | None
+) -> tuple[dict | None, str]:
+    """Наш словарь → промах → ВЫЧИТКА слова → снова наш словарь. Возвращает найденную
+    карточку (или None) и то написание, с которым идти дальше.
+
+    Почему вычитка живёт именно здесь. Раньше она стояла только на СОХРАНЕНИИ, а платим
+    мы за разбор раньше — на поиске. Поэтому за неверную форму мы честно платили GPT,
+    строили ей карточку и заводили ей единицу, и только текст правили потом. Так в слое
+    и появилось «das Neugeborenes» — слова, которого в немецком нет.
+
+    Почему это не дорого. Вычитку зовём ТОЛЬКО после того, как наш собственный словарь
+    ответить не смог, то есть ровно там, где мы всё равно собираемся платить за полный
+    разбор. Слово, которое у нас уже есть, верное по определению — спрашивать не о чем,
+    и на попадании в свой словарь не тратится ничего. А на промахе дешёвая вычитка
+    вместо разбора нередко ЭКОНОМИТ: исправленное слово часто уже лежит у нас."""
+    item = _load_dictionary_item_from_pool(word=word, source_lang=source_lang, target_lang=target_lang)
+    if item:
+        return item, word
+    if not dictionary_intake.worth_language_check(word, source_lang):
+        return None, word
+    corrected = _proofread_dictionary_phrase(word, source_lang=source_lang, user_id=user_id)
+    corrected = dictionary_intake.clean_text(corrected)
+    if not corrected or corrected == word:
+        return None, word
+    logging.info("словарь: вход %r исправлен на %r перед разбором", word[:60], corrected[:60])
+    item = _load_dictionary_item_from_pool(
+        word=corrected, source_lang=source_lang, target_lang=target_lang
+    )
+    return item, corrected
 
 
 def _load_reverse_pool_item(*, word: str, source_lang: str, target_lang: str) -> dict | None:
@@ -9115,6 +9149,78 @@ def _attach_saved_entry_to_lex_unit(entry_id, kwargs: dict) -> None:
         logging.debug("перенос готового разбора в новую карточку не удался", exc_info=True)
 
 
+def _db_rule_that_refused(exc) -> str:
+    """Имя правила базы, которое отказало. Пусто — отказ не от правила."""
+    text = str(exc or "")
+    if "violates check constraint" not in text and "нарушает ограничение-проверку" not in text:
+        return ""
+    for part in text.replace('"', " ").replace("«", " ").replace("»", " ").split():
+        if part.startswith(("chk_wdq_", "chk_pool_")):
+            return part
+    return ""
+
+
+def _repair_dictionary_kwargs_for_db_rule(kwargs: dict, rule: str) -> dict | None:
+    """Починить сохранение, которое база отказалась принять. Возвращает исправленный
+    набор полей или None, если починить нечем.
+
+    Человеку до наших правил дела нет: он отправил фразу и ждёт, что она сохранится.
+    Поэтому отказ базы — это не ошибка для показа, а сигнал нам: разобраться, что не
+    так, и записать правильно. Сама фраза у нас есть, остальное — наша работа."""
+    fixed = dict(kwargs)
+    word_de = str(fixed.get("word_de") or "")
+    word_ru = str(fixed.get("word_ru") or "")
+
+    if rule in ("chk_wdq_german_side_is_latin", "chk_pool_pair_is_two_languages",
+                "chk_wdq_pair_is_two_languages"):
+        # Немецкая колонка без единой латинской буквы = стороны перепутаны местами.
+        if dictionary_intake.has_cyrillic(word_de) and dictionary_intake.has_latin(word_ru):
+            fixed["word_de"], fixed["word_ru"] = word_ru, word_de
+            fixed["translation_de"], fixed["translation_ru"] = (
+                fixed.get("translation_ru"), fixed.get("translation_de"),
+            )
+            fixed["source_lang"], fixed["target_lang"] = (
+                fixed.get("target_lang"), fixed.get("source_lang"),
+            )
+            return fixed
+    if rule == "chk_wdq_german_side_is_latin":
+        # Латыни нет ни с одной стороны — немецкую колонку не выдумываем, оставляем
+        # карточку на одной стороне: слово человека сохранится, а не пропадёт.
+        if word_ru.strip():
+            fixed["word_de"] = None
+            fixed["translation_de"] = None
+            return fixed
+        return None
+    if rule in ("chk_wdq_pair_is_two_languages", "chk_pool_pair_is_two_languages"):
+        # Одинаковая пара языков — определяем по алфавиту того, что реально записано.
+        if dictionary_intake.has_latin(word_de) and dictionary_intake.has_cyrillic(word_ru):
+            fixed["source_lang"], fixed["target_lang"] = "de", "ru"
+            return fixed
+        fixed["source_lang"] = None
+        fixed["target_lang"] = None
+        return fixed
+    if rule == "chk_wdq_response_is_object":
+        fixed["response_json"] = {}
+        return fixed
+    if rule in ("chk_wdq_has_a_side", "chk_pool_texts_filled"):
+        return None  # нечего сохранять: обе стороны пусты
+    return None
+
+
+def _kwargs_repaired_for_db_rule(kwargs: dict, exc) -> dict:
+    """Одна попытка починки перед повтором сохранения. Не наше правило или чинить нечем —
+    поднимаем исходную ошибку дальше: тихо терять слово человека нельзя."""
+    rule = _db_rule_that_refused(exc)
+    if not rule:
+        raise exc
+    repaired = _repair_dictionary_kwargs_for_db_rule(kwargs, rule)
+    if repaired is None:
+        logging.error("сохранение отклонено правилом %s и починить нечем: %s", rule, exc)
+        raise exc
+    logging.warning("сохранение отклонено правилом %s — починили и повторяем", rule)
+    return repaired
+
+
 def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
     kwargs = _fix_swapped_sides_before_save(kwargs)
     kwargs = _fix_headword_case_before_save(kwargs)
@@ -9123,13 +9229,14 @@ def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
         _attach_saved_entry_to_lex_unit(entry_id, kwargs)
         return entry_id
     except Exception as exc:
-        if not _is_missing_dictionary_schema_error(exc):
-            raise
-        logging.warning(
-            "Dictionary save hit missing schema; running ensure_webapp_tables and retrying once: error=%s",
-            exc,
-        )
-        ensure_webapp_tables()
+        if _is_missing_dictionary_schema_error(exc):
+            logging.warning(
+                "Dictionary save hit missing schema; running ensure_webapp_tables and retrying once: error=%s",
+                exc,
+            )
+            ensure_webapp_tables()
+        else:
+            kwargs = _kwargs_repaired_for_db_rule(kwargs, exc)
     entry_id = save_webapp_dictionary_query_returning_id(**kwargs)
     _attach_saved_entry_to_lex_unit(entry_id, kwargs)
     return entry_id
@@ -9143,13 +9250,14 @@ def _save_dictionary_entry_with_inserted_schema_retry(**kwargs) -> tuple[int, bo
         _attach_saved_entry_to_lex_unit((result or (None,))[0], kwargs)
         return result
     except Exception as exc:
-        if not _is_missing_dictionary_schema_error(exc):
-            raise
-        logging.warning(
-            "Dictionary save hit missing schema; running ensure_webapp_tables and retrying once: error=%s",
-            exc,
-        )
-        ensure_webapp_tables()
+        if _is_missing_dictionary_schema_error(exc):
+            logging.warning(
+                "Dictionary save hit missing schema; running ensure_webapp_tables and retrying once: error=%s",
+                exc,
+            )
+            ensure_webapp_tables()
+        else:
+            kwargs = _kwargs_repaired_for_db_rule(kwargs, exc)
     result = save_webapp_dictionary_query_returning_id_with_inserted(**kwargs)
     _attach_saved_entry_to_lex_unit((result or (None,))[0], kwargs)
     return result
@@ -38512,10 +38620,16 @@ def lookup_webapp_dictionary():
         # попасть к нам как угодно (личный чат бота, ночной шорткат, тап в тренажёре,
         # чужой запрос) — оно общее, и отдаём мы его из своего словаря бесплатно.
         if not cached_payload:
-            pool_item = _load_dictionary_item_from_pool(
+            # Промах своего словаря → вычитка слова → ещё одна попытка своим словарём.
+            # Дальше по маршруту идёт УЖЕ ИСПРАВЛЕННОЕ написание: за разбор неверной
+            # формы мы больше не платим и единицу ей не заводим. Ключи кеша посчитаны
+            # выше по тому, что набрал человек, — его опечатка попадёт в кеш и во второй
+            # раз ответится мгновенно.
+            pool_item, word_ru = _dictionary_hit_or_corrected_word(
                 word=word_ru,
                 source_lang=query_source_lang,
                 target_lang=query_target_lang,
+                user_id=int(user_id) if user_id else None,
             )
             if isinstance(pool_item, dict) and pool_item:
                 pool_direction = f"{query_source_lang}-{query_target_lang}"
@@ -39093,8 +39207,11 @@ def stream_webapp_dictionary():
         cached_payload = None  # тонкая карточка в кеше = промах, а не «готово»
     # Промах кеша → ОБЩИЙ ПУЛ, и только если и там пусто — GPT.
     if not isinstance(cached_payload, dict) or not isinstance(cached_payload.get("item"), dict):
-        pool_item = _load_dictionary_item_from_pool(
+        # То же правило на потоковом пути: сначала свой словарь, на промахе — вычитка,
+        # и только исправленное написание уходит в GPT.
+        pool_item, word_ru = _dictionary_hit_or_corrected_word(
             word=word_ru, source_lang=query_source_lang, target_lang=query_target_lang,
+            user_id=int(user_id) if user_id else None,
         )
         if not pool_item:
             # Обратная находка — только если карточка получилась ПОЛНОЙ. Неполную здесь не
@@ -47135,7 +47252,10 @@ Output ONLY valid json: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
 
 
 def _shortcut_normalize_unit_text(text: str) -> str:
-    cleaned = str(text or "").replace("\u00a0", " ").strip()
+    # Общая дверь идёт ПЕРВОЙ: невидимые знаки, буквы-двойники, кавычки, нумерация —
+    # это грязь копипаста, одинаковая для всех входов. Ниже остаётся только то, что
+    # присуще именно «Ярлыку»: мусор из скриншотов социальных сетей.
+    cleaned = dictionary_intake.clean_text(text)
     cleaned = cleaned.replace("…", "...")
     cleaned = re.sub(r"(?<=\S)\s*(?:\.{3,})\s*(?=\S)", " ", cleaned)
     cleaned = re.sub(r"\s*\+\s*", " + ", cleaned)

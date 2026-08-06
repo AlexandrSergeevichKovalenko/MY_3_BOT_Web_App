@@ -9,6 +9,7 @@ import os
 from backend.r2_storage import r2_get_bytes, r2_put_bytes, r2_public_url
 from backend.word_frequency import compute_frequency_rank
 from backend.dictionary_frequency import normalize_frequency_lemma
+from backend import dictionary_intake as intake
 import hashlib
 import atexit
 import math
@@ -4871,6 +4872,12 @@ def _upsert_dictionary_canonical_entry_with_cursor(
 ) -> int:
     normalized_source_lang = _normalize_lang_code(source_lang)
     normalized_target_lang = _normalize_lang_code(target_lang)
+    # Механическая чистка на самом дне записи в общий словарь: сюда приходят и живой
+    # путь, и дообогащение, и разовые прогоны. Слово с невидимым знаком или переводом
+    # строки внутри заводит ВТОРУЮ запись, которую поиск не найдёт по её же тексту.
+    source_text, target_text, word_ru, word_de, translation_ru, translation_de = intake.clean_all(
+        source_text, target_text, word_ru, word_de, translation_ru, translation_de
+    )
     resolved_source_text = str(source_text or "").strip()
     resolved_target_text = str(target_text or "").strip()
     normalized_source_text = _normalize_dictionary_text_key(resolved_source_text)
@@ -5005,6 +5012,13 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
     normalized_response_json = _coerce_json_object(response_json)
     normalized_source_lang = _normalize_lang_code(source_lang)
     normalized_target_lang = _normalize_lang_code(target_lang)
+    # Единственное место, где заводится строка личной карточки. Механическая чистка
+    # стоит ЗДЕСЬ, а не у каждой двери: сохраняют из окна словаря, из мобильного, из
+    # бота, из «Ярлыка» и из импортов, и заводить проверку в каждом входе — тот самый
+    # способ, которым дырка открывалась заново с каждой задачей.
+    word_ru, translation_de, word_de, translation_ru = intake.clean_all(
+        word_ru, translation_de, word_de, translation_ru
+    )
     normalized_semantic_tag = normalize_dictionary_semantic_tag(semantic_tag)
     freq_rank = compute_frequency_rank(word_de, normalized_response_json)
     # Фраза — это всё, что не сводится к одному немецкому слову (артикль не в счёт).
