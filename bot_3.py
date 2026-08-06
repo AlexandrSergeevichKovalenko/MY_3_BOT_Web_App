@@ -21004,7 +21004,25 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
     if not source or not target:
         return False, "Вариант неполный, выберите другой.", 0, False
 
-    response_json = dict(lookup) if isinstance(lookup, dict) else {}
+    # Разбор описывает ТО СЛОВО, которое искали. Если человек сохраняет ДРУГОЙ вариант
+    # из того же разбора («Kein Wunder, dass er reich ist» → «Das viele Geld kommt nicht
+    # von ungefähr»), то заголовок у карточки свой, а тело — чужое: примеры, сочетания,
+    # управление и мнемоника остаются от искомого слова. Человек открывает лампочку и
+    # видит разбор совершенно другой фразы. Замер 06.08.2026: 289 карточек из 15 549.
+    #
+    # Поэтому копируем тело ТОЛЬКО когда сохраняется то же самое слово. Для другого
+    # варианта оставляем опознавательные поля — разбор приедет с его собственного слова
+    # или соберётся позже. Тонкая карточка честнее карточки с чужим содержимым.
+    lookup_dict = dict(lookup) if isinstance(lookup, dict) else {}
+    _lookup_head = str(
+        lookup_dict.get("word_source") or lookup_dict.get("source_text")
+        or lookup_dict.get("word_de") or ""
+    ).strip().casefold()
+    if _lookup_head and _lookup_head != source.strip().casefold():
+        from backend.database import strip_card_content_for_subscription
+        response_json = strip_card_content_for_subscription(lookup_dict)
+    else:
+        response_json = lookup_dict
     response_json["word_source"] = source
     response_json["word_target"] = target
     response_json["source_text"] = source
