@@ -22366,7 +22366,50 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
             )
         conn.commit()
     result["text"] = new_text
+    # Фраза стала другой — значит и разбор к ней другой. Латать старый заменой текста
+    # нельзя: если существительное внутри примера стоит в другом падеже, замена по
+    # строке либо не сработает, либо испортит падеж. Мы делаем лингвистический продукт,
+    # поэтому разбор СОБИРАЕТСЯ ЗАНОВО под новый текст. Событие редкое (правки идут
+    # поштучно), так что расход копеечный. Решение владельца 06.08.2026.
+    try:
+        rebuild_unit_breakdown(int(result["unit_id"]), new_text)
+    except Exception as exc:
+        logging.warning("разбор для %r не пересобрался: %s", new_text[:60], exc)
     return result
+
+
+def rebuild_unit_breakdown(unit_id: int, text: str) -> bool:
+    """Собрать разбор заново для изменённого текста и положить его на слово.
+
+    Старый разбор снимаем ДО запроса: если запрос сорвётся, лучше пустая карточка, чем
+    карточка с разбором чужой фразы. Пустую доберёт ночь, а неверная учит неправде."""
+    import asyncio
+    if not unit_id or not str(text or "").strip():
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_lex_units SET card = NULL, card_source = NULL WHERE id = %s;",
+                (int(unit_id),),
+            )
+        conn.commit()
+    try:
+        from backend.openai_manager import run_dictionary_lookup_multilang_core_fast
+        raw = asyncio.run(run_dictionary_lookup_multilang_core_fast(
+            word=text, source_lang="de", target_lang="ru", explanation_lang="ru",
+        ))
+    except Exception as exc:
+        logging.warning("разбор %r не получен: %s", str(text)[:60], exc)
+        return False
+    if not isinstance(raw, dict) or not raw:
+        return False
+    from backend.lex_units import save_unit_card_if_richer, sync_unit_links_from_card
+    save_unit_card_if_richer(int(unit_id), raw, source="пересборка после правки")
+    try:
+        sync_unit_links_from_card(int(unit_id), raw)
+    except Exception:
+        logging.debug("связи после пересборки не обновились", exc_info=True)
+    return True
 
 
 def _phrase_review_key(text: str) -> str:

@@ -124,6 +124,15 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
             agreed, category, corrected = _both_agree(judges)
             if agreed and category in SILENT_CATEGORIES:
                 if dry_run or _apply_silent_fix(row["unit_id"], corrected):
+                    if not dry_run:
+                        # Текст изменился — разбор к нему собирается ЗАНОВО, а не
+                        # латается заменой: замена по строке ломает падеж, если слово
+                        # внутри примера стоит в другой форме.
+                        try:
+                            from backend.database import rebuild_unit_breakdown
+                            rebuild_unit_breakdown(row["unit_id"], corrected)
+                        except Exception as exc:
+                            logging.warning("пересборка после ночной правки не удалась: %s", exc)
                     report["fixed"] += 1
                     report["by_category"][category] = report["by_category"].get(category, 0) + 1
                     if not dry_run:
