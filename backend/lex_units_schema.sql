@@ -209,3 +209,19 @@ BEGIN
             CHECK (rank >= 0);
     END IF;
 END $$;
+
+-- Английская сторона. Правило то же, что для немецкой, но поставить его сразу было
+-- нельзя: 239 из 494 английских единиц содержали русский текст — это была русская
+-- сторона пары, помеченная чужим языком. 06.08.2026 они развёрнуты и слиты с
+-- правильными русскими единицами (осталось 255 английских, все на латинице), и правило
+-- можно ставить полноценным — не NOT VALID.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_lex_units_english_is_latin'
+    ) THEN
+        ALTER TABLE bt_3_lex_units
+            ADD CONSTRAINT chk_lex_units_english_is_latin
+            CHECK (lang <> 'en' OR display ~ '[A-Za-z]');
+    END IF;
+END $$;
