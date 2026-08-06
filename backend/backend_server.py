@@ -7154,9 +7154,10 @@ def _set_cached_quick_correct(cache_key: str, corrected: str) -> None:
                 _QUICK_CORRECT_CACHE.pop(stale_key, None)
 
 
-def _proofread_dictionary_source_for_save(text: str, *, source_lang: str, user_id: int | None) -> str:
+def _proofread_dictionary_phrase(text: str, *, source_lang: str, user_id: int | None) -> str:
     """Server-side twin of the /api/translate/quick/correct route, called from the dictionary
-    SAVE endpoints so a typed phrase is proofread no matter WHICH surface saved it. The
+    SAVE endpoints AND from the lookup routes so a typed phrase is proofread no matter WHICH
+    surface it came from — see `_dictionary_hit_or_corrected_word` for the lookup side. The
     client-side proofread only covers the quick-dictionary overlay; wiring it here means every
     manual-entry surface (in-app dictionary, reader, YouTube, world-news, deep analysis, ask/
     answer overlays, …) is corrected too — the mechanism must be origin-independent.
@@ -7204,7 +7205,7 @@ def _apply_dictionary_source_proofread(
     side only (never the translation side, which is the other language). Returns the possibly-
     updated (source_text, word_ru, word_de, translation_ru, translation_de) tuple; a no-op when
     there is nothing to fix."""
-    corrected = _proofread_dictionary_source_for_save(source_text, source_lang=source_lang, user_id=user_id)
+    corrected = _proofread_dictionary_phrase(source_text, source_lang=source_lang, user_id=user_id)
     original = source_text
     if corrected and corrected != original:
         source_text = corrected
@@ -7495,6 +7496,38 @@ def _store_quick_translate_in_pool(
         )
     except Exception as exc:
         logging.debug("quick translate → pool skipped: %s", exc)
+
+
+def _dictionary_hit_or_corrected_word(
+    *, word: str, source_lang: str, target_lang: str, user_id: int | None
+) -> tuple[dict | None, str]:
+    """Наш словарь → промах → ВЫЧИТКА слова → снова наш словарь. Возвращает найденную
+    карточку (или None) и то написание, с которым идти дальше.
+
+    Почему вычитка живёт именно здесь. Раньше она стояла только на СОХРАНЕНИИ, а платим
+    мы за разбор раньше — на поиске. Поэтому за неверную форму мы честно платили GPT,
+    строили ей карточку и заводили ей единицу, и только текст правили потом. Так в слое
+    и появилось «das Neugeborenes» — слова, которого в немецком нет.
+
+    Почему это не дорого. Вычитку зовём ТОЛЬКО после того, как наш собственный словарь
+    ответить не смог, то есть ровно там, где мы всё равно собираемся платить за полный
+    разбор. Слово, которое у нас уже есть, верное по определению — спрашивать не о чем,
+    и на попадании в свой словарь не тратится ничего. А на промахе дешёвая вычитка
+    вместо разбора нередко ЭКОНОМИТ: исправленное слово часто уже лежит у нас."""
+    item = _load_dictionary_item_from_pool(word=word, source_lang=source_lang, target_lang=target_lang)
+    if item:
+        return item, word
+    if not dictionary_intake.worth_language_check(word, source_lang):
+        return None, word
+    corrected = _proofread_dictionary_phrase(word, source_lang=source_lang, user_id=user_id)
+    corrected = dictionary_intake.clean_text(corrected)
+    if not corrected or corrected == word:
+        return None, word
+    logging.info("словарь: вход %r исправлен на %r перед разбором", word[:60], corrected[:60])
+    item = _load_dictionary_item_from_pool(
+        word=corrected, source_lang=source_lang, target_lang=target_lang
+    )
+    return item, corrected
 
 
 def _load_reverse_pool_item(*, word: str, source_lang: str, target_lang: str) -> dict | None:
@@ -38513,10 +38546,16 @@ def lookup_webapp_dictionary():
         # попасть к нам как угодно (личный чат бота, ночной шорткат, тап в тренажёре,
         # чужой запрос) — оно общее, и отдаём мы его из своего словаря бесплатно.
         if not cached_payload:
-            pool_item = _load_dictionary_item_from_pool(
+            # Промах своего словаря → вычитка слова → ещё одна попытка своим словарём.
+            # Дальше по маршруту идёт УЖЕ ИСПРАВЛЕННОЕ написание: за разбор неверной
+            # формы мы больше не платим и единицу ей не заводим. Ключи кеша посчитаны
+            # выше по тому, что набрал человек, — его опечатка попадёт в кеш и во второй
+            # раз ответится мгновенно.
+            pool_item, word_ru = _dictionary_hit_or_corrected_word(
                 word=word_ru,
                 source_lang=query_source_lang,
                 target_lang=query_target_lang,
+                user_id=int(user_id) if user_id else None,
             )
             if isinstance(pool_item, dict) and pool_item:
                 pool_direction = f"{query_source_lang}-{query_target_lang}"
@@ -39094,8 +39133,11 @@ def stream_webapp_dictionary():
         cached_payload = None  # тонкая карточка в кеше = промах, а не «готово»
     # Промах кеша → ОБЩИЙ ПУЛ, и только если и там пусто — GPT.
     if not isinstance(cached_payload, dict) or not isinstance(cached_payload.get("item"), dict):
-        pool_item = _load_dictionary_item_from_pool(
+        # То же правило на потоковом пути: сначала свой словарь, на промахе — вычитка,
+        # и только исправленное написание уходит в GPT.
+        pool_item, word_ru = _dictionary_hit_or_corrected_word(
             word=word_ru, source_lang=query_source_lang, target_lang=query_target_lang,
+            user_id=int(user_id) if user_id else None,
         )
         if not pool_item:
             # Обратная находка — только если карточка получилась ПОЛНОЙ. Неполную здесь не
