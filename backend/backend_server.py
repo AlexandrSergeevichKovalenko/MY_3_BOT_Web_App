@@ -21013,6 +21013,14 @@ def _build_multilang_dictionary_result(
         "meanings",
         "correction_applied",
         "corrected_form",
+        # Вердикт о ВВОДЕ ЧЕЛОВЕКА — отдельно от словарной формы. Старое поле
+        # corrected_form отвечало сразу на два вопроса и потому непригодно для показа:
+        # у верного предложения «Sie kollabierte vor den Augen ihrer Freunde.» оно
+        # содержит «kollabieren», то есть словарную форму, а не исправление. Показывать
+        # такое человеку как «возможно, вы имели в виду» — врать ему про его же текст.
+        "input_is_correct",
+        "input_correction",
+        "input_correction_reason",
         "etymology_note",
         "usage_note",
         "real_life_usage",

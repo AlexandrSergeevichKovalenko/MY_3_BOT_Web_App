@@ -2232,6 +2232,24 @@ Return STRICT JSON with these fields:
   },
   "correction_applied": true,
   "corrected_form": "corrected Russian form or null",
+  "input_is_correct": true,
+  "input_correction": "string|null",
+  "input_correction_reason": "string|null",
+- ВВОД ЧЕЛОВЕКА И СЛОВАРНАЯ ФОРМА — ЭТО ДВА РАЗНЫХ ВОПРОСА. Отвечай на них
+  раздельно и не путай одно с другим.
+  * "input_is_correct" = false ТОЛЬКО если в том, что человек написал, есть настоящая
+    ошибка: опечатка, неверное окончание, падеж, предлог, артикль, пропущенный знак
+    конца предложения.
+  * Правильное предложение ВСЕГДА даёт input_is_correct=true — даже если словарная
+    форма слова выглядит иначе. «Sie kollabierte vor den Augen ihrer Freunde.» верно,
+    и «kollabieren» здесь НЕ исправление, а словарная форма (её место в word_source /
+    forms, а не в input_correction). «Meine Chefin hat Haare auf den Zähnen.» верно,
+    и «Haare auf den Zähnen haben» — тоже словарная форма, а не правка.
+  * НИКОГДА не считай ошибкой стиль, выбор слова, регистр речи или порядок слов в
+    ОТРЫВКЕ: кусок, вырванный из предложения, законно выглядит переставленным.
+  * "input_correction" — минимально исправленный текст человека теми же словами.
+    Синонимы не подставляй, слова не добавляй и не выбрасывай. Если ошибки нет — null.
+  * "input_correction_reason" — одна короткая фраза на языке пояснений, ЗАЧЕМ правка.
   "etymology_note": "string|null",
   "memory_tip": "string|null",
   "expression_note": "string|null",
@@ -2386,6 +2404,24 @@ Return STRICT JSON with these fields:
   },
   "correction_applied": true,
   "corrected_form": "corrected German form or null",
+  "input_is_correct": true,
+  "input_correction": "string|null",
+  "input_correction_reason": "string|null",
+- ВВОД ЧЕЛОВЕКА И СЛОВАРНАЯ ФОРМА — ЭТО ДВА РАЗНЫХ ВОПРОСА. Отвечай на них
+  раздельно и не путай одно с другим.
+  * "input_is_correct" = false ТОЛЬКО если в том, что человек написал, есть настоящая
+    ошибка: опечатка, неверное окончание, падеж, предлог, артикль, пропущенный знак
+    конца предложения.
+  * Правильное предложение ВСЕГДА даёт input_is_correct=true — даже если словарная
+    форма слова выглядит иначе. «Sie kollabierte vor den Augen ihrer Freunde.» верно,
+    и «kollabieren» здесь НЕ исправление, а словарная форма (её место в word_source /
+    forms, а не в input_correction). «Meine Chefin hat Haare auf den Zähnen.» верно,
+    и «Haare auf den Zähnen haben» — тоже словарная форма, а не правка.
+  * НИКОГДА не считай ошибкой стиль, выбор слова, регистр речи или порядок слов в
+    ОТРЫВКЕ: кусок, вырванный из предложения, законно выглядит переставленным.
+  * "input_correction" — минимально исправленный текст человека теми же словами.
+    Синонимы не подставляй, слова не добавляй и не выбрасывай. Если ошибки нет — null.
+  * "input_correction_reason" — одна короткая фраза на языке пояснений, ЗАЧЕМ правка.
   "etymology_note": "string|null",
   "memory_tip": "string|null",
   "expression_note": "string|null",
@@ -2691,6 +2727,24 @@ Return STRICT JSON with keys:
   },
   "correction_applied": true,
   "corrected_form": "string|null",
+  "input_is_correct": true,
+  "input_correction": "string|null",
+  "input_correction_reason": "string|null",
+- ВВОД ЧЕЛОВЕКА И СЛОВАРНАЯ ФОРМА — ЭТО ДВА РАЗНЫХ ВОПРОСА. Отвечай на них
+  раздельно и не путай одно с другим.
+  * "input_is_correct" = false ТОЛЬКО если в том, что человек написал, есть настоящая
+    ошибка: опечатка, неверное окончание, падеж, предлог, артикль, пропущенный знак
+    конца предложения.
+  * Правильное предложение ВСЕГДА даёт input_is_correct=true — даже если словарная
+    форма слова выглядит иначе. «Sie kollabierte vor den Augen ihrer Freunde.» верно,
+    и «kollabieren» здесь НЕ исправление, а словарная форма (её место в word_source /
+    forms, а не в input_correction). «Meine Chefin hat Haare auf den Zähnen.» верно,
+    и «Haare auf den Zähnen haben» — тоже словарная форма, а не правка.
+  * НИКОГДА не считай ошибкой стиль, выбор слова, регистр речи или порядок слов в
+    ОТРЫВКЕ: кусок, вырванный из предложения, законно выглядит переставленным.
+  * "input_correction" — минимально исправленный текст человека теми же словами.
+    Синонимы не подставляй, слова не добавляй и не выбрасывай. Если ошибки нет — null.
+  * "input_correction_reason" — одна короткая фраза на языке пояснений, ЗАЧЕМ правка.
   "expression_note": "string|null",
   "part_of_speech_note": "string|null",
   "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
@@ -2878,12 +2932,31 @@ Return STRICT JSON with keys:
     {"source": "...", "target": "...", "kind": "base|collocation|phrase"},
     {"source": "...", "target": "...", "kind": "base|collocation|phrase"}
   ],
-  "raw_text": "<optional very short practical note>"
+  "raw_text": "<optional very short practical note>",
+  "input_is_correct": true,
+  "input_correction": "string|null",
+  "input_correction_reason": "string|null"
 }
 
 Rules:
 - Output ONLY JSON.
 - Keep everything compact.
+- ВВОД ЧЕЛОВЕКА И СЛОВАРНАЯ ФОРМА — ЭТО ДВА РАЗНЫХ ВОПРОСА. Отвечай на них
+  раздельно и не путай одно с другим.
+  * "input_is_correct" = false ТОЛЬКО если в том, что человек написал, есть настоящая
+    ошибка: опечатка, неверное окончание, падеж, предлог, артикль, пропущенный знак
+    конца предложения.
+  * Правильное предложение ВСЕГДА даёт input_is_correct=true — даже если словарная
+    форма слова выглядит иначе. «Sie kollabierte vor den Augen ihrer Freunde.» верно,
+    и «kollabieren» здесь НЕ исправление, а словарная форма (её место в word_source /
+    forms, а не в input_correction). «Meine Chefin hat Haare auf den Zähnen.» верно,
+    и «Haare auf den Zähnen haben» — тоже словарная форма, а не правка.
+  * НИКОГДА не считай ошибкой стиль, выбор слова, регистр речи или порядок слов в
+    ОТРЫВКЕ: кусок, вырванный из предложения, законно выглядит переставленным.
+  * "input_correction" — минимально исправленный текст человека теми же словами.
+    Синонимы не подставляй, слова не добавляй и не выбрасывай. Если ошибки нет — null.
+  * "input_correction_reason" — одна короткая фраза на языке пояснений, ЗАЧЕМ правка.
+
 - LANGUAGE SPLIT: word_target, translations[].value and usage_examples[].target are in
   target_language (the foreign words being learned). translations[].context and raw_text are
   monolingual EXPLANATIONS and MUST be in explanation_language (the user's own base/native language,
