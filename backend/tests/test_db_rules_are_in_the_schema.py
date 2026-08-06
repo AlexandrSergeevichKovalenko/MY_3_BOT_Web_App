@@ -30,6 +30,7 @@ UNIT_RULES = [
     "chk_lex_units_gender_german_only",
     "chk_lex_units_card_is_object",
     "chk_lex_units_script_matches_lang",
+    "chk_lex_units_english_is_latin",
     "uq_lex_units_id_lang",
     "chk_lex_surfaces_key_normalized",
     "fk_lex_surfaces_unit_lang",
