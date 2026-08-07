@@ -796,7 +796,7 @@ function homographList(item) {
     .filter((h) => h.display);
 }
 
-export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips, hideMeanings, onPickHomograph, tablesOpen = true }) {
+export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips, hideMeanings, onPickHomograph, tablesOpen = true, hideFormNote = false }) {
   // Resolve example-sentence audio URLs (deterministic R2, NO synthesis) when the examples
   // change, so tapping an example's 🔊 plays an already-cached clip instantly. Must run before
   // the early return to keep hook order stable.
@@ -860,9 +860,12 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
   // Reverso, dict.cc. Без этой строки он набирает «wuchsen», видит «wachsen» и не
   // понимает, послушала ли его программа. Это не ошибка и не упрёк, поэтому строка
   // спокойная, а не амберная плашка «возможно, вы имели в виду».
+  // `hideFormNote` ставит вызывающий, когда САМ уже показал такую строку: у оверлея есть
+  // своя «мн. ч. от …», и она берётся из быстрого перевода. Без этого на множественном
+  // человек видел бы две одинаковые подписи подряд.
   const askedForm = clean(item.asked_form);
   const askedFormOf = clean(item.asked_form_of);
-  const showAskedForm = !!(askedForm && askedFormOf
+  const showAskedForm = !hideFormNote && !!(askedForm && askedFormOf
     && askedForm.toLowerCase() !== askedFormOf.toLowerCase());
 
   return (

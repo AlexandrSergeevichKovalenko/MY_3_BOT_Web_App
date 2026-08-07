@@ -124,7 +124,8 @@ def article_of(text: str) -> str:
 def _fetch_units(cur, *, lang: str, surface_key: str) -> list[dict]:
     cur.execute(
         """
-        SELECT u.id, u.lang, u.kind, u.lemma, u.lemma_key, u.pos, u.gender, u.display, u.card
+        SELECT u.id, u.lang, u.kind, u.lemma, u.lemma_key, u.pos, u.gender, u.display, u.card,
+               s.match_kind
         FROM bt_3_lex_surfaces s
         JOIN bt_3_lex_units u ON u.id = s.unit_id
         WHERE s.lang = %s AND s.surface_key = %s;
@@ -133,7 +134,8 @@ def _fetch_units(cur, *, lang: str, surface_key: str) -> list[dict]:
     )
     return [
         {"id": r[0], "lang": r[1], "kind": r[2], "lemma": r[3], "lemma_key": r[4],
-         "pos": r[5], "gender": r[6], "display": r[7], "card": r[8] if isinstance(r[8], dict) else None}
+         "pos": r[5], "gender": r[6], "display": r[7], "card": r[8] if isinstance(r[8], dict) else None,
+         "match_kind": str(r[9] or "")}
         for r in cur.fetchall()
     ]
 
@@ -300,10 +302,14 @@ def _mark_asked_form(item: dict, *, asked: str, unit: dict, query_lang: str) -> 
     стоит строкой рядом («wuchsen — форма слова wachsen»). Иначе человек набирает одно,
     видит другое и не понимает, послушала ли его программа вообще.
 
-    Признак формы простой и не требует лишнего запроса: написание, по которому нашли,
-    отличается от ключа самой единицы. Артикль на это не влияет — `normalize_query` его
-    снимает, поэтому «der Rüpel» и «Rüpel» ведут к одному ключу и подписи не рождают."""
+    Подпись ставится ТОЛЬКО по указателю вида `inflected` — это настоящая словоформа из
+    парадигмы. Написания вида `exact` тоже могут отличаться от заголовка, но это не формы,
+    а опечаточные входы: «Bestürtz» ведёт на «bestürzt», потому что мы починили заголовок
+    и оставили старое написание дверью для того, кто наберёт его снова. Назвать опечатку
+    «формой слова» в языковом приложении нельзя — это прямая неправда."""
     if not isinstance(item, dict) or unit.get("lang") != query_lang:
+        return
+    if str(unit.get("match_kind") or "") != "inflected":
         return
     asked_clean = _SPACE_RE.sub(" ", str(asked or "").strip())
     if not asked_clean:

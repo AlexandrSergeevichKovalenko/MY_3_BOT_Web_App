@@ -968,6 +968,8 @@ export default function DictionaryOverlay({ onClose } = {}) {
               <WordBreakdown
                 item={item}
                 tts={tts}
+                // Строку «форма слова …» здесь не дублируем: своя «мн. ч. от …» уже выше.
+                hideFormNote={dqNumber === 'pl' && !!dqLemma}
                 onSaveChip={saveChip}
                 onSaveExample={saveExample}
                 savedChips={savedChips}

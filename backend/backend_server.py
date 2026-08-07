@@ -7182,7 +7182,11 @@ def _proofread_dictionary_phrase(text: str, *, source_lang: str, user_id: int | 
         logging.debug("save-time quick correct failed", exc_info=True)
         corrected = ""
     _set_cached_quick_correct(cache_key, corrected)
-    if corrected and user_id is not None:
+    # Пишем в ведомость ВСЕГДА, когда обращение состоялось, а не только когда корректор
+    # нашёл ошибку. Молчание — самый частый его ответ, и раньше эти вызовы были оплачены,
+    # но в учёте отсутствовали. Из кеша сюда не попадают (вышли выше), а при отказе сети
+    # расхода нет: `get_last_llm_usage` вернёт пусто, и запись не создастся.
+    if user_id is not None:
         try:
             _billing_log_openai_usage(
                 user_id=int(user_id),
@@ -38401,7 +38405,9 @@ def translate_quick_correct():
         corrected = ""
     _set_cached_quick_correct(cache_key, corrected)
 
-    if corrected and user_id_for_billing is not None:
+    # Тот же учёт, что и на серверной вычитке: обращение состоялось — значит оно в
+    # ведомости, независимо от того, нашёл корректор ошибку или промолчал.
+    if user_id_for_billing is not None:
         try:
             _billing_log_openai_usage(
                 user_id=int(user_id_for_billing),
