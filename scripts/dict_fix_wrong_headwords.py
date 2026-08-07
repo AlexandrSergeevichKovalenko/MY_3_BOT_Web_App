@@ -107,8 +107,14 @@ OWNER_DECIDED = {
     25069: "das Ausrufezeichen",
 }
 
-# Ждут владельца: 23080 «Dewählt», 23601 «Verängstig» — исходное написание испорчено так,
-# что восстановить задуманное слово нельзя ни машиной, ни человеком.
+# Восстановить задуманное слово нельзя ни машиной, ни человеком — владелец решил удалить
+# (07.08.2026): держать в словаре написание, которого нет в языке, хуже, чем не держать
+# ничего. Обе карточки принадлежат самому владельцу, чужих людей удаление не касается.
+UNFIXABLE = {23080: "Dewählt", 23601: "Verängstig"}
+
+# Пустой дубликат в старом словаре: та же пара «Восклицательный знак», но с опечаткой в
+# немецкой стороне. Верный близнец — 21012. Карточку переносим на него, дубликат убираем.
+DUPLICATE_POOL_ENTRIES = {23903: 21012}
 
 
 def _same(a: str, b: str) -> bool:
@@ -393,6 +399,7 @@ def main() -> int:
     ready = [
         uid for uid, txt in BROKEN_HEADWORDS
         if uid in units and (_same(units[uid]["lemma"], txt) or _fixed_already(units[uid]))
+        and uid not in UNFIXABLE
     ]
     done = [uid for uid in ready if _fixed_already(units[uid])]
 
@@ -403,6 +410,8 @@ def main() -> int:
         print("   %s: единицы больше нет в базе (%r), пропуск" % (uid, txt))
     for uid, txt in changed:
         print("   %s: в базе теперь %r, а не %r — пропуск" % (uid, units[uid]["lemma"], txt))
+    for uid, txt in UNFIXABLE.items():
+        print("   %s: %r — восстановить нельзя, УДАЛЯЕТСЯ" % (uid, txt))
 
     if not args.apply:
         print()
@@ -462,7 +471,55 @@ def main() -> int:
                          "  (ключ занят единицей %s, оставлен прежним)" % taken if taken else "",
                          touched))
 
+    # Неисправимые — вон из словаря. Личная карточка человека уходит вместе со словом:
+    # она и есть то, где он это написание видит. Остальное на единице (написания, связи,
+    # значения, источники) база уносит сама по ON DELETE CASCADE.
+    dropped = {"карточек": 0, "словарь": 0, "единиц": 0, "кеш": 0, "дубликатов": 0}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            for uid, text in UNFIXABLE.items():
+                cur.execute(
+                    """DELETE FROM bt_3_webapp_dictionary_queries
+                       WHERE lex_unit_id = %s OR word_de = %s OR translation_de = %s;""",
+                    (uid, text, text),
+                )
+                dropped["карточек"] += cur.rowcount or 0
+                cur.execute(
+                    """DELETE FROM bt_3_dictionary_entries
+                       WHERE source_text = %s OR target_text = %s OR word_de = %s;""",
+                    (text, text, text),
+                )
+                dropped["словарь"] += cur.rowcount or 0
+                cur.execute(
+                    "DELETE FROM bt_3_dictionary_lookup_cache WHERE lower(normalized_word) = %s;",
+                    (text.casefold(),),
+                )
+                dropped["кеш"] += cur.rowcount or 0
+                cur.execute("DELETE FROM bt_3_lex_units WHERE id = %s;", (uid,))
+                dropped["единиц"] += cur.rowcount or 0
+
+            for dup_id, keep_id in DUPLICATE_POOL_ENTRIES.items():
+                # Карточку переносим на верную запись, а у кого верная карточка УЖЕ есть —
+                # у того на дубликате висит второй экземпляр того же слова, с опечаткой.
+                # Его убираем: человек ничего не теряет, у него остаётся правильный.
+                cur.execute(
+                    """UPDATE bt_3_webapp_dictionary_queries q SET canonical_entry_id = %(keep)s
+                       WHERE q.canonical_entry_id = %(dup)s
+                         AND NOT EXISTS (SELECT 1 FROM bt_3_webapp_dictionary_queries k
+                                         WHERE k.user_id = q.user_id AND k.canonical_entry_id = %(keep)s);""",
+                    {"keep": keep_id, "dup": dup_id},
+                )
+                cur.execute(
+                    "DELETE FROM bt_3_webapp_dictionary_queries WHERE canonical_entry_id = %s;",
+                    (dup_id,),
+                )
+                dropped["карточек"] += cur.rowcount or 0
+                cur.execute("DELETE FROM bt_3_dictionary_entries WHERE id = %s;", (dup_id,))
+                dropped["дубликатов"] += cur.rowcount or 0
+        conn.commit()
+
     print()
+    print("УДАЛЕНО НЕИСПРАВИМОГО: %s" % dropped)
     print("ИСПРАВЛЕНО: %d" % len(applied))
     print("НА РЕШЕНИЕ ВЛАДЕЛЬЦУ: %d" % (len(for_owner) + len(missing) + len(changed)))
     for unit, stored, door, why in for_owner:
