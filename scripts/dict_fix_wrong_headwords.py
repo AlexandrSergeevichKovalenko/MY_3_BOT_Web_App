@@ -88,6 +88,28 @@ BROKEN_HEADWORDS = [
 
 CROOKED = dict(BROKEN_HEADWORDS)
 
+# Написания, которые назвал ВЛАДЕЛЕЦ, разобрав список поимённо 07.08.2026. Здесь правило
+# «два источника должны сойтись» не действует: оно нужно там, где решает машина, а тут
+# решил человек. Часть этих случаев машина закрыть и не могла — «gefűgig» пришло от
+# модели с венгерской «ű», а корректор ошибки вовсе не увидел.
+OWNER_DECIDED = {
+    568: "im heute verlandeten Hafen bei Ostia zeigen",
+    3400: "Das Zwiebelschneiden ruft Weinen hervor",
+    15868: "abwerten",
+    # Машина непрерывного литья — от Strang (ручей заготовки), не от Strand (пляж).
+    # Оба машинных ответа были мимо: «die Strandgußanlage» и «Straußanlage».
+    17941: "die Stranggußanlage",
+    20961: "gefügig",
+    22567: "Zusammenstoß",
+    23047: "Beschaffung",
+    23017: "widerlegen",
+    24120: "umarmen",
+    25069: "das Ausrufezeichen",
+}
+
+# Ждут владельца: 23080 «Dewählt», 23601 «Verängstig» — исходное написание испорчено так,
+# что восстановить задуманное слово нельзя ни машиной, ни человеком.
+
 
 def _same(a: str, b: str) -> bool:
     return str(a or "").strip().casefold() == str(b or "").strip().casefold()
@@ -147,14 +169,18 @@ def _rewrite_everywhere(cur, unit: dict, new_text: str, *, rename_key: bool, cro
     нет. Так доделываются хвосты, если первый прогон закрыл не всё."""
     # Кривое написание ищем и по тому, что лежит в единице сейчас, и по исходному: после
     # переименования единица о нём уже не помнит, а хвосты в других хранилищах — помнят.
-    old_texts = {t for t in (unit["lemma"], unit["display"], crooked) if t and not _same(t, new_text)}
-    touched = {"единица": 0, "написаний": 0, "карточек": 0, "словарь": 0, "кеш": 0}
+    # Сравнение ТОЧНОЕ, а не по регистру: «Gefügig» и «gefügig» — разные строки для поиска
+    # в остальных хранилищах, и на этом одна запись уже уцелела после «готово».
+    old_texts = {t for t in (unit["lemma"], unit["display"], crooked) if t and t != new_text}
+    touched = {"единица": 0, "написаний": 0, "карточек": 0, "словарь": 0, "кеш": 0, "разбор снят": 0}
 
     # Артикль в написании не хранится — для него есть своя колонка. Иначе на экран уедет
     # «die die Auslegung»: заголовок берётся из написания, а артикль подставляется рядом.
-    article = lex_units.article_of(new_text)
+    # Только у отдельного СЛОВА: у фразы ведущее «Das» — это подлежащее, а не артикль, и
+    # снятие превращает «Das Zwiebelschneiden ruft Weinen hervor» в обрубок.
+    article = lex_units.article_of(new_text) if unit["kind"] == "word" else ""
     bare_text = new_text[len(article):].strip() if article else new_text
-    if not article:
+    if not article and unit["kind"] == "word":
         # Артикля в исправлении может не быть, а в самом разборе он есть: «Abwesentheit»
         # лежала прилагательным, хотя её же разбор называет слово «die Abwesenheit».
         card_word = clean_text(unit.get("card_word_de") or "")
@@ -163,6 +189,10 @@ def _rewrite_everywhere(cur, unit: dict, new_text: str, *, rename_key: bool, cro
     new_key = lex_units.normalize_query(bare_text)
     gender = unit["gender"]
     pos = unit["pos"]
+    if unit["kind"] != "word":
+        # У фразы нет ни рода, ни части речи. «Das Zwiebelschneiden…» успело полежать
+        # существительным среднего рода — это след того же обрубания.
+        gender, pos = None, None
     if article:
         # Артикль означает существительное — значит и часть речи у слова эта. Кривой
         # заголовок «DieAuslegung» выглядел прилагательным, отсюда и метка.
@@ -196,11 +226,56 @@ def _rewrite_everywhere(cur, unit: dict, new_text: str, *, rename_key: bool, cro
         )
         touched["единица"] = cur.rowcount or 0
 
+    # Разбор внутри покупался для КРИВОГО слова. Там, где он описывает уже не то слово,
+    # что стоит заголовком («Zusammenstoß» с разбором глагола «zusammenstoßen»), снимаем
+    # его — ночной добор соберёт заново. Оставить хуже: человек увидит верный заголовок и
+    # чужой к нему разбор. Там, где разбор и заголовок про одно слово, ничего не трогаем и
+    # заново не платим.
+    card_word = clean_text(unit.get("card_word_de") or "")
+    if card_word and lex_units.normalize_query(card_word) != new_key:
+        drop_key = new_key if rename_key and new_key else unit["lemma_key"]
+        if unit["kind"] == "word" and not _identity_taken(cur, unit, key=drop_key, pos=None, gender=None):
+            # Часть речи и род тоже пришли из снятого разбора — пусть ночь поставит заново.
+            cur.execute(
+                """UPDATE bt_3_lex_units SET card = NULL, card_source = NULL,
+                       pos = NULL, gender = NULL, updated_at = NOW() WHERE id = %s;""",
+                (unit["id"],),
+            )
+        else:
+            cur.execute(
+                "UPDATE bt_3_lex_units SET card = NULL, card_source = NULL, updated_at = NOW() WHERE id = %s;",
+                (unit["id"],),
+            )
+        touched["разбор снят"] = cur.rowcount or 0
+
+    # Личная карточка хранит слово ВМЕСТЕ с артиклем («Die Strangußanlage»), а единица —
+    # без него. Искать одну голую форму мало: так десять карточек у восьми человек
+    # остались с кривым написанием после первого «готово». Перебираем формы с артиклем и
+    # меняем только само слово, оставляя артикль карточки на месте.
+    variants: dict[str, str] = {}
     for old in old_texts:
+        old_article = lex_units.article_of(old)
+        old_bare = old[len(old_article):].strip() if old_article else old
+        for prefix in ("", "der ", "die ", "das ", "Der ", "Die ", "Das ",
+                       "den ", "dem ", "des ", "Den ", "Dem ", "Des "):
+            candidate = (prefix + old_bare) if prefix else old
+            replacement = (prefix + bare_text) if prefix else new_text
+            if candidate and candidate != replacement:
+                variants[candidate] = replacement
+
+    for old, replacement in variants.items():
+        # Немецкая сторона карточки живёт в ДВУХ колонках: `word_de` и `translation_de`.
+        # Правил только первую — и 22 карточки у восьми человек остались с кривым
+        # написанием во второй, хотя отчёт показывал «готово».
         cur.execute(
-            """UPDATE bt_3_webapp_dictionary_queries SET word_de = %s, updated_at = NOW()
-               WHERE word_de = %s AND (lex_unit_id = %s OR lex_unit_id IS NULL);""",
-            (new_text, old, unit["id"]),
+            """UPDATE bt_3_webapp_dictionary_queries
+               SET word_de = CASE WHEN word_de = %(old)s THEN %(new)s ELSE word_de END,
+                   translation_de = CASE WHEN translation_de = %(old)s
+                                         THEN %(new)s ELSE translation_de END,
+                   updated_at = NOW()
+               WHERE (word_de = %(old)s OR translation_de = %(old)s)
+                 AND (lex_unit_id = %(uid)s OR lex_unit_id IS NULL);""",
+            {"old": old, "new": replacement, "uid": unit["id"]},
         )
         touched["карточек"] += cur.rowcount or 0
 
@@ -220,7 +295,7 @@ def _rewrite_everywhere(cur, unit: dict, new_text: str, *, rename_key: bool, cro
                     """SELECT 1 FROM bt_3_dictionary_entries
                        WHERE source_lang = %s AND target_lang = %s AND source_text_norm = %s AND id <> %s
                        LIMIT 1;""",
-                    (src_lang, tgt_lang, _normalize_dictionary_text_key(new_text), entry_id),
+                    (src_lang, tgt_lang, _normalize_dictionary_text_key(replacement), entry_id),
                 )
                 if cur.fetchone():
                     continue
@@ -230,13 +305,29 @@ def _rewrite_everywhere(cur, unit: dict, new_text: str, *, rename_key: bool, cro
                            word_de = %s, translation_de = %s, updated_at = NOW()
                        WHERE id = %s;""",
                     (
-                        new_text,
-                        _normalize_dictionary_text_key(new_text),
-                        _normalize_dictionary_headword_key(new_text) or None,
-                        new_text, new_text, entry_id,
+                        replacement,
+                        _normalize_dictionary_text_key(replacement),
+                        _normalize_dictionary_headword_key(replacement) or None,
+                        replacement, replacement, entry_id,
                     ),
                 )
             else:
+                # Та же защита, что и на прямой стороне. Без неё исправление упиралось в
+                # уже существующую верную запись той же пары, база отвергала весь шаг, и
+                # вместе с ним откатывалась правка личной карточки.
+                cur.execute(
+                    """SELECT 1 FROM bt_3_dictionary_entries e
+                       WHERE e.source_lang = %s AND e.target_lang = %s
+                         AND e.source_text_norm = (SELECT source_text_norm
+                                                   FROM bt_3_dictionary_entries WHERE id = %s)
+                         AND e.target_text_norm = %s AND e.id <> %s
+                       LIMIT 1;""",
+                    (src_lang, tgt_lang, entry_id,
+                     _normalize_dictionary_text_key(replacement), entry_id),
+                )
+                if cur.fetchone():
+                    touched["словарь дубликат"] = touched.get("словарь дубликат", 0) + 1
+                    continue
                 cur.execute(
                     """UPDATE bt_3_dictionary_entries
                        SET target_text = CASE WHEN target_text = %(old)s THEN %(new)s ELSE target_text END,
@@ -250,9 +341,9 @@ def _rewrite_everywhere(cur, unit: dict, new_text: str, *, rename_key: bool, cro
                            updated_at = NOW()
                        WHERE id = %(id)s;""",
                     {
-                        "old": old, "new": new_text, "id": entry_id,
-                        "norm": _normalize_dictionary_text_key(new_text),
-                        "head": _normalize_dictionary_headword_key(new_text) or None,
+                        "old": old, "new": replacement, "id": entry_id,
+                        "norm": _normalize_dictionary_text_key(replacement),
+                        "head": _normalize_dictionary_headword_key(replacement) or None,
                     },
                 )
             touched["словарь"] += cur.rowcount or 0
@@ -279,10 +370,15 @@ def main() -> int:
         with conn.cursor() as cur:
             units = _load(cur)
 
+    def _chosen(unit: dict) -> str:
+        """Написание, которым чиним: слово владельца, если он его назвал, иначе ответ
+        модели (его ещё предстоит подтвердить корректором)."""
+        return clean_text(OWNER_DECIDED.get(unit["id"]) or unit["corrected_form"] or "")
+
     def _fixed_already(unit: dict) -> bool:
         """Единица уже переименована прошлым прогоном? Тогда спрашивать корректор не о
         чем — остаётся дописать хвосты в остальных хранилищах."""
-        target = clean_text(unit["corrected_form"] or "")
+        target = _chosen(unit)
         if not target:
             return False
         article = lex_units.article_of(target)
@@ -312,7 +408,10 @@ def main() -> int:
         print()
         for uid in ready:
             u = units[uid]
-            print("   %-6s %r → ответ модели %r" % (uid, u["lemma"][:44], (u["corrected_form"] or "")[:44]))
+            print("   %-6s %r → %s %r"
+                  % (uid, u["lemma"][:44],
+                     "слово владельца" if uid in OWNER_DECIDED else "ответ модели",
+                     _chosen(u)[:44]))
         print()
         print("ВХОЛОСТУЮ. Спросить корректор и записать: --apply")
         return 0
@@ -324,8 +423,8 @@ def main() -> int:
         with conn.cursor() as cur:
             for uid in ready:
                 unit = units[uid]
-                stored = clean_text(unit["corrected_form"] or "")
-                if uid not in done:
+                stored = _chosen(unit)
+                if uid not in done and uid not in OWNER_DECIDED:
                     try:
                         door = clean_text(run_quick_correct(text=unit["lemma"], source_lang=unit["lang"]) or "")
                     except Exception as exc:
@@ -343,12 +442,20 @@ def main() -> int:
 
                 new_key = lex_units.normalize_query(stored)
                 taken = _key_taken(cur, unit, new_key) if new_key and new_key != unit["lemma_key"] else None
-                touched = _rewrite_everywhere(
-                    cur, unit, stored,
-                    rename_key=not taken and bool(new_key),
-                    crooked=CROOKED.get(uid, ""),
-                )
-                conn.commit()
+                # Каждое слово — своя сделка. Иначе отказ базы на одном (а он был: запись
+                # ru→de упёрлась в уже существующую верную) откатывает и остальные, причём
+                # молча: в отчёте остаются нули, будто чинить было нечего.
+                try:
+                    touched = _rewrite_everywhere(
+                        cur, unit, stored,
+                        rename_key=not taken and bool(new_key),
+                        crooked=CROOKED.get(uid, ""),
+                    )
+                    conn.commit()
+                except Exception as exc:
+                    conn.rollback()
+                    for_owner.append((unit, stored, "", "база отказала: %s" % str(exc).splitlines()[0][:80]))
+                    continue
                 applied.append((unit, stored, taken, touched))
                 print("   %-6s %r → %r%s   %s"
                       % (uid, unit["lemma"][:38], stored[:38],
