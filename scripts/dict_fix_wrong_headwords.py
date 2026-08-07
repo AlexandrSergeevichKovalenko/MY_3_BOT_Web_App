@@ -42,7 +42,9 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import os
+import re
 import sys
 
 _here = os.path.dirname(os.path.abspath(globals().get("__file__", ".")))
@@ -117,8 +119,68 @@ UNFIXABLE = {23080: "Dewählt", 23601: "Verängstig"}
 DUPLICATE_POOL_ENTRIES = {23903: 21012}
 
 
+# «ausreißen - ausgerissen»: человек сохранил пару «инфинитив — причастие» одной строкой,
+# и она стала заголовком слова. У десяти человек.
+PAIR_RE = re.compile(r"^(.+?)\s*[-–—]\s*(.+)$")
+
+
 def _same(a: str, b: str) -> bool:
     return str(a or "").strip().casefold() == str(b or "").strip().casefold()
+
+
+def _bare_key(text: str) -> str:
+    return lex_units.normalize_query(text)
+
+
+def _is_typo_correction(original: str, candidate: str) -> bool:
+    """Исправление ОПЕЧАТКИ или подмена слова другим?
+
+    Без этой проверки два источника соглашаются на подмене смысла: «wohingenen»
+    (человек имел в виду «wohingegen», и переводы в карточке — «в то время как»)
+    корректор и разбор дружно назвали «wohnen». Слово стало правильным, а значить
+    стало не то — это хуже, чем кривое написание. Так же «Bares» едва не превратилось
+    в синоним «Bargeld».
+
+    Порог тот же 0.82, что и в `_is_dictionary_typo_correction` в боте: правило в
+    продукте уже есть, второе такое же с другим числом только развело бы поведение."""
+    left, right = _bare_key(original), _bare_key(candidate)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return difflib.SequenceMatcher(None, left, right).ratio() >= 0.82
+
+
+def collect_broken(cur) -> list[dict]:
+    """Слова, у которых ЗАГОЛОВОК расходится с заголовком собственного разбора.
+
+    Первый отбор шёл по полю `corrected_form`, и слова без него прошли мимо: «die
+    Begutachung», «der Rollstuchl», «konkurenzfähig». Отбор по расхождению с разбором
+    их находит — разбор куплен для этого же слова и знает, как оно пишется.
+
+    Внутри отбора две разные беды, и различает их не список, а проверка ниже: у одних
+    врёт ЗАГОЛОВОК (это чиним), у других — служебное поле внутри разбора («die Behörde»
+    с полем «die Behörden», «die Pfeife» с обрезанным «die Pfeif»). Второе человеку не
+    видно никогда, и трогать его нельзя: заголовок как раз верный."""
+    cur.execute(
+        """SELECT id, lang, kind, pos, gender, lemma, display, lemma_key,
+                  card->>'corrected_form', card->>'word_de'
+           FROM bt_3_lex_units
+           WHERE lang = 'de' AND kind = 'word' AND card IS NOT NULL
+             AND coalesce(card->>'word_de', '') <> ''
+           ORDER BY id;"""
+    )
+    out = []
+    for row in cur.fetchall():
+        unit = {
+            "id": int(row[0]), "lang": row[1], "kind": row[2], "pos": row[3],
+            "gender": row[4], "lemma": row[5], "display": row[6],
+            "lemma_key": row[7], "corrected_form": row[8], "card_word_de": row[9],
+        }
+        if _bare_key(unit["card_word_de"]) == _bare_key(unit["display"]):
+            continue
+        out.append(unit)
+    return out
 
 
 def _load(cur) -> dict:
@@ -367,10 +429,96 @@ def _rewrite_everywhere(cur, unit: dict, new_text: str, *, rename_key: bool, cro
     return touched
 
 
+def scan_mode(*, apply: bool) -> int:
+    """Второй отбор — по расхождению заголовка с разбором, без опоры на `corrected_form`.
+
+    Правило записи то же, что и раньше: пишем только там, где сошлись ДВА независимых
+    источника — заголовок разбора (куплен отдельно и раньше) и наш корректор. На верном
+    заголовке корректор молчит, поэтому «die Behörde» и «die Pfeife» сюда не попадают
+    сами собой, без всяких списков."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            candidates = collect_broken(cur)
+    print("СЛОВ, ГДЕ ЗАГОЛОВОК РАСХОДИТСЯ С РАЗБОРОМ: %d" % len(candidates))
+    if not apply:
+        for u in candidates[:40]:
+            print("   %-6s человек видит %r ← разбор про %r"
+                  % (u["id"], u["display"][:34], (u["card_word_de"] or "")[:34]))
+        print()
+        print("ВХОЛОСТУЮ. Спросить корректор и записать: --scan --apply")
+        return 0
+
+    from openai_manager import run_quick_correct
+
+    fixed, skipped = [], []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            for unit in candidates:
+                card_word = clean_text(unit["card_word_de"] or "")
+                display = str(unit["display"] or "")
+                if not card_word:
+                    skipped.append((unit, "", "разбор без заголовка"))
+                    continue
+                why = ""
+                pair = PAIR_RE.match(display)
+                if pair and _bare_key(pair.group(1)) == _bare_key(card_word):
+                    # Пара «инфинитив — причастие» одной строкой. Разбор куплен на первую
+                    # половину, она и есть слово. Корректор тут не нужен: это не ошибка
+                    # написания, а склеенные в одну строку два слова.
+                    why = "пара «слово — форма», взята первая половина"
+                else:
+                    try:
+                        door = clean_text(run_quick_correct(text=display, source_lang="de") or "")
+                    except Exception as exc:
+                        skipped.append((unit, "", "корректор не ответил (%s)" % type(exc).__name__))
+                        continue
+                    if not door:
+                        skipped.append((unit, card_word, "корректор ошибки в заголовке не видит"))
+                        continue
+                    if _bare_key(door) != _bare_key(card_word):
+                        skipped.append((unit, card_word, "корректор говорит %r" % door[:28]))
+                        continue
+                    if not _is_typo_correction(display, card_word):
+                        skipped.append((unit, card_word, "это не опечатка, а другое слово"))
+                        continue
+                    why = "корректор и разбор сошлись"
+
+                new_key = lex_units.normalize_query(card_word)
+                if not new_key:
+                    skipped.append((unit, card_word, "пустое написание"))
+                    continue
+                taken = _key_taken(cur, unit, new_key) if new_key != unit["lemma_key"] else None
+                try:
+                    touched = _rewrite_everywhere(
+                        cur, unit, card_word,
+                        rename_key=not taken, crooked=display,
+                    )
+                    conn.commit()
+                except Exception as exc:
+                    conn.rollback()
+                    skipped.append((unit, card_word, "база отказала: %s" % str(exc).splitlines()[0][:60]))
+                    continue
+                fixed.append((unit, card_word, why, taken, touched))
+                print("   %-6s %r → %r%s   %s   [%s]"
+                      % (unit["id"], display[:30], card_word[:30],
+                         "  (ключ занят #%s)" % taken if taken else "", touched, why))
+
+    print()
+    print("ИСПРАВЛЕНО ЗАГОЛОВКОВ: %d" % len(fixed))
+    print("ОСТАВЛЕНО (заголовок верен либо источники разошлись): %d" % len(skipped))
+    for unit, target, why in skipped:
+        print("   %-6s %-34r %s" % (unit["id"], unit["display"][:32], why))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--scan", action="store_true",
+                        help="искать кривые заголовки по расхождению с разбором")
     args = parser.parse_args()
+    if args.scan:
+        return scan_mode(apply=args.apply)
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
