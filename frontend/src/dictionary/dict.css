@@ -583,6 +583,20 @@
   color: var(--dmps-text-muted, #94a3b8);
 }
 
+/* «wuchsen — форма слова wachsen». Заголовок у нас всегда словарная форма, как у
+   Linguee и dict.cc, а набранное человеком стоит рядом. Ничего не сломано — поэтому
+   строка спокойная, без плашки и без цвета тревоги. */
+.dq-form-note {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+.dq-form-note b {
+  font-weight: 600;
+  color: var(--dmps-text, #e8eefc);
+}
+
 /* POS badge + IPA line under the headword. */
 .dq-meta {
   display: flex;

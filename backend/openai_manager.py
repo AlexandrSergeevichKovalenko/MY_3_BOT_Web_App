@@ -8459,6 +8459,68 @@ def stream_dictionary_breakdown_sections(
         pass
 
 
+_LEMMA_ARTICLE_RE = re.compile(r"^(der|die|das|den|dem|des)\s+", re.I)
+
+
+def run_quick_lemma(*, surface: str) -> dict:
+    """Одно дешёвое обращение → «это форма слова или само слово, и какое слово».
+
+    Зачем отдельный вопрос, а не `run_quick_correct`. Корректор правит ОШИБКИ и на
+    законной форме честно молчит: «wuchsen» написано верно, поправлять нечего. Но
+    заголовком карточки должна стоять словарная форма — так делают Linguee, Reverso,
+    dict.cc. Это разные вопросы, и смешивать их в одном промпте нельзя: получится
+    корректор, который «исправляет» правильно написанные слова.
+
+    Возвращает {"lemma": str, "is_form": bool} или пустое на любой неудаче — вызывающий
+    тогда оставляет всё как есть. Существительное просим В ИМЕНИТЕЛЬНОМ ЕДИНСТВЕННОМ:
+    иначе на «Behörden» модель отвечает «die Behörden», и множественное число уезжает в
+    заголовок как словарная форма."""
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    text = str(surface or "").strip()
+    empty = {"lemma": "", "is_form": False}
+    if not api_key or not text or len(text) > 80 or " " in _LEMMA_ARTICLE_RE.sub("", text).strip():
+        return empty
+    system = (
+        "You are given ONE German word form. Return its DICTIONARY form (lemma): "
+        "nouns in the nominative SINGULAR with the definite article (unless the noun "
+        "exists only in the plural), verbs in the infinitive, adjectives and adverbs in "
+        "the uninflected positive form. Do NOT correct spelling, do NOT translate, do "
+        "NOT pick a synonym. If the given form is ALREADY the dictionary form, repeat it "
+        "unchanged and set is_form to false. Respond with STRICT JSON ONLY: "
+        '{"lemma":"<dictionary form>","is_form":true|false}'
+    )
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=10)
+        resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps({"form": text}, ensure_ascii=False)},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        logging.warning("run_quick_lemma failed surface=%s", text[:64], exc_info=True)
+        return empty
+    try:
+        u = getattr(resp, "usage", None)
+        if u:
+            _LAST_LLM_USAGE.set({
+                "model": "gpt-4.1-mini",
+                "prompt_tokens": int(getattr(u, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
+            })
+    except Exception:
+        logging.debug("run_quick_lemma usage read failed", exc_info=True)
+    data = parse_llm_json_object(resp.choices[0].message.content, context="quick_lemma")
+    lemma = str((data or {}).get("lemma") or "").strip()
+    if not lemma or len(lemma) > 80:
+        return empty
+    return {"lemma": lemma, "is_form": bool((data or {}).get("is_form"))}
+
+
 _QUICK_ARTICLE_ALLOWED = {"der", "die", "das"}
 
 

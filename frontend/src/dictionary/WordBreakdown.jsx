@@ -856,8 +856,22 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
   const inputCorrection = (item.input_is_correct === false && clean(item.input_correction)) || '';
   const inputCorrectionWhy = inputCorrection ? clean(item.input_correction_reason) : '';
 
+  // Человек набрал форму слова, а заголовок показываем словарный — так делают Linguee,
+  // Reverso, dict.cc. Без этой строки он набирает «wuchsen», видит «wachsen» и не
+  // понимает, послушала ли его программа. Это не ошибка и не упрёк, поэтому строка
+  // спокойная, а не амберная плашка «возможно, вы имели в виду».
+  const askedForm = clean(item.asked_form);
+  const askedFormOf = clean(item.asked_form_of);
+  const showAskedForm = !!(askedForm && askedFormOf
+    && askedForm.toLowerCase() !== askedFormOf.toLowerCase());
+
   return (
     <>
+      {showAskedForm && (
+        <div className="dq-form-note">
+          <b lang="de">{askedForm}</b> — форма слова <b lang="de">{askedFormOf}</b>
+        </div>
+      )}
       {inputCorrection && (
         <div className="dq-input-hint">
           <span className="dq-input-hint-label">Возможно, вы имели в виду</span>

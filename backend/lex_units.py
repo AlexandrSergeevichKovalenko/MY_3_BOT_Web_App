@@ -293,6 +293,32 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
     return item
 
 
+def _mark_asked_form(item: dict, *, asked: str, unit: dict, query_lang: str) -> None:
+    """Человек набрал ФОРМУ слова, а показываем мы словарную форму — сказать ему об этом.
+
+    Так делают Linguee, Reverso, dict.cc: заголовок всегда словарная форма, а набранное
+    стоит строкой рядом («wuchsen — форма слова wachsen»). Иначе человек набирает одно,
+    видит другое и не понимает, послушала ли его программа вообще.
+
+    Признак формы простой и не требует лишнего запроса: написание, по которому нашли,
+    отличается от ключа самой единицы. Артикль на это не влияет — `normalize_query` его
+    снимает, поэтому «der Rüpel» и «Rüpel» ведут к одному ключу и подписи не рождают."""
+    if not isinstance(item, dict) or unit.get("lang") != query_lang:
+        return
+    asked_clean = _SPACE_RE.sub(" ", str(asked or "").strip())
+    if not asked_clean:
+        return
+    asked_key = normalize_query(asked_clean)
+    lemma_display = str(unit.get("display") or "").strip()
+    if not asked_key or not lemma_display or asked_key == str(unit.get("lemma_key") or ""):
+        return
+    # Написание совпало с заголовком с точностью до регистра и артикля — не форма.
+    if asked_key == normalize_query(lemma_display):
+        return
+    item["asked_form"] = asked_clean
+    item["asked_form_of"] = lemma_display
+
+
 def units_needing_card(limit: int, *, lang: str = "de", native_lang: str = "ru") -> list[dict]:
     """Слова слоя, у которых ещё нет разбора, — сначала те, что скоро спросят.
 
@@ -1077,6 +1103,7 @@ def lookup(word: str, *, source_lang: str, target_lang: str) -> dict | None:
                     # пусть обычный путь сходит в переводчик.
                     return None
                 item = _build_item(unit, links, source_lang=query_lang, target_lang=other_lang)
+                _mark_asked_form(item, asked=word, unit=unit, query_lang=query_lang)
                 # Соседей ищем по написанию БЕЗ артикля, даже когда спросили с ним:
                 # человек, открывший «der Kiefer», должен знать, что есть и «die Kiefer».
                 siblings = units
