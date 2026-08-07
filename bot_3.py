@@ -19046,6 +19046,57 @@ async def _send_dictionary_lookup_result(
     add_service_msg_id(context, msg.message_id)
 
 
+async def _proofread_lookup_input(text: str, *, source_lang: str, user_id: int) -> str:
+    """Вычитать написание перед разбором — та же дверь, что и в вебе.
+
+    Возвращает написание, с которым идти дальше (в худшем случае — исходное). Ничего не
+    бросает: поиск не имеет права упасть из-за вычитки."""
+    value = str(text or "").strip()
+    if not value:
+        return value
+    lang = str(source_lang or "").strip().lower()
+
+    def _known(word: str) -> bool:
+        # «Знаем ли мы это слово» — единственный вопрос к базе. Полную карточку тут не
+        # собираем: она нужна разбору, а не двери.
+        try:
+            from backend import lex_units
+            other = "ru" if lang != "ru" else "de"
+            return lex_units.lookup(word, source_lang=lang, target_lang=other) is not None
+        except Exception:
+            logging.debug("дверь бота: свой словарь не ответил про %r", word[:60], exc_info=True)
+            return False
+
+    def _bill() -> None:
+        # Обращение состоялось — значит оно в ведомости. Пишем общим регистратором, а не
+        # своей копией: расчёт цены и разделение свежего/кешированного входа живут в
+        # одном месте на всю программу.
+        try:
+            from backend.openai_manager import get_last_llm_usage
+            from backend.openai_usage_logging import log_openai_raw_usage
+            usage = get_last_llm_usage(reset=True) or {}
+            log_openai_raw_usage(
+                action_type="quick_correct",
+                model=str(usage.get("model") or "gpt-4.1-mini"),
+                usage=usage,
+                user_id=int(user_id),
+                source_lang=lang or None,
+                metadata={"origin": "telegram_lookup", "text": value[:64]},
+            )
+        except Exception:
+            logging.debug("дверь бота: расход не записан", exc_info=True)
+
+    try:
+        from backend import dictionary_door
+        return await asyncio.to_thread(
+            dictionary_door.word_to_look_up,
+            value, lang=lang, is_known=_known, on_usage=_bill,
+        )
+    except Exception:
+        logging.warning("дверь бота не сработала для %r", value[:60], exc_info=True)
+        return value
+
+
 async def _prepare_dictionary_lookup_response(
     *,
     user_id: int,
@@ -19073,6 +19124,19 @@ async def _prepare_dictionary_lookup_response(
             target_lang=target_lang,
         ):
             raise DictionaryLookupDailyLimitExceeded()
+        # ДВЕРЬ. Раньше поиск в личном чате шёл в модель напрямую, и за неверное написание
+        # мы честно платили полным разбором, а потом заводили ему слово. Ярлык идёт этим
+        # же путём, поэтому и он был не прикрыт. Правила общие с вебом — модуль один
+        # (`backend.dictionary_door`), второй копии здесь нет.
+        #
+        # Денежное правило соблюдено: если слово наш словарь уже знает, корректор не
+        # зовётся вовсе. Корректор синхронный и ходит в сеть, поэтому уводим его в поток —
+        # иначе он держал бы весь бот на время своего таймаута.
+        normalized_lookup_input = await _proofread_lookup_input(
+            normalized_lookup_input or lookup_input,
+            source_lang=source_lang,
+            user_id=int(user_id),
+        ) or normalized_lookup_input
         lookup_started_perf = pytime.perf_counter()
         lookup = await _run_dictionary_lookup_for_pair(
             normalized_lookup_input or lookup_input,

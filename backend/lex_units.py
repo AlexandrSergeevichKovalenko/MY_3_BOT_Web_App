@@ -575,31 +575,42 @@ def sync_unit_links_from_card(unit_id: int, card: dict, *, native_lang: str = "r
         if isinstance(item, dict) and str(item.get("value") or "").strip():
             values.append({"value": str(item["value"]).strip(),
                            "note": str(item.get("context") or "").strip()})
-    if not values:
-        for item in (card.get("translations") or []):
-            value = item.get("value") if isinstance(item, dict) else item
-            if isinstance(value, str) and value.strip():
-                values.append({"value": value.strip(), "note": ""})
+    from_translations: list[dict] = []
+    for item in (card.get("translations") or []):
+        value = item.get("value") if isinstance(item, dict) else item
+        if isinstance(value, str) and value.strip():
+            from_translations.append({"value": value.strip(), "note": ""})
+
     # Разбор тоже бывает склеен: «ромб (геометрическая фигура); решётка (символ #)» —
     # это два значения в одной строке. Прогоняем через общий разрезатель, иначе свалка
     # вернулась бы с другой стороны. Длинные определения переводом не считаем и кладём
     # в пояснение к значению: «направление, к которому движутся» — это не перевод.
-    unique: list[dict] = []
-    seen: set[str] = set()
-    for item in values:
-        for part in split_translation(item["value"]):
-            value = part["value"].strip()
-            if not value:
-                continue
-            note = "; ".join(x for x in (part.get("label"), item.get("note")) if x)
-            if len(value) > 60:
-                if unique:
-                    unique[-1]["note"] = "; ".join(x for x in (unique[-1].get("note"), value) if x)[:500]
-                continue
-            key = normalize_query(value)
-            if key and key not in seen:
-                seen.add(key)
-                unique.append({"value": value, "note": note})
+    def _pick(items: list[dict]) -> list[dict]:
+        unique: list[dict] = []
+        seen: set[str] = set()
+        for item in items:
+            for part in split_translation(item["value"]):
+                value = part["value"].strip()
+                if not value:
+                    continue
+                note = "; ".join(x for x in (part.get("label"), item.get("note")) if x)
+                if len(value) > 60:
+                    if unique:
+                        unique[-1]["note"] = "; ".join(
+                            x for x in (unique[-1].get("note"), value) if x)[:500]
+                    continue
+                key = normalize_query(value)
+                if key and key not in seen:
+                    seen.add(key)
+                    unique.append({"value": value, "note": note})
+        return unique
+
+    # Список переводов смотрим не только когда значений НЕТ, но и когда после отсева от
+    # них ничего не осталось. У «das Musterkind» все значения — определения на сто с
+    # лишним знаков, а рядом лежат готовые «примерный ребёнок», «идеальный ребёнок»;
+    # старый порядок до них не доходил, и слово оставалось вовсе без перевода — то есть
+    # выпадало из выдачи, и за него платили второй раз.
+    unique = _pick(values) or _pick(from_translations)
     if not unique:
         return {"senses": 0, "links": 0}
 

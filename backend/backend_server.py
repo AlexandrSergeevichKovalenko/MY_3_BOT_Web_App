@@ -40108,6 +40108,19 @@ def lookup_mobile_dictionary():
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
+    # Дверь и здесь: этот маршрут тоже уходил в модель с тем написанием, которое пришло.
+    # Правило то же — вычитка только после промаха нашего словаря, то есть ровно там,
+    # где мы всё равно собираемся платить за разбор.
+    _query_source = source_lang if not _is_legacy_ru_de_pair(source_lang, target_lang) else (
+        "ru" if any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word) else "de"
+    )
+    _, word = _dictionary_hit_or_corrected_word(
+        word=word,
+        source_lang=_query_source,
+        target_lang=("de" if _query_source == "ru" else "ru"),
+        user_id=int(user_id),
+    )
+
     try:
         if _is_legacy_ru_de_pair(source_lang, target_lang):
             is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word)
