@@ -44,9 +44,15 @@ KIND_TITLE = {
 
 _WEEKDAY_RU = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
+INBOX_CODE_TO_KIND = {code: kind for kind, code in KIND_TO_INBOX_CODE.items()}
+
 
 def _title(kind: str) -> str:
     return KIND_TITLE.get(kind, kind)
+
+
+def _title_by_code(code: str) -> str:
+    return _title(INBOX_CODE_TO_KIND.get(code, code))
 
 
 def _plural(n: int, one: str, few: str, many: str) -> str:
@@ -157,34 +163,62 @@ def build_free_delivery_text(
     def _name(uid: int) -> str:
         return str(names.get(uid) or "").strip() or f"id {uid}"
 
-    full, short, mute = [], [], []
+    # Две РАЗНЫЕ беды, и мешать их нельзя: «пришло меньше шести» — человек недополучил,
+    # это поломка доставки; «шесть пришло, но не те» — норма выполнена, а слот плана не
+    # отработал и дырку закрыл вечерний добор другим типом. Раньше обе шли под словом
+    # «недобрали», и отчёт сам себе противоречил строкой «6 из 6 · не дошло».
+    full, short, swapped, mute = [], [], [], []
     for uid in free_ids:
         got = delivered.get(uid, {})
         counted = sum(n for code, n in got.items() if code not in BONUS_INBOX_KINDS)
         if uid in silent:
             mute.append(_name(uid))
             continue
-        missing = []
+        missing, extra = [], []
         for kind, want in planned_by_kind.items():
             have = int(got.get(KIND_TO_INBOX_CODE.get(kind, kind), 0))
             for _ in range(max(0, want - have)):
                 missing.append(_title(kind))
-        if counted >= budget and not missing:
+        for code, have in got.items():
+            if code in BONUS_INBOX_KINDS:
+                continue
+            want = planned_by_kind.get(INBOX_CODE_TO_KIND.get(code, code), 0)
+            for _ in range(max(0, int(have) - want)):
+                extra.append(_title_by_code(code))
+        if not missing and counted >= budget:
             full.append(_name(uid))
+        elif counted >= budget:
+            swapped.append((_name(uid), missing, extra))
         else:
             short.append((counted, _name(uid), missing))
 
-    served = len(full) + len(short)
+    served = len(full) + len(short) + len(swapped)
+    got_budget = len(full) + len(swapped)
     if not served:
         verdict = "Сегодня заданий не ждал никто."
-    elif not short:
+    elif not short and not swapped:
         verdict = f"Все свои {budget} получили ({served} {_plural(served, 'человек', 'человека', 'человек')})."
     else:
-        verdict = (f"Недобрали {len(short)} из {served} "
-                   f"{_plural(served, 'человека', 'человек', 'человек')}.")
+        parts = []
+        if short:
+            parts.append(f"Недобрали {len(short)} из {served} "
+                         f"{_plural(served, 'человека', 'человек', 'человек')}.")
+        elif got_budget:
+            parts.append(f"Все свои {budget} получили "
+                         f"({got_budget} {_plural(got_budget, 'человек', 'человека', 'человек')}).")
+        if swapped:
+            parts.append(f"Но у {len(swapped)} "
+                         f"{_plural(len(swapped), 'человека', 'человек', 'человек')} "
+                         f"пришло не то, что стояло в плане.")
+        verdict = " ".join(parts)
     lines = [head, "", verdict, "", f"<b>План дня — {budget}:</b>", plan_line, "", "<b>Дошло:</b>"]
     if full:
         lines.append(f"✅ {budget} из {budget} — {', '.join(full)}")
+    for name, missing, extra in sorted(swapped):
+        tail = f" · не дошло: {', '.join(missing)}"
+        if extra:
+            tail += f" · вместо этого: {', '.join(extra)}"
+        lines.append(f"🔀 {budget} из {budget} — {name}{tail}")
     for counted, name, missing in sorted(short):
         if counted == 0:
             lines.append(f"⛔ 0 из {budget} — {name} · не дошло ничего")
@@ -193,6 +227,9 @@ def build_free_delivery_text(
         lines.append(f"⚠️ {counted} из {budget} — {name}{tail}")
     if mute:
         lines.append(f"🔇 не пишем (давно не заходили) — {', '.join(mute)}")
+    if swapped:
+        lines.append("<i>🔀 — норму человек получил, но слот плана не отработал и дырку "
+                     "закрыл вечерний добор другим заданием.</i>")
 
     try:
         bonus = _bonus_recipients(day, tuple(repeat_slot_hours or ()))

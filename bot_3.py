@@ -551,10 +551,12 @@ LISTENING_SLOT_TIME  = (18, 30)              # once/day at 18:30
 LISTENING_COOLDOWN_DAYS = max(5, int((os.getenv("LISTENING_COOLDOWN_DAYS") or "7").strip() or "7"))
 # Банк обязан быть БОЛЬШЕ, чем кулдаун × расход в день, иначе слот встаёт: при 7 текстах
 # и 7-дневном кулдауне свободных не остаётся вообще (проверено на проде 30.07 — слот
-# 18:30 не ушёл никому). Расход — до 2 в день: обычный слот плюс капельная выдача.
+# 18:30 не ушёл никому). Потребителей банка ТРИ: слот 18:30, капельная выдача и вечерний
+# добор (появился 06.08). Замер 07.08: расходуется по 3 текста в день, а банк считался
+# от «до 2 в день» = 16 — и слот 18:30 снова не ушёл никому, свободных было ноль.
 # Пол считаем от кулдауна, чтобы две константы больше не разъехались.
-LISTENING_POOL_TARGET   = max(3, LISTENING_COOLDOWN_DAYS * 2 + 2,
-                              int((os.getenv("LISTENING_POOL_TARGET") or "16").strip() or "16"))
+LISTENING_POOL_TARGET   = max(3, LISTENING_COOLDOWN_DAYS * 3 + 2,
+                              int((os.getenv("LISTENING_POOL_TARGET") or "23").strip() or "23"))
 PENDING_INPUT_STATE_LISTENING = "listening_answer"
 LISTENING_ANSWER_TTL_SECONDS  = 60 * 45  # 45 minutes
 NUMDICT_SLOT_TIMES = [(15, 10), (18, 10)]    # Zahlen-Diktat: twice a day
@@ -40467,8 +40469,12 @@ async def _send_scheduled_listening(context: CallbackContext) -> None:
     if (slot_now.hour, slot_now.minute) != LISTENING_SLOT_TIME:
         return
 
+    # Кулдаун — пожелание, а не запрет: пустой слот хуже, чем текст, повторённый раньше
+    # срока. Тот же запасной ход стоит у капельной выдачи, поэтому 07.08 человек со своими
+    # часами аудирование получил, а слотовые — нет.
     try:
-        entry = await asyncio.to_thread(pick_next_listening, cooldown_days=LISTENING_COOLDOWN_DAYS)
+        entry = (await asyncio.to_thread(pick_next_listening, cooldown_days=LISTENING_COOLDOWN_DAYS)
+                 or await asyncio.to_thread(pick_next_listening, cooldown_days=0))
     except Exception:
         logging.warning("ls_slot: pick_next_listening failed", exc_info=True)
         return

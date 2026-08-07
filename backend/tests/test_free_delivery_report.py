@@ -44,6 +44,30 @@ class ReportTextTests(unittest.TestCase):
         self.assertIn("Недобрали 1 из 2", txt)
         self.assertIn("⚠️ 5 из 6 — Олег · не дошло: 🎧 Аудирование", txt)
 
+    def test_six_arrived_but_not_the_planned_ones(self):
+        """Случай 07.08: слот аудирования не отработал, вечерний добор закрыл дырку
+        артикль-квизом. Норма выполнена — «недобрали» тут враньё, но и промолчать нельзя:
+        человек не получил того, что стояло в плане."""
+        swapped = {k: v for k, v in FULL_DAY.items() if k != "ls"}
+        swapped["aq"] = 1
+        txt = _text({1: dict(FULL_DAY), 2: swapped}, free=(1, 2))
+        self.assertNotIn("Недобрали", txt)
+        self.assertIn("Все свои 6 получили (2 человека).", txt)
+        self.assertIn("Но у 1 человека пришло не то, что стояло в плане.", txt)
+        self.assertIn("🔀 6 из 6 — Олег · не дошло: 🎧 Аудирование "
+                      "· вместо этого: 🧩 Артикль-квиз", txt)
+
+    def test_shortfall_and_swap_are_reported_separately(self):
+        """Недобор по числу и подмена типа — разные беды, обе должны быть названы."""
+        swapped = {k: v for k, v in FULL_DAY.items() if k != "ls"}
+        swapped["aq"] = 1
+        short = {k: v for k, v in FULL_DAY.items() if k not in ("ls", "as")}
+        txt = _text({1: swapped, 2: short}, free=(1, 2))
+        self.assertIn("Недобрали 1 из 2 человек.", txt)
+        self.assertIn("Но у 1 человека пришло не то, что стояло в плане.", txt)
+        self.assertIn("🔀 6 из 6 — Лилия", txt)
+        self.assertIn("⚠️ 4 из 6 — Олег", txt)
+
     def test_bonus_does_not_count_as_a_daily_task(self):
         """Работа над ошибками приходит сверх шести: с ней «5 из 6» не станет «6 из 6»."""
         short = {k: v for k, v in FULL_DAY.items() if k != "ls"}
