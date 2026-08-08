@@ -1275,33 +1275,8 @@ html[data-scheme="light"] .dq-gt > summary,
   background: linear-gradient(180deg, #6366F1, #4f46e5);
 }
 
-/* Способ перевода — сегмент из 3 одинаковых кнопок (главная чуть шире) */
-.dict-method {
-  display: flex; gap: 8px; padding: 4px;
-  background: rgba(148, 163, 184, 0.10);
-  border: 1px solid var(--dmps-border, #334155);
-  border-radius: 12px;
-}
-.dict-method-seg {
-  position: relative; flex: 1 1 0; min-width: 0; height: 40px;
-  border: none; border-radius: 8px; background: none; cursor: pointer;
-  font: inherit; font-size: 13px; font-weight: 700;
-  color: var(--dmps-text-secondary, #cbd5e1);
-  display: flex; align-items: center; justify-content: center; gap: 5px;
-  white-space: nowrap;
-}
-.dict-method-seg:first-child { flex: 1.35 1 0; }
-.dict-method-seg.on {
-  color: #fff;
-  background: linear-gradient(180deg, #6366F1, #4f46e5);
-  box-shadow: 0 5px 13px -4px rgba(79, 70, 229, 0.5);
-}
-.dict-method-def {
-  position: absolute; top: -8px; left: 50%; transform: translateX(-50%);
-  font-size: 8px; font-weight: 800; letter-spacing: 0.02em;
-  background: #2bb45f; color: #fff; padding: 1px 6px; border-radius: 999px;
-  white-space: nowrap; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
-}
+/* Стили переключателя «Разбор AI / Быстро / Офлайн» (.dict-method*) удалены вместе
+   с самим переключателем: источник перевода выбираем мы, а не человек. */
 
 /* Большое поле ввода */
 .dictionary-input.dict-input-big {

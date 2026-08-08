@@ -4,6 +4,7 @@ import './dict.css';
 import { WordBreakdown, useTts, SpeakButton, genderClass, resolveArticle, resolveNumber, resolveLemma, cleanArticle as cleanArticleText, stripLeadingArticle, api, haptic, getInitData, getDictToken } from './WordBreakdown';
 import BreakdownSkeleton from './BreakdownSkeleton';
 import { guessPair, buildDictionarySavePayload } from './saveUtils';
+import { languageName, resolvePair, parsePairCode, pairCode, flipPair, DEFAULT_PAIR } from './langPair.js';
 import { humanizeDictError } from './errors.js';
 
 /**
@@ -40,16 +41,16 @@ function isTabletLikeViewport() {
   } catch (_e) { return false; }
 }
 
-const LANG_NAMES = { ru: 'Русский', de: 'Deutsch' };
-
-// Effective direction: an explicit user choice (forced) wins; otherwise auto from
-// the script of the text (Cyrillic → ru→de). Returns 'ru-de' | 'de-ru'.
+// Языки и выбор пары живут в одном месте — ./langPair.js. Здесь раньше стояла своя
+// копия правила «есть кириллица → ru-de, иначе de-ru» и свой список имён языков;
+// с третьим языком две копии разошлись бы, а «table» правило назвало бы немецким.
+// Строка вида 'ru-de' осталась внутренним представлением — это ровно pairCode().
 function effectiveDir(text, forced) {
-  if (forced === 'ru-de' || forced === 'de-ru') return forced;
-  return /[А-Яа-яЁё]/.test(String(text || '')) ? 'ru-de' : 'de-ru';
+  const pair = resolvePair(text, { override: parsePairCode(forced) });
+  return pairCode(pair);
 }
 function dirToPair(dir) {
-  return dir === 'de-ru' ? { source: 'de', target: 'ru' } : { source: 'ru', target: 'de' };
+  return parsePairCode(dir) || DEFAULT_PAIR;
 }
 
 // All dictionary errors go through the shared humanizer so a raw machine code
@@ -277,7 +278,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
     haptic('light');
     try {
       // Direction: an explicit swap wins, then the panel choice, else auto by script.
-      const chosenDir = (dirOverride === 'ru-de' || dirOverride === 'de-ru')
+      const chosenDir = parsePairCode(dirOverride)
         ? dirOverride : effectiveDir(text, forcedDir);
       const pair = dirToPair(chosenDir);
       const data = await api('/api/translate/quick', {
@@ -785,7 +786,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
 
   // Swap the language direction (⇄) and re-translate with the new direction.
   const onSwap = useCallback(() => {
-    const next = effectiveDir(query, forcedDir) === 'ru-de' ? 'de-ru' : 'ru-de';
+    const next = pairCode(flipPair(dirToPair(effectiveDir(query, forcedDir))));
     setForcedDir(next);
     haptic('light');
     const t = query.trim();
@@ -856,9 +857,9 @@ export default function DictionaryOverlay({ onClose } = {}) {
           return (
             <div className="dq-langrow">
               <div className="dq-langbar">
-                <span className="dq-lang">{LANG_NAMES[src]}</span>
+                <span className="dq-lang">{languageName(src)}</span>
                 <button type="button" className="dq-swap" onClick={onSwap} aria-label="Поменять языки">⇄</button>
-                <span className="dq-lang">{LANG_NAMES[tgt]}</span>
+                <span className="dq-lang">{languageName(tgt)}</span>
               </div>
               <button
                 type="button"
