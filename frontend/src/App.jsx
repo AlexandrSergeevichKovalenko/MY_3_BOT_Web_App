@@ -54,6 +54,8 @@ import {
   lookupOfflineBaseDictEntry,
   saveBaseDictEntryFromServerResult,
   ensureOfflinePack,
+  rememberMyWord,
+  lookupMyWord,
 } from './offline/baseDictCache';
 
 import './styles/topbar-redesign.css';
@@ -6052,6 +6054,7 @@ function AppInner() {
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
   }, [dictionaryWord, dictionaryResult]);
+
   // Lazy, streamed GPT breakdown for the in-app dictionary (mirrors the quick
   // dictionary): 'idle' shows the «Подробный разбор» button, 'streaming' fills
   // the card section-by-section, 'done' hides the button, 'error' offers retry.
@@ -6072,6 +6075,20 @@ function AppInner() {
     try { const r = JSON.parse(localStorage.getItem('dq_recents_v1') || '[]'); return Array.isArray(r) ? r.filter((x) => typeof x === 'string').slice(0, 6) : []; } catch (_e) { return []; }
   });
   const [dictionaryLanguagePair, setDictionaryLanguagePair] = useState(null);
+
+  // Своя находка остаётся с человеком. Раньше локально жил только базовый словарь на
+  // 10 000 частых немецких слов, а личные находки не сохранялись НИКОГДА — поэтому в
+  // авиарежиме «Змей горыныч», переведённый месяцем раньше, отвечал «не найдено офлайн».
+  // Ловим здесь, а не в каждом обработчике: карточка приезжает пятью разными путями
+  // (мгновенный перевод, разбор, дообогащение, офлайн, окно переводов), и одна точка
+  // надёжнее пяти. Повторная запись безвредна — она же обновляет отметку касания.
+  useEffect(() => {
+    const item = dictionaryResult;
+    if (!item || typeof item !== 'object') return;
+    const query = String(item.source_text || item.word_ru || dictionaryWord || '').trim();
+    if (!query) return;
+    void rememberMyWord(query, item, dictionaryLanguagePair || null);
+  }, [dictionaryResult, dictionaryWord, dictionaryLanguagePair]);
   // When the user clears the input, the result card should disappear and the screen
   // returns to its initial compose state. (Don't wipe while a lookup is in flight.)
   useEffect(() => {
@@ -30748,6 +30765,20 @@ function AppInner() {
         'Слово не найдено в локальном офлайн-словаре.',
         'Wort wurde im lokalen Offline-Wörterbuch nicht gefunden.'
       );
+      // 0. СВОИ находки — первыми. Человек ищет то, что уже искал, и своя карточка
+      //    с разбором полезнее строки из базового словаря. Базовый словарь знает
+      //    10 000 частых слов и не содержит личных фраз вроде «Змей горыныч» вовсе.
+      const mine = await lookupMyWord(sourceWord);
+      if (mine) {
+        setDictionaryResult(mine);
+        setDictionaryDirection(resolvedDirection);
+        setDictionaryLanguagePair(resolveLanguagePairForUI({
+          source_lang: queryLang,
+          target_lang: queryLang === 'ru' ? 'de' : 'ru',
+        }));
+        return;
+      }
+
       void ensureOfflinePack('de', 30000);
       // 1. Check offline IndexedDB first
       const offlineResult = await lookupOfflineBaseDictEntry(sourceWord);
@@ -30762,7 +30793,7 @@ function AppInner() {
       }
 
       if (!isOnline) {
-        setDictionaryError(tr('Нет соединения и слово не найдено офлайн.', 'Kein Netz und Wort nicht offline gefunden.'));
+        setDictionaryError(tr('Нет интернета, а это слово вы раньше не открывали. Всё, что вы уже переводили, доступно и без сети.', 'Kein Internet, und dieses Wort hattest du noch nicht offen. Alles, was du schon übersetzt hast, ist auch ohne Netz da.'));
         return;
       }
 
@@ -30829,7 +30860,7 @@ function AppInner() {
             'Lokal nicht gefunden und die Online-Suche des Wörterbuchs reagiert zu langsam. Versuche ⚡ Übersetzen.'
           ));
         } else {
-          setDictionaryError(tr('Нет соединения и слово не найдено офлайн.', 'Kein Netz und Wort nicht offline gefunden.'));
+          setDictionaryError(tr('Нет интернета, а это слово вы раньше не открывали. Всё, что вы уже переводили, доступно и без сети.', 'Kein Internet, und dieses Wort hattest du noch nicht offen. Alles, was du schon übersetzt hast, ist auch ohne Netz da.'));
         }
       }
     } finally {

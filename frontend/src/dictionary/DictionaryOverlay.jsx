@@ -5,6 +5,7 @@ import { WordBreakdown, useTts, SpeakButton, genderClass, resolveArticle, resolv
 import BreakdownSkeleton from './BreakdownSkeleton';
 import { guessPair, buildDictionarySavePayload } from './saveUtils';
 import { languageName, resolvePair, parsePairCode, pairCode, flipPair, DEFAULT_PAIR } from './langPair.js';
+import { rememberMyWord } from '../offline/baseDictCache';
 import { humanizeDictError } from './errors.js';
 
 /**
@@ -152,6 +153,26 @@ export default function DictionaryOverlay({ onClose } = {}) {
   const [phase, setPhase] = useState('idle'); // idle|loading|done|error
   const [quick, setQuick] = useState(null);   // { source, target, translation, sourceLang, targetLang, direction }
   const [item, setItem] = useState(null);     // rich GPT item (for enrich + canonical save)
+
+  // Найденное запоминаем локально, чтобы оно открылось и без сети. Хранилище общее
+  // с приложением, поэтому слово, переведённое здесь, найдётся и во внутреннем словаре.
+  // Пишем разбор, если он уже приехал, иначе мгновенный перевод — что-то лучше, чем
+  // «не найдено офлайн» на слове, которое человек уже смотрел.
+  useEffect(() => {
+    if (!quick && !item) return;
+    const query = String(quick?.source || '').trim();
+    if (!query) return;
+    const card = item || {
+      word_ru: quick.sourceLang === 'ru' ? quick.source : quick.translation,
+      word_de: quick.sourceLang === 'de' ? quick.source : quick.translation,
+      translation_ru: quick.sourceLang === 'ru' ? quick.source : quick.translation,
+      translation_de: quick.sourceLang === 'de' ? quick.source : quick.translation,
+      source_text: quick.source,
+      target_text: quick.translation,
+      article: quick.article || '',
+    };
+    void rememberMyWord(query, card, { source: quick?.sourceLang, target: quick?.targetLang });
+  }, [quick, item]);
   const [enrich, setEnrich] = useState('idle'); // idle|loading|streaming|done|error
   const [streamSections, setStreamSections] = useState(() => new Set()); // section names arrived
   const [deepLoading, setDeepLoading] = useState(false); // background enrichment poll
