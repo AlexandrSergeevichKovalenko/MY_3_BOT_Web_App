@@ -3034,12 +3034,16 @@ CONTENT RULES (same as the full dictionary):
   comparative/superlative. word_formation ONLY for real compounds/derived words (else is_compound=false,
   parts=[]).
 - synonyms up to 4, antonyms up to 3 (omit if none), related_words up to 4 (same root, nouns with article).
-  HARD RULE: synonyms, antonyms, related_words[].word and common_collocations are TARGET-LANGUAGE
-  words the learner studies — they are synonyms/antonyms OF THE TARGET WORD, in target_language. NEVER
-  give native/explanation-language paraphrases here, even when the input was a phrase in the native
-  language. E.g. source=ru "Противный человек" → target=de "unangenehmer Mensch": synonyms must be
-  German ("widerlicher Kerl", "fieser Typ", "ekelhafter Mensch") — NOT Russian ("неприятный человек").
-  Return [] rather than a native-language word.
+  HARD RULE: synonyms, antonyms, related_words[].word and common_collocations belong to the FOREIGN
+  word the learner is studying — the side whose language is NOT explanation_language.
+  This does NOT depend on the translation direction. With explanation_language=ru they are German
+  BOTH for a ru→de lookup AND for a de→ru lookup: the learner studies German either way.
+  E.g. explanation_language=ru, word="aufstehen", source=de, target=ru → synonyms must be German
+  ("sich erheben", "hochkommen") — NOT Russian ("подниматься").
+  E.g. explanation_language=ru, source=ru "Противный человек" → target=de "unangenehmer Mensch":
+  synonyms must be German ("widerlicher Kerl", "fieser Typ") — NOT Russian ("неприятный человек").
+  Never give explanation-language paraphrases here.
+  Give at least 2 whenever the language offers them; use [] only when the word genuinely has none.
   usage_examples: 2–3 natural pairs different from the meaning examples.
 - For a single-word content lemma provide non-null etymology_note AND memory_tip. Use null/[] for depth
   fields only when they would be artificial (function words, numbers, proper names) or genuinely unknown.

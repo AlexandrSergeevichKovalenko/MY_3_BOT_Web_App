@@ -178,3 +178,55 @@ def test_card_without_a_unit_still_gets_its_notes(monkeypatch):
     database.attach_unit_content_to_cards(items)
     assert items[0]["user_notes"] == notes
     assert items[0]["response_json"] == CARD
+
+
+# ── Синонимы: блок, который мост тихо не переносил ──────────────────────────────
+#
+# Замер 08.08.2026: секции разбора 1–4 доезжали до личной карточки в 14 489 случаях
+# из 24 554, а пятая — та, где лежат синонимы, — всего в 670. На самих единицах она
+# была у 4 098 из 9 711. Модель их присылала, мы за них платили, они сохранялись на
+# слове — и не показывались человеку, потому что в списке переносимых блоков их не
+# было. Причём соседний блок «чем отличаются синонимы» там был: карточка объясняла
+# разницу между словами, которых на экране нет.
+
+UNIT_WITH_SYNONYMS = {
+    "word_de": "aufstehen",
+    "synonyms": ["sich erheben", "hochkommen"],
+    "antonyms": ["sich hinlegen"],
+    "related_words": [{"word": "der Aufstand", "gloss": "восстание"}],
+    "when_to_use": "о подъёме с постели и о том, что окно стоит открытым",
+}
+
+
+def test_synonyms_reach_the_card():
+    card = {"word_de": "aufstehen", "source_text": "aufstehen"}
+    merged = merge_unit_card_for_serve(card, UNIT_WITH_SYNONYMS)
+    assert merged["synonyms"] == ["sich erheben", "hochkommen"], (
+        "синонимы не доехали с единицы до карточки — человек снова увидит пустоту"
+    )
+    assert merged["antonyms"] == ["sich hinlegen"]
+    assert merged["related_words"][0]["word"] == "der Aufstand"
+    assert merged["when_to_use"]
+
+
+def test_own_synonyms_are_not_replaced_by_a_poorer_list():
+    """Правило прежнее: дополняем, но никогда не обедняем."""
+    card = {
+        "word_de": "aufstehen",
+        "synonyms": ["sich erheben", "hochkommen", "sich aufrichten"],
+    }
+    merged = merge_unit_card_for_serve(card, {"word_de": "aufstehen", "synonyms": ["x"]})
+    assert merged["synonyms"] == ["sich erheben", "hochkommen", "sich aufrichten"], (
+        "свой список синонимов подменён более коротким с единицы"
+    )
+
+
+def test_richness_counts_synonyms():
+    """Карточка с синонимами считается более полной — иначе ночной добор её не заметит."""
+    from backend.database import card_content_score
+    without = card_content_score({"meanings": {"primary": {"value": "вставать"}}})
+    with_syn = card_content_score({
+        "meanings": {"primary": {"value": "вставать"}},
+        "synonyms": ["sich erheben"],
+    })
+    assert with_syn > without, "синонимы не влияют на оценку полноты разбора"
