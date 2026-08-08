@@ -56,6 +56,7 @@ import {
   ensureOfflinePack,
   rememberMyWord,
   lookupMyWord,
+  backfillMyWords,
 } from './offline/baseDictCache';
 
 import './styles/topbar-redesign.css';
@@ -9241,6 +9242,33 @@ function AppInner() {
     }
     throw lastError || new Error('Request failed');
   }, [inspectInitDataAuthFailureResponse, inspectSingleInstanceConflictResponse]);
+
+  // Разовая подкачка прошлого в офлайн. Хранилище своих находок завели 08.08.2026, и
+  // наполняется оно с этого дня — а у человека уже накоплены тысячи карточек, которых
+  // без сети не будет ни одной. Поэтому один раз тихо стягиваем последние сохранённые
+  // слова: после этого «Змей горыныч», переведённый месяц назад, откроется в самолёте.
+  //
+  // Тихо — значит без индикаторов и без сообщений об ошибке: это не то, ради чего человек
+  // открыл приложение. Не получилось — попробуем при следующем запуске.
+  // Ждём пять секунд после старта, чтобы не соперничать с первой отрисовкой и с тем,
+  // за чем человек пришёл.
+  useEffect(() => {
+    if (!initData || !isOnline) return undefined;
+    const timer = window.setTimeout(() => {
+      void backfillMyWords(async (limit) => {
+        const resp = await fetchWithTimeout('/api/webapp/dictionary/cards', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, limit }),
+        }, 20000);
+        if (!resp.ok) throw new Error('cards fetch failed');
+        const data = await resp.json();
+        return Array.isArray(data?.items) ? data.items : [];
+      });
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [initData, isOnline, fetchWithTimeout]);
+
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.fetch !== 'function') {
       return undefined;

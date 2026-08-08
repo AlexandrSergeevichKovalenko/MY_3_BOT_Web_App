@@ -34,9 +34,11 @@ const BD_DB_VERSION = 3;
 const STORE_BD      = 'base_dict';
 const STORE_BD_META = 'base_dict_meta';
 const STORE_MINE    = 'my_words';
-// Потолок личного хранилища. Карточка с разбором весит килобайты, а браузер на телефоне
-// не резиновый: держим последние по касанию и не даём хранилищу расти без края.
-const MINE_MAX_ENTRIES = 1500;
+// Потолок личного хранилища — в СТРОКАХ, а не в словах: у карточки несколько ключей
+// поиска, но сама она лежит в одном экземпляре, остальные строки — лёгкие ссылки.
+// Шести тысяч строк хватает примерно на полторы-две тысячи слов, включая разовую
+// подкачку прошлого. Лишнее уходит по давности касания, а не по алфавиту.
+const MINE_MAX_ENTRIES = 6000;
 const PACK_VERSION_KEY = 'pack_version';
 const PACK_ENTRY_COUNT_KEY = 'pack_entry_count';
 const PACK_MAX_AGE_MS  = 7 * 24 * 60 * 60 * 1000; // re-download after 7 days
@@ -161,24 +163,82 @@ export function myWordKeys(query, item) {
   return keys;
 }
 
-/** Положить находку в личное хранилище. Никогда не роняет поиск: это подстраховка. */
+/**
+ * Положить находку в личное хранилище. Никогда не роняет поиск: это подстраховка.
+ *
+ * Карточка находится по нескольким словам сразу (по набранному запросу и по немецкой
+ * стороне), но САМА лежит в одном экземпляре: первый ключ хранит карточку, остальные —
+ * только ссылку на него. Иначе разбор весом в килобайты копировался бы три-четыре раза,
+ * и пятьсот слов съели бы мегабайты там, где хватает сотен килобайт.
+ */
 export async function rememberMyWord(query, item, pair) {
   if (!item || typeof item !== 'object') return;
   const keys = myWordKeys(query, item);
   if (!keys.length) return;
   const ts = Date.now();
+  const [primary, ...aliases] = keys;
   try {
     const db = await _openBD();
     const tx = db.transaction(STORE_MINE, 'readwrite');
     const store = tx.objectStore(STORE_MINE);
-    let last = null;
-    for (const k of keys) last = store.put({ k, item, pair: pair || null, ts });
-    if (last) await _pr(last);
-    void _trimMyWords();
+    const last = store.put({ k: primary, item, pair: pair || null, ts });
+    for (const k of aliases) store.put({ k, ref: primary, ts });
+    await _pr(last);
+    _writesSinceTrim += 1;
+    if (_writesSinceTrim >= TRIM_EVERY) { _writesSinceTrim = 0; void _trimMyWords(); }
   } catch {
     // Место кончилось или хранилище недоступно — молчим. Офлайн-память приятна,
     // но её отсутствие не повод ломать обычный перевод.
   }
+}
+
+// Уборку зовём не после каждой записи: при подкачке прошлого их сотни подряд, и считать
+// размер хранилища на каждой — впустую гонять диск.
+let _writesSinceTrim = 0;
+const TRIM_EVERY = 50;
+
+// Разовая подкачка прошлого. Хранилище своих находок наполняется с того момента, как
+// его завели, — а у человека к этому дню уже накоплены тысячи карточек, и в авиарежиме
+// их не было бы ни одной. Поэтому один раз тихо стягиваем последние сохранённые слова
+// и кладём их сюда же. Дальше хранилище пополняется само, обычным поиском.
+const LS_BACKFILL_TS = 'my_words_backfill_ts';
+const BACKFILL_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;  // повторяем не чаще раза в месяц
+const BACKFILL_LIMIT = 500;                             // столько последних слов забираем
+
+/**
+ * Наполнить личное хранилище прошлыми карточками. Тихо: без индикаторов, без ошибок
+ * наружу, без блокировки запуска. Не сделалось — значит не сделалось, обычный поиск
+ * от этого не страдает, а следующая попытка будет при следующем запуске.
+ *
+ * @param {function} fetchCards  () => Promise<Array>  — отдаёт карточки с сервера
+ */
+export async function backfillMyWords(fetchCards) {
+  if (typeof fetchCards !== 'function') return 0;
+  try {
+    const last = Number(localStorage.getItem(LS_BACKFILL_TS) || 0);
+    if (last && Date.now() - last < BACKFILL_MAX_AGE_MS) return 0;
+  } catch { /* localStorage может быть недоступен — тогда просто пробуем */ }
+
+  let items = [];
+  try {
+    items = await fetchCards(BACKFILL_LIMIT);
+  } catch {
+    return 0;   // нет сети или сервер занят — попробуем в другой раз
+  }
+  if (!Array.isArray(items) || !items.length) return 0;
+
+  let written = 0;
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const query = String(item.source_text || item.word_ru || item.word_de || '').trim();
+    if (!query) continue;
+    // По одной записи, а не одной большой транзакцией: пятьсот карточек с разбором —
+    // это мегабайты, и падение на середине не должно отменить уже записанное.
+    await rememberMyWord(query, item, null);
+    written += 1;
+  }
+  try { localStorage.setItem(LS_BACKFILL_TS, String(Date.now())); } catch { /* не важно */ }
+  return written;
 }
 
 /** Найти свою прошлую находку. Возвращает карточку в том же виде, что рисует приложение. */
@@ -189,7 +249,10 @@ export async function lookupMyWord(query) {
     const db = await _openBD();
     const tx = db.transaction(STORE_MINE, 'readonly');
     const store = tx.objectStore(STORE_MINE);
-    const hit = await _pr(store.get(k)) || await _pr(store.get(_normKey(k)));
+    let hit = await _pr(store.get(k));
+    if (!hit) hit = await _pr(store.get(_normKey(k)));
+    // Попали в ссылку — идём за самой карточкой.
+    if (hit && hit.ref && !hit.item) hit = await _pr(store.get(hit.ref));
     if (!hit || !hit.item) return null;
     void _touchMyWord(hit.k);
     return hit.item;
