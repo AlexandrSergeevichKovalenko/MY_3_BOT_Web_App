@@ -29,6 +29,8 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   const [done, setDone] = useState(null);   // { text, what }
   const doneTimer = useRef(null);
   const [note, setNote] = useState('');
+  // Сколько в очереди пустых придирок: заявлена ошибка, а исправить нечего.
+  const [noise, setNoise] = useState(0);
   const [own, setOwn] = useState('');
   const [typing, setTyping] = useState(false);
   // Отложенные на этом сеансе: в базе ничего не меняется, они просто уходят в конец
@@ -40,6 +42,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
     try {
       const r = await api('/api/answer/phrasereview/list', {});
       setItems(r.items || []);
+      setNoise(Number(r.noise) || 0);
       if (loud) setNote(`🔄 Проверил: спорных фраз — ${(r.items || []).length}.`);
     } catch (e) {
       console.warn('[phrasereview] load', e);
@@ -72,6 +75,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
 
   const applyResponse = (r) => {
     setItems(r.items || []);
+    setNoise(Number(r.noise) || 0);
     setNote('');
     setOwn('');
     // Список сдвинулся на одну — остаёмся на той же позиции, то есть на следующей
@@ -122,6 +126,20 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
     } finally { setBusy(false); }
   };
 
+  const dropNoise = async () => {
+    if (busy) return;
+    setBusy(true); setError(''); setNote('🧹 Убираю пустые придирки…');
+    try {
+      const r = await api('/api/answer/phrasereview/dropnoise', {});
+      applyResponse(r);
+      flashDone(`${r.closed} шт.`, 'пустых придирок убрано');
+    } catch (e) {
+      console.warn('[phrasereview] dropnoise', e);
+      setNote('');
+      setError(e?.message || 'Не получилось. Попробуйте ещё раз.');
+    } finally { setBusy(false); }
+  };
+
   const skip = () => {
     if (!card) return;
     setSkipped((prev) => new Set(prev).add(card.id));
@@ -164,7 +182,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   const arbiter = card.arbiter || null;
 
   return (
-    <div className={`pinw${typing ? ' typing' : ''}`}>
+    <div className={`pinw frrev-w${typing ? ' typing' : ''}`}>
       <div className="pinw-top pinw-top-row">
         <span className="pinw-title">📝 Спорные фразы</span>
         <span className="pinw-count">{position} из {queue.length}</span>
@@ -174,6 +192,12 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
         <div className="frrev-done">
           ✅ «{done.text}» — {done.what.replace(/^Фраза /, '').toLowerCase()}
         </div>
+      ) : null}
+
+      {noise > 0 ? (
+        <button className="frrev-sweep" disabled={busy} onClick={dropNoise}>
+          🧹 Убрать пустые придирки ({noise}) — там заявлена ошибка, а исправить нечего
+        </button>
       ) : null}
 
       <div className="frrev-scroll">
@@ -256,27 +280,24 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
           );
         })}
 
-        {/* Спор двух судей разрешает третий. Владелец не обязан знать, пишется ли
-            «hochbekommen» слитно, — две кнопки без объяснения это та же загадка. */}
-        {variants.length > 1 && !arbiter ? (
-          <button className="ans-btn-ghost" disabled={busy} onClick={settle}>
-            ⚖️ Судьи разошлись — кто прав?
+        {/* Решения в два столбца: место на экране нужно разбору судей, а не кнопкам.
+            Спор двух разрешает третий — владелец не обязан знать, пишется ли
+            «hochbekommen» слитно, две кнопки без объяснения это та же загадка. */}
+        <div className="frrev-row">
+          {variants.length > 1 && !arbiter ? (
+            <button className="ans-btn-ghost" disabled={busy} onClick={settle}>⚖️ Кто прав?</button>
+          ) : null}
+          {!variants.length && !card.all_ok ? (
+            <button className="ans-btn-ghost" disabled={busy} onClick={rejudge}>🔁 Спросить заново</button>
+          ) : null}
+          {/* «Оставить как есть» есть всегда: даже когда варианты предложены, владелец
+              вправе не согласиться с судьями. Когда исправлять нечего — это единственное
+              осмысленное решение, поэтому оно становится главным. */}
+          <button className={variants.length ? 'ans-btn-ghost' : 'ans-btn frrev-keep'}
+            disabled={busy} onClick={() => decide('keep')}>
+            👍 Оставить как есть
           </button>
-        ) : null}
-
-        {/* «Оставить как есть» есть всегда: даже когда варианты предложены, владелец
-            вправе не согласиться с судьями. Когда оба сказали «ошибки нет», принимать
-            нечего — и тогда это единственное осмысленное решение, поэтому оно главное. */}
-        <button className={variants.length ? 'ans-btn-ghost' : 'ans-btn frrev-keep'}
-          disabled={busy} onClick={() => decide('keep')}>
-          👍 Фраза хорошая — оставить как есть
-        </button>
-
-        {!variants.length && !card.all_ok ? (
-          <button className="ans-btn-ghost" disabled={busy} onClick={rejudge}>
-            🔁 Спросить судей заново
-          </button>
-        ) : null}
+        </div>
 
         <input
           className="pinrev-word" value={own} disabled={busy}
@@ -299,17 +320,16 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
           </button>
         ) : null}
 
-        <div className="pinw-bar-row pinw-bar">
+        <div className="frrev-row">
           <button className="ans-btn-ghost" disabled={busy} onClick={skip}>↷ Отложить</button>
           <button className="ans-btn-ghost pinrev-skip" disabled={busy}
             onClick={() => decide('delete')}>🗑 Удалить</button>
+          <button className="ans-btn-ghost frrev-closebtn" onClick={onClose}>✕ Закрыть</button>
         </div>
         <div className="frrev-hint">
-          «Оставить как есть» закрывает вопрос: фраза не меняется и больше не вернётся.
-          «Удалить» убирает её из общего словаря и подписные карточки людей — кроме тех,
-          куда человек вписал что-то своё. «Отложить» ничего не меняет.
+          «Оставить» закрывает вопрос навсегда · «Удалить» уносит фразу и подписные
+          карточки · «Отложить» ничего не меняет
         </div>
-        <button className="pinw-close" onClick={onClose}>Закрыть</button>
       </div>
     </div>
   );

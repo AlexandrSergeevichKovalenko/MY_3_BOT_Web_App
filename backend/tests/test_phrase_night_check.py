@@ -136,3 +136,62 @@ class DeletionRuleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmptyComplaintTests(unittest.TestCase):
+    """Придирка без содержания не должна доходить до владельца.
+
+    Два вида, оба пойманы на живой очереди 08.08.2026 (18 из 40 открытых вопросов):
+      • «лучше 'an mir' заменить на 'an mir'» — правки нет, только слова;
+      • правка, отличающаяся от фразы одной точкой в конце, при вердикте «неправильный
+        предлог с дательным падежом».
+    Кнопка «Принять» на такое не меняет ничего, но выглядит как решение. Владелец
+    справедливо назвал это издевательством: «он же тупо переписал мою фразу»."""
+
+    def test_a_fix_that_only_adds_a_final_dot_is_not_a_fix(self):
+        from backend.database import phrase_review_variants
+        text = "Wir treffen uns am fünften jeden Monats"
+        got = phrase_review_variants(
+            [v(category="kasus", corrected=text + ".")], text)
+        self.assertEqual(got, [])
+
+    def test_end_punctuation_alone_is_noise_not_a_question(self):
+        from backend.database import phrase_review_is_noise
+        text = "Wir treffen uns am fünften jeden Monats"
+        self.assertTrue(phrase_review_is_noise(
+            [v(category="kasus", corrected=text + ".", why="Неправильный падеж.")], text))
+
+    def test_a_complaint_without_any_fix_is_noise(self):
+        from backend.database import phrase_review_is_noise
+        text = "Die Erinnerung hat an mir genagt"
+        self.assertTrue(phrase_review_is_noise(
+            [v(category="praeposition", corrected="",
+               why="Лучше 'an mir' заменить на 'an mir'.")], text))
+
+    def test_a_real_disagreement_is_still_a_question(self):
+        from backend.database import phrase_review_is_noise
+        text = "Er hat hoch bekommen"
+        self.assertFalse(phrase_review_is_noise(
+            [v(category="wortstellung", corrected="Er hat hochbekommen"),
+             v(category="wortstellung", corrected="Er hat es hochbekommen")], text))
+
+    def test_judges_are_told_to_ignore_the_final_dot(self):
+        """Фильтр на выходе — страховка. Судью надо учить не придираться к точке в
+        конце: словарная запись это не связный текст."""
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[1] / "openai_manager.py").read_text(encoding="utf-8")
+        start = src.index("def run_phrase_grammar_verdict")
+        block = src[start:start + 4000]
+        self.assertIn("IGNORE punctuation at the very END", block)
+        self.assertIn("Never claim an error you cannot fix", block)
+
+    def test_night_does_not_queue_an_empty_complaint(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[1] / "phrase_night_check.py").read_text(encoding="utf-8")
+        start = src.index("def run_phrase_night_check")
+        block = src[start:]
+        self.assertIn("phrase_review_is_noise", block,
+                      "пустые придирки снова копятся в очереди владельца")
+        self.assertLess(block.index("phrase_review_is_noise"),
+                        block.index('if any(str(j.get("verdict") or "") == "error"'),
+                        "проверка на пустоту должна стоять ДО постановки вопроса")
