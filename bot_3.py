@@ -9688,12 +9688,21 @@ def _send_phrase_check_morning_report() -> None:
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
         if not token or not admin_ids:
             return
+        # Кнопка ведёт на экран разбора. Разбирать спорные фразы прямо в этой переписке
+        # неудобно: у владельца тут сотни непрочитанных учебных сообщений, и каждый
+        # ответ бота уносил его в самый конец чата.
+        markup = ({"inline_keyboard": [[{"text": "📝 Разобрать спорные фразы",
+                                         "url": get_webapp_deeplink("ans_frv_0")}]]}
+                  if open_reviews else None)
         import requests
         for admin_id in admin_ids:
             try:
+                payload = {"chat_id": admin_id, "text": text, "parse_mode": "HTML"}
+                if markup:
+                    payload["reply_markup"] = markup
                 requests.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": admin_id, "text": text, "parse_mode": "HTML"},
+                    json=payload,
                     timeout=15,
                 )
             except Exception:
@@ -11978,7 +11987,7 @@ def _build_phrase_review(items: list, idx: int, note: str = "") -> tuple:
     names = {"rechtschreibung": "опечатка", "kongruenz": "согласование", "kasus": "падеж",
              "praeposition": "предлог", "wortstellung": "порядок слов", "stil": "стиль"}
     from backend.database import phrase_review_variants
-    variants = phrase_review_variants(judges)
+    variants = phrase_review_variants(judges, it.get("text") or "")
     # вариант → его номер в списке кнопок, чтобы подписать его в тексте тем же числом
     slot_of = {v["text"]: n for n, v in enumerate(variants, 1)}
 
@@ -12029,6 +12038,10 @@ def _build_phrase_review(items: list, idx: int, note: str = "") -> tuple:
         InlineKeyboardButton("🗑 Удалить", callback_data=f"pr:del:{it['id']}:{idx}"),
         InlineKeyboardButton("✏️ Вписать свою", callback_data=f"pr:own:{it['id']}:{idx}"),
     ])
+    # Разбирать длинную очередь в переписке неудобно: тут сотни непрочитанных учебных
+    # сообщений. Экран держит весь разбор в одном месте — и чат не трогает вовсе.
+    rows.append([InlineKeyboardButton("📝 Разбирать экраном",
+                                      url=get_webapp_deeplink("ans_frv_0"))])
     nav = []
     if idx > 0:
         nav.append(InlineKeyboardButton("‹ назад", callback_data=f"pr:nav:0:{idx - 1}"))
