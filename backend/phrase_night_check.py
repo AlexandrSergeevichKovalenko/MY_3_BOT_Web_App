@@ -129,7 +129,8 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
     """Одна ночная партия. Возвращает отчёт для утреннего сообщения владельцу."""
     cap = int(limit if limit is not None else NIGHT_CAP)
     report = {"cap": cap, "picked": 0, "checked": 0, "fixed": 0, "doubt": 0, "errors": 0,
-              "by_category": {}, "left": 0, "open_reviews": 0, "dry_run": bool(dry_run)}
+              "noise": 0, "by_category": {}, "left": 0, "open_reviews": 0,
+              "dry_run": bool(dry_run)}
     rows = pick_phrases_for_grammar_check(cap)
     report["picked"] = len(rows)
     if not rows:
@@ -165,6 +166,18 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
                     continue
             # Хоть один судья увидел ошибку, но согласия нет или это порядок слов —
             # решает владелец. Сюда же попадает всё «зависит от контекста».
+            #
+            # Но только если исправлять реально есть что. Судья умеет объявить ошибку и
+            # не дать ничего: «лучше 'an mir' заменить на 'an mir'» или правку, которая
+            # отличается от исходной фразы одной точкой в конце. Спрашивать по такому
+            # владельца — значит отнимать у него время на пустоту; отмечаем фразу
+            # проверенной и идём дальше. Замер на живой очереди 08.08.2026.
+            from backend.database import phrase_review_is_noise
+            if phrase_review_is_noise(judges, row["text"]):
+                report["noise"] = int(report.get("noise") or 0) + 1
+                if not dry_run:
+                    mark_phrase_checked(row["unit_id"], row["text"], "ok")
+                continue
             if any(str(j.get("verdict") or "") == "error" for j in judges):
                 report["doubt"] += 1
                 if not dry_run:

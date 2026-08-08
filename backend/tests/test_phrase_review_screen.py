@@ -207,3 +207,30 @@ class StaleConfirmationTests(unittest.TestCase):
         start = src.index("const applyResponse")
         self.assertIn("setNote('')", src[start:start + 400],
                       "подтверждение снова оседает в разборе следующей фразы")
+
+
+class ScreenFitsOneScreenTests(unittest.TestCase):
+    """Разбор судей — главное на экране, и он не должен жить в щели в две строки.
+
+    Видео владельца 08.08.2026: вердикты двух судей приходится прокручивать, потому что
+    нижнюю половину занимают кнопки. Смотреть надо на разбор, а решать — потом."""
+
+    def _src(self, name):
+        import pathlib
+        return (pathlib.Path(__file__).resolve().parents[2]
+                / f"frontend/src/answer/{name}").read_text(encoding="utf-8")
+
+    def test_decisions_are_laid_out_in_rows_not_a_column(self):
+        src = self._src("PhraseReviewScreen.jsx")
+        self.assertGreaterEqual(src.count('className="frrev-row"'), 2,
+                                "решения снова занимают по строке каждое")
+
+    def test_review_block_takes_the_free_height(self):
+        css = self._src("answer.css")
+        self.assertIn(".frrev-w .frrev-scroll { flex: 1 1 auto; }", css)
+        self.assertIn(".frrev-w .ans-btn ", css, "кнопки не ужаты — высоту забирают они")
+
+    def test_sweep_button_is_offered_when_the_queue_holds_empty_complaints(self):
+        src = self._src("PhraseReviewScreen.jsx")
+        self.assertIn("frrev-sweep", src)
+        self.assertIn("dropnoise", src, "нельзя убрать пустые придирки одним нажатием")

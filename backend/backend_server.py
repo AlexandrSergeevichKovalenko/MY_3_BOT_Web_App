@@ -29946,7 +29946,13 @@ def _phrase_review_payload(limit: int = 200) -> dict:
                 for n, j in enumerate(judges, 1)
             ],
         })
-    return {"items": items, "total": len(items)}
+    from backend.database import count_noise_phrase_reviews
+    try:
+        noise = count_noise_phrase_reviews()
+    except Exception:
+        logging.debug("phrasereview: noise count failed", exc_info=True)
+        noise = 0
+    return {"items": items, "total": len(items), "noise": noise}
 
 
 @app.route("/api/answer/phrasereview/list", methods=["POST"])
@@ -30001,6 +30007,21 @@ def answer_phrase_review_decide():
         note = "Не записал: такая фраза уже есть в словаре. Снял с разбора."
     return jsonify({"ok": True, "result": decision, "note": note,
                     "text": result.get("text") or "", **_phrase_review_payload()})
+
+
+@app.route("/api/answer/phrasereview/dropnoise", methods=["POST"])
+def answer_phrase_review_drop_noise():
+    """Разом закрыть пустые придирки: заявлена ошибка, а исправить нечего.
+
+    Ночь такие вопросы больше не задаёт, но накопленное уже лежит в очереди, и каждая
+    строка требует отдельного тапа «да нормальная фраза». Одно нажатие вместо сорока."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    from backend.database import drop_noise_phrase_reviews
+    closed = drop_noise_phrase_reviews()
+    return jsonify({"ok": True, "closed": closed,
+                    "note": f"Убрал пустых придирок: {closed}.", **_phrase_review_payload()})
 
 
 @app.route("/api/answer/phrasereview/settle", methods=["POST"])

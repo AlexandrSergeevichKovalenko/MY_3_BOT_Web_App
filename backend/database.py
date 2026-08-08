@@ -22284,6 +22284,63 @@ def list_open_phrase_reviews(limit: int = 200) -> list[dict]:
             for r in rows]
 
 
+def phrase_review_is_noise(judges: list, text: str = "") -> bool:
+    """Придирка без содержания: кто-то заявил ошибку, а исправить нечего.
+
+    Два вида шума, оба пойманы на живой очереди 08.08.2026:
+    «лучше 'an mir' заменить на 'an mir'» — правки нет вовсе, только словесная претензия;
+    и правка, совпадающая с исходной фразой с точностью до точки на конце.
+    В обоих случаях владельцу показывать нечего, а вопрос ему всё равно задавали."""
+    if not judges:
+        return False
+    claimed = any(str(j.get("verdict") or "") == "error"
+                  for j in judges if isinstance(j, dict))
+    return claimed and not phrase_review_variants(judges, text)
+
+
+def drop_noise_phrase_reviews() -> int:
+    """Закрыть уже накопившиеся пустые придирки и пометить фразы проверенными.
+
+    Ночь теперь такие вопросы не задаёт, но в очереди владельца они уже лежат — и
+    каждый требует отдельного тапа, чтобы сказать «да нормальная фраза». Закрываем
+    разом, ровно по тому же правилу: кто-то заявил ошибку, а исправить нечего."""
+    closed = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "SELECT id, unit_id, text, judges FROM bt_3_phrase_review WHERE status = 'open';"
+            )
+            rows = cursor.fetchall() or []
+            for rid, unit_id, text, judges in rows:
+                if not phrase_review_is_noise(judges if isinstance(judges, list) else [], text):
+                    continue
+                cursor.execute(
+                    "UPDATE bt_3_phrase_review SET status = 'kept' WHERE id = %s;", (int(rid),)
+                )
+                cursor.execute(
+                    """INSERT INTO bt_3_phrase_check (unit_id, text_hash, verdict, checked_at)
+                       VALUES (%s, %s, 'ok', NOW())
+                       ON CONFLICT (unit_id) DO UPDATE
+                         SET text_hash = EXCLUDED.text_hash, verdict = 'ok', checked_at = NOW();""",
+                    (int(unit_id), phrase_check_text_hash(text)),
+                )
+                closed += 1
+        conn.commit()
+    logging.info("phrase review noise sweep: closed=%s", closed)
+    return int(closed)
+
+
+def count_noise_phrase_reviews() -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute("SELECT text, judges FROM bt_3_phrase_review WHERE status = 'open';")
+            rows = cursor.fetchall() or []
+    return sum(1 for text, judges in rows
+               if phrase_review_is_noise(judges if isinstance(judges, list) else [], text))
+
+
 def set_phrase_review_arbiter(review_id: int, verdict: dict) -> None:
     """Положить вердикт третейского судьи на открытую спорную фразу."""
     with get_db_connection_context() as conn:
@@ -22348,6 +22405,19 @@ def close_phrase_review(review_id: int, status: str) -> None:
         conn.commit()
 
 
+def _phrase_same_text(a: str, b: str) -> bool:
+    """Одно и то же ли это, если не считать точки и пробелов на концах.
+
+    Замер 08.08.2026 на живой очереди владельца: судья объявляет «неправильное
+    использование предлога am с jeden в дательном падеже» и выдаёт правкой ТУ ЖЕ фразу
+    плюс точку в конце. Кнопка «Принять» на такую правку не меняет ничего, но выглядит
+    как решение, и владелец справедливо назвал это издевательством. Точка на конце —
+    не грамматика падежа, поэтому такие «правки» считаем совпадением с исходным."""
+    def norm(v: str) -> str:
+        return " ".join(str(v or "").split()).strip(" .!?…,;:")
+    return norm(a) == norm(b)
+
+
 def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = None) -> list[dict]:
     """Все РАЗНЫЕ варианты правки, которые предложили судьи, по порядку судей.
 
@@ -22372,7 +22442,9 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
             continue
         for field in ("corrected", "proposal"):
             value = str(j.get(field) or "").strip()
-            if not value or value == original or value in seen:
+            if not value or _phrase_same_text(value, original) or value in seen:
+                continue
+            if any(_phrase_same_text(value, prev) for prev in seen):
                 continue
             seen.add(value)
             out.append({"judge": n, "field": field, "text": value})
@@ -22380,7 +22452,8 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
     # идёт последним, чтобы номера уже показанных вариантов не сдвинулись под рукой у
     # владельца: он мог смотреть на экран до того, как спор разрешили.
     better = str((arbiter or {}).get("better") or "").strip()
-    if better and better != original and better not in seen:
+    if (better and not _phrase_same_text(better, original)
+            and not any(_phrase_same_text(better, prev) for prev in seen)):
         out.append({"judge": 0, "field": "arbiter", "text": better})
     return out
 
