@@ -136,3 +136,74 @@ class NightlyPickerAdvancesTests(unittest.TestCase):
         left = src[src.index("def count_phrases_left_for_grammar_check"):][:1200]
         self.assertIn("AND c.unit_id IS NULL", pick)
         self.assertIn("AND c.unit_id IS NULL", left)
+
+
+# `better` намеренно НЕ совпадает ни с одним вариантом судей: если бы совпал, кнопка
+# осталась бы одна — так и задумано, дубли не плодим.
+ARBITER = {"winner": 1, "why": "Глагол пишется слитно.",
+           "better": "Er hat den Koffer hochbekommen"}
+DISPUTED = [dict(REVIEWS[0], arbiter=ARBITER)]
+
+
+class ArbiterTests(unittest.TestCase):
+    """Спор двух судей разрешает третий, и его слово должно совпадать с кнопками.
+
+    Владелец не обязан знать, пишется ли «hochbekommen» слитно. Две кнопки без
+    объяснения — это загадка, а не решение: он спросил «а как решить?!», и это был
+    честный вопрос к интерфейсу, а не к нему."""
+
+    def _payload(self, rows):
+        from backend.backend_server import _phrase_review_payload
+        with patch("backend.database.list_open_phrase_reviews", return_value=rows):
+            return _phrase_review_payload()
+
+    def test_winner_index_points_at_the_right_button(self):
+        item = self._payload(DISPUTED)["items"][0]
+        win = item["arbiter"]["winner_index"]
+        self.assertEqual(item["variants"][win]["text"], "Er hat hochbekommen")
+
+    def test_arbiters_own_text_goes_last_and_does_not_shift_the_others(self):
+        """Владелец мог смотреть на экран ДО того, как спор разрешили. Если бы вариант
+        третейского встал первым, «Принять 1» под его рукой стало бы другим текстом."""
+        before = self._payload(REVIEWS)["items"][0]["variants"]
+        after = self._payload(DISPUTED)["items"][0]["variants"]
+        self.assertEqual([v["text"] for v in after][:len(before)], [v["text"] for v in before])
+        self.assertEqual(after[-1]["text"], ARBITER["better"])
+        self.assertEqual(after[-1]["kind"], "arbiter")
+
+    def test_arbiters_text_equal_to_an_existing_one_does_not_duplicate(self):
+        same = {"winner": 2, "why": "…", "better": "Er hat es hochbekommen"}
+        item = self._payload([dict(REVIEWS[0], arbiter=same)])["items"][0]
+        texts = [v["text"] for v in item["variants"]]
+        self.assertEqual(len(texts), len(set(texts)))
+
+    def test_arbiter_variant_is_applied_by_the_same_number(self):
+        from backend.database import phrase_review_variants
+        item = self._payload(DISPUTED)["items"][0]
+        applied = phrase_review_variants(REVIEWS[0]["judges"], REVIEWS[0]["text"], ARBITER)
+        for v in item["variants"]:
+            self.assertEqual(v["text"], applied[v["index"]]["text"])
+
+
+class StaleConfirmationTests(unittest.TestCase):
+    """Подтверждение решения всегда про ПРЕДЫДУЩУЮ фразу — значит, обязано её называть.
+
+    Безымянное «✅ вопрос закрыт» висело посреди разбора уже следующей фразы, и прочесть
+    его иначе как решение по ней было нельзя. Владелец обвёл это на скриншоте."""
+
+    def test_banner_names_the_phrase_and_expires(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[2]
+               / "frontend/src/answer/PhraseReviewScreen.jsx").read_text(encoding="utf-8")
+        self.assertIn("frrev-done", src, "нет отдельного баннера о прошлом решении")
+        self.assertIn("{done.text}", src, "баннер не называет фразу, к которой относится")
+        self.assertIn("setTimeout(() => setDone(null)", src, "баннер не гаснет")
+
+    def test_decision_does_not_reuse_the_inline_note(self):
+        """Строка note живёт внутри разбора текущей фразы — решению там не место."""
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[2]
+               / "frontend/src/answer/PhraseReviewScreen.jsx").read_text(encoding="utf-8")
+        start = src.index("const applyResponse")
+        self.assertIn("setNote('')", src[start:start + 400],
+                      "подтверждение снова оседает в разборе следующей фразы")

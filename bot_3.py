@@ -11987,7 +11987,8 @@ def _build_phrase_review(items: list, idx: int, note: str = "") -> tuple:
     names = {"rechtschreibung": "опечатка", "kongruenz": "согласование", "kasus": "падеж",
              "praeposition": "предлог", "wortstellung": "порядок слов", "stil": "стиль"}
     from backend.database import phrase_review_variants
-    variants = phrase_review_variants(judges, it.get("text") or "")
+    arbiter = it.get("arbiter") if isinstance(it.get("arbiter"), dict) else None
+    variants = phrase_review_variants(judges, it.get("text") or "", arbiter)
     # вариант → его номер в списке кнопок, чтобы подписать его в тексте тем же числом
     slot_of = {v["text"]: n for n, v in enumerate(variants, 1)}
 
@@ -12020,6 +12021,21 @@ def _build_phrase_review(items: list, idx: int, note: str = "") -> tuple:
             slot = slot_of.get(text)
             tag = f"Вариант {slot}" if slot else label
             lines.append(f"    <b>{tag}</b> ({label}): <code>{_esc(text)}</code>")
+    win = None
+    if arbiter:
+        try:
+            w = int(arbiter.get("winner") or 0)
+            win = w - 1 if 1 <= w <= len(variants) else None
+        except (TypeError, ValueError):
+            win = None
+        head = "⚖️ <b>Третейский судья</b>"
+        if win is not None:
+            head += f" · прав вариант {win + 1}"
+        elif arbiter.get("better"):
+            head += " · оба мимо"
+        lines.append("\n" + head)
+        if arbiter.get("why"):
+            lines.append(f"    <i>{_esc(str(arbiter['why']))}</i>")
     all_ok = bool(judges) and all(str(j.get("verdict") or "") == "ok" for j in judges)
     if all_ok:
         lines.append("\n<i>Оба судьи говорят: ошибки нет. Править нечего — «Оставить как "
@@ -12031,8 +12047,14 @@ def _build_phrase_review(items: list, idx: int, note: str = "") -> tuple:
     rows: list[list] = []
     for n, v in enumerate(variants, 1):
         label = v["text"] if len(v["text"]) <= 42 else v["text"][:41] + "…"
+        mark = " ⭐" if win == n - 1 else ""
         rows.append([InlineKeyboardButton(
-            f"✅ Принять {n}: {label}", callback_data=f"pr:ok:{it['id']}:{idx}:{n - 1}")])
+            f"✅ Принять {n}{mark}: {label}", callback_data=f"pr:ok:{it['id']}:{idx}:{n - 1}")])
+    # Спор двух судей разрешает третий: владелец не обязан знать, пишется ли
+    # «hochbekommen» слитно, а две кнопки без объяснения — это загадка, а не решение.
+    if len(variants) > 1 and not arbiter:
+        rows.append([InlineKeyboardButton(
+            "⚖️ Судьи разошлись — кто прав?", callback_data=f"pr:who:{it['id']}:{idx}")])
     # «Оставить как есть» есть всегда. Без него разбор был тупиком: когда оба судьи
     # говорят «ошибки нет», принимать нечего, а из решений оставались только «удалить»
     # (то есть уничтожить верную фразу) и «пропустить», которое ничего не решает.
@@ -12113,7 +12135,31 @@ async def handle_phrase_review_callback(update: Update, context: CallbackContext
             "<i>Ответ придёт сюда же, в это сообщение.</i>",
             parse_mode="HTML")
         return
-    if action == "again":
+    if action == "who":
+        await query.answer("Спрашиваю третейского судью…")
+        from backend.database import (
+            get_open_phrase_review, phrase_review_variants, set_phrase_review_arbiter,
+        )
+        note = "⚠️ Третейский судья не ответил — попробуй ещё раз."
+        try:
+            row = await asyncio.to_thread(get_open_phrase_review, review_id)
+            vs = phrase_review_variants((row or {}).get("judges") or [],
+                                        (row or {}).get("text") or "") if row else []
+            if len(vs) > 1:
+                from backend.openai_manager import run_phrase_dispute_verdict
+                verdict = await asyncio.to_thread(
+                    run_phrase_dispute_verdict,
+                    text=row.get("text") or "", translation=row.get("translation") or "",
+                    variants=[v["text"] for v in vs], kind=row.get("kind") or "collocation",
+                )
+                if verdict:
+                    await asyncio.to_thread(set_phrase_review_arbiter, review_id, verdict)
+                    note = ""
+            else:
+                note = "⚠️ Спорить не о чем — вариант всего один."
+        except Exception:
+            logging.exception("phrase review arbiter failed id=%s", review_id)
+    elif action == "again":
         await query.answer("Спрашиваю судей заново…")
         from backend.phrase_night_check import rejudge_phrase_review
         try:

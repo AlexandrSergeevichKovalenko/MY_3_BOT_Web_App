@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 /**
  * Спорные фразы общего словаря (админ). Одна фраза на экран.
@@ -23,6 +23,11 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   const [idx, setIdx] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Подтверждение прошлого решения. Оно ВСЕГДА про предыдущую фразу, поэтому несёт её
+  // текст и само гаснет: пока оно висело просто «✅ вопрос закрыт» над уже следующей
+  // фразой, его нельзя было не прочитать как решение по ней.
+  const [done, setDone] = useState(null);   // { text, what }
+  const doneTimer = useRef(null);
   const [note, setNote] = useState('');
   const [own, setOwn] = useState('');
   const [typing, setTyping] = useState(false);
@@ -57,9 +62,17 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
 
   const card = queue[Math.min(idx, Math.max(0, queue.length - 1))] || null;
 
+  const flashDone = useCallback((phrase, what) => {
+    if (doneTimer.current) clearTimeout(doneTimer.current);
+    setDone({ text: phrase, what });
+    doneTimer.current = setTimeout(() => setDone(null), 5000);
+  }, []);
+
+  useEffect(() => () => { if (doneTimer.current) clearTimeout(doneTimer.current); }, []);
+
   const applyResponse = (r) => {
     setItems(r.items || []);
-    setNote(r.note ? `✅ ${r.note}` : '');
+    setNote('');
     setOwn('');
     // Список сдвинулся на одну — остаёмся на той же позиции, то есть на следующей
     // фразе. Прыжок в начало заставлял бы каждый раз искать, где ты был.
@@ -70,10 +83,12 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
     if (!card || busy) return;
     setBusy(true); setError('');
     try {
+      const was = card.text;
       const r = await api('/api/answer/phrasereview/decide',
         { review_id: card.id, decision, ...extra });
       haptic?.('ok');
       applyResponse(r);
+      flashDone(was, r.note || 'Готово.');
     } catch (e) {
       console.warn('[phrasereview] decide', e);
       haptic?.('bad');
@@ -91,6 +106,19 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
       console.warn('[phrasereview] rejudge', e);
       setNote('');
       setError(e?.message || 'Судьи не ответили. Попробуйте ещё раз.');
+    } finally { setBusy(false); }
+  };
+
+  const settle = async () => {
+    if (!card || busy) return;
+    setBusy(true); setError(''); setNote('⚖️ Спрашиваю третейского судью…');
+    try {
+      const r = await api('/api/answer/phrasereview/settle', { review_id: card.id });
+      applyResponse(r);
+    } catch (e) {
+      console.warn('[phrasereview] settle', e);
+      setNote('');
+      setError(e?.message || 'Третейский судья не ответил. Попробуйте ещё раз.');
     } finally { setBusy(false); }
   };
 
@@ -133,12 +161,20 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   const variants = card.variants || [];
   const position = Math.min(idx, queue.length - 1) + 1;
 
+  const arbiter = card.arbiter || null;
+
   return (
     <div className={`pinw${typing ? ' typing' : ''}`}>
       <div className="pinw-top pinw-top-row">
         <span className="pinw-title">📝 Спорные фразы</span>
         <span className="pinw-count">{position} из {queue.length}</span>
       </div>
+
+      {done ? (
+        <div className="frrev-done">
+          ✅ «{done.text}» — {done.what.replace(/^Фраза /, '').toLowerCase()}
+        </div>
+      ) : null}
 
       <div className="frrev-scroll">
         <div className="frrev-phrase">{card.text}</div>
@@ -172,6 +208,17 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
           ))}
         </div>
 
+        {arbiter ? (
+          <div className="frrev-arbiter">
+            <div className="frrev-arbiter-head">
+              ⚖️ Третейский судья
+              {arbiter.winner_index != null ? ` · прав вариант ${arbiter.winner_index + 1}` : ''}
+              {arbiter.winner_index == null && arbiter.better ? ' · оба мимо' : ''}
+            </div>
+            {arbiter.why ? <div className="frrev-arbiter-why">{arbiter.why}</div> : null}
+          </div>
+        ) : null}
+
         {!variants.length && card.all_ok ? (
           <div className="frrev-allok">
             Оба судьи говорят: ошибки нет. Править нечего — оставь фразу как есть,
@@ -190,14 +237,32 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
       </div>
 
       <div className="pinw-bar">
-        {variants.map((v) => (
-          <button key={v.index} className="ans-btn frrev-accept" disabled={busy}
-            onClick={() => decide('accept', { variant: v.index })}>
-            <span className="frrev-accept-no">✅ Принять {v.index + 1}</span>
-            <span className="frrev-accept-text">{v.text}</span>
-            <span className="frrev-accept-kind">судья {v.judge} · {KIND_LABEL[v.kind]}</span>
+        {variants.map((v) => {
+          const picked = arbiter && arbiter.winner_index === v.index;
+          return (
+            <button key={v.index}
+              className={`ans-btn frrev-accept${picked ? ' frrev-accept-picked' : ''}`}
+              disabled={busy} onClick={() => decide('accept', { variant: v.index })}>
+              <span className="frrev-accept-no">
+                ✅ Принять {v.index + 1}{picked ? ' · рекомендую' : ''}
+              </span>
+              <span className="frrev-accept-text">{v.text}</span>
+              <span className="frrev-accept-kind">
+                {v.kind === 'arbiter'
+                  ? 'третейский судья · свой вариант'
+                  : `судья ${v.judge} · ${KIND_LABEL[v.kind]}`}
+              </span>
+            </button>
+          );
+        })}
+
+        {/* Спор двух судей разрешает третий. Владелец не обязан знать, пишется ли
+            «hochbekommen» слитно, — две кнопки без объяснения это та же загадка. */}
+        {variants.length > 1 && !arbiter ? (
+          <button className="ans-btn-ghost" disabled={busy} onClick={settle}>
+            ⚖️ Судьи разошлись — кто прав?
           </button>
-        ))}
+        ) : null}
 
         {/* «Оставить как есть» есть всегда: даже когда варианты предложены, владелец
             вправе не согласиться с судьями. Когда оба сказали «ошибки нет», принимать

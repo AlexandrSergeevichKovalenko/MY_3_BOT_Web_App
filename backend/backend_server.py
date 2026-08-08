@@ -29908,7 +29908,8 @@ def _phrase_review_payload(limit: int = 200) -> dict:
     items = []
     for it in list_open_phrase_reviews(int(limit)):
         judges = it.get("judges") or []
-        variants = phrase_review_variants(judges, it.get("text") or "")
+        arbiter = it.get("arbiter") if isinstance(it.get("arbiter"), dict) else None
+        variants = phrase_review_variants(judges, it.get("text") or "", arbiter)
         slot_of = {v["text"]: n for n, v in enumerate(variants)}
         items.append({
             "id": it["id"],
@@ -29916,9 +29917,18 @@ def _phrase_review_payload(limit: int = 200) -> dict:
             "translation": it.get("translation") or "",
             "all_ok": bool(judges) and all(
                 str(j.get("verdict") or "") == "ok" for j in judges),
+            # Вердикт третейского: победивший вариант отдаём НОМЕРОМ той же нумерации,
+            # что у кнопок, — иначе «прав второй» и кнопка «Принять 2» разъедутся.
+            "arbiter": ({
+                "why": str(arbiter.get("why") or ""),
+                "winner_index": (int(arbiter.get("winner")) - 1
+                                 if 1 <= int(arbiter.get("winner") or 0) <= len(variants) else None),
+                "better": str(arbiter.get("better") or ""),
+            } if arbiter else None),
             "variants": [
                 {"index": n, "judge": v["judge"], "text": v["text"],
-                 "kind": "fix" if v["field"] == "corrected" else "complete"}
+                 "kind": {"corrected": "fix", "proposal": "complete"}.get(
+                     v["field"], v["field"])}
                 for n, v in enumerate(variants)
             ],
             "judges": [
@@ -29991,6 +30001,49 @@ def answer_phrase_review_decide():
         note = "Не записал: такая фраза уже есть в словаре. Снял с разбора."
     return jsonify({"ok": True, "result": decision, "note": note,
                     "text": result.get("text") or "", **_phrase_review_payload()})
+
+
+@app.route("/api/answer/phrasereview/settle", methods=["POST"])
+def answer_phrase_review_settle():
+    """Спросить третейского судью, кто из двоих прав.
+
+    Спор двух моделей — не работа владельца: он не обязан знать, пишется ли
+    «hochbekommen» слитно. Третий судья видит ОБА варианта разом (первые двое судят
+    вслепую и независимо — в этом смысл двойной проверки) и объясняет разницу
+    по-русски. Один запрос на фразу, по нажатию; вердикт сохраняется, чтобы за тот же
+    ответ не платить дважды."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        review_id = int(payload.get("review_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "нет фразы"}), 400
+
+    from backend.database import (
+        get_open_phrase_review, phrase_review_variants, set_phrase_review_arbiter,
+    )
+    row = get_open_phrase_review(review_id)
+    if not row:
+        return jsonify({"error": "Фраза уже разобрана."}), 404
+    variants = phrase_review_variants(row.get("judges") or [], row.get("text") or "")
+    if len(variants) < 2:
+        return jsonify({"error": "Спорить не о чем — вариант всего один."}), 400
+
+    from backend.openai_manager import run_phrase_dispute_verdict
+    try:
+        verdict = run_phrase_dispute_verdict(
+            text=row.get("text") or "", translation=row.get("translation") or "",
+            variants=[v["text"] for v in variants], kind=row.get("kind") or "collocation",
+        )
+    except Exception:
+        logging.warning("phrasereview: settle failed id=%s", review_id, exc_info=True)
+        verdict = {}
+    if not verdict:
+        return jsonify({"error": "Третейский судья не ответил. Попробуйте ещё раз."}), 503
+    set_phrase_review_arbiter(review_id, verdict)
+    return jsonify({"ok": True, **_phrase_review_payload()})
 
 
 @app.route("/api/answer/phrasereview/rejudge", methods=["POST"])

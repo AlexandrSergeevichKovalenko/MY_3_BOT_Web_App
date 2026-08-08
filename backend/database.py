@@ -22148,6 +22148,12 @@ def _ensure_phrase_check_tables(cursor) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_phrase_review_open "
         "ON bt_3_phrase_review (unit_id) WHERE status = 'open';"
     )
+    # Вердикт третейского судьи по спору двух первых: {winner, why, better}. Хранится,
+    # а не пересчитывается: спор разрешается за деньги, и второй раз платить за тот же
+    # ответ незачем — владелец может вернуться к фразе через день.
+    cursor.execute(
+        "ALTER TABLE bt_3_phrase_review ADD COLUMN IF NOT EXISTS arbiter JSONB;"
+    )
 
 
 def phrase_check_text_hash(text: str) -> str:
@@ -22266,14 +22272,28 @@ def list_open_phrase_reviews(limit: int = 200) -> list[dict]:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
             cursor.execute(
-                """SELECT id, unit_id, text, translation, judges FROM bt_3_phrase_review
+                """SELECT id, unit_id, text, translation, judges, arbiter
+                   FROM bt_3_phrase_review
                    WHERE status = 'open' ORDER BY id LIMIT %s;""",
                 (int(limit),),
             )
             rows = cursor.fetchall()
     return [{"id": int(r[0]), "unit_id": int(r[1]), "text": r[2],
-             "translation": r[3] or "", "judges": r[4] if isinstance(r[4], list) else []}
+             "translation": r[3] or "", "judges": r[4] if isinstance(r[4], list) else [],
+             "arbiter": r[5] if isinstance(r[5], dict) else None}
             for r in rows]
+
+
+def set_phrase_review_arbiter(review_id: int, verdict: dict) -> None:
+    """Положить вердикт третейского судьи на открытую спорную фразу."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "UPDATE bt_3_phrase_review SET arbiter = %s WHERE id = %s AND status = 'open';",
+                (json.dumps(verdict or {}, ensure_ascii=False), int(review_id)),
+            )
+        conn.commit()
 
 
 def count_open_phrase_reviews() -> int:
@@ -22289,7 +22309,7 @@ def get_open_phrase_review(review_id: int) -> dict | None:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
             cursor.execute(
-                """SELECT r.id, r.unit_id, r.text, r.translation, r.judges, u.kind
+                """SELECT r.id, r.unit_id, r.text, r.translation, r.judges, u.kind, r.arbiter
                    FROM bt_3_phrase_review r
                    LEFT JOIN bt_3_lex_units u ON u.id = r.unit_id
                    WHERE r.id = %s AND r.status = 'open';""",
@@ -22300,7 +22320,8 @@ def get_open_phrase_review(review_id: int) -> dict | None:
         return None
     return {"id": int(row[0]), "unit_id": int(row[1]), "text": row[2],
             "translation": row[3] or "", "judges": row[4] if isinstance(row[4], list) else [],
-            "kind": str(row[5] or "collocation")}
+            "kind": str(row[5] or "collocation"),
+            "arbiter": row[6] if isinstance(row[6], dict) else None}
 
 
 def update_phrase_review_judges(review_id: int, judges: list) -> None:
@@ -22327,7 +22348,7 @@ def close_phrase_review(review_id: int, status: str) -> None:
         conn.commit()
 
 
-def phrase_review_variants(judges: list, text: str = "") -> list[dict]:
+def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = None) -> list[dict]:
     """Все РАЗНЫЕ варианты правки, которые предложили судьи, по порядку судей.
 
     Судей двое, и они часто расходятся — ровно поэтому фраза и попала владельцу. Пока
@@ -22355,6 +22376,12 @@ def phrase_review_variants(judges: list, text: str = "") -> list[dict]:
                 continue
             seen.add(value)
             out.append({"judge": n, "field": field, "text": value})
+    # Третейский судья может предложить СВОЙ текст — когда правы оба наполовину. Он
+    # идёт последним, чтобы номера уже показанных вариантов не сдвинулись под рукой у
+    # владельца: он мог смотреть на экран до того, как спор разрешили.
+    better = str((arbiter or {}).get("better") or "").strip()
+    if better and better != original and better not in seen:
+        out.append({"judge": 0, "field": "arbiter", "text": better})
     return out
 
 
@@ -22382,13 +22409,15 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
             cursor.execute(
-                "SELECT unit_id, text, judges FROM bt_3_phrase_review WHERE id = %s AND status = 'open';",
+                """SELECT unit_id, text, judges, arbiter FROM bt_3_phrase_review
+                   WHERE id = %s AND status = 'open';""",
                 (int(review_id),),
             )
             row = cursor.fetchone()
             if not row:
                 return result
             unit_id, old_text, judges = int(row[0]), row[1], (row[2] if isinstance(row[2], list) else [])
+            arbiter = row[3] if isinstance(row[3], dict) else None
             result["unit_id"] = unit_id
 
             if decision == "keep":
@@ -22426,7 +22455,7 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 return result
 
             if decision == "accept":
-                variants = phrase_review_variants(judges, old_text)
+                variants = phrase_review_variants(judges, old_text, arbiter)
                 idx = int(variant or 0)
                 new_text = variants[idx]["text"] if 0 <= idx < len(variants) else ""
             else:

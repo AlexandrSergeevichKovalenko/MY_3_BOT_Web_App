@@ -2419,3 +2419,20 @@ html[data-scheme="light"] .ans-toast.ok    { color: #14532D; background: #DCFCE7
 .frrev-accept-kind { font-size: 0.6875rem; opacity: 0.75; }
 .frrev-allok { font-size: 0.8125rem; color: #16A34A; }
 .frrev-keep { background: #16A34A; box-shadow: 0 8px 20px rgba(22,163,74,0.3); }
+
+/* Подтверждение прошлого решения. Стоит НАД фразой и несёт её текст: пока оно висело
+   безымянным «✅ вопрос закрыт» посреди разбора уже следующей фразы, прочитать его
+   иначе как решение по ней было нельзя. Гаснет само. */
+.frrev-done {
+  flex: 0 0 auto; font-size: 0.8125rem; color: #16A34A;
+  border: 1px solid rgba(22,163,74,0.35); border-radius: 0.75rem;
+  background: rgba(22,163,74,0.10); padding: 0.375rem 0.625rem;
+}
+.frrev-arbiter {
+  border: 1px solid rgba(37,99,235,0.45); border-radius: 0.75rem;
+  background: rgba(37,99,235,0.10); padding: 0.5rem 0.625rem;
+  display: flex; flex-direction: column; gap: 0.25rem;
+}
+.frrev-arbiter-head { font-size: 0.8125rem; font-weight: 800; color: #2563EB; }
+.frrev-arbiter-why { font-size: 0.875rem; line-height: 1.45; color: var(--dmps-text-primary, #F8FAFC); }
+.frrev-accept-picked { box-shadow: 0 0 0 2px #FBBF24, 0 8px 20px rgba(37,99,235,0.3); }
