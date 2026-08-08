@@ -234,3 +234,61 @@ class ScreenFitsOneScreenTests(unittest.TestCase):
         src = self._src("PhraseReviewScreen.jsx")
         self.assertIn("frrev-sweep", src)
         self.assertIn("dropnoise", src, "нельзя убрать пустые придирки одним нажатием")
+
+
+class AskOnTheScreenTests(unittest.TestCase):
+    """Вопрос про фразу задаётся там же, где по ней принимается решение.
+
+    Владельцу пришлось уйти в другое приложение, чтобы выяснить, что «Wappnen mit» и
+    «Wappnen gegen» — разные значения, а не ошибка. Ответ он получил верный, а экран
+    его к этому вопросу даже не подпускал."""
+
+    def test_endpoint_feeds_the_saved_meaning_into_the_answer(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[1] / "backend_server.py").read_text(encoding="utf-8")
+        start = src.index("def answer_phrase_review_ask")
+        block = src[start:src.index("\n@app.route", start)]
+        self.assertIn("row['translation']", block,
+                      "ответ будет таким же слепым, как был вердикт")
+        self.assertIn("run_quick_ask", block)
+
+    def test_screen_has_the_ask_field(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[2]
+               / "frontend/src/answer/PhraseReviewScreen.jsx").read_text(encoding="utf-8")
+        self.assertIn("phrasereview/ask", src)
+        self.assertIn("❓ Спросить", src)
+
+    def test_answer_does_not_survive_into_the_next_phrase(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[2]
+               / "frontend/src/answer/PhraseReviewScreen.jsx").read_text(encoding="utf-8")
+        start = src.index("const applyResponse")
+        self.assertIn("setAnswer('')", src[start:start + 500],
+                      "ответ про прошлую фразу останется висеть над новой")
+
+
+class VariantTranslationTests(unittest.TestCase):
+    """У предложенной замены обязан быть перевод: иначе не видно, сохранил ли судья
+    смысл сохранённой фразы или подменил его другим управлением глагола."""
+
+    def test_variant_carries_its_russian(self):
+        from backend.database import phrase_review_variants
+        got = phrase_review_variants([
+            {"verdict": "error", "category": "praeposition", "corrected": "Wappnen gegen",
+             "corrected_ru": "вооружиться против чего-то", "why": "…"},
+        ], "Wappnen mit")
+        self.assertEqual(got[0]["ru"], "вооружиться против чего-то")
+
+    def test_payload_passes_it_to_the_button(self):
+        from backend.backend_server import _phrase_review_payload
+        rows = [{"id": 1, "unit_id": 2, "text": "Wappnen mit",
+                 "translation": "запастись чем-то",
+                 "judges": [{"verdict": "error", "category": "praeposition",
+                             "corrected": "Wappnen gegen",
+                             "corrected_ru": "вооружиться против", "why": "…"}],
+                 "arbiter": None}]
+        with patch("backend.database.list_open_phrase_reviews", return_value=rows):
+            item = _phrase_review_payload()["items"][0]
+        self.assertEqual(item["variants"][0]["ru"], "вооружиться против")
+        self.assertEqual(item["judges"][0]["corrected_ru"], "вооружиться против")

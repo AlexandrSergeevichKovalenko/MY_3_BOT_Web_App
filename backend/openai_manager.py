@@ -8687,7 +8687,8 @@ def run_quick_correct(*, text: str, source_lang: str = "") -> str:
 PHRASE_HARD_ERRORS = {"rechtschreibung", "kongruenz", "kasus", "praeposition"}
 
 
-def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence") -> dict:
+def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence",
+                               translation: str = "") -> dict:
     """Грамматический вердикт по немецкой ФРАЗЕ — с учётом того, ЧЕМ она является.
 
     Зачем отдельно от `run_quick_correct`. Тот спрашивает «исправь слово» и на фразе
@@ -8696,12 +8697,23 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence") -> dict:
     самостоятельный вопрос требует глагол на втором месте, а как придаточное написано
     верно. Одна и та же строка, разный вердикт.
 
+    Почему сюда передаётся ПЕРЕВОД. Предлог в немецком выбирается по смыслу, а не сам
+    по себе: `sich mit etw. wappnen` — вооружиться ЧЕМ (средством), `sich gegen etw.
+    wappnen` — вооружиться ПРОТИВ чего (угрозы). Верны оба. Судья, который видит только
+    немецкую строку, берёт более частое управление и объявляет ошибкой другое: на
+    «Wappnen mit» с переводом «запастись чем-то, вооружаться аргументами» оба судьи
+    независимо потребовали `gegen` — и оба были неправы, потому что смысла не видели
+    (разобрано с владельцем 08.08.2026). Русский перевод и есть контекст, поэтому он
+    передаётся судье и судить надо ПОД НЕГО.
+
     Поэтому сюда передаётся `kind` из слоя слов:
       "sentence"    — судим как самостоятельное предложение (порядок слов применим);
       "collocation" — судим как оборот (порядок слов НЕ применим, но падеж,
                       согласование и предлог применимы).
 
-    Возвращает {"verdict","category","corrected","why"}:
+    Возвращает {"verdict","category","corrected","corrected_ru","proposal","proposal_ru","why"}:
+      *_ru      — перевод СВОЕГО предложения на русский. Без него владелец не может
+                  понять, сохранил ли судья смысл его фразы или подменил его;
       verdict  — "ok" | "error" | "context" (зависит от того, откуда фраза вырвана)
                  | "style" (вопрос вкуса, не ошибка);
       why      — одна строка по-русски, для отчёта владельцу.
@@ -8716,6 +8728,22 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence") -> dict:
     as_what = ("a COMPLETE standalone German sentence"
                if str(kind or "").lower() == "sentence"
                else "a German phrase / fragment (NOT a full sentence)")
+    meaning = str(translation or "").strip()
+    meaning_rule = (
+        "- The learner also saved what this MEANS in Russian: \"" + meaning[:200] + "\". "
+        "That meaning is the CONTEXT and it decides the case, the preposition and the "
+        "verb government. German often allows several prepositions with the SAME verb "
+        "for DIFFERENT meanings (sich mit etw. wappnen = arm oneself WITH something; "
+        "sich gegen etw. wappnen = arm oneself AGAINST something) - both are correct "
+        "German. Judge the text against the saved meaning ONLY. If the text is correct "
+        "for THAT meaning, answer verdict=\"ok\", even when a different preposition "
+        "would be more frequent in some other meaning. Never rewrite the text into "
+        "something that means something else.\n"
+        if meaning else
+        "- No Russian meaning was saved for this entry. Since the preposition and the "
+        "case depend on the intended meaning, do NOT call a preposition wrong unless it "
+        "is impossible in every reading; when in doubt answer verdict=\"context\".\n"
+    )
     system = (
         "You are a strict German grammar examiner. You are given " + as_what + " that a "
         "learner saved into a dictionary. Decide whether it is grammatically correct AS SUCH.\n"
@@ -8725,6 +8753,7 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence") -> dict:
         "verdict=\"context\": a fragment torn out of a sentence may look reordered.\n"
         "- If it is merely a matter of preference or a different but equally correct "
         "wording, answer verdict=\"style\".\n"
+        + meaning_rule +
         "- Colloquial but attested German is CORRECT. Do not standardise it.\n"
         "- IGNORE punctuation at the very END of the text: a missing (or extra) final "
         "full stop, question or exclamation mark is NOT an error. This is a dictionary "
@@ -8744,9 +8773,14 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence") -> dict:
         "well-formed, repeat it in `proposal`. Never leave `proposal` empty while "
         "complaining that something is missing - naming the defect without showing the fix "
         "is useless to the reader.\n"
+        "- Whenever you return `corrected` or `proposal`, ALSO translate YOUR OWN text "
+        "into Russian in `corrected_ru` / `proposal_ru`. The reader must be able to see "
+        "whether your fix still means what the learner saved, or whether you quietly "
+        "changed the meaning.\n"
         "Answer STRICT JSON only: {\"verdict\":\"ok|error|context|style\","
         "\"category\":\"rechtschreibung|kongruenz|kasus|praeposition|wortstellung|stil|\","
-        "\"corrected\":\"<fixed text or empty>\",\"proposal\":\"<complete German text or empty>\","
+        "\"corrected\":\"<fixed text or empty>\",\"corrected_ru\":\"<RUSSIAN or empty>\","
+        "\"proposal\":\"<complete German text or empty>\",\"proposal_ru\":\"<RUSSIAN or empty>\","
         "\"why\":\"<one short sentence in RUSSIAN>\"}"
     )
     try:
@@ -8755,7 +8789,8 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence") -> dict:
             model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": json.dumps({"text": t, "kind": kind}, ensure_ascii=False)},
+                {"role": "user", "content": json.dumps(
+                    {"text": t, "kind": kind, "meaning_ru": meaning}, ensure_ascii=False)},
             ],
             temperature=0,
             response_format={"type": "json_object"},
@@ -8782,7 +8817,9 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence") -> dict:
         "verdict": str(data.get("verdict") or "ok").strip().lower(),
         "category": str(data.get("category") or "").strip().lower(),
         "corrected": str(data.get("corrected") or "").strip(),
+        "corrected_ru": str(data.get("corrected_ru") or "").strip(),
         "proposal": str(data.get("proposal") or "").strip(),
+        "proposal_ru": str(data.get("proposal_ru") or "").strip(),
         "why": str(data.get("why") or "").strip(),
     }
     # Ответ не в том алфавите — модель перевела вместо разбора; такому верить нельзя.
@@ -8795,6 +8832,10 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence") -> dict:
     # Достройка совпала с самим текстом или с правкой — второй кнопки быть не должно.
     if out["proposal"] in (t, out["corrected"]):
         out["proposal"] = ""
+    if not out["corrected"]:
+        out["corrected_ru"] = ""
+    if not out["proposal"]:
+        out["proposal_ru"] = ""
     return out
 
 
@@ -8834,12 +8875,19 @@ def run_phrase_dispute_verdict(*, text: str, variants: list, translation: str = 
         "- If none of them is right, set winner=0 and put the correct text in `better`.\n"
         "- If the winning proposal is right but still incomplete (a missing pronoun, "
         "object or article), put the complete version in `better` as well.\n"
+        "- The learner's Russian meaning is the CONTEXT and it decides the preposition "
+        "and the case. German allows different prepositions with the same verb for "
+        "DIFFERENT meanings, and both are correct German. If the ORIGINAL text is right "
+        "for the saved meaning and the examiners simply did not look at it, say so "
+        "plainly in `why`, set winner=0 and leave `better` empty.\n"
+        "- Translate your own `better` into Russian in `better_ru`, so the reader sees "
+        "whether it still means what was saved.\n"
         "- `why` is ONE short paragraph in RUSSIAN, in plain words, for a non-linguist: "
         "say what actually differs between the proposals and why the winner is right. "
         "Name the rule in plain Russian, never in grammar jargon alone. Do not restate "
         "the proposals - the reader already sees them.\n"
         "Answer STRICT JSON only: {\"winner\":<int>,\"why\":\"<RUSSIAN>\","
-        "\"better\":\"<German text or empty>\"}"
+        "\"better\":\"<German text or empty>\",\"better_ru\":\"<RUSSIAN or empty>\"}"
     )
     payload = {"text": t, "kind": kind, "meaning_ru": str(translation or ""),
                "proposals": clean}
@@ -8888,7 +8936,8 @@ def run_phrase_dispute_verdict(*, text: str, variants: list, translation: str = 
     why = str(data.get("why") or "").strip()
     if not why and not winner and not better:
         return {}
-    return {"winner": winner, "why": why, "better": better}
+    return {"winner": winner, "why": why, "better": better,
+            "better_ru": (str(data.get("better_ru") or "").strip() if better else "")}
 
 
 def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", forbid: str = "",
