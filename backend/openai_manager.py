@@ -8790,6 +8790,99 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence") -> dict:
     return out
 
 
+def run_phrase_dispute_verdict(*, text: str, variants: list, translation: str = "",
+                               kind: str = "collocation") -> dict:
+    """Третейский судья: два первых разошлись — кто из них прав и почему.
+
+    Зачем. Спор двух судей — не работа владельца. Он не обязан знать, пишется ли
+    «hochbekommen» слитно; ему показали две кнопки и оставили гадать, а это ровно то же
+    самое, что вывалить на человека сырой вердикт модели. Здесь спрашивается третий,
+    и ему показаны ОБА варианта разом — в отличие от первых двух, которые судили
+    вслепую и независимо (в этом весь смысл двух судей: совпали — правим молча).
+
+    Объяснение — по-русски и человеческим языком: владелец читает его, чтобы принять
+    решение, а не чтобы сверить термины.
+
+    Возвращает {"winner": <номер варианта с 1 или 0>, "why": "<по-русски>",
+                "better": "<свой текст или пусто>"}.
+    `winner` = 0 значит «оба мимо» — тогда смотреть надо на `better`.
+    """
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    t = str(text or "").strip()
+    clean = [str(v or "").strip() for v in (variants or []) if str(v or "").strip()]
+    if not api_key or not t or not clean:
+        return {}
+    as_what = ("a COMPLETE standalone German sentence"
+               if str(kind or "").lower() == "sentence"
+               else "a German phrase / fragment (NOT a full sentence)")
+    numbered = "\n".join(f"{i}. {v}" for i, v in enumerate(clean, 1))
+    system = (
+        "You are a senior German grammar arbiter. Two independent examiners disagreed "
+        "about how to correct " + as_what + " a learner saved into a dictionary. "
+        "You see BOTH proposals and must settle it.\n"
+        "- Pick the ONE proposal that is correct standard German for this text. Put its "
+        "number in `winner`.\n"
+        "- If none of them is right, set winner=0 and put the correct text in `better`.\n"
+        "- If the winning proposal is right but still incomplete (a missing pronoun, "
+        "object or article), put the complete version in `better` as well.\n"
+        "- `why` is ONE short paragraph in RUSSIAN, in plain words, for a non-linguist: "
+        "say what actually differs between the proposals and why the winner is right. "
+        "Name the rule in plain Russian, never in grammar jargon alone. Do not restate "
+        "the proposals - the reader already sees them.\n"
+        "Answer STRICT JSON only: {\"winner\":<int>,\"why\":\"<RUSSIAN>\","
+        "\"better\":\"<German text or empty>\"}"
+    )
+    payload = {"text": t, "kind": kind, "meaning_ru": str(translation or ""),
+               "proposals": clean}
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=25)
+        resp = client.chat.completions.create(
+            model="gpt-4.1",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)
+                                            + "\n\nProposals:\n" + numbered},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        logging.warning("run_phrase_dispute_verdict failed text=%s", t[:64], exc_info=True)
+        return {}
+    try:
+        u = getattr(resp, "usage", None)
+        if u:
+            _LAST_LLM_USAGE.set({
+                "model": "gpt-4.1",
+                "prompt_tokens": int(getattr(u, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(u, "total_tokens", 0) or 0),
+            })
+    except Exception:
+        pass
+    try:
+        data = json.loads(resp.choices[0].message.content or "{}") or {}
+    except Exception:
+        return {}
+    try:
+        winner = int(data.get("winner") or 0)
+    except (TypeError, ValueError):
+        winner = 0
+    if winner < 0 or winner > len(clean):
+        winner = 0
+    better = str(data.get("better") or "").strip()
+    # Разбор не на том языке — модель ушла в перевод; такому верить нельзя.
+    if better and _has_cyrillic(better):
+        better = ""
+    if better == t or better in clean:
+        better = ""
+    why = str(data.get("why") or "").strip()
+    if not why and not winner and not better:
+        return {}
+    return {"winner": winner, "why": why, "better": better}
+
+
 def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", forbid: str = "",
                       sibling: str = "", sibling_meaning: str = "", stands_for: str = "",
                       mime: str = "image/png") -> dict:
