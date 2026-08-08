@@ -29952,13 +29952,20 @@ def _phrase_review_payload(limit: int = 200) -> dict:
                 for n, j in enumerate(judges, 1)
             ],
         })
-    from backend.database import count_noise_phrase_reviews
+    from backend.database import (
+        count_noise_phrase_reviews, list_open_phrase_reviews_judged_blind,
+    )
     try:
         noise = count_noise_phrase_reviews()
     except Exception:
         logging.debug("phrasereview: noise count failed", exc_info=True)
         noise = 0
-    return {"items": items, "total": len(items), "noise": noise}
+    try:
+        blind = len(list_open_phrase_reviews_judged_blind(500))
+    except Exception:
+        logging.debug("phrasereview: blind count failed", exc_info=True)
+        blind = 0
+    return {"items": items, "total": len(items), "noise": noise, "blind": blind}
 
 
 @app.route("/api/answer/phrasereview/list", methods=["POST"])
@@ -30106,8 +30113,8 @@ def answer_phrase_review_settle():
     if not row:
         return jsonify({"error": "Фраза уже разобрана."}), 404
     variants = phrase_review_variants(row.get("judges") or [], row.get("text") or "")
-    if len(variants) < 2:
-        return jsonify({"error": "Спорить не о чем — вариант всего один."}), 400
+    if not variants:
+        return jsonify({"error": "Спорить не о чем — судьи ничего не предложили."}), 400
 
     from backend.openai_manager import run_phrase_dispute_verdict
     try:
@@ -30122,6 +30129,27 @@ def answer_phrase_review_settle():
         return jsonify({"error": "Третейский судья не ответил. Попробуйте ещё раз."}), 503
     set_phrase_review_arbiter(review_id, verdict)
     return jsonify({"ok": True, **_phrase_review_payload()})
+
+
+@app.route("/api/answer/phrasereview/rejudgeall", methods=["POST"])
+def answer_phrase_review_rejudge_all():
+    """Пересудить разом всё, что судилось без перевода.
+
+    До 08.08.2026 судья видел только немецкую строку, а предлог и падеж выбираются по
+    смыслу — значит все накопленные вердикты слепые. Пересуживать их по одному это
+    десятки нажатий, поэтому одна кнопка на всю очередь."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    from backend.phrase_night_check import rejudge_open_phrase_reviews
+    try:
+        stats = rejudge_open_phrase_reviews(60)
+    except Exception:
+        logging.warning("phrasereview: rejudge all failed", exc_info=True)
+        return jsonify({"error": "Судьи не ответили. Попробуйте ещё раз."}), 503
+    note = (f"Пересудил со смыслом: {stats['rejudged']}."
+            + (f" Не ответили: {stats['failed']}." if stats.get("failed") else ""))
+    return jsonify({"ok": True, "note": note, **stats, **_phrase_review_payload()})
 
 
 @app.route("/api/answer/phrasereview/rejudge", methods=["POST"])

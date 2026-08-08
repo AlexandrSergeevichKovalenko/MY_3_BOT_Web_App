@@ -22331,6 +22331,32 @@ def drop_noise_phrase_reviews() -> int:
     return int(closed)
 
 
+def phrase_review_was_judged_blind(judges: list) -> bool:
+    """Судился ли этот вопрос ДО того, как судья стал видеть перевод.
+
+    Метка точная, а не по дате: судья с новым промптом всегда возвращает ключ
+    `corrected_ru` — хотя бы пустым. Старые вердикты этого ключа не имеют вовсе.
+    Такие вердикты слепые: предлог и падеж выбираются по смыслу, а смысла судья не
+    видел, и «Wappnen mit» («запастись чем-то») ему пришлось судить наугад."""
+    for j in (judges or []):
+        if isinstance(j, dict) and "corrected_ru" not in j:
+            return True
+    return False
+
+
+def list_open_phrase_reviews_judged_blind(limit: int = 200) -> list[int]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "SELECT id, judges FROM bt_3_phrase_review WHERE status = 'open' ORDER BY id;"
+            )
+            rows = cursor.fetchall() or []
+    out = [int(rid) for rid, judges in rows
+           if phrase_review_was_judged_blind(judges if isinstance(judges, list) else [])]
+    return out[:int(limit)]
+
+
 def count_noise_phrase_reviews() -> int:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

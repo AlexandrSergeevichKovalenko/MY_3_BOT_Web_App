@@ -96,6 +96,29 @@ def rejudge_phrase_review(review_id: int) -> bool:
     return True
 
 
+def rejudge_open_phrase_reviews(limit: int = 60) -> dict:
+    """Пересудить разом открытые вопросы, которые судились БЕЗ перевода.
+
+    До 08.08.2026 судья видел только немецкую строку и выбирал более частое управление:
+    «Wappnen mit» («запастись чем-то») оба судьи независимо потребовали переписать на
+    `gegen` — и оба ошиблись. Все накопленные вердикты слепые, и по одному их
+    пересуживать — это десятки нажатий. Идём в несколько потоков, как ночью."""
+    from backend.database import list_open_phrase_reviews_judged_blind
+
+    ids = list_open_phrase_reviews_judged_blind(int(limit))
+    out = {"picked": len(ids), "rejudged": 0, "failed": 0}
+    if not ids:
+        return out
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        for ok in pool.map(rejudge_phrase_review, ids):
+            if ok:
+                out["rejudged"] += 1
+            else:
+                out["failed"] += 1
+    logging.info("пересуд открытых вопросов: %s", out)
+    return out
+
+
 def _apply_silent_fix(unit_id: int, corrected: str) -> bool:
     """Записать исправленную фразу в слой слов. Ключ поиска пересобираем, старое
     написание оставляем рядом: по нему уже могли сохраниться карточки."""

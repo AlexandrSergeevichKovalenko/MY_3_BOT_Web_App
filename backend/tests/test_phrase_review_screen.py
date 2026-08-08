@@ -292,3 +292,67 @@ class VariantTranslationTests(unittest.TestCase):
             item = _phrase_review_payload()["items"][0]
         self.assertEqual(item["variants"][0]["ru"], "вооружиться против")
         self.assertEqual(item["judges"][0]["corrected_ru"], "вооружиться против")
+
+
+class ActionsAreAlwaysReachableTests(unittest.TestCase):
+    """Кнопки прятались ровно тогда, когда были нужнее всего.
+
+    Живой случай 08.08.2026: оба судьи предложили ОДНО И ТО ЖЕ («Wappnen gegen»),
+    вариант после дедупа остался один — и «Кто прав?» исчезла, хотя спор был: судьи
+    против самой фразы, и правы были не они. «Пересудить» пряталась, стоило судьям
+    хоть что-то предложить, — а именно эти вердикты и надо пересуживать, они слепые."""
+
+    def _screen(self):
+        import pathlib
+        return (pathlib.Path(__file__).resolve().parents[2]
+                / "frontend/src/answer/PhraseReviewScreen.jsx").read_text(encoding="utf-8")
+
+    def test_rejudge_is_not_hidden_behind_a_condition(self):
+        src = self._screen()
+        i = src.index("onClick={rejudge}")
+        line_start = src.rindex("\n", 0, i)
+        block = src[line_start:i]
+        self.assertNotIn("?", block, "«Пересудить» снова спрятана за условием")
+
+    def test_arbiter_is_offered_with_a_single_variant_too(self):
+        src = self._screen()
+        self.assertIn("variants.length > 0 && !arbiter", src)
+
+    def test_server_settles_a_single_variant_dispute(self):
+        import pathlib
+        srv = (pathlib.Path(__file__).resolve().parents[1] / "backend_server.py").read_text(encoding="utf-8")
+        start = srv.index("def answer_phrase_review_settle")
+        block = srv[start:srv.index("\n@app.route", start)]
+        self.assertIn("if not variants:", block)
+        self.assertNotIn("len(variants) < 2", block,
+                         "спор судей с самой фразой снова нельзя рассудить")
+
+
+class BlindVerdictsTests(unittest.TestCase):
+    """Вердикты, вынесенные до того, как судья стал видеть перевод, — слепые.
+
+    Замер на живой очереди 08.08.2026: слепыми оказались ВСЕ 21 открытых вопроса.
+    Пересуживать их по одному — 21 нажатие, поэтому одна кнопка на всю очередь."""
+
+    def test_marker_is_the_missing_key_not_a_date(self):
+        from backend.database import phrase_review_was_judged_blind
+        old = [{"verdict": "error", "corrected": "Wappnen gegen", "why": "…"}]
+        new = [{"verdict": "ok", "corrected": "", "corrected_ru": "", "why": "…"}]
+        self.assertTrue(phrase_review_was_judged_blind(old))
+        self.assertFalse(phrase_review_was_judged_blind(new))
+
+    def test_bulk_rejudge_runs_in_parallel_like_the_night(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[1] / "phrase_night_check.py").read_text(encoding="utf-8")
+        start = src.index("def rejudge_open_phrase_reviews")
+        block = src[start:src.index("\ndef ", start + 10)]
+        self.assertIn("ThreadPoolExecutor", block,
+                      "по одному запросу за раз — веб-запрос столько не живёт")
+        self.assertIn("list_open_phrase_reviews_judged_blind", block)
+
+    def test_screen_offers_the_bulk_button(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[2]
+               / "frontend/src/answer/PhraseReviewScreen.jsx").read_text(encoding="utf-8")
+        self.assertIn("rejudgeall", src)
+        self.assertIn("Судили без перевода", src)

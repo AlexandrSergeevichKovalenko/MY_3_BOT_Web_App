@@ -12052,19 +12052,18 @@ def _build_phrase_review(items: list, idx: int, note: str = "") -> tuple:
             f"✅ Принять {n}{mark}: {label}", callback_data=f"pr:ok:{it['id']}:{idx}:{n - 1}")])
     # Спор двух судей разрешает третий: владелец не обязан знать, пишется ли
     # «hochbekommen» слитно, а две кнопки без объяснения — это загадка, а не решение.
-    if len(variants) > 1 and not arbiter:
+    if variants and not arbiter:
         rows.append([InlineKeyboardButton(
-            "⚖️ Судьи разошлись — кто прав?", callback_data=f"pr:who:{it['id']}:{idx}")])
+            "⚖️ Кто прав?", callback_data=f"pr:who:{it['id']}:{idx}")])
     # «Оставить как есть» есть всегда. Без него разбор был тупиком: когда оба судьи
     # говорят «ошибки нет», принимать нечего, а из решений оставались только «удалить»
     # (то есть уничтожить верную фразу) и «пропустить», которое ничего не решает.
     rows.append([InlineKeyboardButton("👍 Фраза хорошая — оставить",
                                       callback_data=f"pr:keep:{it['id']}:{idx}")])
-    if not variants and not all_ok:
-        # Фразы, отложенные до 08.08.2026, судились промптом, который не требовал
-        # показывать готовый вариант. Переспросить одну — один запрос, копейки.
-        rows.append([InlineKeyboardButton(
-            "🔁 Спросить заново", callback_data=f"pr:again:{it['id']}:{idx}")])
+    # «Пересудить» — всегда. Пряталась, когда судьи хоть что-то предложили, а именно
+    # тогда она и нужна: до 08.08.2026 судья не видел перевода и судил вслепую.
+    rows.append([InlineKeyboardButton(
+        "🔁 Пересудить", callback_data=f"pr:again:{it['id']}:{idx}")])
     rows.append([
         InlineKeyboardButton("🗑 Удалить", callback_data=f"pr:del:{it['id']}:{idx}"),
         InlineKeyboardButton("✏️ Вписать свою", callback_data=f"pr:own:{it['id']}:{idx}"),
@@ -12145,7 +12144,7 @@ async def handle_phrase_review_callback(update: Update, context: CallbackContext
             row = await asyncio.to_thread(get_open_phrase_review, review_id)
             vs = phrase_review_variants((row or {}).get("judges") or [],
                                         (row or {}).get("text") or "") if row else []
-            if len(vs) > 1:
+            if vs:
                 from backend.openai_manager import run_phrase_dispute_verdict
                 verdict = await asyncio.to_thread(
                     run_phrase_dispute_verdict,
@@ -12156,7 +12155,7 @@ async def handle_phrase_review_callback(update: Update, context: CallbackContext
                     await asyncio.to_thread(set_phrase_review_arbiter, review_id, verdict)
                     note = ""
             else:
-                note = "⚠️ Спорить не о чем — вариант всего один."
+                note = "⚠️ Спорить не о чем — судьи ничего не предложили."
         except Exception:
             logging.exception("phrase review arbiter failed id=%s", review_id)
     elif action == "again":

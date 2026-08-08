@@ -31,6 +31,9 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   const [note, setNote] = useState('');
   // Сколько в очереди пустых придирок: заявлена ошибка, а исправить нечего.
   const [noise, setNoise] = useState(0);
+  // Сколько вердиктов вынесено ДО того, как судья стал видеть перевод. Такие слепые:
+  // предлог и падеж выбираются по смыслу, а смысла судья не видел.
+  const [blind, setBlind] = useState(0);
   // Вопрос своими словами про эту фразу. Владельцу пришлось уходить в другое приложение,
   // чтобы выяснить, что «Wappnen mit» и «Wappnen gegen» — разные значения, а не ошибка;
   // спрашивать надо там же, где принимаешь решение.
@@ -49,6 +52,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
       const r = await api('/api/answer/phrasereview/list', {});
       setItems(r.items || []);
       setNoise(Number(r.noise) || 0);
+      setBlind(Number(r.blind) || 0);
       if (loud) setNote(`🔄 Проверил: спорных фраз — ${(r.items || []).length}.`);
     } catch (e) {
       console.warn('[phrasereview] load', e);
@@ -82,6 +86,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   const applyResponse = (r) => {
     setItems(r.items || []);
     setNoise(Number(r.noise) || 0);
+    setBlind(Number(r.blind) || 0);
     setNote('');
     setOwn('');
     // Ответ был про ПРЕДЫДУЩУЮ фразу — на новой ему не место.
@@ -131,6 +136,21 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
       console.warn('[phrasereview] settle', e);
       setNote('');
       setError(e?.message || 'Третейский судья не ответил. Попробуйте ещё раз.');
+    } finally { setBusy(false); }
+  };
+
+  const rejudgeAll = async () => {
+    if (busy) return;
+    setBusy(true); setError('');
+    setNote('⚖️ Пересуживаю со смыслом — это займёт с полминуты…');
+    try {
+      const r = await api('/api/answer/phrasereview/rejudgeall', {});
+      applyResponse(r);
+      flashDone(`${r.rejudged} шт.`, 'пересужено со смыслом');
+    } catch (e) {
+      console.warn('[phrasereview] rejudgeall', e);
+      setNote('');
+      setError(e?.message || 'Судьи не ответили. Попробуйте ещё раз.');
     } finally { setBusy(false); }
   };
 
@@ -215,6 +235,12 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
         <div className="frrev-done">
           ✅ «{done.text}» — {done.what.replace(/^Фраза /, '').toLowerCase()}
         </div>
+      ) : null}
+
+      {blind > 0 ? (
+        <button className="frrev-sweep frrev-sweep-blind" disabled={busy} onClick={rejudgeAll}>
+          ⚖️ Судили без перевода: {blind} — пересудить со смыслом
+        </button>
       ) : null}
 
       {noise > 0 ? (
@@ -334,12 +360,16 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
             Спор двух разрешает третий — владелец не обязан знать, пишется ли
             «hochbekommen» слитно, две кнопки без объяснения это та же загадка. */}
         <div className="frrev-row">
-          {variants.length > 1 && !arbiter ? (
+          {/* «Кто прав?» доступно и когда вариант ОДИН: спор бывает не между двумя
+              правками, а между судьями и самой фразой — «Wappnen mit» оба судьи
+              потребовали переписать, и оба ошиблись. Третейский умеет сказать
+              «оба мимо, исходная фраза верна». */}
+          {variants.length > 0 && !arbiter ? (
             <button className="ans-btn-ghost" disabled={busy} onClick={settle}>⚖️ Кто прав?</button>
           ) : null}
-          {!variants.length && !card.all_ok ? (
-            <button className="ans-btn-ghost" disabled={busy} onClick={rejudge}>🔁 Пересудить</button>
-          ) : null}
+          {/* «Пересудить» — ВСЕГДА. Пряталась, когда судьи хоть что-то предложили, и
+              именно тогда она нужнее всего: спросить их заново, уже со смыслом. */}
+          <button className="ans-btn-ghost" disabled={busy} onClick={rejudge}>🔁 Пересудить</button>
           {!asking ? (
             <button className="ans-btn-ghost" disabled={busy}
               onClick={() => { setAsking(true); setAnswer(''); }}>❓ Спросить</button>
