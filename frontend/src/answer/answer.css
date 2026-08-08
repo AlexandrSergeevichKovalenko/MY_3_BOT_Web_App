@@ -2369,3 +2369,51 @@ html[data-scheme="light"] .ans-toast.ok    { color: #14532D; background: #DCFCE7
   .ans-card:has(> .tr-all) > .tr-done-note,
   .ans-card:has(> .tr-all) > .tr-score { max-width: 42rem; margin-left: auto; margin-right: auto; }
 }
+
+/* ══ Спорные фразы словаря — экран приёмки (frv) ════════════════════════════════
+   Каркас общий с приёмками картинок (.pinw): шапка, прокручиваемая середина,
+   нижняя панель решений. Своё здесь только содержимое: сама фраза, разбор судей и
+   кнопки-варианты, где на кнопке ВИДЕН текст, который она запишет. Кнопка без текста
+   («Принять») не даёт понять, что именно принимаешь, — а судьи расходятся постоянно. */
+.frrev-scroll {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  display: flex; flex-direction: column; gap: 0.625rem;
+}
+.frrev-phrase {
+  font-size: 1.1875rem; font-weight: 800; line-height: 1.35;
+  color: var(--dmps-text-primary, #F8FAFC);
+  border: 1px solid var(--dmps-border, #334155); border-radius: 0.875rem;
+  background: var(--dmps-card-alt, rgba(148,163,184,0.10)); padding: 0.75rem;
+  word-break: break-word;
+}
+.frrev-translation { font-size: 0.9375rem; color: var(--dmps-text-secondary, #CBD5E1); font-style: italic; }
+.frrev-judges { display: flex; flex-direction: column; gap: 0.5rem; }
+.frrev-judge {
+  border: 1px solid var(--dmps-border, #334155); border-radius: 0.75rem;
+  padding: 0.5rem 0.625rem; display: flex; flex-direction: column; gap: 0.25rem;
+}
+.frrev-judge-head { font-size: 0.8125rem; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); }
+.frrev-judge-why { font-size: 0.8125rem; color: var(--dmps-text-secondary, #CBD5E1); }
+.frrev-judge-fix { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.375rem; }
+.frrev-judge-fix b {
+  font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase;
+  color: #22C55E; border: 1px solid rgba(34,197,94,0.45); border-radius: 0.5rem;
+  padding: 0.0625rem 0.375rem;
+}
+.frrev-judge-fix code {
+  font-size: 0.9375rem; font-weight: 600; color: var(--dmps-text-primary, #F8FAFC);
+  word-break: break-word;
+}
+.frrev-judge-fix em { font-size: 0.75rem; color: var(--dmps-text-muted, #94A3B8); font-style: normal; }
+.frrev-nofix { font-size: 0.8125rem; color: #B45309; }
+.frrev-hint { font-size: 0.75rem; color: var(--dmps-text-muted, #94A3B8); text-align: center; }
+
+/* Кнопка-вариант: номер, сам текст и подпись, чей это вариант. Текст переносится —
+   обрезанная фраза на кнопке снова заставила бы гадать, что запишется. */
+.frrev-accept {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 0.125rem;
+  text-align: left; white-space: normal; line-height: 1.3; padding: 0.625rem 0.75rem;
+}
+.frrev-accept-no { font-size: 0.75rem; font-weight: 800; opacity: 0.85; }
+.frrev-accept-text { font-size: 1.0rem; font-weight: 700; word-break: break-word; }
+.frrev-accept-kind { font-size: 0.6875rem; opacity: 0.75; }

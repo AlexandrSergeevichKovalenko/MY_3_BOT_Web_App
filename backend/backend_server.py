@@ -29887,6 +29887,134 @@ def answer_rebus_review_verdict():
     return jsonify({"ok": True, **result, "status_pool": rebus_pool_status()})
 
 
+# ── Спорные фразы общего словаря: экран приёмки вместо переписки в чате ─────────
+# Ночная проверка откладывает владельцу фразы, по которым двое судей не сошлись. Разбор
+# жил в чате бота, и это его ломало: у владельца там сотни непрочитанных учебных
+# сообщений, а каждый ответ бота приходил новым сообщением в самый конец переписки —
+# то есть уносил его от того места, где он читал. Экран держит весь разбор в одном
+# месте: список, варианты судей, решение — и чат в этом не участвует.
+_PHRASE_REVIEW_CATEGORY_RU = {
+    "rechtschreibung": "опечатка", "kongruenz": "согласование", "kasus": "падеж",
+    "praeposition": "предлог", "wortstellung": "порядок слов", "stil": "стиль",
+}
+
+
+def _phrase_review_payload(limit: int = 200) -> dict:
+    """Открытые спорные фразы в том виде, в каком их показывает экран.
+
+    Варианты нумеруются ЗДЕСЬ, на сервере, и тот же номер уходит обратно в решении —
+    иначе фронт и бэкенд могли бы разойтись в том, что значит «принять второй»."""
+    from backend.database import list_open_phrase_reviews, phrase_review_variants
+    items = []
+    for it in list_open_phrase_reviews(int(limit)):
+        judges = it.get("judges") or []
+        variants = phrase_review_variants(judges, it.get("text") or "")
+        slot_of = {v["text"]: n for n, v in enumerate(variants)}
+        items.append({
+            "id": it["id"],
+            "text": it.get("text") or "",
+            "translation": it.get("translation") or "",
+            "variants": [
+                {"index": n, "judge": v["judge"], "text": v["text"],
+                 "kind": "fix" if v["field"] == "corrected" else "complete"}
+                for n, v in enumerate(variants)
+            ],
+            "judges": [
+                {
+                    "no": n,
+                    "verdict": str(j.get("verdict") or ""),
+                    "category": _PHRASE_REVIEW_CATEGORY_RU.get(
+                        str(j.get("category") or ""), str(j.get("category") or "")),
+                    "why": str(j.get("why") or ""),
+                    "corrected": str(j.get("corrected") or ""),
+                    "proposal": str(j.get("proposal") or ""),
+                    "corrected_slot": slot_of.get(str(j.get("corrected") or "").strip()),
+                    "proposal_slot": slot_of.get(str(j.get("proposal") or "").strip()),
+                }
+                for n, j in enumerate(judges, 1)
+            ],
+        })
+    return {"items": items, "total": len(items)}
+
+
+@app.route("/api/answer/phrasereview/list", methods=["POST"])
+def answer_phrase_review_list():
+    """Все спорные фразы разом: экран листает их у себя, без похода на сервер за каждой."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    return jsonify({"ok": True, **_phrase_review_payload()})
+
+
+@app.route("/api/answer/phrasereview/decide", methods=["POST"])
+def answer_phrase_review_decide():
+    """Решение владельца по одной фразе: принять вариант судьи, вписать свой или удалить.
+
+    Ответ сразу несёт обновлённый список — экран не должен ходить за ним отдельно и
+    показывать между двумя запросами уже решённую фразу."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        review_id = int(payload.get("review_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "нет фразы"}), 400
+    decision = str(payload.get("decision") or "").strip().lower()
+    if decision not in ("accept", "delete", "replace", "skip"):
+        return jsonify({"error": "неизвестное решение"}), 400
+    own_text = str(payload.get("text") or "").strip()
+    if decision == "replace" and not own_text:
+        return jsonify({"error": "пустой текст"}), 400
+    try:
+        variant = max(0, int(payload.get("variant") or 0))
+    except (TypeError, ValueError):
+        variant = 0
+
+    from backend.database import apply_phrase_review_decision
+    if decision == "skip":
+        # «Отложить» ничего не решает и не закрывает строку — фраза просто уезжает в
+        # конец списка на этом экране. Никакой записи в базу.
+        return jsonify({"ok": True, "result": "skipped", **_phrase_review_payload()})
+    result = apply_phrase_review_decision(review_id, decision, own_text, variant)
+    if decision == "delete":
+        note = "Фраза удалена из общего словаря."
+    elif result.get("text"):
+        note = f"Записал: {result['text']}"
+    else:
+        # Ни одна из веток не записала текст: либо такая фраза уже есть, либо вариант
+        # совпал с исходным. Строка при этом закрыта — врать «готово» нельзя.
+        note = "Не записал: такая фраза уже есть в словаре. Снял с разбора."
+    return jsonify({"ok": True, "result": decision, "note": note,
+                    "text": result.get("text") or "", **_phrase_review_payload()})
+
+
+@app.route("/api/answer/phrasereview/rejudge", methods=["POST"])
+def answer_phrase_review_rejudge():
+    """Переспросить судей по одной фразе.
+
+    Нужно для фраз, отложенных до 08.08.2026: тогдашний промпт не требовал показывать
+    готовый исправленный текст, и судья мог написать «нет местоимения», не дописав
+    ничего. Один запрос на фразу и только по нажатию — расход копеечный."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        review_id = int(payload.get("review_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "нет фразы"}), 400
+    from backend.phrase_night_check import rejudge_phrase_review
+    try:
+        ok = bool(rejudge_phrase_review(review_id))
+    except Exception:
+        logging.warning("phrasereview: rejudge failed id=%s", review_id, exc_info=True)
+        ok = False
+    if not ok:
+        return jsonify({"error": "Судьи не ответили. Попробуйте ещё раз."}), 503
+    return jsonify({"ok": True, "note": "Переспросил судей.", **_phrase_review_payload()})
+
+
 @app.route("/api/answer/review/overview", methods=["POST"])
 def answer_review_overview():
     """Mistakes review sections + due-counts (Artikel vs Grammatik) for the section picker."""

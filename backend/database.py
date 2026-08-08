@@ -22314,7 +22314,7 @@ def close_phrase_review(review_id: int, status: str) -> None:
         conn.commit()
 
 
-def phrase_review_variants(judges: list) -> list[dict]:
+def phrase_review_variants(judges: list, text: str = "") -> list[dict]:
     """Все РАЗНЫЕ варианты правки, которые предложили судьи, по порядку судей.
 
     Судей двое, и они часто расходятся — ровно поэтому фраза и попала владельцу. Пока
@@ -22323,18 +22323,25 @@ def phrase_review_variants(judges: list) -> list[dict]:
 
     `corrected` — правка без добавления слов (её же берёт ночной автофикс). `proposal` —
     достройка неполной фразы: судья дописывает недостающее (местоимение, артикль), чтобы
-    фраза стала целой. В автофикс proposal не идёт НИКОГДА, только владельцу на решение."""
+    фраза стала целой. В автофикс proposal не идёт НИКОГДА, только владельцу на решение.
+
+    `text` — сама фраза. Судья иногда объявляет ошибку и «исправляет» текст в самого
+    себя («порядок слов неверный» → тот же текст слово в слово). Кнопка на такой вариант
+    ничего не меняет, а выглядит как решение — поэтому такие варианты сюда не попадают.
+    Нумерация вариантов идёт ПОСЛЕ этого отсева, и она одна и та же везде: и на кнопках
+    экрана, и при применении решения."""
+    original = str(text or "").strip()
     out: list[dict] = []
     seen: set[str] = set()
     for n, j in enumerate(judges or [], 1):
         if not isinstance(j, dict):
             continue
         for field in ("corrected", "proposal"):
-            text = str(j.get(field) or "").strip()
-            if not text or text in seen:
+            value = str(j.get(field) or "").strip()
+            if not value or value == original or value in seen:
                 continue
-            seen.add(text)
-            out.append({"judge": n, "field": field, "text": text})
+            seen.add(value)
+            out.append({"judge": n, "field": field, "text": value})
     return out
 
 
@@ -22384,7 +22391,7 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 return result
 
             if decision == "accept":
-                variants = phrase_review_variants(judges)
+                variants = phrase_review_variants(judges, old_text)
                 idx = int(variant or 0)
                 new_text = variants[idx]["text"] if 0 <= idx < len(variants) else ""
             else:
