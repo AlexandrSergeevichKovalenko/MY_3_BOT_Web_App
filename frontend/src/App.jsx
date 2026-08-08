@@ -9224,6 +9224,75 @@ function AppInner() {
     }
     throw lastError || new Error('Request failed');
   }, [inspectInitDataAuthFailureResponse, inspectSingleInstanceConflictResponse]);
+
+  // ── Словарь целиком уезжает на телефон ────────────────────────────────────────
+  //
+  // Владелец задал вопрос, на который у продукта не было ответа: «как человек поймёт,
+  // какие слова ищутся без сети, а какие нет?» Никак — и не должен. Пока офлайн работал
+  // только для тех страниц Библиотеки, до которых человек долистал, правило было
+  // непредсказуемым, а непредсказуемое правило хуже отсутствующего.
+  //
+  // Замер 08.08.2026: у обычного человека словарь весит около мегабайта (735 карточек
+  // по полтора килобайта), у самого большого — 22 МБ на 15 тысяч. То есть «всё, что
+  // сохранено, доступно без сети» — выполнимое обещание, а не мечта.
+  //
+  // Поэтому докачиваем ВЕСЬ словарь, но по-человечески: порциями, с продолжением между
+  // запусками. За один заход берём не больше 20 страниц — на большом словаре это
+  // несколько запусков, зато телефон и сервер не замечают работы. Дойдя до конца,
+  // останавливаемся до следующего дня.
+  const VOCAB_OFFLINE_PAGE = 100;
+  const VOCAB_OFFLINE_PAGES_PER_RUN = 20;
+  const LS_VOCAB_SYNC_OFFSET = 'vocab_offline_offset';
+  const LS_VOCAB_SYNC_DONE_AT = 'vocab_offline_done_at';
+
+  useEffect(() => {
+    if (!initData || !isOnline || !isOfflineCacheAvailable()) return undefined;
+    const userId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!userId) return undefined;
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const doneAt = Number(localStorage.getItem(LS_VOCAB_SYNC_DONE_AT) || 0);
+        if (doneAt && Date.now() - doneAt < 24 * 60 * 60 * 1000) return;
+        let offset = Number(localStorage.getItem(LS_VOCAB_SYNC_OFFSET) || 0);
+
+        for (let page = 0; page < VOCAB_OFFLINE_PAGES_PER_RUN; page += 1) {
+          if (cancelled) return;
+          const resp = await fetchWithTimeout('/api/webapp/vocabulary/list', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData, folder_id: null, search: null,
+              sort: 'date_desc', limit: VOCAB_OFFLINE_PAGE, offset,
+            }),
+          }, 15000);
+          if (!resp.ok) return;                       // сервер занят — продолжим в другой раз
+          const data = await resp.json();
+          const items = Array.isArray(data?.items) ? data.items : [];
+          if (!items.length) {                        // дошли до конца словаря
+            localStorage.setItem(LS_VOCAB_SYNC_DONE_AT, String(Date.now()));
+            localStorage.setItem(LS_VOCAB_SYNC_OFFSET, '0');
+            return;
+          }
+          await saveVocabBatch(userId, items, Number(data.total || 0));
+          offset += items.length;
+          localStorage.setItem(LS_VOCAB_SYNC_OFFSET, String(offset));
+          if (offset >= Number(data.total || 0)) {
+            localStorage.setItem(LS_VOCAB_SYNC_DONE_AT, String(Date.now()));
+            localStorage.setItem(LS_VOCAB_SYNC_OFFSET, '0');
+            return;
+          }
+          await new Promise((r) => window.setTimeout(r, 200));  // не давим на сервер
+        }
+      } catch (_e) {
+        // Тихо. Это подготовка к офлайну, а не то, ради чего человек открыл приложение.
+      }
+    }, 8000);
+
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [initData, isOnline, webappUser, fetchWithTimeout]);
+
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.fetch !== 'function') {
       return undefined;
@@ -30748,8 +30817,8 @@ function AppInner() {
         emoji: '✈️',
         title: tr('Нет интернета', 'Kein Internet'),
         message: tr(
-          'Это слово пока не сохранено на телефоне. Оно откроется, когда появится связь.',
-          'Dieses Wort liegt noch nicht auf dem Handy. Es öffnet sich, sobald du wieder online bist.',
+          'Без сети открываются слова из вашего словаря. Этого слова там пока нет.',
+          'Ohne Netz öffnen sich Wörter aus deinem Wörterbuch. Dieses ist noch nicht dabei.',
         ),
       });
       // 0. СВОИ слова — первыми, из кеша Библиотеки.
@@ -30806,9 +30875,11 @@ function AppInner() {
         showNoticeModal({
           emoji: '✈️',
           title: tr('Нет интернета', 'Kein Internet'),
+          // Правило, а не факт: человек должен понять ГРАНИЦУ — что работает без сети,
+          // а что нет, — и она привязана к тому, что он сам делал (сохранял слова).
           message: tr(
-            'Это слово пока не сохранено на телефоне. Оно откроется, когда появится связь.',
-            'Dieses Wort liegt noch nicht auf dem Handy. Es öffnet sich, sobald du wieder online bist.',
+            'Без сети открываются слова из вашего словаря. Этого слова там пока нет.',
+            'Ohne Netz öffnen sich Wörter aus deinem Wörterbuch. Dieses ist noch nicht dabei.',
           ),
         });
         return;
