@@ -54,9 +54,6 @@ import {
   lookupOfflineBaseDictEntry,
   saveBaseDictEntryFromServerResult,
   ensureOfflinePack,
-  rememberMyWord,
-  lookupMyWord,
-  backfillMyWords,
 } from './offline/baseDictCache';
 
 import './styles/topbar-redesign.css';
@@ -6055,7 +6052,6 @@ function AppInner() {
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
   }, [dictionaryWord, dictionaryResult]);
-
   // Lazy, streamed GPT breakdown for the in-app dictionary (mirrors the quick
   // dictionary): 'idle' shows the «Подробный разбор» button, 'streaming' fills
   // the card section-by-section, 'done' hides the button, 'error' offers retry.
@@ -6076,20 +6072,6 @@ function AppInner() {
     try { const r = JSON.parse(localStorage.getItem('dq_recents_v1') || '[]'); return Array.isArray(r) ? r.filter((x) => typeof x === 'string').slice(0, 6) : []; } catch (_e) { return []; }
   });
   const [dictionaryLanguagePair, setDictionaryLanguagePair] = useState(null);
-
-  // Своя находка остаётся с человеком. Раньше локально жил только базовый словарь на
-  // 10 000 частых немецких слов, а личные находки не сохранялись НИКОГДА — поэтому в
-  // авиарежиме «Змей горыныч», переведённый месяцем раньше, отвечал «не найдено офлайн».
-  // Ловим здесь, а не в каждом обработчике: карточка приезжает пятью разными путями
-  // (мгновенный перевод, разбор, дообогащение, офлайн, окно переводов), и одна точка
-  // надёжнее пяти. Повторная запись безвредна — она же обновляет отметку касания.
-  useEffect(() => {
-    const item = dictionaryResult;
-    if (!item || typeof item !== 'object') return;
-    const query = String(item.source_text || item.word_ru || dictionaryWord || '').trim();
-    if (!query) return;
-    void rememberMyWord(query, item, dictionaryLanguagePair || null);
-  }, [dictionaryResult, dictionaryWord, dictionaryLanguagePair]);
   // When the user clears the input, the result card should disappear and the screen
   // returns to its initial compose state. (Don't wipe while a lookup is in flight.)
   useEffect(() => {
@@ -9242,33 +9224,6 @@ function AppInner() {
     }
     throw lastError || new Error('Request failed');
   }, [inspectInitDataAuthFailureResponse, inspectSingleInstanceConflictResponse]);
-
-  // Разовая подкачка прошлого в офлайн. Хранилище своих находок завели 08.08.2026, и
-  // наполняется оно с этого дня — а у человека уже накоплены тысячи карточек, которых
-  // без сети не будет ни одной. Поэтому один раз тихо стягиваем последние сохранённые
-  // слова: после этого «Змей горыныч», переведённый месяц назад, откроется в самолёте.
-  //
-  // Тихо — значит без индикаторов и без сообщений об ошибке: это не то, ради чего человек
-  // открыл приложение. Не получилось — попробуем при следующем запуске.
-  // Ждём пять секунд после старта, чтобы не соперничать с первой отрисовкой и с тем,
-  // за чем человек пришёл.
-  useEffect(() => {
-    if (!initData || !isOnline) return undefined;
-    const timer = window.setTimeout(() => {
-      void backfillMyWords(async (limit) => {
-        const resp = await fetchWithTimeout('/api/webapp/dictionary/cards', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData, limit }),
-        }, 20000);
-        if (!resp.ok) throw new Error('cards fetch failed');
-        const data = await resp.json();
-        return Array.isArray(data?.items) ? data.items : [];
-      });
-    }, 5000);
-    return () => window.clearTimeout(timer);
-  }, [initData, isOnline, fetchWithTimeout]);
-
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.fetch !== 'function') {
       return undefined;
@@ -30789,22 +30744,47 @@ function AppInner() {
     let baseLookupTimeoutId = null;
 
     try {
-      const offlineNotFoundMessage = tr(
-        'Слово не найдено в локальном офлайн-словаре.',
-        'Wort wurde im lokalen Offline-Wörterbuch nicht gefunden.'
-      );
-      // 0. СВОИ находки — первыми. Человек ищет то, что уже искал, и своя карточка
-      //    с разбором полезнее строки из базового словаря. Базовый словарь знает
-      //    10 000 частых слов и не содержит личных фраз вроде «Змей горыныч» вовсе.
-      const mine = await lookupMyWord(sourceWord);
-      if (mine) {
-        setDictionaryResult(mine);
-        setDictionaryDirection(resolvedDirection);
-        setDictionaryLanguagePair(resolveLanguagePairForUI({
-          source_lang: queryLang,
-          target_lang: queryLang === 'ru' ? 'de' : 'ru',
-        }));
-        return;
+      const showOfflineMiss = () => showNoticeModal({
+        emoji: '✈️',
+        title: tr('Нет интернета', 'Kein Internet'),
+        message: tr(
+          'Это слово пока не сохранено на телефоне. Оно откроется, когда появится связь.',
+          'Dieses Wort liegt noch nicht auf dem Handy. Es öffnet sich, sobald du wieder online bist.',
+        ),
+      });
+      // 0. СВОИ слова — первыми, из кеша Библиотеки.
+      //
+      //    Здесь была дыра, которую я сперва «починил» третьим механизмом, хотя чинить
+      //    было нечего: слова человека УЖЕ лежат на устройстве. Их кладёт Библиотека
+      //    (loadVocabLibrary → saveVocabBatch), и у getCachedVocab уже есть поиск по
+      //    тексту — по немецкому, по русскому, по переводам и внутрь разбора. Офлайн-
+      //    словарь просто никогда туда не заглядывал: он знал только базовый пакет
+      //    на 10 000 частых немецких слов, где личных фраз нет и не будет.
+      //
+      //    Поэтому никакой подкачки не нужно: что человек видел в Библиотеке, то и
+      //    найдётся без сети.
+      const offlineUserId = webappUser?.id ? Number(webappUser.id) : null;
+      if (offlineUserId && isOfflineCacheAvailable()) {
+        try {
+          const cached = await getCachedVocab(offlineUserId, { search: sourceWord, limit: 1 });
+          const row = cached?.items?.[0];
+          if (row) {
+            const card = coerceResponseJson(row.response_json) || {};
+            setDictionaryResult({
+              ...card,
+              word_de:        row.word_de        || card.word_de        || '',
+              word_ru:        row.word_ru        || card.word_ru        || '',
+              translation_de: row.translation_de || card.translation_de || '',
+              translation_ru: row.translation_ru || card.translation_ru || '',
+            });
+            setDictionaryDirection(resolvedDirection);
+            setDictionaryLanguagePair(resolveLanguagePairForUI({
+              source_lang: queryLang,
+              target_lang: queryLang === 'ru' ? 'de' : 'ru',
+            }));
+            return;
+          }
+        } catch (_e) { /* кеш недоступен — идём дальше, к базовому словарю */ }
       }
 
       void ensureOfflinePack('de', 30000);
@@ -30821,13 +30801,22 @@ function AppInner() {
       }
 
       if (!isOnline) {
-        setDictionaryError(tr('Нет интернета, а это слово вы раньше не открывали. Всё, что вы уже переводили, доступно и без сети.', 'Kein Internet, und dieses Wort hattest du noch nicht offen. Alles, was du schon übersetzt hast, ist auch ohne Netz da.'));
+        // Не красная плашка с техтекстом, а маленькая модалка в нашем стиле: человек
+        // пришёл за переводом, а не читать про устройство кеша.
+        showNoticeModal({
+          emoji: '✈️',
+          title: tr('Нет интернета', 'Kein Internet'),
+          message: tr(
+            'Это слово пока не сохранено на телефоне. Оно откроется, когда появится связь.',
+            'Dieses Wort liegt noch nicht auf dem Handy. Es öffnet sich, sobald du wieder online bist.',
+          ),
+        });
         return;
       }
 
       // 2. Try server-side pre-loaded dictionary (PostgreSQL)
       if (!initData) {
-        setDictionaryError(offlineNotFoundMessage);
+        showOfflineMiss();
         return;
       }
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -30845,21 +30834,30 @@ function AppInner() {
         baseLookupTimeoutId = null;
       }
       if (!response.ok && response.status !== 202) {
-        setDictionaryError(tr('Ошибка соединения со словарём.', 'Verbindungsfehler zum Wörterbuch.'));
+        showNoticeModal({
+          emoji: '🦊',
+          title: tr('Словарь не отвечает', 'Wörterbuch antwortet nicht'),
+          message: tr('Попробуйте ещё раз через минуту.', 'Versuche es in einer Minute noch einmal.'),
+        });
         return;
       }
       const data = await response.json();
 
       if (data.warming_up) {
-        setDictionaryError(tr(
-          'Базовый словарь ещё загружается на сервер. Попробуйте снова чуть позже или используйте ⚡ Перевод.',
-          'Das Basiswörterbuch wird auf dem Server noch geladen. Versuche es gleich noch einmal oder nutze ⚡ Übersetzen.'
-        ));
+        showNoticeModal({
+          emoji: '🦊',
+          title: tr('Ещё пара минут', 'Noch ein paar Minuten'),
+          message: tr('Словарь готовится. Попробуйте чуть позже.', 'Das Wörterbuch wird vorbereitet. Versuche es gleich noch einmal.'),
+        });
         return;
       }
 
       if (data.not_found || !data.item) {
-        setDictionaryError(tr('Слово не найдено в базовом словаре. Попробуйте ⚡ Перевод.', 'Wort nicht im Basiswörterbuch gefunden. Versuche ⚡ Übersetzen.'));
+        showNoticeModal({
+          emoji: '🔍',
+          title: tr('Не нашлось', 'Nicht gefunden'),
+          message: tr('Проверьте написание и попробуйте ещё раз.', 'Prüfe die Schreibweise und versuche es noch einmal.'),
+        });
         return;
       }
 
@@ -30883,12 +30881,13 @@ function AppInner() {
       } else {
         const isAbort = String(error?.name || '').trim() === 'AbortError';
         if (isAbort) {
-          setDictionaryError(tr(
-            'Локально слово не найдено, а онлайн-поиск словаря отвечает слишком долго. Попробуйте ⚡ Перевод.',
-            'Lokal nicht gefunden und die Online-Suche des Wörterbuchs reagiert zu langsam. Versuche ⚡ Übersetzen.'
-          ));
+          showNoticeModal({
+            emoji: '🐢',
+            title: tr('Долго думает', 'Es dauert zu lange'),
+            message: tr('Связь медленная. Попробуйте ещё раз.', 'Die Verbindung ist langsam. Versuche es noch einmal.'),
+          });
         } else {
-          setDictionaryError(tr('Нет интернета, а это слово вы раньше не открывали. Всё, что вы уже переводили, доступно и без сети.', 'Kein Internet, und dieses Wort hattest du noch nicht offen. Alles, was du schon übersetzt hast, ist auch ohne Netz da.'));
+          showOfflineMiss();
         }
       }
     } finally {

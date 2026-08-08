@@ -13,32 +13,12 @@
  *
  * v2: added by_ru_lc multi-entry index for O(log n) Russian → German lookups.
  *     Previously the reverse lookup did getAll() + JS scan = O(n), very slow.
- *
- * v3: добавлено хранилище "my_words" — СВОИ находки человека.
- *
- *     Зачем. Владелец 08.08.2026 включил авиарежим и поискал «Змей горыныч» —
- *     фразу, которую сам переводил месяцем раньше. Получил «слово не найдено офлайн».
- *     Разбор показал, что офлайн у нас был ровно один: базовый словарь на 10 000
- *     частых немецких слов. Личные находки не сохранялись НИКОГДА — ни одна из
- *     почти пятнадцати тысяч. Своё слово человек считает своим и ждёт, что оно
- *     останется с ним; базовый словарь его личных фраз не содержит и не будет.
- *
- *     Store "my_words"
- *       keyPath: "k"  (нормализованный запрос)
- *       Fields : k, item (карточка как её рисует приложение), pair, ts (последнее касание)
- *       Index  : by_ts — по нему чистим самые старые, когда упираемся в потолок
  */
 
 const BD_DB_NAME    = 'DeutschBaseDictionary';
-const BD_DB_VERSION = 3;
+const BD_DB_VERSION = 2;
 const STORE_BD      = 'base_dict';
 const STORE_BD_META = 'base_dict_meta';
-const STORE_MINE    = 'my_words';
-// Потолок личного хранилища — в СТРОКАХ, а не в словах: у карточки несколько ключей
-// поиска, но сама она лежит в одном экземпляре, остальные строки — лёгкие ссылки.
-// Шести тысяч строк хватает примерно на полторы-две тысячи слов, включая разовую
-// подкачку прошлого. Лишнее уходит по давности касания, а не по алфавиту.
-const MINE_MAX_ENTRIES = 6000;
 const PACK_VERSION_KEY = 'pack_version';
 const PACK_ENTRY_COUNT_KEY = 'pack_entry_count';
 const PACK_MAX_AGE_MS  = 7 * 24 * 60 * 60 * 1000; // re-download after 7 days
@@ -92,13 +72,6 @@ function _openBD() {
       if (!db.objectStoreNames.contains(STORE_BD_META)) {
         db.createObjectStore(STORE_BD_META, { keyPath: 'key' });
       }
-
-      // v3: свои находки. Пустое хранилище на старых устройствах создаётся здесь же,
-      // поэтому обновление не требует ни перекачки пакета, ни выхода из приложения.
-      if (!db.objectStoreNames.contains(STORE_MINE)) {
-        const mine = db.createObjectStore(STORE_MINE, { keyPath: 'k' });
-        mine.createIndex('by_ts', 'ts');
-      }
     };
     req.onsuccess  = (e) => resolve(e.target.result);
     req.onerror    = (e) => { _bdDbPromise = null; reject(e.target.error); };
@@ -139,156 +112,6 @@ export async function getBaseDictEntry(word) {
   } catch {
     return null;
   }
-}
-
-// ── Свои находки: запомнить и найти без сети ────────────────────────────────────
-//
-// Ключ — нормализованный запрос, а не немецкая лемма: человек ищет теми же словами,
-// какими искал в прошлый раз, и «Змей горыныч» должен находиться по «змей горыныч».
-// Немецкое слово кладём вторым ключом, чтобы находка работала и с другой стороны.
-
-export function myWordKeys(query, item) {
-  const keys = [];
-  const push = (v) => {
-    const k = String(v || '').trim().toLowerCase();
-    if (k && !keys.includes(k)) keys.push(k);
-  };
-  push(query);
-  push(_normKey(query));
-  if (item && typeof item === 'object') {
-    push(item.word_de);
-    push(item.translation_de);
-    push(_normKey(item.word_de || item.translation_de || ''));
-  }
-  return keys;
-}
-
-/**
- * Положить находку в личное хранилище. Никогда не роняет поиск: это подстраховка.
- *
- * Карточка находится по нескольким словам сразу (по набранному запросу и по немецкой
- * стороне), но САМА лежит в одном экземпляре: первый ключ хранит карточку, остальные —
- * только ссылку на него. Иначе разбор весом в килобайты копировался бы три-четыре раза,
- * и пятьсот слов съели бы мегабайты там, где хватает сотен килобайт.
- */
-export async function rememberMyWord(query, item, pair) {
-  if (!item || typeof item !== 'object') return;
-  const keys = myWordKeys(query, item);
-  if (!keys.length) return;
-  const ts = Date.now();
-  const [primary, ...aliases] = keys;
-  try {
-    const db = await _openBD();
-    const tx = db.transaction(STORE_MINE, 'readwrite');
-    const store = tx.objectStore(STORE_MINE);
-    const last = store.put({ k: primary, item, pair: pair || null, ts });
-    for (const k of aliases) store.put({ k, ref: primary, ts });
-    await _pr(last);
-    _writesSinceTrim += 1;
-    if (_writesSinceTrim >= TRIM_EVERY) { _writesSinceTrim = 0; void _trimMyWords(); }
-  } catch {
-    // Место кончилось или хранилище недоступно — молчим. Офлайн-память приятна,
-    // но её отсутствие не повод ломать обычный перевод.
-  }
-}
-
-// Уборку зовём не после каждой записи: при подкачке прошлого их сотни подряд, и считать
-// размер хранилища на каждой — впустую гонять диск.
-let _writesSinceTrim = 0;
-const TRIM_EVERY = 50;
-
-// Разовая подкачка прошлого. Хранилище своих находок наполняется с того момента, как
-// его завели, — а у человека к этому дню уже накоплены тысячи карточек, и в авиарежиме
-// их не было бы ни одной. Поэтому один раз тихо стягиваем последние сохранённые слова
-// и кладём их сюда же. Дальше хранилище пополняется само, обычным поиском.
-const LS_BACKFILL_TS = 'my_words_backfill_ts';
-const BACKFILL_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;  // повторяем не чаще раза в месяц
-const BACKFILL_LIMIT = 500;                             // столько последних слов забираем
-
-/**
- * Наполнить личное хранилище прошлыми карточками. Тихо: без индикаторов, без ошибок
- * наружу, без блокировки запуска. Не сделалось — значит не сделалось, обычный поиск
- * от этого не страдает, а следующая попытка будет при следующем запуске.
- *
- * @param {function} fetchCards  () => Promise<Array>  — отдаёт карточки с сервера
- */
-export async function backfillMyWords(fetchCards) {
-  if (typeof fetchCards !== 'function') return 0;
-  try {
-    const last = Number(localStorage.getItem(LS_BACKFILL_TS) || 0);
-    if (last && Date.now() - last < BACKFILL_MAX_AGE_MS) return 0;
-  } catch { /* localStorage может быть недоступен — тогда просто пробуем */ }
-
-  let items = [];
-  try {
-    items = await fetchCards(BACKFILL_LIMIT);
-  } catch {
-    return 0;   // нет сети или сервер занят — попробуем в другой раз
-  }
-  if (!Array.isArray(items) || !items.length) return 0;
-
-  let written = 0;
-  for (const item of items) {
-    if (!item || typeof item !== 'object') continue;
-    const query = String(item.source_text || item.word_ru || item.word_de || '').trim();
-    if (!query) continue;
-    // По одной записи, а не одной большой транзакцией: пятьсот карточек с разбором —
-    // это мегабайты, и падение на середине не должно отменить уже записанное.
-    await rememberMyWord(query, item, null);
-    written += 1;
-  }
-  try { localStorage.setItem(LS_BACKFILL_TS, String(Date.now())); } catch { /* не важно */ }
-  return written;
-}
-
-/** Найти свою прошлую находку. Возвращает карточку в том же виде, что рисует приложение. */
-export async function lookupMyWord(query) {
-  const k = String(query || '').trim().toLowerCase();
-  if (!k) return null;
-  try {
-    const db = await _openBD();
-    const tx = db.transaction(STORE_MINE, 'readonly');
-    const store = tx.objectStore(STORE_MINE);
-    let hit = await _pr(store.get(k));
-    if (!hit) hit = await _pr(store.get(_normKey(k)));
-    // Попали в ссылку — идём за самой карточкой.
-    if (hit && hit.ref && !hit.item) hit = await _pr(store.get(hit.ref));
-    if (!hit || !hit.item) return null;
-    void _touchMyWord(hit.k);
-    return hit.item;
-  } catch {
-    return null;
-  }
-}
-
-async function _touchMyWord(k) {
-  try {
-    const db = await _openBD();
-    const tx = db.transaction(STORE_MINE, 'readwrite');
-    const store = tx.objectStore(STORE_MINE);
-    const row = await _pr(store.get(k));
-    if (row) { row.ts = Date.now(); store.put(row); }
-  } catch { /* не важно */ }
-}
-
-/** Держим потолок: лишнее убираем с самого давнего касания, а не с начала алфавита. */
-async function _trimMyWords() {
-  try {
-    const db = await _openBD();
-    const countTx = db.transaction(STORE_MINE, 'readonly');
-    const total = await _pr(countTx.objectStore(STORE_MINE).count());
-    if (total <= MINE_MAX_ENTRIES) return;
-    let toDrop = total - MINE_MAX_ENTRIES;
-    const tx = db.transaction(STORE_MINE, 'readwrite');
-    const cursorReq = tx.objectStore(STORE_MINE).index('by_ts').openCursor();
-    cursorReq.onsuccess = (e) => {
-      const cursor = e.target.result;
-      if (!cursor || toDrop <= 0) return;
-      cursor.delete();
-      toDrop -= 1;
-      cursor.continue();
-    };
-  } catch { /* не важно */ }
 }
 
 export async function saveBaseDictEntry(entry) {
