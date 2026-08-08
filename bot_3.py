@@ -12020,7 +12020,11 @@ def _build_phrase_review(items: list, idx: int, note: str = "") -> tuple:
             slot = slot_of.get(text)
             tag = f"Вариант {slot}" if slot else label
             lines.append(f"    <b>{tag}</b> ({label}): <code>{_esc(text)}</code>")
-    if not variants:
+    all_ok = bool(judges) and all(str(j.get("verdict") or "") == "ok" for j in judges)
+    if all_ok:
+        lines.append("\n<i>Оба судьи говорят: ошибки нет. Править нечего — «Оставить как "
+                     "есть» закроет вопрос.</i>")
+    elif not variants:
         lines.append("\n<i>Готового варианта судьи не дали. Нажми «Спросить заново» — "
                      "или впиши свой, или удали фразу.</i>")
 
@@ -12029,7 +12033,12 @@ def _build_phrase_review(items: list, idx: int, note: str = "") -> tuple:
         label = v["text"] if len(v["text"]) <= 42 else v["text"][:41] + "…"
         rows.append([InlineKeyboardButton(
             f"✅ Принять {n}: {label}", callback_data=f"pr:ok:{it['id']}:{idx}:{n - 1}")])
-    if not variants:
+    # «Оставить как есть» есть всегда. Без него разбор был тупиком: когда оба судьи
+    # говорят «ошибки нет», принимать нечего, а из решений оставались только «удалить»
+    # (то есть уничтожить верную фразу) и «пропустить», которое ничего не решает.
+    rows.append([InlineKeyboardButton("👍 Фраза хорошая — оставить",
+                                      callback_data=f"pr:keep:{it['id']}:{idx}")])
+    if not variants and not all_ok:
         # Фразы, отложенные до 08.08.2026, судились промптом, который не требовал
         # показывать готовый вариант. Переспросить одну — один запрос, копейки.
         rows.append([InlineKeyboardButton(
@@ -12113,22 +12122,25 @@ async def handle_phrase_review_callback(update: Update, context: CallbackContext
             logging.exception("phrase review rejudge failed id=%s", review_id)
             ok = False
         note = "🔁 Переспросил судей." if ok else "⚠️ Судьи не ответили — попробуй ещё раз."
-    elif action in ("ok", "del"):
+    elif action in ("ok", "del", "keep"):
+        decision = {"ok": "accept", "del": "delete", "keep": "keep"}[action]
         try:
             res = await asyncio.to_thread(apply_phrase_review_decision, review_id,
-                                          "accept" if action == "ok" else "delete", "", variant)
+                                          decision, "", variant)
         except Exception as exc:
             logging.exception("phrase review decision failed id=%s", review_id)
             await query.answer(f"Не получилось: {exc}", show_alert=True)
             return
         if action == "del":
             note = "🗑 Фраза удалена из общего словаря."
+        elif action == "keep":
+            note = "👍 Оставил как есть — вопрос закрыт."
         elif res.get("text"):
             from html import escape as _esc
             note = f"✅ Записал: <code>{_esc(res['text'])}</code>"
         else:
             note = "⚠️ Не записал: такая фраза уже есть в словаре. Снял с разбора."
-        await query.answer("Принято" if action == "ok" else "Удалено")
+        await query.answer({"ok": "Принято", "del": "Удалено", "keep": "Оставлено"}[action])
     else:
         await query.answer()
     items = await asyncio.to_thread(list_open_phrase_reviews, 200)

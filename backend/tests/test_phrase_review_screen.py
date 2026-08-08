@@ -72,3 +72,67 @@ class VariantNumberingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeadEndTests(unittest.TestCase):
+    """Разбор обязан иметь выход, когда править нечего.
+
+    Замер 08.08.2026: после переспроса обычный исход — оба судьи говорят «ошибки нет».
+    Принимать тогда нечего, и из решений оставались «удалить» (уничтожить ВЕРНУЮ фразу)
+    и «отложить» (ничего не решает). Это тупик, и владелец в него упёрся на первой же
+    фразе. Решение «keep» закрывает вопрос: фраза остаётся, ночь помечает её проверенной."""
+
+    def test_keep_is_an_accepted_decision(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[1] / "backend_server.py").read_text(encoding="utf-8")
+        start = src.index("def answer_phrase_review_decide")
+        block = src[start:start + 2000]
+        self.assertIn('"keep"', block, "экран не может закрыть вопрос по хорошей фразе")
+
+    def test_keep_marks_the_phrase_checked_so_it_never_returns(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[1] / "database.py").read_text(encoding="utf-8")
+        start = src.index('if decision == "keep":')
+        block = src[start:start + 900]
+        self.assertIn("bt_3_phrase_check", block,
+                      "фраза вернётся в разбор следующей же ночью")
+        self.assertIn("'kept'", block)
+
+    def test_screen_offers_keep_even_when_judges_proposed_a_fix(self):
+        """Владелец вправе не согласиться с судьями — кнопка не должна прятаться."""
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[2]
+               / "frontend/src/answer/PhraseReviewScreen.jsx").read_text(encoding="utf-8")
+        start = src.index("decide('keep')")
+        # кнопка стоит вне ветки «вариантов нет»
+        self.assertNotIn("!variants.length ? (\n          <button className=\"ans-btn-ghost\" disabled={busy} onClick={() => decide('keep')}",
+                         src[max(0, start - 400):start + 50])
+
+
+class NightlyPickerAdvancesTests(unittest.TestCase):
+    """Ночная выборка обязана двигаться вперёд, а не пересуживать проверенное.
+
+    Замер 08.08.2026 на живой базе: проверено 491, непроверенных 8709, а следующая ночь
+    брала 500 фраз, из которых 491 уже проверена — то есть продвигалась на девять штук
+    и тратила тысячу запросов к GPT впустую. Виновато было условие
+    `c.text_hash <> ''` — истина для любой проверенной строки."""
+
+    def test_picker_takes_only_never_checked_phrases(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[1] / "database.py").read_text(encoding="utf-8")
+        start = src.index("def pick_phrases_for_grammar_check")
+        # только сам запрос: в docstring условие процитировано как история дефекта
+        sql = src[src.index("cursor.execute(", start):start + 2600]
+        self.assertNotIn("c.text_hash <>", sql,
+                         "сравнение хеша с пустой строкой снова пересуживает проверенное")
+        self.assertIn("AND c.unit_id IS NULL", sql)
+
+    def test_picker_and_the_left_counter_agree(self):
+        """Отчёт обещает «осталось N, ≈N/500 ночей». Если выборка и счётчик смотрят на
+        разное, это обещание — вымысел."""
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[1] / "database.py").read_text(encoding="utf-8")
+        pick = src[src.index("def pick_phrases_for_grammar_check"):][:2600]
+        left = src[src.index("def count_phrases_left_for_grammar_check"):][:1200]
+        self.assertIn("AND c.unit_id IS NULL", pick)
+        self.assertIn("AND c.unit_id IS NULL", left)
