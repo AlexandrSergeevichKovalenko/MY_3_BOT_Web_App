@@ -6039,8 +6039,19 @@ function AppInner() {
   const [translationDictionaryOpen, setTranslationDictionaryOpen] = useState(false);
   const [translationDictionaryAnchor, setTranslationDictionaryAnchor] = useState('');
   const [dictionaryWord, setDictionaryWord] = useState('');
+  // Поле поиска в словаре — многострочное и растёт под текст (см. dq-input--multi).
+  const dictionaryInputRef = useRef(null);
   const [dictSearchMethod, setDictSearchMethod] = useState('gpt'); // 'gpt' | 'quick' | 'base'
   const [dictionaryResult, setDictionaryResult] = useState(null);
+  // Высота поля под текст. Считаем ДО отрисовки, иначе на длинной фразе кадр успевает
+  // мигнуть однострочным полем. Потолок задан в CSS (max-height) — дальше поле
+  // прокручивается само и не выдавливает карточку с экрана.
+  useLayoutEffect(() => {
+    const el = dictionaryInputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [dictionaryWord, dictionaryResult]);
   // Lazy, streamed GPT breakdown for the in-app dictionary (mirrors the quick
   // dictionary): 'idle' shows the «Подробный разбор» button, 'streaming' fills
   // the card section-by-section, 'done' hides the button, 'error' offers retry.
@@ -38591,13 +38602,18 @@ function AppInner() {
                       <div className="webapp-dictionary-form dict-search-compose">
                         {/* Компактная строка «ввод + Перевести рядом» — точь-в-точь классы
                             быстрого словаря (dq-search/dq-input-wrap/dq-input/dq-clear/dq-go). */}
-                        <div className="dq-search">
-                          <div className="dq-input-wrap">
-                            <input
-                              className="ans-input dq-input"
+                        <div className="dq-search dq-search--multi">
+                          <div className="dq-input-wrap dq-input-wrap--multi">
+                            {/* Многострочное поле, как в быстром словаре: однострочный
+                                input обрезал фразу на первой строке, и человек не видел,
+                                что отправил. Высота подгоняется в useLayoutEffect. */}
+                            <textarea
+                              ref={dictionaryInputRef}
+                              className="ans-input dq-input dq-input--multi"
+                              rows={1}
                               value={dictionaryWord}
                               onChange={(event) => setDictionaryWord(event.target.value)}
-                              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleDictionaryLookup(e); } }}
+                              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleDictionaryLookup(e); } }}
                               placeholder={tr('Слово или фраза…', 'Wort oder Phrase…')}
                             />
                             {dictionaryWord.trim() && (

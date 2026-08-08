@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import '../answer/answer.css';
 import './dict.css';
 import { WordBreakdown, useTts, SpeakButton, genderClass, resolveArticle, resolveNumber, resolveLemma, cleanArticle as cleanArticleText, stripLeadingArticle, api, haptic, getInitData, getDictToken } from './WordBreakdown';
@@ -797,6 +797,16 @@ export default function DictionaryOverlay({ onClose } = {}) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); translate(); }
   };
 
+  // Поле результата растёт под текст. Считаем ДО отрисовки (useLayoutEffect), иначе
+  // на длинной фразе кадр успевает мигнуть однострочным полем. Потолок в CSS
+  // (max-height), дальше поле прокручивается само и не съедает экран под перевод.
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el || el.tagName !== 'TEXTAREA' || !el.classList.contains('dq-input--multi')) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [query, quick]);
+
   if (blocked) {
     return <DictBlockedGate botUsername={blocked.botUsername} />;
   }
@@ -902,13 +912,16 @@ export default function DictionaryOverlay({ onClose } = {}) {
           </div>
         ) : (
         <>
-        <div className="dq-search">
-          <div className="dq-input-wrap">
-            <input
+        <div className="dq-search dq-search--multi">
+          <div className="dq-input-wrap dq-input-wrap--multi">
+            {/* Поле остаётся МНОГОСТРОЧНЫМ и после перевода. Раньше здесь стоял
+                <input type="text">, и фраза обрезалась на первой строке: человек не
+                видел, что именно он отправил. Меняли размер — а дело было в самом
+                элементе. Высота подгоняется под текст в useLayoutEffect ниже. */}
+            <textarea
               ref={inputRef}
-              className="ans-input dq-input"
-              type="text"
-              inputMode="text"
+              className="ans-input dq-input dq-input--multi"
+              rows={1}
               autoComplete="off"
               placeholder="Слово или фраза…"
               value={query}
