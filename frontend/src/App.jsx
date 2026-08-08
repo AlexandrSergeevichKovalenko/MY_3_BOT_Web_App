@@ -6041,7 +6041,7 @@ function AppInner() {
   const [dictionaryWord, setDictionaryWord] = useState('');
   // Поле поиска в словаре — многострочное и растёт под текст (см. dq-input--multi).
   const dictionaryInputRef = useRef(null);
-  const [dictSearchMethod, setDictSearchMethod] = useState('gpt'); // 'gpt' | 'quick' | 'base'
+  // dictSearchMethod ('gpt' | 'quick' | 'base') удалён вместе с переключателем движка.
   const [dictionaryResult, setDictionaryResult] = useState(null);
   // Высота поля под текст. Считаем ДО отрисовки, иначе на длинной фразе кадр успевает
   // мигнуть однострочным полем. Потолок задан в CSS (max-height) — дальше поле
@@ -30682,12 +30682,18 @@ function AppInner() {
 
   const handleDictionaryLookup = async (event) => {
     if (event && event.preventDefault) event.preventDefault();
-    if (!initData) {
-      setDictionaryError(initDataMissingMsg);
-      return;
-    }
     if (!dictionaryWord.trim()) {
       setDictionaryError(tr('Введите слово или фразу для словаря.', 'Bitte gib ein Wort oder eine Phrase fürs Wörterbuch ein.'));
+      return;
+    }
+    // Нет сети — идём в офлайн-запас САМИ. Раньше это была кнопка «📖 Офлайн», и в метро
+    // без интернета человек получал ошибку, пока не догадается её нажать. Кнопку убрали,
+    // а способность оставили: она и была единственным путём, который работает без сети.
+    if (!isOnline) {
+      return handleDictionaryBaseLookup();
+    }
+    if (!initData) {
+      setDictionaryError(initDataMissingMsg);
       return;
     }
     setDictionaryLoading(true);
@@ -30712,42 +30718,9 @@ function AppInner() {
     }
   };
 
-  const handleDictionaryQuickLookup = async () => {
-    if (!initData) {
-      setDictionaryError(initDataMissingMsg);
-      return;
-    }
-    const sourceWord = String(dictionaryWord || '').trim();
-    if (!sourceWord) {
-      setDictionaryError(tr('Введите слово или фразу для словаря.', 'Bitte gib ein Wort oder eine Phrase fürs Wörterbuch ein.'));
-      return;
-    }
-    setDictionaryLoading(true);
-    setDictionaryLookupMode('quick');
-    dictionaryLookupPollTokenRef.current += 1;
-    try { dictBreakdownAbortRef.current?.abort(); } catch (_e) { /* ignore */ }
-    setDictBreakdownPhase('idle');
-    setDictBreakdownError('');
-    setDictionaryLookupProgress({
-      lookupId: null,
-      status: 'ready',
-      saveLocked: false,
-      error: '',
-    });
-    setDictionaryError('');
-    setDictionaryResult(null);
-    setDictionarySaved('');
-    setLastLookupScrollY(null);
-    try {
-      // ⚡ Быстро: pure instant translation, no «Подробный разбор» offer.
-      await runDictQuickTranslate(sourceWord, { offerBreakdown: false });
-    } catch (error) {
-      setDictionaryError(normalizeNetworkErrorMessage(error, 'Не удалось перевести. Попробуйте ещё раз.', 'Übersetzung fehlgeschlagen. Bitte versuche es erneut.'));
-    } finally {
-      setDictionaryLoading(false);
-      setDictionaryLookupMode('');
-    }
-  };
+  // handleDictionaryQuickLookup удалён: он делал ровно то же, что и обычный поиск,
+  // только не предлагал «Подробный разбор». Отдельная кнопка «⚡ Быстро» ушла вместе
+  // с выбором движка, а разбор и так лениво докупается тапом.
 
   const handleDictionaryBaseLookup = async () => {
     const sourceWord = String(dictionaryWord || '').trim();
@@ -31228,15 +31201,12 @@ function AppInner() {
               </button>
             )}
           </div>
+          {/* Была тройка «⚡ Перевод / 🤖 AI / 📖 Офлайн» — тот же выбор движка, что и
+              в словаре, только другими словами. Убрана по той же причине: человеку
+              незачем знать, откуда мы берём перевод. Осталась одна кнопка. */}
           <div className="translation-dict-widget-actions">
-            <button type="button" onClick={handleDictionaryQuickLookup} disabled={dictionaryLoading}>
-              {dictionaryLoading && dictionaryLookupMode === 'quick' ? tr('Перевод...', 'Übersetzen...') : tr('⚡ Перевод', '⚡ Übersetzen')}
-            </button>
-            <button type="submit" disabled={dictionaryLoading}>
-              {dictionaryLoading && dictionaryLookupMode === 'gpt' ? tr('AI...', 'KI...') : tr('🤖 AI', '🤖 KI')}
-            </button>
-            <button type="button" onClick={handleDictionaryBaseLookup} disabled={dictionaryLoading}>
-              {dictionaryLoading && dictionaryLookupMode === 'base' ? tr('Офлайн...', 'Offline...') : tr('📖 Офлайн', '📖 Offline')}
+            <button type="submit" disabled={dictionaryLoading || !dictionaryWord.trim()}>
+              {dictionaryLoading ? tr('Перевожу…', 'Übersetze…') : tr('Перевести', 'Übersetzen')}
             </button>
           </div>
           <label className="translation-dict-folder-row">
@@ -38509,32 +38479,13 @@ function AppInner() {
                       </>)}
                     </div>
 
-                    {/* Способ перевода — выбор метода (по умолчанию: Разбор AI) */}
-                    <div className="dict-method" role="tablist" aria-label={tr('Способ перевода', 'Übersetzungsmethode')}>
-                      <button
-                        type="button"
-                        className={`dict-method-seg ${dictSearchMethod === 'gpt' ? 'on' : ''}`}
-                        onClick={() => setDictSearchMethod('gpt')}
-                      >
-                        <span className="dict-method-def">{tr('по умолчанию', 'Standard')}</span>
-                        <span className="dict-method-lbl">✦ {tr('Разбор AI', 'KI-Analyse')}</span>
-                      </button>
-                      <button
-                        type="button"
-                        className={`dict-method-seg ${dictSearchMethod === 'quick' ? 'on' : ''}`}
-                        onClick={() => setDictSearchMethod('quick')}
-                      >
-                        <span className="dict-method-lbl">⚡ {tr('Быстро', 'Schnell')}</span>
-                      </button>
-                      <button
-                        type="button"
-                        className={`dict-method-seg ${dictSearchMethod === 'base' ? 'on' : ''}`}
-                        onClick={() => setDictSearchMethod('base')}
-                      >
-                        <span className="dict-method-lbl">📖 {tr('Офлайн', 'Offline')}</span>
-                      </button>
-                    </div>
-
+                    {/* Переключателя «Разбор AI / Быстро / Офлайн» здесь больше нет.
+                        Человек не должен выбирать, откуда мы берём перевод: он не знает
+                        и не обязан знать, что «Офлайн» — это наш локальный запас, а
+                        «Быстро» — сторонний переводчик без разбора. Источник выбираем
+                        сами и всегда по одной лестнице: кеш → наш словарь → обратная
+                        сторона → офлайн-запас → модель. Модель платная и стоит последней,
+                        то есть за неё платим только на честном промахе. */}
                     {/* Раскладка 1-в-1 с быстрым словарём:
                         • ПУСТО → большой ввод + «Недавние», а «Перевести» ПРИЖАТ к низу
                           экрана (виден всегда, на любой высоте — в этом смысл переводчика);
@@ -38583,11 +38534,7 @@ function AppInner() {
                           <button
                             type="button"
                             className="dict-translate-primary"
-                            onClick={(e) => {
-                              if (dictSearchMethod === 'quick') return handleDictionaryQuickLookup(e);
-                              if (dictSearchMethod === 'base') return handleDictionaryBaseLookup(e);
-                              return handleDictionaryLookup(e);
-                            }}
+                            onClick={handleDictionaryLookup}
                             disabled={dictionaryLoading || !dictionaryWord.trim()}
                           >
                             {dictionaryLoading ? tr('Перевод…', 'Übersetze…') : tr('Перевести', 'Übersetzen')}
@@ -38628,11 +38575,7 @@ function AppInner() {
                           <button
                             type="button"
                             className="dq-go"
-                            onClick={(e) => {
-                              if (dictSearchMethod === 'quick') return handleDictionaryQuickLookup(e);
-                              if (dictSearchMethod === 'base') return handleDictionaryBaseLookup(e);
-                              return handleDictionaryLookup(e);
-                            }}
+                            onClick={handleDictionaryLookup}
                             disabled={dictionaryLoading || !dictionaryWord.trim()}
                           >
                             {dictionaryLoading ? tr('Перевод…', 'Übersetze…') : tr('Перевести', 'Übersetzen')}
