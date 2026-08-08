@@ -51,7 +51,12 @@ def _judge_twice(text: str, kind: str) -> list[dict]:
 
 
 def _both_agree(judges: list[dict]) -> tuple[bool, str, str]:
-    """Согласны ли судьи ДОСЛОВНО. Возвращает (согласны, категория, исправленный текст)."""
+    """Согласны ли судьи ДОСЛОВНО. Возвращает (согласны, категория, исправленный текст).
+
+    Смотрим ТОЛЬКО `corrected` — правку без добавления слов. Поле `proposal` (достройка
+    неполной фразы: дописанное местоимение, артикль, подлежащее) сюда не допускается
+    никогда: дописать слова за человека — это решение о смысле, а его принимает владелец
+    в /admin_phrase_review, а не ночь молча."""
     if len(judges) != 2:
         return False, "", ""
     a, b = judges
@@ -64,6 +69,26 @@ def _both_agree(judges: list[dict]) -> tuple[bool, str, str]:
     if not fix_a or fix_a != fix_b:
         return False, "", ""
     return True, str(a.get("category") or ""), fix_a
+
+
+def rejudge_phrase_review(review_id: int) -> bool:
+    """Переспросить судей по одной уже открытой спорной фразе.
+
+    Зачем. Судьи, отвечавшие до 08.08.2026, не обязаны были показывать готовый вариант:
+    могли написать «фраза не полная, нет местоимения» и не дописать НИЧЕГО. Владельцу
+    оставалось печатать руками. Промпт починен, но фразы, отложенные раньше, лежат со
+    старым вердиктом — эта кнопка спрашивает по ним заново. Один запрос на фразу,
+    поштучно и по нажатию, поэтому расход копеечный."""
+    from backend.database import get_open_phrase_review, update_phrase_review_judges
+
+    row = get_open_phrase_review(int(review_id))
+    if not row:
+        return False
+    judges = _judge_twice(row["text"], row.get("kind") or "collocation")
+    if not any(j for j in judges):
+        return False
+    update_phrase_review_judges(int(review_id), judges)
+    return True
 
 
 def _apply_silent_fix(unit_id: int, corrected: str) -> bool:

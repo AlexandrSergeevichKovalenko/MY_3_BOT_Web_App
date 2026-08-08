@@ -6874,7 +6874,14 @@ async def handle_describe_new_callback(update: Update, context: CallbackContext)
 
 async def handle_phrase_review_own_input(update: Update, context: CallbackContext) -> None:
     """Свой вариант фразы после «✏️ Вписать свою». Ранняя группа обработчиков; сообщение
-    забираем ТОЛЬКО у того владельца, который сейчас этого варианта ждёт."""
+    забираем ТОЛЬКО у того владельца, который сейчас этого варианта ждёт.
+
+    Результат дописываем В ТО ЖЕ сообщение, где открыт разбор, и там же показываем
+    следующую фразу. Раньше бот отвечал двумя новыми сообщениями, и владельца уносило в
+    самый конец переписки — мимо сотни непрочитанных, к которым потом не вернуться.
+    Новое сообщение шлём только если старое отредактировать не вышло (удалено/слишком
+    старое) — молчать в ответ на правку нельзя."""
+    from html import escape as _esc
     if not update.message or not (update.message.text or ""):
         return
     user = update.effective_user
@@ -6883,27 +6890,40 @@ async def handle_phrase_review_own_input(update: Update, context: CallbackContex
     txt = (update.message.text or "").strip()
     if txt.startswith("/"):
         return  # настоящие команды пропускаем, ожидание не сбрасываем
-    review_id = _PHRASE_REVIEW_PENDING_INPUT.pop(int(user.id))
+    pending = _PHRASE_REVIEW_PENDING_INPUT.pop(int(user.id)) or {}
+    review_id = int(pending.get("review_id") or 0)
+    idx = int(pending.get("idx") or 0)
+    anchor_chat = int(pending.get("chat_id") or 0)
+    anchor_msg = int(pending.get("message_id") or 0)
     from backend.database import apply_phrase_review_decision, list_open_phrase_reviews
     try:
-        res = await asyncio.to_thread(apply_phrase_review_decision, int(review_id), "replace", txt)
+        res = await asyncio.to_thread(apply_phrase_review_decision, review_id, "replace", txt)
     except Exception as exc:
         logging.exception("phrase review own text failed id=%s", review_id)
         await update.message.reply_text(f"❌ Не получилось записать: {exc}")
         return
     if not res.get("text"):
-        await update.message.reply_text(
-            "⚠️ Не записал: такая фраза в словаре уже есть или текст пустой. "
-            "Фраза снята с разбора.")
+        note = ("⚠️ Не записал: такая фраза в словаре уже есть или текст пустой. "
+                "Фраза снята с разбора.")
     else:
-        await update.message.reply_text(
-            f"✅ Записал: <code>{res['text']}</code>\nРазбор к ней соберётся ночью.",
-            parse_mode="HTML")
+        note = f"✅ Записал: <code>{_esc(res['text'])}</code> — разбор к ней соберётся ночью."
+
     items = await asyncio.to_thread(list_open_phrase_reviews, 200)
     if items:
-        text, markup = _build_phrase_review(items, 0)
-        await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup,
-                                        disable_web_page_preview=True)
+        text, markup = _build_phrase_review(items, min(idx, len(items) - 1), note)
+    else:
+        text, markup = note + "\n\n✅ Спорные фразы разобраны — больше ничего не ждёт.", None
+    if anchor_chat and anchor_msg:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=anchor_chat, message_id=anchor_msg, text=text, parse_mode="HTML",
+                reply_markup=markup, disable_web_page_preview=True)
+            return
+        except Exception:
+            logging.debug("phrase review anchor edit failed chat=%s msg=%s",
+                          anchor_chat, anchor_msg, exc_info=True)
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup,
+                                    disable_web_page_preview=True)
 
 
 async def handle_describe_custom_input(update: Update, context: CallbackContext) -> None:
@@ -11868,10 +11888,18 @@ async def admin_pool_enrich_command(update: Update, context: CallbackContext):
     )
 
 
-# ── Карантин пула: интерактивный разбор «отметь галочками, удали мусор» ──────────
-# Все слова по умолчанию отмечены ✅ (на удаление); тап отжимает в ☐ (оставить). Внизу
-# «🗑 Удалить отмеченные (N)». Снимок кандидатов и набор «оставленных» живут в сессии
-# (bt_3_pool_quarantine_review), поэтому состояние переживает пагинацию и переключения.
+# ── Карантин пула: интерактивный разбор «мусор — удалить, нормальное — вернуть» ──
+# Все слова по умолчанию отмечены 🗑 (на удаление); тап переводит в ↩️ (вернуть в работу).
+# Внизу одна кнопка «Применить», и она делает ОБА действия: мусор удаляет, отмеченное
+# «вернуть» — выпускает из карантина обратно в ночное обогащение.
+#
+# Почему так. Карантин — это счётчик неудачных попыток внутри записи, а не отдельный
+# список. Пока «оставить» означало просто «не удалять сейчас», счётчик оставался на
+# потолке: слово никуда не уходило, в обогащение не возвращалось и приходило владельцу
+# в воскресном разборе неделя за неделей. Выпустить его может только сброс счётчика.
+#
+# Снимок кандидатов и набор «возвращаемых» живут в сессии (bt_3_pool_quarantine_review),
+# поэтому состояние переживает пагинацию и переключения.
 _QUARANTINE_PAGE_SIZE = 8
 _QUARANTINE_MAX_CANDIDATES = 160  # верхняя граница на одну сессию разбора
 
@@ -11889,8 +11917,12 @@ def _build_quarantine_review(session: dict, sid: str, page: int) -> tuple[str, "
     to_delete = sum(1 for c in cands if int(c.get("id")) not in kept)
 
     head = [
-        f"🗑 <b>Карантин пула</b> — {total} слов, к удалению отмечено <b>{to_delete}</b>",
-        "<i>✅ = удалить, ☐ = оставить. Отожми те, что удалять НЕ надо, потом «Удалить отмеченные».</i>",
+        f"🗑 <b>Карантин пула</b> — {total} слов",
+        "<i>Карточка не собралась три раза подряд, и слово выпало из ночной очереди.</i>",
+        "",
+        f"Сейчас: удалить <b>{to_delete}</b>, вернуть в работу <b>{len(kept)}</b>.",
+        "<i>Тап по слову переключает: 🗑 удалить ↔ ↩️ вернуть. «Вернуть» — значит слово "
+        "снова попадёт в ночное обогащение и бот попробует собрать карточку заново.</i>",
         f"Стр. {page + 1}/{n_pages}",
         "",
     ]
@@ -11898,12 +11930,14 @@ def _build_quarantine_review(session: dict, sid: str, page: int) -> tuple[str, "
     for local_i, c in enumerate(chunk):
         gidx = start + local_i
         cid = int(c.get("id"))
-        mark = "☐" if cid in kept else "✅"
+        mark = "↩️" if cid in kept else "🗑"
         why = reason_ru.get(str(c.get("r") or ""), "?")
         word = str(c.get("w") or "")
+        again = int(c.get("rel") or 0)
+        again_note = f", возвращали {again}×" if again else ""
         head.append(
             f"{gidx + 1}. <b>{_esc(word)}</b> — {_esc(str(c.get('t') or ''))} "
-            f"<i>[{why}, спрос {int(c.get('d') or 0)}]</i>"
+            f"<i>[{why}, спрос {int(c.get('d') or 0)}{again_note}]</i>"
         )
         label = f"{mark} {gidx + 1}. {word}"
         if len(label) > 60:
@@ -11917,17 +11951,25 @@ def _build_quarantine_review(session: dict, sid: str, page: int) -> tuple[str, "
         nav.append(InlineKeyboardButton("▶", callback_data=f"qz:p:{sid}:{page + 1}"))
     if nav:
         rows_kb.append(nav)
-    rows_kb.append([InlineKeyboardButton(f"🗑 Удалить отмеченные ({to_delete})", callback_data=f"qz:del:{sid}")])
-    rows_kb.append([InlineKeyboardButton("✖ Закрыть", callback_data=f"qz:x:{sid}")])
+    rows_kb.append([InlineKeyboardButton(
+        f"✅ Применить: удалить {to_delete}, вернуть {len(kept)}", callback_data=f"qz:del:{sid}")])
+    rows_kb.append([InlineKeyboardButton("✖ Закрыть без изменений", callback_data=f"qz:x:{sid}")])
     return "\n".join(head), InlineKeyboardMarkup(rows_kb)
 
 
-_PHRASE_REVIEW_PENDING_INPUT: dict = {}   # admin_id -> review_id, ждём свой текст
+_PHRASE_REVIEW_PENDING_INPUT: dict = {}   # admin_id -> {"review_id", "idx", "chat_id", "message_id"}
 
 
-def _build_phrase_review(items: list, idx: int) -> tuple:
-    """Одна спорная фраза на экран и три решения. По одной, а не списком: решение здесь
-    не «отметить галочкой», а выбрать одно из трёх, и каждое надо обдумать."""
+def _build_phrase_review(items: list, idx: int, note: str = "") -> tuple:
+    """Одна спорная фраза на экран. По одной, а не списком: решение здесь не «отметить
+    галочкой», а выбрать один из готовых вариантов, и каждый надо обдумать.
+
+    Судей двое, и они часто расходятся — из-за этого фраза сюда и попала. Поэтому кнопка
+    «Принять» не одна: у каждого предложенного варианта своя, с номером судьи, и рядом с
+    вариантом в тексте стоит тот же номер. Иначе по кнопке нельзя понять, что принимаешь.
+
+    `note` — строка результата предыдущего действия. Она печатается прямо в этой карточке,
+    чтобы подтверждение не улетало отдельным сообщением в конец чата."""
     from html import escape as _esc
     total = len(items)
     idx = max(0, min(idx, total - 1))
@@ -11935,8 +11977,16 @@ def _build_phrase_review(items: list, idx: int) -> tuple:
     judges = it.get("judges") or []
     names = {"rechtschreibung": "опечатка", "kongruenz": "согласование", "kasus": "падеж",
              "praeposition": "предлог", "wortstellung": "порядок слов", "stil": "стиль"}
-    lines = [f"<b>{idx + 1} из {total}</b>\n",
-             f"<code>{_esc(it.get('text') or '')}</code>"]
+    from backend.database import phrase_review_variants
+    variants = phrase_review_variants(judges)
+    # вариант → его номер в списке кнопок, чтобы подписать его в тексте тем же числом
+    slot_of = {v["text"]: n for n, v in enumerate(variants, 1)}
+
+    lines = []
+    if note:
+        lines.append(f"{note}\n")
+    lines += [f"<b>{idx + 1} из {total}</b>\n",
+              f"<code>{_esc(it.get('text') or '')}</code>"]
     if it.get("translation"):
         lines.append(f"<i>{_esc(it['translation'])}</i>")
     lines.append("")
@@ -11952,21 +12002,39 @@ def _build_phrase_review(items: list, idx: int) -> tuple:
         else:
             head = f"Судья {n} · ошибки нет"
         lines.append(head)
-        if j.get("corrected"):
-            lines.append(f"    <code>{_esc(j['corrected'])}</code>")
         if j.get("why"):
             lines.append(f"    <i>{_esc(j['why'])}</i>")
-    accept = next((str(j.get("corrected") or "") for j in judges if j.get("corrected")), "")
-    buttons = []
-    if accept:
-        buttons.append(InlineKeyboardButton("✅ Принять", callback_data=f"pr:ok:{it['id']}:{idx}"))
-    buttons.append(InlineKeyboardButton("🗑 Удалить", callback_data=f"pr:del:{it['id']}:{idx}"))
-    buttons.append(InlineKeyboardButton("✏️ Вписать свою", callback_data=f"pr:own:{it['id']}:{idx}"))
+        for field, label in (("corrected", "как исправить"), ("proposal", "как дописать")):
+            text = str(j.get(field) or "").strip()
+            if not text:
+                continue
+            slot = slot_of.get(text)
+            tag = f"Вариант {slot}" if slot else label
+            lines.append(f"    <b>{tag}</b> ({label}): <code>{_esc(text)}</code>")
+    if not variants:
+        lines.append("\n<i>Готового варианта судьи не дали. Нажми «Спросить заново» — "
+                     "или впиши свой, или удали фразу.</i>")
+
+    rows: list[list] = []
+    for n, v in enumerate(variants, 1):
+        label = v["text"] if len(v["text"]) <= 42 else v["text"][:41] + "…"
+        rows.append([InlineKeyboardButton(
+            f"✅ Принять {n}: {label}", callback_data=f"pr:ok:{it['id']}:{idx}:{n - 1}")])
+    if not variants:
+        # Фразы, отложенные до 08.08.2026, судились промптом, который не требовал
+        # показывать готовый вариант. Переспросить одну — один запрос, копейки.
+        rows.append([InlineKeyboardButton(
+            "🔁 Спросить заново", callback_data=f"pr:again:{it['id']}:{idx}")])
+    rows.append([
+        InlineKeyboardButton("🗑 Удалить", callback_data=f"pr:del:{it['id']}:{idx}"),
+        InlineKeyboardButton("✏️ Вписать свою", callback_data=f"pr:own:{it['id']}:{idx}"),
+    ])
     nav = []
     if idx > 0:
         nav.append(InlineKeyboardButton("‹ назад", callback_data=f"pr:nav:0:{idx - 1}"))
     nav.append(InlineKeyboardButton("Пропустить ›", callback_data=f"pr:nav:0:{idx + 1}"))
-    return "\n".join(lines), InlineKeyboardMarkup([buttons, nav])
+    rows.append(nav)
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
 async def admin_phrase_review_command(update: Update, context: CallbackContext):
@@ -11997,38 +12065,66 @@ async def handle_phrase_review_callback(update: Update, context: CallbackContext
     if not _is_admin_user(user.id):
         await query.answer("Только для администратора.", show_alert=True)
         return
-    parts = str(query.data or "").split(":")       # pr:<action>:<review_id>:<idx>
+    parts = str(query.data or "").split(":")       # pr:<action>:<review_id>:<idx>[:<variant>]
     action = parts[1] if len(parts) > 1 else ""
     review_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
     idx = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    variant = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
 
     from backend.database import (
         close_phrase_review, list_open_phrase_reviews, apply_phrase_review_decision,
     )
+    note = ""
     if action == "own":
-        _PHRASE_REVIEW_PENDING_INPUT[int(user.id)] = review_id
+        # Запоминаем, В КАКОМ сообщении открыт разбор: ответ на свой вариант допишется
+        # сюда же. Иначе бот отвечал новыми сообщениями в конец чата, и владельца
+        # выбрасывало из середины непрочитанного к последней строке переписки.
+        _PHRASE_REVIEW_PENDING_INPUT[int(user.id)] = {
+            "review_id": review_id, "idx": idx,
+            "chat_id": query.message.chat_id if query.message else 0,
+            "message_id": query.message.message_id if query.message else 0,
+        }
         await query.answer()
         await query.edit_message_text(
             "✏️ Пришлите свой вариант фразы одним сообщением.\n"
-            "Он заменит фразу в общем словаре и уйдёт на разбор следующей ночью.",
+            "Он заменит фразу в общем словаре и уйдёт на разбор следующей ночью.\n"
+            "<i>Ответ придёт сюда же, в это сообщение.</i>",
             parse_mode="HTML")
         return
-    if action in ("ok", "del"):
+    if action == "again":
+        await query.answer("Спрашиваю судей заново…")
+        from backend.phrase_night_check import rejudge_phrase_review
         try:
-            await asyncio.to_thread(apply_phrase_review_decision, review_id,
-                                    "accept" if action == "ok" else "delete", "")
+            ok = await asyncio.to_thread(rejudge_phrase_review, review_id)
+        except Exception:
+            logging.exception("phrase review rejudge failed id=%s", review_id)
+            ok = False
+        note = "🔁 Переспросил судей." if ok else "⚠️ Судьи не ответили — попробуй ещё раз."
+    elif action in ("ok", "del"):
+        try:
+            res = await asyncio.to_thread(apply_phrase_review_decision, review_id,
+                                          "accept" if action == "ok" else "delete", "", variant)
         except Exception as exc:
             logging.exception("phrase review decision failed id=%s", review_id)
             await query.answer(f"Не получилось: {exc}", show_alert=True)
             return
+        if action == "del":
+            note = "🗑 Фраза удалена из общего словаря."
+        elif res.get("text"):
+            from html import escape as _esc
+            note = f"✅ Записал: <code>{_esc(res['text'])}</code>"
+        else:
+            note = "⚠️ Не записал: такая фраза уже есть в словаре. Снял с разбора."
         await query.answer("Принято" if action == "ok" else "Удалено")
     else:
         await query.answer()
     items = await asyncio.to_thread(list_open_phrase_reviews, 200)
     if not items:
-        await query.edit_message_text("✅ Спорные фразы разобраны — больше ничего не ждёт.")
+        await query.edit_message_text(
+            (note + "\n\n" if note else "") + "✅ Спорные фразы разобраны — больше ничего не ждёт.",
+            parse_mode="HTML")
         return
-    text, markup = _build_phrase_review(items, min(idx, len(items) - 1))
+    text, markup = _build_phrase_review(items, min(idx, len(items) - 1), note)
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup,
                                   disable_web_page_preview=True)
 
@@ -12036,7 +12132,9 @@ async def handle_phrase_review_callback(update: Update, context: CallbackContext
 async def admin_pool_quarantine_command(update: Update, context: CallbackContext):
     """Интерактивный разбор «мусора» пула: слова, которые GPT не смог собрать в карточку
     POOL_ENRICH_MAX_ATTEMPTS раз подряд (выдуманные композиты/опечатки/обрывки, спрос ~0).
-    Все отмечены на удаление; отожми лишнее и жми «Удалить отмеченные». /admin_pool_quarantine"""
+    Все отмечены 🗑; тап переключает в ↩️ «вернуть в работу», «Применить» делает оба
+    действия — удаляет мусор и выпускает возвращённые обратно в ночное обогащение.
+    /admin_pool_quarantine"""
     sender = update.effective_user
     message = update.effective_message
     if not sender or not message:
@@ -12057,7 +12155,8 @@ async def admin_pool_quarantine_command(update: Update, context: CallbackContext
     sid = await asyncio.to_thread(create_quarantine_review_session, int(sender.id), rows)
     session = {"admin_id": int(sender.id),
                "candidates": [{"id": int(r["id"]), "w": r.get("source_text"), "t": r.get("target_text"),
-                               "r": r.get("reason"), "d": r.get("demand")} for r in rows],
+                               "r": r.get("reason"), "d": r.get("demand"),
+                               "rel": int(r.get("releases") or 0)} for r in rows],
                "kept_ids": []}
     text, markup = _build_quarantine_review(session, sid, 0)
     await message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
@@ -12078,6 +12177,7 @@ async def handle_quarantine_callback(update: Update, context: CallbackContext) -
     from backend.database import (
         get_quarantine_review_session, toggle_quarantine_review_keep,
         delete_pool_entries_by_ids, delete_quarantine_review_session,
+        release_pool_entries_from_quarantine,
     )
     session = await asyncio.to_thread(get_quarantine_review_session, sid)
     if not session or int(session.get("admin_id") or 0) != int(user.id):
@@ -12105,33 +12205,41 @@ async def handle_quarantine_callback(update: Update, context: CallbackContext) -
         elif action == "del":  # ask confirm
             kept = set(session.get("kept_ids") or [])
             n = sum(1 for c in (session.get("candidates") or []) if int(c["id"]) not in kept)
-            if n == 0:
-                await query.answer("Ничего не отмечено к удалению.", show_alert=True)
+            if n == 0 and not kept:
+                await query.answer("Нечего применять.", show_alert=True)
                 return
             await query.answer()
             kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"✅ Да, удалить {n}", callback_data=f"qz:go:{sid}"),
+                InlineKeyboardButton(f"✅ Да: −{n} / ↩️{len(kept)}", callback_data=f"qz:go:{sid}"),
                 InlineKeyboardButton("↩ Назад", callback_data=f"qz:p:{sid}:0"),
             ]])
             await query.edit_message_text(
-                f"⚠️ Удалить <b>{n}</b> слов из пула безвозвратно?\n"
-                f"<i>Оставленные (☐) не тронутся. Удалённое при повторном запросе снова уйдёт в GPT.</i>",
+                f"⚠️ Удалить из пула безвозвратно: <b>{n}</b>.\n"
+                f"Вернуть в ночное обогащение: <b>{len(kept)}</b>.\n\n"
+                f"<i>Удалённое при следующем запросе снова уйдёт в GPT. Возвращённое бот "
+                f"попробует собрать заново ближайшей ночью; если снова не выйдет три раза — "
+                f"слово вернётся в этот разбор с пометкой, сколько раз его уже возвращали.</i>",
                 parse_mode="HTML", reply_markup=kb,
             )
-        elif action == "go":  # perform delete
-            kept = set(session.get("kept_ids") or [])
-            del_ids = [int(c["id"]) for c in (session.get("candidates") or []) if int(c["id"]) not in kept]
+        elif action == "go":  # perform delete + release
+            kept = sorted(set(session.get("kept_ids") or []))
+            del_ids = [int(c["id"]) for c in (session.get("candidates") or [])
+                       if int(c["id"]) not in set(kept)]
             deleted = await asyncio.to_thread(delete_pool_entries_by_ids, del_ids)
+            released = await asyncio.to_thread(release_pool_entries_from_quarantine, kept) if kept else 0
             await asyncio.to_thread(delete_quarantine_review_session, sid)
             await query.answer("Готово.")
             await query.edit_message_text(
-                f"🗑 Удалено из пула: <b>{deleted}</b>. Оставлено: <b>{len(kept)}</b>.",
+                f"🗑 Удалено из пула: <b>{deleted}</b>.\n"
+                f"↩️ Возвращено в обогащение: <b>{released}</b> — бот возьмётся за них ночью.",
                 parse_mode="HTML",
             )
         elif action == "x":  # close
             await asyncio.to_thread(delete_quarantine_review_session, sid)
             await query.answer("Закрыто.")
-            await query.edit_message_text("🗑 Разбор карантина закрыт. Ничего не удалено.")
+            await query.edit_message_text(
+                "🗑 Разбор карантина закрыт. Ничего не удалено и ничего не возвращено — "
+                "слова остались в карантине.")
         else:
             await query.answer()
     except Exception:
@@ -12164,7 +12272,8 @@ def _send_quarantine_review_weekly() -> None:
                 session = {"admin_id": uid,
                            "candidates": [{"id": int(r["id"]), "w": r.get("source_text"),
                                            "t": r.get("target_text"), "r": r.get("reason"),
-                                           "d": r.get("demand")} for r in rows],
+                                           "d": r.get("demand"),
+                                           "rel": int(r.get("releases") or 0)} for r in rows],
                            "kept_ids": []}
                 text, markup = _build_quarantine_review(session, sid, 0)
                 requests.post(

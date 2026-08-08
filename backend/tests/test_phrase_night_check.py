@@ -15,8 +15,53 @@ import unittest
 from backend.phrase_night_check import SILENT_CATEGORIES, _both_agree
 
 
-def v(verdict="error", category="rechtschreibung", corrected="", why=""):
-    return {"verdict": verdict, "category": category, "corrected": corrected, "why": why}
+def v(verdict="error", category="rechtschreibung", corrected="", why="", proposal=""):
+    return {"verdict": verdict, "category": category, "corrected": corrected,
+            "proposal": proposal, "why": why}
+
+
+class JudgeVariantsTests(unittest.TestCase):
+    """Что владелец видит кнопками в /admin_phrase_review.
+
+    Судей двое, и расходятся они постоянно — из-за этого фраза туда и попадает. Одна
+    кнопка «Принять» молча брала вариант первого судьи: по кнопке нельзя было понять,
+    какую из двух правок принимаешь. Теперь у каждого варианта своя кнопка со своим
+    номером, и тот же номер стоит рядом с вариантом в тексте."""
+
+    def test_two_different_fixes_give_two_buttons(self):
+        from backend.database import phrase_review_variants
+        got = phrase_review_variants([
+            v(category="wortstellung", corrected="Er hat hochbekommen"),
+            v(category="wortstellung", corrected="Er hat hoch bekommen"),
+        ])
+        self.assertEqual([x["text"] for x in got],
+                         ["Er hat hochbekommen", "Er hat hoch bekommen"])
+        self.assertEqual([x["judge"] for x in got], [1, 2])
+
+    def test_identical_fixes_collapse_into_one_button(self):
+        from backend.database import phrase_review_variants
+        got = phrase_review_variants([v(corrected="Ich habe Hunger"), v(corrected="Ich habe Hunger")])
+        self.assertEqual(len(got), 1)
+
+    def test_incomplete_phrase_offers_the_completed_text(self):
+        """Судья сказал «фраза не полная, нет местоимения» — и обязан показать, ЧТО
+        дописать. Диагноз без готового варианта заставляет владельца печатать руками."""
+        from backend.database import phrase_review_variants
+        got = phrase_review_variants([
+            v(verdict="error", category="kongruenz", corrected="",
+              proposal="das Anliegen an ihn", why="Фраза не полная, нет местоимения."),
+        ])
+        self.assertEqual([x["text"] for x in got], ["das Anliegen an ihn"])
+        self.assertEqual(got[0]["field"], "proposal")
+
+    def test_completion_never_reaches_the_silent_night_fix(self):
+        """Дописать слова за человека — решение о смысле, его принимает владелец.
+        Ночь молча правит только то, что оба судьи выдали в `corrected`."""
+        agreed, _c, _f = _both_agree([
+            v(corrected="", proposal="das Anliegen an ihn"),
+            v(corrected="", proposal="das Anliegen an ihn"),
+        ])
+        self.assertFalse(agreed)
 
 
 class BothJudgesMustAgreeTests(unittest.TestCase):

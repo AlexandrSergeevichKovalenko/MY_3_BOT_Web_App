@@ -22081,7 +22081,10 @@ def get_quarantined_pool_entries(limit: int = 1000) -> list[dict]:
                                       THEN (e.response_json->>'enrich_attempts')::int
                                       ELSE 0 END), 0) AS attempts,
                        e.response_json->>'enrich_last_reason' AS reason,
-                       COALESCE(MAX(c.hit_count), 0) AS demand
+                       COALESCE(MAX(c.hit_count), 0) AS demand,
+                       COALESCE((CASE WHEN e.response_json->>'quarantine_releases' ~ '^[0-9]+$'
+                                      THEN (e.response_json->>'quarantine_releases')::int
+                                      ELSE 0 END), 0) AS releases
                 FROM bt_3_dictionary_entries e
                 LEFT JOIN bt_3_dictionary_lookup_cache c
                        ON c.normalized_word IN (e.source_headword_norm, e.source_text_norm)
@@ -22101,6 +22104,7 @@ def get_quarantined_pool_entries(limit: int = 1000) -> list[dict]:
             "id": r[0], "source_lang": r[1], "target_lang": r[2],
             "source_text": r[3], "target_text": r[4],
             "attempts": int(r[5] or 0), "reason": str(r[6] or ""), "demand": int(r[7] or 0),
+            "releases": int(r[8] or 0),
         }
         for r in rows
     ]
@@ -22267,6 +22271,38 @@ def count_open_phrase_reviews() -> int:
             return int((cursor.fetchone() or [0])[0])
 
 
+def get_open_phrase_review(review_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                """SELECT r.id, r.unit_id, r.text, r.translation, r.judges, u.kind
+                   FROM bt_3_phrase_review r
+                   LEFT JOIN bt_3_lex_units u ON u.id = r.unit_id
+                   WHERE r.id = %s AND r.status = 'open';""",
+                (int(review_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"id": int(row[0]), "unit_id": int(row[1]), "text": row[2],
+            "translation": row[3] or "", "judges": row[4] if isinstance(row[4], list) else [],
+            "kind": str(row[5] or "collocation")}
+
+
+def update_phrase_review_judges(review_id: int, judges: list) -> None:
+    """Переспросили судей по уже открытой фразе — кладём новый вердикт на место старого.
+    Строка остаётся той же и не всплывает заново в очереди: решение по ней ещё не принято."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "UPDATE bt_3_phrase_review SET judges = %s WHERE id = %s AND status = 'open';",
+                (json.dumps(judges or [], ensure_ascii=False), int(review_id)),
+            )
+        conn.commit()
+
+
 def close_phrase_review(review_id: int, status: str) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -22278,7 +22314,32 @@ def close_phrase_review(review_id: int, status: str) -> None:
         conn.commit()
 
 
-def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = "") -> dict:
+def phrase_review_variants(judges: list) -> list[dict]:
+    """Все РАЗНЫЕ варианты правки, которые предложили судьи, по порядку судей.
+
+    Судей двое, и они часто расходятся — ровно поэтому фраза и попала владельцу. Пока
+    «Принять» было одно, оно молча брало вариант первого судьи, и по кнопке нельзя было
+    понять, что именно ты принимаешь. Теперь у каждого варианта своя кнопка.
+
+    `corrected` — правка без добавления слов (её же берёт ночной автофикс). `proposal` —
+    достройка неполной фразы: судья дописывает недостающее (местоимение, артикль), чтобы
+    фраза стала целой. В автофикс proposal не идёт НИКОГДА, только владельцу на решение."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for n, j in enumerate(judges or [], 1):
+        if not isinstance(j, dict):
+            continue
+        for field in ("corrected", "proposal"):
+            text = str(j.get(field) or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            out.append({"judge": n, "field": field, "text": text})
+    return out
+
+
+def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = "",
+                                 variant: int = 0) -> dict:
     """Решение владельца по спорной фразе: принять правку, удалить или вписать свою.
 
     Правило удаления, согласованное 06.08.2026. Фраза уходит из общего словаря, и вместе
@@ -22323,8 +22384,9 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 return result
 
             if decision == "accept":
-                new_text = next((str(j.get("corrected") or "").strip()
-                                 for j in judges if j.get("corrected")), "")
+                variants = phrase_review_variants(judges)
+                idx = int(variant or 0)
+                new_text = variants[idx]["text"] if 0 <= idx < len(variants) else ""
             else:
                 new_text = str(own_text or "").strip()
             if not new_text or new_text == old_text:
@@ -22439,7 +22501,8 @@ def create_quarantine_review_session(admin_id: int, candidates: list[dict]) -> s
     payload = [
         {"id": int(c.get("id")), "w": str(c.get("source_text") or c.get("w") or ""),
          "t": str(c.get("target_text") or c.get("t") or ""),
-         "r": str(c.get("reason") or c.get("r") or ""), "d": int(c.get("demand") or c.get("d") or 0)}
+         "r": str(c.get("reason") or c.get("r") or ""), "d": int(c.get("demand") or c.get("d") or 0),
+         "rel": int(c.get("releases") or c.get("rel") or 0)}
         for c in candidates if c.get("id") is not None
     ]
     with get_db_connection_context() as conn:
@@ -22543,6 +22606,46 @@ def delete_pool_entries_by_ids(ids: list[int]) -> int:
             deleted = cursor.rowcount
         conn.commit()
     return int(deleted or 0)
+
+
+def release_pool_entries_from_quarantine(ids: list[int]) -> int:
+    """Вернуть слова из карантина в ночную очередь обогащения.
+
+    Карантин — это НЕ отдельная колонка, а счётчик `enrich_attempts` в response_json:
+    дошёл до POOL_ENRICH_MAX_ATTEMPTS — слово выпало из очереди. Пока счётчик не сброшен,
+    «оставить» в разборе означало только «не удалять сейчас»: слово никуда не уходило и
+    приходило владельцу в воскресном разборе снова и снова. Сброс счётчика — единственный
+    способ вернуть его в работу.
+
+    Считаем, сколько раз слово уже возвращали (`quarantine_releases`) и когда в последний
+    раз (`quarantine_released_at`): по этому видно слова, которые не собираются никогда,
+    и их не приходится вспоминать на память."""
+    clean_ids = [int(x) for x in (ids or []) if str(x).lstrip("-").isdigit()]
+    if not clean_ids:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_dictionary_entries
+                SET response_json = COALESCE(response_json, '{}'::jsonb)
+                    || jsonb_build_object(
+                        'enrich_attempts', 0,
+                        'quarantine_released_at', to_char(NOW() AT TIME ZONE 'UTC',
+                                                          'YYYY-MM-DD"T"HH24:MI:SSZ'),
+                        'quarantine_releases',
+                        COALESCE((CASE WHEN response_json->>'quarantine_releases' ~ '^[0-9]+$'
+                                       THEN (response_json->>'quarantine_releases')::int
+                                       ELSE 0 END), 0) + 1
+                    )
+                WHERE id = ANY(%s)
+                """,
+                (clean_ids,),
+            )
+            released = cursor.rowcount
+        conn.commit()
+    logging.info("pool quarantine release: ids=%s released=%s", len(clean_ids), released)
+    return int(released or 0)
 
 
 def get_thin_pool_entries_for_enrichment(

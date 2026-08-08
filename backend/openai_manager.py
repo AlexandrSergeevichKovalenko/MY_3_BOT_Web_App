@@ -8728,9 +8728,18 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence") -> dict:
         "- Colloquial but attested German is CORRECT. Do not standardise it.\n"
         "- Keep the learner's words: `corrected` may fix endings, articles, prepositions, "
         "punctuation and word order, but must not swap in synonyms or add/remove content.\n"
+        "- ALWAYS fill `proposal` whenever verdict is NOT \"ok\": the shortest German text "
+        "you would put in the dictionary instead. Unlike `corrected`, here you MAY add the "
+        "few words the text is missing - a pronoun, an article, a subject, a finite verb - "
+        "so that it becomes a well-formed German sentence or phrase. Add as little as "
+        "possible and never change the meaning. If `corrected` is already complete and "
+        "well-formed, repeat it in `proposal`. Never leave `proposal` empty while "
+        "complaining that something is missing - naming the defect without showing the fix "
+        "is useless to the reader.\n"
         "Answer STRICT JSON only: {\"verdict\":\"ok|error|context|style\","
         "\"category\":\"rechtschreibung|kongruenz|kasus|praeposition|wortstellung|stil|\","
-        "\"corrected\":\"<fixed text or empty>\",\"why\":\"<one short sentence in RUSSIAN>\"}"
+        "\"corrected\":\"<fixed text or empty>\",\"proposal\":\"<complete German text or empty>\","
+        "\"why\":\"<one short sentence in RUSSIAN>\"}"
     )
     try:
         client = build_sync_openai_client(api_key=api_key, timeout=15)
@@ -8765,13 +8774,19 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence") -> dict:
         "verdict": str(data.get("verdict") or "ok").strip().lower(),
         "category": str(data.get("category") or "").strip().lower(),
         "corrected": str(data.get("corrected") or "").strip(),
+        "proposal": str(data.get("proposal") or "").strip(),
         "why": str(data.get("why") or "").strip(),
     }
     # Ответ не в том алфавите — модель перевела вместо разбора; такому верить нельзя.
     if out["corrected"] and _has_cyrillic(out["corrected"]):
-        return {"verdict": "ok", "category": "", "corrected": "", "why": ""}
+        return {"verdict": "ok", "category": "", "corrected": "", "proposal": "", "why": ""}
+    if out["proposal"] and _has_cyrillic(out["proposal"]):
+        out["proposal"] = ""
     if out["corrected"] == t:
         out["corrected"] = ""
+    # Достройка совпала с самим текстом или с правкой — второй кнопки быть не должно.
+    if out["proposal"] in (t, out["corrected"]):
+        out["proposal"] = ""
     return out
 
 
