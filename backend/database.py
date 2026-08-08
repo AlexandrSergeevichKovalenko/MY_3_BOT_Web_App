@@ -22447,14 +22447,16 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
             if any(_phrase_same_text(value, prev) for prev in seen):
                 continue
             seen.add(value)
-            out.append({"judge": n, "field": field, "text": value})
+            out.append({"judge": n, "field": field, "text": value,
+                        "ru": str(j.get(f"{field}_ru") or "").strip()})
     # Третейский судья может предложить СВОЙ текст — когда правы оба наполовину. Он
     # идёт последним, чтобы номера уже показанных вариантов не сдвинулись под рукой у
     # владельца: он мог смотреть на экран до того, как спор разрешили.
     better = str((arbiter or {}).get("better") or "").strip()
     if (better and not _phrase_same_text(better, original)
             and not any(_phrase_same_text(better, prev) for prev in seen)):
-        out.append({"judge": 0, "field": "arbiter", "text": better})
+        out.append({"judge": 0, "field": "arbiter", "text": better,
+                    "ru": str((arbiter or {}).get("better_ru") or "").strip()})
     return out
 
 

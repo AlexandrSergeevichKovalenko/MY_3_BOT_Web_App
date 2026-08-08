@@ -31,6 +31,12 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   const [note, setNote] = useState('');
   // Сколько в очереди пустых придирок: заявлена ошибка, а исправить нечего.
   const [noise, setNoise] = useState(0);
+  // Вопрос своими словами про эту фразу. Владельцу пришлось уходить в другое приложение,
+  // чтобы выяснить, что «Wappnen mit» и «Wappnen gegen» — разные значения, а не ошибка;
+  // спрашивать надо там же, где принимаешь решение.
+  const [question, setQuestion] = useState('');
+  const [answer, setAnswer] = useState('');
+  const [asking, setAsking] = useState(false);
   const [own, setOwn] = useState('');
   const [typing, setTyping] = useState(false);
   // Отложенные на этом сеансе: в базе ничего не меняется, они просто уходят в конец
@@ -78,6 +84,8 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
     setNoise(Number(r.noise) || 0);
     setNote('');
     setOwn('');
+    // Ответ был про ПРЕДЫДУЩУЮ фразу — на новой ему не место.
+    setQuestion(''); setAnswer(''); setAsking(false);
     // Список сдвинулся на одну — остаёмся на той же позиции, то есть на следующей
     // фразе. Прыжок в начало заставлял бы каждый раз искать, где ты был.
     setIdx((prev) => Math.max(0, Math.min(prev, (r.items || []).length - 1)));
@@ -140,11 +148,26 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
     } finally { setBusy(false); }
   };
 
+  const ask = async () => {
+    const q = question.trim();
+    if (!card || busy || !q) return;
+    setBusy(true); setError(''); setAnswer(''); setNote('💬 Спрашиваю…');
+    try {
+      const r = await api('/api/answer/phrasereview/ask', { review_id: card.id, question: q });
+      setNote('');
+      setAnswer(r.answer || '');
+    } catch (e) {
+      console.warn('[phrasereview] ask', e);
+      setNote('');
+      setError(e?.message || 'Не получилось ответить. Попробуйте ещё раз.');
+    } finally { setBusy(false); }
+  };
+
   const skip = () => {
     if (!card) return;
     setSkipped((prev) => new Set(prev).add(card.id));
-    setNote('');
-    setError('');
+    setNote(''); setError('');
+    setQuestion(''); setAnswer(''); setAsking(false);
   };
 
   if (items === null) {
@@ -219,12 +242,16 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
                 <div className="frrev-judge-fix">
                   {j.corrected_slot != null ? <b>Вариант {j.corrected_slot + 1}</b> : null}
                   <code>{j.corrected}</code>
+                  {/* Перевод замены — единственный способ увидеть, что судья сохранил
+                      смысл, а не подменил его другим управлением глагола. */}
+                  {j.corrected_ru ? <em>— {j.corrected_ru}</em> : null}
                 </div>
               ) : null}
               {j.proposal ? (
                 <div className="frrev-judge-fix">
                   {j.proposal_slot != null ? <b>Вариант {j.proposal_slot + 1}</b> : null}
                   <code>{j.proposal}</code>
+                  {j.proposal_ru ? <em>— {j.proposal_ru}</em> : null}
                   <em>дописано недостающее</em>
                 </div>
               ) : null}
@@ -256,6 +283,28 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
           </div>
         ) : null}
 
+        {answer ? <div className="frrev-answer">{answer}</div> : null}
+
+        {asking ? (
+          <div className="frrev-ask">
+            <input
+              className="pinrev-word" value={question} disabled={busy} autoFocus
+              onChange={(e) => setQuestion(e.target.value)}
+              onFocus={() => setTyping(true)}
+              onBlur={() => setTyping(false)}
+              placeholder="например: mit и gegen тут разный смысл?"
+              enterKeyHint="send"
+              onKeyDown={(e) => { if (e.key === 'Enter' && question.trim()) { e.target.blur(); ask(); } }}
+            />
+            <div className="frrev-row">
+              <button className="ans-btn-ghost" disabled={busy || !question.trim()}
+                onClick={ask}>💬 Спросить</button>
+              <button className="ans-btn-ghost"
+                onClick={() => { setAsking(false); setQuestion(''); }}>← передумал</button>
+            </div>
+          </div>
+        ) : null}
+
         {note ? <div className="pinrev-note">{note}</div> : null}
         {error ? <div className="pinrev-err">{error}</div> : null}
       </div>
@@ -271,6 +320,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
                 ✅ Принять {v.index + 1}{picked ? ' · рекомендую' : ''}
               </span>
               <span className="frrev-accept-text">{v.text}</span>
+              {v.ru ? <span className="frrev-accept-ru">{v.ru}</span> : null}
               <span className="frrev-accept-kind">
                 {v.kind === 'arbiter'
                   ? 'третейский судья · свой вариант'
@@ -288,7 +338,11 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
             <button className="ans-btn-ghost" disabled={busy} onClick={settle}>⚖️ Кто прав?</button>
           ) : null}
           {!variants.length && !card.all_ok ? (
-            <button className="ans-btn-ghost" disabled={busy} onClick={rejudge}>🔁 Спросить заново</button>
+            <button className="ans-btn-ghost" disabled={busy} onClick={rejudge}>🔁 Пересудить</button>
+          ) : null}
+          {!asking ? (
+            <button className="ans-btn-ghost" disabled={busy}
+              onClick={() => { setAsking(true); setAnswer(''); }}>❓ Спросить</button>
           ) : null}
           {/* «Оставить как есть» есть всегда: даже когда варианты предложены, владелец
               вправе не согласиться с судьями. Когда исправлять нечего — это единственное

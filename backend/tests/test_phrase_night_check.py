@@ -176,8 +176,10 @@ class EmptyComplaintTests(unittest.TestCase):
         конце: словарная запись это не связный текст."""
         import pathlib
         src = (pathlib.Path(__file__).resolve().parents[1] / "openai_manager.py").read_text(encoding="utf-8")
+        # ровно тело функции: окно «столько-то символов» рвётся, стоит дописать
+        # в docstring абзац
         start = src.index("def run_phrase_grammar_verdict")
-        block = src[start:start + 4000]
+        block = src[start:src.index("\ndef ", start + 10)]
         self.assertIn("IGNORE punctuation at the very END", block)
         self.assertIn("Never claim an error you cannot fix", block)
 
@@ -191,6 +193,59 @@ class EmptyComplaintTests(unittest.TestCase):
         self.assertLess(block.index("phrase_review_is_noise"),
                         block.index('if any(str(j.get("verdict") or "") == "error"'),
                         "проверка на пустоту должна стоять ДО постановки вопроса")
+
+
+class MeaningIsTheContextTests(unittest.TestCase):
+    """Предлог в немецком выбирается по СМЫСЛУ, значит судья обязан видеть перевод.
+
+    `sich mit etw. wappnen` — вооружиться ЧЕМ (средством), `sich gegen etw. wappnen` —
+    вооружиться ПРОТИВ чего (угрозы). Верны оба. Судья, видевший только немецкую строку,
+    брал более частое управление: на «Wappnen mit» с переводом «запастись чем-то,
+    вооружаться аргументами» ОБА судьи независимо потребовали `gegen` — и оба ошиблись.
+    Владелец это заметил и был прав: контекст — это перевод.
+
+    Проверено после правки (08.08.2026, два прогона): с переводом вердикт «ошибки нет»,
+    без перевода — «зависит от контекста», а не «ошибка»."""
+
+    def test_night_hands_the_translation_to_both_judges(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[1] / "phrase_night_check.py").read_text(encoding="utf-8")
+        start = src.index("def _judge_twice")
+        self.assertIn("translation", src[start:start + 700],
+                      "судья снова судит вслепую, без смысла фразы")
+        self.assertIn('_judge_twice(row["text"], row["kind"], row.get("translation")',
+                      src, "ночь не передаёт перевод в судью")
+
+    def test_prompt_makes_the_saved_meaning_decide(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[1] / "openai_manager.py").read_text(encoding="utf-8")
+        start = src.index("def run_phrase_grammar_verdict")
+        block = src[start:src.index("\ndef ", start + 10)]
+        self.assertIn("That meaning is the CONTEXT", block)
+        self.assertIn("sich gegen etw. wappnen", block,
+                      "правило без примера читается как общие слова")
+        self.assertIn('verdict=\\"context\\"', block,
+                      "без перевода предлог всё ещё объявляется ошибкой")
+
+    def test_judge_translates_its_own_suggestion(self):
+        """Владелец должен видеть, сохранил ли судья смысл или подменил его."""
+        from backend.database import phrase_review_variants
+        got = phrase_review_variants([
+            v(category="praeposition", corrected="Wappnen gegen",
+              why="…") | {"corrected_ru": "вооружиться против чего-то"},
+        ], "Wappnen mit")
+        self.assertEqual(got[0]["ru"], "вооружиться против чего-то")
+
+    def test_self_contradicting_verdict_never_reaches_the_owner(self):
+        """«ошибка в предлоге… однако предложение грамматически корректно» и никакой
+        правки — это шум. Настоящий ответ судьи на живой фразе владельца."""
+        from backend.database import phrase_review_is_noise
+        text = "Die Erinnerung hat an mir genagt"
+        self.assertTrue(phrase_review_is_noise([
+            v(category="praeposition", corrected="",
+              why="Ошибка в предлоге, однако предложение грамматически корректно."),
+        ], text))
+
 
 if __name__ == "__main__":
     unittest.main()

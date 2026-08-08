@@ -29924,9 +29924,13 @@ def _phrase_review_payload(limit: int = 200) -> dict:
                 "winner_index": (int(arbiter.get("winner")) - 1
                                  if 1 <= int(arbiter.get("winner") or 0) <= len(variants) else None),
                 "better": str(arbiter.get("better") or ""),
+                "better_ru": str(arbiter.get("better_ru") or ""),
             } if arbiter else None),
             "variants": [
                 {"index": n, "judge": v["judge"], "text": v["text"],
+                 # перевод СВОЕГО предложения: без него не видно, сохранил ли судья
+                 # смысл сохранённой фразы или молча подменил его
+                 "ru": v.get("ru") or "",
                  "kind": {"corrected": "fix", "proposal": "complete"}.get(
                      v["field"], v["field"])}
                 for n, v in enumerate(variants)
@@ -29939,7 +29943,9 @@ def _phrase_review_payload(limit: int = 200) -> dict:
                         str(j.get("category") or ""), str(j.get("category") or "")),
                     "why": str(j.get("why") or ""),
                     "corrected": str(j.get("corrected") or ""),
+                    "corrected_ru": str(j.get("corrected_ru") or ""),
                     "proposal": str(j.get("proposal") or ""),
+                    "proposal_ru": str(j.get("proposal_ru") or ""),
                     "corrected_slot": slot_of.get(str(j.get("corrected") or "").strip()),
                     "proposal_slot": slot_of.get(str(j.get("proposal") or "").strip()),
                 }
@@ -30007,6 +30013,57 @@ def answer_phrase_review_decide():
         note = "Не записал: такая фраза уже есть в словаре. Снял с разбора."
     return jsonify({"ok": True, "result": decision, "note": note,
                     "text": result.get("text") or "", **_phrase_review_payload()})
+
+
+@app.route("/api/answer/phrasereview/ask", methods=["POST"])
+def answer_phrase_review_ask():
+    """Спросить про эту фразу своими словами, не выходя с экрана.
+
+    Владельцу пришлось уйти в другое приложение, чтобы выяснить, что «Wappnen mit» и
+    «Wappnen gegen» — разные значения, а не ошибка. Вопрос про фразу должен задаваться
+    там же, где по ней принимается решение. В контекст кладём саму фразу, её русский
+    перевод и все предложения судей: без перевода ответ будет таким же слепым, как был
+    вердикт."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    question = str(payload.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "пустой вопрос"}), 400
+    try:
+        review_id = int(payload.get("review_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "нет фразы"}), 400
+
+    from backend.database import get_open_phrase_review, phrase_review_variants
+    row = get_open_phrase_review(review_id)
+    if not row:
+        return jsonify({"error": "Фраза уже разобрана."}), 404
+    arbiter = row.get("arbiter") if isinstance(row.get("arbiter"), dict) else None
+    variants = phrase_review_variants(row.get("judges") or [], row.get("text") or "", arbiter)
+    lines = [f"Немецкая фраза из словаря: {row.get('text') or ''}"]
+    if row.get("translation"):
+        lines.append(f"Русский перевод, ради которого её сохранили: {row['translation']}")
+    for n, j in enumerate(row.get("judges") or [], 1):
+        if isinstance(j, dict) and j.get("why"):
+            lines.append(f"Проверяющий {n} считает: {j['why']}")
+    for n, v in enumerate(variants, 1):
+        lines.append(f"Предложенная замена {n}: {v['text']}"
+                     + (f" ({v['ru']})" if v.get("ru") else ""))
+    lines.append("Отвечай с оглядкой на сохранённый русский перевод: он и есть смысл, "
+                 "который человек хотел записать. Если исходная фраза верна для этого "
+                 "смысла, так и скажи прямо.")
+
+    from backend.openai_manager import run_quick_ask
+    try:
+        answer = run_quick_ask(question=question, context_text="\n".join(lines))
+    except Exception:
+        logging.warning("phrasereview: ask failed id=%s", review_id, exc_info=True)
+        answer = ""
+    if not answer:
+        return jsonify({"error": "Не получилось ответить. Попробуйте ещё раз."}), 503
+    return jsonify({"ok": True, "answer": answer})
 
 
 @app.route("/api/answer/phrasereview/dropnoise", methods=["POST"])

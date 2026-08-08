@@ -37,13 +37,17 @@ NIGHT_CAP = int(os.getenv("PHRASE_NIGHT_CHECK_CAP", "500") or "500")
 WORKERS = int(os.getenv("PHRASE_NIGHT_CHECK_WORKERS", "6") or "6")
 
 
-def _judge_twice(text: str, kind: str) -> list[dict]:
+def _judge_twice(text: str, kind: str, translation: str = "") -> list[dict]:
+    """Спросить судью дважды, независимо. Перевод передаём ОБОИМ: предлог и падеж в
+    немецком выбираются по смыслу, и судья без перевода судит вслепую — на «Wappnen mit»
+    («запастись чем-то») оба независимо потребовали `gegen` и оба ошиблись."""
     from backend.openai_manager import run_phrase_grammar_verdict
 
     out = []
     for _ in range(2):
         try:
-            out.append(run_phrase_grammar_verdict(text=text, kind=kind) or {})
+            out.append(run_phrase_grammar_verdict(
+                text=text, kind=kind, translation=translation) or {})
         except Exception as exc:
             logging.debug("судья фраз не ответил: %s", exc)
             out.append({})
@@ -84,7 +88,8 @@ def rejudge_phrase_review(review_id: int) -> bool:
     row = get_open_phrase_review(int(review_id))
     if not row:
         return False
-    judges = _judge_twice(row["text"], row.get("kind") or "collocation")
+    judges = _judge_twice(row["text"], row.get("kind") or "collocation",
+                          row.get("translation") or "")
     if not any(j for j in judges):
         return False
     update_phrase_review_judges(int(review_id), judges)
@@ -139,7 +144,7 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
         return report
 
     def work(row):
-        return row, _judge_twice(row["text"], row["kind"])
+        return row, _judge_twice(row["text"], row["kind"], row.get("translation") or "")
 
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
         for row, judges in pool.map(work, rows):

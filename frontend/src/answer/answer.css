@@ -2472,3 +2472,19 @@ html[data-scheme="light"] .ans-toast.ok    { color: #14532D; background: #DCFCE7
   padding: 0.375rem 0.625rem; cursor: pointer;
 }
 .frrev-sweep:disabled { opacity: 0.5; }
+
+/* Перевод предложенной замены. Без него не видно главного: сохранил ли судья смысл
+   фразы или молча подменил его другим управлением глагола. «Wappnen mit» (запастись
+   ЧЕМ-ТО) и «Wappnen gegen» (вооружиться ПРОТИВ) — оба верны, и разница только в
+   переводе; судьи требовали второе, не видя первого. */
+.frrev-judge-fix em { display: inline; }
+.frrev-accept-ru { font-size: 0.75rem; opacity: 0.9; font-style: italic; }
+
+/* Вопрос своими словами прямо в разборе — и ответ на него. */
+.frrev-ask { display: flex; flex-direction: column; gap: 0.375rem; }
+.frrev-answer {
+  font-size: 0.875rem; line-height: 1.5; white-space: pre-wrap;
+  color: var(--dmps-text-primary, #F8FAFC);
+  border: 1px solid var(--dmps-border, #334155); border-radius: 0.75rem;
+  background: var(--dmps-card-alt, rgba(148,163,184,0.10)); padding: 0.5rem 0.625rem;
+}
