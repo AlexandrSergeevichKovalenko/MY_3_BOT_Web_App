@@ -134,10 +134,6 @@ class DeletionRuleTests(unittest.TestCase):
         self.assertIn("jsonb_array_length(q.user_notes) = 0", block)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class EmptyComplaintTests(unittest.TestCase):
     """Придирка без содержания не должна доходить до владельца.
 
@@ -195,3 +191,6 @@ class EmptyComplaintTests(unittest.TestCase):
         self.assertLess(block.index("phrase_review_is_noise"),
                         block.index('if any(str(j.get("verdict") or "") == "error"'),
                         "проверка на пустоту должна стоять ДО постановки вопроса")
+
+if __name__ == "__main__":
+    unittest.main()
