@@ -7925,7 +7925,12 @@ body:has(.webapp-page.is-theme-light),
   gap: 12px;
 }
 
-.webapp-dictionary-form input {
+/* Поле поиска стало многострочным (textarea вместо input, 08.08.2026), а все правила
+   этой формы были написаны на `input` — поле разом осталось без оформления: белая
+   коробка на бежевом и съехавший крестик очистки. Перечисляем его явно, а не через
+   голый `textarea`, чтобы не задеть большое поле ввода на стартовом экране. */
+.webapp-dictionary-form input,
+.webapp-dictionary-form .dq-input--multi {
   padding: 12px 14px;
   border-radius: 12px;
   border: 1px solid rgba(148, 163, 184, 0.35);
@@ -25450,6 +25455,7 @@ body.worldnews-active .webapp-topbar {
 }
 
 .webapp-dictionary .webapp-dictionary-form input,
+.webapp-dictionary .webapp-dictionary-form .dq-input--multi,
 .webapp-dictionary .folder-create input {
   min-height: 52px;
   border-radius: 16px;
