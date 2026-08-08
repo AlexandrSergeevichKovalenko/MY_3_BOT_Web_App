@@ -1519,3 +1519,10 @@ html[data-scheme="light"] .dq-gt > summary,
   .dq-sk-line, .dq-sk-box, .dq-sk-chip, .dq-sk-pill { animation: none; }
   .dq-sk-hint::before { animation: none; }
 }
+
+/* Перевод рядом с синонимом. Приглушён, чтобы само слово оставалось главным:
+   человек ищет глазами немецкое слово, а перевод читает только если оно незнакомо. */
+.dq-chip-gloss {
+  color: var(--dmps-text-muted, #94a3b8);
+  font-weight: 500;
+}

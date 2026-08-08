@@ -3004,7 +3004,7 @@ OUTPUT FORMAT — CRITICAL:
 2) {"section":"meanings","meanings":{"primary":{"value":"...","context":"...","example_source":"...","example_target":"..."},"secondary":[{"value":"...","context":"...","example_source":"...","example_target":"..."}]},"semantic_category":"<one of the fixed categories>"}
 3) {"section":"grammar","forms":{"plural":null,"genitive":null,"present_2sg":null,"present_3sg":null,"praeteritum":null,"perfekt":null,"comparative":null,"superlative":null,"konjunktiv2":null,"imperative_sg":null},"is_separable":true,"government_patterns":[{"pattern":"...","preposition":"...","case":"...","example_source":"...","example_target":"..."}],"word_formation":{"is_compound":false,"parts":[{"text":"...","gloss":"..."}],"note":"string|null"}}
 4) {"section":"examples","usage_examples":[{"source":"...","target":"..."}],"common_collocations":["..."],"save_worthy_options":[{"source":"...","target":"...","kind":"base|collocation|phrase"}]}
-5) {"section":"extra","synonyms":["..."],"antonyms":["..."],"related_words":[{"word":"...","gloss":"..."}],"etymology_note":"string|null","memory_tip":"string|null","when_to_use":"string|null","real_life_usage":"string|null","usage_note":"string|null","register_note":"string|null","connotation":{"tone":"string|null","note":"string|null"},"synonym_differences":[{"word":"...","when":"...","nuance":"..."}],"common_mistakes":[{"mistake":"...","correction":"...","why":"..."}],"false_friends":[{"word":"...","looks_like":"...","actual_meaning":"..."}]}
+5) {"section":"extra","synonyms":[{"word":"...","gloss":"..."}],"antonyms":[{"word":"...","gloss":"..."}],"related_words":[{"word":"...","gloss":"..."}],"etymology_note":"string|null","memory_tip":"string|null","when_to_use":"string|null","real_life_usage":"string|null","usage_note":"string|null","register_note":"string|null","connotation":{"tone":"string|null","note":"string|null"},"synonym_differences":[{"word":"...","when":"...","nuance":"..."}],"common_mistakes":[{"mistake":"...","correction":"...","why":"..."}],"false_friends":[{"word":"...","looks_like":"...","actual_meaning":"..."}]}
 
 CONTENT RULES (same as the full dictionary):
 - Detect whether "word" is source_language or target_language; translate to the opposite.
@@ -3044,6 +3044,11 @@ CONTENT RULES (same as the full dictionary):
   synonyms must be German ("widerlicher Kerl", "fieser Typ") — NOT Russian ("неприятный человек").
   Never give explanation-language paraphrases here.
   Give at least 2 whenever the language offers them; use [] only when the word genuinely has none.
+  SHAPE: synonyms and antonyms are objects {"word","gloss"} — "word" is the foreign word,
+  "gloss" is its SHORT translation in explanation_language (1–3 words, no explanations,
+  no register labels). A learner who does not yet know the synonym must understand it at a
+  glance: ["sich erheben" alone teaches nothing; {"word":"sich erheben","gloss":"подняться"} does].
+  Put stylistic notes in synonym_differences, never inside gloss.
   usage_examples: 2–3 natural pairs different from the meaning examples.
 - For a single-word content lemma provide non-null etymology_note AND memory_tip. Use null/[] for depth
   fields only when they would be artificial (function words, numbers, proper names) or genuinely unknown.

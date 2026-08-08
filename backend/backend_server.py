@@ -7858,10 +7858,19 @@ def _sanitize_learning_language_fields(item: dict, learn_lang: str) -> dict:
     for key in ("synonyms", "antonyms", "common_collocations"):
         vals = item.get(key)
         if isinstance(vals, list):
-            item[key] = [
-                v for v in vals
-                if isinstance(v, str) and v.strip() and not _entry_wrong_script_for_learning_lang(v, ll)
-            ]
+            # Синоним приходит либо строкой (старый вид), либо {word, gloss} — с 08.08.2026
+            # мы просим перевод рядом со словом. Проверяем ИМЕННО слово: перевод по
+            # определению на языке объяснений, и проверять его этим стражем нельзя —
+            # иначе он вычистит всё, что сам же и попросил.
+            kept = []
+            for v in vals:
+                word = v.get("word") if isinstance(v, dict) else v
+                if not isinstance(word, str) or not word.strip():
+                    continue
+                if _entry_wrong_script_for_learning_lang(word, ll):
+                    continue
+                kept.append(v)
+            item[key] = kept
     rel = item.get("related_words")
     if isinstance(rel, list):
         item["related_words"] = [

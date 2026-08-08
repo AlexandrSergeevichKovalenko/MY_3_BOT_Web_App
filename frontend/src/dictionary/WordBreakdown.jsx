@@ -386,6 +386,29 @@ function stringList(value) {
   return (Array.isArray(value) ? value : []).map(clean).filter(Boolean);
 }
 
+// Синоним с переводом. Человек, который синонима ещё не знает, из голого «sich erheben»
+// не понимает ничего — а именно так они и показывались. Соседний блок «близкие слова»
+// перевод имел всегда (270 из 270), синонимы — никогда.
+//
+// Приходить может тремя видами, и все три надо понимать:
+//   • {word, gloss} — как просим с 08.08.2026;
+//   • «sich erheben (подняться)» — накопленное: перевод внутри строки, в скобках;
+//   • «sich erheben» — накопленное без перевода, тогда показываем как есть.
+// Из скобок берём содержимое как перевод: там встречается и помета стиля
+// («более официальное»), но показать её рядом со словом всё равно полезнее, чем ничего.
+export function glossedList(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((entry) => {
+      if (entry && typeof entry === 'object') {
+        return { word: clean(entry.word), gloss: clean(entry.gloss) };
+      }
+      const raw = clean(entry);
+      const m = raw.match(/^(.+?)\s*\(([^()]+)\)\s*$/);
+      return m ? { word: clean(m[1]), gloss: clean(m[2]) } : { word: raw, gloss: '' };
+    })
+    .filter((entry) => entry.word);
+}
+
 function relatedList(item) {
   return (Array.isArray(item?.related_words) ? item.related_words : [])
     .map((r) => (r && typeof r === 'object'
@@ -615,9 +638,10 @@ function buildGrammarTablesJS(item) {
 }
 
 // A tappable German word/phrase pill that saves to the dictionary on tap.
-function SaveChip({ text, className, label, saved, onSave }) {
+function SaveChip({ text, gloss, className, label, saved, onSave }) {
   const t = clean(text);
   if (!t) return null;
+  const g = clean(gloss);
   const isSaved = saved && saved.has(t);
   return (
     <button
@@ -626,7 +650,9 @@ function SaveChip({ text, className, label, saved, onSave }) {
       onClick={() => onSave && onSave(t)}
       title={isSaved ? 'Сохранено в словарь' : 'Нажмите, чтобы сохранить в словарь'}
     >
-      {label || t}{isSaved ? ' ✓' : ''}
+      {label || t}
+      {g ? <span className="dq-chip-gloss"> — {g}</span> : null}
+      {isSaved ? ' ✓' : ''}
     </button>
   );
 }
@@ -841,8 +867,8 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
   const level = clean(item.level).toUpperCase();
   const freqLabel = FREQ_LABELS[clean(item.frequency).toLowerCase()] || '';
   const formation = wordFormationParts(item);
-  const synonyms = stringList(item.synonyms);
-  const antonyms = stringList(item.antonyms);
+  const synonyms = glossedList(item.synonyms);
+  const antonyms = glossedList(item.antonyms);
   const related = relatedList(item);
   const register = registerLabel(item);
   const homographs = homographList(item);
@@ -950,7 +976,8 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
           <strong>{isPhrase ? 'Похожие выражения' : 'Синонимы'}</strong>
           <div className="dq-vars">
             {synonyms.map((s, i) => (
-              <SaveChip key={`${s}-${i}`} text={s} className="dq-syn" saved={savedChips} onSave={onSaveChip} />
+              <SaveChip key={`${s.word}-${i}`} text={s.word} gloss={s.gloss}
+                        className="dq-syn" saved={savedChips} onSave={onSaveChip} />
             ))}
           </div>
         </div>
@@ -961,7 +988,8 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
           <strong>Антонимы</strong>
           <div className="dq-vars">
             {antonyms.map((a, i) => (
-              <SaveChip key={`${a}-${i}`} text={a} className="dq-ant" saved={savedChips} onSave={onSaveChip} />
+              <SaveChip key={`${a.word}-${i}`} text={a.word} gloss={a.gloss}
+                        className="dq-ant" saved={savedChips} onSave={onSaveChip} />
             ))}
           </div>
         </div>
