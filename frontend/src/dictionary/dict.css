@@ -1526,3 +1526,20 @@ html[data-scheme="light"] .dq-gt > summary,
   color: var(--dmps-text-muted, #94a3b8);
   font-weight: 500;
 }
+
+/* Значение со своим содержимым: под текстом смысла — его синонимы и его пример.
+   Отступ слева связывает их со значением, а не с карточкой целиком. */
+.dq-meaning { margin-bottom: 10px; }
+.dq-meaning:last-child { margin-bottom: 0; }
+.dq-mean-syn {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin: 6px 0 0;
+}
+.dq-mean-ex {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--dq-chip-strong);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.dq-mean-ex-de { font-size: 14px; }
+.dq-mean-ex-ru { font-size: 13px; color: var(--dmps-text-muted, #94a3b8); }

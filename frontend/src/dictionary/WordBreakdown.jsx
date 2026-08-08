@@ -190,12 +190,9 @@ function collectExamples(item) {
     if (typeof ex === 'string') add(ex, '');
     else if (ex && typeof ex === 'object') add(ex.source ?? ex.de ?? ex.text, ex.target ?? ex.ru ?? ex.translation);
   });
-  const m = item?.meanings;
-  if (m && typeof m === 'object') {
-    const take = (e) => { if (e && typeof e === 'object') add(e.example_source, e.example_target); };
-    take(m.primary);
-    if (Array.isArray(m.secondary)) m.secondary.forEach(take);
-  }
+  // Примеры значений сюда БОЛЬШЕ НЕ ПОПАДАЮТ: они показываются при своих значениях
+  // (см. meaningList). Иначе один и тот же пример стоял бы на экране дважды — сперва
+  // под своим смыслом, потом в общей куче.
   // Пример, дословно повторяющий сам заголовок (частый случай у сохранённого целого
   // предложения), ничего не показывает — заголовок и так стоит выше.
   const headKey = exampleKeyOf(item?.word_de);
@@ -318,6 +315,24 @@ function translationVariants(item) {
     .slice(0, 3);
 }
 
+// Значение — это узел, к которому крепится всё остальное. Так устроены все словари,
+// на которые мы смотрели: Wiktionary нумерует синонимы и примеры по значениям, Duden
+// вкладывает примеры внутрь смысла, Vocabulary.com ставит синонимы прямо под ним.
+//
+// У нас пример СВОЕГО значения приходил всегда (замер 08.08.2026: 12 154 карточки из
+// 12 352), но здесь отбрасывался — брали только текст значения. Потом все примеры
+// сваливались в общую кучу под карточкой, и «вставать с постели» оказывалось рядом с
+// «окно стоит открытым». Теперь пример остаётся при своём значении.
+function meaningExamplePair(entry) {
+  const a = clean(entry?.example_source);
+  const b = clean(entry?.example_target);
+  if (!a && !b) return null;
+  // Какая сторона немецкая, зависит от направления поиска, а не от имени поля.
+  if (hasCyrillic(a) && !hasCyrillic(b)) return { de: b, ru: a };
+  if (!hasCyrillic(a) && hasCyrillic(b)) return { de: a, ru: b };
+  return { de: a, ru: b };
+}
+
 function meaningList(item) {
   const m = item?.meanings;
   if (!m || typeof m !== 'object') return [];
@@ -327,7 +342,14 @@ function meaningList(item) {
     const value = clean(entry.value);
     const context = humanContext(entry.context);
     if (!value && !context) return;
-    out.push({ value, context });
+    out.push({
+      value,
+      context,
+      example: meaningExamplePair(entry),
+      // Синонимы своего значения — новый вид разбора. У накопленных карточек их нет,
+      // и тогда работает общий блок ниже: человек видит столько же, сколько вчера.
+      synonyms: glossedList(entry.synonyms),
+    });
   };
   take(m.primary);
   if (Array.isArray(m.secondary)) m.secondary.forEach(take);
@@ -952,6 +974,20 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
                 <span className="dq-mean-head">
                   {m.value}{m.context ? <em> · {m.context}</em> : null}
                 </span>
+                {m.synonyms.length > 0 && (
+                  <div className="dq-mean-syn">
+                    {m.synonyms.map((sy, k) => (
+                      <SaveChip key={`${sy.word}-${k}`} text={sy.word} gloss={sy.gloss}
+                                className="dq-syn" saved={savedChips} onSave={onSaveChip} />
+                    ))}
+                  </div>
+                )}
+                {m.example && (
+                  <div className="dq-mean-ex">
+                    <span className="dq-mean-ex-de">{m.example.de}</span>
+                    {m.example.ru ? <span className="dq-mean-ex-ru">{m.example.ru}</span> : null}
+                  </div>
+                )}
               </li>
             ))}
           </ol>
@@ -971,7 +1007,9 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
         </div>
       )}
 
-      {synonyms.length > 0 && (
+      {/* Общий список синонимов — только когда они НЕ разложены по значениям. Иначе
+          одно и то же стояло бы на экране дважды: под своим смыслом и общей кучей. */}
+      {synonyms.length > 0 && !meanings.some((m) => m.synonyms.length > 0) && (
         <div className="dq-block">
           <strong>{isPhrase ? 'Похожие выражения' : 'Синонимы'}</strong>
           <div className="dq-vars">

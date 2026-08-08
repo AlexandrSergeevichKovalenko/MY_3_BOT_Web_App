@@ -3001,7 +3001,7 @@ OUTPUT FORMAT — CRITICAL:
   "section" tag:
 
 1) {"section":"head","detected_language":"source|target","word_source":"<normalized source-language form>","word_target":"<normalized target-language form>","part_of_speech":"noun|verb|adjective|adverb|phrase|other","phrase_kind":"idiom|saying|collocation|null","article":"<der/die/das or language-appropriate article or null>","literal_meaning":"string|null","level":"A1|A2|B1|B2|C1|C2|null","frequency":"very_common|common|uncommon|rare|null","register":"нейтральное|разговорное|официальное|книжное|устаревшее|сленг|null","pronunciation":{"ipa":"string|null","stress":"string|null"},"translations":[{"value":"...","context":"...","is_primary":true}]}
-2) {"section":"meanings","meanings":{"primary":{"value":"...","context":"...","example_source":"...","example_target":"..."},"secondary":[{"value":"...","context":"...","example_source":"...","example_target":"..."}]},"semantic_category":"<one of the fixed categories>"}
+2) {"section":"meanings","meanings":{"primary":{"value":"...","context":"...","example_source":"...","example_target":"...","synonyms":[{"word":"...","gloss":"..."}]},"secondary":[{"value":"...","context":"...","example_source":"...","example_target":"...","synonyms":[{"word":"...","gloss":"..."}]}]},"semantic_category":"<one of the fixed categories>"}
 3) {"section":"grammar","forms":{"plural":null,"genitive":null,"present_2sg":null,"present_3sg":null,"praeteritum":null,"perfekt":null,"comparative":null,"superlative":null,"konjunktiv2":null,"imperative_sg":null},"is_separable":true,"government_patterns":[{"pattern":"...","preposition":"...","case":"...","example_source":"...","example_target":"..."}],"word_formation":{"is_compound":false,"parts":[{"text":"...","gloss":"..."}],"note":"string|null"}}
 4) {"section":"examples","usage_examples":[{"source":"...","target":"..."}],"common_collocations":["..."],"save_worthy_options":[{"source":"...","target":"...","kind":"base|collocation|phrase"}]}
 5) {"section":"extra","synonyms":[{"word":"...","gloss":"..."}],"antonyms":[{"word":"...","gloss":"..."}],"related_words":[{"word":"...","gloss":"..."}],"etymology_note":"string|null","memory_tip":"string|null","when_to_use":"string|null","real_life_usage":"string|null","usage_note":"string|null","register_note":"string|null","connotation":{"tone":"string|null","note":"string|null"},"synonym_differences":[{"word":"...","when":"...","nuance":"..."}],"common_mistakes":[{"mistake":"...","correction":"...","why":"..."}],"false_friends":[{"word":"...","looks_like":"...","actual_meaning":"..."}]}
@@ -3052,6 +3052,12 @@ CONTENT RULES (same as the full dictionary):
   usage_examples: 2–3 natural pairs different from the meaning examples.
 - For a single-word content lemma provide non-null etymology_note AND memory_tip. Use null/[] for depth
   fields only when they would be artificial (function words, numbers, proper names) or genuinely unknown.
+- meanings[].synonyms: up to 3 synonyms OF THAT MEANING, not of the word in general. This is the
+  point of splitting meanings at all: "aufstehen" as "get up from bed" has "sich erheben", as
+  "the window stands open" it has "offen sein" — listing both under the word teaches the learner
+  a wrong equivalence. Same shape and same language rule as the extra-section synonyms
+  ({"word","gloss"}, word in the studied language, gloss in explanation_language). Use [] when a
+  meaning has no distinct synonyms of its own; never repeat the same synonym under two meanings.
 - semantic_category: pick one of: Работа, Учёба, Здоровье, Путешествия, Быт, Еда, Спорт, Технологии,
   Деньги, Семья, Транспорт, Природа, Культура, Общение, Покупки, Жильё, Право, Эмоции, Прочее.
 - Keep everything compact. If information is unknown, use null. Output ONLY the 5 JSON-Lines objects.
