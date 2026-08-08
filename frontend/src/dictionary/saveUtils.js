@@ -6,13 +6,18 @@
  * grammar), never bare German text without a translation.
  */
 
-// Cheap language guess for the instant path: any Cyrillic → translate ru→de,
-// otherwise treat as German → ru. The full GPT lookup auto-detects properly.
-export function guessPair(text) {
-  const hasCyrillic = /[А-Яа-яЁё]/.test(String(text || ''));
-  return hasCyrillic
-    ? { source: 'ru', target: 'de' }
-    : { source: 'de', target: 'ru' };
+import { resolvePair } from './langPair.js';
+
+// Пара языков для мгновенного пути. Раньше здесь стояло правило «есть кириллица →
+// ru→de, ИНАЧЕ немецкий»; оно верно ровно до третьего языка, потому что «table»
+// латиницей — английское слово, а не немецкое. Теперь решение принимает langPair.js,
+// где языки лежат таблицей: тут остаётся только знакомая всем подпись.
+//
+// Поведение для пары «русский ↔ немецкий» не изменилось ни на шаг — это закреплено
+// тестами (frontend/tests/lang_pair.test.mjs).
+export function guessPair(text, options) {
+  const { source, target } = resolvePair(text, options);
+  return { source, target };
 }
 
 // The GPT breakdown carries the target-language meaning in `translations`
