@@ -1,6 +1,59 @@
 /* Quick-dictionary overlay (?startapp=dict). Card shell + .dd-* action/save/err
  * classes come from answer.css; this file only adds the search row + result. */
 
+/* ── Палитра словаря: раскладка одна, цвета разные ─────────────────────────────
+   Решение владельца 08.08.2026: два словаря делаем одинаковыми ВО ВСЁМ, кроме цвета.
+   Быстрый живёт отдельной иконкой на рабочем столе и вправе читаться самостоятельным
+   приложением — у него белое с индиго; внутренний остаётся бежевым с амброй («Фукс»).
+
+   Поэтому ниже — не второй набор правил, а второй набор ЗНАЧЕНИЙ. Правило одно,
+   значения берутся из переменных, а переменные задаёт та страница, на которой словарь
+   открыт. Механизм не новый: тема `.webapp-page.is-theme-light` уже так работает.
+
+   Правило, без которого это ломается: шкурка задаёт набор ЦЕЛИКОМ. Если одна определит
+   только акцент, а остальное «унаследует» — получим светлый текст на светлом фоне.
+
+   Цвета РОДА (der/die/das) в набор НЕ входят намеренно: род — это смысл, а не оформление,
+   и слово обязано выглядеть одинаково в обоих словарях. То же для ошибки и успеха. */
+/* Быстрый словарь — белое с индиго. Это сегодняшний его вид, значение в значение. */
+:root {
+  --dq-accent:       #4f46e5;
+  --dq-accent-soft:  #6366f1;
+  --dq-accent-ink:   #fff;
+  --dq-accent-wash:  rgba(79, 70, 229, 0.30);
+  --dq-chip:         rgba(148, 163, 184, 0.12);
+  --dq-chip-strong:  rgba(148, 163, 184, 0.28);
+  --dq-label:        #8fb4ff;
+  --dq-good:         #4ad08a;
+  --dq-warn:         #d8a657;
+  /* Род — смысл, а не оформление: цвет обязан читаться как «тот же самый» в обоих
+     словарях. Но одинаковое ЗНАЧЕНИЕ на двух разных фонах даёт разную читаемость:
+     замер 08.08.2026 показал 1.86 контраста у «das» на бежевом при норме 4.5 — текст
+     превращался в водяной знак. Поэтому оттенок сохраняем, светлоту подгоняем под фон. */
+  --dq-gen-m:        #5b9bff;
+  --dq-gen-f:        #ff7a90;
+  --dq-gen-n:        #4ad08a;
+}
+
+/* Внутренний словарь — «Фукс». Значения те же по смыслу, другие по цвету. */
+.webapp-page.is-theme-light {
+  --dq-accent:       #b45f13;
+  --dq-accent-soft:  #d67a24;
+  --dq-accent-ink:   #fff;
+  --dq-accent-wash:  rgba(180, 95, 19, 0.28);
+  --dq-chip:         rgba(120, 90, 50, 0.10);
+  --dq-chip-strong:  rgba(120, 90, 50, 0.22);
+  --dq-label:        #a9741f;
+  --dq-good:         #1c7a44;
+  --dq-warn:         #a9741f;
+  /* Те же три рода, читаемые на бежевом: 4.54 / 5.45 / 5.08 вместо 2.63 / 2.36 / 1.86.
+     Синий у «der» — тот же, каким светлая тема уже красит артикль в карточках. */
+  --dq-gen-m:        #3a72c4;
+  --dq-gen-f:        #c02a44;
+  --dq-gen-n:        #1c7a44;
+}
+
+
 /* The shared .ans-root vertically centers its card with margin:auto. That clips
    the TOP of any card taller than the screen (you can't scroll up to it) and lets
    it slide under Telegram's Mini-App header. For the dictionary — which grows tall
@@ -119,8 +172,8 @@
   font-size: 16px;
   font-weight: 800;
   color: #fff;
-  background: linear-gradient(180deg, #6366F1, #4f46e5);
-  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.3);
+  background: linear-gradient(180deg, var(--dq-accent-soft), var(--dq-accent));
+  box-shadow: 0 6px 16px var(--dq-accent-wash);
   cursor: pointer;
 }
 .dict-translate-primary:disabled { opacity: 0.5; box-shadow: none; cursor: default; }
@@ -143,7 +196,7 @@
   font-size: 38px;
   border-radius: 22px;
   margin-bottom: 16px;
-  background: linear-gradient(180deg, #6366F1, #4f46e5);
+  background: linear-gradient(180deg, var(--dq-accent-soft), var(--dq-accent));
   box-shadow: 0 12px 26px rgba(79, 70, 229, 0.36);
 }
 .dq-gate-title {
@@ -169,8 +222,8 @@
   font-size: 16px;
   font-weight: 800;
   color: #fff;
-  background: linear-gradient(180deg, #6366F1, #4f46e5);
-  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.3);
+  background: linear-gradient(180deg, var(--dq-accent-soft), var(--dq-accent));
+  box-shadow: 0 6px 16px var(--dq-accent-wash);
   cursor: pointer;
   transition: transform 0.08s ease;
 }
@@ -187,9 +240,9 @@
   min-height: 46px;
   padding: 12px 16px;
   border-radius: 14px;
-  border: 1px solid var(--dmps-accent, #6366F1);
-  background: color-mix(in srgb, var(--dmps-accent, #6366F1) 12%, transparent);
-  color: var(--dmps-accent, #4f46e5);
+  border: 1px solid var(--dmps-accent, var(--dq-accent-soft));
+  background: color-mix(in srgb, var(--dmps-accent, var(--dq-accent-soft)) 12%, transparent);
+  color: var(--dmps-accent, var(--dq-accent));
   font: inherit;
   font-size: 15px;
   font-weight: 700;
@@ -202,7 +255,7 @@
   padding: 0 12px;
   border-radius: 14px;
   border: 1px solid var(--dmps-border, #334155);
-  background: rgba(148, 163, 184, 0.10);
+  background: var(--dq-chip);
   color: var(--dmps-text-secondary, #cbd5e1);
   font: inherit;
   font-size: 12.5px;
@@ -309,7 +362,7 @@
   gap: 10px;
   padding: 8px 10px;
   border-radius: 14px;
-  background: rgba(148, 163, 184, 0.10);
+  background: var(--dq-chip);
   border: 1px solid var(--dmps-border, #334155);
 }
 .dq-auto-toggle {
@@ -317,7 +370,7 @@
   padding: 0 14px;
   border-radius: 14px;
   border: 1px solid var(--dmps-border, #334155);
-  background: rgba(148, 163, 184, 0.10);
+  background: var(--dq-chip);
   color: var(--dmps-text-muted, #94a3b8);
   font: inherit;
   font-size: 13px;
@@ -327,7 +380,7 @@
 }
 .dq-auto-toggle.on {
   color: #fff;
-  background: linear-gradient(180deg, #6366F1, #4f46e5);
+  background: linear-gradient(180deg, var(--dq-accent-soft), var(--dq-accent));
   border-color: transparent;
 }
 .dq-lang {
@@ -350,7 +403,7 @@
   font-size: 16px;
   font-weight: 700;
   color: #fff;
-  background: linear-gradient(180deg, #6366F1, #4f46e5);
+  background: linear-gradient(180deg, var(--dq-accent-soft), var(--dq-accent));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -401,7 +454,7 @@
   padding: 8px 14px;
   border-radius: 999px;
   border: 1px solid var(--dmps-border, #334155);
-  background: rgba(148, 163, 184, 0.10);
+  background: var(--dq-chip);
   color: var(--dmps-text-secondary, #cbd5e1);
   font: inherit;
   font-size: 14px;
@@ -414,7 +467,7 @@
   border-radius: 16px;
   font-size: 17px;
   font-weight: 800;
-  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.32);
+  box-shadow: 0 8px 20px var(--dq-accent-wash);
 }
 
 .dq-search {
@@ -452,8 +505,8 @@
   font-weight: 700;
   font-size: 15px;
   color: #fff;
-  background: linear-gradient(180deg, #2f6df6, #2563eb);
-  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35);
+  background: linear-gradient(180deg, var(--dq-accent-soft), var(--dq-accent));
+  box-shadow: 0 6px 16px var(--dq-accent-wash);
   cursor: pointer;
 }
 .dq-go:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
@@ -523,7 +576,7 @@
 .dq-corrected {
   margin-left: 8px;
   font-size: 11px !important;
-  color: #d8a657 !important;
+  color: var(--dq-warn) !important;
 }
 
 .dq-translation {
@@ -545,7 +598,7 @@
   border-radius: 50%;
   font-size: 16px;
   cursor: pointer;
-  background: rgba(37, 99, 235, 0.16);
+  background: var(--dq-accent-wash);
   color: var(--dmps-text-primary, #f8fafc);
 }
 .dq-tts.on { background: rgba(37, 99, 235, 0.4); }
@@ -563,7 +616,7 @@
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: #818cf8; /* distinct accent so the section is clearly visible */
+  color: var(--dq-accent-soft); /* distinct accent so the section is clearly visible */
 }
 .dq-block span {
   font-size: 15px;
@@ -631,8 +684,8 @@
   text-transform: uppercase;
   padding: 3px 9px;
   border-radius: 999px;
-  color: #8fb4ff;
-  background: rgba(37, 99, 235, 0.16);
+  color: var(--dq-label);
+  background: var(--dq-accent-wash);
 }
 .dq-ipa {
   font-size: 14px;
@@ -660,7 +713,7 @@
   align-items: baseline;
   gap: 5px;
   padding: 4px 10px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
+  border: 1px solid var(--dq-chip-strong);
   border-radius: 999px;
   background: transparent;
   font: inherit;
@@ -713,8 +766,8 @@
   height: 18px;
   text-align: center;
   border-radius: 50%;
-  color: #8fb4ff;
-  background: rgba(37, 99, 235, 0.16);
+  color: var(--dq-label);
+  background: var(--dq-accent-wash);
 }
 .dq-mean-head {
   font-size: 15px;
@@ -740,7 +793,7 @@
   padding: 4px 10px;
   border-radius: 999px;
   color: var(--dmps-text-secondary, #cbd5e1);
-  background: rgba(148, 163, 184, 0.12);
+  background: var(--dq-chip);
 }
 .dq-var em { font-style: normal; opacity: 0.7; }
 
@@ -759,7 +812,7 @@
   padding: 5px 11px;
   border-radius: 12px;
   color: var(--dmps-text-title, #f1f5f9);
-  background: rgba(148, 163, 184, 0.12);
+  background: var(--dq-chip);
 }
 .dq-chip em {
   font-style: normal;
@@ -799,8 +852,8 @@
   content: '';
   width: 12px;
   height: 12px;
-  border: 2px solid rgba(148, 163, 184, 0.35);
-  border-top-color: #6ea0ff;
+  border: 2px solid var(--dq-chip-strong);
+  border-top-color: var(--dq-label);
   border-radius: 50%;
   animation: dq-spin 0.8s linear infinite;
 }
@@ -838,15 +891,15 @@
   font: inherit;
   font-size: 14px;
   font-weight: 600;
-  color: #6ea0ff;
+  color: var(--dq-label);
   cursor: pointer;
 }
 
 /* ── Gender color coding (der=blue, die=red, das=green) ───────────────────────── */
 .dq-art { font-weight: 700; }
-.dq-art.g-m { color: #5b9bff; }
-.dq-art.g-f { color: #ff7a90; }
-.dq-art.g-n { color: #4ad08a; }
+.dq-art.g-m { color: var(--dq-gen-m); }
+.dq-art.g-f { color: var(--dq-gen-f); }
+.dq-art.g-n { color: var(--dq-gen-n); }
 
 /* ── Deep grammar tables (collapsible) ───────────────────────────────────────── */
 .dq-gt { width: 100%; }
@@ -855,7 +908,7 @@
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: #818cf8; /* distinct accent so the collapsible section is clearly visible */
+  color: var(--dq-accent-soft); /* distinct accent so the collapsible section is clearly visible */
   cursor: pointer;
   list-style: none;
   padding: 3px 0;
@@ -866,7 +919,7 @@
 .dq-gt[open] > summary::after { content: ' ▴'; }
 
 /* Section headings / collapsible toggles: darker accent on light backgrounds so
-   they stay readable (the base #818cf8 is tuned for dark). */
+   they stay readable (the base var(--dq-accent-soft) is tuned for dark). */
 html[data-scheme="light"] .dq-block strong,
 html[data-scheme="light"] .dq-gt > summary,
 .webapp-page.is-theme-light .dq-block strong,
@@ -895,7 +948,7 @@ html[data-scheme="light"] .dq-gt > summary,
 .dq-decl td {
   padding: 5px 6px 5px 0;
   color: var(--dmps-text-title, #f1f5f9);
-  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  border-top: 1px solid var(--dq-chip);
   /* Don't break long German compounds letter-by-letter — hyphenate at syllables
      (lang="de" on the table), break at spaces otherwise. */
   white-space: normal;
@@ -956,7 +1009,7 @@ html[data-scheme="light"] .dq-gt > summary,
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: #8fb4ff;
+  color: var(--dq-label);
 }
 .dq-conj-grid {
   display: grid;
@@ -997,7 +1050,7 @@ html[data-scheme="light"] .dq-gt > summary,
   color: var(--dmps-text-title, #f1f5f9) !important;
   padding: 5px 11px;
   border-radius: 12px;
-  background: rgba(148, 163, 184, 0.12);
+  background: var(--dq-chip);
 }
 .dq-deg-item em {
   font-style: normal;
@@ -1016,7 +1069,7 @@ html[data-scheme="light"] .dq-gt > summary,
   letter-spacing: 0.02em;
   padding: 3px 9px;
   border-radius: 999px;
-  color: #4ad08a;
+  color: var(--dq-good);
   background: rgba(34, 197, 94, 0.14);
 }
 .dq-freq-chip {
@@ -1025,14 +1078,14 @@ html[data-scheme="light"] .dq-gt > summary,
   padding: 3px 9px;
   border-radius: 999px;
   color: var(--dmps-text-muted, #94a3b8);
-  background: rgba(148, 163, 184, 0.12);
+  background: var(--dq-chip);
 }
 .dq-register-chip {
   font-size: 11px;
   font-weight: 600;
   padding: 3px 9px;
   border-radius: 999px;
-  color: #d8a657;
+  color: var(--dq-warn);
   background: rgba(216, 166, 87, 0.14);
 }
 
@@ -1047,16 +1100,16 @@ html[data-scheme="light"] .dq-gt > summary,
   width: 4px;
   height: 11px;
   border-radius: 1px;
-  background: rgba(148, 163, 184, 0.28);
+  background: var(--dq-chip-strong);
 }
-.dq-freqbar-seg.on { background: #6ea0ff; }
+.dq-freqbar-seg.on { background: var(--dq-label); }
 .dq-freqbar-label {
   font-size: 11px;
   color: var(--dmps-text-muted, #94a3b8);
 }
 
 /* Synonyms / antonyms / related-word pills — tinted variants of .dq-var */
-.dq-syn { background: rgba(34, 197, 94, 0.12); color: #4ad08a; }
+.dq-syn { background: rgba(34, 197, 94, 0.12); color: var(--dq-good); }
 .dq-ant { background: rgba(244, 114, 130, 0.12); color: #ff96a6; }
 .dq-related em { font-style: normal; opacity: 0.65; }
 
@@ -1070,7 +1123,7 @@ html[data-scheme="light"] .dq-gt > summary,
 .dq-savechip:active { transform: scale(0.96); }
 .dq-savechip.is-saved {
   border-color: rgba(34, 197, 94, 0.6);
-  color: #4ad08a !important;
+  color: var(--dq-good) !important;
 }
 
 /* Idiom "дословно" panel — distinct tint so the literal sense reads as a hint */
@@ -1093,7 +1146,7 @@ html[data-scheme="light"] .dq-gt > summary,
   gap: 1px;
   padding: 6px 11px;
   border-radius: 12px;
-  background: rgba(148, 163, 184, 0.12);
+  background: var(--dq-chip);
 }
 .dq-formation-part b {
   font-size: 15px;
@@ -1119,7 +1172,7 @@ html[data-scheme="light"] .dq-gt > summary,
   padding: 0;
   font: inherit;
   font-weight: 700;
-  color: #6ea0ff;
+  color: var(--dq-label);
   cursor: pointer;
 }
 .dq-recent {
@@ -1149,7 +1202,7 @@ html[data-scheme="light"] .dq-gt > summary,
   color: var(--dmps-text-secondary, #cbd5e1);
   cursor: pointer;
 }
-.dq-recent-chip:hover { background: rgba(37, 99, 235, 0.16); }
+.dq-recent-chip:hover { background: var(--dq-accent-wash); }
 
 /* ── Example sentences (German + 🔊, tap to reveal RU) ────────────────────────── */
 .dq-tts.sm {
@@ -1171,7 +1224,7 @@ html[data-scheme="light"] .dq-gt > summary,
   font: inherit;
   font-size: 12px;
   font-weight: 600;
-  color: #6ea0ff;
+  color: var(--dq-label);
   cursor: pointer;
 }
 .dq-ex-list {
@@ -1211,7 +1264,7 @@ html[data-scheme="light"] .dq-gt > summary,
   transition: opacity 0.12s;
 }
 .dq-ex-save:active { opacity: 0.6; }
-.dq-ex-save.is-saved span { color: #4ad08a !important; }
+.dq-ex-save.is-saved span { color: var(--dq-good) !important; }
 .dq-ex-ru,
 .dq-ex-reveal {
   align-self: flex-start;
@@ -1238,7 +1291,7 @@ html[data-scheme="light"] .dq-gt > summary,
 .dq-ex-reveal {
   font-size: 13px;
   font-weight: 600;
-  color: #6ea0ff;
+  color: var(--dq-label);
   opacity: 0.85;
 }
 
@@ -1262,7 +1315,7 @@ html[data-scheme="light"] .dq-gt > summary,
   flex: 0 0 auto;
   display: flex; align-items: center; gap: 8px;
   height: 40px; padding: 0 12px; border-radius: 12px;
-  background: rgba(148, 163, 184, 0.10);
+  background: var(--dq-chip);
   border: 1px solid var(--dmps-border, #334155);
   color: var(--dmps-text-title, #f1f5f9);
   font: inherit; font-size: 13px; font-weight: 800; letter-spacing: 0.02em;
@@ -1272,7 +1325,7 @@ html[data-scheme="light"] .dq-gt > summary,
   width: 26px; height: 26px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-size: 13px;
-  background: linear-gradient(180deg, #6366F1, #4f46e5);
+  background: linear-gradient(180deg, var(--dq-accent-soft), var(--dq-accent));
 }
 
 /* Стили переключателя «Разбор AI / Быстро / Офлайн» (.dict-method*) удалены вместе
@@ -1398,7 +1451,7 @@ html[data-scheme="light"] .dq-gt > summary,
   height: 36px;
   border-radius: 50%;
   border: 1px solid var(--dmps-border, #334155);
-  background: rgba(148, 163, 184, 0.12);
+  background: var(--dq-chip);
   color: var(--dmps-text-title, #f1f5f9);
   cursor: pointer;
   transition: background 0.15s ease, transform 0.1s ease;
@@ -1427,9 +1480,9 @@ html[data-scheme="light"] .dq-gt > summary,
   border-radius: 8px;
   background: linear-gradient(
     100deg,
-    rgba(148, 163, 184, 0.12) 30%,
+    var(--dq-chip) 30%,
     rgba(148, 163, 184, 0.24) 50%,
-    rgba(148, 163, 184, 0.12) 70%
+    var(--dq-chip) 70%
   );
   background-size: 220% 100%;
   animation: dq-sk-shimmer 1.3s ease-in-out infinite;
@@ -1451,7 +1504,7 @@ html[data-scheme="light"] .dq-gt > summary,
   content: '';
   width: 12px; height: 12px;
   border-radius: 50%;
-  border: 2px solid rgba(148, 163, 184, 0.35);
+  border: 2px solid var(--dq-chip-strong);
   border-top-color: #5b9bff;
   animation: dq-share-rot 0.7s linear infinite;
 }
