@@ -22158,7 +22158,20 @@ def pick_phrases_for_grammar_check(limit: int) -> list[dict]:
     """Фразы общего словаря, которые ещё не проверяли (или проверяли ДРУГОЙ текст).
 
     Берём только то, что человек реально видит в поиске: у фразы должен быть перевод.
-    Порядок — по востребованности: сначала то, на что ссылаются карточки людей."""
+    Порядок — по востребованности: сначала то, на что ссылаются карточки людей.
+
+    Берём ТОЛЬКО ни разу не проверенные. Раньше в условии стояло
+    `c.unit_id IS NULL OR c.text_hash <> %s` с параметром пустой строки — то есть
+    «хеш не равен пустоте», а это истина для любой проверенной строки. Замер 08.08.2026:
+    проверено 491 фраза, непроверенных 8709, и следующая ночь брала 500 штук, из которых
+    491 уже проверена. Ночь продвигалась на девять фраз и тратила тысячу запросов к GPT
+    на пересуд одного и того же, а отчёт при этом обещал 18 ночей.
+
+    Отдельная проверка хеша не нужна: текст фразы меняется только через ночную правку
+    (`mark_phrase_checked` тут же перезаписывает хеш) и через решение владельца
+    (`apply_phrase_review_decision` удаляет строку проверки). Условие теперь дословно то
+    же, что в `count_phrases_left_for_grammar_check`, — счётчик и выборка обязаны
+    смотреть на одно и то же, иначе отчёт врёт."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
@@ -22178,11 +22191,11 @@ def pick_phrases_for_grammar_check(limit: int) -> list[dict]:
                   AND length(u.display) <= 200
                   AND EXISTS (SELECT 1 FROM bt_3_lex_links l JOIN bt_3_lex_units v ON v.id = l.to_unit
                               WHERE l.from_unit = u.id AND v.lang = 'ru')
-                  AND (c.unit_id IS NULL OR c.text_hash <> %s)
+                  AND c.unit_id IS NULL
                 ORDER BY saves DESC, u.id
                 LIMIT %s;
                 """,
-                ("", int(limit)),
+                (int(limit),),
             )
             rows = cursor.fetchall()
     out = []
@@ -22357,6 +22370,12 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
 
     Свой текст владельца становится новым написанием, а разбор помечается на пересборку:
     у другой фразы и разбор другой.
+
+    Решение «keep» — «фраза хорошая, вопрос закрыт». Без него разбор оказывался тупиком:
+    когда оба судьи говорят «ошибки нет» (а после переспроса это обычный исход), принять
+    нечего, а из кнопок оставались только «удалить» — то есть уничтожить верную фразу —
+    и «отложить», которое ничего не решает. Здесь фраза остаётся как есть, вопрос
+    закрывается, и ночь помечает её проверенной, чтобы она не вернулась.
     """
     result = {"decision": decision, "unit_id": 0, "cards_removed": 0, "text": ""}
     with get_db_connection_context() as conn:
@@ -22371,6 +22390,22 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 return result
             unit_id, old_text, judges = int(row[0]), row[1], (row[2] if isinstance(row[2], list) else [])
             result["unit_id"] = unit_id
+
+            if decision == "keep":
+                cursor.execute(
+                    "UPDATE bt_3_phrase_review SET status = 'kept' WHERE id = %s;",
+                    (int(review_id),),
+                )
+                cursor.execute(
+                    """INSERT INTO bt_3_phrase_check (unit_id, text_hash, verdict, checked_at)
+                       VALUES (%s, %s, 'ok', NOW())
+                       ON CONFLICT (unit_id) DO UPDATE
+                         SET text_hash = EXCLUDED.text_hash, verdict = 'ok', checked_at = NOW();""",
+                    (unit_id, phrase_check_text_hash(old_text)),
+                )
+                conn.commit()
+                result["text"] = old_text
+                return result
 
             if decision == "delete":
                 cursor.execute(

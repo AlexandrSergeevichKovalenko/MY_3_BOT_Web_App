@@ -124,8 +124,10 @@ class DeletionRuleTests(unittest.TestCase):
     def test_rule_is_written_down_in_the_deletion_query(self):
         import pathlib
         src = (pathlib.Path(__file__).resolve().parents[1] / "database.py").read_text(encoding="utf-8")
+        # ровно тело функции: окно «столько-то символов» рвалось, стоило добавить в
+        # начало функции ещё одну ветку решения
         start = src.index("def apply_phrase_review_decision")
-        block = src[start:start + 3000]
+        block = src[start:src.index("def rebuild_unit_breakdown", start)]
         self.assertIn("origin_process = 'subscription'", block,
                       "удаляем не только подписные карточки")
         self.assertIn("user_notes", block, "не проверяем личные поля человека")

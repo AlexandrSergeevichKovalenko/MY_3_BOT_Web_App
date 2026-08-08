@@ -172,7 +172,13 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
           ))}
         </div>
 
-        {!variants.length ? (
+        {!variants.length && card.all_ok ? (
+          <div className="frrev-allok">
+            Оба судьи говорят: ошибки нет. Править нечего — оставь фразу как есть,
+            и она больше не вернётся в этот разбор.
+          </div>
+        ) : null}
+        {!variants.length && !card.all_ok ? (
           <div className="frrev-nofix">
             Готового варианта судьи не дали. Спроси заново — промпт с 08.08.2026 требует
             показывать исправленный текст, а эта фраза судилась раньше.
@@ -193,7 +199,15 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
           </button>
         ))}
 
-        {!variants.length ? (
+        {/* «Оставить как есть» есть всегда: даже когда варианты предложены, владелец
+            вправе не согласиться с судьями. Когда оба сказали «ошибки нет», принимать
+            нечего — и тогда это единственное осмысленное решение, поэтому оно главное. */}
+        <button className={variants.length ? 'ans-btn-ghost' : 'ans-btn frrev-keep'}
+          disabled={busy} onClick={() => decide('keep')}>
+          👍 Фраза хорошая — оставить как есть
+        </button>
+
+        {!variants.length && !card.all_ok ? (
           <button className="ans-btn-ghost" disabled={busy} onClick={rejudge}>
             🔁 Спросить судей заново
           </button>
@@ -226,8 +240,9 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
             onClick={() => decide('delete')}>🗑 Удалить</button>
         </div>
         <div className="frrev-hint">
-          «Удалить» убирает фразу из общего словаря и подписные карточки людей — кроме
-          тех, куда человек вписал что-то своё. «Отложить» ничего не меняет.
+          «Оставить как есть» закрывает вопрос: фраза не меняется и больше не вернётся.
+          «Удалить» убирает её из общего словаря и подписные карточки людей — кроме тех,
+          куда человек вписал что-то своё. «Отложить» ничего не меняет.
         </div>
         <button className="pinw-close" onClick={onClose}>Закрыть</button>
       </div>

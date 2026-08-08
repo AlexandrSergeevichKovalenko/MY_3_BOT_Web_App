@@ -29914,6 +29914,8 @@ def _phrase_review_payload(limit: int = 200) -> dict:
             "id": it["id"],
             "text": it.get("text") or "",
             "translation": it.get("translation") or "",
+            "all_ok": bool(judges) and all(
+                str(j.get("verdict") or "") == "ok" for j in judges),
             "variants": [
                 {"index": n, "judge": v["judge"], "text": v["text"],
                  "kind": "fix" if v["field"] == "corrected" else "complete"}
@@ -29961,7 +29963,7 @@ def answer_phrase_review_decide():
     except (TypeError, ValueError):
         return jsonify({"error": "нет фразы"}), 400
     decision = str(payload.get("decision") or "").strip().lower()
-    if decision not in ("accept", "delete", "replace", "skip"):
+    if decision not in ("accept", "keep", "delete", "replace", "skip"):
         return jsonify({"error": "неизвестное решение"}), 400
     own_text = str(payload.get("text") or "").strip()
     if decision == "replace" and not own_text:
@@ -29977,7 +29979,9 @@ def answer_phrase_review_decide():
         # конец списка на этом экране. Никакой записи в базу.
         return jsonify({"ok": True, "result": "skipped", **_phrase_review_payload()})
     result = apply_phrase_review_decision(review_id, decision, own_text, variant)
-    if decision == "delete":
+    if decision == "keep":
+        note = "Фраза оставлена как есть — вопрос закрыт."
+    elif decision == "delete":
         note = "Фраза удалена из общего словаря."
     elif result.get("text"):
         note = f"Записал: {result['text']}"

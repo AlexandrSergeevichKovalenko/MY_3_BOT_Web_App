@@ -2417,3 +2417,5 @@ html[data-scheme="light"] .ans-toast.ok    { color: #14532D; background: #DCFCE7
 .frrev-accept-no { font-size: 0.75rem; font-weight: 800; opacity: 0.85; }
 .frrev-accept-text { font-size: 1.0rem; font-weight: 700; word-break: break-word; }
 .frrev-accept-kind { font-size: 0.6875rem; opacity: 0.75; }
+.frrev-allok { font-size: 0.8125rem; color: #16A34A; }
+.frrev-keep { background: #16A34A; box-shadow: 0 8px 20px rgba(22,163,74,0.3); }
