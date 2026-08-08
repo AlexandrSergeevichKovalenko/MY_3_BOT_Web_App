@@ -429,6 +429,20 @@
   font-size: 17px;
 }
 
+/* Поле результата — многострочное (см. DictionaryOverlay: раньше здесь стоял
+   однострочный input и обрезал фразу). Кнопка «Перевести» держит свою высоту и не
+   тянется вслед за растущим полем — поэтому flex-start, а не stretch. */
+.dq-search--multi { align-items: flex-start; }
+.dq-search--multi .dq-go { min-height: 52px; }
+
+.dq-input--multi {
+  resize: none;
+  overflow-y: auto;
+  max-height: 8.5em;      /* дальше поле прокручивается, а не выдавливает перевод */
+  line-height: 1.35;
+  display: block;
+}
+
 .dq-go {
   flex: 0 0 auto;
   border: none;
@@ -476,6 +490,12 @@
   -webkit-tap-highlight-color: transparent;
 }
 .dq-clear:active { transform: translateY(-50%) scale(0.9); }
+
+/* У растущего поля «по центру» уезжает вниз вместе с текстом — прижимаем крестик
+   к первой строке, чтобы он всегда был там, где человек его ищет. */
+.dq-input-wrap--multi { align-items: flex-start; }
+.dq-input-wrap--multi .dq-clear { top: 13px; transform: none; }
+.dq-input-wrap--multi .dq-clear:active { transform: scale(0.9); }
 
 .dq-hint {
   font-size: 14px;
