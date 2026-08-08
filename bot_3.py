@@ -38064,17 +38064,48 @@ async def _send_scheduled_artikel_learn(context: CallbackContext) -> None:
         poster = await asyncio.to_thread(render_artikel_learn_card)
     except Exception:
         logging.warning("artikel_learn: card render failed", exc_info=True)
+    # Слот занимает место в счётном плане дня, значит ОБЯЗАН отметиться в ведомости:
+    # по ней считают дневную норму и вечерний добор. Без отметки (так было до 08.08)
+    # задание уходило человеку, но для счёта не существовало — добор дослал лишнее,
+    # а вечерний отчёт писал «не дошло 📚 Artikel Trainer» про доставленную карточку.
+    slot_hour = int(ARTIKEL_LEARN_SLOT[0])
     sent = 0
     for t in targets:
         cid = int(t.get("chat_id") or 0)
         if cid == 0:
             continue
+        did = None
+        if cid > 0:
+            try:
+                did = await asyncio.to_thread(
+                    create_article_sprint_dispatch,
+                    set_id=real_set_id, slot_date=slot_date, slot_hour=slot_hour, chat_id=cid,
+                )
+            except Exception:
+                logging.warning("artikel_learn: dispatch insert failed chat=%s", cid, exc_info=True)
+                continue
+            if did is None:
+                continue  # этот слот этому чату сегодня уже уходил
         try:
             if poster:
-                await context.bot.send_photo(chat_id=cid, photo=io.BytesIO(poster), caption=caption,
-                                             parse_mode="Markdown", reply_markup=kb)
+                msg = await context.bot.send_photo(chat_id=cid, photo=io.BytesIO(poster), caption=caption,
+                                                   parse_mode="Markdown", reply_markup=kb)
             else:
-                await context.bot.send_message(chat_id=cid, text=caption, parse_mode="Markdown", reply_markup=kb)
+                msg = await context.bot.send_message(chat_id=cid, text=caption, parse_mode="Markdown",
+                                                     reply_markup=kb)
+            if did is not None:
+                try:
+                    await asyncio.to_thread(update_article_sprint_dispatch_message_id, int(did),
+                                            telegram_message_id=int(msg.message_id))
+                    await asyncio.to_thread(
+                        record_interactive_inbox,
+                        user_id=cid, kind="al", dispatch_id=int(did), chat_id=cid,
+                        telegram_message_id=int(msg.message_id),
+                        deeplink="ans_al_0", title="📚 Artikel Trainer",
+                        keyboard_json=_inbox_kb_json(kb),
+                    )
+                except Exception:
+                    logging.debug("artikel_learn: inbox record failed did=%s", did, exc_info=True)
             sent += 1
         except Exception as exc:
             logging.warning("artikel_learn: send failed chat=%s: %s", cid, exc)
