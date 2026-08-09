@@ -30519,7 +30519,9 @@ function AppInner() {
       target_text: targetText,
       source_lang: sourceLang,
       target_lang: targetLang,
-      part_of_speech: '',
+      // Часть речи приходит из нашего же банка слов (переводчики её не отдают). Здесь
+      // стояла пустая строка — то есть присланное затиралось, не доходя до экрана.
+      part_of_speech: String(quick.part_of_speech || '').trim(),
       article,
       // Число показанной поверхности и слово, формой которого она оказалась. Без них
       // карточка снова стала бы печатать артикль леммы рядом с формой («das Probleme»)

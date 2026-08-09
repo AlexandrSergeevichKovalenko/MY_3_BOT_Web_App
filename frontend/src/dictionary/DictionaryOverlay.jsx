@@ -41,6 +41,12 @@ function isTabletLikeViewport() {
   } catch (_e) { return false; }
 }
 
+const QUICK_POS_LABELS = {
+  noun: 'существительное', verb: 'глагол', adjective: 'прилагательное',
+  adverb: 'наречие', pronoun: 'местоимение', preposition: 'предлог',
+  conjunction: 'союз', phrase: 'выражение', participle: 'причастие',
+};
+
 // Языки и выбор пары живут в одном месте — ./langPair.js. Здесь раньше стояла своя
 // копия правила «есть кириллица → ru-de, иначе de-ru» и свой список имён языков;
 // с третьим языком две копии разошлись бы, а «table» правило назвало бы немецким.
@@ -299,6 +305,8 @@ export default function DictionaryOverlay({ onClose } = {}) {
         // Article for a single German noun, resolved instantly from the local
         // reference so "die Wortverbindung" shows without the full breakdown.
         article: String(data?.article || '').trim(),
+        // Часть речи из нашего банка слов — переводчики её не отдают.
+        partOfSpeech: String(data?.part_of_speech || '').trim(),
         // Число и слово, формой которого оказалась поверхность: без них артикль
         // выбрать нельзя («die Probleme», а не «das Probleme»), а склонение
         // построилось бы от формы.
@@ -794,6 +802,10 @@ export default function DictionaryOverlay({ onClose } = {}) {
   }, [query, forcedDir, translate]);
 
   // Enter translates; Shift+Enter inserts a newline.
+  // Ярлык части речи для быстрого ответа. Показываем только когда разбора ещё нет:
+  // у разбора своя строка помет, и дублировать её незачем.
+  const quickPos = (!item && quick && QUICK_POS_LABELS[String(quick.partOfSpeech || '').toLowerCase()]) || '';
+
   const onKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); translate(); }
   };
@@ -977,6 +989,11 @@ export default function DictionaryOverlay({ onClose } = {}) {
                 мн. ч. от <b>{dqLemmaArticle ? `${dqLemmaArticle} ` : ''}{dqLemma}</b>
               </button>
             )}
+            {/* Часть речи у быстрого перевода. Переводчики её не отдают, поэтому она
+                приходит из нашего же банка слов — тем же дешёвым путём, что и артикль.
+                Владелец 08.08.2026: «Soweit → Насколько» без единой пометы; с ней сразу
+                видно, что слово с большой буквы — наречие, а не существительное. */}
+            {quickPos && <div className="dq-quick-pos">{quickPos}</div>}
             {tts.errorMsg && <div className="dd-err" role="status">🔊 {tts.errorMsg}</div>}
             {item && (
               <WordBreakdown

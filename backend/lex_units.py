@@ -1135,3 +1135,38 @@ def lookup(word: str, *, source_lang: str, target_lang: str) -> dict | None:
     except Exception as exc:
         logging.debug("lex units lookup failed for %r: %s", word, exc)
         return None
+
+
+def pos_of_surface(text: str, lang: str = "de") -> str:
+    """Часть речи слова по нашему собственному банку. Без модели и без денег.
+
+    Зачем отдельная функция. Быстрый перевод — гонка обычных переводчиков, они частей
+    речи не отдают, и в карточке быстрого перевода её не было вовсе: владелец 08.08.2026
+    прислал «Soweit → Насколько» без единой пометы. Между тем часть речи у нас уже лежит
+    у 4 787 немецких единиц, и артикль на этот же экран подтягивается ровно так же —
+    отдельным дешёвым запросом после ответа переводчика.
+
+    Пример из того же скриншота: «Soweit» с большой буквы выглядит существительным, и
+    помета «наречие» сразу показала бы, что это не оно.
+
+    Возвращает пустую строку, если слова у нас нет или часть речи не проставлена, —
+    молчание здесь честнее догадки.
+    """
+    surface_key = normalize_query(text)
+    if not surface_key:
+        return ""
+    try:
+        from backend.database import get_db_connection_context
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                units = _fetch_units(cur, lang=str(lang or "de"), surface_key=surface_key)
+    except Exception:
+        return ""
+    if not units:
+        return ""
+    # Одно написание может стоять за несколькими единицами («der Kiefer» — челюсть и
+    # сосна). Часть речи у них при этом обычно одна; когда мнения расходятся, молчим,
+    # а не выбираем наугад.
+    kinds = {str(u.get("pos") or "").strip() for u in units}
+    kinds.discard("")
+    return kinds.pop() if len(kinds) == 1 else ""

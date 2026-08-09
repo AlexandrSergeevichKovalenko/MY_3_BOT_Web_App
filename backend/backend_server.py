@@ -38169,6 +38169,51 @@ def _quick_translate_german_noun_candidate(result, text, source_lang, target_lan
     return german.strip(".,!?;:")
 
 
+def _quick_translate_german_side(result, text, source_lang, target_lang) -> str:
+    """Немецкая сторона быстрого перевода — без требования «одиночное существительное».
+
+    Соседняя функция _quick_translate_german_noun_candidate ищет только существительные,
+    потому что ей нужен артикль. Части речи это ограничение ни к чему: наречие «soweit»
+    и глагол «aufstehen» тоже заслуживают пометы."""
+    if not isinstance(result, dict):
+        return ""
+    detected = str(result.get("detected_source_lang") or source_lang or "").strip().lower()
+    if str(target_lang or "").strip().lower() == "de":
+        german = str(result.get("translation") or "").strip()
+    elif detected == "de":
+        german = str(text or "").strip()
+    else:
+        return ""
+    german = _LEADING_GERMAN_ARTICLE_RE.sub("", german).strip()
+    if not german or " " in german:
+        return ""
+    return german.strip(".,!?;:")
+
+
+def _attach_quick_translate_pos(result, text, source_lang, target_lang):
+    """Проставить часть речи из НАШЕГО банка слов. Бесплатно, без модели.
+
+    Быстрый перевод — гонка обычных переводчиков, они частей речи не отдают, и в его
+    карточке пометы не было вовсе. Артикль сюда подтягивается ровно так же — отдельным
+    дешёвым запросом после ответа переводчика; часть речи просто никто не спросил.
+
+    Существительным её уже проставляет опознание артикля, поэтому здесь только то, что
+    осталось без пометы: глаголы, наречия, прилагательные."""
+    if not isinstance(result, dict) or str(result.get("part_of_speech") or "").strip():
+        return result
+    try:
+        german = _quick_translate_german_side(result, text, source_lang, target_lang)
+        if not german:
+            return result
+        from backend.lex_units import pos_of_surface
+        pos = pos_of_surface(german, "de")
+        if pos:
+            result["part_of_speech"] = pos
+    except Exception as exc:
+        logging.debug("часть речи для быстрого перевода не подтянулась: %s", exc)
+    return result
+
+
 def _attach_quick_translate_article(result, text, source_lang, target_lang):
     """For a single German noun, attach the article we are ALLOWED to print (free,
     instant) so the compact card shows "die Wortverbindung" right away.
@@ -38545,6 +38590,8 @@ def translate_quick():
                 result["detected_source_lang"] = source_lang
             # Instant article (Wiktionary only); LLM fill happens in the background.
             _attach_quick_translate_article(result, text, source_lang, target_lang)
+            # Часть речи — из нашего же банка слов, тем же дешёвым путём, что и артикль.
+            _attach_quick_translate_pos(result, text, source_lang, target_lang)
             if user_id_for_billing is not None and chosen_name in {"google_translate", "deepl_free", "azure_translator"}:
                 provider_billing_map = {
                     "google_translate": ("google_translate", "google_translate_chars"),

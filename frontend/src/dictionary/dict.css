@@ -1543,3 +1543,11 @@ html[data-scheme="light"] .dq-gt > summary,
 }
 .dq-mean-ex-de { font-size: 14px; }
 .dq-mean-ex-ru { font-size: 13px; color: var(--dmps-text-muted, #94a3b8); }
+
+/* Часть речи у быстрого перевода: тихая подпись под переводом, не чип — чипами в
+   карточке помечен разбор, и путать эти два уровня не нужно. */
+.dq-quick-pos {
+  font-size: 13px;
+  color: var(--dmps-text-muted, #94a3b8);
+  margin-top: 2px;
+}
