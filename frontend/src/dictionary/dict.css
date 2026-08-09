@@ -1551,3 +1551,14 @@ html[data-scheme="light"] .dq-gt > summary,
   color: var(--dmps-text-muted, #94a3b8);
   margin-top: 2px;
 }
+
+/* Живые примеры из корпуса. Отличаются от модельных подписью источника — она мелкая
+   и приглушённая: человеку важнее фраза, чем ник её составителя. Лицензия
+   CC BY 2.0 FR требует источник указать, поэтому подпись не украшение. */
+.dq-ex-origin {
+  font-size: 11px;
+  color: var(--dmps-text-muted, #94a3b8);
+  margin-top: 2px;
+  opacity: 0.85;
+}
+.dq-ex--corpus { border-left: 2px solid var(--dq-chip-strong); padding-left: 10px; }

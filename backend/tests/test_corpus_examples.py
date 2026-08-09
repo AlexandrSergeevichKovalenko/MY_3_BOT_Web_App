@@ -54,3 +54,51 @@ def test_license_is_carried_with_the_sentence():
     """CC BY 2.0 FR требует указания источника — значит автор обязан храниться рядом."""
     assert "author" in CORPUS_SCHEMA_SQL
     assert "license" in CORPUS_SCHEMA_SQL
+
+
+# ── Подключение к карточке ──────────────────────────────────────────────────────
+#
+# Решение владельца 09.08.2026: примеры из корпуса ДОПОЛНЯЮТ модельные, а не заменяют.
+# Корпус покрывает 63% наших слов; заменяй мы — у одного слова источник был бы подписан,
+# у соседнего нет, и человек не понял бы почему.
+
+def test_corpus_examples_live_in_their_own_field():
+    """Смешивать проверяемое с сочинённым в одном списке нельзя: у корпусного примера
+    есть автор и лицензия, и их надо показать."""
+    from backend.backend_server import _with_corpus_examples
+    item = {"word_de": "der Test", "usage_examples": [{"source": "Ein Test.", "target": "Тест."}]}
+    out = _with_corpus_examples(dict(item))
+    assert out["usage_examples"] == item["usage_examples"], "модельные примеры затронуты"
+
+
+def test_model_examples_are_never_replaced():
+    from backend.backend_server import _with_corpus_examples
+    mine = [{"source": "Ein Satz.", "target": "Предложение."}]
+    out = _with_corpus_examples({"word_de": "Haus", "usage_examples": list(mine)})
+    assert out["usage_examples"] == mine
+
+
+def test_already_attached_is_not_asked_again():
+    """Один запрос на карточку. Повторный вызов не должен идти в базу снова."""
+    from backend.backend_server import _with_corpus_examples
+    item = {"word_de": "Haus", "corpus_examples": [{"source": "x", "target": "y"}]}
+    out = _with_corpus_examples(item)
+    assert out["corpus_examples"] == [{"source": "x", "target": "y"}]
+
+
+def test_broken_item_does_not_break_the_card():
+    from backend.backend_server import _with_corpus_examples
+    assert _with_corpus_examples(None) is None
+    assert _with_corpus_examples({}) == {}
+
+
+def test_every_single_card_path_goes_through_one_place():
+    """Путей ответа тринадцать (кеш, пул, обратная сторона, фоновая работа, модель).
+    Новый блок не должен требовать правки в тринадцати местах."""
+    import inspect
+    from backend import backend_server
+    src = inspect.getsource(backend_server)
+    assert '"item": _with_grammar_tables(' not in src, (
+        "часть путей выдачи обошла общую точку — на них живых примеров не будет"
+    )
+    assert src.count('"item": _serve_dictionary_item(') >= 10

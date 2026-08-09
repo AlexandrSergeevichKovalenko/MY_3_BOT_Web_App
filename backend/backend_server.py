@@ -38771,6 +38771,47 @@ def translate_quick_correct():
     return jsonify({"corrected": corrected})
 
 
+def _with_corpus_examples(item):
+    """Добавить к карточке живые примеры из корпуса Tatoeba — РЯДОМ с теми, что дала
+    модель, а не вместо них (решение владельца 09.08.2026).
+
+    Почему рядом. Корпус покрывает 63% наших слов (замерено настоящим запросом на
+    случайной выборке из 200). Заменять означало бы, что у одного слова источник
+    подписан, а у соседнего нет, и человек не поймёт почему. Дополнение ничего не
+    отнимает: модельный пример остаётся на месте.
+
+    Кладём в ОТДЕЛЬНОЕ поле, а не подмешиваем в usage_examples: у корпусного примера
+    есть автор и лицензия, их надо показать, и смешивать проверяемое с сочинённым в
+    одном списке нельзя.
+
+    Один запрос на карточку (~57 мс) и только на одиночной выдаче — в списках это
+    был бы запрос на каждую строку. Молчание корпуса не ошибка: для трети слов его
+    там нет, и карточка просто остаётся с примерами модели.
+    """
+    if not isinstance(item, dict) or item.get("corpus_examples"):
+        return item
+    try:
+        german = str(item.get("word_de") or item.get("translation_de") or "").strip()
+        german = _LEADING_GERMAN_ARTICLE_RE.sub("", german).strip()
+        if not german:
+            return item
+        from backend.corpus_examples import examples_for_word
+        found = examples_for_word(german, limit=2)
+        if found:
+            item["corpus_examples"] = found
+    except Exception:
+        logging.debug("корпусные примеры не подтянулись", exc_info=True)
+    return item
+
+
+def _serve_dictionary_item(item):
+    """Единая точка выдачи одиночной карточки: грамматические таблицы + живые примеры.
+    Раньше здесь стоял только _with_grammar_tables, и каждый новый блок пришлось бы
+    дописывать в семь мест сразу — по числу путей ответа (кеш, пул, обратная сторона,
+    фоновая работа, модель)."""
+    return _with_corpus_examples(_with_grammar_tables(item))
+
+
 def _with_grammar_tables(item):
     """Attach deterministic POS-aware grammar tables (noun declension / verb
     conjugation / adjective comparison) to a dictionary item for the deep card.
@@ -38967,7 +39008,7 @@ def lookup_webapp_dictionary():
                 return jsonify(
                     {
                         "ok": True,
-                        "item": _with_grammar_tables(cached_item),
+                        "item": _serve_dictionary_item(cached_item),
                         "direction": cached_direction,
                         "lookup_status": "ready",
                         "enrichment_pending": False,
@@ -39024,7 +39065,7 @@ def lookup_webapp_dictionary():
                 return jsonify(
                     {
                         "ok": True,
-                        "item": _with_grammar_tables(pool_item),
+                        "item": _serve_dictionary_item(pool_item),
                         "direction": pool_direction,
                         "lookup_status": "ready",
                         "enrichment_pending": False,
@@ -39057,7 +39098,7 @@ def lookup_webapp_dictionary():
                 return jsonify(
                     {
                         "ok": True,
-                        "item": _with_grammar_tables(reverse_item),
+                        "item": _serve_dictionary_item(reverse_item),
                         "direction": reverse_direction,
                         "lookup_status": "ready",
                         "enrichment_pending": False,
@@ -39090,7 +39131,7 @@ def lookup_webapp_dictionary():
                 return jsonify(
                     {
                         "ok": True,
-                        "item": _with_grammar_tables(active_job.get("item")),
+                        "item": _serve_dictionary_item(active_job.get("item")),
                         "direction": active_direction,
                         "lookup_id": active_lookup_id,
                         "lookup_status": "ready",
@@ -39117,7 +39158,7 @@ def lookup_webapp_dictionary():
                 return jsonify(
                     {
                         "ok": True,
-                        "item": _with_grammar_tables(active_job.get("core_item")),
+                        "item": _serve_dictionary_item(active_job.get("core_item")),
                         "direction": active_direction,
                         "lookup_id": active_lookup_id,
                         "lookup_status": "enriching",
@@ -39312,7 +39353,7 @@ def lookup_webapp_dictionary():
             response = jsonify(
                 {
                     "ok": True,
-                    "item": _with_grammar_tables(result),
+                    "item": _serve_dictionary_item(result),
                     "direction": direction,
                     "lookup_id": lookup_id,
                     "lookup_status": "enriching",
@@ -39423,7 +39464,7 @@ def lookup_webapp_dictionary():
     response = jsonify(
         {
             "ok": True,
-            "item": _with_grammar_tables(result),
+            "item": _serve_dictionary_item(result),
             "direction": direction,
             "lookup_status": "ready",
             "enrichment_pending": False,
@@ -39616,7 +39657,7 @@ def stream_webapp_dictionary():
         )
         return jsonify({
             "ok": True,
-            "item": _with_grammar_tables(cached_payload.get("item")),
+            "item": _serve_dictionary_item(cached_payload.get("item")),
             "direction": str(cached_payload.get("direction") or "").strip().lower(),
             "lookup_status": "ready",
             "enrichment_pending": False,
@@ -39716,7 +39757,7 @@ def stream_webapp_dictionary():
         )
         return {
             "ok": True,
-            "item": _with_grammar_tables(item),
+            "item": _serve_dictionary_item(item),
             "direction": direction,
             "lookup_status": "ready",
             "enrichment_pending": False,
@@ -39822,7 +39863,7 @@ def get_webapp_dictionary_lookup_status():
         "ok": True,
         "lookup_id": lookup_id,
         "status": status,
-        "item": _with_grammar_tables(item),
+        "item": _serve_dictionary_item(item),
         "direction": str(job.get("direction") or "").strip().lower(),
         "error": str(job.get("error") or "").strip() or None,
         "enrichment_pending": status == "enriching",
@@ -39898,7 +39939,7 @@ def get_webapp_dictionary_deep_analysis():
         {
             "ok": True,
             "deep_id": deep_id,
-            "item": _with_grammar_tables(item),
+            "item": _serve_dictionary_item(item),
             "direction": direction,
             "save_locked": False,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
@@ -40002,7 +40043,7 @@ def get_webapp_dictionary_shared():
     return jsonify({
         "ok": True,
         "share_token": token,
-        "item": _with_grammar_tables(item),
+        "item": _serve_dictionary_item(item),
         "direction": direction,
         "is_guest": True,
         "save_locked": True,
@@ -40052,7 +40093,7 @@ def lookup_webapp_dictionary_by_request():
             {
                 "ok": True,
                 "deep_id": cache_id,   # lets the Mini-App offer "share" on this path too
-                "item": _with_grammar_tables(item),
+                "item": _serve_dictionary_item(item),
                 "direction": direction,
                 "save_locked": False,
                 "language_pair": _build_language_pair_payload(source_lang, target_lang),

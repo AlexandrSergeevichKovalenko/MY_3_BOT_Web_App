@@ -233,6 +233,54 @@ export function SpeakButton({ text, tts, sm }) {
 // to the dictionary as a full sentence (same canonical pipeline as chips) — de→ru, with
 // the shown Russian gloss, so the whole example lands as one card. The 🔊 button keeps
 // its own tap target so listening never triggers a save.
+// Живые примеры из корпуса Tatoeba — отдельным блоком, рядом с примерами модели.
+//
+// Решение владельца 09.08.2026: дополнять, а не заменять. Корпус покрывает 63% наших
+// слов; заменяй мы — у одного слова источник был бы подписан, у соседнего нет, и
+// человек не понял бы почему. Дополнение ничего не отнимает.
+//
+// Подпись обязательна не только из вежливости: лицензия CC BY 2.0 FR требует указать
+// источник. Автора показываем мелко — человеку важнее фраза, чем ник её составителя.
+function CorpusExamplesBlock({ examples, tts, onSaveExample, savedChips }) {
+  const list = Array.isArray(examples) ? examples.filter((e) => e && clean(e.source)) : [];
+  if (!list.length) return null;
+  return (
+    <div className="dq-block">
+      <strong>Из живой речи</strong>
+      <div className="dq-ex-list">
+        {list.map((ex, i) => {
+          const de = clean(ex.source);
+          const ru = clean(ex.target);
+          const isSaved = !!(savedChips && savedChips.has(de));
+          return (
+            <div key={`${de}-${i}`} className="dq-ex dq-ex--corpus">
+              <div className="dq-ex-de">
+                <SpeakButton text={de} tts={tts} sm />
+                {onSaveExample ? (
+                  <button
+                    type="button"
+                    className={`dq-ex-save${isSaved ? ' is-saved' : ''}`}
+                    onClick={() => onSaveExample(de, ru)}
+                    title={isSaved ? 'Сохранено в словарь' : 'Нажмите, чтобы сохранить пример в словарь'}
+                  >
+                    <span>{de}</span>{isSaved ? ' ✓' : ''}
+                  </button>
+                ) : (
+                  <span>{de}</span>
+                )}
+              </div>
+              {ru && <div className="dq-ex-ru-static">{ru}</div>}
+              <div className="dq-ex-origin">
+                {clean(ex.origin) || 'Tatoeba'}{ex.author ? ` · ${clean(ex.author)}` : ''}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ExamplesBlock({ examples, tts, onSaveExample, savedChips }) {
   if (!examples || examples.length === 0) return null;
   return (
@@ -1071,6 +1119,8 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
       )}
 
       <ExamplesBlock examples={examples} tts={tts} onSaveExample={onSaveExample} savedChips={savedChips} />
+      <CorpusExamplesBlock examples={item.corpus_examples} tts={tts}
+                           onSaveExample={onSaveExample} savedChips={savedChips} />
 
       {related.length > 0 && (
         <div className="dq-block">
