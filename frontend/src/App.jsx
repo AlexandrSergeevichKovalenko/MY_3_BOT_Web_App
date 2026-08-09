@@ -36,6 +36,7 @@ import {
   getVocabCacheMeta,
   getCachedFolderStats,
   getCachedVocabSyncStats,
+  countCachedVocab,
   reconcileCachedFolderEntries,
   deleteCachedVocabEntry,
   updateCachedVocabEntry,
@@ -30764,6 +30765,40 @@ function AppInner() {
     }
   };
 
+  // «Слово дня» на пустом экране поиска. Берём то, что человек уже учит: сперва карточку
+  // из его повторений (она и так загружена, если он сегодня повторял), иначе — слово из
+  // его же сохранённых, что лежат на телефоне. Ни одного лишнего обращения к серверу:
+  // экран, который ждёт ввода, не повод тратить деньги и трафик.
+  //
+  // Слово держится сутки и не мигает при каждой перерисовке: выбираем по номеру дня.
+  const [wordOfDay, setWordOfDay] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const fromSrs = srsCard && typeof srsCard === 'object' ? srsCard : null;
+      const pick = (card) => {
+        if (!card) return null;
+        const de = String(card.word_de || card.translation_de || '').trim();
+        const ru = String(card.translation_ru || card.word_ru || '').trim();
+        return de ? { de, ru } : null;
+      };
+      const fromRepetitions = pick(fromSrs);
+      if (fromRepetitions) { if (!cancelled) setWordOfDay(fromRepetitions); return; }
+
+      const userId = webappUser?.id ? Number(webappUser.id) : null;
+      if (!userId || !isOfflineCacheAvailable()) return;
+      try {
+        const total = await countCachedVocab(userId);
+        if (!total) return;
+        const dayNumber = Math.floor(Date.now() / 86400000);
+        const cached = await getCachedVocab(userId, { limit: 1, offset: dayNumber % total });
+        const row = cached?.items?.[0];
+        if (row && !cancelled) setWordOfDay(pick(row));
+      } catch (_e) { /* нет запаса — просто не показываем */ }
+    })();
+    return () => { cancelled = true; };
+  }, [srsCard, webappUser]);
+
   const handleDictionaryLookup = async (event) => {
     if (event && event.preventDefault) event.preventDefault();
     if (!dictionaryWord.trim()) {
@@ -38697,6 +38732,17 @@ function AppInner() {
                             )}
                           </div>
                         </div>
+                        {wordOfDay && !dictionaryWord.trim() && (
+                          <button
+                            type="button"
+                            className="dict-word-of-day"
+                            onClick={() => setDictionaryWord(wordOfDay.de)}
+                          >
+                            <span className="dict-word-of-day-label">{tr('Слово дня', 'Wort des Tages')}</span>
+                            <span className="dict-word-of-day-de">{wordOfDay.de}</span>
+                            {wordOfDay.ru && <span className="dict-word-of-day-ru">{wordOfDay.ru}</span>}
+                          </button>
+                        )}
                         {dictSearchRecents.length > 0 && (
                           <div className="dq-recent dict-search-recent">
                             <span className="dq-recent-label">{tr('Недавние', 'Zuletzt')}</span>
