@@ -100,30 +100,43 @@ def collect_pairs(workdir: Path, limit: int | None = None) -> list[tuple]:
 
 
 def write_pairs(pairs: list[tuple]) -> int:
+    """Записать пары пакетами.
+
+    Первый заход делал executemany — то есть отдельный запрос на КАЖДУЮ строку. Через
+    внешний прокси это дало 15 строк в секунду: 9 000 за десять минут при 225 тысячах
+    к загрузке, то есть четыре часа. Одна строка — один обмен с сервером, и платим мы
+    не за работу базы, а за задержку сети.
+
+    execute_values склеивает партию в ОДИН запрос. Партиями по 2 000, с фиксацией после
+    каждой: обрыв связи на середине не должен обнулять уже загруженное, а повторный
+    запуск дописывает недостающее (ON CONFLICT обновляет, а не плодит копии).
+    """
+    from psycopg2.extras import execute_values
     from backend.database import get_db_connection_context
     written = 0
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
-            # Партиями: обрыв связи на середине не должен обнулять уже загруженное.
-            CHUNK = 1000
+            CHUNK = 2000
             for i in range(0, len(pairs), CHUNK):
                 chunk = pairs[i:i + CHUNK]
-                cur.executemany(
+                execute_values(
+                    cur,
                     """
                     INSERT INTO bt_3_corpus_examples
                         (source, source_id, text_de, text_ru, author, license)
-                    VALUES ('tatoeba', %s, %s, %s, %s, %s)
+                    VALUES %s
                     ON CONFLICT (source, source_id) DO UPDATE
                        SET text_de = EXCLUDED.text_de,
                            text_ru = EXCLUDED.text_ru,
                            author  = EXCLUDED.author,
                            license = EXCLUDED.license;
                     """,
-                    chunk,
+                    [("tatoeba", *row) for row in chunk],
+                    page_size=500,
                 )
                 conn.commit()
                 written += len(chunk)
-                print(f"    записано {written} / {len(pairs)}")
+                print(f"    записано {written} / {len(pairs)}", flush=True)
     return written
 
 
