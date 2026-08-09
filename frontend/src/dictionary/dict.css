@@ -1562,3 +1562,55 @@ html[data-scheme="light"] .dq-gt > summary,
   opacity: 0.85;
 }
 .dq-ex--corpus { border-left: 2px solid var(--dq-chip-strong); padding-left: 10px; }
+
+/* ── Закладки быстрого словаря ────────────────────────────────────────────────
+   Те же три, что и во внутреннем: владелец справедливо заметил, что это один
+   продукт в двух местах и раскладка у них общая. Стили лежат здесь, а не берутся
+   из App.css: быстрый словарь открывается сам по себе и App.css не грузит.
+   Цвета — через переменные шкурки, поэтому в приложении он бежевый, а сам по себе
+   бело-индиговый, как и договаривались. */
+.dq-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.dq-tabs .vocab-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 9px 6px;
+  border-radius: 12px;
+  border: 1px solid var(--dmps-border, #334155);
+  background: var(--dq-chip);
+  color: var(--dmps-text-secondary, #cbd5e1);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.dq-tabs .vocab-tab.is-active {
+  background: var(--dq-accent);
+  border-color: var(--dq-accent);
+  color: var(--dq-accent-ink);
+}
+
+/* Список слов и истории — общий вид для обеих закладок. */
+.dict-history { display: flex; flex-direction: column; gap: 6px; }
+.dict-history-row {
+  text-align: left;
+  padding: 11px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--dmps-border, #334155);
+  background: var(--dq-chip);
+  color: var(--dmps-text-title, #f1f5f9);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+.dict-history-empty {
+  padding: 18px 14px;
+  color: var(--dmps-text-muted, #94a3b8);
+  font-size: 14px;
+}

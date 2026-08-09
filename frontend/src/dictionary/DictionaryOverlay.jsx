@@ -184,6 +184,25 @@ export default function DictionaryOverlay({ onClose } = {}) {
   });
   const [chipHint, setChipHint] = useState(false); // brief "tap a synonym to save it" toast
   const [blocked, setBlocked] = useState(null); // {botUsername} when the user left the bot → gate screen
+  // Закладки быстрого словаря — те же, что во внутреннем.
+  const [tab, setTab] = useState('search');
+  const [historyList, setHistoryList] = useState(() => loadRecentsAll());
+  const [mine, setMine] = useState([]);
+  const [mineState, setMineState] = useState('idle'); // idle | loading | ready | error
+
+  // Свои слова тянем ТОЛЬКО когда человек открыл эту закладку: экран поиска не должен
+  // платить за список, который на нём не виден.
+  useEffect(() => {
+    if (tab !== 'mine' || mineState !== 'idle') return;
+    setMineState('loading');
+    api('/api/webapp/dictionary/cards', { limit: 100 })
+      .then((data) => {
+        setMine(Array.isArray(data?.items) ? data.items : []);
+        setMineState('ready');
+      })
+      .catch(() => setMineState('error'));
+  }, [tab, mineState]);
+
   const lastAutoRef = useRef(''); // text already auto/manually translated (debounce dedupe)
   const chipHintDoneRef = useRef(false); // shown for the current breakdown already
   const seqRef = useRef(0);
@@ -326,6 +345,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
       setQuick(nextQuick);
       setPhase('done'); haptic('ok');
       setRecents(pushRecent(text));
+      setHistoryList(loadRecentsAll());
       // A German noun whose article missed the instant Wiktionary lookup gets its
       // der/die/das filled by a background LLM job that patches the cache. Poll for it
       // so it appears on its own — never make the user press «Перевести» a second time.
@@ -389,14 +409,31 @@ export default function DictionaryOverlay({ onClose } = {}) {
     try { inputRef.current?.focus(); } catch (_e) { /* ignore */ }
   }, [resetResult]);
 
-  // Auto-translate (DeepL-style): translate ~800ms after the user stops typing.
+  // Авто-перевод по паузе. Ждать надо ровно столько, сколько человек думает над
+  // СЛЕДУЮЩИМ словом, а не сколько он печатает текущее.
+  //
+  // Было 800 мс на любой текст. Владелец 09.08.2026: «задумался на секунду — а меня
+  // уже выбривает, перевод готов». Так и есть: секундная пауза посреди фразы длиннее
+  // 800 мс, и отсчёт начинается заново с каждой буквы, поэтому спасает только
+  // безостановочный набор.
+  //
+  // Сколько ждут Google и DeepL, публично неизвестно — я искал и не нашёл, поэтому
+  // цифры ниже наши, а не «как у них». Но разница с ними не в миллисекундах:
+  // у них ранний перевод БЕЗВРЕДЕН, он появляется в отдельной половине экрана и
+  // ничего не двигает. У нас он разворачивает карточку и тратит запрос, поэтому
+  // ошибиться в раннюю сторону нам дороже.
+  //
+  // Отсюда два срока вместо одного. Одно слово человек дописывает не задумываясь —
+  // ему хватает короткой паузы. Фраза пишется с раздумьями между словами, и ей нужен
+  // срок, переживающий «секунду на подумать».
+  const autoDelayMs = query.trim().includes(' ') ? 2200 : 900;
   useEffect(() => {
     if (!autoOn) return undefined;
     const t = query.trim();
     if (!t || t === lastAutoRef.current || phase === 'loading') return undefined;
-    const id = setTimeout(() => translate(t), 800);
+    const id = setTimeout(() => translate(t), autoDelayMs);
     return () => clearTimeout(id);
-  }, [query, forcedDir, phase, translate, autoOn]);
+  }, [query, forcedDir, phase, translate, autoOn, autoDelayMs]);
 
   const toggleAuto = useCallback(() => {
     setAutoOn((v) => {
@@ -873,6 +910,58 @@ export default function DictionaryOverlay({ onClose } = {}) {
           )}
         </div>
 
+        {/* Те же три закладки, что и в словаре внутри приложения. Владелец 09.08.2026:
+            «в словаре иконкой — всё как было, интерфейс же должен быть одинаков». Он
+            прав: это один продукт в двух местах, и раскладка у них общая. Отличаются
+            только цвета — так и договаривались. */}
+        <div className="vocab-tabs dq-tabs">
+          <button type="button" className={`vocab-tab ${tab === 'search' ? 'is-active' : ''}`}
+                  onClick={() => setTab('search')}>🔍 Поиск</button>
+          <button type="button" className={`vocab-tab ${tab === 'mine' ? 'is-active' : ''}`}
+                  onClick={() => setTab('mine')}>📚 Мои слова</button>
+          {historyList.length > 0 && (
+            <button type="button" className={`vocab-tab ${tab === 'history' ? 'is-active' : ''}`}
+                    onClick={() => setTab('history')}>🕘 История</button>
+          )}
+        </div>
+
+        {tab === 'history' && (
+          <div className="dict-history">
+            {historyList.map((w) => (
+              <button key={w} type="button" className="dict-history-row"
+                      onClick={() => { setTab('search'); setQuery(w); translate(w); }}>
+                {w}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {tab === 'mine' && (
+          <div className="dict-history">
+            {mineState === 'loading' && <div className="dict-history-empty">Загружаю…</div>}
+            {mineState === 'error' && (
+              <div className="dict-history-empty">Не получилось открыть ваши слова. Попробуйте ещё раз.</div>
+            )}
+            {mineState === 'ready' && mine.length === 0 && (
+              <div className="dict-history-empty">Здесь появятся слова, которые вы сохранили.</div>
+            )}
+            {mine.map((row, i) => {
+              const de = clean(row.word_de || row.translation_de);
+              const ru = clean(row.translation_ru || row.word_ru);
+              if (!de) return null;
+              return (
+                <button key={`${de}-${i}`} type="button" className="dict-history-row"
+                        onClick={() => { setTab('search'); setQuery(de); translate(de); }}>
+                  <b>{de}</b>{ru ? <span className="dq-chip-gloss"> — {ru}</span> : null}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {tab === 'search' && (<>
+
+
         {(() => {
           const dir = effectiveDir(query, forcedDir);
           const [src, tgt] = dir.split('-');
@@ -1053,6 +1142,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
         )}
         </>
         )}
+        </>)}
       </div>
 
       {chipHint && (
