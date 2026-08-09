@@ -6071,6 +6071,15 @@ function AppInner() {
   const [dictSearchRecents, setDictSearchRecents] = useState(() => {
     try { const r = JSON.parse(localStorage.getItem('dq_recents_v1') || '[]'); return Array.isArray(r) ? r.filter((x) => typeof x === 'string').slice(0, 6) : []; } catch (_e) { return []; }
   });
+  // История поиска. Под чипами «Недавние» показываются шесть последних — это подсказка,
+  // а не история. Для отдельной вкладки держим список длиннее: человек заходит туда
+  // именно чтобы вспомнить, что искал на прошлой неделе.
+  const [dictHistory, setDictHistory] = useState(() => {
+    try {
+      const r = JSON.parse(localStorage.getItem('dq_recents_v1') || '[]');
+      return Array.isArray(r) ? r.filter((x) => typeof x === 'string').slice(0, 60) : [];
+    } catch (_e) { return []; }
+  });
   const [dictionaryLanguagePair, setDictionaryLanguagePair] = useState(null);
   // When the user clears the input, the result card should disappear and the screen
   // returns to its initial compose state. (Don't wipe while a lookup is in flight.)
@@ -10451,9 +10460,13 @@ function AppInner() {
     try {
       const prev = JSON.parse(localStorage.getItem('dq_recents_v1') || '[]');
       const list = Array.isArray(prev) ? prev.filter((x) => typeof x === 'string') : [];
-      const next = [w, ...list.filter((x) => x.toLowerCase() !== w.toLowerCase())].slice(0, 6);
+      // Храним длинный список (для вкладки «История»), а чипами «Недавние» показываем
+      // только шесть: это подсказка под полем, а не история. Раньше хранились те же
+      // шесть — то есть история обрывалась на позавчера.
+      const next = [w, ...list.filter((x) => x.toLowerCase() !== w.toLowerCase())].slice(0, 60);
       localStorage.setItem('dq_recents_v1', JSON.stringify(next));
-      setDictSearchRecents(next);
+      setDictSearchRecents(next.slice(0, 6));
+      setDictHistory(next);
     } catch (_e) { /* ignore */ }
   }, [dictionaryResult]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -37885,12 +37898,45 @@ function AppInner() {
                         className={`vocab-tab ${vocabTab === 'library' ? 'is-active' : ''}`}
                         onClick={() => setVocabTab('library')}
                       >
-                        📚 {tr('Библиотека', 'Bibliothek')}
+                        {/* Была «Библиотека» — звучало как чужая полка с чьими-то книгами.
+                            Это личные сохранённые слова человека, и называться они должны
+                            так, чтобы было понятно, чьи они. Список тот же, ничего не переехало. */}
+                        📚 {tr('Мои слова', 'Meine Wörter')}
                         {vocabFoldersMeta?.total_count > 0 && (
                           <span className="vocab-tab-count">{vocabFoldersMeta.total_count}</span>
                         )}
                       </button>
+                      {dictHistory.length > 0 && (
+                        <button
+                          type="button"
+                          className={`vocab-tab ${vocabTab === 'history' ? 'is-active' : ''}`}
+                          onClick={() => setVocabTab('history')}
+                        >
+                          🕘 {tr('История', 'Verlauf')}
+                        </button>
+                      )}
                     </div>
+
+                    {/* ─── ИСТОРИЯ ─── */}
+                    {vocabTab === 'history' && (
+                      <div className="dict-history">
+                        {dictHistory.length === 0 ? (
+                          <div className="dict-history-empty">
+                            {tr('Здесь появятся слова, которые вы искали.',
+                                'Hier erscheinen die Wörter, die du gesucht hast.')}
+                          </div>
+                        ) : dictHistory.map((w) => (
+                          <button
+                            key={w}
+                            type="button"
+                            className="dict-history-row"
+                            onClick={() => { setVocabTab('search'); setDictionaryWord(w); }}
+                          >
+                            {w}
+                          </button>
+                        ))}
+                      </div>
+                    )}
 
                     {/* ─── LIBRARY TAB ─── */}
                     {vocabTab === 'library' && (() => {

@@ -37,7 +37,7 @@ import textwrap
 from googleapiclient.discovery import build
 from telegram.error import TelegramError
 from telegram.helpers import escape_markdown
-from telegram.error import TimedOut, BadRequest, RetryAfter, Forbidden
+from telegram.error import TimedOut, BadRequest, RetryAfter, Forbidden, NetworkError
 import tempfile
 import sys
 import threading
@@ -44372,7 +44372,33 @@ def main():
     # drop_pending_updates: after a deploy/restart, discard the backlog Telegram queued
     # while the bot was down instead of replaying it as a burst (stale answers, duplicate
     # deliveries, event-loop storm). Fresh start every boot.
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    # Сетевой сбой на старте больше не убивает бота.
+    #
+    # 09.08.2026 бот лёг в цикл падений: при первом обращении к Telegram (get_me внутри
+    # initialize) соединение не поднялось — httpx.ConnectTimeout, — и процесс умирал
+    # целиком. Railway перезапускал контейнер каждые ~50 секунд, три раза подряд, а
+    # потом сдался, и бот остался лежать. Люди в это время писали в тишину.
+    #
+    # Таймаут ни при чём: на соединение уже даётся 20 секунд. Дело в том, что ОДНА
+    # неудача считалась фатальной. Телеграм иногда недоступен минуту-другую, и пережить
+    # это должен сам бот, а не платформа перезапуском.
+    #
+    # Повторяем только СЕТЕВЫЕ ошибки. Неверный токен, отозванный доступ и прочее
+    # осмысленное по-прежнему валит процесс сразу: там повторять нечего, и молчаливый
+    # цикл перезапусков только спрячет причину.
+    _POLL_RETRY_DELAYS = (5, 15, 30, 60, 120)
+    for attempt, delay in enumerate((*_POLL_RETRY_DELAYS, None), start=1):
+        try:
+            application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+            break
+        except (TimedOut, NetworkError) as exc:
+            if delay is None:
+                logging.error("Telegram недоступен после %s попыток — сдаюсь: %s", attempt, exc)
+                raise
+            logging.warning(
+                "Telegram недоступен (попытка %s): %s. Повтор через %s с.", attempt, exc, delay,
+            )
+            pytime.sleep(delay)
 
 
 

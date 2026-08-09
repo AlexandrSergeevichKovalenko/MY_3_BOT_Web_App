@@ -76,20 +76,30 @@ function germanNounAwaitingArticle(q) {
   return german;
 }
 
-// Recent lookups persisted locally (most-recent first, max 6).
+// История поиска. Список общий с приложением — один ключ на оба словаря, поэтому
+// найденное здесь видно и во вкладке «История» внутри приложения.
+//
+// Храним 60, показываем 6. Раньше хранились те же шесть, и любой поиск в быстром
+// словаре обрезал историю приложения до шести — два словаря затирали друг другу память.
 const RECENTS_KEY = 'dq_recents_v1';
-function loadRecents() {
+const RECENTS_KEEP = 60;
+const RECENTS_SHOW = 6;
+function loadRecentsAll() {
   try {
     const raw = JSON.parse(localStorage.getItem(RECENTS_KEY) || '[]');
-    return Array.isArray(raw) ? raw.filter((x) => typeof x === 'string').slice(0, 6) : [];
+    return Array.isArray(raw) ? raw.filter((x) => typeof x === 'string').slice(0, RECENTS_KEEP) : [];
   } catch (_e) { return []; }
+}
+function loadRecents() {
+  return loadRecentsAll().slice(0, RECENTS_SHOW);
 }
 function pushRecent(word) {
   const w = String(word || '').trim();
   if (!w) return loadRecents();
-  const next = [w, ...loadRecents().filter((x) => x.toLowerCase() !== w.toLowerCase())].slice(0, 6);
+  const next = [w, ...loadRecentsAll().filter((x) => x.toLowerCase() !== w.toLowerCase())]
+    .slice(0, RECENTS_KEEP);
   try { localStorage.setItem(RECENTS_KEY, JSON.stringify(next)); } catch (_e) { /* ignore */ }
-  return next;
+  return next.slice(0, RECENTS_SHOW);
 }
 
 // "Tap a synonym to save it" hint — shown a few times total, then it stops nagging.

@@ -31325,3 +31325,22 @@ html[data-scheme="light"] .story-modal-guess-answer,
 .webapp-page.is-theme-light .own-note-label-input::placeholder,
 .webapp-page.is-theme-light .own-note-text-input::placeholder { color: #a2968a; }
 .webapp-page.is-theme-light .own-note-del { background: rgba(60,48,30,0.1); color: #5d5244; }
+
+/* Вкладка «История»: список последних поисков, тап повторяет запрос. */
+.dict-history { display: flex; flex-direction: column; gap: 6px; }
+.dict-history-row {
+  text-align: left;
+  padding: 11px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--dict-border);
+  background: var(--dict-bg-card-alt);
+  color: var(--dict-text-primary);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+.dict-history-empty {
+  padding: 18px 14px;
+  color: var(--dict-text-secondary);
+  font-size: 14px;
+}
