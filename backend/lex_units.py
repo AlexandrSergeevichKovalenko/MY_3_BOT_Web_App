@@ -1220,6 +1220,11 @@ def units_needing_synonyms(limit: int, *, lang: str = "de") -> list[dict]:
                     WHERE u.lang = %s AND u.kind = 'word'
                       AND u.card IS NOT NULL AND jsonb_typeof(u.card) = 'object'
                       AND jsonb_array_length(COALESCE(u.card->'synonyms', '[]'::jsonb)) = 0
+                      -- Слово, у которого мы уже спрашивали и получили пустоту, больше
+                      -- не берём: у части слов близких синонимов действительно нет, и
+                      -- спрашивать о них каждую ночь значит платить за один и тот же
+                      -- отказ бесконечно.
+                      AND NOT (u.card ? 'synonyms_asked_at')
                     ORDER BY (d.due_at IS NULL), d.due_at, saved DESC, u.id
                     LIMIT %s;
                     """,
@@ -1246,7 +1251,8 @@ def count_units_needing_synonyms(*, lang: str = "de") -> int:
                     SELECT count(*) FROM bt_3_lex_units
                     WHERE lang = %s AND kind = 'word'
                       AND card IS NOT NULL AND jsonb_typeof(card) = 'object'
-                      AND jsonb_array_length(COALESCE(card->'synonyms', '[]'::jsonb)) = 0;
+                      AND jsonb_array_length(COALESCE(card->'synonyms', '[]'::jsonb)) = 0
+                      AND NOT (card ? 'synonyms_asked_at');
                     """,
                     (lang,),
                 )

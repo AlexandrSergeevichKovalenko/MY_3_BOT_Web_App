@@ -10516,6 +10516,96 @@ _POOL_NIGHT_ENRICH_LOCK = threading.Lock()
 _POOL_NIGHT_ENRICH_RUNNING = False
 
 
+SYNONYM_BACKFILL_NIGHT_LIMIT = max(
+    0, int((os.getenv("SYNONYM_BACKFILL_NIGHT_LIMIT") or "400").strip() or "400")
+)
+
+
+def _run_synonym_backfill(*, limit: int, learning_lang: str = "de", native_lang: str = "ru") -> dict:
+    """Добрать синонимы словам, у которых разбор уже есть, а синонимов нет.
+
+    Зачем отдельно от основного ночного добора. Тот берёт слова БЕЗ разбора и уже
+    обогащённые не трогает вовсе — правильно, иначе он платил бы дважды. Но синонимы мы
+    стали просить только 10.08.2026: до этого их не просил ни один промпт живого пути.
+    Значит всё накопленное осталось бы без них навсегда — замер того же дня: 9 469 слов,
+    из них 9 261 лежат у людей в личных карточках.
+
+    Запрос короткий, только про синонимы: карточка целиком уже куплена, и переспрашивать
+    её значило бы платить второй раз за то же.
+
+    Пустой ответ — не ошибка: у части слов близких синонимов действительно нет, и модели
+    прямо сказано возвращать пустой список, а не выдумывать. Такое слово мы больше не
+    трогаем: считать его «недоделанным» и спрашивать каждую ночь — это платить за
+    один и тот же отказ бесконечно. Поэтому в карточку кладём отметку, что спрашивали.
+    """
+    report = {"picked": 0, "filled": 0, "empty": 0, "errors": 0, "remaining": 0}
+    if limit <= 0:
+        return report
+    try:
+        from backend import lex_units
+        from backend.openai_manager import run_dictionary_synonyms_backfill
+        units = lex_units.units_needing_synonyms(limit, lang=learning_lang)
+    except Exception:
+        logging.warning("отбор слов для добора синонимов не удался", exc_info=True)
+        return report
+
+    report["picked"] = len(units)
+    for unit in units:
+        german = str(unit.get("display") or "").strip()
+        if not german:
+            continue
+        try:
+            data = asyncio.run(run_dictionary_synonyms_backfill(
+                word=german,
+                translation=str(unit.get("translation") or ""),
+                source_lang=learning_lang,
+                target_lang=native_lang,
+                explanation_lang=native_lang,
+            ))
+        except Exception:
+            logging.warning("добор синонимов не удался для %r", german, exc_info=True)
+            report["errors"] += 1
+            continue
+
+        if not isinstance(data, dict):
+            report["errors"] += 1
+            continue
+
+        patch = {}
+        for key in ("synonyms", "antonyms", "related_words"):
+            value = data.get(key)
+            if isinstance(value, list) and value:
+                patch[key] = value
+        # Отметка «спрашивали» ставится ВСЕГДА, даже когда модель вернула пустоту:
+        # без неё слово вернулось бы в очередь завтра и послезавтра.
+        patch["synonyms_asked_at"] = datetime.now(timezone.utc).isoformat()
+
+        try:
+            from backend.database import get_db_connection_context
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE bt_3_lex_units SET card = card || %s::jsonb, updated_at = NOW() "
+                        "WHERE id = %s AND card IS NOT NULL;",
+                        (json.dumps(patch, ensure_ascii=False), int(unit["id"])),
+                    )
+                conn.commit()
+            if any(k in patch for k in ("synonyms", "antonyms", "related_words")):
+                report["filled"] += 1
+            else:
+                report["empty"] += 1
+        except Exception:
+            logging.warning("запись синонимов не удалась для %r", german, exc_info=True)
+            report["errors"] += 1
+
+    try:
+        from backend import lex_units as _lu
+        report["remaining"] = _lu.count_units_needing_synonyms(lang=learning_lang)
+    except Exception:
+        pass
+    return report
+
+
 def _run_units_night_enrichment(
     *,
     cap: int,
@@ -10638,6 +10728,19 @@ def _run_units_night_enrichment(
     # Остаток берём отдельным подсчётом, а не из выборки: она ограничена ночным
     # потолком, и сводка отчиталась бы «осталось 86» при 3356 неразобранных.
     report["remaining"] = lex_units.count_units_needing_card(lang=learning_lang)
+
+    # Добор синонимов идёт ПОСЛЕ основного и своим потолком: основной добор важнее —
+    # слово без разбора вообще нечего показать, а слово без синонимов показывается,
+    # просто беднее.
+    if not dry_run and SYNONYM_BACKFILL_NIGHT_LIMIT > 0:
+        try:
+            report["synonyms"] = _run_synonym_backfill(
+                limit=SYNONYM_BACKFILL_NIGHT_LIMIT,
+                learning_lang=learning_lang,
+                native_lang=native_lang,
+            )
+        except Exception:
+            logging.warning("ночной добор синонимов не удался", exc_info=True)
     return report
 
 

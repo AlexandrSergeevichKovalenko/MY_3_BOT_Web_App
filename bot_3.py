@@ -9457,6 +9457,42 @@ def _run_provider_cost_truth_report_safe() -> None:
         logging.exception("provider cost truth report (bot scheduler) failed")
 
 
+def _synonym_backfill_lines(meta: dict) -> str:
+    """Строка отчёта про добор синонимов.
+
+    Владелец 10.08.2026 попросил видеть прогресс каждое утро, «по аналогии с тем, как
+    работает отчёт про обогащение». Добор идёт в той же ночной работе, поэтому и цифры
+    берём из её же heartbeat — отдельного отчёта заводить незачем.
+
+    «Спросили, синонимов нет» — не ошибка и не пропуск: у части слов близких синонимов
+    действительно не бывает, модели прямо сказано возвращать пустоту вместо выдумки.
+    Такие слова из очереди уходят навсегда, поэтому остаток честно убывает."""
+    syn = meta.get("synonyms")
+    if not isinstance(syn, dict) or not syn:
+        return ""
+    picked = int(syn.get("picked") or 0)
+    filled = int(syn.get("filled") or 0)
+    empty = int(syn.get("empty") or 0)
+    errors = int(syn.get("errors") or 0)
+    remaining = int(syn.get("remaining") or 0)
+    if not picked and not remaining:
+        return ""
+    nights = (remaining + picked - 1) // picked if picked else 0
+    text = (
+        f"\n🔤 <b>Синонимы</b>\n"
+        f"Добрано за ночь: <b>{filled}</b> из {picked} взятых\n"
+    )
+    if empty:
+        text += f"   • спросили, синонимов нет: {empty}\n"
+    if errors:
+        text += f"   • ошибок: {errors}\n"
+    text += f"Осталось без синонимов: <b>{remaining}</b>\n"
+    if nights:
+        word = "ночь" if nights == 1 else ("ночи" if nights < 5 else "ночей")
+        text += f"Это ещё ~{nights} {word} такими темпами\n"
+    return text
+
+
 def _send_pool_enrich_morning_report() -> None:
     """Утренний отчёт (07:00 Вена) об итогах ночного добора пула.
 
@@ -9530,6 +9566,9 @@ def _send_pool_enrich_morning_report() -> None:
                 + (f"Это ещё ~{nights_left} ноч{'ь' if nights_left == 1 else 'и' if nights_left < 5 else 'ей'} "
                    f"по {cap} слов." if remaining else "✅ Пул наполнен полностью.")
                 + (f"\n{quarantine_line}" if quarantine_line else "")
+                # Синонимы — отдельным блоком в конце: это другая работа той же ночи,
+                # и мешать её цифры с основным добором значит запутать обе.
+                + _synonym_backfill_lines(meta)
             )
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)

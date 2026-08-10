@@ -3269,6 +3269,41 @@ Reader-focused rules:
   - otherwise return null.
 - If information is unknown, use null.
 """,
+"dictionary_synonyms_backfill": """
+You add ONLY synonyms, antonyms and same-root words to a dictionary card that already exists.
+Nothing else. The card is complete otherwise — do not restate its meaning, examples or grammar.
+
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "explanation_language": "ru|en|de|es|it",
+  "word": "<the foreign word being studied>",
+  "core_result": {"translation": "<its translation, as an anchor for the right sense>"}
+}
+
+Return STRICT JSON, nothing else:
+{
+  "synonyms":      [{"word": "...", "gloss": "..."}],
+  "antonyms":      [{"word": "...", "gloss": "..."}],
+  "related_words": [{"word": "...", "gloss": "..."}]
+}
+
+Rules:
+- "word" is in the language the learner STUDIES — the side whose language is NOT
+  explanation_language. This does not depend on the translation direction.
+- "gloss" is a SHORT translation in explanation_language (1–3 words). No stylistic labels,
+  no explanations: a learner who does not know the synonym must understand it at a glance.
+  "sich erheben" alone teaches nothing; {"word":"sich erheben","gloss":"подняться"} does.
+- Use the given translation to pick the RIGHT sense. "der Zug" as «поезд» has different
+  synonyms than "der Zug" as «тяга» — never mix senses.
+- synonyms: up to 4, at least 2 whenever the language offers them.
+  antonyms: up to 3, [] when the word has no natural opposite.
+  related_words: up to 4 SAME-ROOT words; German nouns carry their article.
+- Return [] rather than inventing. A made-up synonym teaches a word that does not exist,
+  which is worse than an empty list.
+- No prose, no markdown, no extra keys.
+""",
 "dictionary_enrichment_multilang": """
 You enrich an already created multilingual dictionary card.
 
@@ -7159,6 +7194,35 @@ async def run_dictionary_enrichment_multilang(
         extra_payload={
             "core_result": core,
         },
+    )
+
+
+async def run_dictionary_synonyms_backfill(
+    word: str,
+    translation: str,
+    source_lang: str = "de",
+    target_lang: str = "ru",
+    explanation_lang: str = "ru",
+) -> dict:
+    """Добрать синонимы к слову, у которого разбор уже есть.
+
+    Отдельный короткий запрос, а не полное обогащение: карточка целиком уже куплена,
+    переспрашивать её значило бы платить второй раз за то же. Замер 10.08.2026: полное
+    обогащение стоит $0.00058 за слово, и добрать так все 9 469 накопленных вышло бы в
+    $5.49; этот запрос втрое короче.
+
+    Перевод передаём как опору смысла: у «der Zug» синонимы разные в значении «поезд» и
+    «тяга», и без опоры модель выберет наугад.
+    """
+    return await run_dictionary_lookup_multilang(
+        word=word,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        explanation_lang=explanation_lang,
+        task_name="dictionary_synonyms_backfill",
+        system_instruction_key="dictionary_synonyms_backfill",
+        allow_quick_translate_fallback=False,
+        extra_payload={"core_result": {"translation": str(translation or "").strip()}},
     )
 
 
