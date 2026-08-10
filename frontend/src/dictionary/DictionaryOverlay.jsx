@@ -189,6 +189,34 @@ export default function DictionaryOverlay({ onClose } = {}) {
   const [mine, setMine] = useState([]);
   const [mineState, setMineState] = useState('idle'); // idle | loading | ready | error
   const [mineQuery, setMineQuery] = useState('');
+  // Открытая карточка своего слова. Разбор приезжает ВМЕСТЕ со списком, поэтому
+  // открытие не стоит ни запроса, ни денег.
+  const [mineCard, setMineCard] = useState(null);
+
+  // Слово из списка открывается КАРТОЧКОЙ, а не отправляется в поиск.
+  //
+  // Сначала я сделал наоборот: нажатие подставляло фразу в строку поиска и переводило
+  // заново. Владелец 10.08.2026 справедливо возразил — зачем переводить то, что уже
+  // переведено и сохранено. Это и лишние деньги, и лишнее ожидание, и человек теряет
+  // место, на котором стоял в списке.
+  const openMineCard = useCallback((row) => {
+    const raw = row && row.response_json;
+    let card = raw;
+    if (typeof raw === 'string') {
+      try { card = JSON.parse(raw); } catch (_e) { card = null; }
+    }
+    if (!card || typeof card !== 'object') {
+      // Разбора у строки нет (тонкая запись) — показываем хотя бы пару «слово — перевод»,
+      // а не пустоту.
+      card = {
+        word_de: clean(row?.word_de || row?.translation_de),
+        word_ru: clean(row?.word_ru || row?.translation_ru),
+        translation_ru: clean(row?.translation_ru || row?.word_ru),
+        translation_de: clean(row?.translation_de || row?.word_de),
+      };
+    }
+    setMineCard(card);
+  }, []);
   const [mineHasMore, setMineHasMore] = useState(false);
   const MINE_PAGE = 50;
 
@@ -962,7 +990,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
           <button type="button" className={`vocab-tab ${tab === 'search' ? 'is-active' : ''}`}
                   onClick={() => setTab('search')}>🔍 Поиск</button>
           <button type="button" className={`vocab-tab ${tab === 'mine' ? 'is-active' : ''}`}
-                  onClick={() => setTab('mine')}>📚 Мои слова</button>
+                  onClick={() => { setTab('mine'); setMineCard(null); }}>📚 Мои слова</button>
           {historyList.length > 0 && (
             <button type="button" className={`vocab-tab ${tab === 'history' ? 'is-active' : ''}`}
                     onClick={() => setTab('history')}>🕘 История</button>
@@ -980,7 +1008,23 @@ export default function DictionaryOverlay({ onClose } = {}) {
           </div>
         )}
 
-        {tab === 'mine' && (
+        {tab === 'mine' && mineCard && (
+          <div className="dq-mine-card">
+            <button type="button" className="dq-mine-back" onClick={() => setMineCard(null)}>
+              ← К моим словам
+            </button>
+            <div className="dq-translation">
+              {clean(mineCard.word_de || mineCard.translation_de)}
+              {clean(mineCard.word_de || mineCard.translation_de) && (
+                <SpeakButton text={clean(mineCard.word_de || mineCard.translation_de)} tts={tts} />
+              )}
+            </div>
+            <div className="dq-source">{clean(mineCard.translation_ru || mineCard.word_ru)}</div>
+            <WordBreakdown item={mineCard} tts={tts} tablesOpen={false} />
+          </div>
+        )}
+
+        {tab === 'mine' && !mineCard && (
           <div className="dict-history">
             <div className="dq-input-wrap dq-mine-search">
               <input
@@ -1013,7 +1057,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
               if (!de) return null;
               return (
                 <button key={`${de}-${i}`} type="button" className="dict-history-row"
-                        onClick={() => { setTab('search'); setQuery(de); translate(de); }}>
+                        onClick={() => openMineCard(row)}>
                   <b>{de}</b>{ru ? <span className="dq-chip-gloss"> — {ru}</span> : null}
                 </button>
               );

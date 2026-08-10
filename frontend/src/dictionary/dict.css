@@ -1618,3 +1618,19 @@ html[data-scheme="light"] .dq-gt > summary,
 /* Поиск среди своих слов и подгрузка следующей порции. */
 .dq-mine-search { margin-bottom: 4px; }
 .dq-mine-more { text-align: center; font-weight: 650; color: var(--dq-accent); }
+
+/* Карточка своего слова, открытая из списка. Открывается из уже полученного разбора,
+   поэтому мгновенно и бесплатно. */
+.dq-mine-card { display: flex; flex-direction: column; gap: 8px; }
+.dq-mine-back {
+  align-self: flex-start;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--dmps-border, #334155);
+  background: var(--dq-chip);
+  color: var(--dmps-text-secondary, #cbd5e1);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
