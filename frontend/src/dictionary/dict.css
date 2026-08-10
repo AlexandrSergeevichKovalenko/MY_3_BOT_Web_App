@@ -269,12 +269,8 @@
 /* 5. Недавние — compact: chips flow left→right and wrap, capped at ~2 rows so
    they never eat the screen (extra recents beyond two lines are hidden). */
 .dict-search-recent { margin: 8px 0 2px; }
-.dict-search-recent .dq-recent-chips {
-  gap: 6px 8px;
-  max-height: 62px; /* ≈ two rows of chips */
-  overflow: hidden;
-}
-.dict-search-recent .dq-recent-chip { font-size: 13px; padding: 4px 12px; }
+
+
 
 /* Share/upload icon must fit its round button */
 .dictionary-share-button { display: inline-flex; align-items: center; justify-content: center; }
@@ -1178,34 +1174,11 @@ html[data-scheme="light"] .dq-gt > summary,
   color: var(--dq-label);
   cursor: pointer;
 }
-.dq-recent {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.dq-recent-label {
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--dmps-text-muted, #94a3b8);
-}
-.dq-recent-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.dq-recent-chip {
-  font: inherit;
-  font-size: 14px;
-  padding: 5px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--dmps-border, #334155);
-  background: rgba(148, 163, 184, 0.1);
-  color: var(--dmps-text-secondary, #cbd5e1);
-  cursor: pointer;
-}
-.dq-recent-chip:hover { background: var(--dq-accent-wash); }
+
+
+
+
+
 
 /* ── Example sentences (German + 🔊, tap to reveal RU) ────────────────────────── */
 .dq-tts.sm {

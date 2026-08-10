@@ -39956,21 +39956,21 @@ def create_webapp_dictionary_share_link():
     import secrets as _secrets
 
     payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
     deep_id = str(payload.get("deep_id") or "").strip()
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
     if not deep_id:
         return jsonify({"error": "deep_id обязателен"}), 400
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
     if not TELEGRAM_BOT_USERNAME:
         return jsonify({"error": "Шеринг недоступен: бот не сконфигурирован"}), 503
 
-    parsed = _parse_telegram_init_data(init_data)
-    user_id = (parsed.get("user") or {}).get("id")
+    # Пользователя определяем общим способом — сессией Telegram ИЛИ токеном словаря.
+    # Здесь требовалась только сессия, и словарь с рабочего стола ломался бы на кнопке
+    # «Поделиться» ровно так же, как ломался на «Моих словах»: он живёт вне Telegram.
+    # Сейчас это ещё не проявилось только потому, что при установке кешируется initData,
+    # и первые тридцать дней она проходит проверку. Найдено проверочным проходом
+    # 10.08.2026, до того как успело сломаться у людей.
+    user_id = _resolve_webapp_user_id(payload)
     if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
 
     record = _get_deep_analysis_record(deep_id)
     if not isinstance(record, dict):
