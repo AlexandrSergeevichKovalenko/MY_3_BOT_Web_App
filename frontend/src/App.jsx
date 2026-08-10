@@ -39082,7 +39082,23 @@ function AppInner() {
                             пока не открыт подробный разбор — в нём свой такой блок. */}
                         {dictBreakdownPhase !== 'done' && (
                           <LiveExamples
-                            germanWord={dictionaryResult.word_de || dictionaryResult.translation_de}
+                            germanWord={(() => {
+                              // Сторону выбираем ПО ЯЗЫКУ, а не по имени поля. Быстрый
+                              // результат называет поля по позиции: при поиске de→ru в
+                              // word_de лежит РУССКОЕ слово («Собрание» для «Die
+                              // Versammlung»). Из-за этого блок молча не показывался —
+                              // корпус искал русское слово среди немецких предложений.
+                              const src = String(dictionaryResult.source_text || '').trim();
+                              const tgt = String(dictionaryResult.target_text || '').trim();
+                              const srcLang = String(dictionaryResult.source_lang || '').toLowerCase();
+                              if (srcLang === 'de' && src) return src;
+                              if (String(dictionaryResult.target_lang || '').toLowerCase() === 'de' && tgt) return tgt;
+                              // Языки не проставлены — определяем по алфавиту.
+                              const hasCyr = (t) => /[А-Яа-яЁё]/.test(t);
+                              if (src && !hasCyr(src)) return src;
+                              if (tgt && !hasCyr(tgt)) return tgt;
+                              return '';
+                            })()}
                           />
                         )}
                         <div className="dictionary-result-actions">

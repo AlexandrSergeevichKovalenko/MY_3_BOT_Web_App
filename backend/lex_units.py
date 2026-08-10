@@ -1170,3 +1170,86 @@ def pos_of_surface(text: str, lang: str = "de") -> str:
     kinds = {str(u.get("pos") or "").strip() for u in units}
     kinds.discard("")
     return kinds.pop() if len(kinds) == 1 else ""
+
+
+def units_needing_synonyms(limit: int, *, lang: str = "de") -> list[dict]:
+    """Слова, у которых разбор УЖЕ есть, а синонимов в нём нет.
+
+    Отдельный отбор понадобился потому, что ночной добор смотрит на слова БЕЗ разбора
+    (units_needing_card) и уже обогащённые не трогает вовсе. А синонимы мы стали просить
+    только 10.08.2026 — до этого их не просил ни один промпт живого пути. Значит всё
+    накопленное так и осталось бы без них: замер того же дня — 9 469 слов, из которых
+    9 261 лежат у людей в личных карточках.
+
+    Порядок тот же, что у основного добора, и по той же причине: сначала то, что человек
+    увидит завтра. Слова, стоящие у кого-то на повторение, идут по ближайшему сроку;
+    дальше — по числу людей, сохранивших слово себе.
+
+    Берём и перевод: он нужен запросу как опора, иначе модель ищет синонимы не тому
+    значению («der Zug» — поезд или тяга).
+    """
+    if limit <= 0:
+        return []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT u.id, u.display, u.pos, u.gender,
+                           COALESCE(p.saved, 0) AS saved,
+                           d.due_at,
+                           (SELECT u2.display FROM bt_3_lex_links l
+                              JOIN bt_3_lex_units u2 ON u2.id = l.to_unit
+                             WHERE l.from_unit = u.id AND u2.lang = 'ru'
+                               AND position('___' in u2.display) = 0
+                             ORDER BY l.rank, u2.id LIMIT 1) AS translation
+                    FROM bt_3_lex_units u
+                    LEFT JOIN (
+                        SELECT lex_unit_id, COUNT(*) AS saved
+                        FROM bt_3_webapp_dictionary_queries
+                        WHERE lex_unit_id IS NOT NULL GROUP BY lex_unit_id
+                    ) p ON p.lex_unit_id = u.id
+                    LEFT JOIN (
+                        SELECT q.lex_unit_id, MIN(st.due_at) AS due_at
+                        FROM bt_3_card_srs_state st
+                        JOIN bt_3_webapp_dictionary_queries q
+                          ON q.id = st.card_id AND q.user_id = st.user_id
+                        WHERE st.status <> 'suspended' AND q.lex_unit_id IS NOT NULL
+                        GROUP BY q.lex_unit_id
+                    ) d ON d.lex_unit_id = u.id
+                    WHERE u.lang = %s AND u.kind = 'word'
+                      AND u.card IS NOT NULL AND jsonb_typeof(u.card) = 'object'
+                      AND jsonb_array_length(COALESCE(u.card->'synonyms', '[]'::jsonb)) = 0
+                    ORDER BY (d.due_at IS NULL), d.due_at, saved DESC, u.id
+                    LIMIT %s;
+                    """,
+                    (lang, int(limit)),
+                )
+                rows = cur.fetchall()
+    except Exception as exc:
+        logging.debug("units needing synonyms failed: %s", exc)
+        return []
+    return [
+        {"id": r[0], "display": r[1], "pos": r[2], "gender": r[3],
+         "saved": r[4], "due_at": r[5], "translation": r[6] or ""}
+        for r in rows
+    ]
+
+
+def count_units_needing_synonyms(*, lang: str = "de") -> int:
+    """Сколько слов ещё ждут синонимов — для утренней строки отчёта."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT count(*) FROM bt_3_lex_units
+                    WHERE lang = %s AND kind = 'word'
+                      AND card IS NOT NULL AND jsonb_typeof(card) = 'object'
+                      AND jsonb_array_length(COALESCE(card->'synonyms', '[]'::jsonb)) = 0;
+                    """,
+                    (lang,),
+                )
+                return int(cur.fetchone()[0] or 0)
+    except Exception:
+        return 0
