@@ -50738,6 +50738,8 @@ def get_webapp_dictionary_cards():
     limit = payload.get("limit", 100)
     folder_mode = payload.get("folder_mode", "all")
     folder_id = payload.get("folder_id")
+    search = payload.get("search")
+    offset = payload.get("offset", 0)
 
     # Пользователя определяем общим способом: сессией Telegram ИЛИ долговременным
     # токеном словаря. Раньше здесь требовалась только сессия — и словарь, открытый
@@ -50757,6 +50759,8 @@ def get_webapp_dictionary_cards():
             folder_id=int(folder_id) if folder_id is not None else None,
             source_lang=source_lang,
             target_lang=target_lang,
+            search=search,
+            offset=int(offset or 0),
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка получения словаря: {exc}"}), 500

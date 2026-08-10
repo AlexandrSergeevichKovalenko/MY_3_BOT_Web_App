@@ -6069,9 +6069,6 @@ function AppInner() {
   });
   const [dictionarySaved, setDictionarySaved] = useState('');
   const [dictionaryDirection, setDictionaryDirection] = useState('ru-de');
-  const [dictSearchRecents, setDictSearchRecents] = useState(() => {
-    try { const r = JSON.parse(localStorage.getItem('dq_recents_v1') || '[]'); return Array.isArray(r) ? r.filter((x) => typeof x === 'string').slice(0, 6) : []; } catch (_e) { return []; }
-  });
   // История поиска. Под чипами «Недавние» показываются шесть последних — это подсказка,
   // а не история. Для отдельной вкладки держим список длиннее: человек заходит туда
   // именно чтобы вспомнить, что искал на прошлой неделе.
@@ -10466,7 +10463,6 @@ function AppInner() {
       // шесть — то есть история обрывалась на позавчера.
       const next = [w, ...list.filter((x) => x.toLowerCase() !== w.toLowerCase())].slice(0, 60);
       localStorage.setItem('dq_recents_v1', JSON.stringify(next));
-      setDictSearchRecents(next.slice(0, 6));
       setDictHistory(next);
     } catch (_e) { /* ignore */ }
   }, [dictionaryResult]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -38743,16 +38739,9 @@ function AppInner() {
                             {wordOfDay.ru && <span className="dict-word-of-day-ru">{wordOfDay.ru}</span>}
                           </button>
                         )}
-                        {dictSearchRecents.length > 0 && (
-                          <div className="dq-recent dict-search-recent">
-                            <span className="dq-recent-label">{tr('Недавние', 'Zuletzt')}</span>
-                            <div className="dq-recent-chips">
-                              {dictSearchRecents.map((w) => (
-                                <button key={w} type="button" className="dq-recent-chip" onClick={() => setDictionaryWord(w)}>{w}</button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                        {/* «Недавние» убраны 10.08.2026 вместе с быстрым словарём:
+                            их работу делает закладка «История», а два одинаковых списка
+                            на одном экране только путают. */}
                         <div className="dict-translate-row">
                           <button
                             type="button"

@@ -18237,7 +18237,17 @@ def get_webapp_dictionary_entries(
     folder_id: int | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    search: str | None = None,
+    offset: int = 0,
 ) -> list[dict]:
+    """Сохранённые слова человека.
+
+    search и offset добавлены 10.08.2026: словарь с рабочего стола показывал первые сто
+    строк и упирался в конец списка. При пятнадцати тысячах слов это не список, а
+    случайная выборка — владелец справедливо спросил, как этим пользоваться.
+
+    Ищем по обеим сторонам пары и по тексту внутри разбора: человек помнит слово
+    то по-немецки, то по-русски, и заставлять его угадывать сторону незачем."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             where_clause = "WHERE user_id = %s"
@@ -18251,13 +18261,21 @@ def get_webapp_dictionary_entries(
                 params.append(folder_id)
             elif folder_mode == "none":
                 where_clause += " AND folder_id IS NULL"
+            needle = str(search or "").strip()
+            if needle:
+                where_clause += (
+                    " AND (word_de ILIKE %s OR word_ru ILIKE %s"
+                    " OR translation_de ILIKE %s OR translation_ru ILIKE %s)"
+                )
+                params.extend([f"%{needle}%"] * 4)
             params.append(limit)
+            params.append(max(0, int(offset or 0)))
             cursor.execute(f"""
                 SELECT id, word_ru, translation_de, word_de, translation_ru, source_lang, target_lang, origin_process, origin_meta, response_json, folder_id, created_at
                 FROM bt_3_webapp_dictionary_queries
                 {where_clause}
                 ORDER BY created_at DESC
-                LIMIT %s;
+                LIMIT %s OFFSET %s;
             """, params)
             rows = cursor.fetchall()
 

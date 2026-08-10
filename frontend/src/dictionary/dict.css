@@ -1614,3 +1614,7 @@ html[data-scheme="light"] .dq-gt > summary,
   color: var(--dmps-text-muted, #94a3b8);
   font-size: 14px;
 }
+
+/* Поиск среди своих слов и подгрузка следующей порции. */
+.dq-mine-search { margin-bottom: 4px; }
+.dq-mine-more { text-align: center; font-weight: 650; color: var(--dq-accent); }

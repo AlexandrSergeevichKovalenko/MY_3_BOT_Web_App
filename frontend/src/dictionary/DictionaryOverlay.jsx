@@ -177,7 +177,6 @@ export default function DictionaryOverlay({ onClose } = {}) {
   const [cardSave, setCardSave] = useState('idle'); // idle|done — «Учить» (SRS)
   const [savedChips, setSavedChips] = useState(() => new Set()); // synonyms/collocations tapped to save
   const [error, setError] = useState('');
-  const [recents, setRecents] = useState(loadRecents);
   const [forcedDir, setForcedDir] = useState(null); // null=auto, else 'ru-de'|'de-ru'
   const [autoOn, setAutoOn] = useState(() => {
     try { return localStorage.getItem('dq_auto') !== '0'; } catch (_e) { return true; }
@@ -189,19 +188,43 @@ export default function DictionaryOverlay({ onClose } = {}) {
   const [historyList, setHistoryList] = useState(() => loadRecentsAll());
   const [mine, setMine] = useState([]);
   const [mineState, setMineState] = useState('idle'); // idle | loading | ready | error
+  const [mineQuery, setMineQuery] = useState('');
+  const [mineHasMore, setMineHasMore] = useState(false);
+  const MINE_PAGE = 50;
 
   // Свои слова тянем ТОЛЬКО когда человек открыл эту закладку: экран поиска не должен
   // платить за список, который на нём не виден.
+  //
+  // Порциями и с поиском. Первая версия показывала первые сто строк и упиралась в конец:
+  // при пятнадцати тысячах слов это не список, а случайная выборка. Владелец справедливо
+  // спросил, как этим пользоваться.
+  const loadMine = useCallback(async ({ reset = false, needle = '' } = {}) => {
+    const offset = reset ? 0 : mine.length;
+    setMineState(reset ? 'loading' : 'more');
+    try {
+      const data = await api('/api/webapp/dictionary/cards', {
+        limit: MINE_PAGE, offset, search: needle || undefined,
+      });
+      const items = Array.isArray(data?.items) ? data.items : [];
+      setMine((prev) => (reset ? items : [...prev, ...items]));
+      setMineHasMore(items.length === MINE_PAGE);
+      setMineState('ready');
+    } catch (_e) {
+      setMineState('error');
+    }
+  }, [mine.length]);
+
   useEffect(() => {
     if (tab !== 'mine' || mineState !== 'idle') return;
-    setMineState('loading');
-    api('/api/webapp/dictionary/cards', { limit: 100 })
-      .then((data) => {
-        setMine(Array.isArray(data?.items) ? data.items : []);
-        setMineState('ready');
-      })
-      .catch(() => setMineState('error'));
-  }, [tab, mineState]);
+    void loadMine({ reset: true });
+  }, [tab, mineState, loadMine]);
+
+  // Поиск по своим словам — с паузой, чтобы не дёргать сервер на каждую букву.
+  useEffect(() => {
+    if (tab !== 'mine') return undefined;
+    const id = setTimeout(() => { void loadMine({ reset: true, needle: mineQuery.trim() }); }, 400);
+    return () => clearTimeout(id);
+  }, [mineQuery]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const lastAutoRef = useRef(''); // text already auto/manually translated (debounce dedupe)
   const chipHintDoneRef = useRef(false); // shown for the current breakdown already
@@ -344,7 +367,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
       };
       setQuick(nextQuick);
       setPhase('done'); haptic('ok');
-      setRecents(pushRecent(text));
+      pushRecent(text);   // пополняем историю, показывает её своя закладка
       setHistoryList(loadRecentsAll());
       // A German noun whose article missed the instant Wiktionary lookup gets its
       // der/die/das filled by a background LLM job that patches the cache. Poll for it
@@ -959,12 +982,30 @@ export default function DictionaryOverlay({ onClose } = {}) {
 
         {tab === 'mine' && (
           <div className="dict-history">
+            <div className="dq-input-wrap dq-mine-search">
+              <input
+                className="ans-input dq-input"
+                type="text"
+                autoComplete="off"
+                placeholder="Найти среди своих слов…"
+                value={mineQuery}
+                onChange={(e) => setMineQuery(e.target.value)}
+              />
+              {mineQuery && (
+                <button type="button" className="dq-clear" aria-label="Очистить"
+                        onClick={() => setMineQuery('')}>×</button>
+              )}
+            </div>
             {mineState === 'loading' && <div className="dict-history-empty">Загружаю…</div>}
             {mineState === 'error' && (
               <div className="dict-history-empty">Не получилось открыть ваши слова. Попробуйте ещё раз.</div>
             )}
             {mineState === 'ready' && mine.length === 0 && (
-              <div className="dict-history-empty">Здесь появятся слова, которые вы сохранили.</div>
+              <div className="dict-history-empty">
+                {mineQuery.trim()
+                  ? 'Среди ваших слов такого нет.'
+                  : 'Здесь появятся слова, которые вы сохранили.'}
+              </div>
             )}
             {mine.map((row, i) => {
               const de = clean(row.word_de || row.translation_de);
@@ -977,6 +1018,13 @@ export default function DictionaryOverlay({ onClose } = {}) {
                 </button>
               );
             })}
+            {mineHasMore && (
+              <button type="button" className="dict-history-row dq-mine-more"
+                      disabled={mineState === 'more'}
+                      onClick={() => void loadMine({ needle: mineQuery.trim() })}>
+                {mineState === 'more' ? 'Загружаю…' : 'Показать ещё'}
+              </button>
+            )}
           </div>
         )}
 
@@ -1019,18 +1067,10 @@ export default function DictionaryOverlay({ onClose } = {}) {
               onKeyDown={onKeyDown}
             />
             {phase === 'error' && error && <div className="dd-err">{error}</div>}
-            {recents.length > 0 && (
-              <div className="dq-recent">
-                <span className="dq-recent-label">Недавние</span>
-                <div className="dq-recent-chips">
-                  {recents.map((w) => (
-                    <button key={w} type="button" className="dq-recent-chip" onClick={() => translate(w)}>
-                      {w}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+            {/* Блок «Недавние» убран 10.08.2026. Владелец: «если есть закладка История,
+                зачем здесь недавние запросы?» — и он прав, это было одно и то же в двух
+                местах. Длинные фразы к тому же занимали чипами полэкрана, ради которого
+                поле ввода и делалось большим. Историю теперь держит своя закладка. */}
             <div className="dq-compose-foot">
               <button type="button" className="dq-paste-btn" onClick={onPaste}>📋 Вставить</button>
               <button
