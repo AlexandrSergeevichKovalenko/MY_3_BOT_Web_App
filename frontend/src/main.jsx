@@ -425,13 +425,59 @@ function applyDictHomeScreenMeta() {
   } catch (_e) { /* non-fatal */ }
 }
 
+// Перехватчик ошибок отрисовки для отдельного словаря.
+//
+// У приложения такой есть давно, а у словаря с рабочего стола не было — и 10.08.2026
+// это стоило белого экрана: одна необъявленная функция в новой закладке уронила всё
+// дерево, и человек увидел пустоту без единого слова о том, что случилось.
+//
+// Сборка такие ошибки не ловит (это не синтаксис), линтера в проекте нет. Значит
+// единственная надёжная защита — не дать падению одного блока стереть весь экран.
+class DictErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error, info) {
+    // Техническое — в консоль, человеку — человеческое.
+    console.error('[dict] отрисовка упала', error, info);
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="ans-root dq-scroll">
+        <div className="ans-card dq-card">
+          <div className="dq-gate">
+            <div className="dq-gate-badge">🦊</div>
+            <h2 className="dq-gate-title">Словарь не открылся</h2>
+            <p className="dq-gate-text">
+              Что-то пошло не так. Закройте окно и откройте словарь заново — обычно этого хватает.
+            </p>
+            <button type="button" className="dq-gate-btn" onClick={() => window.location.reload()}>
+              Открыть заново
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
 async function bootstrapDictionary() {
   tgReady();
   applyDictHomeScreenMeta();
   const { default: DictionaryOverlay } = await import('./dictionary/DictionaryOverlay.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
-      <DictionaryOverlay />
+      <DictErrorBoundary>
+        <DictionaryOverlay />
+      </DictErrorBoundary>
     </React.StrictMode>,
   );
 }
