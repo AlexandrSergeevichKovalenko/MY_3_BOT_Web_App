@@ -857,15 +857,36 @@ export default function DictionaryOverlay({ onClose } = {}) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); translate(); }
   };
 
-  // Поле результата растёт под текст. Считаем ДО отрисовки (useLayoutEffect), иначе
-  // на длинной фразе кадр успевает мигнуть однострочным полем. Потолок в CSS
-  // (max-height), дальше поле прокручивается само и не съедает экран под перевод.
-  useLayoutEffect(() => {
-    const el = inputRef.current;
+  // Поле растёт под текст. Считать высоту в одном useLayoutEffect оказалось
+  // недостаточно: после перевода поле — ДРУГОЙ элемент (компоновка ввода сменяется
+  // компактной строкой), и замер попадал на момент, когда новый элемент ещё не встал
+  // на своё место. Высота оставалась однострочной, и фраза обрезалась ровно так, как
+  // на скриншоте владельца 10.08.2026: две строки, вторая срезана пополам.
+  //
+  // Поэтому меряем не «когда-то», а в три надёжных момента: при появлении элемента
+  // (ref), при каждом вводе и ещё раз на следующем кадре — последний нужен, когда
+  // ширина и шрифт встают уже после монтирования. Потолок задан в CSS: дальше поле
+  // прокручивается само и не съедает экран под перевод.
+  const fitInputHeight = useCallback((el) => {
+    // Трогаем ТОЛЬКО компактное поле после перевода. Большое поле на пустом экране
+    // должно занимать пол-экрана независимо от того, сколько в нём текста, — как во
+    // всех словарях, на которые мы смотрели; подгонять его под содержимое значило бы
+    // схлопнуть его до одной строки.
     if (!el || el.tagName !== 'TEXTAREA' || !el.classList.contains('dq-input--multi')) return;
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
-  }, [query, quick]);
+  }, []);
+
+  const attachInput = useCallback((el) => {
+    inputRef.current = el;
+    if (!el) return;
+    fitInputHeight(el);
+    requestAnimationFrame(() => fitInputHeight(el));
+  }, [fitInputHeight]);
+
+  useLayoutEffect(() => {
+    fitInputHeight(inputRef.current);
+  }, [query, quick, fitInputHeight]);
 
   if (blocked) {
     return <DictBlockedGate botUsername={blocked.botUsername} />;
@@ -989,7 +1010,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
           /* COMPOSE — full-height input like Google Translate / DeepL. */
           <div className="dq-compose">
             <textarea
-              ref={inputRef}
+              ref={attachInput}
               className="dq-textarea"
               autoComplete="off"
               placeholder="Слово или фраза…"
@@ -1031,7 +1052,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
                 видел, что именно он отправил. Меняли размер — а дело было в самом
                 элементе. Высота подгоняется под текст в useLayoutEffect ниже. */}
             <textarea
-              ref={inputRef}
+              ref={attachInput}
               className="ans-input dq-input dq-input--multi"
               rows={1}
               autoComplete="off"

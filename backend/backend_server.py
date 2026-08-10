@@ -50735,23 +50735,17 @@ def save_bot_private_dictionary_entry():
 @app.route("/api/webapp/dictionary/cards", methods=["POST"])
 def get_webapp_dictionary_cards():
     payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
     limit = payload.get("limit", 100)
     folder_mode = payload.get("folder_mode", "all")
     folder_id = payload.get("folder_id")
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
-
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-
+    # Пользователя определяем общим способом: сессией Telegram ИЛИ долговременным
+    # токеном словаря. Раньше здесь требовалась только сессия — и словарь, открытый
+    # иконкой с рабочего стола, получал отказ: он живёт вне Telegram и работает по
+    # токену. Владелец 10.08.2026 увидел это как «Мои слова» с ошибкой на пустом экране.
+    user_id = _resolve_webapp_user_id(payload)
     if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
