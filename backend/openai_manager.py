@@ -3298,6 +3298,9 @@ Return STRICT JSON with keys:
   "translations": [
     {"value": "...", "context": "...", "is_primary": true}
   ],
+  "synonyms": [{"word": "...", "gloss": "..."}],
+  "antonyms": [{"word": "...", "gloss": "..."}],
+  "related_words": [{"word": "...", "gloss": "..."}],
   "etymology_note": "string|null",
   "usage_note": "string|null",
   "real_life_usage": "string|null",
@@ -3348,6 +3351,17 @@ Rules:
 - Keep examples natural and worth saving.
 - Return up to 3 useful usage examples.
 - Return up to 3 save_worthy_options whenever possible.
+- synonyms (up to 4), antonyms (up to 3), related_words (up to 4, same root). Give at least
+  2 synonyms whenever the language offers them — a learner cannot feel a word from one.
+  Use [] only when the word genuinely has none.
+- LANGUAGE: synonyms, antonyms and related_words[].word belong to the FOREIGN word the
+  learner studies — the side whose language is NOT explanation_language. This does NOT
+  depend on the translation direction: with explanation_language=ru they are German both
+  for a ru→de lookup AND for a de→ru one. Never put explanation-language paraphrases here.
+- SHAPE: each is {"word","gloss"} — "word" is the foreign word, "gloss" its SHORT
+  translation in explanation_language (1–3 words). A learner who does not know the synonym
+  must understand it at a glance: "sich erheben" alone teaches nothing,
+  {"word":"sich erheben","gloss":"подняться"} does. Stylistic notes do NOT go into gloss.
 - If information is unknown, use null.
 """,
 "dictionary_enrichment_multilang_word_compact": """
