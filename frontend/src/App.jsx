@@ -7257,18 +7257,25 @@ function AppInner() {
     prevDictLoadingRef.current = dictionaryLoading;
   }, [dictionaryLoading, dictionaryResult]);
 
-  // When the collocation picker opens it renders at the bottom of the card — scroll
-  // it into view so the user actually sees the choices instead of the card sitting
-  // unchanged. Deferred a tick so the panel is mounted before we scroll.
+  // Выбор вариантов открывается ВНИЗУ карточки — если к нему не прокрутить, человек
+  // просто не заметит, что что-то появилось. Владелец 10.08.2026: «экран не
+  // прокручивается, я смотрю и не понимаю, что произошло».
+  //
+  // Прокрутка была, но срабатывала только на ОТКРЫТИИ панели — а варианты в этот момент
+  // ещё грузятся, и блок состоит из одного заголовка. Экран вставал на пустое место,
+  // список раскрывался ниже и оказывался снова за краем.
+  //
+  // Поэтому прокручиваем и когда панель открылась, и когда варианты приехали. И к
+  // НАЧАЛУ блока, а не к его середине: список читают сверху.
   useEffect(() => {
     if (!collocationsVisible) return undefined;
     const id = setTimeout(() => {
       try {
-        collocationsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        collocationsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       } catch (_e) { /* ignore */ }
     }, 60);
     return () => clearTimeout(id);
-  }, [collocationsVisible]);
+  }, [collocationsVisible, collocationOptions.length]);
 
   useEffect(() => {
     const wasVisible = Boolean(translationConfiguratorWasVisibleRef.current);
@@ -22191,6 +22198,19 @@ function AppInner() {
     if (pos && !/(noun|substantiv|nomen|sostantiv|sustantiv)/.test(pos)) {
       return base;
     }
+    // Артикль принадлежит ОДНОМУ существительному. Часть речи здесь — от ЗАГОЛОВКА
+    // («der Dummkopf», noun), а текст может быть чем угодно: связкой, фразой, целым
+    // предложением. Без этой проверки владелец 10.08.2026 увидел в вариантах для
+    // сохранения «der Sei kein Dummkopf» и «der Du bist so ein Dummkopf!» — артикль
+    // слова, приклеенный к предложению.
+    //
+    // Правило простое и безопасное: не трогаем то, что не похоже на одиночное
+    // существительное. Многословные названия вроде «die Vereinigten Staaten» приходят
+    // от модели уже с артиклем, а здесь мы его только ДОБАВЛЯЕМ — значит худшее, что
+    // может случиться, это что мы его не добавим.
+    if (/\s/.test(base) || /[.!?…]$/.test(base)) {
+      return base;
+    }
     const firstToken = String(base.split(/\s+/, 1)[0] || '')
       .toLowerCase()
       .replace(/[.,;:!?]+$/g, '');
@@ -31063,7 +31083,7 @@ function AppInner() {
       const sourceTarget = getDictionarySourceTarget(dictionaryResult);
       const baseSource = sourceTarget.sourceText || dictionaryWord.trim();
       const baseTarget = sourceTarget.targetText || '';
-      const options = [
+      const rawOptions = [
         { source: baseSource, target: baseTarget, isBase: true },
         ...(data.items || []).map((item) => ({
           ...(() => {
@@ -31078,6 +31098,16 @@ function AppInner() {
           isBase: false,
         })),
       ].filter((item) => item.source && item.target);
+      // Модель нередко возвращает среди связок и само исходное слово — и оно вставало
+      // в список дважды, второй раз без пометки «Исходное». Оставляем первое вхождение:
+      // оно и есть помеченное.
+      const seenOptions = new Set();
+      const options = rawOptions.filter((item) => {
+        const key = `${item.source.trim().toLowerCase()}|||${item.target.trim().toLowerCase()}`;
+        if (seenOptions.has(key)) return false;
+        seenOptions.add(key);
+        return true;
+      });
       setCollocationOptions(options);
       setSelectedCollocations(options.length > 0
         ? [`${String(options[0].source)}|||${String(options[0].target)}`]
@@ -37934,7 +37964,14 @@ function AppInner() {
                             так, чтобы было понятно, чьи они. Список тот же, ничего не переехало. */}
                         📚 {tr('Мои слова', 'Meine Wörter')}
                         {vocabFoldersMeta?.total_count > 0 && (
-                          <span className="vocab-tab-count">{vocabFoldersMeta.total_count}</span>
+                          // Пять цифр рядом с подписью не помещаются: «Мои слова 15070»
+                          // выдавливало соседнюю закладку. Точное число человеку здесь
+                          // и не нужно — важен порядок величины.
+                          <span className="vocab-tab-count">
+                            {vocabFoldersMeta.total_count > 999
+                              ? `${Math.floor(vocabFoldersMeta.total_count / 1000)}k`
+                              : vocabFoldersMeta.total_count}
+                          </span>
                         )}
                       </button>
                       {dictHistory.length > 0 && (
@@ -39100,8 +39137,12 @@ function AppInner() {
                     )}
                     {collocationsVisible && (
                       <div className="dictionary-collocations" ref={collocationsRef}>
-                        <h4>{tr('Выберите связку для словаря', 'Wähle eine Kollokation')}</h4>
-                        {collocationsLoading && <div className="webapp-muted">{tr('Генерируем варианты...', 'Varianten werden generiert...')}</div>}
+                        <h4>{tr('Что сохранить в словарь', 'Was ins Wörterbuch speichern')}</h4>
+                        <p className="collocation-hint">
+                          {tr('Отметьте, что пригодится. Сохранится каждое отмеченное — отдельной карточкой.',
+                              'Wähle aus, was du brauchst. Jedes Markierte wird als eigene Karte gespeichert.')}
+                        </p>
+                        {collocationsLoading && <div className="webapp-muted">{tr('Подбираем варианты…', 'Varianten werden gesucht…')}</div>}
                         {collocationsError && <div className="webapp-error">{collocationsError}</div>}
                         {!collocationsLoading && collocationOptions.length > 0 && (
                           <div className="collocation-list">
@@ -39120,9 +39161,22 @@ function AppInner() {
                                   }}
                                 />
                                 <div>
-                                  <div className="collocation-source">{option.source}</div>
-                                  <div className="collocation-target">{option.target}</div>
-                                  {option.isBase && <span className="collocation-tag">{tr('Исходное', 'Basis')}</span>}
+                                  {/* Первым идёт ИЗУЧАЕМОЕ слово, а не родное. Раньше жирным стоял
+                                      русский текст, а немецкий — мелким и приглушённым, хотя
+                                      сохраняем и учим мы именно немецкое. Сторону выбираем по
+                                      алфавиту: направление поиска бывает любым. */}
+                                  {(() => {
+                                    const hasCyr = (t) => /[А-Яа-яЁё]/.test(String(t || ''));
+                                    const learned = hasCyr(option.source) ? option.target : option.source;
+                                    const native = hasCyr(option.source) ? option.source : option.target;
+                                    return (
+                                      <>
+                                        <div className="collocation-source">{learned}</div>
+                                        <div className="collocation-target">{native}</div>
+                                      </>
+                                    );
+                                  })()}
+                                  {option.isBase && <span className="collocation-tag">{tr('Само слово', 'Das Wort selbst')}</span>}
                                 </div>
                               </label>
                             ))}

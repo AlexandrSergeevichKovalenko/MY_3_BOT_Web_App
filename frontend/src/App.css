@@ -31369,3 +31369,60 @@ html[data-scheme="light"] .story-modal-guess-answer,
 }
 .dict-word-of-day-de { font-size: 17px; font-weight: 700; color: var(--dict-text-primary); }
 .dict-word-of-day-ru { font-size: 14px; color: var(--dict-text-secondary); }
+
+/* Закладки словаря: три штуки со счётчиком не помещались в строку — подпись обрезалась.
+   Даём им ужиматься и не переносить текст. */
+.vocab-tabs { display: flex; gap: 6px; }
+.vocab-tabs .vocab-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Подсказка над списком вариантов: что вообще происходит и что будет, если отметить. */
+.collocation-hint {
+  margin: 2px 0 10px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--dict-text-secondary);
+}
+
+/* Выбор вариантов сохранения — переработан 10.08.2026.
+   Владелец: «выглядит уродски, непонятно что произошло». Разбирая, нашлись три вещи:
+   жирным стояло РОДНОЕ слово, хотя учат и сохраняют изучаемое; выбранное заливалось
+   тёмным и читалось как сломанная таблица; строки жались друг к другу.
+
+   Отдельно, честно: у Reverso, Linguee и Cambridge такого шага нет вовсе — они
+   сохраняют в один тап. Наш выбор связок полезен, но это лишняя ступень, и потому
+   она обязана быть предельно понятной. */
+.webapp-page.is-theme-light .collocation-item {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--dict-border);
+  background: var(--dict-bg-card);
+  align-items: center;
+}
+.webapp-page.is-theme-light .collocation-item:has(input:checked) {
+  border-color: #b45f13;
+  background: rgba(180, 95, 19, 0.10);
+}
+.webapp-page.is-theme-light .collocation-source {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--dict-text-primary);
+  line-height: 1.3;
+}
+.webapp-page.is-theme-light .collocation-target {
+  font-size: 14px;
+  color: var(--dict-text-secondary);
+  margin-top: 2px;
+}
+.webapp-page.is-theme-light .collocation-tag {
+  background: rgba(180, 95, 19, 0.14);
+  color: #a9741f;
+  font-weight: 650;
+}
+.collocation-actions { display: flex; gap: 10px; margin-top: 4px; }
+.collocation-actions .primary-button { flex: 1 1 auto; }
