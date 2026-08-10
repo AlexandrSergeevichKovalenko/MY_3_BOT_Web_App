@@ -10272,6 +10272,63 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_card_review_log_user_card_reviewed_desc
                 ON bt_3_card_review_log (user_id, card_id, reviewed_at DESC);
             """)
+            # ── Хвосты удалённого слова убирает САМА БАЗА ────────────────────────────
+            # Удалять слово умеют четыре разных пути (кнопка человека, массовое удаление,
+            # две дедупликации), и каждый чистил свой набор таблиц по памяти автора.
+            # Замер 10.08.2026: на таблицу личных карточек стоял РОВНО ОДИН внешний ключ —
+            # у bt_3_manual_training_selection, и только у неё было ноль сирот. У остальных
+            # накопилось 198 висячих строк примерно от 30 удалённых слов: журнал ответов
+            # (путь дедупликации его не чистил), очередь «почувствовать слово», показанные
+            # карточки, счётчики.
+            #
+            # Дописывать чистку в каждый путь бессмысленно: завтра появится пятый и про
+            # него забудут. Правило стоит здесь, и мимо него не пройдёт ни скрипт, ни ветка,
+            # ни будущий агент.
+            #
+            # Личное чистится полностью, ОБЩЕЕ не трогается вовсе: ту же фразу держат
+            # десять человек, и уход одного не повод стирать единицу у всех.
+            for _fk_name, _fk_table, _fk_column in (
+                ("fk_card_review_log_card", "bt_3_card_review_log", "card_id"),
+                ("fk_flashcard_feel_feedback_queue_card", "bt_3_flashcard_feel_feedback_queue", "entry_id"),
+                ("fk_flashcard_seen_card", "bt_3_flashcard_seen", "entry_id"),
+                ("fk_flashcard_stats_card", "bt_3_flashcard_stats", "entry_id"),
+            ):
+                cursor.execute(f"""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '{_fk_name}') THEN
+                            ALTER TABLE {_fk_table} ADD CONSTRAINT {_fk_name}
+                                FOREIGN KEY ({_fk_column})
+                                REFERENCES bt_3_webapp_dictionary_queries(id) ON DELETE CASCADE;
+                        END IF;
+                    EXCEPTION WHEN others THEN
+                        -- Накопленные сироты мешают поставить ключ. Не валим запуск:
+                        -- их убирает scripts/dict_fix_dangling_links.py, после чего
+                        -- ближайший старт поставит ключ сам.
+                        NULL;
+                    END $$;
+                """)
+            # Указатель личной карточки на общую единицу. Удалять единицы умеют десять
+            # разных скриптов, и ни один не поправлял этот указатель — так десять человек
+            # остались со ссылкой на единицу 18048 («Lang-länger-am längsten»), убранную
+            # как грамматическая цепочка. Теперь ссылка обнуляется сама, а карточка живёт
+            # своим содержимым.
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'fk_webapp_dictionary_lex_unit'
+                    ) AND EXISTS (
+                        SELECT 1 FROM information_schema.tables WHERE table_name = 'bt_3_lex_units'
+                    ) THEN
+                        ALTER TABLE bt_3_webapp_dictionary_queries
+                            ADD CONSTRAINT fk_webapp_dictionary_lex_unit
+                            FOREIGN KEY (lex_unit_id) REFERENCES bt_3_lex_units(id) ON DELETE SET NULL;
+                    END IF;
+                EXCEPTION WHEN others THEN
+                    NULL;
+                END $$;
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_daily_plans (
                     id BIGSERIAL PRIMARY KEY,
