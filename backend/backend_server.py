@@ -40394,6 +40394,33 @@ def _base_dict_core_seed(*, word: str, query_source_lang: str, query_target_lang
     }
 
 
+@app.route("/api/webapp/dictionary/examples", methods=["POST"])
+def get_dictionary_corpus_examples():
+    """Живые примеры из корпуса для одного слова — отдельным запросом.
+
+    Зачем отдельно. Быстрый перевод — это гонка обычных переводчиков, карточки разбора
+    там нет вовсе, поэтому примеры некуда было положить. Владелец 10.08.2026 ждал их
+    именно на быстром экране, в обоих словарях: «сначала покажем перевод, а потом,
+    как подгрузится, — живые примеры».
+
+    Так и сделано: перевод не ждёт этого запроса ни секунды, блок появляется следом.
+    Модель здесь не участвует — это чтение своей таблицы, ~57 мс, денег не стоит.
+    """
+    payload = request.get_json(silent=True) or {}
+    word = str(payload.get("word") or "").strip()
+    if not word:
+        return jsonify({"items": []})
+    if not _resolve_webapp_user_id(payload):
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+    try:
+        from backend.corpus_examples import examples_for_word
+        items = examples_for_word(word, limit=2)
+    except Exception:
+        logging.debug("корпусные примеры не отдались", exc_info=True)
+        items = []
+    return jsonify({"items": items})
+
+
 @app.route("/api/webapp/dictionary/base-lookup", methods=["POST"])
 def base_dictionary_lookup():
     ensure_webapp_tables()

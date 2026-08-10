@@ -3,6 +3,7 @@ import '../answer/answer.css';
 import './dict.css';
 import { WordBreakdown, useTts, SpeakButton, genderClass, resolveArticle, resolveNumber, resolveLemma, clean, cleanArticle as cleanArticleText, stripLeadingArticle, api, haptic, getInitData, getDictToken } from './WordBreakdown';
 import BreakdownSkeleton from './BreakdownSkeleton';
+import LiveExamples from './LiveExamples';
 import { guessPair, buildDictionarySavePayload } from './saveUtils';
 import { languageName, resolvePair, parsePairCode, pairCode, flipPair, DEFAULT_PAIR } from './langPair.js';
 import { humanizeDictError } from './errors.js';
@@ -1192,6 +1193,10 @@ export default function DictionaryOverlay({ onClose } = {}) {
               >
                 мн. ч. от <b>{dqLemmaArticle ? `${dqLemmaArticle} ` : ''}{dqLemma}</b>
               </button>
+            )}
+            {/* Живые примеры — общий компонент на оба словаря. */}
+            {!item && (
+              <LiveExamples germanWord={quick?.sourceLang === 'de' ? quick?.source : quick?.translation} />
             )}
             {/* Часть речи у быстрого перевода. Переводчики её не отдают, поэтому она
                 приходит из нашего же банка слов — тем же дешёвым путём, что и артикль.

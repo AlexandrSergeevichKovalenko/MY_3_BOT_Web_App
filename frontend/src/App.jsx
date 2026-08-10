@@ -13,6 +13,7 @@ import ExplainErrorsModal from './components/ExplainErrorsModal';
 import StoryResultModal from './components/StoryResultModal';
 import ProFeatureModal from './components/ProFeatureModal';
 import NoticeModal from './components/NoticeModal';
+import LiveExamples from './dictionary/LiveExamples';
 import WordHintModal, { collectHintExamples, hasHintBreakdown } from './components/WordHintModal';
 import FsrsHeadword from './answer/FsrsHeadword';
 import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
@@ -39075,6 +39076,14 @@ function AppInner() {
                           <div className="webapp-muted">
                             {dictionaryLookupProgress.error}
                           </div>
+                        )}
+                        {/* Живые примеры — тот же общий компонент, что и в быстром
+                            словаре. Перевод их не ждёт: подгружаются следом. Показываем,
+                            пока не открыт подробный разбор — в нём свой такой блок. */}
+                        {dictBreakdownPhase !== 'done' && (
+                          <LiveExamples
+                            germanWord={dictionaryResult.word_de || dictionaryResult.translation_de}
+                          />
                         )}
                         <div className="dictionary-result-actions">
                           <button

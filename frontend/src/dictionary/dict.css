@@ -1607,3 +1607,28 @@ html[data-scheme="light"] .dq-gt > summary,
   font-weight: 650;
   cursor: pointer;
 }
+
+/* Живые примеры на быстром экране: появляются следом за переводом, каждый — кнопка,
+   один тап сохраняет в словарь. Полоска слева связывает их в блок и отличает от
+   перевода, подпись источника обязательна по лицензии CC BY 2.0 FR. */
+.dq-live-ex { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.dq-live-ex-label {
+  font-size: 11px; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+.dq-live-ex-row {
+  display: flex; flex-direction: column; gap: 2px;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--dmps-border, #334155);
+  border-left: 3px solid var(--dq-accent);
+  background: var(--dq-chip);
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.dq-live-ex-row.is-saved { border-color: var(--dq-good); border-left-color: var(--dq-good); }
+.dq-live-ex-de { font-size: 15px; font-weight: 650; color: var(--dmps-text-title, #f1f5f9); }
+.dq-live-ex-ru { font-size: 13.5px; color: var(--dmps-text-secondary, #cbd5e1); }
+.dq-live-ex-src { font-size: 11px; color: var(--dmps-text-muted, #94a3b8); opacity: 0.85; }
