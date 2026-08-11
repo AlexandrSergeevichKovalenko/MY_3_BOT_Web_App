@@ -7038,6 +7038,13 @@ def _set_cached_dictionary_lookup(cache_key: str, payload: dict) -> None:
 
 def _build_quick_translate_cache_key(*, text: str, source_lang: str | None, target_lang: str) -> str:
     safe_text = str(text or "").strip()
+    # ОДНО СЛОВО — ОДИН КЛЮЧ, независимо от регистра. Первое слово в строке человек
+    # пишет с большой буквы, это норма письма, а не другой запрос. Раньше «Толстый»
+    # и «толстый» были для нас двумя разными словами с двумя разными ответами
+    # (замер 11.08.2026: в общем пуле 35 таких пар).
+    # У фраз регистр не трогаем: там заглавная буква может стоять за именем.
+    if safe_text and " " not in safe_text:
+        safe_text = safe_text.casefold()
     safe_source_lang = _normalize_short_lang_code(source_lang, fallback="") or ""
     safe_target_lang = _normalize_short_lang_code(target_lang, fallback="de")
     text_hash = hashlib.sha1(safe_text.encode("utf-8", "ignore")).hexdigest()
@@ -38293,6 +38300,56 @@ def _quick_translate_german_side(result, text, source_lang, target_lang) -> str:
     return german.strip(".,!?;:")
 
 
+def _quick_translate_dictionary_entries(text, source_lang, target_lang):
+    """Словарные статьи для запроса — из НАШИХ данных, до всякого переводчика.
+
+    Возвращает список статей (лемма + часть речи + род + переводы) либо пустой
+    список, если слово нам незнакомо: тогда вызывающая сторона идёт в переводчик.
+    Молчать нестрашно, страшно догадываться — именно догадка про часть речи по
+    заглавной букве и превратила «толстый» в «der Dicke».
+
+    Не поднимает исключений НИКОГДА: быстрый перевод не должен падать из-за того,
+    что справочник не ответил."""
+    try:
+        from backend.dictionary_entries import entries_for_query
+        return entries_for_query(text, source_lang=source_lang or "", target_lang=target_lang or "")
+    except Exception:
+        logging.debug("слой статей не ответил на быстром пути", exc_info=True)
+        return []
+
+
+def _build_quick_translate_from_entries(entries, text, source_lang, target_lang):
+    """Ответ быстрого словаря из готовых статей.
+
+    Крупно показываем ПЕРВУЮ по частотности, а весь список отдаём рядом: выбирать
+    между «dick» и «der Dicke» должен человек, а не таймаут сетевого запроса. Так
+    устроена выдача PONS и dict.cc, и ошибиться там невозможно — выбора «один
+    ответ на всё» просто не существует."""
+    primary = entries[0]
+    query_lang = _normalize_short_lang_code(source_lang, fallback="") if source_lang else ""
+    if not query_lang:
+        query_lang = "ru" if _CYRILLIC_RE.search(str(text or "")) else "de"
+    other_lang = _normalize_short_lang_code(target_lang, fallback="") or (
+        "ru" if query_lang == "de" else "de"
+    )
+    if query_lang == "de":
+        # Спросили по-немецки — показываем перевод на родной язык.
+        translation = primary.get("translation") or ""
+    else:
+        translation = primary.get("headword") or ""
+    return {
+        "translation": translation,
+        "detected_source_lang": query_lang,
+        "provider": "dictionary",
+        "article": primary.get("gender") or "",
+        "part_of_speech": primary.get("pos") or "",
+        "article_source": "словарь статей",
+        # Весь список — то, ради чего всё и затевалось.
+        "entries": entries,
+        "entry_lang": other_lang,
+    }
+
+
 def _attach_quick_translate_pos(result, text, source_lang, target_lang):
     """Проставить часть речи из НАШЕГО банка слов. Бесплатно, без модели.
 
@@ -38587,6 +38644,37 @@ def translate_quick():
             )
             return jsonify(response_payload)
 
+    # ───── СНАЧАЛА СВОЙ СЛОВАРЬ, ПОТОМ МАШИНА ─────
+    # Переводчик отвечает СТРОКОЙ без грамматики, и достроить из неё словарную
+    # статью нечем: 11.08.2026 «Толстый» превратился в «Der Dicke», потому что
+    # часть речи выводилась из заглавной буквы ответа. Между тем правильный ответ
+    # («dick», прилагательное) лежал у нас в базовом словаре, и его никто не
+    # спрашивал. Теперь спрашиваем — бесплатно, без сети и без модели.
+    entries = _quick_translate_dictionary_entries(text, source_lang, target_lang)
+    if entries:
+        result = _build_quick_translate_from_entries(entries, text, source_lang, target_lang)
+        _set_cached_quick_translate(cache_key, result)
+        _release_quick_translate_inflight_slot(cache_key)
+        _log_flow_observation(
+            "quick_translate",
+            "quick_translate_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id_for_billing,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            text_chars=len(text),
+            provider="dictionary",
+            entry_count=len(entries),
+            cache_hit=False,
+            cache_tier="miss",
+            coalesced_wait_ms=coalesced_wait_ms,
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+        )
+        return jsonify(result)
+
     attempts: list[dict] = []
     provider_timings_ms: dict[str, int] = {}
     # Two tiers. The FREE providers (DeepL Free, LibreTranslate, offline Argos,
@@ -38689,6 +38777,10 @@ def translate_quick():
         if chosen_result is not None:
             result = chosen_result
             result["provider"] = chosen_name
+            # Это ответ МАШИНЫ, а не словарная статья: слово нам незнакомо. Пометка
+            # нужна и экрану (подписать «машинный перевод»), и стражу общего пула —
+            # чтобы строка без грамматики не улеглась туда как готовая статья.
+            result["machine"] = True
             if not result.get("detected_source_lang") and source_lang:
                 result["detected_source_lang"] = source_lang
             # Instant article (Wiktionary only); LLM fill happens in the background.
