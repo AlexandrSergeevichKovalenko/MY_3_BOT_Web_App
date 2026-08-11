@@ -23973,6 +23973,29 @@ def get_dictionary_lookup_cache(cache_key: str, ttl_seconds: int | None = None) 
             return dict(response_json)
 
 
+def delete_dictionary_lookup_cache(*, cache_key: str) -> int:
+    """Убрать запись словарного кэша по ключу. Возвращает число удалённых строк.
+
+    Общий ключ кэша живёт годами и раздаётся всем, поэтому ошибочная карточка
+    обязана уметь исчезнуть сразу, а не дожидаться истечения срока (11.08.2026:
+    разбор про «Blatt» раздавался всем, кто спрашивал «blad»)."""
+    key = str(cache_key or "").strip()
+    if not key:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM bt_3_dictionary_lookup_cache WHERE cache_key = %s;", (key,)
+                )
+                removed = cursor.rowcount or 0
+            conn.commit()
+        return int(removed)
+    except Exception:
+        logging.debug("не удалось убрать кэш словаря %s", key, exc_info=True)
+        return 0
+
+
 def upsert_dictionary_lookup_cache(
     *,
     cache_key: str,

@@ -2679,7 +2679,8 @@ Input JSON:
   "source_language": "ru|en|de|es|it",
   "target_language": "ru|en|de|es|it",
   "explanation_language": "ru|en|de|es|it",
-  "word": "<user input>"
+  "word": "<user input>",
+  "verified_entry": {"lemma": "...", "pos": "...", "gloss": "..."}   // OPTIONAL
 }
 
 Task:
@@ -2691,6 +2692,13 @@ Task:
 - If input is a full sentence, translate the FULL sentence literally and keep full-sentence mapping in word_source/word_target.
 - Never collapse sentence input to a single word/lemma.
 - Detect obvious typos only when confidence is high and normalize the lookup form.
+- VERIFIED ENTRY OVERRIDES EVERY CORRECTION RULE. When "verified_entry" is present,
+  the word has already been confirmed against a curated dictionary: it is spelled
+  correctly, however rare or unfamiliar it looks. Describe THAT word — its lemma and
+  its part of speech — and NEVER substitute a more common lookalike. Concretely:
+  "blad" (adjective, "fat") must NOT become "Blatt" or "bald"; correction_applied
+  stays false and word_source/word_target keep the given lemma. A card about a
+  different word is worse than no card at all.
 - If the input is a noisy pedagogical grammar fragment such as
   "erinnert... an + Akkusativ", "ist... ähnlich + Dativ",
   "hat Ähnlichkeit mit + Dativ":

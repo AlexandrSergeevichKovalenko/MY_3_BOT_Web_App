@@ -7021,6 +7021,24 @@ def _get_cached_dictionary_lookup(cache_key: str) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _drop_cached_dictionary_lookup(cache_key: str) -> None:
+    """Выбросить запись словарного кэша — и из памяти, и из общей базы.
+
+    Нужна там, где кэш оказался НЕПРАВ: он живёт годами и раздаётся всем, поэтому
+    ошибочная карточка должна уметь исчезнуть, а не ждать истечения срока."""
+    if not cache_key:
+        return
+    with _DICTIONARY_LOOKUP_CACHE_LOCK:
+        _DICTIONARY_LOOKUP_CACHE.pop(cache_key, None)
+    if not DICTIONARY_PERSISTENT_CACHE_ENABLED:
+        return
+    try:
+        from backend.database import delete_dictionary_lookup_cache
+        delete_dictionary_lookup_cache(cache_key=cache_key)
+    except Exception:
+        logging.debug("не удалось убрать кэш словаря из базы: %s", cache_key, exc_info=True)
+
+
 def _set_cached_dictionary_lookup(cache_key: str, payload: dict) -> None:
     if not cache_key or not isinstance(payload, dict):
         return
@@ -7231,9 +7249,52 @@ def _apply_dictionary_source_proofread(
     return source_text, word_ru, word_de, translation_ru, translation_de
 
 
-def _get_cached_dictionary_lookup_with_tier(cache_key: str) -> tuple[dict | None, str]:
+def _cached_card_is_about(payload, word: str, lookup_lang: str) -> bool:
+    """Правда ли, что лежащая в кэше карточка — про ЭТО слово.
+
+    Зачем. 11.08.2026 человек набрал «Blad» (настоящее прилагательное «blad» —
+    толстый), вычитка приняла его за опечатку частого «Blatt», и разбор про лист
+    лёг в общий кэш под ключом «blad». Саму вычитку мы починили, но отравленная
+    запись продолжала раздаваться ВСЕМ, кто спросит это слово, ещё десять лет —
+    столько живёт общий ключ. Кэш обязан уметь признавать себя неправым.
+
+    Проверяем узко и только там, где ответ доказуем: спросили ОДНО немецкое слово,
+    и оно есть в выверенном внешнем словаре — значит заголовок карточки должен быть
+    им же. Всё остальное (фразы, словоформы, незнакомые слова) пропускаем: «wuchsen»
+    законно ведёт на «wachsen», и объявить это подменой было бы хуже болезни."""
+    item = payload.get("item") if isinstance(payload, dict) else None
+    if not isinstance(item, dict):
+        return True
+    if str(lookup_lang or "").strip().lower() != "de":
+        return True
+    asked = str(word or "").strip()
+    if not asked or not _dictionary_layer_knows(asked, source_lang="de", target_lang="ru"):
+        return True
+    got = _LEADING_GERMAN_ARTICLE_RE.sub("", str(item.get("word_de") or "").strip()).strip()
+    if not got:
+        return True
+    return got.casefold() == _LEADING_GERMAN_ARTICLE_RE.sub("", asked).strip().casefold()
+
+
+def _get_cached_dictionary_lookup_with_tier(
+    cache_key: str, *, expected_word: str = "", lookup_lang: str = "",
+) -> tuple[dict | None, str]:
+    def _usable(payload):
+        if not isinstance(payload, dict) or not expected_word:
+            return True
+        if _cached_card_is_about(payload, expected_word, lookup_lang):
+            return True
+        # Отравленную запись не просто пропускаем — ВЫБРАСЫВАЕМ, иначе следующий
+        # человек снова заплатит за неё разбором, который не покажут.
+        logging.warning("кэш словаря отдал карточку про другое слово: спросили %r", expected_word[:60])
+        try:
+            _drop_cached_dictionary_lookup(cache_key)
+        except Exception:
+            logging.debug("не удалось выбросить отравленный кэш %s", cache_key, exc_info=True)
+        return False
+
     cached = _get_cached_dictionary_lookup(cache_key)
-    if cached:
+    if cached and _usable(cached):
         return cached, "memory"
     if not DICTIONARY_PERSISTENT_CACHE_ENABLED:
         return None, "none"
@@ -7241,7 +7302,7 @@ def _get_cached_dictionary_lookup_with_tier(cache_key: str) -> tuple[dict | None
         cache_key=cache_key,
         ttl_seconds=DICTIONARY_PERSISTENT_CACHE_TTL_SEC,
     )
-    if isinstance(persistent, dict):
+    if isinstance(persistent, dict) and _usable(persistent):
         _set_cached_dictionary_lookup(cache_key, persistent)
         return persistent, "db"
     return None, "none"
@@ -7533,6 +7594,31 @@ def _store_quick_translate_in_pool(
 # остальное (фразы, ссылки, числа) до словаря не доходит и в базу не ходит.
 _SINGLE_GERMAN_WORD_RE = re.compile(r"[A-Za-zÄÖÜäöüß]{2,}(?:-[A-Za-zÄÖÜäöüß]{2,})*")
 
+
+
+def _verified_entry_for_prompt(word: str, *, lookup_lang: str = "") -> dict | None:
+    """Факты о слове из ВЫВЕРЕННОГО словаря — для подсказки модели, что править нечего.
+
+    Отдаём лемму, часть речи и первый перевод: этого достаточно, чтобы модель поняла,
+    о каком именно слове её спрашивают, и не подменила его похожим частотным.
+    None — значит слова мы не знаем, и никаких утверждений о нём не делаем."""
+    if str(lookup_lang or "").strip().lower() not in ("", "de"):
+        return None
+    if not _dictionary_layer_knows(word, source_lang="de", target_lang="ru"):
+        return None
+    try:
+        from backend.dictionary_entries import entries_for_query
+        found = entries_for_query(word, source_lang="de", target_lang="ru")
+    except Exception:
+        return None
+    if not found:
+        return None
+    top = found[0]
+    return {
+        "lemma": top.get("display") or top.get("headword") or "",
+        "pos": top.get("pos") or "",
+        "gloss": top.get("translation") or "",
+    }
 
 def _dictionary_layer_knows(word: str, *, source_lang: str, target_lang: str) -> bool:
     """Знает ли НАШ словарь это написание как настоящее слово.
@@ -21399,6 +21485,12 @@ def _run_dictionary_full_lookup_sync(
     gateway_path = "unknown"
     usage_main = None
 
+    # Слово, подтверждённое выверенным словарём, модели «исправлять» нельзя. Без этой
+    # подсказки она делает это сама: «blad» (толстый) 11.08.2026 превращался то в
+    # «Blatt», то в «bald», и человек получал разбор чужого слова. Молчим, когда слова
+    # не знаем, — тогда правила исправления опечаток работают как раньше.
+    verified = _verified_entry_for_prompt(word, lookup_lang=lookup_lang)
+
     try:
         raw = asyncio.run(
             run_dictionary_lookup_multilang(
@@ -21408,6 +21500,7 @@ def _run_dictionary_full_lookup_sync(
                 # explanations always in the user's native language, never the swapped query source
                 explanation_lang=source_lang,
                 responses_timeout_seconds=DICTIONARY_DEEP_RESPONSES_TIMEOUT_SECONDS,
+                extra_payload=({"verified_entry": verified} if verified else None),
             )
         )
         llm_calls_total += 1
@@ -39217,11 +39310,13 @@ def lookup_webapp_dictionary():
             return not _dictionary_payload_needs_enrichment(item)
 
         def _load_cache_payload() -> tuple[dict | None, str]:
-            local_payload, local_tier = _get_cached_dictionary_lookup_with_tier(cache_key)
+            local_payload, local_tier = _get_cached_dictionary_lookup_with_tier(
+                cache_key, expected_word=word_ru, lookup_lang=lookup_lang)
             if local_payload and _cached_payload_is_servable(local_payload):
                 return local_payload, f"user_{local_tier}"
             if DICTIONARY_SHARED_CACHE_ENABLED:
-                shared_payload, shared_tier = _get_cached_dictionary_lookup_with_tier(cache_key_shared)
+                shared_payload, shared_tier = _get_cached_dictionary_lookup_with_tier(
+                    cache_key_shared, expected_word=word_ru, lookup_lang=lookup_lang)
                 if shared_payload and _cached_payload_is_servable(shared_payload):
                     _set_cached_dictionary_lookup(cache_key, shared_payload)
                     return shared_payload, f"shared_{shared_tier}"
@@ -39857,9 +39952,11 @@ def stream_webapp_dictionary():
     )
 
     # Cache hit → return the full item as JSON immediately (no stream, no LLM spend).
-    cached_payload, _tier = _get_cached_dictionary_lookup_with_tier(cache_key)
+    cached_payload, _tier = _get_cached_dictionary_lookup_with_tier(
+        cache_key, expected_word=word_ru, lookup_lang=lookup_lang)
     if not cached_payload and DICTIONARY_SHARED_CACHE_ENABLED:
-        cached_payload, _tier = _get_cached_dictionary_lookup_with_tier(cache_key_shared)
+        cached_payload, _tier = _get_cached_dictionary_lookup_with_tier(
+            cache_key_shared, expected_word=word_ru, lookup_lang=lookup_lang)
     _is_word_query = _is_single_word_dictionary_entry(word_ru, query_source_lang)
     if (
         isinstance(cached_payload, dict)
