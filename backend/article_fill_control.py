@@ -13,6 +13,12 @@
   • продолжить      — счётчик пустых прогонов обнуляется, добор идёт дальше;
   • дам свои слова  — присылаем список слов, которые в теме уже есть, и ждём ответ.
 
+«Больше не дёргаем» — буквально. Решение владельца уводит тему в состояние `stopped`, и
+вопрос по ней не задаётся никогда. Пока `stopped` и `paused` были одним состоянием, кнопка
+«остановить» возвращала тему ровно туда, откуда отчёт задаёт вопрос, и каждые три дня
+прилетал тот же список тем, который владелец уже закрыл. Вопрос повторяется только там,
+где ответа не было.
+
 Список нужен обязательно: без него владелец пишет дубликаты, а поняв, что добавить
 нечего, не может об этом сказать. Поэтому у сообщения со списком есть и кнопка отмены,
 и срок: не ответил за неделю — тема тихо возвращается на паузу.
@@ -43,8 +49,8 @@ def _keyboard(theme_key: str) -> dict[str, Any]:
 
 
 def _state_ru(state: str) -> str:
-    return {"auto": "добираем", "paused": "на паузе",
-            "awaiting_words": "ждём твои слова"}.get(str(state), str(state))
+    return {"auto": "добираем", "paused": "на паузе, жду решения",
+            "stopped": "ты остановил", "awaiting_words": "ждём твои слова"}.get(str(state), str(state))
 
 
 def _words_ru(count: int) -> str:
@@ -71,7 +77,11 @@ def report_lines(rows: list[dict]) -> list[str]:
     full = [r for r in rows if r["state"] == "auto" and not r["fresh"]
             and r["words"] >= r["target"] > 0]
     stalled = [r for r in rows if r["state"] == "auto" and not r["fresh"] and r not in full]
-    paused = [r for r in rows if r["state"] != "auto"]
+    # Темы, закрытые владельцем, — отдельно от тех, где решение ещё за ним. Иначе список
+    # «добор не идёт» растёт до трёх десятков и в нём тонет то единственное, что требует
+    # внимания.
+    stopped = [r for r in rows if r["state"] == "stopped"]
+    paused = [r for r in rows if r["state"] not in ("auto", "stopped")]
     total = sum(r["words"] for r in rows)
     lines = [f"📚 <b>Наполнение тем</b>", f"Всего в игре {_words_ru(total)} в {len(rows)} темах.", ""]
 
@@ -102,6 +112,13 @@ def report_lines(rows: list[dict]) -> list[str]:
         lines.append("<b>Добор не идёт</b>")
         for r in paused:
             lines.append(f"• {r['label']} — {_words_ru(r['words'])} · {_state_ru(r['state'])}")
+        lines.append("")
+    if stopped:
+        # Одной строкой и без имён: это темы, по которым решать уже нечего, а тридцать
+        # названий подряд превращают отчёт в стену.
+        words = sum(r["words"] for r in stopped)
+        lines.append(f"⏸ <b>Остановлены тобой: {len(stopped)}</b> — {_words_ru(words)} в игре. "
+                     f"Спрашивать по ним не буду.")
     return lines
 
 
@@ -219,17 +236,20 @@ def apply_fill_decision(action: str, theme_key: str) -> str:
     theme = get_article_sprint_theme(theme_key) or {}
     label = theme.get("label_ru") or theme_key
     act = str(action or "").strip().lower()
+    # `stopped`, а не `paused`: в paused тема ждёт решения, и отчёт по ней спрашивает
+    # каждые три дня. Возвращать туда тему, по которой владелец решение уже принял,
+    # значит спрашивать его снова и снова про одно и то же.
     if act == "stop":
-        set_theme_fill_state(theme_key, "paused")
-        return (f"⏸ «{label}» — новых слов больше не добираем. В игре тема остаётся, слова "
-                f"никуда не деваются.")
+        set_theme_fill_state(theme_key, "stopped")
+        return (f"⏸ «{label}» — новых слов больше не добираем, и спрашивать про эту тему я "
+                f"больше не буду. В игре тема остаётся, слова никуда не деваются.")
     if act == "go":
         set_theme_fill_state(theme_key, "auto")
         return (f"▶️ «{label}» — добор снова идёт. Если следующие два прогона опять дадут "
                 f"пусто, спрошу ещё раз.")
     if act == "cancel":
-        set_theme_fill_state(theme_key, "paused")
-        return (f"🚫 «{label}» — понял, слов не нашлось. Тема на паузе, дёргать тебя по ней "
+        set_theme_fill_state(theme_key, "stopped")
+        return (f"🚫 «{label}» — понял, слов не нашлось. Тема остановлена, дёргать тебя по ней "
                 f"больше не буду.")
     return "Не понял действие."
 
@@ -339,9 +359,10 @@ def commit_selected_words(theme_key: str, rows: list[dict], selected: list[bool]
     if not take:
         return "Ничего не отмечено — в тему ничего не добавил."
     res = commit_manual_words(theme_key, take) or {}
-    # После своих слов тема остаётся на паузе: включать автодобор за владельца нельзя —
-    # он его и остановил.
-    set_theme_fill_state(theme_key, "paused")
+    # После своих слов автодобор не включаем: его остановил владелец, решать за него нельзя.
+    # И не спрашиваем заново — он только что этой темой занимался, вопрос закрыт. Кнопка
+    # «включить добор» едет прямо под этим ответом.
+    set_theme_fill_state(theme_key, "stopped")
     added = int(res.get("added") or 0)
     names = ", ".join(f"{r['article']} {r['word']}" for r in take)
     lines = [f"✅ Добавил в тему: {names}."]

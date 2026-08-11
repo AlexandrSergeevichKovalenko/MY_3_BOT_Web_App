@@ -52188,8 +52188,18 @@ def record_theme_fill_run(theme_key: str, added: int) -> dict:
 
 
 def set_theme_fill_state(theme_key: str, state: str, *, awaiting_message_id: int | None = None) -> bool:
-    """auto — добираем; paused — не добираем; awaiting_words — ждём список от владельца."""
-    if str(state) not in ("auto", "paused", "awaiting_words"):
+    """Состояния наполнения темы:
+
+      auto           — добираем;
+      paused         — добор встал САМ (два пустых прогона), ждём решения владельца;
+      stopped        — владелец решение принял: не добирать и больше не спрашивать;
+      awaiting_words — владелец обещал прислать свои слова, ждём список.
+
+    Различать paused и stopped обязательно. Пока это было одно состояние, кнопка
+    «остановить» возвращала тему ровно в то положение, по которому отчёт и задаёт вопрос,
+    — и каждые три дня владельцу прилетала та же самая тема, которую он уже закрыл.
+    """
+    if str(state) not in ("auto", "paused", "stopped", "awaiting_words"):
         return False
     key = str(theme_key or "").strip().lower()
     with get_db_connection_context() as conn:
@@ -52253,12 +52263,16 @@ def list_theme_fill_report() -> list[dict]:
 
 
 def expire_stale_awaiting_themes(days: int = THEME_AWAITING_DAYS) -> list[str]:
-    """Владелец обещал слова и не прислал. Тема не должна висеть в ожидании вечно."""
+    """Владелец обещал слова и не прислал. Тема не должна висеть в ожидании вечно.
+
+    Уводим в `stopped`, а не в `paused`: про эту тему владельца уже спрашивали, он ответил
+    «дам свои слова» и передумал. Второй раз задавать тот же вопрос — навязчивость; в
+    отчёте про такие темы есть отдельная строка, а вернуть добор можно кнопкой."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 "UPDATE bt_3_article_sprint_themes "
-                "SET fill_state = 'paused', awaiting_message_id = NULL, "
+                "SET fill_state = 'stopped', awaiting_message_id = NULL, "
                 "    fill_state_at = NOW(), updated_at = NOW() "
                 "WHERE fill_state = 'awaiting_words' "
                 "  AND fill_state_at < NOW() - make_interval(days => %s) "

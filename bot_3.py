@@ -13872,7 +13872,9 @@ async def handle_artwords_callback(update: Update, context: CallbackContext) -> 
         _artwords_delete(pid)
         await query.answer("Отменил.")
         from backend.database import set_theme_fill_state
-        await asyncio.to_thread(set_theme_fill_state, state["theme_key"], "paused")
+        # `stopped`: владелец открыл тему, посмотрел и решил ничего не добавлять. Вопрос
+        # закрыт, задавать его снова через три дня нельзя.
+        await asyncio.to_thread(set_theme_fill_state, state["theme_key"], "stopped")
         try:
             await query.edit_message_text("↩️ Ничего не добавил, тема осталась как была.")
         except Exception:

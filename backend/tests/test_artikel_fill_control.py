@@ -66,7 +66,7 @@ class FillDecisionTests(unittest.TestCase):
 
     def test_stop_pauses_the_fill_but_keeps_the_theme_in_the_game(self):
         text, calls = self._decide("stop")
-        self.assertEqual(calls, [("haushalt", "paused")])
+        self.assertEqual(calls, [("haushalt", "stopped")])
         self.assertIn("В игре тема остаётся", text)
 
     def test_go_resumes_the_fill(self):
@@ -75,12 +75,52 @@ class FillDecisionTests(unittest.TestCase):
 
     def test_cancel_means_the_owner_found_nothing(self):
         text, calls = self._decide("cancel")
-        self.assertEqual(calls, [("haushalt", "paused")])
+        self.assertEqual(calls, [("haushalt", "stopped")])
         self.assertIn("слов не нашлось", text)
 
     def test_an_unknown_button_does_not_change_anything(self):
         _, calls = self._decide("wat")
         self.assertEqual(calls, [])
+
+
+class DecidedThemesStopAskingTests(unittest.TestCase):
+    """Тему, по которой владелец уже решил, отчёт спрашивать не имеет права.
+
+    Так и было 11.08.2026: «остановить» возвращало тему в `paused`, а вопрос отчёт задаёт
+    именно по `paused` с двумя пустыми прогонами. Двадцать закрытых тем возвращались
+    каждые три дня одним и тем же списком."""
+
+    @staticmethod
+    def _rows(state):
+        return [{"theme_key": "haushalt", "label": "Уборка", "target": 150, "state": state,
+                 "dry_streak": 2, "state_at": None, "words": 117, "fresh": 0}]
+
+    def _asked(self, state):
+        """Про какие темы отчёт задаёт вопрос — тот же отбор, что и в рассылке."""
+        return [r for r in self._rows(state) if r["state"] == "paused" and r["dry_streak"] >= 2]
+
+    def test_a_theme_the_owner_stopped_is_never_asked_about_again(self):
+        self.assertEqual(self._asked("stopped"), [])
+
+    def test_a_theme_that_stalled_on_its_own_is_still_asked_about(self):
+        self.assertEqual(len(self._asked("paused")), 1, "тут решения ещё не было")
+
+    def test_the_report_counts_stopped_themes_without_nagging(self):
+        text = "\n".join(ctl.report_lines(self._rows("stopped")))
+        self.assertIn("Остановлены тобой: 1", text)
+        self.assertNotIn("Что делаем", text)
+        self.assertNotIn("stopped", text, "в отчёт для человека внутренние слова не идут")
+
+    def test_supplying_your_own_words_closes_the_question_too(self):
+        """Владелец разобрал тему руками — спрашивать его про неё снова незачем."""
+        calls = []
+        with patch.object(db, "set_theme_fill_state",
+                          lambda t, s, **k: calls.append((t, s)) or True), \
+                patch.object(gen, "commit_manual_words",
+                             lambda t, rows: {"added": 1, "final_verified": 53}):
+            ctl.commit_selected_words("haushalt", WordReviewTests.ROWS,
+                                      [True, False, False, False])
+        self.assertEqual(calls, [("haushalt", "stopped")])
 
 
 class WordReviewTests(unittest.TestCase):
