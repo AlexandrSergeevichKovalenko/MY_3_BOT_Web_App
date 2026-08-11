@@ -7529,6 +7529,44 @@ def _store_quick_translate_in_pool(
         logging.debug("quick translate → pool skipped: %s", exc)
 
 
+# Голое немецкое слово: только буквы и дефис, без пробелов, артиклей и цифр. Всё
+# остальное (фразы, ссылки, числа) до словаря не доходит и в базу не ходит.
+_SINGLE_GERMAN_WORD_RE = re.compile(r"[A-Za-zÄÖÜäöüß]{2,}(?:-[A-Za-zÄÖÜäöüß]{2,})*")
+
+
+def _dictionary_layer_knows(word: str, *, source_lang: str, target_lang: str) -> bool:
+    """Знает ли НАШ словарь это написание как настоящее слово.
+
+    Нужна там, где мы собираемся что-то «исправлять»: исправлять можно только то,
+    чего мы не знаем. Спрашивает ВЫВЕРЕННЫЙ внешний словарь (FreeDict, 26 630
+    статей) — бесплатно и без сети.
+
+    Именно внешний, а не наш собственный слой: в наших единицах живут наши же
+    прошлые ошибки («Neugeborenes» — слова такого нет) и двери для опечаток
+    («Bestürtz» ведёт на «bestürzt»). Дай им право вето над корректором — и они
+    объявят себя правильными навсегда.
+
+    Вето даётся ТОЛЬКО голому одиночному слову. «das Neugeborenes» неверно именно
+    АРТИКЛЕМ («das Neugeborene» или «ein Neugeborenes»), а само написание
+    «Neugeborenes» словарь знает — сверять такую строку с однословным словарём
+    значит выбросить то единственное, что в ней сломано. Согласование артикля с
+    формой проверяет вычитка, и отбирать у неё эту работу нельзя.
+
+    Молчание тут не приговор слову, а честное «не знаем»: тогда вычитка своё дело
+    делает как раньше."""
+    if str(source_lang or "").strip().lower() != "de":
+        return False
+    candidate = str(word or "").strip()
+    if not candidate or not _SINGLE_GERMAN_WORD_RE.fullmatch(candidate):
+        return False
+    try:
+        from backend.dictionary_entries import known_in_base_dictionary
+        return known_in_base_dictionary(word, "de")
+    except Exception:
+        logging.debug("базовый словарь не ответил при проверке слова %r", word, exc_info=True)
+        return False
+
+
 def _dictionary_hit_or_corrected_word(
     *, word: str, source_lang: str, target_lang: str, user_id: int | None
 ) -> tuple[dict | None, str]:
@@ -7548,6 +7586,14 @@ def _dictionary_hit_or_corrected_word(
     item = _load_dictionary_item_from_pool(word=word, source_lang=source_lang, target_lang=target_lang)
     if item:
         return item, word
+    # ПУЛ — ЭТО НЕ ВЕСЬ НАШ СЛОВАРЬ. Правило выше («слово, которое у нас уже есть,
+    # верное по определению») проверялось только по пулу, а словарных статей у нас
+    # 26 630. Так «blad» (толстый, прилагательное) — настоящее немецкое слово,
+    # которого просто не было в пуле, — уехало в корректор, тот «исправил» его на
+    # частое «Blatt», и человек получил разбор совсем другого слова: заголовок
+    # «толстый», а под ним лист, страница и die Seite (11.08.2026).
+    if _dictionary_layer_knows(word, source_lang=source_lang, target_lang=target_lang):
+        return None, word
     if not dictionary_intake.worth_language_check(word, source_lang):
         return None, word
     corrected = _proofread_dictionary_phrase(word, source_lang=source_lang, user_id=user_id)
