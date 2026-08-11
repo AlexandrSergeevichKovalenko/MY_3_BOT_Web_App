@@ -160,7 +160,33 @@ def _parse(data: bytes) -> list[dict]:
             "wikt_fetched":    False,
         })
 
-    return entries
+    return _merge_same_headword(entries)
+
+
+def _merge_same_headword(entries: list[dict]) -> list[dict]:
+    """Склеить статьи с одинаковым написанием И одинаковой частью речи.
+
+    Источник даёт «Kiefer — челюсть» и «Kiefer — сосна» двумя записями: это два
+    значения одного написания, различаются они родом (der/die), которого в FreeDict
+    нет вовсе (замер: род не проставлен ни у одной из 26 809 статей). Различить их
+    нам нечем, поэтому храним одну статью со ВСЕМИ переводами — иначе при вставке
+    второй просто затирала бы первую и «сосна» пропадала.
+
+    А вот «essen» (глагол) и «Essen» (существительное) остаются РАЗНЫМИ статьями:
+    их различает часть речи, и ровно этот выбор мы обязаны показать человеку."""
+    merged: dict[tuple[str, str], dict] = {}
+    for entry in entries:
+        key = (entry["lemma_key"], entry["pos"] or "")
+        found = merged.get(key)
+        if found is None:
+            merged[key] = dict(entry)
+            continue
+        for translation in entry["translations_ru"]:
+            if translation not in found["translations_ru"]:
+                found["translations_ru"].append(translation)
+        found["translations_ru"] = found["translations_ru"][:8]
+        found["senses_json"] = [{"gloss_en": "", "gloss_ru": ru} for ru in found["translations_ru"]]
+    return list(merged.values())
 
 
 def _bulk_insert(entries: list[dict]) -> int:
@@ -179,12 +205,12 @@ def _bulk_insert(entries: list[dict]) -> int:
                     cursor.execute(
                         """
                         INSERT INTO bt_base_dictionary (
-                            lemma, lemma_key, source_lang, pos, article,
+                            lemma, lemma_key, source_lang, pos, pos_key, article,
                             translations_ru, glosses_en, senses_json, forms_json,
                             wikt_fetched, updated_at
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, NOW())
-                        ON CONFLICT (lemma_key, source_lang) DO UPDATE SET
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, NOW())
+                        ON CONFLICT (lemma_key, source_lang, pos_key) DO UPDATE SET
                             translations_ru = CASE
                                 WHEN array_length(EXCLUDED.translations_ru, 1) > 0
                                      AND (array_length(bt_base_dictionary.translations_ru, 1) IS NULL
@@ -201,6 +227,7 @@ def _bulk_insert(entries: list[dict]) -> int:
                             e["lemma_key"],
                             e["source_lang"],
                             e["pos"] or None,
+                            e["pos"] or "",
                             e["article"] or None,
                             e["translations_ru"],
                             e["glosses_en"],

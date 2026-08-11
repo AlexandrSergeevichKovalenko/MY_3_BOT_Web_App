@@ -70,6 +70,9 @@ const friendlyError = humanizeDictError;
 // non-empty the article is being filled in the background and we should poll for it.
 function germanNounAwaitingArticle(q) {
   if (!q || String(q.article || '').trim()) return '';
+  // Слово нашлось в словаре статей — артикль там либо есть, либо его сознательно
+  // не печатают (род неизвестен или их два). Опрашивать фоновый добор незачем.
+  if (Array.isArray(q.entries) && q.entries.length) return '';
   let german = '';
   if (q.targetLang === 'de') german = String(q.translation || '').trim();
   else if (q.sourceLang === 'de') german = String(q.source || '').trim();
@@ -255,6 +258,12 @@ export default function DictionaryOverlay({ onClose } = {}) {
     return () => clearTimeout(id);
   }, [mineQuery]);   // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Какую статью из списка человек выбрал. Одно написание — несколько словарных
+  // статей («толстый» → dick прилаг. / der Dicke сущ.), и выбирать между ними
+  // обязан человек: любой автоматический выбор здесь — это догадка, а именно
+  // догадка 11.08.2026 превратила прилагательное в толстяка. По умолчанию 0 —
+  // самая частотная, но список рядом и виден.
+  const [chosen, setChosen] = useState(0);
   const lastAutoRef = useRef(''); // text already auto/manually translated (debounce dedupe)
   const chipHintDoneRef = useRef(false); // shown for the current breakdown already
   const seqRef = useRef(0);
@@ -299,8 +308,32 @@ export default function DictionaryOverlay({ onClose } = {}) {
     return () => { try { tg?.offEvent?.('themeChanged', applyScheme); } catch (_e) { /* ignore */ } };
   }, []);
 
+  // Выбранная статья. Всё, что ниже — заголовок, артикль, часть речи, озвучка,
+  // разбор и сохранение — берётся из НЕЁ, а не из строки переводчика.
+  const entries = Array.isArray(quick?.entries) ? quick.entries : [];
+  const chosenEntry = entries[Math.min(chosen, Math.max(entries.length - 1, 0))] || null;
+
+  // ПРЕДМЕТ РАЗБОРА — то слово, о котором мы просим карточку. Выбрал человек «dick»
+  // из списка — разбор идёт про «dick», а не про то, что он набрал: иначе выбор
+  // остаётся украшением экрана, а модель заново гадает, о чём речь, и снова может
+  // выбрать «der Dicke». Существительное отправляем С АРТИКЛЕМ — так словарь
+  // отличает «der Kiefer» (челюсть) от «die Kiefer» (сосна).
+  // Держим в ref, чтобы разбор и поток не пересоздавались на каждый тап по списку.
+  const subjectRef = useRef(null);
+  subjectRef.current = () => {
+    if (chosenEntry) {
+      const head = String(chosenEntry.headword || '').trim();
+      const article = String(chosenEntry.gender || '').trim();
+      const word = (chosenEntry.pos === 'noun' && article) ? `${article} ${head}` : head;
+      if (word) return { text: word, lang: 'de' };
+    }
+    const typed = query.trim();
+    return { text: typed, lang: guessPair(typed).source };
+  };
+
   // German text of the current result, for pronunciation.
   const germanText = (() => {
+    if (chosenEntry) return String(chosenEntry.headword || '').trim();
     if (item?.word_de) return String(item.word_de).trim();
     if (!quick) return '';
     if (quick.sourceLang === 'de') return quick.source;
@@ -323,14 +356,20 @@ export default function DictionaryOverlay({ onClose } = {}) {
   // Strip the article from EVERY German fallback (not just word_de). The colored
   // article renders in its own span, so an un-stripped "das Kabel" here plus the
   // span produced "der das Kabel".
-  const headTranslation = quick?.targetLang === 'de'
-    ? (corrDe || stripLeadingArticle(quick?.translation) || '—')
-    : (bestRu || quick?.translation || '—');
+  const headTranslation = chosenEntry
+    ? (quick?.targetLang === 'de'
+      ? (chosenEntry.headword || '—')
+      : (chosenEntry.translation || chosenEntry.translations?.[0] || '—'))
+    : (quick?.targetLang === 'de'
+      ? (corrDe || stripLeadingArticle(quick?.translation) || '—')
+      : (bestRu || quick?.translation || '—'));
   const headSource = (quick?.sourceLang === 'de')
-    ? (corrDe || stripLeadingArticle(quick?.source) || '')
+    ? ((chosenEntry ? chosenEntry.headword : '') || corrDe || stripLeadingArticle(quick?.source) || '')
     : (quick?.source || '');
-  // One clean der/die/das for both the source and translation spans.
-  const dqArticle = resolveArticle(item, quick);
+  // One clean der/die/das for both the source and translation spans. Артикль
+  // выбранной статьи главнее всего: он приехал вместе с её частью речи и родом,
+  // а не был приклеен к чужому слову отдельным запросом.
+  const dqArticle = chosenEntry ? String(chosenEntry.gender || '') : resolveArticle(item, quick);
   // Показанная поверхность может быть формой слова. Тогда артикль у неё свой («die»
   // у именительного множественного), а само слово подписывается отдельной строкой —
   // как это делают dict.cc и DWDS. Артикль леммы берём из разбора, если он уже пришёл.
@@ -393,7 +432,13 @@ export default function DictionaryOverlay({ onClose } = {}) {
         // построилось бы от формы.
         number: String(data?.grammatical_number || '').trim(),
         lemma: String(data?.lemma_de || '').trim(),
+        // Словарные статьи. Приходят, когда слово нам знакомо: тогда переводчика
+        // не спрашивали вовсе и грамматика в ответе настоящая, а не выведенная из
+        // написания. Пусто — значит ответила машина, и это подписано на экране.
+        entries: Array.isArray(data?.entries) ? data.entries : [],
+        machine: !!data?.machine,
       };
+      setChosen(0);
       setQuick(nextQuick);
       setPhase('done'); haptic('ok');
       pushRecent(text);   // пополняем историю, показывает её своя закладка
@@ -445,13 +490,31 @@ export default function DictionaryOverlay({ onClose } = {}) {
   const resetResult = useCallback(() => {
     seqRef.current += 1; // abort any in-flight translate/lookup
     tts.stop();
-    setQuick(null); setItem(null); setEnrich('idle'); setPhase('idle');
+    setQuick(null); setItem(null); setEnrich('idle'); setPhase('idle'); setChosen(0);
     setError(''); setSave('idle'); setCardSave('idle'); setSavedChips(new Set());
     setDeepId(''); setStreamSections(new Set());
     lastAutoRef.current = '';
     try { streamAbortRef.current?.abort(); } catch (_e) { /* ignore */ }
     streamAbortRef.current = null;
     lookupPromiseRef.current = null;
+  }, [tts]);
+
+  // Выбрали другую статью — прежний разбор был про ДРУГОЕ слово, и оставлять его
+  // на экране нельзя. Сбрасываем карточку; новую человек откроет тем же «Подробным
+  // разбором», уже про выбранное слово.
+  const chooseEntry = useCallback((index) => {
+    setChosen((prev) => {
+      if (prev === index) return prev;
+      seqRef.current += 1;
+      try { streamAbortRef.current?.abort(); } catch (_e) { /* ignore */ }
+      streamAbortRef.current = null;
+      lookupPromiseRef.current = null;
+      tts.stop();
+      setItem(null); setEnrich('idle'); setDeepId(''); setStreamSections(new Set());
+      setSave('idle'); setCardSave('idle'); setSavedChips(new Set());
+      return index;
+    });
+    haptic('light');
   }, [tts]);
 
   const clearInput = useCallback(() => {
@@ -544,9 +607,8 @@ export default function DictionaryOverlay({ onClose } = {}) {
   // Non-stream breakdown — the proven, atomic path. Used as the fallback when SSE
   // streaming is unsupported or fails (see runLookup). Errors surface loudly.
   const fetchDeepBreakdown = useCallback(async () => {
-    const w = query.trim();
-    const pair = guessPair(w);
-    const data = await api('/api/webapp/dictionary', { word: w, lookup_lang: pair.source });
+    const { text: w, lang: lookupLang } = subjectRef.current();
+    const data = await api('/api/webapp/dictionary', { word: w, lookup_lang: lookupLang });
     const rich = applyDeep(data);
     setEnrich(rich ? 'done' : 'error');
     return rich;
@@ -560,8 +622,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
   // ended without one (caller then falls back). A 4xx (e.g. daily limit) throws with
   // .status so the caller surfaces it instead of falling back.
   const streamLookup = useCallback(async () => {
-    const w = query.trim();
-    const pair = guessPair(w);
+    const { text: w, lang: lookupLang } = subjectRef.current();
     const mySeq = seqRef.current;
     const controller = new AbortController();
     streamAbortRef.current = controller;
@@ -572,7 +633,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
     const resp = await fetch('/api/webapp/dictionary/stream', {
       method: 'POST',
       headers: streamHeaders,
-      body: JSON.stringify({ initData: getInitData(), ...(dictToken ? { dqt: dictToken } : {}), word: w, lookup_lang: pair.source }),
+      body: JSON.stringify({ initData: getInitData(), ...(dictToken ? { dqt: dictToken } : {}), word: w, lookup_lang: lookupLang }),
       signal: controller.signal,
     });
     if (!resp.ok) {
@@ -711,7 +772,9 @@ export default function DictionaryOverlay({ onClose } = {}) {
     // Silently correct the typed phrase first, and reflect it in the field + card so the
     // user sees (and saves) the clean form. Mark it handled so the auto-translate effect
     // doesn't re-fire a fresh translation on the corrected text.
-    const corrected = await proofreadSource(typed);
+    // Вычитка нужна только тому, чего мы не знаем. Слово нашлось в словаре статей —
+    // значит оно написано верно, и платный запрос к корректору здесь лишний.
+    const corrected = chosenEntry ? typed : await proofreadSource(typed);
     if (corrected && corrected !== typed) {
       lastAutoRef.current = corrected;
       setQuery(corrected);
@@ -721,11 +784,24 @@ export default function DictionaryOverlay({ onClose } = {}) {
     // Сохраняем РАЗРЕШЁННЫЙ артикль, а не сырой быстрый: у формы множественного это
     // «die», а не род леммы. Иначе в ОБЩИЙ пул уезжало «das Probleme» — и доставалось
     // всем, кто потом искал это слово.
-    const art = resolveArticle(item, quick);
+    const art = chosenEntry ? String(chosenEntry.gender || '') : resolveArticle(item, quick);
     const hasArticle = (s) => /^(der|die|das)\s/i.test(String(s || ''));
     let sourceText = corrected;
     let quickForSave = quick ? { ...quick, source: corrected } : quick;
-    if (!rich && art && quick) {
+    // Человек выбрал статью — сохраняем ЕЁ, а не то, что первым ответил переводчик.
+    // Без этого выбор «dick, а не der Dicke» жил бы только на экране, а в словарь
+    // и в общий пул уезжало бы прежнее.
+    if (chosenEntry && quick) {
+      const head = String(chosenEntry.headword || '').trim();
+      const german = (chosenEntry.pos === 'noun' && art) ? `${art} ${head}` : head;
+      const native = String(chosenEntry.translation || (chosenEntry.translations || [])[0] || '').trim();
+      if (quick.targetLang === 'de') {
+        quickForSave = { ...quickForSave, translation: german };
+      } else {
+        sourceText = german;
+        quickForSave = { ...quickForSave, source: german, translation: native || quick.translation };
+      }
+    } else if (!rich && art && quick) {
       if (quick.targetLang === 'de' && !hasArticle(quick.translation)) {
         quickForSave = { ...quickForSave, translation: `${art} ${quick.translation}` };
       } else if (quick.sourceLang === 'de' && !hasArticle(sourceText)) {
@@ -735,7 +811,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
     return api('/api/webapp/dictionary/save', buildDictionarySavePayload({
       rich, sourceText, quick: quickForSave, origin: 'webapp_quick_dictionary',
     }));
-  }, [item, enrich, quick, query, proofreadSource]);
+  }, [item, enrich, quick, query, proofreadSource, chosenEntry]);
 
   const onSave = useCallback(() => {
     if (save !== 'idle') return;
@@ -1193,6 +1269,41 @@ export default function DictionaryOverlay({ onClose } = {}) {
               >
                 мн. ч. от <b>{dqLemmaArticle ? `${dqLemmaArticle} ` : ''}{dqLemma}</b>
               </button>
+            )}
+            {/* ВЫБОР СТАТЬИ. Одно написание может стоять за несколькими словами:
+                «толстый» — это и прилагательное dick, и существительное der Dicke.
+                Раньше мы выбирали за человека, и выбирал по сути таймаут сетевого
+                запроса. Теперь показываем все статьи, как PONS и dict.cc, и
+                воткнуть неправильно нельзя — выбирает человек. */}
+            {entries.length > 1 && (
+              <div className="dq-entries">
+                <div className="dq-entries-title">Найдено несколько слов — выберите нужное:</div>
+                {entries.map((entry, index) => (
+                  <button
+                    key={`${entry.headword}-${entry.pos}-${entry.gender}`}
+                    type="button"
+                    className={`dq-entry${index === chosen ? ' is-chosen' : ''}`}
+                    onClick={() => chooseEntry(index)}
+                  >
+                    <span className="dq-entry-head">
+                      {entry.gender && (
+                        <span className={`dq-art ${genderClass(entry.gender)}`}>{entry.gender} </span>
+                      )}
+                      {entry.headword}
+                    </span>
+                    {entry.pos && (
+                      <span className="dq-entry-pos">{QUICK_POS_LABELS[entry.pos] || entry.pos}</span>
+                    )}
+                    <span className="dq-entry-tr">{(entry.translations || []).join(', ')}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {/* Ответ машинного переводчика, а не словарная статья: слова у нас нет,
+                грамматику мы про него не знаем и выдумывать не станем. Человек
+                должен видеть разницу — это ровно то, чего не хватало. */}
+            {quick.machine && !entries.length && (
+              <div className="dq-machine-note">машинный перевод — этого слова нет в словаре</div>
             )}
             {/* Живые примеры — общий компонент на оба словаря. */}
             {!item && (
