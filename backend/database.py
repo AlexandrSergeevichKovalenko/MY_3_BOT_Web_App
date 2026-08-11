@@ -12047,9 +12047,39 @@ def ensure_webapp_tables() -> None:
                     UNIQUE (lemma_key, source_lang)
                 );
             """)
+            # Одно написание — НЕСКОЛЬКО статей. «essen» это и глагол «есть», и
+            # существительное «Essen» (еда); «Kiefer» — челюсть и сосна. Ключ
+            # (lemma_key, source_lang) вмещал только одну из них, и вторая молча
+            # пропадала при загрузке: замер 11.08.2026 — источник даёт 26 809 статей,
+            # у нас лежало 23 125, потерялось 547 ровно по 512 таким написаниям.
+            # Пока словарь физически не может хранить омонимы, показать человеку
+            # выбор «прилагательное или существительное» невозможно в принципе.
+            cursor.execute("""
+                ALTER TABLE bt_base_dictionary
+                ADD COLUMN IF NOT EXISTS pos_key TEXT NOT NULL DEFAULT '';
+            """)
+            cursor.execute("""
+                UPDATE bt_base_dictionary
+                SET pos_key = COALESCE(pos, '')
+                WHERE pos_key = '' AND COALESCE(pos, '') <> '';
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_base_dictionary_lemma_pos
+                ON bt_base_dictionary (lemma_key, source_lang, pos_key);
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_base_dictionary
+                DROP CONSTRAINT IF EXISTS bt_base_dictionary_lemma_key_source_lang_key;
+            """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_base_dictionary_lemma_key
                 ON bt_base_dictionary (lemma_key, source_lang);
+            """)
+            # Обратный поиск: русское слово → немецкие статьи. Без индекса это
+            # последовательный проход по 23 тысячам строк на КАЖДЫЙ запрос «толстый».
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_base_dictionary_translations
+                ON bt_base_dictionary USING GIN (translations_ru);
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_base_dictionary_updated
@@ -45625,11 +45655,11 @@ def upsert_base_dictionary_entry(entry: dict) -> dict:
             cursor.execute(
                 """
                 INSERT INTO bt_base_dictionary (
-                    lemma, lemma_key, source_lang, pos, article,
+                    lemma, lemma_key, source_lang, pos, pos_key, article,
                     translations_ru, glosses_en, senses_json, forms_json,
                     wikt_fetched, frequency_rank, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                ON CONFLICT (lemma_key, source_lang) DO UPDATE SET
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (lemma_key, source_lang, pos_key) DO UPDATE SET
                     lemma        = EXCLUDED.lemma,
                     pos          = COALESCE(EXCLUDED.pos, bt_base_dictionary.pos),
                     article      = COALESCE(EXCLUDED.article, bt_base_dictionary.article),
@@ -45662,7 +45692,7 @@ def upsert_base_dictionary_entry(entry: dict) -> dict:
                     wikt_fetched, frequency_rank, hit_count, created_at, updated_at
                 """,
                 (
-                    lemma, key, source_lang, pos, article,
+                    lemma, key, source_lang, pos, (pos or ""), article,
                     translations_ru, glosses_en,
                     _json.dumps(senses_json, ensure_ascii=False),
                     _json.dumps(forms_json, ensure_ascii=False),
