@@ -398,6 +398,35 @@ def entries_for_query(query: str, *, source_lang: str, target_lang: str,
     return entries[:limit]
 
 
+def known_in_base_dictionary(word: str, lang: str = "de") -> bool:
+    """Есть ли это написание в ВЫВЕРЕННОМ внешнем словаре (FreeDict, 26 630 статей).
+
+    Отдельно от entries_for_query, и это принципиально. entries_for_query спрашивает
+    ещё и НАШИ единицы — а там живут наши же прошлые ошибки и «двери» для опечаток:
+    «Bestürtz» ведёт на «bestürzt», «Neugeborenes» когда-то завелось словом, хотя
+    такого слова нет. Для показа человеку это нормально, он получит верную статью.
+
+    Но там, где решается «исправлять ли написание», своими данными пользоваться
+    нельзя: слово, попавшее к нам по ошибке, само себя объявит правильным и никогда
+    не починится. Поэтому вето корректору даёт только внешний словарь."""
+    key = normalize_query(word)
+    if not key:
+        return False
+    try:
+        from backend.database import get_db_connection_context
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM bt_base_dictionary "
+                    "WHERE source_lang = %s AND lemma_key = %s LIMIT 1;",
+                    (str(lang or "de"), key),
+                )
+                return cur.fetchone() is not None
+    except Exception:
+        logging.debug("базовый словарь не ответил про %r", word, exc_info=True)
+        return False
+
+
 def primary_entry(entries: list[dict]) -> dict | None:
     """Статья, которую показываем крупно. Это просто первая по частотности — но
     выбор остальных при этом никуда не девается, он рядом на экране."""

@@ -593,6 +593,23 @@ export default function DictionaryOverlay({ onClose } = {}) {
   const applyDeep = useCallback((data) => {
     const rich = data?.item || null;
     if (!rich) return null;
+    // РАЗБОР ОБЯЗАН БЫТЬ ПРО ТО СЛОВО, КОТОРОЕ СПРОСИЛИ. Человек набрал «Blad»,
+    // заголовок показал верное «толстый», а разбор под ним приехал про «das Blatt»:
+    // лист, страница, die Seite. Причину чиним на бэкенде, но карточку про чужое
+    // слово нельзя показывать ни при какой причине — лучше без разбора, чем про
+    // другое слово. Проверяем только когда спрашивали немецкую статью: на русский
+    // запрос немецкий заголовок отличается законно.
+    const asked = subjectRef.current();
+    if (asked.lang === 'de') {
+      const want = stripLeadingArticle(asked.text).trim().toLowerCase();
+      const got = stripLeadingArticle(String(rich.word_de || '')).trim().toLowerCase();
+      if (want && got && want !== got) {
+        // eslint-disable-next-line no-console
+        console.warn('разбор пришёл про другое слово:', { want, got });
+        setEnrich('idle');
+        return null;
+      }
+    }
     rich.__direction = String(data?.direction || rich.__direction || '').trim();
     rich.__language_pair = data?.language_pair || null;
     setItem(rich);
