@@ -194,6 +194,12 @@ def _bulk_insert(entries: list[dict]) -> int:
 
     ensure_webapp_tables()
 
+    # Партия уходит ОДНИМ запросом, а не 500 отдельными. Построчная вставка стоила
+    # 26 629 обращений к серверу, и 11.08.2026 загрузка через публичный прокси
+    # оборвалась на 12 000: соединение столько подряд не живёт. Повтор безопасен —
+    # вставка идемпотентна (ON CONFLICT), уже загруженное просто обновится.
+    from psycopg2.extras import execute_values
+
     inserted = 0
     batch_size = 500
 
@@ -201,27 +207,28 @@ def _bulk_insert(entries: list[dict]) -> int:
         with conn.cursor() as cursor:
             for i in range(0, len(entries), batch_size):
                 batch = entries[i : i + batch_size]
-                for e in batch:
-                    cursor.execute(
-                        """
-                        INSERT INTO bt_base_dictionary (
-                            lemma, lemma_key, source_lang, pos, pos_key, article,
-                            translations_ru, glosses_en, senses_json, forms_json,
-                            wikt_fetched, updated_at
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, NOW())
-                        ON CONFLICT (lemma_key, source_lang, pos_key) DO UPDATE SET
-                            translations_ru = CASE
-                                WHEN array_length(EXCLUDED.translations_ru, 1) > 0
-                                     AND (array_length(bt_base_dictionary.translations_ru, 1) IS NULL
-                                          OR array_length(bt_base_dictionary.translations_ru, 1) = 0)
-                                THEN EXCLUDED.translations_ru
-                                ELSE bt_base_dictionary.translations_ru
-                            END,
-                            pos     = COALESCE(NULLIF(bt_base_dictionary.pos, ''), EXCLUDED.pos),
-                            article = COALESCE(NULLIF(bt_base_dictionary.article, ''), EXCLUDED.article),
-                            updated_at = NOW()
-                        """,
+                execute_values(
+                    cursor,
+                    """
+                    INSERT INTO bt_base_dictionary (
+                        lemma, lemma_key, source_lang, pos, pos_key, article,
+                        translations_ru, glosses_en, senses_json, forms_json,
+                        wikt_fetched, updated_at
+                    )
+                    VALUES %s
+                    ON CONFLICT (lemma_key, source_lang, pos_key) DO UPDATE SET
+                        translations_ru = CASE
+                            WHEN array_length(EXCLUDED.translations_ru, 1) > 0
+                                 AND (array_length(bt_base_dictionary.translations_ru, 1) IS NULL
+                                      OR array_length(bt_base_dictionary.translations_ru, 1) = 0)
+                            THEN EXCLUDED.translations_ru
+                            ELSE bt_base_dictionary.translations_ru
+                        END,
+                        pos     = COALESCE(NULLIF(bt_base_dictionary.pos, ''), EXCLUDED.pos),
+                        article = COALESCE(NULLIF(bt_base_dictionary.article, ''), EXCLUDED.article),
+                        updated_at = NOW()
+                    """,
+                    [
                         (
                             e["lemma"],
                             e["lemma_key"],
@@ -232,11 +239,15 @@ def _bulk_insert(entries: list[dict]) -> int:
                             e["translations_ru"],
                             e["glosses_en"],
                             json.dumps(e["senses_json"], ensure_ascii=False),
-                            json.dumps(e["forms_json"],  ensure_ascii=False),
+                            json.dumps(e["forms_json"], ensure_ascii=False),
                             e["wikt_fetched"],
-                        ),
-                    )
-                    inserted += 1
+                        )
+                        for e in batch
+                    ],
+                    template="(%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, NOW())",
+                    page_size=batch_size,
+                )
+                inserted += len(batch)
                 conn.commit()
                 print(f"  {min(i + batch_size, len(entries))} / {len(entries)}", end="\r")
 
