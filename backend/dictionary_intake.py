@@ -178,8 +178,15 @@ def has_cyrillic(text) -> bool:
 
 
 def clean_all(*values) -> tuple:
-    """Чистка нескольких полей разом — чтобы у двери не забыли ни одно."""
-    return tuple(clean_text(v) if isinstance(v, str) or v is None else v for v in values)
+    """Чистка нескольких полей разом — чтобы у двери не забыли ни одно.
+
+    Регистр артикля правится здесь же и во ВСЕХ полях без разбора, какое из них
+    немецкое: правило срабатывает только на «Артикль + одно немецкое слово», и в
+    русский текст оно попасть не может по построению."""
+    return tuple(
+        lower_leading_article(clean_text(v)) if isinstance(v, str) or v is None else v
+        for v in values
+    )
 
 
 # ── Слой 2: когда вообще стоит спрашивать модель ──────────────────────────────────
@@ -205,3 +212,30 @@ def worth_language_check(text: str, lang: str) -> bool:
     if "://" in value or "@" in value or value.replace(" ", "").isdigit():
         return False
     return True
+
+
+# Заголовок вида «Артикль + одно слово». Предложение сюда не попадает намеренно:
+# «Die Kosten waren höher als erwartet.» начинается с большой буквы ЗАКОННО.
+_ARTICLE_HEADWORD_RE = re.compile(
+    r"^(Der|Die|Das)(\s+)([A-ZÄÖÜ][A-Za-zÄÖÜäöüß-]*)$"
+)
+
+
+def lower_leading_article(text) -> str:
+    """«Die Enkelin» → «die Enkelin». Смысл не меняется, меняется только регистр.
+
+    В немецком артикль пишется со строчной; с заглавной он стоит, только когда
+    открывает предложение. В словарной карточке он предложение не открывает, и
+    «Die Kundgebung» читается как обрывок фразы, а не как словарная запись.
+
+    Замер 11.08.2026: в общем пуле накопилось 1 384 таких заголовка. Их починили
+    разом, но без этого правила на входе они начали бы копиться заново — модель
+    возвращает заголовок с большой буквы регулярно.
+
+    Трогаем ТОЛЬКО «артикль + ОДНО слово». Всё остальное возвращаем как есть:
+    у предложения большая буква законная, и опустить её значит сломать текст."""
+    value = str(text or "").strip()
+    match = _ARTICLE_HEADWORD_RE.match(value)
+    if not match:
+        return value
+    return f"{match.group(1).lower()}{match.group(2)}{match.group(3)}"
