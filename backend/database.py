@@ -921,6 +921,22 @@ def _load_identity_from_legacy_tables(user_ids: list[int]) -> dict[int, str]:
     return out
 
 
+def list_known_telegram_user_ids() -> list[int]:
+    """Все, кого бот когда-либо видел, — по таблице личности (в неё пишется каждое
+    обновление из телеграма). Нужно рассылке заданий: она обязана дотянуться и до того,
+    кто нажал «Старт» и пропал, — следов в таблицах активности он не оставляет."""
+    try:
+        ensure_user_identity_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT user_id FROM bt_3_user_identity WHERE user_id > 0;")
+                rows = cursor.fetchall() or []
+    except Exception:
+        logging.warning("list_known_telegram_user_ids failed", exc_info=True)
+        return []
+    return sorted({int(row[0]) for row in rows if is_real_telegram_user_id(row[0])})
+
+
 def get_user_display_names(user_ids: list[int] | set[int]) -> dict[int, str]:
     """Имена для набора пользователей. Сначала таблица личности; кого там нет — достаём из
     старых таблиц и тут же записываем в личность, чтобы второй раз не искать. Пользователи,

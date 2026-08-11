@@ -20,7 +20,7 @@ FULL_DAY = {"ad": 1, "nd": 1, "tr": 1, "wf": 1, "ls": 1, "as": 1}
 NAMES = {1: "Лилия", 2: "Олег", 3: "Мария"}
 
 
-def _text(delivered, *, free=(1,), silent=(), bonus=None):
+def _text(delivered, *, free=(1,), bonus=None):
     with patch.object(report, "_delivered_by_user", Mock(return_value=delivered)), \
          patch.object(report, "_bonus_recipients",
                       Mock(return_value=bonus or {"sprint": set(), "trainer_repeat": set()})), \
@@ -28,7 +28,7 @@ def _text(delivered, *, free=(1,), silent=(), bonus=None):
          patch("backend.database.get_user_display_names", Mock(return_value=NAMES)):
         return report.build_free_delivery_text(
             day=date(2026, 8, 2), tz_name="Europe/Vienna", plan=PLAN, budget=6,
-            free_user_ids=free, silent_user_ids=silent, repeat_slot_hours=(1300, 1800))
+            free_user_ids=free, repeat_slot_hours=(1300, 1800))
 
 
 class ReportTextTests(unittest.TestCase):
@@ -76,11 +76,14 @@ class ReportTextTests(unittest.TestCase):
         self.assertIn("⚠️ 5 из 6 — Лилия", txt)
         self.assertIn("работа над ошибками — 1 человек", txt)
 
-    def test_silent_user_is_not_counted_as_short(self):
-        """Кому по правилам сегодня не пишем — тот не «недобрал», это не поломка."""
-        txt = _text({1: dict(FULL_DAY)}, free=(1, 3), silent=(3,))
-        self.assertIn("Все свои 6 получили (1 человек)", txt)
-        self.assertIn("🔇 не пишем (давно не заходили) — Мария", txt)
+    def test_long_absent_user_is_a_shortfall_not_an_excuse(self):
+        """Раньше давно не заходившего отчёт выводил строкой «не пишем» и не считал
+        недобором. Теперь задания идут всем, поэтому пустой день у такого человека —
+        обычная поломка доставки, и отчёт обязан её назвать."""
+        txt = _text({1: dict(FULL_DAY)}, free=(1, 3))
+        self.assertIn("Недобрали 1 из 2", txt)
+        self.assertIn("⛔ 0 из 6 — Мария · не дошло ничего", txt)
+        self.assertNotIn("не пишем", txt)
 
     def test_nothing_arrived_says_so_plainly(self):
         txt = _text({}, free=(1,))
@@ -90,6 +93,25 @@ class ReportTextTests(unittest.TestCase):
         txt = _text({1: dict(FULL_DAY)})
         self.assertIn("🏃 спринт — 0", txt)
         self.assertIn("прошёл тренировку", txt)
+
+
+class SendBudgetTests(unittest.TestCase):
+    """Дневной лимит не зависит от того, как давно человек заходил.
+
+    Раньше бесплатному, который 21 день не появлялся, бюджет обнулялся — и он переставал
+    получать ровно те задания, ради которых мог бы вернуться. Задания общие и лежат в
+    пулах, лишний получатель не стоит ни токена, так что молчать было не за чем.
+    Единственный ноль, который остался, — «Тишина», её человек выбирает сам."""
+
+    def test_free_user_always_gets_the_free_budget(self):
+        self.assertEqual(bot_3._user_send_budget(424242, is_pro=False), bot_3.FREE_SEND_BUDGET)
+
+    def test_silence_still_means_silence(self):
+        self.assertEqual(bot_3._user_send_budget(424242, is_pro=True, preset="silent"), 0)
+
+    def test_paid_preset_is_untouched(self):
+        self.assertEqual(bot_3._user_send_budget(424242, is_pro=True, preset="normal"),
+                         bot_3.DEFAULT_PRO_SEND_BUDGET)
 
 
 class PlanSourceTests(unittest.TestCase):

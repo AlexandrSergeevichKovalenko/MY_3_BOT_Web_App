@@ -170,6 +170,7 @@ from backend.database import (
     clean_identity_name,
     get_user_display_name,
     get_user_display_names,
+    list_known_telegram_user_ids,
     remember_user_identity,
     is_telegram_user_allowed,
     is_telegram_user_allowed_async,
@@ -996,9 +997,21 @@ def _now_in_window(schedule, tz_name) -> bool:
         return any(int(s) <= now_min < int(e) for s, e in windows)
     except Exception:
         return True
-# Free users with no activity in this many days get no scheduled push (data kept;
-# the pull "Следующее задание" button still works; they resume on any activity).
-FREE_INACTIVE_SUPPRESS_DAYS = max(1, int((os.getenv("FREE_INACTIVE_SUPPRESS_DAYS") or "21").strip() or "21"))
+# Кому вообще уходят ЗАДАНИЯ. Раньше рассылка сама себе резала аудиторию: бесплатному,
+# который 21 день не заходил, дневной бюджет обнулялся, а через 30 дней человек выпадал
+# из списка получателей совсем. Воронка работала в одну сторону — перестал заходить,
+# перестал получать задания, и вернуться уже не с чего.
+#
+# Задания у нас общие: они лежат в пулах, которые ночной наполнитель делает под всех
+# сразу (цели пулов — фиксированные числа, от количества людей не зависят), а отправка
+# — это строка в ведомости, картинка-обложка и вызов телеграма. Лишний получатель не
+# стоит ни токена, поэтому «экономить» на молчании было не на чем.
+#
+# Значит шлём всем, кого бот знает, сколько бы он ни отсутствовал. Молчим только там,
+# где это выбор человека («Тишина», свои часы, ночные часы) или его прямой отказ —
+# заблокировал бота (адресат отсеивается отдельно и навсегда).
+TASK_DELIVERY_LOOKBACK_DAYS = max(
+    1, int((os.getenv("TASK_DELIVERY_LOOKBACK_DAYS") or "3650").strip() or "3650"))
 
 # Set by the rotation gate for the duration of one scheduled send so the shared
 # delivery collector can tier-filter DM recipients. Unset (None) on manual/force
@@ -1098,14 +1111,12 @@ def _free_plan_today(now: datetime | None = None) -> list:
             for e in _tiered_order(free=True, now=now)[:FREE_SEND_BUDGET]]
 
 
-def _user_send_budget(user_id: int, *, is_pro: bool, active_recent: set | None,
-                      preset: str | None = None) -> int:
-    """How many of today's ranked active slots this DM user receives."""
+def _user_send_budget(user_id: int, *, is_pro: bool, preset: str | None = None) -> int:
+    """Сколько сегодняшних слотов получит этот человек в личку. Давность последнего
+    захода роли НЕ играет (см. TASK_DELIVERY_LOOKBACK_DAYS): бесплатному всегда положены
+    его шесть, оплаченному — его пресет. Ноль тут значит только «Тишину»."""
     if is_pro:
         return _preset_budget(preset)  # «Обычно» by default; their chosen preset otherwise
-    # Free: suppress entirely if inactive past the window (data kept, pull still works).
-    if active_recent is not None and int(user_id) not in active_recent:
-        return 0
     return FREE_SEND_BUDGET
 
 
@@ -1139,17 +1150,15 @@ async def _send_free_delivery_report(context: CallbackContext) -> None:
         return
     try:
         uids = await _collect_scheduler_candidate_user_ids(
-            lookback_days=30, include_allowed=True, include_admins=False)
+            lookback_days=TASK_DELIVERY_LOOKBACK_DAYS, include_allowed=True,
+            include_admins=False, include_known=True)
         pro_map = await asyncio.to_thread(
             lambda ids=tuple(uids): {u: _is_user_pro_cached(int(u)) for u in ids})
         free_ids = [int(u) for u in uids if not pro_map.get(u)]
-        active_recent = set(await _collect_scheduler_candidate_user_ids(
-            lookback_days=FREE_INACTIVE_SUPPRESS_DAYS, include_allowed=False, include_admins=False))
-        silent = [u for u in free_ids if u not in active_recent]
         text = await asyncio.to_thread(
             build_free_delivery_text,
             day=day, tz_name=QUIZ_SCHEDULE_TZ_NAME, plan=_free_plan_today(now),
-            budget=FREE_SEND_BUDGET, free_user_ids=free_ids, silent_user_ids=silent,
+            budget=FREE_SEND_BUDGET, free_user_ids=free_ids,
             repeat_slot_hours=[h * 100 + m for (h, m) in TRAINER_REPEAT_SLOT_TIMES],
         )
         for admin_id in admin_ids:
@@ -2826,10 +2835,9 @@ async def _send_next_task_card(context: CallbackContext, chat_id: int, tasks: li
 
 
 def _pull_budget_for(user_id: int) -> tuple[int, bool]:
-    """Daily budget for an ON-DEMAND «Следующее задание» pull, and whether the user is
-    Pro. Unlike push budgets this ignores the Free inactivity suppression (an explicit
-    tap IS activity) and lets «Тишина» Pro pull a normal amount (silent = no auto push,
-    but pull-on-demand still serves them)."""
+    """Дневной лимит для тапа «Следующее задание» и признак оплаченного тарифа. В отличие
+    от рассылки, «Тишина» тут не обнуляет: человек попросил не писать ему сам, но раз он
+    пришёл и нажал — задание выдаём."""
     try:
         is_pro = bool(_is_user_pro_cached(int(user_id)))
     except Exception:
@@ -4719,9 +4727,8 @@ async def _daily_topup_job(context: CallbackContext) -> None:
     since_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
     try:
         uids = await _collect_scheduler_candidate_user_ids(
-            lookback_days=30, include_allowed=True, include_admins=True)
-        active_recent = set(await _collect_scheduler_candidate_user_ids(
-            lookback_days=FREE_INACTIVE_SUPPRESS_DAYS, include_allowed=False, include_admins=True))
+            lookback_days=TASK_DELIVERY_LOOKBACK_DAYS, include_allowed=True,
+            include_admins=True, include_known=True)
         prefs_map = await asyncio.to_thread(get_user_prefs_bulk, tuple(uids))
     except Exception:
         logging.warning("daily_topup: список получателей собрать не вышло", exc_info=True)
@@ -4736,10 +4743,9 @@ async def _daily_topup_job(context: CallbackContext) -> None:
             is_pro = _is_user_pro_cached(uid)
             if _drip_delivery_enabled() and bool(prefs.get("schedule")) and is_pro:
                 continue  # свои часы → его ведёт капля
-            budget = _user_send_budget(uid, is_pro=is_pro, active_recent=active_recent,
-                                       preset=prefs.get("preset"))
+            budget = _user_send_budget(uid, is_pro=is_pro, preset=prefs.get("preset"))
             if budget <= 0:
-                continue  # тишина или давно не заходил — добор молчит вместе с рассылкой
+                continue  # «Тишина» — добор молчит вместе с рассылкой
             served += 1
             count, _last = await asyncio.to_thread(get_inbox_delivery_stats_today, uid, since_ts)
             if count >= budget:
@@ -11356,9 +11362,9 @@ async def run_world_news_evening_prep(context: CallbackContext):
 
 async def run_world_news_morning_broadcast(context: CallbackContext):
     """Morning (6:30) broadcast: if today's entry was APPROVED (pinned) last evening, send the
-    branded card to the group + every recently-active user's DM. Strict — no approval = no send.
+    branded card to the group + the DM of everyone the bot knows. Strict — no approval = no send.
     Idempotent via status='sent'. Bypasses quiet hours (this IS the morning starter)."""
-    from backend.database import get_world_news_for_date, set_world_news_status, active_user_ids_in_window
+    from backend.database import get_world_news_for_date, set_world_news_status
     today = datetime.now().strftime("%Y-%m-%d")
     try:
         entry = await asyncio.to_thread(get_world_news_for_date, today)
@@ -11404,12 +11410,17 @@ async def run_world_news_morning_broadcast(context: CallbackContext):
     if BOT_GROUP_CHAT_ID_Deutsch:
         group_ok = await _send(BOT_GROUP_CHAT_ID_Deutsch)
 
-    now = datetime.now()
+    # Новость дня — утренний повод открыть бота, а не награда за посещаемость. Раньше
+    # адресатов брали за последние 14 дней: кто пропал — тот и новость переставал видеть,
+    # то есть терял ровно то, что могло его вернуть. Берём всех, кого бот знает
+    # (см. TASK_DELIVERY_LOOKBACK_DAYS); новость общая, лишний адресат ничего не стоит.
     try:
-        uids = await asyncio.to_thread(active_user_ids_in_window, now - timedelta(days=14), now)
+        uids = await _collect_scheduler_candidate_user_ids(
+            lookback_days=TASK_DELIVERY_LOOKBACK_DAYS, include_allowed=True,
+            include_admins=False, include_known=True)
     except Exception:
-        logging.exception("world_news morning: active users lookup failed")
-        uids = set()
+        logging.exception("world_news morning: recipients lookup failed")
+        uids = []
     sent = 0
     for uid in uids:
         if await _send(int(uid)):
@@ -14932,7 +14943,11 @@ async def send_morning_reminder(context:CallbackContext):
     )
 
     try:
-        targets = await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_morning_reminder")
+        # Утреннее «приходи заниматься» — как раз то, чем человека и возвращают, поэтому
+        # оно идёт всем, кого бот знает, а не только тем, кто заходил недавно.
+        targets = await _collect_scheduler_delivery_targets(
+            context, lookback_days=TASK_DELIVERY_LOOKBACK_DAYS,
+            job_name="send_morning_reminder", include_known=True)
     except Exception:
         logging.warning("⚠️ Не удалось собрать targets для morning reminder", exc_info=True)
         targets = []
@@ -14996,7 +15011,9 @@ async def send_flashcard_reminder(context: CallbackContext):
         f'Перейти к тренировке: <a href="{review_url}">Открыть карточки</a>'
     )
     try:
-        targets = await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_flashcard_reminder")
+        targets = await _collect_scheduler_delivery_targets(
+            context, lookback_days=TASK_DELIVERY_LOOKBACK_DAYS,
+            job_name="send_flashcard_reminder", include_known=True)
     except Exception:
         logging.warning("⚠️ Не удалось собрать targets для flashcard reminder", exc_info=True)
         targets = []
@@ -23784,6 +23801,7 @@ async def _collect_scheduler_candidate_user_ids(
     lookback_days: int = 30,
     include_allowed: bool = True,
     include_admins: bool = True,
+    include_known: bool = False,
 ) -> list[int]:
     safe_days = max(1, int(lookback_days or 30))
     user_ids: set[int] = set()
@@ -23808,11 +23826,11 @@ async def _collect_scheduler_candidate_user_ids(
                 WHERE start_time >= NOW() - (%s || ' days')::interval
                   AND user_id IS NOT NULL
                 UNION
-                -- Answering a daily interactive task IS activity. Without this a user
-                -- who only does the interactive loop (no chat/translation/SRS) looks
-                -- "inactive" after 21d → Free-suppressed → stops getting the very tasks
-                -- they engage with. answered_at is NULL until answered, so this counts
-                -- only genuine engagement (not merely being sent a card).
+                -- Ответ на ежедневное задание — тоже активность. Без этой ветки человек,
+                -- который живёт только в интерактиве (без чата, переводов и повторений),
+                -- выглядел бы «пропавшим» и переставал бы получать ровно то, что решает.
+                -- answered_at пуст до ответа, так что считается настоящее участие,
+                -- а не сам факт отправленной карточки.
                 SELECT DISTINCT user_id
                 FROM bt_3_interactive_inbox
                 WHERE answered_at >= NOW() - (%s || ' days')::interval
@@ -23832,6 +23850,27 @@ async def _collect_scheduler_candidate_user_ids(
                     continue
                 if candidate > 0:
                     user_ids.add(candidate)
+
+    if include_known:
+        # Все, кого бот когда-либо видел. Нужно для рассылки заданий: человек, который
+        # нажал «Старт» и ушёл, не оставляет следа ни в одной таблице активности — без
+        # этой ветки он не получил бы вообще ничего и вернуться ему было бы не с чего.
+        try:
+            known_rows = await asyncio.to_thread(list_known_telegram_user_ids)
+        except Exception:
+            logging.warning("scheduler candidates: known users lookup failed", exc_info=True)
+            known_rows = []
+        for raw in known_rows:
+            try:
+                candidate = int(raw)
+            except Exception:
+                continue
+            if candidate <= 0:
+                continue
+            if _is_synthetic_telegram_user_id(candidate):
+                skipped_synthetic += 1
+                continue
+            user_ids.add(candidate)
 
     if include_allowed:
         try:
@@ -23898,11 +23937,13 @@ async def _collect_scheduler_delivery_targets(
     *,
     lookback_days: int = 30,
     job_name: str = "unknown",
+    include_known: bool = False,
 ) -> list[int]:
     user_ids = await _collect_scheduler_candidate_user_ids(
         lookback_days=lookback_days,
         include_allowed=True,
         include_admins=True,
+        include_known=include_known,
     )
     delivery_map = await _build_user_delivery_map(context, user_ids, job_name=job_name)
     targets: list[int] = []
@@ -28419,9 +28460,10 @@ async def _collect_quiz_delivery_targets(context: CallbackContext) -> list[int]:
 async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[dict]:
     try:
         user_ids = await _collect_scheduler_candidate_user_ids(
-            lookback_days=30,
+            lookback_days=TASK_DELIVERY_LOOKBACK_DAYS,
             include_allowed=True,
             include_admins=True,
+            include_known=True,
         )
         delivery_map = await _build_user_delivery_map(context, user_ids, job_name="send_scheduled_quiz")
         grouped: dict[int, list[int]] = {}
@@ -28444,18 +28486,11 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
         slot_rank = 0
         pro_map: dict[int, bool] = {}
         prefs_map: dict = {}
-        active_recent: set | None = None
         if tier_active:
             s_kind, s_hh, s_mm = sched
             slot_rank = _slot_rank_today(s_kind, s_hh, s_mm)
             dm_uids = [int(uids[0]) for cid, uids in grouped.items() if int(cid) > 0 and uids]
             if dm_uids:
-                try:
-                    active_recent = set(await _collect_scheduler_candidate_user_ids(
-                        lookback_days=FREE_INACTIVE_SUPPRESS_DAYS,
-                        include_allowed=False, include_admins=True))
-                except Exception:
-                    active_recent = None
                 try:
                     pro_map = await asyncio.to_thread(
                         lambda ids=tuple(dm_uids): {u: _is_user_pro_cached(u) for u in ids})
@@ -28485,10 +28520,9 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
                 if _drip_delivery_enabled() and windowed:
                     tier_skipped += 1
                     continue  # windowed → drip job delivers; no live slot sends
-                budget = _user_send_budget(uid, is_pro=is_pro_user,
-                                           active_recent=active_recent, preset=p.get("preset"))
-                # Silence / inactive suppression (budget 0) is ALWAYS respected — even a
-                # bonus send never reaches someone who opted out of all pushes.
+                budget = _user_send_budget(uid, is_pro=is_pro_user, preset=p.get("preset"))
+                # «Тишина» (бюджет 0) соблюдается ВСЕГДА — даже сверхплановая отправка не
+                # доходит до того, кто сам отказался от любых уведомлений.
                 if budget <= 0:
                     tier_skipped += 1
                     continue
@@ -28532,9 +28566,10 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
 async def _collect_quiz_delivery_user_routes(context: CallbackContext) -> list[dict]:
     try:
         user_ids = await _collect_scheduler_candidate_user_ids(
-            lookback_days=30,
+            lookback_days=TASK_DELIVERY_LOOKBACK_DAYS,
             include_allowed=True,
             include_admins=True,
+            include_known=True,
         )
         delivery_map = await _build_user_delivery_map(context, user_ids, job_name="send_scheduled_quiz")
         routes: list[dict] = []

@@ -135,16 +135,13 @@ def build_free_delivery_text(
     plan: list,
     budget: int,
     free_user_ids,
-    silent_user_ids=(),
     repeat_slot_hours=(),
 ) -> str:
     """Текст отчёта. `plan` — [(kind, hour, minute)] на сегодня для бесплатного тарифа,
-    `silent_user_ids` — те, кому по правилам сегодня не пишем (давно не заходили),
     `repeat_slot_hours` — слоты повторной тренировки (бонус) в виде ЧЧММ."""
     from backend.database import get_user_display_names
 
     free_ids = sorted({int(u) for u in free_user_ids or []})
-    silent = {int(u) for u in silent_user_ids or []}
     head = f"🧾 <b>Бесплатные за {day.strftime('%d.%m')} ({_WEEKDAY_RU[day.weekday()]})</b>"
     if not free_ids:
         return f"{head}\n\nБесплатных получателей сегодня нет."
@@ -167,13 +164,10 @@ def build_free_delivery_text(
     # это поломка доставки; «шесть пришло, но не те» — норма выполнена, а слот плана не
     # отработал и дырку закрыл вечерний добор другим типом. Раньше обе шли под словом
     # «недобрали», и отчёт сам себе противоречил строкой «6 из 6 · не дошло».
-    full, short, swapped, mute = [], [], [], []
+    full, short, swapped = [], [], []
     for uid in free_ids:
         got = delivered.get(uid, {})
         counted = sum(n for code, n in got.items() if code not in BONUS_INBOX_KINDS)
-        if uid in silent:
-            mute.append(_name(uid))
-            continue
         missing, extra = [], []
         for kind, want in planned_by_kind.items():
             have = int(got.get(KIND_TO_INBOX_CODE.get(kind, kind), 0))
@@ -225,8 +219,6 @@ def build_free_delivery_text(
             continue
         tail = f" · не дошло: {', '.join(missing)}" if missing else ""
         lines.append(f"⚠️ {counted} из {budget} — {name}{tail}")
-    if mute:
-        lines.append(f"🔇 не пишем (давно не заходили) — {', '.join(mute)}")
     if swapped:
         lines.append("<i>🔀 — норму человек получил, но слот плана не отработал и дырку "
                      "закрыл вечерний добор другим заданием.</i>")
