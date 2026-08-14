@@ -17117,13 +17117,22 @@ Im Zweifel: "schlecht"."""
 
 
 
-# Судья предложений НЕ на quiz-модели: замер 14.08.2026 показал, что gpt-4.1-mini
-# в один голос пропускает «Er steht jeden Morgen pünktlich zur Arbeit auf», а
-# gpt-4.1 в три голоса — ловит. Приёмка обязана судить тем же, чем меряем, иначе
-# отчёт и продукт разъезжаются. Объём копеечный: 3 вызова на заготовку, а заготовок
-# не больше 60 за ночь.
+# Судья предложений НЕ на quiz-модели (mini), и это МЕРЕНО, а не на глаз.
+# Эталон 14.08.2026 — 12 заведомо мёртвых предложений и 12 заведомо живых:
+#     mini    ×1  пропустил 2 из 12 мёртвых
+#     mini    ×3  пропустил 1 из 12   («… zur Arbeit hin» — голоса не спасают,
+#                                       промах у mini повторяющийся, не случайный)
+#     gpt-4.1 ×1  пропустил 0 из 12
+#     gpt-4.1 ×3  пропустил 0 из 12
+# Живые предложения зря не забраковал никто.
+# Отсюда: модель полная, голос ОДИН — три ничего не добавляют, только утраивают счёт.
+# Деньги (прайс из provider_cost_truth.py, замер 214 вх./7 вых. токенов на проверку,
+# потолок 60 заготовок за ночь): mini ×3 = $0.53/мес, полная ×1 = $0.88/мес,
+# полная ×3 = $2.64/мес. За 35 центов в месяц мёртвые предложения не попадают в банк.
+# Потолок 60/ночь задан SENTENCE_PREWARM_MAX_USERS×MAX_GENERATE_PER_USER: поднимут
+# его — расход вырастет линейно (на 2000 человек в сутки это уже $88/мес).
 SEPARABLE_SENTENCE_JUDGE_MODEL = (os.getenv("SEPARABLE_SENTENCE_JUDGE_MODEL") or "gpt-4.1").strip()
-SEPARABLE_SENTENCE_JUDGE_VOTES = max(1, int(os.getenv("SEPARABLE_SENTENCE_JUDGE_VOTES") or "3"))
+SEPARABLE_SENTENCE_JUDGE_VOTES = max(1, int(os.getenv("SEPARABLE_SENTENCE_JUDGE_VOTES") or "1"))
 
 
 def separable_sentence_sounds_native(sentence: str, translation_ru: str, infinitive: str) -> bool:
