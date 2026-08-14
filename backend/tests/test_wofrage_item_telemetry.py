@@ -256,6 +256,57 @@ class PersonalisedPracticeTests(unittest.TestCase):
             out = db.pick_wofrage_payloads_for_user(777, 5)
         self.assertEqual([i["s"] for i in out], [i["s"] for i in pool[:5]])
 
+    # ── Отбор идёт по ДВУМ измерениям и не глушит измеренное неизмеренным ──────────
+    # Замер 14.08.2026 (см. комментарии у _WOFRAGE_UNMEASURED_WEIGHT в database.py):
+    # пока вес «не мерено» был 0.5, всё измеренное с долей ошибок ниже половины уходило
+    # вниз списка, и упор на ошибки не работал ни у кого, кроме безнадёжных случаев.
+
+    def _share(self, pool, weakness, want, runs, predicate):
+        """Доля заданий, попавших под `predicate`, за `runs` независимых выдач."""
+        hits = shown = 0
+        with patch.object(db, "pick_wofrage_payloads", return_value=None) as picker, \
+             patch.object(db, "get_user_wofrage_weakness", return_value=weakness):
+            picker.side_effect = lambda n: [dict(i) for i in pool]
+            for _ in range(runs):
+                out = db.pick_wofrage_payloads_for_user(777, want)
+                hits += sum(1 for i in out if predicate(i))
+                shown += len(out)
+        return hits / max(1, shown)
+
+    def test_question_type_thing_vs_person_is_used_too(self):
+        """«Worüber ↔ Über wen» — самая частая ошибка формата, и она измеряется."""
+        pool = ([{"s": f"thing{i}", "prep": "auf", "target": "thing"} for i in range(12)]
+                + [{"s": f"person{i}", "prep": "auf", "target": "person"} for i in range(12)])
+        weakness = {"attempts": 60, "correct": 33,
+                    "preps": {"auf": {"attempts": 60, "correct": 33}},   # предлог один и тот же
+                    "targets": {"thing": {"attempts": 30, "correct": 27},    # с вещами всё хорошо
+                                "person": {"attempts": 30, "correct": 6}}}   # о людях спрашивать не умеет
+        share = self._share(pool, weakness, 8, 60, lambda i: i["target"] == "person")
+        self.assertGreater(share, 0.7,
+                           f"вопросы о людях должны вытеснять вопросы о вещах, вышло {share:.2f}")
+
+    def test_measured_weak_spot_beats_unmeasured_one(self):
+        """Тому, где человек ошибается, положено идти чаще того, что про него не известно."""
+        pool = ([{"s": f"weak{i}", "prep": "an", "target": "thing"} for i in range(12)]
+                + [{"s": f"unknown{i}", "prep": "zu", "target": "thing"} for i in range(12)])
+        weakness = {"attempts": 40, "correct": 30,
+                    "preps": {"an": {"attempts": 20, "correct": 10}},   # половина мимо
+                    "targets": {"thing": {"attempts": 40, "correct": 30}}}
+        share = self._share(pool, weakness, 8, 60, lambda i: i["prep"] == "an")
+        self.assertGreater(share, 0.7,
+                           f"измеренное слабое место должно обгонять неизвестное, вышло {share:.2f}")
+
+    def test_mastered_spot_yields_to_unmeasured_one(self):
+        """А освоенное, наоборот, уступает место неизвестному — иначе колода замрёт."""
+        pool = ([{"s": f"done{i}", "prep": "an", "target": "thing"} for i in range(12)]
+                + [{"s": f"unknown{i}", "prep": "zu", "target": "thing"} for i in range(12)])
+        weakness = {"attempts": 40, "correct": 38,
+                    "preps": {"an": {"attempts": 20, "correct": 19}},   # почти без ошибок
+                    "targets": {"thing": {"attempts": 40, "correct": 38}}}
+        share = self._share(pool, weakness, 8, 60, lambda i: i["prep"] == "an")
+        self.assertLess(share, 0.3,
+                        f"освоенный предлог не должен занимать колоду, вышло {share:.2f}")
+
 
 if __name__ == "__main__":
     unittest.main()

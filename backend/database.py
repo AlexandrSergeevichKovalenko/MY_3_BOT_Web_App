@@ -3734,12 +3734,30 @@ def pick_wofrage_payloads(n: int = 10) -> list[dict]:
     return []
 
 
+# Ниже трёх ответов доля ошибок — не замер, а шум: одна промашка даёт 100%.
+_WOFRAGE_MIN_ATTEMPTS = 3
+# Вес того, что про человека ещё НЕ измерено. Замер 14.08.2026: пока здесь стояло 0.5,
+# неизмеренное било любое измеренное с долей ошибок ниже половины (при 0.2 — 0% побед,
+# при 0.3 — 2%), а живой человек ошибается на 15-30%. Из-за этого «упор на мои ошибки»
+# включался только у того, кто валит предлог чаще чем через раз: у единственного
+# человека, прошедшего порог, доля заданий на измеренные предлоги вышла 0.000 против
+# 0.231 при случайной выдаче — перекос шёл в обратную сторону. 0.32 ставит неизмеренное
+# ВЫШЕ освоенного, но НИЖЕ всего, где человек ошибается чаще трети.
+_WOFRAGE_UNMEASURED_WEIGHT = 0.32
+# Доля вклада второго измерения — «вещь или человек» (Worüber ↔ Über wen). Это самая
+# частая реальная ошибка формата; она измерялась с самого начала и до 14.08.2026
+# выбрасывалась — формула смотрела только на предлог.
+_WOFRAGE_TARGET_SHARE = 0.35
+# Шум, чтобы верхушка колоды не была одной и той же пачку за пачкой.
+_WOFRAGE_PICK_NOISE = 0.20
+
+
 def pick_wofrage_payloads_for_user(user_id: int, n: int = 12) -> list[dict]:
     """То же, но с оглядкой на этого человека: где он ошибается — того больше.
 
-    Дневной набор общий (общий зачёт), а личная тренировка подстраивается: предлог,
-    на котором человек валится, встречается чаще; освоенное — реже. Пока ответов
-    мало, работает обычная случайная выдача.
+    Дневной набор общий (общий зачёт), а личная тренировка подстраивается: и предлог,
+    и тип вопроса (о вещи или о человеке), на которых человек валится, встречаются
+    чаще; освоенное — реже. Пока ответов мало, работает обычная случайная выдача.
     """
     want = max(1, int(n))
     try:
@@ -3751,14 +3769,20 @@ def pick_wofrage_payloads_for_user(user_id: int, n: int = 12) -> list[dict]:
             return pool[:want]
         import random as _random
 
-        def score(item: dict) -> float:
-            prep = str(item.get("prep") or "")
-            stat = (weak.get("preps") or {}).get(prep) or {}
+        def measured(stats: dict, key: str) -> float:
+            """Доля ошибок по одному измерению; где мерить ещё нечего — средний вес."""
+            stat = (stats or {}).get(key) or {}
             attempts = int(stat.get("attempts") or 0)
-            if attempts < 3:
-                return 0.5 + _random.random() * 0.3          # незнакомое — умеренно интересно
-            error_rate = 1.0 - (int(stat.get("correct") or 0) / attempts)
-            return error_rate + _random.random() * 0.25       # шум, чтобы не выдавать одно и то же
+            if attempts < _WOFRAGE_MIN_ATTEMPTS:
+                return _WOFRAGE_UNMEASURED_WEIGHT
+            return 1.0 - (int(stat.get("correct") or 0) / attempts)
+
+        def score(item: dict) -> float:
+            by_prep = measured(weak.get("preps"), str(item.get("prep") or ""))
+            by_target = measured(weak.get("targets"), str(item.get("target") or ""))
+            return ((1.0 - _WOFRAGE_TARGET_SHARE) * by_prep
+                    + _WOFRAGE_TARGET_SHARE * by_target
+                    + _random.random() * _WOFRAGE_PICK_NOISE)
 
         pool.sort(key=score, reverse=True)
         return pool[:want]
