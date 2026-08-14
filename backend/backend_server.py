@@ -16866,6 +16866,26 @@ CRITICAL CONSTRAINTS:
    MUST reproduce correct_full_sentence character for character.
    NEVER hide the prefix inside a single gap — an infinitive can never stand in
    the conjugated slot ("Ich anlegen mein Geld ..." is not German).
+4a) THE SENTENCE MUST BE REAL, EVERYDAY GERMAN — not a grammar exercise skeleton.
+   Choose the CONTEXT TO FIT THE VERB, never force a verb into a fixed context.
+   The verb's Rektion/Valenz must be genuine and the collocation must be one a
+   native speaker actually says.
+   These were produced by the old prompt and are WRONG — never generate anything
+   like them:
+   ✗ "Er steht jeden Morgen pünktlich zur Arbeit auf."   (aufstehen has no "zur Arbeit")
+   ✗ "Jeden Morgen fährt er pünktlich zur Arbeit ab."    (abfahren ≠ zur Arbeit fahren)
+   ✗ "Sie fährt jeden Morgen pünktlich zur Arbeit fort." (fortfahren does not work here)
+   ✗ "Er geht heute früher von der Arbeit aus."          (ausgehen von = to assume)
+   ✗ "Er kommt heute früher in der Firma an."            (ankommen im Büro, not in der Firma)
+   ✗ "Sie arbeitet die neue Software jeden Tag ein."     (einarbeiten is about people)
+   ✗ "Er steht jeden Morgen früh im Büro auf."           (you get up at home, not at the office)
+   Right ones look like this:
+   ✓ "Ich lege mein Geld langfristig in Aktien an."
+   ✓ "Er hört heute früher mit der Arbeit auf."
+   ✓ "Er kommt jeden Morgen pünktlich im Büro an."
+   ✓ "Am Morgen sieht er immer seine E-Mails durch."
+   If the verb does not fit a work/finance context, PICK A DIFFERENT SITUATION
+   (household, travel, friends, shopping, health) — the situation serves the verb.
 5) Provide 3 wrong options that are plausible but clearly wrong in this exact context.
    - At least 2 wrong options should be other separable prefix verbs (preferably similar topic).
    - Avoid nonsense distractors.
@@ -16891,6 +16911,8 @@ OUTPUT MUST BE STRICT JSON WITH EXACT KEYS IN THIS ORDER:
 }
 
 VALIDATION CHECKLIST (you must self-check before output):
+- would a native speaker really say this sentence? if not, start over with another situation
+- the verb's Rektion matches the objects/prepositions actually used in the sentence
 - sentence_with_gap contains "___" exactly TWICE
 - filling gap 1 with verb_form and gap 2 with prefix reproduces correct_full_sentence exactly
 - correct_full_sentence has the separated prefix as its last word (before punctuation)
@@ -17016,16 +17038,39 @@ def _validate_separable_prefix_quiz_item(item: dict) -> dict:
     }
 
 
-def _request_separable_prefix_quiz_item_via_openai() -> dict:
+def _request_separable_prefix_quiz_item_via_openai(
+    target_infinitive: str | None = None,
+    avoid_sentences: list[str] | None = None,
+) -> dict:
+    """target_infinitive — заказать задание на КОНКРЕТНЫЙ глагол.
+
+    Без заказа модель выбирает глагол сама и схлопывается на одном и том же:
+    при чистке банка 14.08.2026 44 попытки из 60 вернули «Er hört heute früher
+    mit der Arbeit auf». Когда глагол задаём мы, модель занимается тем, чем
+    должна — подбирает ЖИВОЙ контекст под этот глагол."""
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY not configured")
     endpoint = "https://api.openai.com/v1/chat/completions"
+    instructions = SEPARABLE_PREFIX_VERB_GAP_PROMPT
+    wanted = _normalize_space(target_infinitive)
+    if wanted:
+        instructions += (
+            f"\n\nMANDATORY: correct_infinitive MUST be exactly \"{wanted}\". "
+            "Build the situation around THIS verb's real usage — if it does not fit "
+            "work or finance, use any other everyday situation where it is truly said."
+        )
+    blocked = [_normalize_space(item) for item in (avoid_sentences or []) if _normalize_space(item)]
+    if blocked:
+        listed = "\n".join(f"- {item}" for item in blocked[:20])
+        instructions += f"\n\nDo NOT produce any of these sentences again:\n{listed}"
     payload = {
         "model": OPENAI_QUIZ_MODEL,
-        "temperature": 0.35,
+        # Заказ на конкретный глагол сужает пространство, поэтому температуру
+        # поднимаем: иначе на один и тот же глагол приходит одно и то же.
+        "temperature": 0.9 if wanted else 0.35,
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "user", "content": SEPARABLE_PREFIX_VERB_GAP_PROMPT},
+            {"role": "user", "content": instructions},
         ],
     }
     headers = {
@@ -17057,12 +17102,98 @@ def _request_separable_prefix_quiz_item_via_openai() -> dict:
     return _validate_separable_prefix_quiz_item(parsed)
 
 
-def _get_separable_prefix_quiz_item_with_retry(max_retries: int = 2) -> dict:
+SEPARABLE_SENTENCE_JUDGE_PROMPT = """Du bist Muttersprachler und DaF-Lehrer. Beurteile EINEN Übungssatz.
+
+Der Satz muss ECHTES, im Alltag vorkommendes Deutsch sein:
+- die Rektion/Valenz des Verbs muss stimmen ("von der Arbeit ausgehen" ist FALSCH
+  für "die Arbeit verlassen": ausgehen von = annehmen)
+- die Kollokation muss real sein, so sagt man das tatsächlich
+- die Situation muss lebensnah sein (man steht nicht "im Büro auf")
+- die russische Übersetzung muss zum deutschen Satz passen
+
+Antworte NUR mit JSON: {"verdict": "gut" | "schlecht"}
+"schlecht" auch dann, wenn der Satz grammatisch möglich, aber unnatürlich ist.
+Im Zweifel: "schlecht"."""
+
+
+
+# Судья предложений НЕ на quiz-модели: замер 14.08.2026 показал, что gpt-4.1-mini
+# в один голос пропускает «Er steht jeden Morgen pünktlich zur Arbeit auf», а
+# gpt-4.1 в три голоса — ловит. Приёмка обязана судить тем же, чем меряем, иначе
+# отчёт и продукт разъезжаются. Объём копеечный: 3 вызова на заготовку, а заготовок
+# не больше 60 за ночь.
+SEPARABLE_SENTENCE_JUDGE_MODEL = (os.getenv("SEPARABLE_SENTENCE_JUDGE_MODEL") or "gpt-4.1").strip()
+SEPARABLE_SENTENCE_JUDGE_VOTES = max(1, int(os.getenv("SEPARABLE_SENTENCE_JUDGE_VOTES") or "3"))
+
+
+def separable_sentence_sounds_native(sentence: str, translation_ru: str, infinitive: str) -> bool:
+    """Отдельный судья предложения: «так вообще говорят?»
+
+    Страж собираемости (`gap_reconstructs_sentence`) проверяет ФОРМУ и молчит о
+    смысле. Замер 14.08.2026 показал, чем это кончается: 27 предложений из 85
+    были неживыми — «Er steht jeden Morgen pünktlich zur Arbeit auf»,
+    «Jeden Morgen fährt er pünktlich zur Arbeit ab». Промпту такое запрещено, но
+    промпт — не гарантия, поэтому проверка стоит ОТДЕЛЬНО и до записи в базу.
+
+    Судья недоступен или сомневается — считаем предложение негодным: пустой банк
+    лучше банка, который учит несуществующему немецкому.
+    """
+    if not OPENAI_API_KEY:
+        return False
+    payload = {
+        "model": SEPARABLE_SENTENCE_JUDGE_MODEL,
+        "temperature": 1.0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": SEPARABLE_SENTENCE_JUDGE_PROMPT},
+            {"role": "user", "content": json.dumps(
+                {"satz": _normalize_space(sentence),
+                 "verb": _normalize_space(infinitive),
+                 "russisch": _normalize_space(translation_ru)},
+                ensure_ascii=False)},
+        ],
+    }
+
+    def _one_vote() -> bool | None:
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json=payload, timeout=30,
+            )
+            if not response.ok:
+                return None
+            data = response.json() if response.content else {}
+            try:
+                from backend.openai_usage_logging import log_openai_raw_usage
+                log_openai_raw_usage(action_type="quiz_separable_sentence_judge",
+                                     model=SEPARABLE_SENTENCE_JUDGE_MODEL,
+                                     usage=data.get("usage"), user_id=None)
+            except Exception:
+                pass
+            content = data["choices"][0]["message"]["content"]
+            return str(json.loads(_extract_json_object(content)).get("verdict") or "").strip() == "gut"
+        except Exception as exc:
+            logging.warning("Separable sentence judge failed: %s", exc)
+            return None
+
+    votes = [vote for vote in (_one_vote() for _ in range(SEPARABLE_SENTENCE_JUDGE_VOTES)) if vote is not None]
+    if len(votes) < (SEPARABLE_SENTENCE_JUDGE_VOTES + 1) // 2:
+        return False  # судьи не дошли — считаем предложение негодным
+    return sum(1 for vote in votes if vote) > len(votes) / 2
+
+
+def _get_separable_prefix_quiz_item_with_retry(
+    max_retries: int = 2,
+    target_infinitive: str | None = None,
+    avoid_sentences: list[str] | None = None,
+) -> dict:
     last_error = None
     attempts = max(1, int(max_retries) + 1)
     for _ in range(attempts):
         try:
-            return _request_separable_prefix_quiz_item_via_openai()
+            return _request_separable_prefix_quiz_item_via_openai(
+                target_infinitive=target_infinitive, avoid_sentences=avoid_sentences)
         except Exception as exc:
             last_error = exc
             continue
@@ -17945,6 +18076,13 @@ def _ensure_sentence_gpt_seed_entries(
             payload = _validate_separable_prefix_quiz_item(dict(quiz or {}))
         except Exception as exc:
             logging.warning("Invalid GPT seed sentence item skipped: %s", exc)
+            continue
+        # Форма сошлась — теперь смысл. Человек учится ПО этому предложению,
+        # поэтому неживое управление отсекается до записи, а не «потом почистим».
+        if not separable_sentence_sounds_native(
+            payload["correct_full_sentence"], payload["translation_ru"], payload["correct_infinitive"]
+        ):
+            logging.warning("Unnatural GPT seed sentence skipped: %s", payload["correct_full_sentence"])
             continue
         response_json = {
             **payload,

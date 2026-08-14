@@ -46,6 +46,7 @@ from backend.backend_server import (  # noqa: E402
     _get_separable_prefix_quiz_item_with_retry,
     gap_reconstructs_sentence,
     separable_gap_entry_is_sound,
+    separable_sentence_sounds_native,
 )
 from backend.database import (  # noqa: E402
     get_db_connection_context,
@@ -101,13 +102,16 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="ограничить число записей")
     parser.add_argument("--no-llm", action="store_true",
                         help="не звать модель для тех, кого не удалось выровнять")
+    parser.add_argument("--check-sense", action="store_true",
+                        help="дополнительно судить предложения на живость и переписывать неживые")
     args = parser.parse_args()
 
     stats = {
-        "scanned": 0, "already_sound": 0,
+        "scanned": 0, "already_sound": 0, "unnatural": 0,
         "repaired_offline": 0, "regenerated_llm": 0,
         "unfixable": 0, "failed": 0,
     }
+    sense_cache: dict[str, bool] = {}
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -135,11 +139,30 @@ def main() -> None:
         seen_sentences = seen_by_user.setdefault(int(user_id or 0), set())
         stats["scanned"] += 1
         payload = _coerce_response_json(raw_json)
-        if separable_gap_entry_is_sound(payload):
+        structure_ok = separable_gap_entry_is_sound(payload)
+
+        # Форма сошлась — ещё не значит, что предложение живое. Судья смотрит
+        # управление и сочетаемость: «Er steht … zur Arbeit auf» так не говорят.
+        # Одно и то же предложение стоит у нескольких людей, поэтому вердикт
+        # кешируется — иначе платим за один и тот же вопрос по нескольку раз.
+        sense_ok = True
+        if structure_ok and args.check_sense:
+            sentence = _normalize_space(payload.get("correct_full_sentence"))
+            if sentence not in sense_cache:
+                sense_cache[sentence] = separable_sentence_sounds_native(
+                    sentence, payload.get("translation_ru"), payload.get("correct_infinitive"))
+            sense_ok = sense_cache[sentence]
+            if not sense_ok:
+                stats["unnatural"] += 1
+                print(f"[неживое] id={entry_id}: {sentence}")
+
+        if structure_ok and sense_ok:
             stats["already_sound"] += 1
             continue
 
-        repaired = repair_payload_without_llm(payload)
+        # Выравниванием чинится только сломанная ФОРМА. Неживое предложение
+        # выравнивать бессмысленно — его надо писать заново.
+        repaired = repair_payload_without_llm(payload) if not structure_ok else None
         source = "offline"
 
         if repaired is None:
@@ -148,7 +171,14 @@ def main() -> None:
                 print(f"[не выровнялось] id={entry_id}: {payload.get('sentence_with_gap')!r}")
                 continue
             try:
-                fresh = _get_separable_prefix_quiz_item_with_retry(max_retries=2)
+                # Глагол сохраняем — чинить надо КОНТЕКСТ, а не подменять урок.
+                # «abfahren» остаётся abfahren, просто уезжает не «zur Arbeit»,
+                # а туда, куда по-немецки действительно уезжают.
+                fresh = _get_separable_prefix_quiz_item_with_retry(
+                    max_retries=2,
+                    target_infinitive=payload.get("correct_infinitive"),
+                    avoid_sentences=sorted(seen_sentences)[:20],
+                )
             except Exception as exc:
                 stats["failed"] += 1
                 print(f"[ошибка модели] id={entry_id}: {exc}")
@@ -157,6 +187,15 @@ def main() -> None:
             if new_sentence in seen_sentences:
                 stats["failed"] += 1
                 print(f"[дубль] id={entry_id}: {new_sentence!r}")
+                continue
+            # Свежее предложение проходит того же судью — иначе прогон просто
+            # заменит одно неживое предложение другим неживым.
+            if args.check_sense and not separable_sentence_sounds_native(
+                fresh.get("correct_full_sentence"), fresh.get("translation_ru"),
+                fresh.get("correct_infinitive")
+            ):
+                stats["failed"] += 1
+                print(f"[неживое от модели] id={entry_id}: {new_sentence!r}")
                 continue
             seen_sentences.add(new_sentence)
             repaired = {
