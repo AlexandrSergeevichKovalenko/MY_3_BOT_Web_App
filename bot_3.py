@@ -172,6 +172,8 @@ from backend.database import (
     get_user_display_names,
     list_known_telegram_user_ids,
     remember_user_identity,
+    is_real_telegram_user_id,
+    list_bot_blocked_user_ids,
     is_telegram_user_allowed,
     is_telegram_user_allowed_async,
     log_billing_event,
@@ -707,6 +709,35 @@ def _is_permanent_quiz_delivery_error(exc: Exception) -> bool:
     return any(fragment in message for fragment in permanent_fragments)
 
 
+def _recipient_is_gone(exc: Exception, chat_id: int) -> bool:
+    """Человека в этом личном чате больше нет — доставить нельзя в принципе.
+
+    НЕ «он не пользуется» и НЕ «сейчас не прошло». Правило владельца: нажал «Старт» —
+    получает задания всегда, даже если никогда не заходит. Поэтому здесь только те
+    ответы Telegram, которые значат «адресата не существует»: он заблокировал бота,
+    удалил аккаунт, или чата никогда и не было («chat not found» — так выглядит
+    выдуманный id из прогона по боевой базе).
+
+    Сознательно НЕ включены ошибки прав («not enough rights», «polls can't be sent»):
+    они означают «это сообщение не прошло», а не «человека нет», и по ним глушить
+    живого человека нельзя.
+    """
+    try:
+        if int(chat_id) <= 0:  # группы — отрицательные, у них своя механика
+            return False
+    except Exception:
+        return False
+    if isinstance(exc, Forbidden):
+        return True
+    if not isinstance(exc, BadRequest):
+        return False
+    message = str(exc or "").strip().lower()
+    return any(
+        fragment in message
+        for fragment in ("chat not found", "user is deactivated", "peer_id_invalid")
+    )
+
+
 def _get_quiz_schedule_now() -> datetime:
     try:
         tz = ZoneInfo(QUIZ_SCHEDULE_TZ_NAME)
@@ -1232,6 +1263,25 @@ def _is_synthetic_telegram_user_id(user_id: int) -> bool:
     except Exception:
         return False
     return candidate >= SYNTHETIC_TELEGRAM_USER_ID_MIN
+
+
+def _is_deliverable_recipient_user_id(user_id: int) -> bool:
+    """Годится ли этот id как получатель рассылки.
+
+    Одного верхнего порога синтетики мало. Прогон кода приложения против БОЕВОЙ базы
+    оставляет в ней «людей» с выдуманными короткими id (5555, 11, 77 — замер 14.08.2026),
+    а рассыльщик потом вечно печёт им персональные задания, которые некуда доставить.
+    Правило одно на весь продукт — is_real_telegram_user_id: настоящий Telegram-id не
+    короче шести знаков и ниже порога нагрузочных прогонов. Заодно отсекает
+    отрицательные id синтетических «пользователей» из Phase2.
+    """
+    try:
+        candidate = int(user_id)
+    except Exception:
+        return False
+    if candidate <= 0:
+        return False
+    return bool(is_real_telegram_user_id(candidate))
 
 
 def _should_persist_message_activity(user_id: int) -> bool:
@@ -23847,11 +23897,10 @@ async def _collect_scheduler_candidate_user_ids(
                     continue
                 if candidate <= 0:
                     continue
-                if _is_synthetic_telegram_user_id(candidate):
+                if not _is_deliverable_recipient_user_id(candidate):
                     skipped_synthetic += 1
                     continue
-                if candidate > 0:
-                    user_ids.add(candidate)
+                user_ids.add(candidate)
 
     if include_known:
         # Все, кого бот когда-либо видел. Нужно для рассылки заданий: человек, который
@@ -23869,7 +23918,7 @@ async def _collect_scheduler_candidate_user_ids(
                 continue
             if candidate <= 0:
                 continue
-            if _is_synthetic_telegram_user_id(candidate):
+            if not _is_deliverable_recipient_user_id(candidate):
                 skipped_synthetic += 1
                 continue
             user_ids.add(candidate)
@@ -23886,11 +23935,10 @@ async def _collect_scheduler_candidate_user_ids(
                 continue
             if candidate <= 0:
                 continue
-            if _is_synthetic_telegram_user_id(candidate):
+            if not _is_deliverable_recipient_user_id(candidate):
                 skipped_synthetic += 1
                 continue
-            if candidate > 0:
-                user_ids.add(candidate)
+            user_ids.add(candidate)
 
     if include_admins:
         for admin_id in get_admin_telegram_ids():
@@ -23903,9 +23951,33 @@ async def _collect_scheduler_candidate_user_ids(
 
     if skipped_synthetic > 0:
         logging.info(
-            "ℹ️ scheduler candidate collection skipped %s synthetic load-test user id(s)",
+            "ℹ️ scheduler candidate collection skipped %s synthetic/unreal user id(s)",
             skipped_synthetic,
         )
+
+    # Кому доставка больше не проходит — тому и готовить нечего. Раньше этой проверки не
+    # было: человек, которому НИ РАЗУ ничего не дошло, всё равно получал полный набор
+    # заданий каждый день, вечно. Замер 13.08.2026 — 198 из 242 подготовленных строк (82%)
+    # адресованы четырём получателям, у которых telegram_message_id всегда NULL.
+    # Пометка снимается сама, когда человек возвращается (my_chat_member → blocked=False),
+    # поэтому вернувшийся снова начнёт получать задания без ручного вмешательства.
+    # Админов не трогаем никогда — им отчёты нужны в любом состоянии.
+    try:
+        blocked_ids = await asyncio.to_thread(list_bot_blocked_user_ids)
+    except Exception:
+        logging.warning("scheduler candidates: blocked-users lookup failed", exc_info=True)
+        blocked_ids = set()
+    if blocked_ids:
+        admin_ids = {int(a) for a in get_admin_telegram_ids() or []}
+        unreachable = (user_ids & blocked_ids) - admin_ids
+        if unreachable:
+            user_ids -= unreachable
+            logging.info(
+                "ℹ️ scheduler candidate collection skipped %s unreachable user id(s) "
+                "(bot blocked / chat not found)",
+                len(unreachable),
+            )
+
     return sorted(user_ids)
 
 
@@ -41809,14 +41881,21 @@ async def _send_poll_quiz_for_target(
                 "⚠️ suppressing scheduled quiz target chat_id=%s for %ss after permanent send failure: %s",
                 int(target_chat_id), QUIZ_DELIVERY_SUPPRESS_SECONDS, exc,
             )
-            # Backlog harvest: a private-chat Forbidden means this user blocked/deleted the bot.
-            # (chat_id > 0 ⇒ private user; groups are negative.) Catches people who left BEFORE
-            # this feature shipped, so their standalone dictionary also gets gated.
+            # Backlog harvest: любая ПОСТОЯННАЯ ошибка доставки в личный чат (chat_id > 0;
+            # у групп id отрицательный) значит, что человека там больше нет — он заблокировал
+            # бота (Forbidden), удалил аккаунт, либо чата и не существовало («chat not found»
+            # — так выглядит выдуманный id из прогона по боевой базе).
+            # Раньше запоминался только Forbidden, а «chat not found» глушился на 6 часов
+            # в памяти процесса и терялся при рестарте — поэтому рассыльщик печёт задания
+            # мёртвым адресатам бесконечно (замер 13.08.2026: 82% дневной работы).
+            # Пометка снимается сама, когда человек возвращается (my_chat_member).
             try:
-                if isinstance(exc, Forbidden) and int(target_chat_id) > 0:
+                if _recipient_is_gone(exc, int(target_chat_id)):
                     await asyncio.to_thread(_mark_user_bot_blocked, int(target_chat_id), True)
             except Exception:
-                logging.debug("forbidden-harvest mark blocked failed chat_id=%s", target_chat_id, exc_info=True)
+                logging.debug(
+                    "permanent-failure mark unreachable failed chat_id=%s", target_chat_id, exc_info=True
+                )
         logging.warning("⚠️ Не удалось отправить mc-квиз в chat_id=%s: %s", target_chat_id, exc)
         return False
 

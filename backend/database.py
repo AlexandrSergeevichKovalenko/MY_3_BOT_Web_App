@@ -14394,11 +14394,20 @@ def get_access_growth_snapshot(hours: int = 24) -> dict:
     Synthetic load-test users live in the same table, so they are filtered out by
     user_id floor AND by their note prefixes — otherwise a load run reads as 60 new
     signups. Returns the fresh arrivals (with how they got in) plus the running total.
+
+    Отсекается ОБА конца диапазона, а не только верхний. 11.08.2026 прогон кода
+    приложения против боевой базы записал в аллоулист три выдуманных id (5555, 987654,
+    776655) — верхний порог их пропустил, и утренний отчёт объявил владельцу «+3
+    подключились за сутки» при нуле настоящих новичков. Нижняя граница —
+    _MIN_REAL_TELEGRAM_USER_ID: настоящий Telegram-id не короче шести знаков.
+    По username фильтровать НЕЛЬЗЯ: живой человек, зашедший с иконки на домашнем экране,
+    приходит без имени (backend_server.py: _authenticate_webapp_request → _is_webapp_user_allowed).
     """
     window_hours = max(1, int(hours or 24))
-    synthetic_floor = 9_000_000_000
+    synthetic_floor = SYNTHETIC_TELEGRAM_USER_ID_MIN
     real_user_filter = """
         user_id < %s
+        AND user_id >= %s
         AND COALESCE(note, '') NOT LIKE 'load_test%%'
         AND COALESCE(note, '') NOT LIKE '%%smoke%%'
         AND COALESCE(note, '') NOT LIKE '%%synthetic%%'
@@ -14416,7 +14425,7 @@ def get_access_growth_snapshot(hours: int = 24) -> dict:
                   AND created_at >= NOW() - (%s * INTERVAL '1 hour')
                 ORDER BY created_at DESC;
                 """,
-                (synthetic_floor, window_hours),
+                (synthetic_floor, _MIN_REAL_TELEGRAM_USER_ID, window_hours),
             )
             new_rows = [
                 {
@@ -14429,7 +14438,7 @@ def get_access_growth_snapshot(hours: int = 24) -> dict:
             ]
             cursor.execute(
                 f"SELECT COUNT(*) FROM bt_3_allowed_users WHERE {real_user_filter};",
-                (synthetic_floor,),
+                (synthetic_floor, _MIN_REAL_TELEGRAM_USER_ID),
             )
             total_real = int((cursor.fetchone() or [0])[0])
     return {
@@ -25432,6 +25441,27 @@ def is_user_bot_blocked(user_id: int) -> bool:
     except Exception:
         logging.debug("is_user_bot_blocked failed user_id=%s", user_id, exc_info=True)
         return False
+
+
+def list_bot_blocked_user_ids() -> set[int]:
+    """Все, кому доставка в Telegram больше не проходит — одним запросом.
+
+    Нужно отбору получателей рассылки: проверять поштучно значит один запрос на человека
+    на каждый слот расписания. Fails OPEN (пустое множество) — при сбое БД лучше
+    приготовить лишнее задание, чем молча перестать слать живым людям.
+    """
+    try:
+        ensure_bot_blocked_table()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT user_id FROM bt_3_bot_blocked_users WHERE is_blocked IS TRUE;"
+                )
+                rows = cursor.fetchall() or []
+        return {int(row[0]) for row in rows if row and row[0] is not None}
+    except Exception:
+        logging.debug("list_bot_blocked_user_ids failed", exc_info=True)
+        return set()
 
 
 def get_shortcut_installations_for_user(user_id: int, *, active_only: bool = True) -> list[dict]:
