@@ -16848,14 +16848,24 @@ USER:
 Generate ONE multiple-choice quiz item that trains *separable prefix verbs* (trennbare Verben) in German.
 
 CRITICAL CONSTRAINTS:
-1) The correct verb MUST be a separable prefix verb (trennbares Verb). In the correct sentence, the prefix MUST appear separated at the end of the clause (e.g., "Ich lege ... an.", "Er steht ... auf.").
+1) The correct verb MUST be a separable prefix verb (trennbares Verb). In the correct sentence, the prefix MUST appear separated at the very end of the clause (e.g., "Ich lege ... an.", "Er steht ... auf.").
 2) The quiz must test choosing the correct infinitive verb from 4 options. Options must be infinitives (e.g., "anlegen", "ausgeben", etc.).
 3) The sentence must be a simple main clause in Präsens (present tense), B1–B2, not a question, not passive.
-4) The gap must remove the WHOLE target verb phrase from the sentence. Do NOT leave the separated prefix visible in sentence_with_gap.
+4) THE WHOLE POINT of this exercise is the Satzklammer: the verb occupies TWO
+   positions. So sentence_with_gap MUST contain EXACTLY TWO gaps "___":
+   the first where the conjugated form stands, the second where the separated
+   prefix stands at the end. The learner picks ONE infinitive and thereby fills
+   BOTH gaps — that is the lesson.
    Example pattern:
-   sentence_with_gap: "Ich ___ mein Geld in Immobilien."
    correct_full_sentence: "Ich lege mein Geld in Immobilien an."
-   correct_infinitive: "anlegen"
+   sentence_with_gap:     "Ich ___ mein Geld in Immobilien ___."
+   verb_form:             "lege"
+   prefix:                "an"
+   correct_infinitive:    "anlegen"
+   HARD: putting verb_form into the first gap and prefix into the second gap
+   MUST reproduce correct_full_sentence character for character.
+   NEVER hide the prefix inside a single gap — an infinitive can never stand in
+   the conjugated slot ("Ich anlegen mein Geld ..." is not German).
 5) Provide 3 wrong options that are plausible but clearly wrong in this exact context.
    - At least 2 wrong options should be other separable prefix verbs (preferably similar topic).
    - Avoid nonsense distractors.
@@ -16874,16 +16884,20 @@ OUTPUT MUST BE STRICT JSON WITH EXACT KEYS IN THIS ORDER:
   "options": ["...", "...", "...", "..."],
   "correct_index": 1,
   "correct_infinitive": "...",
+  "verb_form": "...",
   "prefix": "...",
   "base_verb": "...",
   "explanation_de": "..."
 }
 
 VALIDATION CHECKLIST (you must self-check before output):
-- sentence_with_gap contains "___" exactly once
-- correct_full_sentence has separated prefix at the end
+- sentence_with_gap contains "___" exactly TWICE
+- filling gap 1 with verb_form and gap 2 with prefix reproduces correct_full_sentence exactly
+- correct_full_sentence has the separated prefix as its last word (before punctuation)
+- verb_form is the CONJUGATED form of base_verb matching the subject (e.g., "lege", "steht", "nimmt") — never an infinitive
 - options are infinitives only
 - correct_infinitive equals options[correct_index-1]
+- correct_infinitive equals prefix + base_verb (e.g., "an" + "legen" = "anlegen")
 - prefix equals the separated prefix at the end (e.g., "an", "auf", "mit", "zurück")
 - base_verb is the verb without prefix (e.g., "legen" for "anlegen")
 - Only one option fits semantically"""
@@ -16916,6 +16930,7 @@ def _validate_separable_prefix_quiz_item(item: dict) -> dict:
         "options",
         "correct_index",
         "correct_infinitive",
+        "verb_form",
         "prefix",
         "base_verb",
         "explanation_de",
@@ -16930,9 +16945,13 @@ def _validate_separable_prefix_quiz_item(item: dict) -> dict:
     if topic not in SEPARABLE_PREFIX_QUIZ_TOPICS:
         raise ValueError("invalid topic")
 
-    sentence_with_gap = str(item.get("sentence_with_gap") or "").strip()
-    if sentence_with_gap.count("___") != 1:
-        raise ValueError("sentence_with_gap must contain one ___")
+    # Два пропуска — не украшение, а суть упражнения: отделяемый глагол занимает
+    # в предложении ДВА места (спрягаемая форма + приставка в конце). Один
+    # пропуск здесь означал бы, что инфинитив встаёт в спрягаемую позицию, а
+    # такого немецкого не бывает — именно это и уехало в прод (разбор 14.08.2026).
+    sentence_with_gap = _normalize_space(item.get("sentence_with_gap"))
+    if sentence_with_gap.count("___") != 2:
+        raise ValueError("sentence_with_gap must contain exactly two ___ (verb form + prefix)")
     correct_full_sentence = str(item.get("correct_full_sentence") or "").strip()
     translation_ru = str(item.get("translation_ru") or "").strip()
     explanation_de = str(item.get("explanation_de") or "").strip()
@@ -16962,12 +16981,23 @@ def _validate_separable_prefix_quiz_item(item: dict) -> dict:
 
     prefix = str(item.get("prefix") or "").strip()
     base_verb = str(item.get("base_verb") or "").strip()
-    if not prefix or not base_verb:
-        raise ValueError("prefix/base_verb required")
+    verb_form = _normalize_space(item.get("verb_form"))
+    if not prefix or not base_verb or not verb_form:
+        raise ValueError("prefix/base_verb/verb_form required")
+    if not re.fullmatch(r"[A-Za-zÄÖÜäöüß]+", verb_form):
+        raise ValueError("verb_form must be a single German word")
+    if verb_form.lower() == correct_infinitive.lower():
+        raise ValueError("verb_form must be conjugated, not the infinitive")
+    if correct_infinitive.lower() != f"{prefix}{base_verb}".lower():
+        raise ValueError("correct_infinitive must equal prefix + base_verb")
+    # Рамка обязана закрываться: приставка стоит последним словом предложения.
     if not re.search(rf"\b{re.escape(prefix)}[.!?]?\s*$", correct_full_sentence):
         raise ValueError("prefix is not separated at sentence end")
-    if re.search(rf"\b{re.escape(prefix)}[.!?]?\s*$", sentence_with_gap):
-        raise ValueError("sentence_with_gap must hide separated prefix too")
+    # ЕДИНЫЙ страж всех заданий с пропуском: «nimmt» в первый пропуск, «an» во
+    # второй — обязано получиться ровно правильное предложение. Без него в базу
+    # уехали 199 заданий, которые не собирались обратно ни одним способом.
+    if not gap_reconstructs_sentence(sentence_with_gap, [verb_form, prefix], correct_full_sentence):
+        raise ValueError("verb_form + prefix in the two gaps must reproduce correct_full_sentence")
 
     return {
         "quiz_type": "separable_prefix_verb_gap",
@@ -16979,6 +17009,7 @@ def _validate_separable_prefix_quiz_item(item: dict) -> dict:
         "options": options_clean,
         "correct_index": correct_index,
         "correct_infinitive": correct_infinitive,
+        "verb_form": verb_form,
         "prefix": prefix,
         "base_verb": base_verb,
         "explanation_de": explanation_de,
@@ -17198,6 +17229,40 @@ SELF-CHECK BEFORE OUTPUT:
 
 def _normalize_space(value: str | None) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def gap_reconstructs_sentence(
+    sentence_with_gap: str | None,
+    fillers: str | list | tuple | None,
+    correct_full_sentence: str | None,
+) -> bool:
+    """ГЛАВНОЕ правило для ЛЮБОГО задания с пропуском: заполни «___» тем, что
+    продукт считает правильным, — обязано получиться правильное предложение
+    слово в слово. `fillers` — одна строка на один пропуск, по порядку.
+
+    Разбор 14.08.2026. У режима «Satz Ergänzen» эта проверка была (и держала),
+    а у отделяемых глаголов её не было — и промпт вдобавок ТРЕБОВАЛ прятать
+    отделённую приставку внутри единственного пропуска. Итог: 199 из 199
+    заданий не собирались обратно. Человеку показывали «Er ___ die neuen
+    Aufgaben sofort.» с ответом «annehmen», хотя по-немецки это
+    «Er nimmt die neuen Aufgaben sofort an»: у отделяемого глагола ДВА места
+    в предложении, значит и пропуска должно быть два («nimmt» и «an»).
+    Правило теперь ОДНО и живёт здесь; все генераторы и все места показа зовут
+    именно его, чтобы второй раз не разъехалось.
+    """
+    gap = _normalize_space(sentence_with_gap)
+    parts = gap.split("___")
+    values = [fillers] if isinstance(fillers, str) else list(fillers or [])
+    if len(parts) - 1 != len(values) or not values:
+        return False
+    rebuilt = parts[0]
+    for value, tail in zip(values, parts[1:]):
+        filler = _normalize_space(value)
+        if not filler:
+            return False
+        rebuilt += filler + tail
+    reconstructed = _normalize_space(rebuilt)
+    return bool(reconstructed) and reconstructed == _normalize_space(correct_full_sentence)
 
 
 def _count_words(value: str | None) -> int:
@@ -17489,9 +17554,7 @@ def _validate_sentence_context_quiz(item: dict) -> dict:
     if _is_trivial_gap_word(correct_word):
         raise ValueError("correct_word is a trivial filler/function word, not a key content word")
 
-    left, right = sentence_with_gap.split("___", 1)
-    reconstructed = _normalize_space(f"{left}{correct_word}{right}")
-    if reconstructed != correct_full_sentence:
+    if not gap_reconstructs_sentence(sentence_with_gap, correct_word, correct_full_sentence):
         raise ValueError("gap reconstruction mismatch")
 
     return {
@@ -17819,6 +17882,25 @@ def _is_gpt_seed_sentence_entry(entry: dict | None) -> bool:
     return str(response_json.get("sentence_origin") or "").strip() == "gpt_seed"
 
 
+def separable_gap_entry_is_sound(response_json: dict | None) -> bool:
+    """Годна ли ГОТОВАЯ запись с отделяемым глаголом к показу.
+
+    Тем же единственным правилом, что и на приёмке: «nimmt» в первый пропуск,
+    «an» во второй → правильное предложение. Записи старого формата (один
+    пропуск, без verb_form) правило не проходят и на экран не идут. Их 199
+    штук на 14.08.2026 — до перегенерации они молча не показываются, вместо
+    того чтобы учить человека несуществующему немецкому.
+    """
+    payload = _coerce_response_json(response_json)
+    if str(payload.get("quiz_type") or "").strip() != "separable_prefix_verb_gap":
+        return False
+    return gap_reconstructs_sentence(
+        payload.get("sentence_with_gap"),
+        [payload.get("verb_form"), payload.get("prefix")],
+        payload.get("correct_full_sentence"),
+    )
+
+
 def _ensure_sentence_gpt_seed_entries(
     *,
     user_id: int,
@@ -17827,7 +17909,14 @@ def _ensure_sentence_gpt_seed_entries(
     existing_entries: list[dict],
     max_generate_per_call: int | None = None,
 ) -> list[dict]:
-    seed_entries = [item for item in existing_entries if _is_gpt_seed_sentence_entry(item)]
+    # К норме засчитываем только ГОДНЫЕ заготовки. Иначе 199 записей старого
+    # формата навсегда занимали бы места в норме (100 на человека) и мешали
+    # добрать вместо себя правильные — а показывать их всё равно нельзя.
+    seed_entries = [
+        item for item in existing_entries
+        if _is_gpt_seed_sentence_entry(item)
+        and separable_gap_entry_is_sound(item.get("response_json"))
+    ]
     if len(seed_entries) >= SENTENCE_TRAINING_GPT_SEED_TARGET:
         return seed_entries
     missing_total = SENTENCE_TRAINING_GPT_SEED_TARGET - len(seed_entries)
@@ -17934,7 +18023,10 @@ def _build_sentence_training_set(
     ]
 
     desired_seed_count = min(set_size, int(round(set_size * SENTENCE_TRAINING_GPT_SEED_SHARE)))
-    gpt_seed_entries = [item for item in decorated_all if _is_gpt_seed_sentence_entry(item)]
+    gpt_seed_entries = [
+        item for item in decorated_all
+        if _is_gpt_seed_sentence_entry(item) and separable_gap_entry_is_sound(item.get("response_json"))
+    ]
     if desired_seed_count > 0 and folder_mode in {"all", "none"}:
         gpt_seed_entries = _ensure_sentence_gpt_seed_entries(
             user_id=int(user_id),

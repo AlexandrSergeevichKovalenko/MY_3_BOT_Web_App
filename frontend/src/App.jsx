@@ -27701,21 +27701,30 @@ function AppInner() {
     return resolveFlashcardTexts(entry).targetText || '—';
   };
 
+  // `answer` — строка на один пропуск ИЛИ массив по одному значению на пропуск.
+  // У отделяемого глагола пропуска два («Er ___ … sofort ___.»), и заполняются
+  // они не инфинитивом, а спрягаемой формой и приставкой: «nimmt» и «an».
   const renderSentenceWithGapAnswer = (sentenceWithGap, answer, tone = 'neutral') => {
     const sentence = String(sentenceWithGap || '').trim();
     if (!sentence) return '—';
-    if (!sentence.includes('___') || !answer) return sentence;
+    const fillers = (Array.isArray(answer) ? answer : [answer])
+      .map((item) => String(item || '').trim());
+    const parts = sentence.split('___');
+    if (parts.length - 1 !== fillers.length || fillers.some((item) => !item)) return sentence;
     const answerToneClass = tone === 'correct'
       ? 'flashcard-gap-answer is-correct'
       : tone === 'wrong'
         ? 'flashcard-gap-answer is-wrong'
         : 'flashcard-gap-answer';
-    const [left, right] = sentence.split('___');
     return (
       <>
-        {left}
-        <span className={answerToneClass}>{answer}</span>
-        {right}
+        {parts[0]}
+        {fillers.map((filler, index) => (
+          <React.Fragment key={`${filler}-${index}`}>
+            <span className={answerToneClass}>{filler}</span>
+            {parts[index + 1]}
+          </React.Fragment>
+        ))}
       </>
     );
   };
@@ -40685,7 +40694,9 @@ function AppInner() {
                                         {(isSentenceTrainingMode || isSentenceGapQuiz) && isAnswered
                                           ? renderSentenceWithGapAnswer(
                                             questionWord,
-                                            correct,
+                                            isSentenceGapQuiz
+                                              ? [responseJson?.verb_form, responseJson?.prefix]
+                                              : correct,
                                             isCorrectAnswer ? 'correct' : 'wrong'
                                           )
                                           : questionWord}

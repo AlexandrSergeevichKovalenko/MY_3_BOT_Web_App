@@ -59,6 +59,7 @@ from backend.backend_server import (
     _shortcut_enforce_pairing_code_issuance_limit,
     _build_video_search_queries,
     _get_user_language_pair,
+    gap_reconstructs_sentence,
     _is_youtube_short_like,
     _parse_iso8601_duration_to_seconds,
     _video_conflicts_with_target_language,
@@ -27806,19 +27807,30 @@ def _extract_prefix_quiz_context(
 
     if payload_correct_word and payload_correct_word != correct_word.lower():
         return None
-    if sentence_with_gap.count("___") != 1:
-        return None
     if not correct_full_sentence:
         return None
     if not translation_ru or not _contains_cyrillic_text(translation_ru):
         return None
     if _contains_cyrillic_text(sentence_with_gap) or not _contains_latin_text(sentence_with_gap):
         return None
+    # Страж на выходе. У отделяемого глагола ДВА места в предложении, поэтому и
+    # пропуска два: «Er ___ die neuen Aufgaben sofort ___.» Проверяем тем же
+    # единственным правилом, что и на приёмке: спрягаемая форма в первый
+    # пропуск, приставка во второй → правильное предложение слово в слово.
+    # 199 записей старого формата (один пропуск, ответ-инфинитив в спрягаемую
+    # позицию) правило не проходят и человеку не показываются — см. разбор
+    # 14.08.2026 и backend_server.gap_reconstructs_sentence.
+    verb_form = re.sub(r"\s+", " ", str(response_json.get("verb_form") or "").strip())
+    prefix = re.sub(r"\s+", " ", str(response_json.get("prefix") or "").strip())
+    if not gap_reconstructs_sentence(sentence_with_gap, [verb_form, prefix], correct_full_sentence):
+        return None
 
     return {
         "sentence_with_gap": sentence_with_gap,
         "translation_ru": translation_ru,
         "correct_full_sentence": correct_full_sentence,
+        "verb_form": verb_form,
+        "prefix": prefix,
     }
 
 
@@ -27937,9 +27949,13 @@ async def generate_prefix_quiz(entry: dict) -> dict | None:
         if context and options:
             options = list(options)
             random.shuffle(options)
+            # Два пропуска показываем ДО ответа: человек сразу видит, что глагол
+            # займёт в предложении два места, и что приставка уедет в конец.
+            # Разбор после ответа обязан показать собранное предложение целиком —
+            # раньше его не было нигде, и человек уходил с неверным образцом.
             return {
                 "question": (
-                    "Выберите глагол, который правильно заполняет пропуск.\n"
+                    "Какой глагол подходит? Приставка уедет в конец — поэтому пропуска два.\n"
                     f"RU: «{context['translation_ru']}»\n"
                     f"DE: {context['sentence_with_gap']}"
                 ),
@@ -27948,6 +27964,10 @@ async def generate_prefix_quiz(entry: dict) -> dict | None:
                 "quiz_type": "prefix",
                 "word_ru": word_ru,
                 "correct_text": correct_word,
+                "explanation": (
+                    f"{context['correct_full_sentence']}\n"
+                    f"{correct_word} → {context['verb_form']} … {context['prefix']}"
+                ),
             }
 
     # 2) Otherwise: prefix-choice quiz built from the `prefixes` array. Replaces
