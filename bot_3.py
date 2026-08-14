@@ -27134,6 +27134,15 @@ _ANAGRAM_MUTATION_ALPHABET = list("abcdefghijklmnopqrstuvwxyzäöüß")
 _SEPARABLE_PREFIXES = (
     "zurück", "zurueck", "weiter", "weg", "fest",
     "ab", "an", "auf", "aus", "bei", "ein", "mit", "nach", "vor", "zu", "hin", "her", "los",
+    # Дополнено 14.08.2026. Без этих приставок 8 готовых заданий из 199 не
+    # доходили до людей: `_is_valid_prefix_quiz_verb` не признавал durchsehen,
+    # fertigschreiben, bereitlegen, fortfahren отделяемыми, поэтому квиз по ним
+    # вообще не собирался. «fort/fertig/bereit» однозначно отделяемые.
+    # «durch» ДВОЯКАЯ: durchsehen отделяемая (sieht durch), а durchqueren —
+    # неотделяемая (durchquert). Неотделяемые durch-глаголы перечислены в
+    # _INSEPARABLE_PREFIXED_VERBS ниже, иначе они попадали бы в варианты ответа
+    # как «отделяемые», чем упражнение и учит неправильному.
+    "fort", "fertig", "bereit", "durch",
 )
 _ANAGRAM_EXCLUDED_WORDS = {
     # explicit user-requested exclusions
@@ -27621,6 +27630,17 @@ _PREFIX_QUIZ_NON_VERB_BLOCKLIST = {
     "zusammen", "vorne", "hinten", "mitnichten",
 }
 
+# Пишутся как приставочные, но приставка НЕ отделяется: «Er durchquert die
+# Wüste», а не «Er quert die Wüste durch». В упражнении про отделяемые глаголы
+# им не место — ни правильным ответом, ни вариантом.
+_INSEPARABLE_PREFIXED_VERBS = {
+    "durchqueren", "durchschauen", "durchsuchen", "durchdringen", "durchlaufen",
+    "durchbrechen", "durchleben", "durchdenken", "durchqueren", "durchreisen",
+    "durchschneiden", "durchsetzen", "durchziehen", "durchbohren", "durchfließen",
+    "durchfliessen", "durchforsten", "durchkreuzen", "durchnässen", "durchnaessen",
+    "durchschwimmen", "durchstreifen", "durchwandern", "durchweichen",
+}
+
 
 def _is_valid_prefix_quiz_verb(raw_word: str) -> bool:
     token = str(raw_word or "").strip()
@@ -27634,6 +27654,8 @@ def _is_valid_prefix_quiz_verb(raw_word: str) -> bool:
     if not word:
         return False
     if word in _PREFIX_QUIZ_NON_VERB_BLOCKLIST:
+        return False
+    if word in _INSEPARABLE_PREFIXED_VERBS:
         return False
     if len(word) < 5 or len(word) > 28:
         return False
