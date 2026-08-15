@@ -342,6 +342,18 @@ class SubscriptionQueriesRunTests(unittest.TestCase):
                 self.assertNotIn("a.user_id = %s", sql, "фильтра по автору быть не должно")
                 self.assertIn("lu.card IS NOT NULL", sql, "слово без разбора выдавать нельзя")
 
+    def test_candidates_are_sorted_by_need_after_deduplication(self):
+        """Порядок «сначала частотные» должен стоять СНАРУЖИ схлопывания повторов.
+
+        DISTINCT ON обязан сортировать сначала по своему ключу, и если оставить только
+        его, порядок выйдет по номеру слова: первый прогон 15.08.2026 выдал новичку
+        длинные фразы без ранга вместо «die Habe» и «jetzt»."""
+        cur = self._Cursor()
+        db.list_admin_subscription_new_candidates(
+            user_id=77, source_user_id=1, source_lang="ru", target_lang="de", cursor=cur)
+        sql = " ".join(cur.sqls[0].split())
+        self.assertIn(") t ORDER BY t.frequency_rank ASC NULLS LAST", sql)
+
 
 if __name__ == "__main__":
     unittest.main()

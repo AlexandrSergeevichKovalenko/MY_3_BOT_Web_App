@@ -19648,10 +19648,18 @@ def list_admin_subscription_new_candidates(
     # базе столько раз, сколько людей его сохранили: без него один и тот же кандидат
     # приходил бы по нескольку раз подряд.
     # ─────────────────────────────────────────────────────────────────────────────
+    # ⚠ ДВА ЭТАЖА СОРТИРОВКИ, И ЭТО НЕ УКРАШЕНИЕ. DISTINCT ON обязан сортировать
+    # СНАЧАЛА по своему ключу, иначе Postgres его не примет. Значит внутри порядок
+    # идёт по номеру слова, и «сначала самые частотные» там не работает: первый же
+    # прогон 15.08.2026 выдал новичку длинные фразы без ранга. Поэтому нужный порядок
+    # ставится СНАРУЖИ, после того как повторы слова уже схлопнуты.
     sql = f"""
+        SELECT t.id, t.canonical_entry_id, t.word_de, t.frequency_rank, t.translation
+        FROM (
                 SELECT DISTINCT ON (a.canonical_entry_id)
                        a.id, a.canonical_entry_id, a.word_de, e.frequency_rank,
-                       COALESCE(a.translation_ru, a.word_ru)
+                       COALESCE(a.translation_ru, a.word_ru) AS translation,
+                       COALESCE(p.holders, 0) AS holders, a.created_at
                 FROM bt_3_webapp_dictionary_queries a
                 JOIN bt_3_dictionary_entries e ON e.id = a.canonical_entry_id
                 JOIN bt_3_lex_units lu ON lu.id = a.lex_unit_id AND lu.card IS NOT NULL
@@ -19664,7 +19672,9 @@ def list_admin_subscription_new_candidates(
                       WHERE u.user_id = %s AND u.canonical_entry_id = a.canonical_entry_id
                   )
                 ORDER BY a.canonical_entry_id, {_SUBSCRIPTION_ORDER_BY_SQL}
-                LIMIT %s;
+        ) t
+        ORDER BY t.frequency_rank ASC NULLS LAST, t.holders DESC, t.created_at ASC
+        LIMIT %s;
     """
     # Берём с запасом: часть кандидатов отсеется как повтор или как негодное слово,
     # а вызывающая сторона просит обычно один. Запас втрое перекрывает 3% отсева.
