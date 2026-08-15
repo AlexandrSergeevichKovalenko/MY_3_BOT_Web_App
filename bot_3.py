@@ -37990,6 +37990,13 @@ async def _run_task_supply_topup(item: dict) -> str:
             for _ in range(tonight):
                 if not await _ensure_anagram_card():
                     break
+        elif kind == "ls":
+            # Аудирование: банк самый тонкий из всех, и заказ ему нужен раньше прочих.
+            # Синтез озвучки идёт отдельной ночной работой (_backfill_listening_audio),
+            # поэтому здесь только тексты — запись станет выдаваемой, когда доедет звук.
+            from backend.listening_generator import prepare_listening_pool
+            await asyncio.to_thread(prepare_listening_pool, target_ready=target,
+                                    max_attempts=tonight * 2 + 5)
         else:
             # Пул заданий наполняется по каждому формату отдельно своей ночной
             # работой — молча подменять её цель нельзя, поэтому честно говорим,

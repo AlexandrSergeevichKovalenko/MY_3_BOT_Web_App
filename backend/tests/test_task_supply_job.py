@@ -72,6 +72,16 @@ class TopupDispatchTests(unittest.IsolatedAsyncioTestCase):
             {"kind": "au", "title": "Задания пула", "tonight": 5, "target_ready": 50})
         self.assertIn("не заказано", out)
 
+    async def test_listening_is_actually_ordered(self):
+        """15.08.2026: аудирование — единственный вид, которому заказ реально нужен
+        (банк 23 при расходе 0.87 в сутки), и оно единственное не было подключено."""
+        with patch("backend.listening_generator.prepare_listening_pool") as gen:
+            out = await bot_3._run_task_supply_topup(
+                {"kind": "ls", "title": "Аудирование", "tonight": 3, "target_ready": 26})
+        gen.assert_called_once()
+        self.assertEqual(gen.call_args.kwargs["target_ready"], 26)
+        self.assertIn("заказано 3", out)
+
     async def test_failure_is_reported_not_swallowed(self):
         with patch("backend.rebus_generator.prepare_rebus_pool",
                    side_effect=RuntimeError):
