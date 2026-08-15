@@ -261,6 +261,75 @@ def _collect_homographs(cur, units: list[dict], chosen: dict, *, want_lang: str)
 
 _BRACKET_NOTE_RE = re.compile(r"^(.*?)\s*\([^)]*\)\s*$")
 
+# Номер значения в начале строки: «1 колоть», «2. разгадать», «1.приём» (без пробела).
+_SENSE_LEAD_RE = re.compile(r"^\s*([1-9])\s*(?:[).]\s*|\s+)(?=[А-Яа-яЁёA-Za-z])")
+# Номер значения в середине: «…отбивать 2 предотвращать», «…схватить 2. поймать».
+_SENSE_MID_RE = re.compile(r"(?<=[\w,;.])\s+([1-9])\s*[).]?\s+(?=[А-Яа-яЁё])")
+# Слова, после которых цифра — ЧАСТЬ СМЫСЛА, а не номер значения. Без этого списка
+# «Меню из 5 блюд» превратилось бы в «Меню из» и «блюд», а «до 16 часов» — в мусор.
+_DIGIT_IS_MEANING_AFTER = {
+    "из", "до", "на", "за", "в", "во", "с", "со", "к", "ко", "от", "о", "об", "по",
+    "при", "для", "через", "около", "более", "менее", "свыше", "почти", "ещё", "еще",
+    "уже", "лет", "года", "год", "часов", "минут", "раз",
+}
+# Слова ПОСЛЕ цифры, которые выдают счёт, а не номер значения: «2 недели», «5 блюд».
+# Проверяются, когда номер стоит в начале строки без точки и скобки.
+_COUNTED_NOUNS = {
+    "лет", "год", "года", "годов", "месяц", "месяца", "месяцев", "неделя", "недели",
+    "недель", "день", "дня", "дней", "час", "часа", "часов", "минута", "минуты",
+    "минут", "секунда", "секунды", "секунд", "раз", "раза", "штук", "штуки", "блюд",
+    "блюда", "человек", "человека", "тысяч", "тысячи", "миллиона", "миллионов",
+    "процент", "процента", "процентов", "евро", "рубля", "рублей", "километр",
+    "километра", "километров", "метр", "метра", "метров",
+}
+
+
+def split_numbered_senses(value: str) -> list[str]:
+    """Свалку с номерами значений разложить на отдельные значения.
+
+    ЗАЧЕМ. В банке осели строки вида «1.приём на работу 2. место, должность» и обрубки
+    вида «1 колоть». Человеку это не перевод, а кусок словарной статьи. Замер
+    11.08.2026 (scripts/dict_defect_audit.py, п.2): 15 таких строк доходят до карточек
+    одиночных слов, из них 12 настоящих свалок.
+
+    ЧЕГО ЭТО ПРАВИЛО НЕ ДЕЛАЕТ — и это главное. Цифра в переводе далеко не всегда
+    номер значения: «Меню из 5 блюд», «детская группа для малышей до 3 лет», «до 16
+    часов». Поэтому режем ТОЛЬКО там, где цифра ведёт себя как нумерация:
+      • число от 1 до 9 (номеров значений больше девяти не бывает, а «16 часов» бывает);
+      • перед ним начало строки либо конец предыдущего значения;
+      • перед ним НЕ предлог и не счётное слово (список выше);
+      • после него — буква.
+    Если хоть одно условие не выполнено, строка остаётся как есть. Лучше показать
+    строку с цифрой, чем разрезать живой перевод пополам.
+
+    Из базы ничего не удаляется: это правило показа.
+    """
+    text = _SPACE_RE.sub(" ", str(value or "").strip())
+    if not text:
+        return []
+    lead = _SENSE_LEAD_RE.match(text)
+    if lead:
+        rest = text[lead.end():].strip()
+        first_word = re.split(r"[\s,;]+", rest)[0].strip(".,;").casefold() if rest else ""
+        # «2 недели» — это счёт, а не второе значение. Точка или скобка после номера
+        # («2. поймать») снимают сомнение: так пишут только нумерацию.
+        numbered = bool(re.match(r"^\s*[1-9]\s*[).]", text))
+        if numbered or first_word not in _COUNTED_NOUNS:
+            text = rest
+    parts, last = [], 0
+    for match in _SENSE_MID_RE.finditer(text):
+        before = text[last:match.start()].strip()
+        prev_word = re.split(r"[\s,;]+", before)[-1].strip(".,;").casefold() if before else ""
+        if prev_word in _DIGIT_IS_MEANING_AFTER:
+            continue
+        if before:
+            parts.append(before)
+        last = match.end()
+    tail = text[last:].strip()
+    if tail:
+        parts.append(tail)
+    return [p.strip(" ,;.") for p in parts if p.strip(" ,;.")] or ([text] if text else [])
+
 
 def _translation_key(value: str) -> str:
     """Ключ сравнения переводов: пробелы, регистр и точка в конце значения не меняют."""
@@ -384,25 +453,39 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
         # 169 — то же плюс продолжение, 71 — то же плюс скобка, 47 — начало элемента,
         # 12 — та же строка с другим знаком в конце.
         # Понижением ранга это НЕ лечится: у 1147 из 1358 слов понижённой склейки нет
-        # вовсе (июльское разрезание трогало только свалки с номерами). Лечится здесь,
-        # на выдаче: если перевод целиком содержится в другом переводе того же слова —
-        # показывать короткий. Правило пока не поставлено, решение за владельцем.
+        # вовсе (июльское разрезание трогало только свалки с номерами). Лечится ниже,
+        # на выдаче — drop_nested_translations.
         seen_values.add(key)
         shown.append(link)
-    # Пересказы соседних переводов убираем ЗДЕСЬ, после отсева полных повторов и до
-    # обрезки до _MAX_LINKS: иначе «Скобка, скрепка» занимает место, которое должно
-    # достаться настоящему другому значению. Правило и числа — в drop_nested_translations.
-    kept = set(drop_nested_translations([link["display"] for link in shown]))
-    shown = [link for link in shown if link["display"] in kept][:_MAX_LINKS]
-    if shown:
+
+    # Дальше работаем со СТРОКАМИ, а не со связями: одна связь может дать несколько
+    # значений («1 класть, положить 2 накладывать» — это два перевода, а не один).
+    values: list[str] = []
+    for link in shown:
+        for piece in split_numbered_senses(link["display"]):
+            values.append(piece)
+    # Свалка могла распасться на куски, уже лежащие рядом отдельными связями.
+    deduped: list[str] = []
+    seen_pieces: set[str] = set()
+    for value in values:
+        key = _translation_key(value)
+        if key in seen_pieces:
+            continue
+        seen_pieces.add(key)
+        deduped.append(value)
+    # Пересказы соседних переводов убираем ЗДЕСЬ, после разрезания и до обрезки до
+    # _MAX_LINKS: иначе «Скобка, скрепка» занимает место, которое должно достаться
+    # настоящему другому значению. Правило и числа — в drop_nested_translations.
+    values = drop_nested_translations(deduped)[:_MAX_LINKS]
+    if values:
         item["translations"] = [
-            {"value": link["display"], "context": "", "is_primary": index == 0}
-            for index, link in enumerate(shown)
+            {"value": value, "context": "", "is_primary": index == 0}
+            for index, value in enumerate(values)
         ]
         item["dictionary_senses"] = [
             {"rank": index + 1, "label": "main" if index == 0 else "secondary",
-             "value": link["display"], "context": "", "example_source": "", "example_target": ""}
-            for index, link in enumerate(shown)
+             "value": value, "context": "", "example_source": "", "example_target": ""}
+            for index, value in enumerate(values)
         ]
     item["__lex_unit_id"] = unit["id"]
     # Отдельная пометка «у единицы есть НАСТОЯЩИЙ разбор». Без неё карточка со списком
