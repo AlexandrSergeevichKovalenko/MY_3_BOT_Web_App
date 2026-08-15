@@ -100,8 +100,10 @@ def _fake_db(stored_card):
 def _catch_saves(monkeypatch, stored_card):
     saved = []
     monkeypatch.setattr(lex_units, "get_db_connection_context", _fake_db(stored_card))
-    monkeypatch.setattr(lex_units, "save_unit_card",
-                        lambda unit_id, card, source="": saved.append((unit_id, card, source)) or True)
+    monkeypatch.setattr(
+        lex_units, "save_unit_card",
+        lambda unit_id, card, source="", cursor=None: saved.append((unit_id, card, source)) or True,
+    )
     return saved
 
 

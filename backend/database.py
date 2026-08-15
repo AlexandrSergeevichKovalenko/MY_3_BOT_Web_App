@@ -3131,6 +3131,110 @@ def ensure_adjektiv_sprint_schema() -> None:
     _ADJEKTIV_SPRINT_SCHEMA_DONE = True
 
 
+def adjektiv_cell_key(item: dict) -> str:
+    """Клетка таблицы окончаний: тип склонения × падеж × род. Их всего 27, и люди
+    обычно стабильно валят две-три — по ним и подбираем."""
+    it = item or {}
+    return f"{it.get('typ') or ''}:{it.get('case') or ''}:{it.get('gender') or ''}"
+
+
+def ensure_adjektiv_item_answers_schema() -> None:
+    """Ответ по КАЖДОМУ заданию прилагательных. До 15.08.2026 хранился только итог
+    «12 из 15», поэтому сказать, на какой клетке человек спотыкается, было не из чего."""
+    if _task_rotation_writes_disabled():
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_adjektiv_item_answers (
+                    id         BIGSERIAL PRIMARY KEY,
+                    user_id    BIGINT NOT NULL,
+                    set_id     TEXT,
+                    cell       TEXT NOT NULL,
+                    typ        TEXT, "case" TEXT, gender TEXT,
+                    chosen     TEXT NOT NULL DEFAULT '',
+                    correct    BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_bt_3_adjektiv_answers_user "
+                        "ON bt_3_adjektiv_item_answers (user_id, created_at DESC);")
+        conn.commit()
+
+
+def record_adjektiv_item_answers(rows: list) -> None:
+    """Поштучные ответы пачкой, в фоне. Игра ждать этого не должна."""
+    if _task_rotation_writes_disabled() or not rows:
+        return
+    try:
+        ensure_adjektiv_item_answers_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                for r in rows:
+                    cur.execute(
+                        'INSERT INTO bt_3_adjektiv_item_answers '
+                        '(user_id, set_id, cell, typ, "case", gender, chosen, correct) '
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s);",
+                        (int(r.get("user_id") or 0), str(r.get("set_id") or ""),
+                         str(r.get("cell") or ""), str(r.get("typ") or ""),
+                         str(r.get("case") or ""), str(r.get("gender") or ""),
+                         str(r.get("chosen") or ""), bool(r.get("correct"))),
+                    )
+            conn.commit()
+    except Exception:
+        logging.warning("record_adjektiv_item_answers failed", exc_info=True)
+
+
+def get_user_adjektiv_weakness(user_id: int, *, days: int = 90) -> dict:
+    """Где ИМЕННО этот человек спотыкается в окончаниях: по клеткам таблицы."""
+    if _task_rotation_writes_disabled():
+        return {"attempts": 0, "cells": {}}
+    try:
+        ensure_adjektiv_item_answers_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT cell, COUNT(*), SUM(CASE WHEN correct THEN 1 ELSE 0 END)
+                       FROM bt_3_adjektiv_item_answers
+                       WHERE user_id=%s AND chosen <> ''
+                         AND created_at > NOW() - (%s || ' days')::interval
+                       GROUP BY cell;""",
+                    (int(user_id), int(days)),
+                )
+                rows = cur.fetchall() or []
+        cells, total = {}, 0
+        for cell, cnt, corr in rows:
+            cnt, corr = int(cnt or 0), int(corr or 0)
+            total += cnt
+            cells[str(cell or "")] = {"attempts": cnt, "correct": corr}
+        return {"attempts": total, "cells": cells}
+    except Exception:
+        logging.warning("get_user_adjektiv_weakness failed user=%s", user_id, exc_info=True)
+        return {"attempts": 0, "cells": {}}
+
+
+def pick_adjektiv_payloads_for_user(user_id: int, n: int = 15) -> list[dict]:
+    """То же, что `pick_adjektiv_payloads`, но с упором на клетки, где человек валится.
+
+    Пока ответов мало (меньше 20), работает обычная случайная выдача: доля ошибок по
+    одной-двум попыткам — это шум, а не замер.
+    """
+    want = max(1, int(n))
+    try:
+        pool = pick_adjektiv_payloads(want * 4)
+        if not pool:
+            return []
+        weak = get_user_adjektiv_weakness(int(user_id))
+        if int(weak.get("attempts") or 0) < 20:
+            return pool[:want]
+        from backend.weak_spot import order_by_weakness
+        return order_by_weakness(pool, weak.get("cells"), adjektiv_cell_key)[:want]
+    except Exception:
+        logging.warning("pick_adjektiv_payloads_for_user failed user=%s", user_id,
+                        exc_info=True)
+        return pick_adjektiv_payloads(want)
+
+
 def pick_adjektiv_payloads(n: int = 15) -> list[dict]:
     """`n` adjective items. Primary source: the DETERMINISTIC rule-based generator
     (unlimited, 100% correct, no LLM). Falls back to the aufgabe bank only if that
@@ -19503,7 +19607,7 @@ def materialize_subscription_card(
             """
             SELECT q.word_ru, q.translation_de, q.word_de, q.translation_ru,
                    q.response_json, q.source_lang, q.target_lang, q.semantic_tag,
-                   (u.card IS NOT NULL) AS unit_ready
+                   (u.card IS NOT NULL) AS unit_ready, q.lex_unit_id
             FROM bt_3_webapp_dictionary_queries q
             LEFT JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
             WHERE q.user_id = %s AND q.canonical_entry_id = %s
@@ -19514,6 +19618,39 @@ def materialize_subscription_card(
         src = cur.fetchone()
         if not src:
             return None
+
+        # ─────────────────────────────────────────────────────────────────────────
+        # РАЗБОР НЕ КОПИРУЕТСЯ ЧЕЛОВЕКУ. Он кладётся НА СЛОВО — одно на всех.
+        #
+        # Как было до 15.08.2026: если у слова разбора ещё нет, разбор из карточки
+        # владельца копировался новому человеку целиком. Решение принималось ОДИН раз,
+        # в момент выдачи, и больше не пересматривалось: слово улучшали потом, а у
+        # человека навсегда оставался снимок того дня. Замер: из 16 выданных по
+        # подписке карточек копию несут ВСЕ 16.
+        #
+        # Как теперь: тот же разбор поднимается на общее слово, если там пусто. После
+        # этого он виден всем, кто на слово подписан, и продолжает улучшаться. Карточка
+        # человека остаётся лёгкой — читатели берут содержимое со слова (перепись:
+        # docs/tasks/dictionary_readers_census.md).
+        #
+        # Курсор передаём свой: мы внутри чужой транзакции, второе соединение из пула
+        # брать нельзя. Коммит сделает вызывающий — слово и карточка должны лечь вместе.
+        # ─────────────────────────────────────────────────────────────────────────
+        source_card = _coerce_json_object(src[4])
+        unit_has_card = bool(src[8])
+        unit_id = src[9]
+        if not unit_has_card and unit_id and card_content_score(source_card) > 0:
+            try:
+                from backend.lex_units import save_unit_card_if_richer
+
+                unit_has_card = save_unit_card_if_richer(
+                    int(unit_id), source_card, source="выдача по подписке", cursor=cur,
+                )
+            except Exception:
+                logging.warning(
+                    "подписка: разбор не лёг на слово unit_id=%s", unit_id, exc_info=True,
+                )
+                unit_has_card = False
         entry_id, _inserted = _create_or_attach_user_dictionary_entry_with_cursor(
             cur,
             user_id=int(user_id),
@@ -19521,12 +19658,13 @@ def materialize_subscription_card(
             translation_de=src[1],
             word_de=src[2],
             translation_ru=src[3],
-            # Подписка не копирует разбор: он приезжает с единицы при показе. Копируем
-            # только когда на единице разбора ещё нет — иначе человек остался бы с
-            # пустой карточкой, а это хуже лишней копии.
+            # Разбор приезжает с общего слова при показе. Копию кладём только в одном
+            # случае: слова в слое единиц нет вовсе (lex_unit_id пуст) либо разбор на
+            # него не лёг — иначе человек остался бы с пустой карточкой, а это хуже
+            # лишней копии. Во всех остальных случаях карточка лёгкая.
             response_json=(
-                strip_card_content_for_subscription(_coerce_json_object(src[4]))
-                if src[8] else _coerce_json_object(src[4])
+                strip_card_content_for_subscription(source_card)
+                if unit_has_card else source_card
             ),
             folder_id=None,
             source_lang=src[5],
@@ -19539,7 +19677,21 @@ def materialize_subscription_card(
             },
             semantic_tag=src[7],
         )
-        return int(entry_id) if entry_id else None
+        if not entry_id:
+            return None
+
+        # УКАЗАТЕЛЬ НА СЛОВО СТАВИМ СРАЗУ, В ЭТОЙ ЖЕ ТРАНЗАКЦИИ. Без него лёгкая
+        # карточка была бы ПУСТОЙ: читатели берут содержимое по указателю, а он тут
+        # при вставке не проставляется — его догоняет отдельный проход
+        # (attach_missing_entries), и до него человек видел бы пустой экран.
+        # Слово то же самое, что у исходной карточки: выдаётся ровно оно.
+        if unit_id:
+            cur.execute(
+                "UPDATE bt_3_webapp_dictionary_queries SET lex_unit_id = %s "
+                "WHERE id = %s AND lex_unit_id IS NULL;",
+                (int(unit_id), int(entry_id)),
+            )
+        return int(entry_id)
 
     if cursor is not None:
         return _do(cursor)

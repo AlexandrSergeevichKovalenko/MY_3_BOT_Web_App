@@ -811,18 +811,24 @@ def unit_display(unit_id: int) -> str:
         return ""
 
 
-def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащение") -> bool:
-    """Положить разбор НА единицу. Пишем только в слой; общий банк не трогаем."""
+def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащение", cursor=None) -> bool:
+    """Положить разбор НА единицу. Пишем только в слой; общий банк не трогаем.
+
+    cursor передаёт тот, кто уже держит транзакцию (выдача слова по подписке): иначе
+    из пула берётся второе соединение, пока первое не отпущено. Коммит в этом случае
+    делает вызывающий — запись должна попасть в ту же транзакцию, что и карточка."""
     if not isinstance(card, dict) or not card:
         return False
+    sql = ("UPDATE bt_3_lex_units SET card = %s::jsonb, card_source = %s, updated_at = NOW() "
+           "WHERE id = %s;")
+    params = (json.dumps(card, ensure_ascii=False), source, int(unit_id))
     try:
+        if cursor is not None:
+            cursor.execute(sql, params)
+            return True
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE bt_3_lex_units SET card = %s::jsonb, card_source = %s, updated_at = NOW() "
-                    "WHERE id = %s;",
-                    (json.dumps(card, ensure_ascii=False), source, int(unit_id)),
-                )
+                cur.execute(sql, params)
             conn.commit()
         return True
     except Exception as exc:
@@ -833,7 +839,8 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
 # Оценка полноты разбора (CARD_CONTENT_KEYS / card_content_score) живёт в слое БД:
 # ею пользуются и запись на единицу, и отдача карточки человеку, а импортировать слой БД
 # отсюда обратно нельзя — вышло бы кольцо.
-def save_unit_card_if_richer(unit_id: int, card: dict, *, source: str = "сохранение") -> bool:
+def save_unit_card_if_richer(unit_id: int, card: dict, *, source: str = "сохранение",
+                             cursor=None) -> bool:
     """Положить разбор на единицу, но ТОЛЬКО если он полнее уже лежащего.
 
     Единица — общая, и её разбор виден всем, кто на слово подписан. Поэтому тонкое
@@ -845,11 +852,18 @@ def save_unit_card_if_richer(unit_id: int, card: dict, *, source: str = "сох�
     fresh = card_content_score(card)
     if fresh <= 0:
         return False
+
+    def _current(cur):
+        cur.execute("SELECT card FROM bt_3_lex_units WHERE id = %s;", (int(unit_id),))
+        return cur.fetchone()
+
     try:
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT card FROM bt_3_lex_units WHERE id = %s;", (int(unit_id),))
-                row = cur.fetchone()
+        if cursor is not None:
+            row = _current(cursor)
+        else:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    row = _current(cur)
         if row is None:
             return False
         if fresh <= card_content_score(row[0] if isinstance(row[0], dict) else None):
@@ -857,7 +871,7 @@ def save_unit_card_if_richer(unit_id: int, card: dict, *, source: str = "сох�
     except Exception as exc:
         logging.debug("compare unit card failed for %s: %s", unit_id, exc)
         return False
-    return save_unit_card(int(unit_id), card, source=source)
+    return save_unit_card(int(unit_id), card, source=source, cursor=cursor)
 
 
 # Артикль однозначно выдаёт существительное, а вместе с ним и род. Это единственный
