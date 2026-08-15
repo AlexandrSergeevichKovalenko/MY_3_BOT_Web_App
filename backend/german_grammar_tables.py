@@ -237,6 +237,13 @@ def build_verb_conjugation(
     # любой одиночный токен за инфинитив без единой проверки.
     if looks_like_zu_infinitive(inf):
         return None
+    # СПРЯГАЕМЫЙ ГЛАГОЛ ПИШЕТСЯ СО СТРОЧНОЙ — всегда, кроме начала предложения.
+    # Заголовок в базе может стоять с заглавной: «Aufwachen», «Hineingehen» — это
+    # субстантивированный инфинитив, и в таком виде он приходит из сохранения. Движок
+    # приклеивал окончания как есть, и человек читал «ich Gehe», «ich Hineingehe»,
+    # «ich Aufwache» — форм, которых в языке нет. Замер 15.08.2026 воспроизведён на
+    # gehen/Gehen, arbeiten/Arbeiten, Aufwachen, Hineingehen.
+    inf = inf[:1].lower() + inf[1:]
     seed = seed or {}
     stem, pl_end = _verb_stem(inf)
     reg_du, reg_er = _present_du_er(stem)
@@ -384,6 +391,9 @@ def build_adjective_comparison(
     # прилагательных, и у каждого печаталась своя выдуманная лесенка.
     if looks_like_declined_adjective(positive):
         return None
+    # Прилагательное в степенях сравнения тоже со строчной: «Nahtlos» в заголовке —
+    # след сохранения, а не немецкая орфография. См. пояснение у спряжения.
+    positive = positive[:1].lower() + positive[1:]
     comp = str(comparative or "").strip()
     sup = str(superlative or "").strip()
     if not comp:

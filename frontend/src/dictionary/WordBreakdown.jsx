@@ -630,11 +630,16 @@ function _parsePerfekt(perfekt) {
   return ['haben', text];
 }
 function buildVerbConjugation(wordDe, seed) {
-  const inf = _stripArticle(wordDe);
+  let inf = _stripArticle(wordDe);
   if (!inf || /\s/.test(inf)) return null;
   // Лучше не показать таблицу, чем показать выдуманную: от zu-инфинитива выходит
   // «ich klarzukomme, du klarzukommst» — форм, которых в языке нет.
   if (looksLikeZuInfinitive(inf)) return null;
+  // Спрягаемый глагол пишется со строчной — всегда, кроме начала предложения.
+  // Заголовок в базе может стоять с заглавной («Aufwachen», «Hineingehen»), и без
+  // этой строки человек читал «ich Gehe», «ich Hineingehe». То же правило стоит на
+  // сервере, в german_grammar_tables.build_verb_conjugation.
+  inf = inf.charAt(0).toLowerCase() + inf.slice(1);
   seed = seed || {};
   let stem; let plEnd;
   if (inf.endsWith('eln') || inf.endsWith('ern')) { stem = inf.slice(0, -1); plEnd = 'n'; }
@@ -702,10 +707,12 @@ function looksLikeDeclinedAdjective(word) {
   });
 }
 function buildAdjectiveComparison(wordDe, comparative, superlative) {
-  const positive = _stripArticle(wordDe);
+  let positive = _stripArticle(wordDe);
   if (!positive || /\s/.test(positive)) return null;
   // Лучше не показать таблицу, чем показать выдуманную.
   if (looksLikeDeclinedAdjective(positive)) return null;
+  // Степени сравнения тоже со строчной: «Nahtlos» в заголовке — след сохранения.
+  positive = positive.charAt(0).toLowerCase() + positive.slice(1);
   let comp = clean(comparative);
   let sup = clean(superlative);
   if (!comp) comp = positive + 'er';
