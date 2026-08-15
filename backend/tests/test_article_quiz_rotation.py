@@ -19,13 +19,21 @@ import backend.database as db
 class ArticleQuizWritesRotationTests(unittest.TestCase):
     def test_answer_lands_in_rotation_memory(self):
         with patch.object(bot_3, "record_user_task_answer") as rec:
-            bot_3._remember_article_quiz_answer(user_id=7, word_id=42, is_correct=True)
+            bot_3._remember_article_quiz_answer(user_id=7, word_id="42", is_correct=True)
         rec.assert_called_once()
         kwargs = rec.call_args.kwargs
         self.assertEqual(kwargs["user_id"], 7)
         self.assertEqual(kwargs["kind"], "article_quiz")
         self.assertEqual(kwargs["task_key"], "42")
         self.assertTrue(kwargs["is_correct"])
+
+    def test_text_word_id_is_accepted(self):
+        """15.08.2026: `int(word_id)` роняло КАЖДОЕ нажатие кнопки ещё до ответа
+        человеку — в банке ключ текстовый («Rabe»), а не число."""
+        with patch.object(bot_3, "record_user_task_answer") as rec:
+            bot_3._remember_article_quiz_answer(user_id=7, word_id="Rabe",
+                                                is_correct=False)
+        self.assertEqual(rec.call_args.kwargs["task_key"], "Rabe")
 
     def test_failure_to_remember_never_breaks_the_answer(self):
         """Память служебная: упала — человек всё равно получает разбор своего ответа."""

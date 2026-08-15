@@ -4363,10 +4363,35 @@ async def _drip_emit_reminder(context, uid, did, *, kb, caption, poster_fn, inbo
     return True
 
 
+# Вид задания в рассылке → вид в памяти личной ротации (тот же код, каким строится
+# ключ ответа в `content_ranking_key`).
+_ROTATION_KIND_BY_DRIP = {"aufgabe": "au", "anagram": "ag", "rebus": "rb",
+                          "crossword": "cw"}
+
+
+async def _drip_blocked_ids(uid: int, kind: str) -> list:
+    """Что этому человеку по этому виду сейчас закрыто: пройденное и не подошедшее по
+    сроку. Если памяти нет или она недоступна — не закрываем ничего."""
+    rot = _ROTATION_KIND_BY_DRIP.get(kind)
+    if not rot:
+        return []
+    try:
+        return await asyncio.to_thread(get_user_blocked_content_ids, int(uid), rot)
+    except Exception:
+        logging.warning("ротация: не удалось получить закрытое uid=%s kind=%s", uid, kind,
+                        exc_info=True)
+        return []
+
+
 async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, held: bool = False) -> bool:
     """Pull one item of `kind` from its pool and send it to the windowed user.
     cooldown first, then 0-cooldown fallback so a thin pool still delivers.
-    held=True records it into the inbox WITHOUT sending the card."""
+    held=True records it into the inbox WITHOUT sending the card.
+
+    Личная ротация: первым заходом человеку не предлагается то, что он уже прошёл.
+    Запасной заход (нулевой кулдаун) исключений НЕ применяет — человек скорее получит
+    повтор, чем пустоту."""
+    blocked = await _drip_blocked_ids(uid, kind)
     if kind == "aufgabe":
         fmt = _DRIP_AUFGABE_FORMATS[int(idx) % len(_DRIP_AUFGABE_FORMATS)]
         entry = (await asyncio.to_thread(pick_next_aufgabe, cooldown_days=AUFGABE_SEND_COOLDOWN_DAYS, format=fmt)
@@ -33036,12 +33061,14 @@ async def send_article_quiz_to_chat(
     return True
 
 
-def _remember_article_quiz_answer(*, user_id: int, word_id: int, is_correct: bool) -> None:
+def _remember_article_quiz_answer(*, user_id: int, word_id, is_correct: bool) -> None:
     """Запомнить, что этот человек эту картинку уже решал.
 
     Личная ротация выдачи опирается только на эту память: без неё следующая картинка
     выбирается вслепую и может прийти человеку по второму разу. Ошибка записи не должна
     ломать ответ человеку — память служебная.
+
+    `word_id` — ТЕКСТОВЫЙ ключ банка (например «Rabe»), числом он не является.
     """
     try:
         record_user_task_answer(user_id=int(user_id), kind="article_quiz",
@@ -33224,10 +33251,17 @@ async def handle_article_quiz_callback(update: Update, context: CallbackContext)
 
     # Личная ротация: помним, что этот человек эту картинку уже решал, иначе следующая
     # выбирается вслепую и может прийти ему по второму разу.
-    await asyncio.to_thread(
-        _remember_article_quiz_answer,
-        user_id=int(user.id), word_id=int(word_id), is_correct=bool(is_correct),
-    )
+    # `word_id` здесь СТРОКА (в банке это текстовый ключ вроде «Rabe»), приводить его к
+    # числу нельзя: 15.08.2026 из-за `int(word_id)` каждое нажатие кнопки падало с
+    # ошибкой ещё до ответа человеку, и квиз выглядел мёртвым.
+    try:
+        await asyncio.to_thread(
+            _remember_article_quiz_answer,
+            user_id=int(user.id), word_id=word_id, is_correct=bool(is_correct),
+        )
+    except Exception:
+        logging.warning("aq_callback: память ротации недоступна word_id=%s", word_id,
+                        exc_info=True)
 
     # Ответил — закрываем строку в ведомости дня, чтобы квиз не висел
     # в «не сделано за сегодня».
