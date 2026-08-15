@@ -314,6 +314,7 @@ from backend.database import (
     update_article_quiz_dispatch_telegram_id,
     get_article_quiz_dispatch_by_id,
     record_article_quiz_answer,
+    record_user_task_answer,
     mark_article_quiz_answer_feedback_sent,
     upsert_article_quiz_text_entry,
     pick_next_crossword,
@@ -33034,6 +33035,22 @@ async def send_article_quiz_to_chat(
     return True
 
 
+def _remember_article_quiz_answer(*, user_id: int, word_id: int, is_correct: bool) -> None:
+    """Запомнить, что этот человек эту картинку уже решал.
+
+    Личная ротация выдачи опирается только на эту память: без неё следующая картинка
+    выбирается вслепую и может прийти человеку по второму разу. Ошибка записи не должна
+    ломать ответ человеку — память служебная.
+    """
+    try:
+        record_user_task_answer(user_id=int(user_id), kind="article_quiz",
+                                task_key=str(word_id), is_correct=bool(is_correct),
+                                source="chat")
+    except Exception:
+        logging.warning("article_quiz: не удалось запомнить ответ user=%s word=%s",
+                        user_id, word_id, exc_info=True)
+
+
 async def _send_scheduled_article_quiz(context: CallbackContext) -> None:
     if _is_quiet_hours_now():
         logging.info("quiet_hours: skip article_quiz")
@@ -33181,6 +33198,13 @@ async def handle_article_quiz_callback(update: Update, context: CallbackContext)
             "aq_callback: record_answer failed dispatch_id=%s user_id=%s",
             dispatch_id, int(user.id), exc_info=True,
         )
+
+    # Личная ротация: помним, что этот человек эту картинку уже решал, иначе следующая
+    # выбирается вслепую и может прийти ему по второму разу.
+    await asyncio.to_thread(
+        _remember_article_quiz_answer,
+        user_id=int(user.id), word_id=int(word_id), is_correct=bool(is_correct),
+    )
 
     # Ответил — закрываем строку в ведомости дня, чтобы квиз не висел
     # в «не сделано за сегодня».
