@@ -1115,6 +1115,7 @@ def compose_german_headword(
     article: str | None = None,
     gender: str | None = None,
     number: str | None = None,
+    pos: str | None = None,
 ) -> str:
     """Немецкий заголовок так, как его видит человек: слово вместе с артиклем.
 
@@ -1137,6 +1138,11 @@ def compose_german_headword(
     surface = _squash_space(word)
     if not surface:
         return ""
+    # В немецком с заглавной пишутся только существительные. Глагол и прилагательное
+    # приходят из сохранения как «Abbuchen», «Akut» — опускаем. Правило общее с
+    # экраном и таблицами: german_grammar_tables.german_headword_case.
+    from backend.german_grammar_tables import german_headword_case
+    surface = german_headword_case(surface, pos)
     if _LEADING_ARTICLE_ANY_CASE_RE.match(surface):
         return surface  # артикль уже на месте
     if not _GERMAN_NOUN_SURFACE_RE.match(surface):
@@ -30639,6 +30645,10 @@ def list_user_vocabulary(
                 article=response_json.get("article"),
                 gender=row[26],
                 number=response_json.get("grammatical_number"),
+                # Часть речи нужна для регистра: существительное с заглавной, глагол и
+                # прилагательное со строчной. Замер 15.08.2026: 357 карточек стояли с
+                # заглавной при неименной части речи — «Abbuchen», «Akut».
+                pos=response_json.get("part_of_speech"),
             ),
             "display_translation": native_display or row[25] or "",
             "user_notes": normalize_user_notes(row[21]),

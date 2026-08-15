@@ -448,7 +448,11 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
     ru_side = links[0] if unit["lang"] == "de" else unit
     card = dict(unit.get("card") or (de_side or {}).get("card") or {})
 
-    german_display = (de_side or {}).get("display") or ""
+    # Регистр заголовка: существительное с заглавной, остальное со строчной.
+    # Общее правило с карточкой и таблицами — german_grammar_tables.
+    from backend.german_grammar_tables import german_headword_case
+    german_display = german_headword_case((de_side or {}).get("display") or "",
+                                          (de_side or {}).get("pos"))
     native_display = (ru_side or {}).get("display") or ""
 
     item: dict[str, Any] = dict(card)

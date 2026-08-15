@@ -39,3 +39,33 @@ def test_zu_infinitive_still_has_no_table():
 
 def test_declined_adjective_still_has_no_table():
     assert build_adjective_comparison(word_de="schlammigen") is None
+
+
+# ── заголовок слова ───────────────────────────────────────────────────────────
+
+from backend.german_grammar_tables import german_headword_case as headword
+
+
+def test_verb_and_adjective_headwords_are_lowercase():
+    assert headword("Abbuchen", "verb") == "abbuchen"
+    assert headword("Akut", "adjective") == "akut"
+    assert headword("Nahtlos", "adjective") == "nahtlos"
+
+
+def test_noun_keeps_its_capital():
+    assert headword("Haus", "noun") == "Haus"
+    assert headword("Wehe", "noun") == "Wehe"
+
+
+def test_unknown_part_of_speech_is_not_touched():
+    """Пустая часть речи — не разрешение: под ней прячутся имена собственные.
+
+    Тот же урок, что с русскими переводами, где проверка «а это существительное?»
+    написала «афины»."""
+    assert headword("Berlin", "") == "Berlin"
+    assert headword("Aufwachen", None) == "Aufwachen"
+
+
+def test_already_lowercase_is_untouched():
+    assert headword("gehen", "verb") == "gehen"
+    assert headword("", "verb") == ""
