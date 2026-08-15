@@ -336,6 +336,46 @@ def _attach_frequency(cur, entries: list[dict]) -> None:
             entry["rank"] = by_word.get(entry["headword"].lower())
 
 
+def _attach_examples(cur, entries: list[dict], limit: int = 2) -> None:
+    """Примеры к статье — те, что лежат на САМОМ СЛОВЕ.
+
+    Зачем именно они, а не корпус. Корпус ищется по написанию, а написание не
+    различает разные слова: «der Kiefer» (челюсть) и «die Kiefer» (сосна) пишутся
+    одинаково, «Wehe» (схватка) и «wehe» (горе) — тоже. Наши примеры привязаны к
+    конкретному слову, и перепутать их невозможно: у «der Kiefer» — «Der Kiefer ist
+    gebrochen», у «die Kiefer» — «Im Wald wachsen viele Kiefern».
+
+    Владелец 15.08.2026 увидел обратное: выбрал глагол «wehen» (веять), а под ним
+    стояло «Die Wehen haben eingesetzt» — Схватки начались. Это существительное.
+    """
+    unit_ids = [int(e.get("unit_id") or 0) for e in entries if e.get("unit_id")]
+    if not unit_ids:
+        return
+    cur.execute(
+        "SELECT id, card -> 'usage_examples' FROM bt_3_lex_units "
+        "WHERE id = ANY(%s) AND card IS NOT NULL;",
+        (unit_ids,),
+    )
+    by_unit = {int(row[0]): row[1] for row in cur.fetchall()}
+    for entry in entries:
+        raw = by_unit.get(int(entry.get("unit_id") or 0))
+        if not isinstance(raw, list):
+            continue
+        picked = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            source = _clean(item.get("source") or item.get("de") or "")
+            target = _clean(item.get("target") or item.get("ru") or "")
+            if not source:
+                continue
+            picked.append({"source": source, "target": target})
+            if len(picked) >= limit:
+                break
+        if picked:
+            entry["examples"] = picked
+
+
 # ─────────────────────────── вход ───────────────────────────
 
 
@@ -396,6 +436,7 @@ def entries_for_query(query: str, *, source_lang: str, target_lang: str,
                         collected[entry_key] = item
                 entries = list(collected.values())
                 _attach_frequency(cur, entries)
+                _attach_examples(cur, entries)
     except Exception as exc:
         logging.debug("слой статей промолчал для %r: %s", query, exc)
         return []

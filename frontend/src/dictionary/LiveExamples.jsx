@@ -15,22 +15,44 @@ import { buildDictionarySavePayload } from './saveUtils';
  * Один компонент на оба словаря. Две копии этого блока разошлись бы через неделю —
  * сегодня уже был случай, когда одинаковую разметку чинили дважды.
  */
-export default function LiveExamples({ germanWord, onSaved }) {
+export default function LiveExamples({ germanWord, ownExamples, onSaved }) {
   const [items, setItems] = useState([]);
   const [saved, setSaved] = useState(() => new Set());
 
+  // ПОКАЗЫВАЕМ ОБА ИСТОЧНИКА, и каждый подписан своим именем.
+  //
+  // Свои примеры лежат на самом слове и привязаны к КОНКРЕТНОМУ слову — перепутать
+  // их нельзя: у «der Kiefer» про челюсть, у «die Kiefer» про сосну. Идут первыми.
+  //
+  // Корпус ищет по написанию и различать слова не умеет: владелец 15.08.2026 выбрал
+  // глагол «wehen» (веять) и увидел «Die Wehen haben eingesetzt» — Схватки начались.
+  // Но выбрасывать корпус незачем — это живая речь носителей, ради неё он и заведён.
+  // Решение владельца: показывать оба, подпись под примером говорит, откуда он.
+  const own = Array.isArray(ownExamples)
+    ? ownExamples.filter((x) => x && clean(x.source))
+    : [];
+  const ownKey = own.map((x) => clean(x.source)).join('|');
+
   useEffect(() => {
-    setItems([]);
+    const mine = own.map((x) => ({ ...x, origin: 'Наш словарь', author: '' }));
+    setItems(mine);
     const word = clean(germanWord);
     if (!word) return undefined;
     let cancelled = false;
     api('/api/webapp/dictionary/examples', { word })
       .then((data) => {
-        if (!cancelled) setItems(Array.isArray(data?.items) ? data.items : []);
+        if (cancelled) return;
+        const fromCorpus = Array.isArray(data?.items) ? data.items : [];
+        // Одно и то же предложение из двух источников показывать дважды незачем.
+        const seen = new Set(mine.map((x) => clean(x.source).toLowerCase()));
+        setItems(mine.concat(
+          fromCorpus.filter((x) => x && !seen.has(clean(x.source).toLowerCase())),
+        ));
       })
-      .catch(() => { /* примеров нет — просто не показываем, это не ошибка */ });
+      .catch(() => { /* корпус промолчал — свои примеры уже показаны */ });
     return () => { cancelled = true; };
-  }, [germanWord]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [germanWord, ownKey]);
 
   if (!items.length) return null;
 
