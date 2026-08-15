@@ -31251,6 +31251,7 @@ def adjektiv_submit():
     except (TypeError, ValueError):
         time_ms = 0
     from backend.database import (
+        adjektiv_cell_key as _adjektiv_cell_key,
         get_adjektiv_sprint_set, record_adjektiv_sprint_result,
         get_adjektiv_sprint_result, compute_adjektiv_sprint_ranking,
     )
@@ -31281,6 +31282,25 @@ def adjektiv_submit():
         set_id=set_id, user_id=int(user_id), user_name=user_name or "",
         correct=correct, answered=answered, total=total, time_ms=time_ms,
     )
+    if recorded:
+        # Ответ по КАЖДОМУ заданию — в фоне, игра ждать этого не должна. Раньше
+        # хранился только итог «12 из 15», поэтому сказать, на какой клетке таблицы
+        # человек спотыкается, было не из чего: клеток 27, и обычно валятся две-три.
+        def _log_adjektiv_items(rows=[
+            {"user_id": int(user_id), "set_id": set_id,
+             "cell": _adjektiv_cell_key(it), "typ": it.get("typ", ""),
+             "case": it.get("case", ""), "gender": it.get("gender", ""),
+             "chosen": str((answers[i] if i < len(answers) else {} or {}).get("chosen") or ""),
+             "correct": str((answers[i] if i < len(answers) else {} or {}).get("chosen") or "").strip().lower()
+                        == str(it.get("a") or "").strip().lower()}
+            for i, it in enumerate(set_items)]):
+            try:
+                from backend.database import record_adjektiv_item_answers
+                record_adjektiv_item_answers(rows)
+            except Exception:
+                logging.warning("adjektiv item telemetry failed set=%s", set_id,
+                                exc_info=True)
+        threading.Thread(target=_log_adjektiv_items, daemon=True).start()
     _unpin_battle_invite_async(int(user_id), set_id)  # event-driven: result → unpin
     _flip_battle_ctas_done_async(int(user_id), set_id)  # flip play buttons → «✅ Сыграно»
     if not recorded:
@@ -31380,14 +31400,16 @@ def adjektiv_learn():
     user_id, _user_name, err = _answer_auth_user_id()
     if user_id is None:
         return err
-    from backend.database import pick_adjektiv_payloads, derive_adjektiv_split
+    from backend.database import pick_adjektiv_payloads_for_user, derive_adjektiv_split
     payload = request.get_json(silent=True) or {}
     try:
         n = max(5, min(20, int(payload.get("count") or 12)))
     except (TypeError, ValueError):
         n = 12
     out = []
-    for p in pick_adjektiv_payloads(n):
+    # Личная тренировка подстраивается: клетки таблицы окончаний, на которых человек
+    # валится, идут чаще. Дневной набор так подбирать нельзя — по нему сравнивают всех.
+    for p in pick_adjektiv_payloads_for_user(int(user_id), n):
         correct = str(p.get("correct") or "").lower()
         before = str(p.get("before") or "")
         after = str(p.get("after") or "")

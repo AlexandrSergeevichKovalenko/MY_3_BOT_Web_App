@@ -269,6 +269,11 @@ def _build_one(noun: tuple, adjective: str) -> dict:
         "tip": _feeling(typ, case, gender, ending),
         "example": _example(typ, case, gender, ending),
         "hint_ru": hint_ru,
+        # Из чего задание СОБРАНО. До 15.08.2026 эти три величины считались и тут же
+        # выбрасывались — оставалась только русская подсказка строкой. Без них нельзя
+        # сказать, на чём человек спотыкается: клеток всего 27 (3 типа × 3 падежа ×
+        # 3 рода), и люди обычно стабильно валят две-три из них.
+        "typ": typ, "case": case, "gender": gender,
         # Per-word data for tap-to-translate + save-to-dictionary.
         "adj": adjective, "adj_ru": ADJECTIVE_RU.get(adjective, ""),
         "noun": word, "noun_ru": noun_ru, "noun_article": _GENDER_ART.get(gender, "das"),
