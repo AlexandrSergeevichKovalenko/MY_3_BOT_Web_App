@@ -48686,6 +48686,69 @@ def pick_next_article_quiz(
     }
 
 
+def list_ready_article_quiz_entries(*, card_kind: str | None = None,
+                                    difficulty_filter: str | None = None,
+                                    limit: int = 400) -> list:
+    """Готовые к выдаче записи банка — весь пул, из которого выбирает личная ротация."""
+    where = ["image_status = 'ready'", "retired = FALSE"]
+    params: list = []
+    if card_kind == "photo":
+        where.append("dalle_prompt IS NOT NULL")
+    elif card_kind == "grammar":
+        where.append("dalle_prompt IS NULL")
+    if difficulty_filter:
+        where.append("difficulty = %s")
+        params.append(str(difficulty_filter))
+    params.append(int(limit))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT word_id, word, article, meaning_ru, difficulty, category, "
+                "       image_object_key, image_status, send_count, last_sent_at, "
+                "       retired, dalle_prompt "
+                "FROM bt_3_article_quiz_bank "
+                f"WHERE {' AND '.join(where)} "
+                "ORDER BY last_sent_at NULLS FIRST LIMIT %s;",
+                tuple(params),
+            )
+            cols = [c[0] for c in cursor.description]
+            return [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+
+def pick_article_quiz_for_user(user_id: int, *, cooldown_days: int = 14,
+                               card_kind: str | None = None,
+                               difficulty_filter: str | None = None) -> dict | None:
+    """Следующая картинка ИМЕННО для этого человека.
+
+    До 15.08.2026 картинка выбиралась одна на всех: `pick_next_article_quiz` смотрела
+    только на общий `last_sent_at`, хотя сама рассылка давно идёт циклом по людям и
+    каждому шлёт отдельное сообщение. Банк на 452 готовые записи (замер 14.08.2026)
+    позволяет каждому идти своим путём, не тратя на генерацию ни копейки: разным людям
+    МОЖНО дать одно и то же задание, нельзя только повторять одному и тому же.
+
+    Если личный отбор почему-то сломался — человек молча получает общую картинку.
+    """
+    from datetime import datetime, timezone
+    from backend.task_rotation import order_candidates
+    try:
+        bank = list_ready_article_quiz_entries(card_kind=card_kind,
+                                               difficulty_filter=difficulty_filter)
+        if not bank:
+            return None
+        for e in bank:
+            e["task_key"] = str(e.get("word_id") or "")
+        state = get_user_task_state(int(user_id), "article_quiz",
+                                    [e["task_key"] for e in bank])
+        ordered = order_candidates(bank, state, datetime.now(timezone.utc))
+        return ordered[0] if ordered else None
+    except Exception:
+        logging.warning("pick_article_quiz_for_user failed user=%s", user_id,
+                        exc_info=True)
+        return pick_next_article_quiz(cooldown_days=cooldown_days,
+                                      difficulty_filter=difficulty_filter,
+                                      card_kind=card_kind)
+
+
 def mark_article_quiz_sent(word_id: str) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

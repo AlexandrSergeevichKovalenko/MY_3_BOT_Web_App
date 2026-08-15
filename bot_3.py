@@ -306,6 +306,7 @@ from backend.database import (
     mark_rebus_answer_feedback_sent,
     sync_article_quiz_bank_from_code,
     pick_next_article_quiz,
+    pick_article_quiz_for_user,
     get_article_quiz_entry,
     mark_article_quiz_sent,
     count_available_article_quiz_entries,
@@ -33110,14 +33111,35 @@ async def _send_scheduled_article_quiz(context: CallbackContext) -> None:
         return
 
     sent = 0
+    sent_word_ids: set = set()
     for target in delivery_targets:
         target_chat_id = int(target.get("chat_id") or 0)
         if target_chat_id == 0:
             continue
+
+        # Каждому — своя картинка из ОБЩЕГО банка: та, которую именно он ещё не решал.
+        # Генерации это не стоит ничего (банк уже готов), а повтор пройденного уходит.
+        # Если личный отбор не сложился — человек получает общую картинку слота.
+        entry_for_user, image_url_for_user = entry, image_url
+        try:
+            personal = await asyncio.to_thread(
+                pick_article_quiz_for_user, target_chat_id,
+                cooldown_days=ARTICLE_QUIZ_COOLDOWN_DAYS,
+                card_kind=card_kind, difficulty_filter=difficulty_hint,
+            )
+            personal_key = str((personal or {}).get("image_object_key") or "")
+            if personal and personal_key:
+                entry_for_user = personal
+                image_url_for_user = r2_public_url(personal_key)
+        except Exception:
+            logging.warning("aq_slot: личный отбор не сложился chat_id=%s",
+                            target_chat_id, exc_info=True)
+            entry_for_user, image_url_for_user = entry, image_url
+
         ok = await send_article_quiz_to_chat(
             context,
-            entry=entry,
-            image_url=image_url,
+            entry=entry_for_user,
+            image_url=image_url_for_user,
             slot_date=slot_date,
             slot_hour=slot_hour,
             chat_id=target_chat_id,
@@ -33125,12 +33147,13 @@ async def _send_scheduled_article_quiz(context: CallbackContext) -> None:
         )
         if ok:
             sent += 1
+            sent_word_ids.add(str(entry_for_user.get("word_id") or ""))
 
-    if sent > 0:
+    for wid in sorted(w for w in sent_word_ids if w):
         try:
-            await asyncio.to_thread(mark_article_quiz_sent, word_id)
+            await asyncio.to_thread(mark_article_quiz_sent, wid)
         except Exception:
-            logging.warning("aq_slot: mark_article_quiz_sent failed word_id=%s", word_id, exc_info=True)
+            logging.warning("aq_slot: mark_article_quiz_sent failed word_id=%s", wid, exc_info=True)
 
     logging.info("aq_slot_done slot=%s/%s word_id=%s sent=%s", slot_date, slot_hour, word_id, sent)
 
