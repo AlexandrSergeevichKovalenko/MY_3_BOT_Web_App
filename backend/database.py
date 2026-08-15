@@ -5173,7 +5173,55 @@ def merge_unit_card_for_serve(card: dict | None, unit_card: dict | None,
         for key, value in overrides.items():
             if key in USER_EDITABLE_CARD_FIELDS and value not in (None, "", [], {}):
                 base[key] = value
-    return base
+    return dedupe_card_meanings(base)
+
+
+# Поля, где модель повторяет одно и то же значение по два раза.
+_MEANING_LIST_KEYS = ("dictionary_senses", "translations")
+
+
+def _meaning_key(value) -> str:
+    return _squash_space(str(value or "")).casefold().strip(" .,;")
+
+
+def dedupe_card_meanings(card: dict) -> dict:
+    """Убрать повторы значений внутри одного разбора.
+
+    ЗАЧЕМ. Модель пишет одно значение дважды, меняя пояснение: у «entsorgen» пять
+    значений, а разных три — «утилизировать» и «избавляться» стоят по два раза.
+    Замер 15.08.2026: в личных карточках 11 848 повторов из 33 954 значений (у 6 642
+    карточек), на общих словах — 614 из 13 799 (у 349 слов). Человек видит «пять
+    значений» и думает, что слово богаче, чем оно есть.
+
+    Сравниваем по ТЕКСТУ значения, пояснение в расчёт не берём: именно разным
+    пояснением модель и оправдывает повтор. Остаётся первое вхождение — оно идёт под
+    первым рангом, то есть признано главным. Ранги после отсева пересчитываются, иначе
+    на карточке будет «1, 3, 5».
+
+    Из базы ничего не удаляется: это правило показа. Страж на приёмке стоит отдельно,
+    в _prepare_dictionary_response_json_for_save.
+    """
+    if not isinstance(card, dict):
+        return card
+    for key in _MEANING_LIST_KEYS:
+        values = card.get(key)
+        if not isinstance(values, list) or len(values) < 2:
+            continue
+        kept, seen = [], set()
+        for item in values:
+            text = item.get("value") if isinstance(item, dict) else item
+            marker = _meaning_key(text)
+            if not marker or marker in seen:
+                continue
+            seen.add(marker)
+            kept.append(item)
+        if len(kept) == len(values):
+            continue
+        for index, item in enumerate(kept):
+            if isinstance(item, dict) and "rank" in item:
+                item["rank"] = index + 1
+        card[key] = kept
+    return card
 
 
 def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "response_json",

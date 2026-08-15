@@ -497,6 +497,7 @@ from backend.database import (
     get_dictionary_entry_by_id,
     list_user_vocabulary,
     attach_unit_content_to_cards,
+    dedupe_card_meanings,
     top_up_subscription_words,
     save_card_user_notes,
     USER_NOTES_MAX,
@@ -10150,6 +10151,13 @@ def _prepare_dictionary_response_json_for_save(
         source_lang=source_lang,
         target_lang=target_lang,
     )
+    # СТРАЖ НА ВХОДЕ: одно значение не ложится в базу дважды. Модель повторяет его,
+    # меняя пояснение («утилизировать — процесс удаления отходов» и «утилизировать —
+    # основное значение»), и человек видит пять значений там, где их три. Замер
+    # 15.08.2026: в личных карточках 11 848 повторов из 33 954 значений.
+    # На выдаче стоит такой же отсев (dedupe_card_meanings в merge_unit_card_for_serve)
+    # — он прикрывает то, что уже накоплено, а этот не пускает новое.
+    payload = dedupe_card_meanings(payload)
     return payload
 
 

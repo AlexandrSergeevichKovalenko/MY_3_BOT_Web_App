@@ -2212,6 +2212,10 @@ Return STRICT JSON with these fields:
   "translations": [
     {"value": "...", "context": "...", "is_primary": true}
   ],
+  // NO REPEATED MEANINGS. Every "value" in translations/meanings must be a DIFFERENT
+  // word. Do not list the same equivalent twice with a different "context" — that is
+  // what you did for "entsorgen" (утилизировать, избавляться, утилизировать,
+  // избавляться, вывозить мусор): five entries, three real meanings. Give three then.
   "meanings": {
     "primary": {
       "value": "...",
@@ -2391,6 +2395,10 @@ Return STRICT JSON with these fields:
   "translations": [
     {"value": "...", "context": "...", "is_primary": true}
   ],
+  // NO REPEATED MEANINGS. Every "value" in translations/meanings must be a DIFFERENT
+  // word. Do not list the same equivalent twice with a different "context" — that is
+  // what you did for "entsorgen" (утилизировать, избавляться, утилизировать,
+  // избавляться, вывозить мусор): five entries, three real meanings. Give three then.
   "meanings": {
     "primary": {
       "value": "...",
@@ -2729,6 +2737,10 @@ Return STRICT JSON with keys:
   "translations": [
     {"value": "...", "context": "...", "is_primary": true}
   ],
+  // NO REPEATED MEANINGS. Every "value" in translations/meanings must be a DIFFERENT
+  // word. Do not list the same equivalent twice with a different "context" — that is
+  // what you did for "entsorgen" (утилизировать, избавляться, утилизировать,
+  // избавляться, вывозить мусор): five entries, three real meanings. Give three then.
   "meanings": {
     "primary": {
       "value": "...",
@@ -2947,6 +2959,10 @@ Return STRICT JSON with keys:
   "translations": [
     {"value": "...", "context": "...", "is_primary": true}
   ],
+  // NO REPEATED MEANINGS. Every "value" in translations/meanings must be a DIFFERENT
+  // word. Do not list the same equivalent twice with a different "context" — that is
+  // what you did for "entsorgen" (утилизировать, избавляться, утилизировать,
+  // избавляться, вывозить мусор): five entries, three real meanings. Give three then.
   "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
   "article": "<language-appropriate article or null>",
   "forms": {
@@ -3230,6 +3246,10 @@ Return STRICT JSON with keys:
   "translations": [
     {"value": "...", "context": "...", "is_primary": true}
   ],
+  // NO REPEATED MEANINGS. Every "value" in translations/meanings must be a DIFFERENT
+  // word. Do not list the same equivalent twice with a different "context" — that is
+  // what you did for "entsorgen" (утилизировать, избавляться, утилизировать,
+  // избавляться, вывозить мусор): five entries, three real meanings. Give three then.
   "meanings": {
     "primary": {
       "value": "...",
@@ -3386,6 +3406,10 @@ Return STRICT JSON with keys:
   "translations": [
     {"value": "...", "context": "...", "is_primary": true}
   ],
+  // NO REPEATED MEANINGS. Every "value" in translations/meanings must be a DIFFERENT
+  // word. Do not list the same equivalent twice with a different "context" — that is
+  // what you did for "entsorgen" (утилизировать, избавляться, утилизировать,
+  // избавляться, вывозить мусор): five entries, three real meanings. Give three then.
   "synonyms": [{"word": "...", "gloss": "..."}],
   "antonyms": [{"word": "...", "gloss": "..."}],
   "related_words": [{"word": "...", "gloss": "..."}],
@@ -3482,6 +3506,10 @@ Return STRICT JSON with keys:
   "translations": [
     {"value": "...", "context": "...", "is_primary": true}
   ],
+  // NO REPEATED MEANINGS. Every "value" in translations/meanings must be a DIFFERENT
+  // word. Do not list the same equivalent twice with a different "context" — that is
+  // what you did for "entsorgen" (утилизировать, избавляться, утилизировать,
+  // избавляться, вывозить мусор): five entries, three real meanings. Give three then.
   "usage_note": "string|null",
   "register_note": "string|null",
   "register": "<нейтральное|разговорное|официальное|книжное|устаревшее|сленг|null>",
@@ -3597,6 +3625,10 @@ Return STRICT JSON with keys:
   "translations": [
     {"value": "...", "context": "...", "is_primary": true}
   ],
+  // NO REPEATED MEANINGS. Every "value" in translations/meanings must be a DIFFERENT
+  // word. Do not list the same equivalent twice with a different "context" — that is
+  // what you did for "entsorgen" (утилизировать, избавляться, утилизировать,
+  // избавляться, вывозить мусор): five entries, three real meanings. Give three then.
   "meanings": {
     "primary": {
       "value": "...",
