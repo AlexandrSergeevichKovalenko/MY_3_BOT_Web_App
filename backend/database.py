@@ -55381,6 +55381,48 @@ def get_trainer_recipient_ids(sprint_id: str, *, since_days: int = 5) -> set[int
     return {int(r[0]) for r in rows}
 
 
+def pick_personal_rail_sprint(*, user_id: int, relation: str, since_days: int = 5,
+                              exclude_ids: list | None = None) -> dict | None:
+    """Слово, которое ИМЕННО ЭТОТ человек тренировал на днях и ещё не спринтовал.
+
+    Учебная связка «узнавание → через три дня припоминание» тут не ломается, а
+    усиливается: раньше слово выбиралось одно на всех, и того, кто его не тренировал,
+    просто пропускали (`gated`) — человек не получал ничего. Теперь ему достаётся слово
+    из его собственной подготовки.
+    """
+    skip = [str(i).split(":", 1)[-1] for i in (exclude_ids or []) if str(i)]
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT b.sprint_id, b.relation, b.wort, b.accepted, b.erklaerung,
+                           b.tip, b.hint_ru
+                    FROM bt_3_sprint_bank b
+                    JOIN bt_3_trainer_dispatches d ON d.sprint_id = b.sprint_id
+                    WHERE b.relation = %s AND b.retired = FALSE
+                      AND d.target_user_id = %s
+                      AND d.sent_at >= NOW() - (%s || ' days')::INTERVAL
+                    """
+                    + ("  AND b.sprint_id::text <> ALL(%s)\n" if skip else "")
+                    + """
+                    ORDER BY d.sent_at ASC, b.send_count ASC
+                    LIMIT 1
+                    """,
+                    ((str(relation), int(user_id), int(since_days), skip) if skip
+                     else (str(relation), int(user_id), int(since_days))),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        return {"sprint_id": row[0], "relation": row[1], "wort": row[2],
+                "accepted": row[3], "erklaerung": row[4], "tip": row[5],
+                "hint_ru": row[6]}
+    except Exception:
+        logging.warning("pick_personal_rail_sprint failed user=%s", user_id, exc_info=True)
+        return None
+
+
 def get_trainer_dispatch_by_id(dispatch_id: int) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

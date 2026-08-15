@@ -448,6 +448,7 @@ from backend.database import (
     delete_sprint_bank,
     count_available_sprint_items,
     pick_next_sprint,
+    pick_personal_rail_sprint,
     get_sprint_item_by_word,
     list_sprint_bank_words,
     list_sprint_words_needing_trainer,
@@ -4367,7 +4368,7 @@ async def _drip_emit_reminder(context, uid, did, *, kb, caption, poster_fn, inbo
 # Вид задания в рассылке → вид в памяти личной ротации (тот же код, каким строится
 # ключ ответа в `content_ranking_key`).
 _ROTATION_KIND_BY_DRIP = {"aufgabe": "au", "anagram": "ag", "rebus": "rb",
-                          "crossword": "cw", "listening": "ls"}
+                          "crossword": "cw", "listening": "ls", "sprint": "sp"}
 
 
 async def _drip_blocked_ids(uid: int, kind: str) -> list:
@@ -39338,19 +39339,33 @@ async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> Non
         get_trainer_recipient_ids, str(entry["sprint_id"]), since_days=5)) if apply_rail_gate else set()
     sent = 0
     gated = 0
+    sent_ids: set = set()
     for t in targets:
         cid = int(t.get("chat_id") or 0)
         if cid == 0:
             continue
-        if apply_rail_gate and cid > 0 and cid not in trainer_recipients:  # DM: prep required
-            gated += 1
-            continue
-        if await send_sprint_to_chat(context, entry=entry, relation=relation, slot_date=slot_date,
-                                     slot_hour=slot_hour, chat_id=cid, target_user_id=cid):
+        entry_for_user = entry
+        if apply_rail_gate and cid > 0 and cid not in trainer_recipients:
+            # Человек не тренировал слово этого слота. Раньше его просто пропускали и он
+            # не получал НИЧЕГО. Теперь ищем слово из ЕГО собственной подготовки: связка
+            # «узнавание → припоминание» так не ломается, а работает точнее.
+            blocked = await _drip_blocked_ids(cid, "sprint")
+            personal = await asyncio.to_thread(
+                pick_personal_rail_sprint, user_id=cid, relation=relation,
+                since_days=5, exclude_ids=blocked)
+            if not personal:
+                gated += 1
+                continue
+            entry_for_user = personal
+        if await send_sprint_to_chat(context, entry=entry_for_user, relation=relation,
+                                     slot_date=slot_date, slot_hour=slot_hour,
+                                     chat_id=cid, target_user_id=cid):
             sent += 1
-    if sent > 0:
-        await asyncio.to_thread(mark_sprint_sent, str(entry["sprint_id"]))
-    logging.info("sprint_sent relation=%s sent=%s gated_free=%s word=%s", relation, sent, gated, entry.get("wort"))
+            sent_ids.add(str(entry_for_user["sprint_id"]))
+    for sid in sorted(sent_ids):
+        await asyncio.to_thread(mark_sprint_sent, sid)
+    logging.info("sprint_sent relation=%s sent=%s gated_free=%s words=%s",
+                 relation, sent, gated, len(sent_ids))
 
 
 async def admin_clearsprint_command(update: Update, context: CallbackContext) -> None:

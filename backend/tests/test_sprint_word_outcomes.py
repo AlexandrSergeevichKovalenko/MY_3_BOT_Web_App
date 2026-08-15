@@ -76,5 +76,36 @@ class PickerTests(unittest.TestCase):
         self.assertNotIn("<> ALL(%s)", " ".join(cur.execute.call_args[0][0].split()))
 
 
+
+
+class PersonalRailTests(unittest.TestCase):
+    """Учебная связка «узнавание → через три дня припоминание» не ломается, а работает
+    точнее: человеку, который слово слота не тренировал, даётся слово из ЕГО подготовки.
+    Раньше такого просто пропускали и он не получал ничего."""
+
+    def test_query_is_tied_to_this_persons_trainer(self):
+        ctx, cur = _fake_conn()
+        with patch.object(db, "get_db_connection_context", return_value=ctx):
+            db.pick_personal_rail_sprint(user_id=42, relation="synonym", since_days=5)
+        sql = " ".join(cur.execute.call_args[0][0].split())
+        self.assertIn("JOIN bt_3_trainer_dispatches", sql)
+        self.assertIn("d.target_user_id = %s", sql)
+        self.assertIn(42, cur.execute.call_args[0][1])
+
+    def test_passed_words_are_skipped(self):
+        ctx, cur = _fake_conn()
+        with patch.object(db, "get_db_connection_context", return_value=ctx):
+            db.pick_personal_rail_sprint(user_id=42, relation="synonym",
+                                         exclude_ids=["sp:s7"])
+        self.assertIn("<> ALL(%s)", " ".join(cur.execute.call_args[0][0].split()))
+        self.assertIn(["s7"], list(cur.execute.call_args[0][1]))
+
+    def test_nothing_trained_means_nothing_forced(self):
+        """Не тренировал ничего — спринт не выдаём: это припоминание, а не угадайка."""
+        ctx, _ = _fake_conn()
+        with patch.object(db, "get_db_connection_context", return_value=ctx):
+            self.assertIsNone(
+                db.pick_personal_rail_sprint(user_id=42, relation="synonym"))
+
 if __name__ == "__main__":
     unittest.main()
