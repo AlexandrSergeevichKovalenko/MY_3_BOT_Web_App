@@ -2699,4 +2699,25 @@ def evaluate_sprint(*, dispatch_id: int, user_id: int, words: list, time_ms: int
     count = len(found)
     record_sprint_result(sprint_key=key, user_id=int(user_id), user_name=str(user_name or ""),
                          correct_count=count, time_ms=int(time_ms or 0))
+    # Что человек НАЗВАЛ и что упустил — до 15.08.2026 не сохранялось нигде: в базу
+    # уходил только счёт «7 слов за минуту». Поэтому нельзя было ни повторить ему
+    # именно то слово, на котором он сел, ни перестать давать пройденное.
+    # Банк тут крошечный (16 синонимов и 18 антонимов, замер 14.08.2026), так что
+    # повтор одного и того же особенно заметен.
+    try:
+        from backend.database import record_sprint_word_outcomes, record_user_task_answer
+        total_accepted = len(accepted_pairs(item.get("accepted"))) or 1
+        record_sprint_word_outcomes(
+            user_id=int(user_id), sprint_id=str(item.get("sprint_id") or ""),
+            relation=relation, found=found,
+            missed=[str(p.get("de") or "") for p in accepted_pairs(item.get("accepted"))
+                    if str(p.get("de") or "") not in set(found)],
+        )
+        # «Решил» = назвал хотя бы половину списка. Иначе слово вернётся раньше.
+        record_user_task_answer(
+            user_id=int(user_id), kind="sp",
+            task_key=f"sp:{item.get('sprint_id')}",
+            is_correct=bool(count * 2 >= total_accepted), source="chat")
+    except Exception:
+        logging.warning("sprint: не записались слова раунда user=%s", user_id, exc_info=True)
     return _sprint_result_view(item, count, int(time_ms or 0), user_id=int(user_id), found=found)

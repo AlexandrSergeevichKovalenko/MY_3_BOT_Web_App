@@ -54910,7 +54910,62 @@ def count_available_sprint_items(*, relation: str, cooldown_days: int = 0) -> in
             return int((cursor.fetchone() or [0])[0])
 
 
-def pick_next_sprint(*, relation: str, cooldown_days: int = 14) -> dict | None:
+def ensure_sprint_word_outcomes_schema() -> None:
+    """Какие слова человек НАЗВАЛ, а какие упустил. До 15.08.2026 не сохранялось нигде:
+    в базу уходил только счёт «7 слов за минуту»."""
+    if _task_rotation_writes_disabled():
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_sprint_word_outcomes (
+                    id         BIGSERIAL PRIMARY KEY,
+                    user_id    BIGINT NOT NULL,
+                    sprint_id  TEXT NOT NULL,
+                    relation   TEXT NOT NULL,
+                    word       TEXT NOT NULL,
+                    found      BOOLEAN NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_bt_3_sprint_word_outcomes_user "
+                        "ON bt_3_sprint_word_outcomes (user_id, relation, created_at DESC);")
+        conn.commit()
+
+
+def record_sprint_word_outcomes(*, user_id: int, sprint_id: str, relation: str,
+                                found: list, missed: list) -> None:
+    """Слова раунда пачкой. Служебная запись: упала — раунд человеку всё равно засчитан."""
+    if _task_rotation_writes_disabled():
+        return
+    rows = ([(str(w), True) for w in (found or []) if str(w).strip()]
+            + [(str(w), False) for w in (missed or []) if str(w).strip()])
+    if not rows:
+        return
+    try:
+        ensure_sprint_word_outcomes_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                for word, ok in rows:
+                    cur.execute(
+                        "INSERT INTO bt_3_sprint_word_outcomes "
+                        "(user_id, sprint_id, relation, word, found) VALUES (%s,%s,%s,%s,%s);",
+                        (int(user_id), str(sprint_id), str(relation), word[:64], bool(ok)),
+                    )
+            conn.commit()
+    except Exception:
+        logging.warning("record_sprint_word_outcomes failed user=%s sprint=%s",
+                        user_id, sprint_id, exc_info=True)
+
+
+def pick_next_sprint(*, relation: str, cooldown_days: int = 14,
+                     exclude_ids: list | None = None) -> dict | None:
+    """`exclude_ids` — что закрыто ЛИЧНО этому человеку (`get_user_blocked_content_ids`).
+
+    Банк здесь крошечный (16 синонимов и 18 антонимов, замер 14.08.2026), поэтому
+    повтор одного и того же слова заметен сильнее, чем где бы то ни было.
+    """
+    skip = [str(i).split(":", 1)[-1] for i in (exclude_ids or []) if str(i)]
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -54919,10 +54974,14 @@ def pick_next_sprint(*, relation: str, cooldown_days: int = 14) -> dict | None:
                 FROM bt_3_sprint_bank
                 WHERE relation = %s AND retired = FALSE
                   AND (last_sent_at IS NULL OR last_sent_at < NOW() - (%s || ' days')::INTERVAL)
+                """
+                + ("  AND sprint_id::text <> ALL(%s)\n" if skip else "")
+                + """
                 ORDER BY last_sent_at NULLS FIRST, send_count ASC
                 LIMIT 1
                 """,
-                (str(relation), int(cooldown_days)),
+                ((str(relation), int(cooldown_days), skip) if skip
+                 else (str(relation), int(cooldown_days))),
             )
             row = cursor.fetchone()
     if not row:
