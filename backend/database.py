@@ -2880,6 +2880,20 @@ def purge_retired_artikel_mistakes(user_id: int | None = None) -> int:
         return 0
 
 
+# Порция на день: человеку показываем не всю кучу, а самые старые 30 ошибок.
+# Замер 15.08.2026: у людей копилось до 188 просроченных заданий, а за один заход
+# разбиралось 20-50 — куча была физически неразбираема и только росла. Решение
+# владельца: «давал бы короткими порциями по 30 ошибок за день, все ошибки собираем,
+# показываем самые старшие 30». Очередь при этом не режется: копится всё, меняется
+# только то, сколько видно за раз.
+REVIEW_DAILY_PORTION = 30
+
+_DAILY_PORTION_SQL = (
+    " AND m.id IN (SELECT id FROM bt_3_aufgabe_mistakes "
+    "              WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW() "
+    f"             ORDER BY due_at ASC, id ASC LIMIT {REVIEW_DAILY_PORTION})")
+
+
 def count_due_mistakes(user_id: int, *, family: str | None = None) -> int:
     try:
         ensure_aufgabe_mistakes_schema()
@@ -2888,8 +2902,9 @@ def count_due_mistakes(user_id: int, *, family: str | None = None) -> int:
                 cur.execute(
                     "SELECT COUNT(*) FROM bt_3_aufgabe_mistakes m "
                     "WHERE m.user_id=%s AND m.mastered=FALSE AND m.due_at<=NOW() "
-                    f"{_mistake_family_clause(family)}{_ARTIKEL_LIVE_WORD_SQL};",
-                    (int(user_id),),
+                    f"{_mistake_family_clause(family)}{_ARTIKEL_LIVE_WORD_SQL}"
+                    f"{_DAILY_PORTION_SQL};",
+                    (int(user_id), int(user_id)),
                 )
                 return int((cur.fetchone() or [0])[0])
     except Exception:
@@ -2912,8 +2927,8 @@ def count_due_mistakes_by_family(user_id: int) -> dict:
                     "  COUNT(*) "
                     "FROM bt_3_aufgabe_mistakes m "
                     "WHERE m.user_id=%s AND m.mastered=FALSE AND m.due_at<=NOW()"
-                    + _ARTIKEL_LIVE_WORD_SQL + ";",
-                    (int(user_id),),
+                    + _ARTIKEL_LIVE_WORD_SQL + _DAILY_PORTION_SQL + ";",
+                    (int(user_id), int(user_id)),
                 )
                 row = cur.fetchone() or [0, 0, 0, 0]
                 return {"artikel": int(row[0] or 0), "wofrage": int(row[1] or 0),
@@ -2959,9 +2974,10 @@ def get_next_due_mistake(user_id: int, *, family: str | None = None) -> dict | N
                     """SELECT m.id, m.format, m.payload, m.correct_answer
                        FROM bt_3_aufgabe_mistakes m
                        WHERE m.user_id=%s AND m.mastered=FALSE AND m.due_at<=NOW() """
-                    + _mistake_family_clause(family) + _ARTIKEL_LIVE_WORD_SQL +
+                    + _mistake_family_clause(family) + _ARTIKEL_LIVE_WORD_SQL
+                    + _DAILY_PORTION_SQL +
                     """ ORDER BY m.due_at ASC, m.id ASC LIMIT 12;""",
-                    (int(user_id),),
+                    (int(user_id), int(user_id)),
                 )
                 rows = cur.fetchall() or []
                 # Serve-time self-heal (mirrors pick_next_aufgabe for the pool): the review
@@ -52730,11 +52746,11 @@ def get_due_artikel_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
                           AND COALESCE(n.retired, FALSE) = FALSE
                     WHERE m.user_id = %s AND m.format = 'artikel'
                       AND m.mastered = FALSE AND m.due_at <= NOW()
-                    """ + _ARTIKEL_LIVE_WORD_SQL + """
+                    """ + _ARTIKEL_LIVE_WORD_SQL + _DAILY_PORTION_SQL + """
                     ORDER BY m.due_at ASC, m.id ASC
                     LIMIT %s;
                     """,
-                    (int(user_id), int(limit)),
+                    (int(user_id), int(user_id), int(limit)),
                 )
                 rows = cur.fetchall() or []
         # A word can have several noun-bank rows (theme dupes) → keep the first non-null media.
@@ -52777,8 +52793,11 @@ def get_due_wofrage_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
                     "SELECT id, payload FROM bt_3_aufgabe_mistakes "
                     "WHERE user_id=%s AND format='wofrage' "
                     "  AND mastered=FALSE AND due_at<=NOW() "
+                    + "  AND id IN (SELECT id FROM bt_3_aufgabe_mistakes "
+                    "              WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW() "
+                    f"             ORDER BY due_at ASC, id ASC LIMIT {REVIEW_DAILY_PORTION}) "
                     "ORDER BY due_at ASC, id ASC LIMIT %s;",
-                    (int(user_id), int(limit)),
+                    (int(user_id), int(user_id), int(limit)),
                 )
                 rows = cur.fetchall() or []
         out = []

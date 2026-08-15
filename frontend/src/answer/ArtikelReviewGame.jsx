@@ -1,6 +1,7 @@
 import useFitText from './useFitText.js';
 import useWideScreen from './useWideScreen.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { sendReviewAnswer, flushPendingReviewAnswers } from './reviewAnswerQueue';
 
 /**
  * Artikel section of «работа над ошибками», built on the SAME template as the Artikel
@@ -43,6 +44,8 @@ export default function ArtikelReviewGame({ api, haptic, onClose, onBack }) {
   const loadBatch = useCallback(async () => {
     setPhase('loading');
     try {
+      // Сначала досылаем то, что не ушло в прошлый раз.
+      await flushPendingReviewAnswers(api);
       const data = await api('/api/answer/review/artikel/batch', { limit: 20 });
       if (!data.ok) { setError(data.error || 'Fehler'); setPhase('error'); return; }
       cardsRef.current = data.cards || [];
@@ -63,9 +66,10 @@ export default function ArtikelReviewGame({ api, haptic, onClose, onBack }) {
     setStats((s) => ({ correct: s.correct + (ok ? 1 : 0), answered: s.answered + 1 }));
     try { haptic?.(ok ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
     playAudio(c.audio); // "der/die/das + Wort" on the tap (user gesture → iOS allows it)
-    // Advance spaced-repetition in the background — never blocks the next card.
-    api('/api/answer/review/artikel/answer', { mistake_id: c.id, is_correct: ok })
-      .catch(() => { /* fire-and-forget */ });
+    // Ответ уходит в фоне и НЕ теряется: при неудаче повторяется, а совсем не
+    // ушедший откладывается и досылается при следующем открытии экрана.
+    sendReviewAnswer(api, '/api/answer/review/artikel/answer',
+                     { mistake_id: c.id, is_correct: ok });
   }, [chosen, idx, api, haptic, playAudio]);
 
   const next = useCallback(() => {

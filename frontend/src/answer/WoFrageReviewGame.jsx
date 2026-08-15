@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import useFitText from './useFitText.js';
 import useWideScreen from './useWideScreen.js';
+import { sendReviewAnswer, flushPendingReviewAnswers } from './reviewAnswerQueue';
 
 /**
  * Wo-Fragen section of «работа над ошибками», built on the SAME template as the Wo-Frage
@@ -31,6 +32,9 @@ export default function WoFrageReviewGame({ api, haptic, onClose, onBack }) {
   const loadBatch = useCallback(async () => {
     setPhase('loading');
     try {
+      // Сначала досылаем то, что не ушло в прошлый раз, — иначе человек снова увидит
+      // задания, которые он уже решил.
+      await flushPendingReviewAnswers(api);
       const data = await api('/api/answer/review/wofrage/batch', { limit: 20 });
       if (!data.ok) { setError(data.error || 'Fehler'); setPhase('error'); return; }
       const list = data.cards || [];
@@ -49,9 +53,11 @@ export default function WoFrageReviewGame({ api, haptic, onClose, onBack }) {
     setPick(o);
     setStats((s) => ({ correct: s.correct + (ok ? 1 : 0), answered: s.answered + 1 }));
     try { haptic?.(ok ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
-    // Advance spaced-repetition in the background — never blocks the next card.
-    api('/api/answer/review/wofrage/answer', { mistake_id: card.id, is_correct: ok })
-      .catch(() => { /* fire-and-forget */ });
+    // Ответ уходит в фоне и НЕ теряется: при неудаче повторяется, а совсем не
+    // ушедший откладывается и досылается при следующем открытии экрана. Раньше здесь
+    // стоял .catch(() => {}) — человек видел галочку, а задание оставалось нерешённым.
+    sendReviewAnswer(api, '/api/answer/review/wofrage/answer',
+                     { mistake_id: card.id, is_correct: ok });
   }, [pick, card, api, haptic]);
 
   const next = useCallback(() => {
