@@ -196,7 +196,12 @@ def _fetch_links(cur, unit_id: int, *, want_lang: str) -> list[dict]:
         ORDER BY (l.sense_id IS NULL), l.rank, u.id
         LIMIT %s;
         """,
-        (unit_id, want_lang, _DEMOTED_RANK, _MAX_LINKS),
+        # Берём с запасом. Показать надо _MAX_LINKS штук, но часть из них — пересказы
+        # друг друга («скобка» и «Скобка, скрепка»), и отсеиваются они уже здесь, в
+        # коде. Если брать ровно шесть, дубли занимают места ДО отсева, и настоящие
+        # значения человек не увидит: замер 11.08.2026 — 338 слов показывали ровно
+        # шесть строк, где половина одно и то же. Отбор в _build_item.
+        (unit_id, want_lang, _DEMOTED_RANK, _MAX_LINKS * 4),
     )
     return [
         {"id": r[0], "lang": r[1], "kind": r[2], "display": r[3], "lemma": r[4],
@@ -252,6 +257,61 @@ def _collect_homographs(cur, units: list[dict], chosen: dict, *, want_lang: str)
             "unit_id": unit["id"],
         })
     return out
+
+
+_BRACKET_NOTE_RE = re.compile(r"^(.*?)\s*\([^)]*\)\s*$")
+
+
+def _translation_key(value: str) -> str:
+    """Ключ сравнения переводов: пробелы, регистр и точка в конце значения не меняют."""
+    return _SPACE_RE.sub(" ", str(value or "").strip()).casefold().rstrip(".")
+
+
+def drop_nested_translations(values: list[str]) -> list[str]:
+    """Убрать переводы, целиком сидящие внутри соседних.
+
+    ЗАЧЕМ. У слова показывают и «скобка», и «Скобка, скрепка» — это не два значения, а
+    одно плюс пересказ. Замер 11.08.2026 (scripts/dict_defect_audit.py, п.4): такое у
+    1358 немецких слов из 4627, то есть у каждого третьего. Хуже того, у 338 слов
+    пересказы занимают все шесть мест, и настоящие другие значения не влезают.
+
+    ПРАВИЛО. Остаётся КОРОТКИЙ: он и есть перевод, длинный обычно тащит приклеенное
+    пояснение («направление» против «направление, к которому движутся»). Исключение
+    одно — когда длинный отличается только пометой в скобках («деньги» против «деньги
+    (разг.)»): помета короткая, полезная и человеку нужна, поэтому остаётся она.
+
+    ЧЕГО ПРАВИЛО НЕ ДЕЛАЕТ. Не режет перечисления на части. «зажим, клипса» так и
+    останется одной строкой, если внутри нет отдельно лежащего перевода: резать по
+    запятой вслепую опасно — «направление, к которому движутся» дало бы обрывок
+    «к которому движутся», который переводом не является.
+
+    Из базы НИЧЕГО не удаляется: это правило показа. Понижением ранга оно и не
+    лечится — у 1147 слов из 1358 понижать нечего, июльское разрезание трогало
+    только свалки с номерами.
+    """
+    keys = [_translation_key(v) for v in values]
+    drop: set[int] = set()
+    for i, short in enumerate(keys):
+        for j, long_ in enumerate(keys):
+            if i == j or i in drop or j in drop:
+                continue
+            if short == long_:
+                # «венчик» и «венчик.» — одно значение: отличается только знак в конце
+                # (12 слов в замере). Полное сравнение строк в _build_item такое не
+                # ловит, оно точку считает частью перевода. Оставляем первый.
+                drop.add(max(i, j))
+                continue
+            inside = (
+                short in [part.strip() for part in long_.split(",")]
+                or long_.startswith(short + " ")
+                or long_.startswith(short + ",")
+            )
+            if not inside:
+                continue
+            note = _BRACKET_NOTE_RE.match(long_)
+            # «деньги» ⊂ «деньги (разг.)» — оставляем помеченный, он информативнее.
+            drop.add(i if (note and _translation_key(note.group(1)) == short) else j)
+    return [value for index, value in enumerate(values) if index not in drop]
 
 
 def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang: str) -> dict:
@@ -329,6 +389,11 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
         # показывать короткий. Правило пока не поставлено, решение за владельцем.
         seen_values.add(key)
         shown.append(link)
+    # Пересказы соседних переводов убираем ЗДЕСЬ, после отсева полных повторов и до
+    # обрезки до _MAX_LINKS: иначе «Скобка, скрепка» занимает место, которое должно
+    # достаться настоящему другому значению. Правило и числа — в drop_nested_translations.
+    kept = set(drop_nested_translations([link["display"] for link in shown]))
+    shown = [link for link in shown if link["display"] in kept][:_MAX_LINKS]
     if shown:
         item["translations"] = [
             {"value": link["display"], "context": "", "is_primary": index == 0}
