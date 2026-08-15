@@ -49539,6 +49539,112 @@ def mark_freeform_card_sent(answer_id: int) -> None:
         conn.commit()
 
 
+# ─── Личная ротация заданий: что этот человек по этому виду уже видел ─────────
+#
+# Отдельно от `bt_3_challenge_results` НАМЕРЕННО. Та таблица засчитывает только ПЕРВЫЙ
+# ответ (`ON CONFLICT DO NOTHING` в `record_challenge_result` ниже), и на ней стоят места
+# и проценты в рейтингах (`compute_challenge_ranking`). Лестница возврата 90 → 120 →
+# никогда обязана считать ПОВТОРНЫЕ верные ответы — сменить там семантику значило бы
+# рискнуть рейтингами. Само правило живёт без базы, в `backend/task_rotation.py`.
+
+def ensure_task_rotation_schema() -> None:
+    """Личное состояние ротации: одна строка на (человек, вид задания, задание)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_user_task_state (
+                    id               BIGSERIAL PRIMARY KEY,
+                    user_id          BIGINT NOT NULL,
+                    kind             TEXT NOT NULL,
+                    task_key         TEXT NOT NULL,
+                    seen_count       INTEGER NOT NULL DEFAULT 0,
+                    correct_count    INTEGER NOT NULL DEFAULT 0,
+                    source           TEXT NOT NULL DEFAULT 'sprint',
+                    last_seen_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    next_eligible_at TIMESTAMPTZ,
+                    retired_at       TIMESTAMPTZ,
+                    UNIQUE (user_id, kind, task_key)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_user_task_state_pick
+                ON bt_3_user_task_state (user_id, kind, next_eligible_at);
+            """)
+        conn.commit()
+
+
+def get_user_task_state(user_id: int, kind: str, task_keys: list) -> dict:
+    """Состояние по перечисленным заданиям: {task_key: {...}}. Чего нет — не видел."""
+    keys = [str(k) for k in (task_keys or []) if str(k)]
+    if not keys:
+        return {}
+    try:
+        ensure_task_rotation_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """SELECT task_key, seen_count, correct_count,
+                              last_seen_at, next_eligible_at, retired_at
+                       FROM bt_3_user_task_state
+                       WHERE user_id = %s AND kind = %s AND task_key = ANY(%s);""",
+                    (int(user_id), str(kind), keys),
+                )
+                rows = cursor.fetchall()
+        return {r[0]: {"seen_count": r[1], "correct_count": r[2], "last_seen_at": r[3],
+                       "next_eligible_at": r[4], "retired_at": r[5]} for r in rows}
+    except Exception:
+        logging.warning("get_user_task_state failed user=%s kind=%s", user_id, kind,
+                        exc_info=True)
+        return {}
+
+
+def record_user_task_answer(*, user_id: int, kind: str, task_key: str,
+                            is_correct: bool, source: str = "sprint") -> None:
+    """Записать ответ и передвинуть лестницу возврата по правилу из `task_rotation`.
+
+    Память служебная: если запись упала, ответ человеку всё равно должен пройти —
+    поэтому наружу отсюда ничего не летит.
+    """
+    from datetime import datetime, timezone
+    from backend.task_rotation import next_state
+    try:
+        ensure_task_rotation_schema()
+        now = datetime.now(timezone.utc)
+        prev = get_user_task_state(int(user_id), str(kind), [str(task_key)]).get(
+            str(task_key)) or {}
+        st = next_state(seen_count=int(prev.get("seen_count") or 0),
+                        correct_count=int(prev.get("correct_count") or 0),
+                        is_correct=bool(is_correct), now=now)
+        params = [int(user_id), str(kind), str(task_key), st["seen_count"],
+                  st["correct_count"], str(source)[:16]]
+        if st["next_eligible_at"] is not None:
+            params.append(st["next_eligible_at"])
+        if st["retired_at"] is not None:
+            params.append(st["retired_at"])
+        sql = (
+            "INSERT INTO bt_3_user_task_state "
+            "    (user_id, kind, task_key, seen_count, correct_count, source, "
+            "     last_seen_at, next_eligible_at, retired_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, NOW(), {due}, {ret}) "
+            "ON CONFLICT (user_id, kind, task_key) DO UPDATE SET "
+            "    seen_count = EXCLUDED.seen_count, "
+            "    correct_count = EXCLUDED.correct_count, "
+            "    source = EXCLUDED.source, "
+            "    last_seen_at = NOW(), "
+            "    next_eligible_at = EXCLUDED.next_eligible_at, "
+            "    retired_at = COALESCE(bt_3_user_task_state.retired_at, "
+            "                          EXCLUDED.retired_at);"
+        ).format(due="%s" if st["next_eligible_at"] is not None else "NULL",
+                 ret="%s" if st["retired_at"] is not None else "NULL")
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, tuple(params))
+            conn.commit()
+    except Exception:
+        logging.warning("record_user_task_answer failed user=%s kind=%s key=%s",
+                        user_id, kind, task_key, exc_info=True)
+
+
 # ─── Unified challenge ranking (trophy / leaderboard across all games) ────────
 
 def record_challenge_result(*, challenge_key: str, user_id: int, user_name: str,
