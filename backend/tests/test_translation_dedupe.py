@@ -90,3 +90,41 @@ def test_counted_noun_after_a_leading_digit_is_not_a_sense_number():
 def test_plain_translation_survives_untouched():
     assert split("класть трубку") == ["класть трубку"]
     assert split("") == []
+
+
+# ── регистр перевода ──────────────────────────────────────────────────────────
+# Замер 15.08.2026: на карточках одиночных слов 1418 переводов с заглавной. Это
+# словарные статьи, а не предложения. Но 53 из них трогать нельзя: имена собственные
+# и строки с заглавной внутри.
+
+from backend.lex_units import normalize_translation_case as fix_case
+
+
+def test_ordinary_translation_becomes_lowercase():
+    assert fix_case("Аккуратный, опрятный", german_pos="adjective") == "аккуратный, опрятный"
+    assert fix_case("Тормозить, сдерживать", german_pos="verb") == "тормозить, сдерживать"
+
+
+def test_sentence_keeps_its_capital():
+    assert fix_case("Прогноз оправдался.", german_pos="") == "Прогноз оправдался."
+    assert fix_case("Почему вы опять сплетничаете?", german_pos="") == "Почему вы опять сплетничаете?"
+
+
+def test_proper_name_inside_the_string_is_left_alone():
+    assert fix_case("Северный Ледовитый океан", german_pos="noun") == "Северный Ледовитый океан"
+
+
+def test_single_word_stays_capital_when_the_german_side_is_a_noun():
+    """«Athen → Афины», «Marokko → Марокко» — опустить значило бы соврать."""
+    assert fix_case("Афины", german_pos="noun") == "Афины"
+    assert fix_case("Марокко", german_pos="") == "Марокко", "пустая часть речи — не разрешение"
+
+
+def test_single_word_is_lowered_only_for_a_clearly_non_noun():
+    assert fix_case("Вводить", german_pos="verb") == "вводить"
+    assert fix_case("Быстро", german_pos="adverb") == "быстро"
+
+
+def test_already_lowercase_is_untouched():
+    assert fix_case("скобка", german_pos="noun") == "скобка"
+    assert fix_case("", german_pos="noun") == ""

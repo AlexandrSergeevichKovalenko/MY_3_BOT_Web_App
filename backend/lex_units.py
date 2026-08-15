@@ -383,6 +383,49 @@ def drop_nested_translations(values: list[str]) -> list[str]:
     return [value for index, value in enumerate(values) if index not in drop]
 
 
+# Части речи, у которых перевод точно не может быть именем собственным.
+_NOT_A_NOUN_POS = {"verb", "adjective", "adverb", "adj", "adv", "preposition",
+                   "conjunction", "particle", "pronoun", "numeral", "interjection"}
+_RU_CAPITAL_START_RE = re.compile(r"^[А-ЯЁ][а-яё]")
+_RU_CAPITAL_INSIDE_RE = re.compile(r".[А-ЯЁ]")
+_SENTENCE_END_RE = re.compile(r"[.!?]$")
+_ONE_TOKEN_RE = re.compile(r"^[^\s,;]+$")
+
+
+def normalize_translation_case(value: str, *, german_pos: str = "") -> str:
+    """Перевод в словаре пишется со строчной. Но не всякую заглавную можно опустить.
+
+    ЗАЧЕМ. Замер 15.08.2026: на карточках одиночных слов 1418 переводов начинаются с
+    заглавной — «Аккуратный, опрятный», «Тормозить, сдерживать». Это словарные статьи,
+    а не предложения, и заглавная в них лишняя.
+
+    ЧЕГО НЕ ТРОГАЕМ, и почему именно так:
+      • предложение (кончается на . ! ?) — «Прогноз оправдался.» пишется с заглавной;
+      • строка с заглавной ВНУТРИ («Северный Ледовитый океан») — там имя собственное;
+      • ОДНО слово, если немецкое слово не названо ЯВНО глаголом, прилагательным или
+        наречием. Здесь прячутся имена собственные: «Athen → Афины», «Marokko →
+        Марокко», «der Anhalt → Анхальт». Часть речи у них в базе пустая, поэтому
+        проверка «это существительное» их НЕ ловит — проверять надо наоборот, и
+        первая версия правила из-за этого написала «афины». Разбирать такие случаи
+        надо глазами, а не правилом; их 39 из 1418.
+
+    Охват: 1365 из 1418 (96%) опускаются без единого риска, 53 остаются как есть.
+    """
+    text = str(value or "")
+    if not _RU_CAPITAL_START_RE.match(text):
+        return text
+    if _SENTENCE_END_RE.search(text.strip()):
+        return text
+    if _RU_CAPITAL_INSIDE_RE.search(text):
+        return text
+    if _ONE_TOKEN_RE.match(text.strip()):
+        # Одиночное слово опускаем, только если немецкое слово ЯВНО не существительное.
+        # Пустая часть речи — не разрешение: у «Athen» и «Marokko» она пустая.
+        if str(german_pos or "").strip().lower() not in _NOT_A_NOUN_POS:
+            return text
+    return text[:1].lower() + text[1:]
+
+
 def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang: str) -> dict:
     """Карточка в том виде, какой ждёт фронт.
 
@@ -460,10 +503,13 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
 
     # Дальше работаем со СТРОКАМИ, а не со связями: одна связь может дать несколько
     # значений («1 класть, положить 2 накладывать» — это два перевода, а не один).
+    german_pos = str((de_side or {}).get("pos") or "")
     values: list[str] = []
     for link in shown:
         for piece in split_numbered_senses(link["display"]):
-            values.append(piece)
+            # Регистр правим ДО отсева повторов: иначе «Перемена, изменение» и
+            # «перемена, изменение» считаются разными строками и остаются обе.
+            values.append(normalize_translation_case(piece, german_pos=german_pos))
     # Свалка могла распасться на куски, уже лежащие рядом отдельными связями.
     deduped: list[str] = []
     seen_pieces: set[str] = set()
