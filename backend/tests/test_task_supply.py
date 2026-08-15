@@ -7,7 +7,8 @@
 
 import unittest
 
-from backend.task_supply import (TARGET_SUPPLY_DAYS, TOPUP_PER_NIGHT_CAP,
+from backend.task_supply import (FORECAST_MARGIN, TARGET_SUPPLY_DAYS,
+                                 TOPUP_PER_NIGHT_CAP,
                                  percentile, plan_topups, shortfall, supply_days,
                                  verdict)
 
@@ -91,6 +92,24 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(verdict(400), "с запасом")
         self.assertEqual(verdict(float("inf")), "не расходуется")
 
+
+
+
+class ForecastMarginTests(unittest.TestCase):
+    """Заказ работает на завтра, а замер показывает вчера. Решение владельца
+    15.08.2026: считать средний расход живого человека и добавлять 20%."""
+
+    def test_margin_is_twenty_percent(self):
+        self.assertAlmostEqual(FORECAST_MARGIN, 1.20, places=2)
+
+    def test_margin_orders_more_than_bare_measurement(self):
+        bare = shortfall(20, 1.0)
+        with_margin = shortfall(20, 1.0 * FORECAST_MARGIN)
+        self.assertGreater(with_margin, bare)
+
+    def test_margin_does_not_wake_a_healthy_bank(self):
+        """Запас глубокий — 20% сверху всё равно не должны заставить нас платить."""
+        self.assertEqual(shortfall(426, 0.39 * FORECAST_MARGIN), 0)
 
 if __name__ == "__main__":
     unittest.main()

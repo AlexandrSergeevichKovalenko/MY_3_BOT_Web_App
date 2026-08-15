@@ -50715,16 +50715,27 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
                 bank_total = int((cursor.fetchone() or [0])[0])
                 # Расход на человека в сутки и его личный «закрытый» список — одним
                 # запросом, чтобы отчёт не расходился между двумя замерами.
-                # Расход — из журнала выдачи: сколько заданий этого вида человек
-                # РЕАЛЬНО получил за окно.
+                # Расход — СРЕДНИЙ по живым людям за окно, из журнала выдачи.
+                # «Живой» = хоть раз ответил хоть на что-то за это окно: тот, кто
+                # перестал заходить, продолжает получать задания, и если считать по
+                # нему, мы закажем больше, чем нужно тем, кто учится (замер 15.08.2026:
+                # трое из семи не ответили ни разу за месяц).
+                # На число людей расход НЕ умножается: разным людям можно давать одно и
+                # то же задание, поэтому банк от прихода новых не растёт.
                 cursor.execute(
-                    """SELECT user_id, COUNT(*)::float / GREATEST(%s, 1)
-                       FROM bt_3_interactive_inbox
-                       WHERE kind = %s
-                         AND created_at > NOW() - (%s || ' days')::interval
-                       GROUP BY user_id;""",
-                    (int(window_days), _INBOX_KIND.get(str(kind), str(kind)),
-                     int(window_days)),
+                    """WITH active AS (
+                           SELECT DISTINCT user_id FROM bt_3_interactive_inbox
+                           WHERE answered
+                             AND created_at > NOW() - (%s || ' days')::interval
+                       )
+                       SELECT i.user_id, COUNT(*)::float / GREATEST(%s, 1)
+                       FROM bt_3_interactive_inbox i
+                       JOIN active a ON a.user_id = i.user_id
+                       WHERE i.kind = %s
+                         AND i.created_at > NOW() - (%s || ' days')::interval
+                       GROUP BY i.user_id;""",
+                    (int(window_days), int(window_days),
+                     _INBOX_KIND.get(str(kind), str(kind)), int(window_days)),
                 )
                 rates_by_user = {int(r[0]): float(r[1] or 0.0)
                                  for r in (cursor.fetchall() or [])}
@@ -50746,9 +50757,13 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
         logging.warning("measure_task_supply failed kind=%s", kind, exc_info=True)
         return {"kind": kind, "error": "замер не удался"}
 
+    from backend.task_supply import FORECAST_MARGIN
     rates = [float(r[1] or 0.0) for r in rows]
     blocked = [int(r[2] or 0) for r in rows]
-    per_day = percentile(rates, 0.95)
+    # Средний расход живого человека, а не самого прожорливого: один аномальный
+    # (например, владелец на тестах) не должен задирать заказ для всех. Сверху запас.
+    avg_rate = (sum(rates) / len(rates)) if rates else 0.0
+    per_day = avg_rate * FORECAST_MARGIN
     # Запас считаем у самого «глубокого»: у него закрыто больше всего.
     deepest_blocked = int(percentile(blocked, 0.95))
     available = max(0, bank_total - deepest_blocked)
@@ -50756,7 +50771,8 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
     return {
         "kind": str(kind), "title": TASK_KIND_TITLES.get(str(kind), str(kind)),
         "bank_total": bank_total, "people": len(rows),
-        "per_day": round(per_day, 2), "blocked_deepest": deepest_blocked,
+        "per_day": round(per_day, 2), "per_day_measured": round(avg_rate, 2),
+        "people_active": len(rates), "blocked_deepest": deepest_blocked,
         "available": available, "supply_days": days,
         "order_now": shortfall(available, per_day),
     }
