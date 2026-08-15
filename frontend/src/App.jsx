@@ -40115,9 +40115,33 @@ function AppInner() {
                           {!srsLoading && srsCard && (() => {
                             const direction = (srsCard?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
                             const cardTexts = getDictionarySourceTarget(srsCard, direction);
+                            // ВОПРОС ВСЕГДА РУССКИЙ, ОТВЕТ ВСЕГДА НЕМЕЦКИЙ.
+                            //
+                            // Раньше стороны выбирались по направлению сохранения
+                            // (source_lang), и владелец 15.08.2026 показал экран, где
+                            // вопрос был немецким. Разобрать по коду не удалось: у той
+                            // карточки и данные верные, и направление верное. Гадать
+                            // дальше незачем — правило владельца простое и не зависит
+                            // от того, как слово попало в базу.
+                            //
+                            // Русский и немецкий различаются АЛФАВИТОМ, это не примета
+                            // и не догадка: есть кириллица — русская сторона. Если
+                            // алфавит не помог (обе стороны одинаковые или пустые),
+                            // возвращаемся к прежнему правилу по направлению.
                             const isCardReversed = (srsCard?.source_lang || 'ru') === 'de';
-                            const sourceText = isCardReversed ? (cardTexts?.targetText || '—') : (cardTexts?.sourceText || '—');
-                            const targetText = isCardReversed ? (cardTexts?.sourceText || '—') : (cardTexts?.targetText || '—');
+                            const byDirectionSource = isCardReversed ? (cardTexts?.targetText || '') : (cardTexts?.sourceText || '');
+                            const byDirectionTarget = isCardReversed ? (cardTexts?.sourceText || '') : (cardTexts?.targetText || '');
+                            const hasCyrillic = (value) => /[А-Яа-яЁё]/.test(String(value || ''));
+                            const sideA = String(cardTexts?.sourceText || '');
+                            const sideB = String(cardTexts?.targetText || '');
+                            let questionSide = byDirectionSource;
+                            let answerSide = byDirectionTarget;
+                            if (hasCyrillic(sideA) !== hasCyrillic(sideB)) {
+                              questionSide = hasCyrillic(sideA) ? sideA : sideB;
+                              answerSide = hasCyrillic(sideA) ? sideB : sideA;
+                            }
+                            const sourceText = questionSide || '—';
+                            const targetText = answerSide || '—';
                             // Перевод в личной карточке может быть склейкой смыслов
                             // («1прикладывать; накладывать 2 надевать 3 строить…»). Такую
                             // карточку невозможно честно оценить, поэтому крупно показываем
