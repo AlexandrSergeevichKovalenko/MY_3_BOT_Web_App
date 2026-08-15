@@ -37963,20 +37963,71 @@ async def admin_task_supply_command(update: Update, context: CallbackContext) ->
     await message.reply_text(build_task_supply_report(rows), parse_mode="HTML")
 
 
+async def _run_task_supply_topup(item: dict) -> str:
+    """Дозаказать один вид заданий до нужного размера. Возвращает строку для отчёта.
+
+    Пополнялки во всём проекте устроены как «дозаполни банк до N», поэтому заказ —
+    это поднятая цель, а не отдельная порция.
+    """
+    kind = str(item.get("kind") or "")
+    target = int(item.get("target_ready") or 0)
+    tonight = int(item.get("tonight") or 0)
+    try:
+        if kind == "rb":
+            from backend.rebus_generator import prepare_rebus_pool
+            await asyncio.to_thread(prepare_rebus_pool, target_ready=target,
+                                    max_attempts=tonight * 3 + 10)
+        elif kind == "cw":
+            from backend.crossword_generator import prepare_crossword_pool
+            await asyncio.to_thread(prepare_crossword_pool, target_ready=target,
+                                    max_attempts=tonight * 3 + 10)
+        elif kind == "article_quiz":
+            from backend.article_quiz_generator import prepare_article_quiz_pool
+            await asyncio.to_thread(prepare_article_quiz_pool, target_ready=target,
+                                    max_attempts=tonight * 3 + 10)
+        elif kind == "ag":
+            for _ in range(tonight):
+                if not await _ensure_anagram_card():
+                    break
+        else:
+            # Пул заданий наполняется по каждому формату отдельно своей ночной
+            # работой — молча подменять её цель нельзя, поэтому честно говорим,
+            # что этот вид заказан НЕ был.
+            return f"{item.get('title')}: не заказано (пул наполняется по форматам)"
+        return f"{item.get('title')}: заказано {tonight}" + (
+            f", остаток {item['deferred']} уйдёт следующей ночью"
+            if item.get("deferred") else "")
+    except Exception:
+        logging.warning("task_supply: дозаказ не прошёл kind=%s", kind, exc_info=True)
+        return f"{item.get('title')}: ЗАКАЗ НЕ ПРОШЁЛ, смотри логи"
+
+
 async def _task_supply_watch_job(context: CallbackContext) -> None:
-    """Ночная проверка запаса. Молчит, пока всё в порядке: писать владельцу каждую
-    ночь «всё хорошо» — верный способ добиться, чтобы отчёт перестали читать."""
+    """Ночная проверка запаса и дозаказ. Молчит, пока всё в порядке: писать владельцу
+    каждую ночь «всё хорошо» — верный способ добиться, чтобы отчёт перестали читать."""
     try:
         from backend.database import measure_all_task_supply
+        from backend.task_supply import plan_topups
         from backend.task_supply_report import build_task_supply_report, task_supply_alerts
         rows = await asyncio.to_thread(measure_all_task_supply)
         alerts = task_supply_alerts(rows)
         logging.info("task_supply: %s", "; ".join(
             f"{r.get('title')}={r.get('supply_days')}" for r in rows if not r.get("error")))
-        if not alerts:
+
+        # Дозаказ. При здоровом запасе список пуст — значит модель ночью не трогаем
+        # и денег не тратим. Это и есть «растим банк по расходу, а не по числу людей».
+        plan = plan_topups(rows)
+        ordered = []
+        for item in plan:
+            ordered.append(await _run_task_supply_topup(item))
+        if ordered:
+            logging.info("task_supply topup: %s", "; ".join(ordered))
+        if not alerts and not ordered:
             return
         text = ("⚠️ <b>Заканчиваются задания</b>\n\n"
                 + "\n".join(f"• {a}" for a in alerts)
+                + ("\n\n🛠 <b>Дозаказано ночью:</b>\n"
+                   + "\n".join(f"• {o}" for o in ordered) if ordered else "")
                 + "\n\n" + build_task_supply_report(rows))
         for admin_id in (get_admin_telegram_ids() or []):
             try:

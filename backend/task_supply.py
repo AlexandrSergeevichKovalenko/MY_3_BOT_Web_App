@@ -65,6 +65,37 @@ def shortfall(available: int, per_day: float,
     return max(0, need - max(0, int(available or 0)))
 
 
+# Сколько заданий одного вида дозаказываем максимум за одну ночь. Потолок нужен не
+# ради нагрузки, а ради счёта: если замер вдруг соврёт (например, один человек за день
+# «прошёл» пол-банка), без потолка это обернулось бы сотнями обращений к модели за ночь.
+# Остаток не теряется — он уйдёт следующей ночью.
+TOPUP_PER_NIGHT_CAP = 25
+
+
+def plan_topups(rows: list, cap: int = TOPUP_PER_NIGHT_CAP) -> list:
+    """Что именно заказать сегодня ночью: по одной строке на вид, где есть нехватка.
+
+    `target_ready` — до какого размера наполнять банк: пополнялки во всём проекте
+    устроены как «дозаполни до N», а не «сделай ещё N».
+    """
+    out = []
+    for r in rows or []:
+        if r.get("error"):
+            continue
+        need = int(r.get("order_now") or 0)
+        if need <= 0:
+            continue
+        tonight = min(need, max(1, int(cap)))
+        out.append({
+            "kind": r.get("kind"), "title": r.get("title") or r.get("kind"),
+            "order_now": need, "tonight": tonight,
+            "deferred": need - tonight,
+            "target_ready": int(r.get("bank_total") or 0) + tonight,
+        })
+    out.sort(key=lambda r: -r["tonight"])
+    return out
+
+
 def verdict(days: float) -> str:
     """Человеческая оценка запаса — для отчёта владельцу, не для кода."""
     if days == float("inf"):

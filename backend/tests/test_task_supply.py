@@ -7,8 +7,9 @@
 
 import unittest
 
-from backend.task_supply import (TARGET_SUPPLY_DAYS, percentile, shortfall,
-                                 supply_days, verdict)
+from backend.task_supply import (TARGET_SUPPLY_DAYS, TOPUP_PER_NIGHT_CAP,
+                                 percentile, plan_topups, shortfall, supply_days,
+                                 verdict)
 
 
 class PercentileTests(unittest.TestCase):
@@ -45,6 +46,41 @@ class SupplyTests(unittest.TestCase):
 
     def test_target_is_a_month(self):
         self.assertEqual(TARGET_SUPPLY_DAYS, 30)
+
+
+class TopupPlanTests(unittest.TestCase):
+    """Заказ на ночь. Владелец 14.08.2026: «зачем мне сейчас формировать под 2000
+    пользователей» — поэтому при здоровом запасе список заказа обязан быть ПУСТЫМ."""
+
+    def _row(self, **kw):
+        base = {"kind": "rb", "title": "Ребусы", "bank_total": 338, "order_now": 0}
+        base.update(kw)
+        return base
+
+    def test_healthy_supply_orders_nothing_at_all(self):
+        self.assertEqual(plan_topups([self._row(order_now=0)]), [])
+
+    def test_shortfall_becomes_a_fill_up_to_target(self):
+        """Пополнялки во всём проекте устроены как «дозаполни до N», а не «сделай N»."""
+        plan = plan_topups([self._row(bank_total=20, order_now=10)])
+        self.assertEqual(plan[0]["tonight"], 10)
+        self.assertEqual(plan[0]["target_ready"], 30)
+        self.assertEqual(plan[0]["deferred"], 0)
+
+    def test_night_cap_defers_the_rest_instead_of_dropping_it(self):
+        plan = plan_topups([self._row(bank_total=10, order_now=200)],
+                           cap=TOPUP_PER_NIGHT_CAP)
+        self.assertEqual(plan[0]["tonight"], TOPUP_PER_NIGHT_CAP)
+        self.assertEqual(plan[0]["deferred"], 200 - TOPUP_PER_NIGHT_CAP)
+        self.assertEqual(plan[0]["target_ready"], 10 + TOPUP_PER_NIGHT_CAP)
+
+    def test_broken_measurement_orders_nothing(self):
+        self.assertEqual(plan_topups([{"kind": "cw", "error": "замер не удался"}]), [])
+
+    def test_biggest_need_goes_first(self):
+        plan = plan_topups([self._row(kind="rb", order_now=3),
+                            self._row(kind="cw", order_now=9)])
+        self.assertEqual(plan[0]["kind"], "cw")
 
 
 class VerdictTests(unittest.TestCase):
