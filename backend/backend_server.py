@@ -31499,12 +31499,18 @@ def wofrage_today():
     from backend.database import (
         get_latest_daily_wofrage_set, get_wofrage_sprint_set,
         get_wofrage_sprint_result, compute_wofrage_sprint_ranking,
+        get_or_create_personal_wofrage_set,
     )
     play_date = _dt.now(ZoneInfo("Europe/Vienna")).date()
     set_id = get_latest_daily_wofrage_set(play_date)
     if not set_id:
         return jsonify({"ok": False, "error_code": "wofrage_set_not_ready",
                         "error": "Сет Wo-Frage Sprint на сегодня ещё готовится. Загляни чуть позже."}), 200
+    # Набор дня стал ЛИЧНЫМ (решение владельца 14.08.2026): задания подбираются с упором
+    # на слабые места этого человека. Генератор бесплатный, поэтому личный набор не стоит
+    # ни копейки. Зачёт при этом остаётся общим — он считается по всем наборам слота
+    # сразу, по доле верных и времени. Не собрался личный — играем общий, как раньше.
+    set_id = get_or_create_personal_wofrage_set(set_id, int(user_id)) or set_id
     s = get_wofrage_sprint_set(set_id)
     if not s or not s.get("items"):
         return jsonify({"ok": False, "error_code": "wofrage_set_empty", "error": "Сет пуст."}), 200

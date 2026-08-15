@@ -4248,14 +4248,68 @@ def delete_wofrage_sprint_result(set_id, user_id) -> None:
         logging.warning("delete_wofrage_sprint_result failed", exc_info=True)
 
 
+# Личный набор дня живёт под составным ключом «<набор слота>#u<человек>». Слот — это
+# группа зачёта: наборы у людей разные, а сравниваются они внутри одного слота по доле
+# верных и времени (решение владельца 14.08.2026).
+_WOFRAGE_PERSONAL_MARK = "#u"
+
+
+def wofrage_group_set_id(set_id) -> str:
+    """Набор слота, к которому относится этот (возможно, личный) набор."""
+    return str(set_id or "").split(_WOFRAGE_PERSONAL_MARK, 1)[0]
+
+
+def get_or_create_personal_wofrage_set(slot_set_id: str, user_id: int) -> str | None:
+    """Личный набор дня для этого человека внутри слота.
+
+    Задания собирает бесплатный генератор, поэтому личный набор не стоит ни копейки.
+    Подбор — с упором на слабые места (`pick_wofrage_payloads_for_user`), а зачёт
+    остаётся общим: он считается по всем наборам слота сразу.
+    """
+    import json as _json
+    group = wofrage_group_set_id(slot_set_id)
+    if not group:
+        return None
+    personal_id = f"{group}{_WOFRAGE_PERSONAL_MARK}{int(user_id)}"
+    try:
+        ensure_wofrage_sprint_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM bt_3_wofrage_sprint_sets WHERE set_id=%s;",
+                            (personal_id,))
+                if cur.fetchone():
+                    return personal_id
+        items = pick_wofrage_payloads_for_user(int(user_id), 10)
+        if not items:
+            return None
+        game_items = [_wofrage_item_for_game(p) for p in items]
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO bt_3_wofrage_sprint_sets (set_id, items_json, total, kind) "
+                    "VALUES (%s,%s::jsonb,%s,%s) ON CONFLICT (set_id) DO NOTHING;",
+                    (personal_id, _json.dumps(game_items, ensure_ascii=False),
+                     len(game_items), "daily"),
+                )
+            conn.commit()
+        return personal_id
+    except Exception:
+        logging.warning("get_or_create_personal_wofrage_set failed user=%s set=%s",
+                        user_id, slot_set_id, exc_info=True)
+        # Личный набор не собрался — человек играет общий набор слота, как раньше.
+        return None
+
+
 def list_wofrage_sprint_results_ranked(set_id) -> list[dict]:
     try:
+        group = wofrage_group_set_id(set_id)
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT user_id, user_name, correct, time_ms FROM bt_3_wofrage_sprint_results "
-                    "WHERE set_id=%s ORDER BY correct DESC, time_ms ASC;",
-                    (str(set_id),),
+                    "WHERE set_id=%s OR set_id LIKE %s "
+                    "ORDER BY correct DESC, time_ms ASC;",
+                    (group, group + _WOFRAGE_PERSONAL_MARK + "%"),
                 )
                 return [{"user_id": int(r[0]), "name": r[1] or "Игрок",
                          "count": int(r[2]), "time_ms": int(r[3])} for r in (cur.fetchall() or [])]
