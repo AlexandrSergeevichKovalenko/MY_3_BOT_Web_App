@@ -264,7 +264,7 @@ _BRACKET_NOTE_RE = re.compile(r"^(.*?)\s*\([^)]*\)\s*$")
 # Номер значения в начале строки: «1 колоть», «2. разгадать», «1.приём» (без пробела).
 _SENSE_LEAD_RE = re.compile(r"^\s*([1-9])\s*(?:[).]\s*|\s+)(?=[А-Яа-яЁёA-Za-z])")
 # Номер значения в середине: «…отбивать 2 предотвращать», «…схватить 2. поймать».
-_SENSE_MID_RE = re.compile(r"(?<=[\w,;.])\s+([1-9])\s*[).]?\s+(?=[А-Яа-яЁё])")
+_SENSE_MID_RE = re.compile(r"(?<=[\w,;.])\s+([1-9])\s*[).]?\s+(?=[А-Яа-яЁёA-Za-z])")
 # Слова, после которых цифра — ЧАСТЬ СМЫСЛА, а не номер значения. Без этого списка
 # «Меню из 5 блюд» превратилось бы в «Меню из» и «блюд», а «до 16 часов» — в мусор.
 _DIGIT_IS_MEANING_AFTER = {
@@ -321,6 +321,12 @@ def split_numbered_senses(value: str) -> list[str]:
         before = text[last:match.start()].strip()
         prev_word = re.split(r"[\s,;]+", before)[-1].strip(".,;").casefold() if before else ""
         if prev_word in _DIGIT_IS_MEANING_AFTER:
+            continue
+        # И то же самое справа: «У нас осталось 3 штуки» — счёт, а не второе значение.
+        # Слева тут стоит «осталось», предлога нет, и без этой проверки предложение
+        # разрезалось бы пополам.
+        after_word = re.split(r"[\s,;]+", text[match.end():].strip())[0].strip(".,;!?").casefold()
+        if after_word in _COUNTED_NOUNS:
             continue
         if before:
             parts.append(before)
