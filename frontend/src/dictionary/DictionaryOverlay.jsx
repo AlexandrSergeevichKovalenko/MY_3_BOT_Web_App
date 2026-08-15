@@ -1346,6 +1346,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
                   || (quick?.sourceLang === 'de' ? quick?.source : quick?.translation)
                 }
                 ownExamples={chosenEntry?.examples}
+                pos={chosenEntry?.pos || quick?.partOfSpeech}
               />
             )}
             {/* Часть речи у быстрого перевода. Переводчики её не отдают, поэтому она

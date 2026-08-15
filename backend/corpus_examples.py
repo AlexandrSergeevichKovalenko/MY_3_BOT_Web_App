@@ -70,15 +70,39 @@ def ensure_corpus_schema() -> None:
         logging.warning("схема корпуса примеров не создана: %s", exc)
 
 
-def examples_for_word(word: str, *, limit: int = 2) -> list[dict]:
+def examples_for_word(word: str, *, limit: int = 2, pos: str = "") -> list[dict]:
     """Примеры для немецкого слова. Пусто — значит корпус молчит, и это не ошибка:
     для трети наших слов его там нет, пример даст модель.
 
     Отбор: сперва короткие. Учащемуся полезнее фраза, которую он дочитает.
+
+    pos — часть речи выбранной статьи. Немецкий даёт тут бесплатную и надёжную
+    примету: СУЩЕСТВИТЕЛЬНЫЕ ВСЕГДА С ЗАГЛАВНОЙ, остальные слова — со строчной.
+    Написание у разных слов может совпадать («die Wehe» — схватка, «wehe» — горе;
+    «wehen» — веять, «die Wehen» — схватки), и без этой приметы корпус их путает:
+    владелец 15.08.2026 увидел перевод «схватка», а под ним пример «Wehe den
+    Besiegten» — Горе побеждённым.
+
+    Заглавную в НАЧАЛЕ предложения не считаем: там с заглавной пишется всё подряд,
+    и примета ничего не значит. Поэтому для существительного требуем, чтобы перед
+    словом был хотя бы один символ.
     """
     query = str(word or "").strip()
     if not query:
         return []
+    escaped = re.escape(query)
+    kind = str(pos or "").strip().lower()
+    if kind == "noun":
+        # Существительное: слово с заглавной И не в начале предложения (точка перед
+        # \m как раз требует, чтобы слева был хотя бы один символ).
+        shape_sql = "text_de ~ ('.\\m' || %(cap)s || '\\M')"
+    elif kind in {"verb", "adj", "adverb", "adv"}:
+        # Не существительное: слово со строчной. Заглавная означала бы другое слово.
+        shape_sql = "text_de ~ ('\\m' || %(low)s || '\\M')"
+    else:
+        # Часть речи неизвестна — не выдумываем, требуем только слово целиком.
+        shape_sql = "text_de ~* ('\\m' || %(esc)s || '\\M')"
+
     from backend.database import get_db_connection_context
     try:
         with get_db_connection_context() as conn:
@@ -93,9 +117,10 @@ def examples_for_word(word: str, *, limit: int = 2) -> list[dict]:
                     -- основы, и «Wehe» с «weh» получают одну и ту же: на запрос «die
                     -- Wehe» (схватка) человеку показывали «Tut das weh?» — Болит?,
                     -- пример от ТРЕТЬЕГО слова wehtun. Владелец увидел это 15.08.2026.
-                    -- Поэтому требуем, чтобы слово стояло в предложении целиком.
+                    -- Поэтому требуем, чтобы слово стояло в предложении целиком, а
+                    -- регистр совпадал с частью речи (см. описание функции).
                     -- \m и \M — границы слова в регулярных выражениях Postgres.
-                      AND text_de ~* ('\\m' || %(esc)s || '\\M')
+                      AND """ + shape_sql + """
                       AND length(text_de) BETWEEN %(lo)s AND %(hi)s
                     ORDER BY length(text_de)
                     LIMIT %(lim)s;
@@ -104,7 +129,9 @@ def examples_for_word(word: str, *, limit: int = 2) -> list[dict]:
                         "q": query,
                         # В корпусе ищем ровно набранное слово, поэтому спецсимволы
                         # регулярного выражения обезвреживаем.
-                        "esc": re.escape(query),
+                        "esc": escaped,
+                        "cap": re.escape(query[:1].upper() + query[1:]),
+                        "low": re.escape(query[:1].lower() + query[1:]),
                         "lo": MIN_EXAMPLE_CHARS,
                         "hi": MAX_EXAMPLE_CHARS,
                         "lim": int(limit),

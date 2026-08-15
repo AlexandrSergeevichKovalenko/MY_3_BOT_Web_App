@@ -41179,7 +41179,10 @@ def get_dictionary_corpus_examples():
         return jsonify({"error": "Не удалось определить пользователя"}), 401
     try:
         from backend.corpus_examples import examples_for_word
-        items = examples_for_word(word, limit=2)
+        # Часть речи приходит с экрана — от той статьи, которую человек выбрал. Без
+        # неё корпус путает слова с одинаковым написанием: на «die Wehe» (схватка)
+        # он отдавал «Wehe den Besiegten» — Горе побеждённым.
+        items = examples_for_word(word, limit=2, pos=str(payload.get("pos") or "").strip())
     except Exception:
         logging.debug("корпусные примеры не отдались", exc_info=True)
         items = []

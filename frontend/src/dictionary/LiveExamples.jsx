@@ -15,7 +15,7 @@ import { buildDictionarySavePayload } from './saveUtils';
  * Один компонент на оба словаря. Две копии этого блока разошлись бы через неделю —
  * сегодня уже был случай, когда одинаковую разметку чинили дважды.
  */
-export default function LiveExamples({ germanWord, ownExamples, onSaved }) {
+export default function LiveExamples({ germanWord, ownExamples, pos, onSaved }) {
   const [items, setItems] = useState([]);
   const [saved, setSaved] = useState(() => new Set());
 
@@ -39,7 +39,9 @@ export default function LiveExamples({ germanWord, ownExamples, onSaved }) {
     const word = clean(germanWord);
     if (!word) return undefined;
     let cancelled = false;
-    api('/api/webapp/dictionary/examples', { word })
+    // Часть речи выбранной статьи: по ней корпус отличает «die Wehe» (схватка) от
+    // «wehe» (горе) — в немецком существительное всегда с заглавной.
+    api('/api/webapp/dictionary/examples', { word, pos: clean(pos) })
       .then((data) => {
         if (cancelled) return;
         const fromCorpus = Array.isArray(data?.items) ? data.items : [];
