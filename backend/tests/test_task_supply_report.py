@@ -36,8 +36,24 @@ class ReportTextTests(unittest.TestCase):
     def test_unused_game_is_named_and_costs_nothing(self):
         text = build_task_supply_report([_row(title="Анаграммы", per_day=0.0,
                                               supply_days=float("inf"))])
-        self.assertIn("Не расходуются", text)
-        self.assertIn("деньги не тратим", text)
+        self.assertIn("Не выдавались", text)
+        self.assertIn("Анаграммы", text)
+
+    def test_every_live_game_is_listed_by_name(self):
+        """15.08.2026: отчёт свернул пять живых игр в одну строку «не расходуются» и
+        оставил на виду самую редкую. Владелец прочитал это как бред — и был прав."""
+        text = build_task_supply_report([
+            _row(title="Анаграммы", per_day=0.40, supply_days=195.0),
+            _row(title="Аудирование", per_day=0.39, supply_days=77.0),
+            _row(title="Кроссворды", per_day=0.37, supply_days=392.0),
+            _row(title="Картиночный квиз артиклей", per_day=0.14, supply_days=3000.0),
+        ])
+        for name in ("Анаграммы", "Аудирование", "Кроссворды",
+                     "Картиночный квиз артиклей"):
+            self.assertIn(name, text)
+        self.assertLess(text.index("Аудирование"),
+                        text.index("Кроссворды"),
+                        "первым идёт то, где раньше кончится")
 
     def test_broken_measurement_is_shown_not_hidden(self):
         text = build_task_supply_report([{"kind": "cw", "error": "замер не удался"}])
@@ -66,9 +82,12 @@ class MeasureTests(unittest.TestCase):
 
     def test_measurement_uses_the_deepest_person_not_the_average(self):
         cur = MagicMock()
-        # банк 100; трое: расход 1/сутки, закрыто 10, 20 и 90 заданий
+        # банк 100; трое: расход 1/сутки (журнал выдачи), закрыто 10, 20 и 90 заданий
         cur.fetchone.return_value = [100]
-        cur.fetchall.return_value = [(1, 1.0, 10), (2, 1.0, 20), (3, 1.0, 90)]
+        cur.fetchall.side_effect = [
+            [(1, 1.0), (2, 1.0), (3, 1.0)],        # расход из журнала выдачи
+            [(1, 10), (2, 20), (3, 90)],           # закрыто из памяти ротации
+        ]
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = cur
         ctx = MagicMock()

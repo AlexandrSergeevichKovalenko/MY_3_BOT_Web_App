@@ -82,5 +82,39 @@ class PersonalDeckTests(unittest.TestCase):
             self.assertEqual(len(db.pick_adjektiv_payloads_for_user(7, 5)), 1)
 
 
+
+
+class PersonalDailySetTests(unittest.TestCase):
+    """Дневной набор прилагательных тоже личный: генерация бесплатная, значит правило
+    то же, что в Wo-Fragen. Зачёт при этом обязан остаться общим."""
+
+    def _fake_conn(self, one=None, rows=None):
+        from unittest.mock import MagicMock
+        cur = MagicMock()
+        cur.fetchone.return_value = one
+        cur.fetchall.return_value = list(rows or [])
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        ctx = MagicMock()
+        ctx.__enter__.return_value = conn
+        return ctx, cur
+
+    def test_two_people_get_two_different_sets(self):
+        ctx, _ = self._fake_conn(one=None)
+        with patch.object(db, "get_db_connection_context", return_value=ctx), \
+             patch.object(db, "ensure_adjektiv_sprint_schema"), \
+             patch.object(db, "pick_adjektiv_payloads_for_user",
+                          return_value=[{"full": "x", "correct": "e"}]):
+            a = db.get_or_create_personal_adjektiv_set("slot-9", 111)
+            b = db.get_or_create_personal_adjektiv_set("slot-9", 222)
+        self.assertNotEqual(a, b)
+
+    def test_ranking_still_covers_the_whole_slot(self):
+        ctx, cur = self._fake_conn(rows=[(111, "A", 14, 900), (222, "B", 12, 800)])
+        with patch.object(db, "get_db_connection_context", return_value=ctx):
+            out = db.list_adjektiv_sprint_results_ranked("slot-9#u111")
+        self.assertEqual(len(out), 2, "человек должен видеть остальных, а не себя одного")
+        self.assertIn("slot-9", cur.execute.call_args[0][1])
+
 if __name__ == "__main__":
     unittest.main()

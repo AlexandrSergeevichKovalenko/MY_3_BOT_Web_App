@@ -3473,14 +3473,55 @@ def get_adjektiv_sprint_result(set_id, user_id) -> dict | None:
         return None
 
 
+def get_or_create_personal_adjektiv_set(slot_set_id: str, user_id: int) -> str | None:
+    """Личный набор дня по прилагательным — как в Wo-Fragen.
+
+    Задания собирает чистый код, поэтому личный набор не стоит ни копейки. Слот
+    остаётся группой зачёта: результаты собираются по всем наборам слота сразу.
+    """
+    import json as _json
+    group = wofrage_group_set_id(slot_set_id)   # тот же разбор ключа «набор#uчеловек»
+    if not group:
+        return None
+    personal_id = f"{group}{_WOFRAGE_PERSONAL_MARK}{int(user_id)}"
+    try:
+        ensure_adjektiv_sprint_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM bt_3_adjektiv_sprint_sets WHERE set_id=%s;",
+                            (personal_id,))
+                if cur.fetchone():
+                    return personal_id
+        items = pick_adjektiv_payloads_for_user(int(user_id), 15)
+        if not items:
+            return None
+        game_items = [_adjektiv_item_for_game(p) for p in items]
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO bt_3_adjektiv_sprint_sets (set_id, items_json, total, kind) "
+                    "VALUES (%s,%s::jsonb,%s,%s) ON CONFLICT (set_id) DO NOTHING;",
+                    (personal_id, _json.dumps(game_items, ensure_ascii=False),
+                     len(game_items), "daily"),
+                )
+            conn.commit()
+        return personal_id
+    except Exception:
+        logging.warning("get_or_create_personal_adjektiv_set failed user=%s set=%s",
+                        user_id, slot_set_id, exc_info=True)
+        return None
+
+
 def list_adjektiv_sprint_results_ranked(set_id) -> list[dict]:
     try:
+        group = wofrage_group_set_id(set_id)
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT user_id, user_name, correct, time_ms FROM bt_3_adjektiv_sprint_results "
-                    "WHERE set_id=%s ORDER BY correct DESC, time_ms ASC;",
-                    (str(set_id),),
+                    "WHERE set_id=%s OR set_id LIKE %s "
+                    "ORDER BY correct DESC, time_ms ASC;",
+                    (group, group + _WOFRAGE_PERSONAL_MARK + "%"),
                 )
                 return [{"user_id": int(r[0]), "name": r[1] or "Игрок",
                          "count": int(r[2]), "time_ms": int(r[3])} for r in (cur.fetchall() or [])]
@@ -50602,6 +50643,13 @@ def get_user_task_state(user_id: int, kind: str, task_keys: list) -> dict:
 # Вид задания → (таблица банка, колонка-ключ, условие «годен к выдаче»).
 # Отсюда берётся размер банка для расчёта запаса; правило годности — то же самое,
 # каким пользуется выдача, чтобы отчёт не мог разойтись с тем, что видит человек.
+# Вид в замере запаса → вид в журнале выдачи `bt_3_interactive_inbox`. Расход берём
+# ОТТУДА: это единственное место, где записано, что задание реально ушло человеку.
+# 15.08.2026 расход считался по таблице личной ротации — она завелась в тот же день, и
+# отчёт объявил «никто не берёт» пять живых игр подряд. Владелец поймал это глазами.
+_INBOX_KIND = {"rb": "rb", "cw": "cw", "ag": "ag", "au": "au", "ls": "ls",
+               "article_quiz": "aq"}
+
 _TASK_BANKS = {
     "rb": ("bt_3_rebus_bank", "compound_id",
            "composed_status = 'ready' AND retired = FALSE"),
@@ -50644,19 +50692,33 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
                 bank_total = int((cursor.fetchone() or [0])[0])
                 # Расход на человека в сутки и его личный «закрытый» список — одним
                 # запросом, чтобы отчёт не расходился между двумя замерами.
+                # Расход — из журнала выдачи: сколько заданий этого вида человек
+                # РЕАЛЬНО получил за окно.
+                cursor.execute(
+                    """SELECT user_id, COUNT(*)::float / GREATEST(%s, 1)
+                       FROM bt_3_interactive_inbox
+                       WHERE kind = %s
+                         AND created_at > NOW() - (%s || ' days')::interval
+                       GROUP BY user_id;""",
+                    (int(window_days), _INBOX_KIND.get(str(kind), str(kind)),
+                     int(window_days)),
+                )
+                rates_by_user = {int(r[0]): float(r[1] or 0.0)
+                                 for r in (cursor.fetchall() or [])}
+                # Сколько заданий человеку уже закрыто — из памяти личной ротации.
                 cursor.execute(
                     """SELECT user_id,
-                              COUNT(*)::float / GREATEST(%s, 1) AS per_day,
                               SUM(CASE WHEN retired_at IS NOT NULL
                                         OR next_eligible_at > NOW()
-                                       THEN 1 ELSE 0 END) AS blocked
+                                       THEN 1 ELSE 0 END)
                        FROM bt_3_user_task_state
-                       WHERE kind = %s
-                         AND last_seen_at > NOW() - (%s || ' days')::interval
-                       GROUP BY user_id;""",
-                    (int(window_days), str(kind), int(window_days)),
+                       WHERE kind = %s GROUP BY user_id;""",
+                    (str(kind),),
                 )
-                rows = cursor.fetchall() or []
+                blocked_by_user = {int(r[0]): int(r[1] or 0)
+                                   for r in (cursor.fetchall() or [])}
+        rows = [(uid, rate, blocked_by_user.get(uid, 0))
+                for uid, rate in rates_by_user.items()]
     except Exception:
         logging.warning("measure_task_supply failed kind=%s", kind, exc_info=True)
         return {"kind": kind, "error": "замер не удался"}

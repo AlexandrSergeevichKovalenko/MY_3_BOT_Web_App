@@ -31205,12 +31205,17 @@ def adjektiv_today():
     from backend.database import (
         get_latest_daily_adjektiv_set, get_adjektiv_sprint_set,
         get_adjektiv_sprint_result, compute_adjektiv_sprint_ranking,
+        get_or_create_personal_adjektiv_set,
     )
     play_date = _dt.now(ZoneInfo("Europe/Vienna")).date()
     set_id = get_latest_daily_adjektiv_set(play_date)
     if not set_id:
         return jsonify({"ok": False, "error_code": "adjektiv_set_not_ready",
                         "error": "Сет Adjektiv Sprint на сегодня ещё готовится. Загляни чуть позже."}), 200
+    # Набор дня личный: задания собирает чистый код, поэтому подбор под слабые клетки
+    # человека не стоит ни копейки. Зачёт остаётся общим — он считается по всем наборам
+    # слота сразу. Не собрался личный — играем общий, как раньше.
+    set_id = get_or_create_personal_adjektiv_set(set_id, int(user_id)) or set_id
     s = get_adjektiv_sprint_set(set_id)
     if not s or not s.get("items"):
         return jsonify({"ok": False, "error_code": "adjektiv_set_empty", "error": "Сет пуст."}), 200
