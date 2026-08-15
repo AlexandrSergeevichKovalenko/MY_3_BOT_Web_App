@@ -29898,6 +29898,18 @@ def submit_answer():
                 challenge_key=challenge_key, user_id=user_id, user_name=user_name,
                 is_correct=is_correct, time_ms=time_ms,
             )
+            # Личная ротация: одно место на все игры. `challenge_key` уже построен по
+            # СОДЕРЖИМОМУ задания («rb:42»), а не по рассылке, поэтому годится как
+            # ключ памяти без всякой переделки. Без этой записи следующая выдача
+            # выбирается вслепую и человеку приходит пройденное.
+            try:
+                from backend.database import record_user_task_answer
+                record_user_task_answer(user_id=user_id, kind=kind,
+                                        task_key=challenge_key,
+                                        is_correct=is_correct, source="chat")
+            except Exception:
+                logging.warning("ротация: не удалось запомнить ответ kind=%s key=%s",
+                                kind, challenge_key, exc_info=True)
             result["ranking"] = compute_challenge_ranking(challenge_key=challenge_key, user_id=user_id)
             # Overtake plaques: a faster correct answer pushes slower players down.
             # Notify whoever just lost #1, AND refresh the current place on every

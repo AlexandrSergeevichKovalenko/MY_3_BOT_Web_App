@@ -48205,8 +48205,13 @@ def mark_rebus_compose_failed(compound_id: str) -> None:
         conn.commit()
 
 
-def pick_next_rebus(*, cooldown_days: int = 30) -> dict | None:
-    """Pick the least-recently-sent ready rebus, respecting cooldown."""
+def pick_next_rebus(*, cooldown_days: int = 30, exclude_ids: list | None = None) -> dict | None:
+    """Pick the least-recently-sent ready rebus, respecting cooldown.
+
+    `exclude_ids` — что закрыто ЛИЧНО этому человеку (см. `get_user_blocked_content_ids`).
+    Пустой список ничего не меняет: без личных данных работает прежняя общая выдача.
+    """
+    skip = [str(i) for i in (exclude_ids or []) if str(i)]
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -49029,7 +49034,7 @@ def mark_crossword_image_failed(crossword_id: str) -> None:
         conn.commit()
 
 
-def pick_next_crossword(*, cooldown_days: int = 14) -> dict | None:
+def pick_next_crossword(*, cooldown_days: int = 14, exclude_ids: list | None = None) -> dict | None:
     """Return the oldest unsent (or cooldown-expired) ready crossword.
 
     Последний сторож перед отправкой: кроссворд, в котором загаданное слово стоит с
@@ -49039,6 +49044,8 @@ def pick_next_crossword(*, cooldown_days: int = 14) -> dict | None:
     """
     from backend.crossword_shape import giveaway_problem
 
+    # `exclude_ids` — что закрыто ЛИЧНО этому человеку (см. `get_user_blocked_content_ids`).
+    skip = [str(i) for i in (exclude_ids or []) if str(i)]
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -49661,6 +49668,38 @@ def get_user_task_state(user_id: int, kind: str, task_keys: list) -> dict:
         return {}
 
 
+def get_user_blocked_content_ids(user_id: int, kind: str) -> list:
+    """Что этому человеку по этому виду сейчас закрыто: выброшенное навсегда и то,
+    чей срок возврата ещё не подошёл.
+
+    Ключ в памяти лежит вместе с видом («rb:42» — так его строит `content_ranking_key`),
+    а банку нужен голый номер записи, поэтому префикс снимается здесь.
+    Память служебная: если она недоступна, не закрываем НИЧЕГО — человек получает
+    задание по-старому, а не пустой экран.
+    """
+    try:
+        ensure_task_rotation_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """SELECT task_key FROM bt_3_user_task_state
+                       WHERE user_id = %s AND kind = %s
+                         AND (retired_at IS NOT NULL OR next_eligible_at > NOW());""",
+                    (int(user_id), str(kind)),
+                )
+                rows = cursor.fetchall()
+        prefix = f"{kind}:"
+        out = []
+        for (key,) in rows:
+            key = str(key or "")
+            out.append(key[len(prefix):] if key.startswith(prefix) else key)
+        return [k for k in out if k]
+    except Exception:
+        logging.warning("get_user_blocked_content_ids failed user=%s kind=%s",
+                        user_id, kind, exc_info=True)
+        return []
+
+
 def record_user_task_answer(*, user_id: int, kind: str, task_key: str,
                             is_correct: bool, source: str = "sprint") -> None:
     """Записать ответ и передвинуть лестницу возврата по правилу из `task_rotation`.
@@ -50244,7 +50283,8 @@ def count_available_aufgaben(*, format: str | None = None) -> int:
             return int(cursor.fetchone()[0])
 
 
-def pick_next_aufgabe(*, cooldown_days: int = 14, format: str | None = None) -> dict | None:
+def pick_next_aufgabe(*, cooldown_days: int = 14, format: str | None = None,
+                      exclude_ids: list | None = None) -> dict | None:
     """Oldest unsent (or cooldown-expired) active task, optionally of one format.
 
     Serve-time self-heal: a degenerate item (e.g. wortbildung whose answer-article
@@ -50252,7 +50292,10 @@ def pick_next_aufgabe(*, cooldown_days: int = 14, format: str | None = None) -> 
     into the pool before the deterministic guard existed and a purge hasn't run
     yet. So we scan the top candidates, skip any that `is_degenerate_aufgabe`
     flags, retire them on the spot (so they leave the rotation for good), and
-    return the first clean one."""
+    return the first clean one.
+
+    `exclude_ids` — что закрыто ЛИЧНО этому человеку (см. `get_user_blocked_content_ids`)."""
+    skip = [str(i) for i in (exclude_ids or []) if str(i)]
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -55038,8 +55081,12 @@ def count_available_anagram_cards(*, cooldown_days: int = 14) -> int:
             return int((cursor.fetchone() or [0])[0])
 
 
-def pick_next_anagram(*, cooldown_days: int = 14) -> dict | None:
-    """Oldest unsent (or cooldown-expired) active anagram card."""
+def pick_next_anagram(*, cooldown_days: int = 14, exclude_ids: list | None = None) -> dict | None:
+    """Oldest unsent (or cooldown-expired) active anagram card.
+
+    `exclude_ids` — что закрыто ЛИЧНО этому человеку (см. `get_user_blocked_content_ids`).
+    """
+    skip = [str(i) for i in (exclude_ids or []) if str(i)]
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(

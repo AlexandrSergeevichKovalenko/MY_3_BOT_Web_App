@@ -314,6 +314,7 @@ from backend.database import (
     record_article_quiz_dispatch,
     update_article_quiz_dispatch_telegram_id,
     get_article_quiz_dispatch_by_id,
+    get_user_blocked_content_ids,
     record_article_quiz_answer,
     record_user_task_answer,
     mark_article_quiz_answer_feedback_sent,
@@ -4394,7 +4395,8 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
     blocked = await _drip_blocked_ids(uid, kind)
     if kind == "aufgabe":
         fmt = _DRIP_AUFGABE_FORMATS[int(idx) % len(_DRIP_AUFGABE_FORMATS)]
-        entry = (await asyncio.to_thread(pick_next_aufgabe, cooldown_days=AUFGABE_SEND_COOLDOWN_DAYS, format=fmt)
+        entry = (await asyncio.to_thread(pick_next_aufgabe, cooldown_days=AUFGABE_SEND_COOLDOWN_DAYS, format=fmt,
+                                          exclude_ids=blocked)
                  or await asyncio.to_thread(pick_next_aufgabe, cooldown_days=0, format=fmt))
         if not entry:
             return False
@@ -4415,7 +4417,8 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             except Exception: pass
         return ok
     if kind == "anagram":
-        entry = (await asyncio.to_thread(pick_next_anagram, cooldown_days=ANAGRAM_COOLDOWN_DAYS)
+        entry = (await asyncio.to_thread(pick_next_anagram, cooldown_days=ANAGRAM_COOLDOWN_DAYS,
+                                          exclude_ids=blocked)
                  or await asyncio.to_thread(pick_next_anagram, cooldown_days=0))
         if not entry:
             return False
@@ -4431,7 +4434,8 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             except Exception: pass
         return ok
     if kind == "rebus":
-        entry = (await asyncio.to_thread(pick_next_rebus, cooldown_days=REBUS_COOLDOWN_DAYS)
+        entry = (await asyncio.to_thread(pick_next_rebus, cooldown_days=REBUS_COOLDOWN_DAYS,
+                                          exclude_ids=blocked)
                  or await asyncio.to_thread(pick_next_rebus, cooldown_days=0))
         if not entry:
             return False
@@ -4449,7 +4453,8 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             except Exception: pass
         return ok
     if kind == "crossword":
-        entry = (await asyncio.to_thread(pick_next_crossword, cooldown_days=CROSSWORD_COOLDOWN_DAYS)
+        entry = (await asyncio.to_thread(pick_next_crossword, cooldown_days=CROSSWORD_COOLDOWN_DAYS,
+                                          exclude_ids=blocked)
                  or await asyncio.to_thread(pick_next_crossword, cooldown_days=0))
         if not entry:
             return False
