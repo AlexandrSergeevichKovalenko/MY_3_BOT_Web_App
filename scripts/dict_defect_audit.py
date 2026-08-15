@@ -143,11 +143,21 @@ def say(verdict: str, title: str, number, measured: str, measured_at: str = "11.
 def screen_of_words(cur) -> tuple[dict[int, list[str]], dict[int, str]]:
     """Точный слепок того, что человек видит на карточке ОДИНОЧНОГО немецкого слова.
 
-    Повторяет _fetch_links + отбор в _build_item шаг в шаг: ранг ниже понижённого,
-    без заготовок упражнений, без грамматических помет, без повторов, первые _MAX_LINKS."""
+    ⚠ ГЛАВНОЕ ПРО ЭТОТ ОТЧЁТ, 15.08.2026. Он меряет НЕ базу, а ЭКРАН. Разница
+    появилась в тот день, когда правки поехали на выдачу, а не в данные: свалки
+    режутся при показе, повторы отсеиваются при показе, регистр правится при показе.
+    Строки в базе при этом остаются прежними.
+
+    Если считать по базе, отчёт будет годами показывать одни и те же 1358 дублей и
+    1424 заглавных, хотя человек их давно не видит. Поэтому здесь применяются те же
+    функции, что и в боевой выдаче (_build_item): split_numbered_senses →
+    normalize_translation_case → drop_nested_translations → первые _MAX_LINKS.
+
+    Хочешь посчитать САМИ ДАННЫЕ, а не экран — бери bt_3_lex_units напрямую, но
+    называй число «в базе», а не «человек видит»."""
     cur.execute(
         """
-        SELECT l.from_unit, f.display, u.display
+        SELECT l.from_unit, f.display, f.pos, u.display
         FROM bt_3_lex_links l
         JOIN bt_3_lex_units u ON u.id = l.to_unit
         JOIN bt_3_lex_units f ON f.id = l.from_unit
@@ -157,18 +167,29 @@ def screen_of_words(cur) -> tuple[dict[int, list[str]], dict[int, str]]:
         """,
         (LU._DEMOTED_RANK, LU._EXERCISE_BLANK),
     )
-    screen: dict[int, list[str]] = defaultdict(list)
+    raw: dict[int, list[str]] = defaultdict(list)
     names: dict[int, str] = {}
-    for from_unit, german, russian in cur.fetchall():
+    poses: dict[int, str] = {}
+    for from_unit, german, german_pos, russian in cur.fetchall():
         names[from_unit] = german
-        shown = screen[from_unit]
-        if len(shown) >= LU._MAX_LINKS:
-            continue
+        poses[from_unit] = german_pos or ""
         if LU._EXERCISE_BLANK in russian or LU._GRAMMAR_NOTE_RE.search(russian):
             continue
-        if any(norm(russian) == norm(x) for x in shown):
-            continue
-        shown.append(russian)
+        raw[from_unit].append(russian)
+
+    screen: dict[int, list[str]] = defaultdict(list)
+    for unit_id, values in raw.items():
+        pieces: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            for piece in LU.split_numbered_senses(value):
+                piece = LU.normalize_translation_case(piece, german_pos=poses.get(unit_id, ""))
+                key = norm(piece)
+                if key in seen:
+                    continue
+                seen.add(key)
+                pieces.append(piece)
+        screen[unit_id] = LU.drop_nested_translations(pieces)[: LU._MAX_LINKS]
     return screen, names
 
 
@@ -292,7 +313,7 @@ def audit_visible_dumps(cur, screen, names, examples: int) -> None:
 цифра — часть смысла («Отпуск продлили на 2 недели»), и это не дефект.""")
     hits = [(names[u], v) for u, vals in screen.items() for v in vals if is_dump(v)]
     say("ДЕФЕКТ", "номер значения внутри перевода на карточке слова",
-        "%d строк" % len(hits), "15 строк")
+        "%d строк" % len(hits), "3 строки (было 15 до правил выдачи)", "15.08.2026")
     for german, russian in sorted(hits):
         print("      %-22s → %s" % (german[:22], russian[:80]))
 
@@ -308,7 +329,7 @@ def audit_capitals(cur, screen, names, examples: int) -> None:
     ordinary = capital - sentences
 
     say("ДЕФЕКТ", "обычный перевод начинается с заглавной",
-        "%d из %d" % (len(ordinary), len(texts)), "1429 из 12238")
+        "%d из %d" % (len(ordinary), len(texts)), "85 из 10906 (было 1429 из 12238)", "15.08.2026")
     print("""    «Аккуратный, опрятный», «Аванс, задаток», «Боль в мышцах» — это переводы, а не
     предложения. Настоящих предложений среди заглавных всего %d (кончаются на . ! ?).""" % len(sentences))
     for value in sorted(ordinary)[:examples]:
@@ -387,7 +408,7 @@ def audit_duplicates(cur, screen, names, examples: int) -> None:
     affected = set().union(*kinds.values()) if kinds else set()
     say("ДЕФЕКТ", "слов, где перевод повторён внутри другого перевода",
         "%d из %d (%.0f%%)" % (len(affected), len(multi), 100.0 * len(affected) / max(1, len(multi))),
-        "1358 из 4608 (29%)")
+        "59 из 4573, 1% (было 1358 из 4608, 29%)", "15.08.2026")
     for kind in sorted(kinds, key=lambda k: -len(kinds[k])):
         print("      %-40s %5d слов" % (kind, len(kinds[kind])))
         for german, short, long_ in samples[kind][:2]:
