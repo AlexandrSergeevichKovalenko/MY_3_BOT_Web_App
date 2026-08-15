@@ -19506,17 +19506,21 @@ def count_admin_subscription_available_words(
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT COUNT(*)
+                -- Считаем РАЗНЫЕ слова общей базы, у которых есть разбор: без имени
+                -- человека одно слово лежит столько раз, сколько людей его сохранили.
+                -- Почему без владельца и почему с разбором — см. пояснение в
+                -- list_admin_subscription_new_candidates.
+                SELECT COUNT(DISTINCT a.canonical_entry_id)
                 FROM bt_3_webapp_dictionary_queries a
-                WHERE a.user_id = %s
-                  AND a.canonical_entry_id IS NOT NULL
+                JOIN bt_3_lex_units lu ON lu.id = a.lex_unit_id AND lu.card IS NOT NULL
+                WHERE a.canonical_entry_id IS NOT NULL
                   {lang_clause}
                   AND NOT EXISTS (
                       SELECT 1 FROM bt_3_webapp_dictionary_queries u
                       WHERE u.user_id = %s AND u.canonical_entry_id = a.canonical_entry_id
                   );
                 """,
-                (int(source_user_id), *lang_params, int(user_id)),
+                (*lang_params, int(user_id)),
             )
             row = cur.fetchone()
     return int(row[0]) if row and row[0] is not None else 0
@@ -19533,10 +19537,11 @@ def has_admin_subscription_available(
     lang_clause = f"AND {lang_sql}" if lang_sql else ""
     sql = f"""
         SELECT EXISTS (
+            -- Тот же пул, что и у отбора: общая база, слово с разбором.
             SELECT 1
             FROM bt_3_webapp_dictionary_queries a
-            WHERE a.user_id = %s
-              AND a.canonical_entry_id IS NOT NULL
+            JOIN bt_3_lex_units lu ON lu.id = a.lex_unit_id AND lu.card IS NOT NULL
+            WHERE a.canonical_entry_id IS NOT NULL
               {lang_clause}
               AND NOT EXISTS (
                   SELECT 1 FROM bt_3_webapp_dictionary_queries u
@@ -19545,7 +19550,7 @@ def has_admin_subscription_available(
             LIMIT 1
         );
     """
-    params = (int(source_user_id), *lang_params, int(user_id))
+    params = (*lang_params, int(user_id))
 
     def _run(cur) -> bool:
         cur.execute(sql, params)
@@ -19625,27 +19630,46 @@ def list_admin_subscription_new_candidates(
     lang_clause = f"AND {lang_sql}" if lang_sql else ""
     phrase_clause = "AND a.is_phrase IS TRUE" if phrases_only else ""
     capped = max(1, min(int(limit or 20), 200))
+    # ─────────────────────────────────────────────────────────────────────────────
+    # ОТБОР ИДЁТ ПО ОБЩЕЙ БАЗЕ, А НЕ ПО СЛОВАРЮ ОДНОГО ЧЕЛОВЕКА.
+    #
+    # Как было до 15.08.2026: здесь стояло `a.user_id = %s` — стартовый набор брался
+    # из карточек владельца. Владелец 15.08.2026: «я такой же обычный пользователь».
+    # Замер того же дня: из 15 645 слов базы 15 290 (97,7%) первым сохранил он, так
+    # что «его словарь» и «вся база» почти совпадали и разницы не было видно. На
+    # тысяче людей она будет.
+    #
+    # УСЛОВИЕ КАЧЕСТВА. Раньше фильтр «только словарь владельца» работал ещё и
+    # фильтром качества — случайно. Теперь требуем прямо: у слова должен быть разбор
+    # в справочнике. Замер: из 15 098 слов прежнего набора у ~4 600 (31%) разбора нет,
+    # и новичок получал пустую карточку. Годных слов с разбором — 10 708.
+    #
+    # DISTINCT ON нужен потому, что без имени человека одно и то же слово лежит в
+    # базе столько раз, сколько людей его сохранили: без него один и тот же кандидат
+    # приходил бы по нескольку раз подряд.
+    # ─────────────────────────────────────────────────────────────────────────────
     sql = f"""
-                SELECT a.id, a.canonical_entry_id, a.word_de, e.frequency_rank,
+                SELECT DISTINCT ON (a.canonical_entry_id)
+                       a.id, a.canonical_entry_id, a.word_de, e.frequency_rank,
                        COALESCE(a.translation_ru, a.word_ru)
                 FROM bt_3_webapp_dictionary_queries a
                 JOIN bt_3_dictionary_entries e ON e.id = a.canonical_entry_id
+                JOIN bt_3_lex_units lu ON lu.id = a.lex_unit_id AND lu.card IS NOT NULL
                 {_SUBSCRIPTION_POPULARITY_JOIN_SQL}
-                WHERE a.user_id = %s
-                  AND a.canonical_entry_id IS NOT NULL
+                WHERE a.canonical_entry_id IS NOT NULL
                   {phrase_clause}
                   {lang_clause}
                   AND NOT EXISTS (
                       SELECT 1 FROM bt_3_webapp_dictionary_queries u
                       WHERE u.user_id = %s AND u.canonical_entry_id = a.canonical_entry_id
                   )
-                ORDER BY {_SUBSCRIPTION_ORDER_BY_SQL}
+                ORDER BY a.canonical_entry_id, {_SUBSCRIPTION_ORDER_BY_SQL}
                 LIMIT %s;
     """
     # Берём с запасом: часть кандидатов отсеется как повтор или как негодное слово,
     # а вызывающая сторона просит обычно один. Запас втрое перекрывает 3% отсева.
     fetch_limit = min(200, max(capped * 3, capped + 10))
-    params = (int(source_user_id), *lang_params, int(user_id), fetch_limit)
+    params = (*lang_params, int(user_id), fetch_limit)
 
     owned_sql = """
         SELECT COALESCE(word_de, ''), COALESCE(translation_ru, word_ru, '')
@@ -19708,6 +19732,11 @@ def materialize_subscription_card(
         if not cands:
             return None
         canonical_id = int(cands[0]["canonical_entry_id"])
+        # Источник — ЛЮБАЯ карточка этого слова, а не карточка одного человека.
+        # Стартовый набор больше не привязан к владельцу (см. пояснение в
+        # list_admin_subscription_new_candidates), поэтому и текст берём оттуда, где
+        # он лучше: сначала строки, у слова которых есть разбор, потом — самые полные.
+        # source_user_id остаётся первым в очереди: его словарь вычитан руками.
         cur.execute(
             """
             SELECT q.word_ru, q.translation_de, q.word_de, q.translation_ru,
@@ -19715,10 +19744,13 @@ def materialize_subscription_card(
                    (u.card IS NOT NULL) AS unit_ready, q.lex_unit_id
             FROM bt_3_webapp_dictionary_queries q
             LEFT JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
-            WHERE q.user_id = %s AND q.canonical_entry_id = %s
+            WHERE q.canonical_entry_id = %s
+            ORDER BY (q.user_id = %s) DESC,
+                     (u.card IS NOT NULL) DESC,
+                     length(COALESCE(q.response_json::text, '')) DESC
             LIMIT 1;
             """,
-            (int(source_user_id), canonical_id),
+            (canonical_id, int(source_user_id)),
         )
         src = cur.fetchone()
         if not src:

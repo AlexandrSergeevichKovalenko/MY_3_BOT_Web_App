@@ -310,15 +310,37 @@ class SubscriptionQueriesRunTests(unittest.TestCase):
         self.assertIn("target_lang", card)
 
     def test_available_counter_query_builds(self):
-        """Счётчик доступного НЕ должен требовать фильтра фраз — он считает всё."""
+        """Счётчик доступного НЕ должен требовать фильтра фраз — он считает всё.
+
+        Считает РАЗНЫЕ слова: с 15.08.2026 пул берётся из общей базы, где одно слово
+        лежит столько раз, сколько людей его сохранили."""
         cur = self._Cursor()
         with patch.object(db, "get_db_connection_context") as ctx:
             ctx.return_value.__enter__.return_value.cursor.return_value = cur
             db.count_admin_subscription_available_words(
                 user_id=77, source_user_id=1, source_lang="ru", target_lang="de",
             )
-        self.assertIn("SELECT COUNT(*)", cur.sql)
+        self.assertIn("COUNT(DISTINCT a.canonical_entry_id)", cur.sql)
         self.assertNotIn("is_phrase", cur.sql)
+
+    def test_starter_pool_is_not_tied_to_a_person(self):
+        """Стартовый набор берётся из общей базы, а не из словаря владельца.
+
+        Решение владельца 15.08.2026: «я такой же обычный пользователь». Проверяем
+        отсутствие фильтра по автору и наличие условия качества — слово выдаётся,
+        только если у него есть разбор (иначе новичок получит пустую карточку)."""
+        for name, call in (
+            ("отбор", lambda cur: db.list_admin_subscription_new_candidates(
+                user_id=77, source_user_id=1, source_lang="ru", target_lang="de", cursor=cur)),
+            ("проверка наличия", lambda cur: db.has_admin_subscription_available(
+                user_id=77, source_user_id=1, source_lang="ru", target_lang="de", cursor=cur)),
+        ):
+            with self.subTest(name):
+                cur = self._Cursor()
+                call(cur)
+                sql = " ".join(cur.sqls[0].split())
+                self.assertNotIn("a.user_id = %s", sql, "фильтра по автору быть не должно")
+                self.assertIn("lu.card IS NOT NULL", sql, "слово без разбора выдавать нельзя")
 
 
 if __name__ == "__main__":
