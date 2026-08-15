@@ -307,7 +307,7 @@ def test_quick_dictionary_shows_the_shared_word(monkeypatch):
     unit_row = (7, "der Wandel", UNIT, "wandel", None, False)
     monkeypatch.setattr(database, "get_db_connection_context",
                         _fake_dictionary_db([card_row], [unit_row]))
-    monkeypatch.setattr(database, "get_user_word_overrides", lambda _ids: {})
+    monkeypatch.setattr(database, "get_user_word_overrides", lambda _ids, cursor=None: {})
 
     items = database.get_webapp_dictionary_entries(user_id=1, limit=10)
 

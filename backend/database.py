@@ -4961,7 +4961,8 @@ def merge_unit_card_for_serve(card: dict | None, unit_card: dict | None,
     return base
 
 
-def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "response_json"):
+def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "response_json",
+                                 cursor=None):
     """Дополнить разбор пачки карточек тем, что лежит на их единице.
 
     Одно место на всех раздатчиков — тренажёры, повторения, подсказка. Иначе правило
@@ -4970,6 +4971,9 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
 
     Один запрос на всю пачку. Правила те же, что в библиотеке: только дополняем, и
     только если единица про это же слово.
+
+    cursor обязателен, когда вызывающий уже держит транзакцию (ответ на повторении):
+    иначе мы возьмём из пула второе соединение, не отпустив первое.
     """
     if not DICTIONARY_UNITS_SERVE_ENABLED or not items:
         return items
@@ -4985,27 +4989,33 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
             ids.append(card_id)
     if not ids:
         return items
+    def _load(cur):
+        cur.execute(
+            """
+            -- Заметки человека берём тем же запросом: они лежат в этой же
+            -- строке, отдельный поход в базу был бы ради ничего. Связь с
+            -- единицей здесь необязательна — заметка есть и у слова без неё.
+            SELECT q.id, q.word_de, u.card, u.lemma_key, q.user_notes,
+                   -- Принадлежит ли написание карточки этому слову — спрашиваем
+                   -- справочник форм, а не сравниваем буквы. Без этого «Die
+                   -- Strümpfe» не признаётся формой слова «Strumpf», и разбор с
+                   -- общего слова не показывается вовсе (1077 таких карточек).
+                   COALESCE(""" + UNIT_OWNS_CARD_SURFACE_SQL.format(q="q", u="u") + """, FALSE)
+            FROM bt_3_webapp_dictionary_queries q
+            LEFT JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
+            WHERE q.id = ANY(%s)
+            """,
+            (ids,),
+        )
+        return cur.fetchall()
+
     try:
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    -- Заметки человека берём тем же запросом: они лежат в этой же
-                    -- строке, отдельный поход в базу был бы ради ничего. Связь с
-                    -- единицей здесь необязательна — заметка есть и у слова без неё.
-                    SELECT q.id, q.word_de, u.card, u.lemma_key, q.user_notes,
-                           -- Принадлежит ли написание карточки этому слову — спрашиваем
-                           -- справочник форм, а не сравниваем буквы. Без этого «Die
-                           -- Strümpfe» не признаётся формой слова «Strumpf», и разбор с
-                           -- общего слова не показывается вовсе (1077 таких карточек).
-                           COALESCE(""" + UNIT_OWNS_CARD_SURFACE_SQL.format(q="q", u="u") + """, FALSE)
-                    FROM bt_3_webapp_dictionary_queries q
-                    LEFT JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
-                    WHERE q.id = ANY(%s)
-                    """,
-                    (ids,),
-                )
-                rows = cursor.fetchall()
+        if cursor is not None:
+            rows = _load(cursor)
+        else:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as own_cursor:
+                    rows = _load(own_cursor)
     except Exception as exc:
         logging.debug("разбор с единиц не подтянулся: %s", exc)
         return items
@@ -5015,7 +5025,7 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
         for row in rows
     }
     # Личные правки человека — то, что он написал своей рукой. Ложатся поверх общего.
-    overrides = get_user_word_overrides(ids)
+    overrides = get_user_word_overrides(ids, cursor=cursor)
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -21806,7 +21816,7 @@ def get_random_dictionary_entry(
                 row = cursor.fetchone()
                 if not row:
                     return None
-            return {
+            entry = {
                 "id": row[0],
                 "user_id": row[1],
                 "word_ru": row[2],
@@ -21815,6 +21825,12 @@ def get_random_dictionary_entry(
                 "source_lang": row[5],
                 "target_lang": row[6],
             }
+            # Квизы в чате строят вопрос из примеров разбора (bot_3.py берёт
+            # usage_examples). Примеры — общие, они живут на слове; личная копия могла
+            # застыть месяцы назад. Курсор передаём свой: мы внутри уже открытого
+            # соединения, второе из пула брать нельзя.
+            attach_unit_content_to_cards([entry], cursor=cursor)
+            return entry
 
 
 def get_random_dictionary_entry_for_quiz_type(
@@ -21931,7 +21947,7 @@ def get_random_dictionary_entry_for_quiz_type(
                 if not row:
                     return None
 
-    return {
+    entry = {
         "id": row[0],
         "user_id": row[1],
         "word_ru": row[2],
@@ -21940,6 +21956,10 @@ def get_random_dictionary_entry_for_quiz_type(
         "source_lang": row[5],
         "target_lang": row[6],
     }
+    # То же, что и у соседней выдачи: вопрос собирается из общего разбора, не из
+    # застывшей личной копии. Соединение здесь уже отпущено, поэтому без курсора.
+    attach_unit_content_to_cards([entry])
+    return entry
 
 
 def _normalize_telegram_quiz_delivery_mode(value: str | None) -> str:
@@ -22080,6 +22100,8 @@ def list_low_accuracy_telegram_quiz_entries(
                 "last_asked_at": row[11].isoformat() if row[11] else None,
             }
         )
+    # Повтор трудных слов — тот же квиз, тот же разбор. Общее слово, а не копия.
+    attach_unit_content_to_cards(items)
     return items
 
 
@@ -28811,7 +28833,7 @@ def get_dictionary_entry_for_user(user_id: int, card_id: int, cursor=None) -> di
         row = cur.fetchone()
         if not row:
             return None
-        return {
+        entry = {
             "id": row[0],
             "word_ru": row[1],
             "translation_de": row[2],
@@ -28821,6 +28843,17 @@ def get_dictionary_entry_for_user(user_id: int, card_id: int, cursor=None) -> di
             "target_lang": row[6],
             "response_json": row[7],
         }
+        # РАЗБОР ЗДЕСЬ НЕ СЛИВАЕТСЯ С ОБЩИМ СЛОВОМ — И ЭТО НЕ ЗАБЫТО. Проверено
+        # 15.08.2026: единственный, кто зовёт эту функцию, — приём ответа
+        # (/api/cards/review), и карточка ему нужна ровно для одного: убедиться, что
+        # такая у человека есть, иначе 404. Ни одно поле разбора в ответ не уходит.
+        # Слияние добавило бы запрос на КАЖДЫЙ ответ человека и не показало бы ни
+        # буквы. Содержимое, которое видно после переворота, приходит из очереди
+        # (_list_srs_queue_cards) — там слияние есть.
+        # Если у этой функции появится читатель, который ПОКАЗЫВАЕТ разбор, — звать
+        # attach_unit_content_to_cards([entry], cursor=cur), курсор обязательно свой:
+        # мы внутри чужой транзакции. Перепись: docs/tasks/dictionary_readers_census.md.
+        return entry
     if cursor is not None:
         return _fetch(cursor)
     with get_db_connection_context() as conn:
@@ -30914,25 +30947,36 @@ def record_user_word_override(cursor, *, user_id: int, entry_id: int, unit_id: i
     )
 
 
-def get_user_word_overrides(entry_ids) -> dict[int, dict]:
+def get_user_word_overrides(entry_ids, cursor=None) -> dict[int, dict]:
     """Личные правки для пачки карточек: {entry_id: {field_key: value}}.
 
     Отпущенные (`released_at` заполнен) не возвращаются — человек сам сказал «верни как
-    в словаре», и поле снова живёт общей жизнью."""
+    в словаре», и поле снова живёт общей жизнью.
+
+    cursor передают те, кто уже держит транзакцию (ответ на повторении, например).
+    Без этого мы брали бы из пула ВТОРОЕ соединение, не отпустив первого, — а это
+    ровно тот способ, которым пул кончается под нагрузкой."""
     ids = [int(x) for x in (entry_ids or []) if x]
     if not ids:
         return {}
     out: dict[int, dict] = {}
+
+    def _fetch(cur):
+        cur.execute(
+            "SELECT entry_id, field_key, value FROM bt_3_user_word_overrides "
+            "WHERE entry_id = ANY(%s) AND released_at IS NULL;",
+            (ids,),
+        )
+        for entry_id, field_key, value in cur.fetchall():
+            out.setdefault(int(entry_id), {})[str(field_key)] = value
+
     try:
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT entry_id, field_key, value FROM bt_3_user_word_overrides "
-                    "WHERE entry_id = ANY(%s) AND released_at IS NULL;",
-                    (ids,),
-                )
-                for entry_id, field_key, value in cursor.fetchall():
-                    out.setdefault(int(entry_id), {})[str(field_key)] = value
+        if cursor is not None:
+            _fetch(cursor)
+        else:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as own_cursor:
+                    _fetch(own_cursor)
     except Exception:
         logging.debug("личные правки не прочитались", exc_info=True)
     return out
@@ -52178,8 +52222,60 @@ def ensure_article_sprint_schema() -> None:
                 );
                 """
             )
+            # Поиск по одному слову без темы. Единственный ключ таблицы начинается с
+            # theme_key, поэтому вопрос «знаем ли мы это слово вообще» шёл полным
+            # перебором. Спрашивает его сохранение словаря на каждое слово
+            # (article_bank_knows_word), а это горячий путь.
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_article_sprint_nouns_word_lower
+                ON bt_3_article_sprint_nouns (lower(word));
+                """
+            )
         conn.commit()
     _ARTICLE_SPRINT_SCHEMA_DONE = True
+
+
+def article_bank_knows_word(word: str) -> bool:
+    """Лежит ли это существительное в НАШЕМ банке Artikel с готовым русским переводом.
+
+    Нужна там, где решается «платное это сохранение или нет». Слово из задания мы уже
+    перевели однажды и держим перевод у себя — просить за него модель второй раз незачем,
+    а значит и лимит на него вешать не за что.
+
+    Отдельно от слоя статей (dictionary_entries.entries_for_query): замер 15.08.2026 на
+    выборке 300 слов показал, что слой знает лишь 57.3% банка. «die Richtlinie», «das
+    Register», «der Schadensersatz» он не знает — а банк знает все 10 503 слова, потому
+    что перевод там обязательное поле.
+
+    Артикль снимается: игра шлёт «die Büroklammer», а в банке артикль лежит отдельной
+    колонкой. Retired-слова тоже считаются известными — перевод от их отставки никуда
+    не делся.
+
+    Приводим к нижнему регистру именно `.lower()`, а НЕ `.casefold()`, которым нормализует
+    ключи `_normalize_dictionary_headword_key`: casefold превращает «Straße» в «strasse»,
+    а SQL `lower()` оставляет «straße», и всякое слово с ß перестало бы находиться."""
+    compact = _MULTI_SPACE_RE.sub(" ", str(word or "").strip()).lower()
+    candidate = _GERMAN_LEADING_ARTICLE_RE.sub("", compact).strip()
+    if not candidate or " " in candidate:
+        return False
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT 1 FROM bt_3_article_sprint_nouns
+                    WHERE lower(word) = %s AND COALESCE(meaning_ru, '') <> ''
+                    LIMIT 1;
+                    """,
+                    (candidate,),
+                )
+                return cursor.fetchone() is not None
+    except Exception:
+        # Молчание базы не повод объявить слово незнакомым «в нашу пользу»: пусть идёт
+        # обычным платным путём, это честнее, чем тихо раздать бесплатные сохранения.
+        logging.debug("банк Artikel не ответил про слово %r", str(word)[:60], exc_info=True)
+        return False
 
 
 def record_article_sprint_result(*, set_id: str, user_id: int, user_name: str,
