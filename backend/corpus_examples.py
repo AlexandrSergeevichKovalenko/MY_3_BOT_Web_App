@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 CORPUS_SOURCE_TATOEBA = "tatoeba"
 
@@ -86,12 +87,28 @@ def examples_for_word(word: str, *, limit: int = 2) -> list[dict]:
                     """
                     SELECT text_de, text_ru, author, license
                     FROM bt_3_corpus_examples
-                    WHERE to_tsvector('german', text_de) @@ plainto_tsquery('german', %s)
-                      AND length(text_de) BETWEEN %s AND %s
+                    -- Полнотекстовый поиск — только чтобы быстро сузить круг по индексу.
+                    WHERE to_tsvector('german', text_de) @@ plainto_tsquery('german', %(q)s)
+                    -- А это — страж. Немецкий полнотекстовый поиск режет слова до
+                    -- основы, и «Wehe» с «weh» получают одну и ту же: на запрос «die
+                    -- Wehe» (схватка) человеку показывали «Tut das weh?» — Болит?,
+                    -- пример от ТРЕТЬЕГО слова wehtun. Владелец увидел это 15.08.2026.
+                    -- Поэтому требуем, чтобы слово стояло в предложении целиком.
+                    -- \m и \M — границы слова в регулярных выражениях Postgres.
+                      AND text_de ~* ('\\m' || %(esc)s || '\\M')
+                      AND length(text_de) BETWEEN %(lo)s AND %(hi)s
                     ORDER BY length(text_de)
-                    LIMIT %s;
+                    LIMIT %(lim)s;
                     """,
-                    (query, MIN_EXAMPLE_CHARS, MAX_EXAMPLE_CHARS, int(limit)),
+                    {
+                        "q": query,
+                        # В корпусе ищем ровно набранное слово, поэтому спецсимволы
+                        # регулярного выражения обезвреживаем.
+                        "esc": re.escape(query),
+                        "lo": MIN_EXAMPLE_CHARS,
+                        "hi": MAX_EXAMPLE_CHARS,
+                        "lim": int(limit),
+                    },
                 )
                 rows = cur.fetchall()
     except Exception as exc:

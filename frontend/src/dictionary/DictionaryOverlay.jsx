@@ -1001,7 +1001,12 @@ export default function DictionaryOverlay({ onClose } = {}) {
   // Enter translates; Shift+Enter inserts a newline.
   // Ярлык части речи для быстрого ответа. Показываем только когда разбора ещё нет:
   // у разбора своя строка помет, и дублировать её незачем.
-  const quickPos = (!item && quick && QUICK_POS_LABELS[String(quick.partOfSpeech || '').toLowerCase()]) || '';
+  // Помета берётся у ВЫБРАННОЙ статьи. Раньше бралась у ответа целиком, то есть у
+  // первой статьи, и не менялась при выборе: человек нажимал «wehen — глагол», а под
+  // примерами по-прежнему стояло «существительное».
+  const quickPos = (!item && quick && QUICK_POS_LABELS[
+    String((chosenEntry?.pos ?? quick.partOfSpeech) || '').toLowerCase()
+  ]) || '';
 
   const onKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); translate(); }
@@ -1327,9 +1332,20 @@ export default function DictionaryOverlay({ onClose } = {}) {
             {quick.machine && !entries.length && (
               <div className="dq-machine-note">машинный перевод — этого слова нет в словаре</div>
             )}
-            {/* Живые примеры — общий компонент на оба словаря. */}
+            {/* Живые примеры — общий компонент на оба словаря.
+
+                Спрашиваем их по ВЫБРАННОМУ слову, а не по строке из поля поиска.
+                До 15.08.2026 сюда уходило quick.source — то, что человек набрал. На
+                «Wehe» это давало примеры от wehtun («Tut das weh?» — Болит?): третье
+                слово, ни к «die Wehe», ни к «wehen» отношения не имеющее. И при выборе
+                другой статьи примеры не менялись — строка поиска-то прежняя. */}
             {!item && (
-              <LiveExamples germanWord={quick?.sourceLang === 'de' ? quick?.source : quick?.translation} />
+              <LiveExamples
+                germanWord={
+                  chosenEntry?.headword
+                  || (quick?.sourceLang === 'de' ? quick?.source : quick?.translation)
+                }
+              />
             )}
             {/* Часть речи у быстрого перевода. Переводчики её не отдают, поэтому она
                 приходит из нашего же банка слов — тем же дешёвым путём, что и артикль.

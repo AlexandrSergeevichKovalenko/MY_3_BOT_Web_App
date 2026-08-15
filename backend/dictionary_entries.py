@@ -347,7 +347,20 @@ def entries_for_query(query: str, *, source_lang: str, target_lang: str,
     ВАЖНО: пустой список не значит «ошибка». Он значит ровно то, что сказано, и
     подсовывать вместо него догадку — это ровно та болезнь, от которой модуль."""
     text = _clean(query)
-    if not text or len(text) > 64 or " " in text:
+    if not text or len(text) > 64:
+        return []
+    # АРТИКЛЬ — НЕ ФРАЗА. Приложение показывает существительные с артиклем («die Habe»),
+    # человек набирает ровно то, что видит, — и до 15.08.2026 получал «этого слова нет
+    # в словаре»: проверка ниже видела пробел и объявляла запрос фразой, не заглянув в
+    # базу ни разу. Слово при этом лежало на месте.
+    # Артикль запоминаем: он уточняет выбор, а не мешает. «der Kiefer» — челюсть,
+    # «die Kiefer» — сосна, и это разные статьи.
+    asked_article = ""
+    article_match = _LEADING_ARTICLE_RE.match(text)
+    if article_match:
+        asked_article = article_match.group(1).lower()
+        text = text[article_match.end():].strip()
+    if not text or " " in text:
         # Фразы и предложения — работа переводчика, а не словаря статей.
         return []
     query_lang = _lang(source_lang) or ("de" if _is_german_query(text) else "ru")
@@ -395,6 +408,11 @@ def entries_for_query(query: str, *, source_lang: str, target_lang: str,
         _POS_ORDER.get(e["pos"], 9),
         e["headword"].lower(),
     ))
+    # Спросили с артиклем — значит человек уже сказал, какое из слов ему нужно.
+    # Ставим подходящие по роду вперёд. НЕ отбрасываем остальные: артикль мог быть
+    # набран по привычке или неверно, и молча спрятать нужную статью — хуже.
+    if asked_article:
+        entries.sort(key=lambda e: 0 if str(e.get("gender") or "").lower() == asked_article else 1)
     return entries[:limit]
 
 
