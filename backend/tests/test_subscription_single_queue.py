@@ -292,6 +292,23 @@ class SubscriptionQueriesRunTests(unittest.TestCase):
                     )
                 self.assertEqual("q.is_phrase IS TRUE" in cur.sql, phrases_only)
 
+    def test_new_card_carries_its_direction(self):
+        """Новая карточка обязана отдавать направление.
+
+        Без него экран считает любую новую карточку «русский → немецкий» и вопросом
+        показывает то, что лежит в русской колонке. У карточки, сохранённой с
+        немецкого, вопрос выходил по-немецки. Замер 15.08.2026: выдача отдавала
+        source_lang = None всегда."""
+        cur = self._Cursor()
+        with patch.object(db, "_trained_german_word_keys", Mock(return_value=[])):
+            card = db.get_next_new_srs_candidate(
+                user_id=77, source_lang="ru", target_lang="de", cursor=cur,
+            )
+        self.assertIn("q.source_lang", cur.sql)
+        self.assertIn("q.target_lang", cur.sql)
+        self.assertIn("source_lang", card)
+        self.assertIn("target_lang", card)
+
     def test_available_counter_query_builds(self):
         """Счётчик доступного НЕ должен требовать фильтра фраз — он считает всё."""
         cur = self._Cursor()

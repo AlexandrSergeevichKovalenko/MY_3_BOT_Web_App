@@ -28617,7 +28617,7 @@ def get_next_new_srs_candidate(
         cur.execute(
             f"""
             SELECT q.id, q.word_ru, q.translation_de, q.word_de, q.translation_ru, q.response_json,
-                   q.frequency_rank
+                   q.frequency_rank, q.source_lang, q.target_lang
             FROM bt_3_webapp_dictionary_queries q
             LEFT JOIN bt_3_card_srs_state s
               ON s.user_id = q.user_id AND s.card_id = q.id
@@ -28645,6 +28645,13 @@ def get_next_new_srs_candidate(
             "response_json": row[5],
             # Нужен, чтобы сравнить своё слово со словом из подписки в единой очереди.
             "frequency_rank": int(row[6]) if row[6] is not None else None,
+            # НАПРАВЛЕНИЕ КАРТОЧКИ. Без него экран считает любую новую карточку
+            # «русский → немецкий» и вопросом показывает то, что лежит в русской
+            # колонке. У карточки, сохранённой с немецкого, это German-сторона —
+            # и человек видит вопрос по-немецки вместо русского. Замер 15.08.2026:
+            # выдача новой карточки отдавала source_lang = None ВСЕГДА.
+            "source_lang": row[7],
+            "target_lang": row[8],
         }
     if cursor is not None:
         return _fetch(cursor)
