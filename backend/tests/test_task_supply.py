@@ -111,5 +111,33 @@ class ForecastMarginTests(unittest.TestCase):
         """Запас глубокий — 20% сверху всё равно не должны заставить нас платить."""
         self.assertEqual(shortfall(426, 0.39 * FORECAST_MARGIN), 0)
 
+
+
+class BenchmarkIsTheHeaviestUserTests(unittest.TestCase):
+    """Числа владельца 15.08.2026: один тратит 5 в сутки, другой 1. Среднее — 3.
+    При банке 30 расчёт по среднему обещает 10 дней, а прожорливый упрётся на шестой:
+    запас в 30 дней ему не обеспечен, хотя отчёт зелёный."""
+
+    def test_average_underestimates_the_heavy_user(self):
+        rates = [5.0, 1.0]
+        avg = sum(rates) / len(rates)
+        top = percentile(rates, 0.95)
+        self.assertGreater(top, avg)
+        self.assertLess(supply_days(30, top), supply_days(30, avg))
+        self.assertLessEqual(supply_days(30, top), 6.5,
+                             "по самому активному банк кончается на шестой день")
+
+    def test_one_outlier_still_does_not_set_the_bar(self):
+        """Владелец на тестах не должен задирать заказ для всех — потому не максимум."""
+        rates = [1.0] * 20 + [40.0]
+        self.assertLess(percentile(rates, 0.95), 40.0)
+
+    def test_order_covers_the_heavy_user_for_the_whole_target(self):
+        rates = [5.0, 1.0]
+        per_day = percentile(rates, 0.95) * FORECAST_MARGIN
+        need = shortfall(30, per_day)
+        self.assertGreaterEqual((30 + need) / 5.0, TARGET_SUPPLY_DAYS,
+                                "после заказа самому активному должно хватить на месяц")
+
 if __name__ == "__main__":
     unittest.main()

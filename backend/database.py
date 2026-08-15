@@ -50760,10 +50760,15 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
     from backend.task_supply import FORECAST_MARGIN
     rates = [float(r[1] or 0.0) for r in rows]
     blocked = [int(r[2] or 0) for r in rows]
-    # Средний расход живого человека, а не самого прожорливого: один аномальный
-    # (например, владелец на тестах) не должен задирать заказ для всех. Сверху запас.
-    avg_rate = (sum(rates) / len(rates)) if rates else 0.0
-    per_day = avg_rate * FORECAST_MARGIN
+    # Эталон — САМЫЙ расходующий живой человек, а не средний. Дно наступает у него
+    # первым, и его пустой экран мы и увидим. Проверка на числах владельца 15.08.2026:
+    # один тратит 5 в сутки, другой 1; среднее 3; при банке 30 расчёт обещает 10 дней,
+    # а прожорливый упрётся на шестой — запас в 30 дней ему не обеспечен.
+    # Не буквальный максимум, а 95-й процентиль: один аномальный человек (владелец на
+    # тестах) не должен задирать заказ для всех. Сверху 20% запаса.
+    avg_rate = (sum(rates) / len(rates)) if rates else 0.0     # только для отчёта
+    top_rate = percentile(rates, 0.95)
+    per_day = top_rate * FORECAST_MARGIN
     # Запас считаем у самого «глубокого»: у него закрыто больше всего.
     deepest_blocked = int(percentile(blocked, 0.95))
     available = max(0, bank_total - deepest_blocked)
@@ -50771,7 +50776,8 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
     return {
         "kind": str(kind), "title": TASK_KIND_TITLES.get(str(kind), str(kind)),
         "bank_total": bank_total, "people": len(rows),
-        "per_day": round(per_day, 2), "per_day_measured": round(avg_rate, 2),
+        "per_day": round(per_day, 2), "per_day_measured": round(top_rate, 2),
+        "per_day_avg": round(avg_rate, 2),
         "people_active": len(rates), "blocked_deepest": deepest_blocked,
         "available": available, "supply_days": days,
         "order_now": shortfall(available, per_day),

@@ -41,8 +41,10 @@ def build_task_supply_report(rows: list) -> str:
         lines.append(
             f"{mark} <b>{r['title']}</b> — хватит на {_days_text(days)} дн. "
             f"({verdict(days)})")
-        measured = r.get("per_day_measured")
-        rate_text = (f"расход {measured}/сутки + запас 20% = {r['per_day']}"
+        measured, avg = r.get("per_day_measured"), r.get("per_day_avg")
+        rate_text = (f"расход у самого активного {measured}/сутки"
+                     + (f" (в среднем {avg})" if avg is not None else "")
+                     + f" + запас 20% = {r['per_day']}"
                      if measured is not None else f"расход {r['per_day']}/сутки")
         lines.append(
             f"    в банке {r['bank_total']}, человеку доступно {r['available']}, "
@@ -65,9 +67,10 @@ def build_task_supply_report(rows: list) -> str:
             lines.append(f"    • {r.get('title') or r.get('kind')}: {r['error']}")
         lines.append("")
 
-    lines.append(f"Расход — средний по ЖИВЫМ людям за 30 дней (кто хоть раз отвечал), "
-                 f"плюс 20% запаса. Держим запас в {TARGET_SUPPLY_DAYS} дн. "
-                 f"у самого продвинутого. Банк зависит не от числа людей, а от расхода: "
+    lines.append(f"Расход — у САМОГО активного из живых за 30 дней (кто хоть раз "
+                 f"отвечал), плюс 20% запаса: дно наступает у него первым, среднее его "
+                 f"недосчитает. Держим запас в {TARGET_SUPPLY_DAYS} дн. "
+                 f"Банк зависит не от числа людей, а от расхода: "
                  f"разным людям можно давать одно и то же задание.")
     return "\n".join(lines)
 
