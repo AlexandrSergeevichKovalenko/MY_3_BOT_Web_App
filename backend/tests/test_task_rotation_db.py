@@ -28,7 +28,8 @@ class RecordAnswerTests(unittest.TestCase):
     def _record(self, **kwargs):
         ctx, cur = _fake_conn(rows=[])
         with patch.object(db, "get_db_connection_context", return_value=ctx), \
-             patch.object(db, "ensure_task_rotation_schema"):
+             patch.object(db, "ensure_task_rotation_schema"), \
+             patch.object(db, "_task_rotation_writes_disabled", return_value=False):
             db.record_user_task_answer(**kwargs)
         return cur.execute.call_args_list
 
@@ -54,7 +55,8 @@ class RecordAnswerTests(unittest.TestCase):
     def test_broken_database_never_raises(self):
         """Память служебная: если она упала, ответ человеку всё равно должен пройти."""
         with patch.object(db, "get_db_connection_context", side_effect=RuntimeError), \
-             patch.object(db, "ensure_task_rotation_schema"):
+             patch.object(db, "ensure_task_rotation_schema"), \
+             patch.object(db, "_task_rotation_writes_disabled", return_value=False):
             db.record_user_task_answer(user_id=1, kind="article_quiz", task_key="w1",
                                        is_correct=True)
 
@@ -65,7 +67,8 @@ class ReadStateTests(unittest.TestCase):
         rows = [("w1", 2, 1, now, now, None)]
         ctx, cur = _fake_conn(rows=rows)
         with patch.object(db, "get_db_connection_context", return_value=ctx), \
-             patch.object(db, "ensure_task_rotation_schema"):
+             patch.object(db, "ensure_task_rotation_schema"), \
+             patch.object(db, "_task_rotation_writes_disabled", return_value=False):
             out = db.get_user_task_state(1, "article_quiz", ["w1", "w2"])
         self.assertEqual(set(out), {"w1"}, "чего в памяти нет — человек ещё не видел")
         self.assertEqual(out["w1"]["seen_count"], 2)

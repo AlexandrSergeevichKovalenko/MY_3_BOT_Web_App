@@ -50326,8 +50326,21 @@ def mark_freeform_card_sent(answer_id: int) -> None:
 # никогда обязана считать ПОВТОРНЫЕ верные ответы — сменить там семантику значило бы
 # рискнуть рейтингами. Само правило живёт без базы, в `backend/task_rotation.py`.
 
+def _task_rotation_writes_disabled() -> bool:
+    """В тестах память ротации не трогаем.
+
+    15.08.2026: хук в аудировании заставил прогон тестов пойти в БОЕВУЮ базу — тесты
+    прогоняют этот путь, а запись живая. Тот же приём, что у ведомости расходов
+    (`SKIP_BILLING_LEDGER_WRITES`): в проде переменная НЕ ставится.
+    """
+    return bool(os.getenv("SKIP_TASK_ROTATION_WRITES")
+                or os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP"))
+
+
 def ensure_task_rotation_schema() -> None:
     """Личное состояние ротации: одна строка на (человек, вид задания, задание)."""
+    if _task_rotation_writes_disabled():
+        return
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
@@ -50354,6 +50367,9 @@ def ensure_task_rotation_schema() -> None:
 
 def get_user_task_state(user_id: int, kind: str, task_keys: list) -> dict:
     """Состояние по перечисленным заданиям: {task_key: {...}}. Чего нет — не видел."""
+
+    if _task_rotation_writes_disabled():
+        return {}
     keys = [str(k) for k in (task_keys or []) if str(k)]
     if not keys:
         return {}
@@ -50390,12 +50406,15 @@ _TASK_BANKS = {
            "retired = FALSE AND review_status = 'approved'"),
     "article_quiz": ("bt_3_article_quiz_bank", "word_id",
                      "image_status = 'ready' AND retired = FALSE"),
+    "ls": ("bt_3_listening_bank", "listening_id",
+           "audio_status = 'ready' AND retired = FALSE"),
 }
 
 # Как вид называется в отчёте владельцу — человеческим словом, а не кодом.
 TASK_KIND_TITLES = {
     "rb": "Ребусы", "cw": "Кроссворды", "ag": "Анаграммы",
     "au": "Задания пула", "article_quiz": "Картиночный квиз артиклей",
+    "ls": "Аудирование",
 }
 
 
@@ -50466,6 +50485,9 @@ def get_user_blocked_content_ids(user_id: int, kind: str) -> list:
     Память служебная: если она недоступна, не закрываем НИЧЕГО — человек получает
     задание по-старому, а не пустой экран.
     """
+
+    if _task_rotation_writes_disabled():
+        return []
     try:
         ensure_task_rotation_schema()
         with get_db_connection_context() as conn:
@@ -50496,6 +50518,8 @@ def record_user_task_answer(*, user_id: int, kind: str, task_key: str,
     Память служебная: если запись упала, ответ человеку всё равно должен пройти —
     поэтому наружу отсюда ничего не летит.
     """
+    if _task_rotation_writes_disabled():
+        return
     from datetime import datetime, timezone
     from backend.task_rotation import next_state
     try:
@@ -56071,8 +56095,14 @@ def pool_demand_last_24h() -> dict:
     }
 
 
-def pick_next_listening(*, cooldown_days: int = 7) -> dict | None:
-    """Pick the oldest ready listening entry not sent within cooldown."""
+def pick_next_listening(*, cooldown_days: int = 7, exclude_ids: list | None = None) -> dict | None:
+    """Pick the oldest ready listening entry not sent within cooldown.
+
+    `exclude_ids` — что закрыто ЛИЧНО этому человеку (см. `get_user_blocked_content_ids`).
+    Банк аудирования маленький (30 записей, замер 14.08.2026), поэтому без личной
+    ротации человеку раз за разом достаётся текст, который он уже слушал.
+    """
+    skip = [str(i) for i in (exclude_ids or []) if str(i)]
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -56084,10 +56114,13 @@ def pick_next_listening(*, cooldown_days: int = 7) -> dict | None:
                   AND retired = FALSE
                   AND (last_sent_at IS NULL
                        OR last_sent_at < NOW() - (%s || ' days')::INTERVAL)
+                """
+                + ("  AND listening_id::text <> ALL(%s)\n" if skip else "")
+                + """
                 ORDER BY last_sent_at NULLS FIRST, created_at
                 LIMIT 1
                 """,
-                (int(cooldown_days),),
+                ((int(cooldown_days), skip) if skip else (int(cooldown_days),)),
             )
             row = cursor.fetchone()
     if not row:

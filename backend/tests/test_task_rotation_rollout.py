@@ -29,14 +29,16 @@ class BlockedIdsTests(unittest.TestCase):
         """В памяти ключ лежит как «rb:42», а банку нужен голый номер записи."""
         ctx, cur = _fake_conn(rows=[("rb:42",), ("rb:77",)])
         with patch.object(db, "get_db_connection_context", return_value=ctx), \
-             patch.object(db, "ensure_task_rotation_schema"):
+             patch.object(db, "ensure_task_rotation_schema"), \
+             patch.object(db, "_task_rotation_writes_disabled", return_value=False):
             out = db.get_user_blocked_content_ids(1, "rb")
         self.assertEqual(out, ["42", "77"])
 
     def test_broken_database_blocks_nothing(self):
         """Память упала — человек получает задание по-старому, а не пустоту."""
         with patch.object(db, "get_db_connection_context", side_effect=RuntimeError), \
-             patch.object(db, "ensure_task_rotation_schema"):
+             patch.object(db, "ensure_task_rotation_schema"), \
+             patch.object(db, "_task_rotation_writes_disabled", return_value=False):
             self.assertEqual(db.get_user_blocked_content_ids(1, "rb"), [])
 
 
@@ -45,7 +47,8 @@ class PickerExclusionTests(unittest.TestCase):
 
     def _sql_of(self, fn, **kwargs):
         ctx, cur = _fake_conn(one=None)
-        with patch.object(db, "get_db_connection_context", return_value=ctx):
+        with patch.object(db, "get_db_connection_context", return_value=ctx), \
+             patch.object(db, "_task_rotation_writes_disabled", return_value=False):
             fn(**kwargs)
         sql, params = cur.execute.call_args[0][0], cur.execute.call_args[0][1]
         return " ".join(sql.split()), params

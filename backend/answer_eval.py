@@ -950,6 +950,18 @@ def _spawn_listening_grader(answer_id: int, german_text: str, questions: list, a
                     user_name=str(user_name or ""), is_correct=bool(total > 0 and scored["passed"]),
                     time_ms=int(time_ms or 0),
                 )
+                # Личная ротация. Аудирование проверяется отдельно и НЕ проходит через
+                # общую сдачу ответа, поэтому память ротации подключается тут же — иначе
+                # человеку раз за разом достаётся тот же текст, который он уже слушал.
+                # Банк маленький (30 записей, замер 14.08.2026), так что это заметно.
+                try:
+                    from backend.database import record_user_task_answer
+                    record_user_task_answer(
+                        user_id=int(user_id), kind="ls", task_key=str(ranking_key),
+                        is_correct=bool(total > 0 and scored["passed"]), source="chat")
+                except Exception:
+                    logging.warning("ротация: аудирование не запомнилось answer_id=%s",
+                                    answer_id, exc_info=True)
             except Exception:
                 logging.warning("listening grader: ranking record failed answer_id=%s", answer_id, exc_info=True)
             save_listening_evaluation(answer_id=int(answer_id), evaluation_json=evals)

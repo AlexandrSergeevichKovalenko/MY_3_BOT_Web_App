@@ -74,7 +74,8 @@ class MeasureTests(unittest.TestCase):
         ctx = MagicMock()
         ctx.__enter__.return_value = conn
         with patch.object(db, "get_db_connection_context", return_value=ctx), \
-             patch.object(db, "ensure_task_rotation_schema"):
+             patch.object(db, "ensure_task_rotation_schema"), \
+             patch.object(db, "_task_rotation_writes_disabled", return_value=False):
             out = db.measure_task_supply("rb")
         self.assertLess(out["available"], 50,
                         "запас надо считать по самому продвинутому, а не по среднему")

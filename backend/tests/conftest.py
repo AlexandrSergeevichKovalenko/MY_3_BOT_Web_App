@@ -21,3 +21,5 @@ import os
 
 os.environ.setdefault("SKIP_STARTUP_SCHEMA_BOOTSTRAP", "1")
 os.environ.setdefault("SKIP_BILLING_LEDGER_WRITES", "1")
+# Личная ротация тоже пишет в базу — в прогоне тестов это боевая база.
+os.environ.setdefault("SKIP_TASK_ROTATION_WRITES", "1")

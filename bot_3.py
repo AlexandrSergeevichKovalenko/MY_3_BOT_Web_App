@@ -4367,7 +4367,7 @@ async def _drip_emit_reminder(context, uid, did, *, kb, caption, poster_fn, inbo
 # Вид задания в рассылке → вид в памяти личной ротации (тот же код, каким строится
 # ключ ответа в `content_ranking_key`).
 _ROTATION_KIND_BY_DRIP = {"aufgabe": "au", "anagram": "ag", "rebus": "rb",
-                          "crossword": "cw"}
+                          "crossword": "cw", "listening": "ls"}
 
 
 async def _drip_blocked_ids(uid: int, kind: str) -> list:
@@ -4407,7 +4407,8 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             except Exception: pass
         return ok
     if kind == "listening":
-        entry = (await asyncio.to_thread(pick_next_listening, cooldown_days=LISTENING_COOLDOWN_DAYS)
+        entry = (await asyncio.to_thread(pick_next_listening, cooldown_days=LISTENING_COOLDOWN_DAYS,
+                                          exclude_ids=blocked)
                  or await asyncio.to_thread(pick_next_listening, cooldown_days=0))
         if not entry:
             return False
