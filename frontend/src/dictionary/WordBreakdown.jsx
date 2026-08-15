@@ -632,6 +632,9 @@ function _parsePerfekt(perfekt) {
 function buildVerbConjugation(wordDe, seed) {
   const inf = _stripArticle(wordDe);
   if (!inf || /\s/.test(inf)) return null;
+  // Лучше не показать таблицу, чем показать выдуманную: от zu-инфинитива выходит
+  // «ich klarzukomme, du klarzukommst» — форм, которых в языке нет.
+  if (looksLikeZuInfinitive(inf)) return null;
   seed = seed || {};
   let stem; let plEnd;
   if (inf.endsWith('eln') || inf.endsWith('ern')) { stem = inf.slice(0, -1); plEnd = 'n'; }
@@ -668,13 +671,46 @@ function buildVerbConjugation(wordDe, seed) {
   tables.infinitive = inf;
   return tables;
 }
+// Отделяемые приставки — с них начинается zu-инфинитив «klar-zu-kommen».
+const SEPARABLE_PREFIXES = ['ab','an','auf','aus','bei','durch','ein','fest','her','hin','los','mit',
+  'nach','über','um','unter','vor','weg','weiter','zurück','zusammen','klar','fort','heim','statt',
+  'teil','wieder','zu'];
+// Зеркало backend/german_grammar_tables.py: «klarzukommen» — это zu-инфинитив, а не
+// словарная форма. Спрягать его нельзя, выходит «ich klarzukomme», чего в языке нет.
+// Правила держим одинаковыми с сервером: этот движок работает, когда сервер таблицу не
+// прислал, и расхождение означало бы, что одно и то же слово выглядит по-разному.
+function looksLikeZuInfinitive(word) {
+  const body = clean(word).toLowerCase();
+  if (!body || /\s/.test(body) || !/(en|eln|ern)$/.test(body)) return false;
+  if (/^(hinzu|dazu|herzu|wozu|darzu)/.test(body)) return false;   // приставка сама на «zu»
+  return SEPARABLE_PREFIXES.some((p) => {
+    if (!body.startsWith(p + 'zu')) return false;
+    const rest = body.slice(p.length + 2);
+    return rest.length >= 5 && /(en|eln|ern)$/.test(rest);         // «zusammenzucken» отсекается
+  });
+}
+const ADJ_SUFFIXES = ['ig','lich','isch','bar','sam','haft','los','voll','iv','abel'];
+// «schlammigen», «winzigen» — склонённые формы. Степени сравнения от них выходят
+// несуществующими: «schlammigener», «am schlammigensten».
+function looksLikeDeclinedAdjective(word) {
+  const body = clean(word).toLowerCase();
+  if (!body || /\s/.test(body)) return false;
+  return ['en','em','es','er','e'].some((end) => {
+    if (!body.endsWith(end)) return false;
+    const stem = body.slice(0, body.length - end.length);
+    return stem.length >= 4 && ADJ_SUFFIXES.some((s) => stem.endsWith(s));
+  });
+}
 function buildAdjectiveComparison(wordDe, comparative, superlative) {
   const positive = _stripArticle(wordDe);
   if (!positive || /\s/.test(positive)) return null;
+  // Лучше не показать таблицу, чем показать выдуманную.
+  if (looksLikeDeclinedAdjective(positive)) return null;
   let comp = clean(comparative);
   let sup = clean(superlative);
   if (!comp) comp = positive + 'er';
-  if (!sup) sup = `am ${positive}sten`;
+  // После t/d/s/ß/z/x положено «-esten»: «am ältesten», а не «am altsten».
+  if (!sup) sup = `am ${positive}${/[tdsßzx]$/i.test(positive) ? 'esten' : 'sten'}`;
   else if (!sup.toLowerCase().startsWith('am ')) sup = 'am ' + sup;
   return { positive, comparative: comp, superlative: sup };
 }

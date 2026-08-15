@@ -1315,6 +1315,32 @@ def run_shortcut_lookup_job(
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_dictionary_dedupe_after_save_job(user_id: int, entry_id: int) -> None:
+    """Убрать повторы одного слова у одного человека — ПОСЛЕ того, как сохранение уже
+    подтверждено человеку.
+
+    Сохранение обязано быть мгновенным: человек нажал «сохранить», увидел подтверждение и
+    продолжил работать. Поэтому уборка живёт здесь, в фоне, а не в запросе.
+
+    Правило простое и не гадающее: сносим карточку, только если совпали И слово, И
+    перевод. История повторений и журнал ответов переезжают на выжившую (это уже умеет
+    dedupe_personal_entry_after_save)."""
+    safe_user_id = int(user_id or 0)
+    safe_entry_id = int(entry_id or 0)
+    if safe_user_id <= 0 or safe_entry_id <= 0:
+        return
+    try:
+        from backend.database import dedupe_personal_entry_after_save
+
+        dedupe_personal_entry_after_save(safe_user_id, safe_entry_id)
+    except Exception:
+        logging.exception(
+            "dictionary_dedupe_after_save_job failed user_id=%s entry_id=%s",
+            safe_user_id, safe_entry_id,
+        )
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_autosave_sweep_job() -> None:
     """Debounce sweep: find users whose nightly auto-save batch went quiet (flush-at elapsed)
     and fan out one flush job each. Triggered by the scheduler every ~30s; one cheap pass for

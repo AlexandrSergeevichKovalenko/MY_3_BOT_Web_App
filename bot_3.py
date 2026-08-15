@@ -37944,6 +37944,51 @@ async def admin_wofrage_health_command(update: Update, context: CallbackContext)
     await message.reply_text(text, parse_mode="HTML")
 
 
+async def admin_task_supply_command(update: Update, context: CallbackContext) -> None:
+    """Хватает ли заданий: на сколько дней и что дозаказать. /task_supply
+
+    С личной ротацией человек перестал получать пройденное — значит у него банк
+    однажды кончится. Дно должно быть видно ДО того, как его увидят люди.
+    """
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    from backend.database import measure_all_task_supply
+    from backend.task_supply_report import build_task_supply_report
+    rows = await asyncio.to_thread(measure_all_task_supply)
+    await message.reply_text(build_task_supply_report(rows), parse_mode="HTML")
+
+
+async def _task_supply_watch_job(context: CallbackContext) -> None:
+    """Ночная проверка запаса. Молчит, пока всё в порядке: писать владельцу каждую
+    ночь «всё хорошо» — верный способ добиться, чтобы отчёт перестали читать."""
+    try:
+        from backend.database import measure_all_task_supply
+        from backend.task_supply_report import build_task_supply_report, task_supply_alerts
+        rows = await asyncio.to_thread(measure_all_task_supply)
+        alerts = task_supply_alerts(rows)
+        logging.info("task_supply: %s", "; ".join(
+            f"{r.get('title')}={r.get('supply_days')}" for r in rows if not r.get("error")))
+        if not alerts:
+            return
+        text = ("⚠️ <b>Заканчиваются задания</b>\n\n"
+                + "\n".join(f"• {a}" for a in alerts)
+                + "\n\n" + build_task_supply_report(rows))
+        for admin_id in (get_admin_telegram_ids() or []):
+            try:
+                await context.bot.send_message(chat_id=int(admin_id), text=text,
+                                               parse_mode="HTML")
+            except Exception:
+                logging.warning("task_supply: не отправился отчёт admin=%s", admin_id,
+                                exc_info=True)
+    except Exception:
+        logging.warning("task_supply_watch_job failed", exc_info=True)
+
+
 async def wofrage_learn_command(update: Update, context: CallbackContext) -> None:
     """Open the Wo-Frage Trainer (self-paced deck). /wofragelearn"""
     message = update.effective_message
@@ -43160,6 +43205,7 @@ def main():
     application.add_handler(CommandHandler("wofragesprint", admin_wofrage_sprint_command))
     application.add_handler(CommandHandler("wofragetest", admin_wofrage_test_command))
     application.add_handler(CommandHandler("wofrage_health", admin_wofrage_health_command))
+    application.add_handler(CommandHandler("task_supply", admin_task_supply_command))
     application.add_handler(CommandHandler("wofragebattle", wofrage_battle_command))
     application.add_handler(CommandHandler("wofragelearn", wofrage_learn_command))
     application.add_handler(CallbackQueryHandler(wofrage_battle_join_callback, pattern=r"^wfb_join:\d+$"))
@@ -43304,6 +43350,18 @@ def main():
             logging.info("scheduled wofrage_bank_health at 04:10 Europe/Vienna")
         except Exception:
             logging.warning("failed to schedule wofrage_bank_health", exc_info=True)
+        try:
+            # Ночью, когда нагрузка минимальная: считаем, на сколько дней хватает
+            # заданий самому продвинутому человеку, и пишем владельцу ТОЛЬКО если
+            # где-то близко дно.
+            application.job_queue.run_daily(
+                _task_supply_watch_job,
+                time=time(hour=4, minute=25, tzinfo=ZoneInfo("Europe/Vienna")),
+                name="task_supply_watch",
+            )
+            logging.info("scheduled task_supply_watch at 04:25 Europe/Vienna")
+        except Exception:
+            logging.warning("failed to schedule task_supply_watch", exc_info=True)
         try:
             application.job_queue.run_daily(
                 _nightly_frequency_backfill_job,

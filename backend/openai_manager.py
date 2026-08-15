@@ -2329,6 +2329,13 @@ Output rules:
 - GERMAN HEADWORD NORMALIZATION:
   - If the main German word is a standalone noun, ALWAYS return it with the correct definite article in nominative: "der/die/das + noun". Never return a bare noun.
   - If the main German word is a standalone verb, ALWAYS normalize it to the infinitive.
+  - A zu-infinitive is NOT the dictionary form: "klarzukommen" -> "klarkommen".
+    Strip the "zu" between a separable prefix and the stem.
+  - A standalone adjective must be the base (positive) form: "schlammigen" -> "schlammig".
+  - For a standalone German noun also return "number_usage": "singular" |
+    "mostly_plural" (singular exists but rare: Blaehungen, Ausschreitungen) |
+    "plural_only" (no singular: Eltern, Ferien, Kosten). For the last two keep the
+    PLURAL as the headword and use "die".
 - If adjective: provide comparative/superlative if useful and common collocations.
 - If phrase/expression: explain whether it is idiomatic, fixed, formal/informal, spoken/written.
 - memory_tip must help the learner feel and remember the word vividly.
@@ -2496,6 +2503,13 @@ Output rules:
 - GERMAN HEADWORD NORMALIZATION:
   - If the looked-up word is a standalone noun, word_de must include the correct definite article in nominative: "der/die/das + noun". Never return a bare noun.
   - If the looked-up word is a standalone verb, word_de must be the infinitive.
+  - A zu-infinitive is NOT the dictionary form: "klarzukommen" -> "klarkommen".
+    Strip the "zu" between a separable prefix and the stem.
+  - A standalone adjective must be the base (positive) form: "schlammigen" -> "schlammig".
+  - For a standalone German noun also return "number_usage": "singular" |
+    "mostly_plural" (singular exists but rare: Blaehungen, Ausschreitungen) |
+    "plural_only" (no singular: Eltern, Ferien, Kosten). For the last two keep the
+    PLURAL as the headword and use "die".
   - If the looked-up item is a grammatical construction fragment, word_de must be the clean canonical construction, not the noisy surface fragment.
 - If adjective: include comparative/superlative if useful and common collocations.
 - If phrase/expression: explain whether it is fixed, idiomatic, formal/informal, spoken/written.
@@ -2884,6 +2898,13 @@ Rules:
 - GERMAN HEADWORD NORMALIZATION:
   - Whenever the source-side or target-side main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun". Never return a bare German noun.
   - Whenever the main German word is a standalone verb, normalize it to the infinitive.
+  - A zu-infinitive is NOT the dictionary form: "klarzukommen" -> "klarkommen".
+    Strip the "zu" between a separable prefix and the stem.
+  - A standalone adjective must be the base (positive) form: "schlammigen" -> "schlammig".
+  - For a standalone German noun also return "number_usage": "singular" |
+    "mostly_plural" (singular exists but rare: Blaehungen, Ausschreitungen) |
+    "plural_only" (no singular: Eltern, Ferien, Kosten). For the last two keep the
+    PLURAL as the headword and use "die".
   - The article belongs to the GERMAN noun only. Never glue der/die/das onto a word in the
     learner's language: "die перчатка" is always wrong — either "der Handschuh" or "перчатка".
 - If adjective: include comparative/superlative if useful and common collocations.
@@ -2984,6 +3005,16 @@ Rules:
 - GERMAN HEADWORD NORMALIZATION:
   - If the main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun".
   - If the main German word is a standalone verb, normalize it to the infinitive.
+    A zu-infinitive is NOT the dictionary form: "klarzukommen" -> "klarkommen",
+    "anzulehnen" -> "anlehnen". Strip the "zu" that sits between a separable prefix
+    and the stem.
+  - If the main German word is a standalone adjective, give the base (positive) form,
+    not a declined one: "schlammigen" -> "schlammig".
+  - For a standalone German noun also return "number_usage": one of
+    "singular" (normal noun; the plural is just a form),
+    "mostly_plural" (the singular exists but is rarely used: Blaehungen, Ausschreitungen),
+    "plural_only" (no singular at all: Eltern, Ferien, Kosten).
+    For "mostly_plural" and "plural_only" keep the PLURAL as the headword and use "die".
 - Do not include etymology, memory tips, long notes, collocations, prefixes, pronunciation, or extended grammar commentary here.
 - For sentence input, translations[0].value must be full-sentence translation and is_primary=true.
 - If information is unknown, use null.
@@ -3035,6 +3066,10 @@ CONTENT RULES (same as the full dictionary):
   that in the morning","context":"literal translation of the Russian sentence"}.
 - GERMAN HEADWORD NORMALIZATION: a standalone German noun in word_source/word_target MUST carry its
   nominative article ("der/die/das + Noun") — never a bare noun. A standalone German verb → infinitive.
+  A zu-infinitive is NOT the dictionary form ("klarzukommen" → "klarkommen"); a standalone adjective
+  must be the base form ("schlammigen" → "schlammig"). For a standalone noun also return
+  "number_usage": "singular" | "mostly_plural" (singular exists but rare) | "plural_only" (no singular);
+  for the last two keep the PLURAL as the headword and use "die".
 - translations: up to 3 real variants, first is_primary=true. meanings: exactly one primary + up to two
   secondary, ranked by frequency, each with one short bilingual example pair.
 - If noun: article/gender + plural + genitive + pronunciation/stress. If verb: separable flag,
@@ -3153,6 +3188,16 @@ Rules:
 - GERMAN HEADWORD NORMALIZATION:
   - If the main German word is a standalone noun, include the correct definite article in nominative: "der/die/das + noun".
   - If the main German word is a standalone verb, normalize it to the infinitive.
+    A zu-infinitive is NOT the dictionary form: "klarzukommen" -> "klarkommen",
+    "anzulehnen" -> "anlehnen". Strip the "zu" that sits between a separable prefix
+    and the stem.
+  - If the main German word is a standalone adjective, give the base (positive) form,
+    not a declined one: "schlammigen" -> "schlammig".
+  - For a standalone German noun also return "number_usage": one of
+    "singular" (normal noun; the plural is just a form),
+    "mostly_plural" (the singular exists but is rarely used: Blaehungen, Ausschreitungen),
+    "plural_only" (no singular at all: Eltern, Ferien, Kosten).
+    For "mostly_plural" and "plural_only" keep the PLURAL as the headword and use "die".
 - Do not include etymology, memory tips, long notes, collocation lists, prefixes, pronunciation, or extended grammar commentary here.
 - If information is unknown, use null.
 """,

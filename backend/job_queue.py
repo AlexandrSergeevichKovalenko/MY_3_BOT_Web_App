@@ -2150,6 +2150,37 @@ def enqueue_shortcut_lookup_job(
         raise
 
 
+def enqueue_dictionary_dedupe_after_save(*, user_id: int, entry_id: int) -> bool:
+    """Поставить в очередь уборку повторов для только что сохранённого слова.
+
+    Никогда не бросает наружу и никогда не задерживает сохранение. Сохранение — главное:
+    человек нажал «сохранить», получил подтверждение и работает дальше. Уборка —
+    второстепенное; если очередь недоступна, повтор просто останется лежать, и его
+    подберёт разовый прогон. Ронять из-за этого сохранение нельзя ни при каких условиях,
+    поэтому здесь ловится ВСЁ, включая недоступный брокер."""
+    safe_user_id = int(user_id or 0)
+    safe_entry_id = int(entry_id or 0)
+    if safe_user_id <= 0 or safe_entry_id <= 0:
+        return False
+    try:
+        if not can_enqueue_background_jobs():
+            return False
+        get_dramatiq_broker()
+        from backend.background_jobs import run_dictionary_dedupe_after_save_job
+
+        run_dictionary_dedupe_after_save_job.send(
+            user_id=safe_user_id,
+            entry_id=safe_entry_id,
+        )
+        return True
+    except Exception:
+        logging.warning(
+            "enqueue_dictionary_dedupe_after_save skipped user_id=%s entry_id=%s",
+            safe_user_id, safe_entry_id, exc_info=True,
+        )
+        return False
+
+
 def enqueue_translation_result_side_effects_job(
     *,
     user_id: int,

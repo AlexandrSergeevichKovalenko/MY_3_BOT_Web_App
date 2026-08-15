@@ -129,7 +129,7 @@ def _fake_units(rows):
 def test_batch_fills_cards_from_their_units(monkeypatch):
     from backend import database
     monkeypatch.setattr(database, "get_db_connection_context",
-                        _fake_units([(1, "der Wandel", UNIT, "wandel", None)]))
+                        _fake_units([(1, "der Wandel", UNIT, "wandel", None, False)]))
     items = [{"id": 1, "response_json": dict(CARD)}, {"id": 2, "response_json": dict(CARD)}]
     database.attach_unit_content_to_cards(items)
     assert items[0]["response_json"]["memory_tip"] == UNIT["memory_tip"]
@@ -140,7 +140,7 @@ def test_batch_refuses_a_unit_about_another_word(monkeypatch):
     from backend import database
     monkeypatch.setattr(database, "get_db_connection_context",
                         _fake_units([(1, "einen Fusselrasierer benutzen", UNIT,
-                                      "использовать машинку для удаления катышков", None)]))
+                                      "использовать машинку для удаления катышков", None, False)]))
     items = [{"id": 1, "response_json": dict(CARD)}]
     database.attach_unit_content_to_cards(items)
     assert items[0]["response_json"] == CARD
@@ -161,7 +161,7 @@ def test_batch_brings_personal_notes_along(monkeypatch):
     from backend import database
     notes = [{"label": "Моё", "text": "не путать с wandern"}]
     monkeypatch.setattr(database, "get_db_connection_context",
-                        _fake_units([(1, "der Wandel", UNIT, "wandel", notes)]))
+                        _fake_units([(1, "der Wandel", UNIT, "wandel", notes, False)]))
     items = [{"id": 1, "response_json": dict(CARD)}]
     database.attach_unit_content_to_cards(items)
     assert items[0]["user_notes"] == notes
@@ -173,7 +173,7 @@ def test_card_without_a_unit_still_gets_its_notes(monkeypatch):
     from backend import database
     notes = [{"label": "", "text": "личное"}]
     monkeypatch.setattr(database, "get_db_connection_context",
-                        _fake_units([(1, "der Wandel", None, None, notes)]))
+                        _fake_units([(1, "der Wandel", None, None, notes, False)]))
     items = [{"id": 1, "response_json": dict(CARD)}]
     database.attach_unit_content_to_cards(items)
     assert items[0]["user_notes"] == notes
@@ -230,3 +230,89 @@ def test_richness_counts_synonyms():
         "synonyms": ["sich erheben"],
     })
     assert with_syn > without, "синонимы не влияют на оценку полноты разбора"
+
+
+def test_surface_index_confirms_a_form_of_the_same_word(monkeypatch):
+    """«Die Strümpfe» и «Strumpf» — одно слово, просто множественное число.
+
+    Сравнение по буквам это не признаёт, и до 14.08.2026 разбор с общего слова таким
+    карточкам не показывался вовсе — 1077 штук из 24 908. Теперь решает справочник
+    форм bt_3_lex_surfaces: подтвердил — показываем."""
+    from backend import database
+    monkeypatch.setattr(database, "get_db_connection_context",
+                        _fake_units([(1, "Die Strümpfe", UNIT, "strumpf", None, True)]))
+    items = [{"id": 1, "response_json": {"word_de": "Die Strümpfe"}}]
+    database.attach_unit_content_to_cards(items)
+    assert items[0]["response_json"].get("usage_examples"), "разбор с общего слова не приехал"
+
+
+def test_without_surface_confirmation_letters_still_decide(monkeypatch):
+    """Справочник промолчал — работает прежнее правило сравнения по буквам."""
+    from backend import database
+    monkeypatch.setattr(database, "get_db_connection_context",
+                        _fake_units([(1, "Die Strümpfe", UNIT, "strumpf", None, False)]))
+    items = [{"id": 1, "response_json": {"word_de": "Die Strümpfe"}}]
+    database.attach_unit_content_to_cards(items)
+    assert not items[0]["response_json"].get("usage_examples")
+
+
+# ── быстрый словарь читает ОБЩЕЕ слово, а не только личную копию ───────────────
+# Экран «Мои слова» и быстрый словарь ходят в get_webapp_dictionary_entries. До
+# 15.08.2026 эта выборка отдавала личную копию как есть, и уточнение общего слова до
+# человека не доходило: ночная раздача копий существовала ровно затем, чтобы это
+# обойти. Тест держит дверь — если слияние из выборки уберут, он покраснеет.
+
+def _fake_dictionary_db(card_rows, unit_rows):
+    """База, отвечающая по-разному на два запроса: список карточек и разбор их слов."""
+    import contextlib
+
+    class Cursor:
+        def __init__(self):
+            self._rows = []
+
+        def execute(self, sql, *_a, **_k):
+            text = sql if isinstance(sql, str) else str(sql)
+            self._rows = unit_rows if "bt_3_lex_units" in text else card_rows
+
+        def fetchall(self):
+            return self._rows
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
+
+    @contextlib.contextmanager
+    def ctx():
+        yield Conn()
+
+    return ctx
+
+
+def test_quick_dictionary_shows_the_shared_word(monkeypatch):
+    from backend import database
+
+    card_row = (
+        7, "перемена", "der Wandel", "der Wandel", "перемена", "de", "ru",
+        "manual", None, dict(CARD), None, None,
+    )
+    unit_row = (7, "der Wandel", UNIT, "wandel", None, False)
+    monkeypatch.setattr(database, "get_db_connection_context",
+                        _fake_dictionary_db([card_row], [unit_row]))
+    monkeypatch.setattr(database, "get_user_word_overrides", lambda _ids: {})
+
+    items = database.get_webapp_dictionary_entries(user_id=1, limit=10)
+
+    assert len(items) == 1
+    card = items[0]["response_json"]
+    assert card["memory_tip"] == UNIT["memory_tip"], "подсказка с общего слова не доехала"
+    assert card["forms"] == UNIT["forms"], "формы с общего слова не доехали"
+    assert card["word_de"] == "der Wandel", "заголовок остаётся личным"

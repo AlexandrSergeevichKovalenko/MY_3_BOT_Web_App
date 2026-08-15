@@ -194,7 +194,11 @@ from backend.job_queue import (
     is_youtube_transcript_async_enabled,
 )
 from backend.translation_workflow import _extract_correct_translation
-from backend.german_grammar_tables import build_grammar_tables
+from backend.german_grammar_tables import (
+    build_grammar_tables,
+    looks_like_zu_infinitive as _GRAMMAR_LOOKS_LIKE_ZU_INFINITIVE,
+    strip_zu_infinitive as _GRAMMAR_STRIP_ZU_INFINITIVE,
+)
 from backend.dictionary_pool_reverse import build_reverse_pool_item
 from backend import lex_units
 from backend import lex_senses
@@ -9674,10 +9678,40 @@ def _detect_dictionary_entry_kind(
         return "phrase"
     probe_source = str(source_text or payload.get("source_text") or "").strip()
     probe_target = str(target_text or payload.get("target_text") or "").strip()
+
+    # Судим по НЕМЕЦКОЙ стороне, а не по той, с которой пришёл запрос.
+    #
+    # До 14.08.2026 здесь проверялась исходная сторона: `_is_single_word_dictionary_entry(
+    # probe_source, source_lang)`. Когда человек ищет от русского, исходная сторона —
+    # русский перевод, а он почти всегда многословный. Поэтому одиночное немецкое слово
+    # штатно объявлялось «фразой», и дальше срабатывали два разрушительных следствия:
+    #   • артикль не приклеивался к заголовку — `_apply_german_headword_normalization`
+    #     выходит на первой же проверке `entry_kind != "word"`, хотя род лежал рядом
+    #     в том же payload («Прорыв водопроводной трубы» → `Rohrbruch` вместо
+    #     `der Rohrbruch`);
+    #   • стиралась разбивка по значениям (ниже по коду, `payload.pop("dictionary_senses")`).
+    # Замер 13.08.2026: 2961 личная карточка помечена фразой/предложением при одиночном
+    # немецком слове, у 2949 из них значения восстанавливаются без обращения к модели.
+    #
+    # Пороги при этом НИ ПРИ ЧЁМ — их проверяли отдельно: подъём с 5 до 10 слов убирает
+    # лишь 5% ошибок. Дело было именно в стороне.
+    source_code = _normalize_short_lang_code(source_lang, fallback="")
+    target_code = _normalize_short_lang_code(target_lang, fallback="")
+    if source_code == "de" and probe_source:
+        german_probe, german_lang = probe_source, source_code
+    elif target_code == "de" and probe_target:
+        german_probe, german_lang = probe_target, target_code
+    else:
+        # Немецкой стороны нет вовсе (английские и итальянские пары) — работаем
+        # по-старому, от исходной стороны.
+        german_probe, german_lang = probe_source, source_code
+
+    # Одиночное слово проверяем ПЕРВЫМ. Иначе длинное предложение на чужой стороне
+    # снова перебивало бы вердикт: «Er ___ jeden Morgen früh zur Arbeit.» → losfahren.
+    if _is_single_word_dictionary_entry(german_probe, german_lang):
+        return "word"
     if _looks_like_dictionary_sentence(probe_source) or _looks_like_dictionary_sentence(probe_target):
         return "sentence"
-    if _is_single_word_dictionary_entry(probe_source, source_lang):
-        return "word"
     return "phrase"
 
 
@@ -9894,6 +9928,22 @@ def _normalize_saved_german_single_word(
     # Wiktionary; молчат оба — оставляем написание человека. Догадка не имеет права
     # переписывать слово, ровно как и артикль.
     normalized_lemma = probe
+    # zu-инфинитив → словарная форма: «klarzukommen» → «klarkommen».
+    #
+    # Это НЕ догадка лемматизатора, о которой сказано выше, и потому она здесь уместна:
+    # «zu» между отделяемой приставкой и основой — чистая синтаксическая частица, она не
+    # бывает частью словарной формы ни у одного немецкого глагола. Снятие обратимо и
+    # проверяемо, в отличие от откусывания окончаний spaCy.
+    #
+    # Замер 14.08.2026: пять таких заголовков (klarzukommen, anzulehnen, auszulaugen,
+    # aufzudecken, umzukrempeln), два из них заведены в тот же день — дверь открыта и
+    # течёт. У всех пяти к неверному заголовку была пририсована выдуманная парадигма
+    # («ich klarzukomme»), потому что таблицы строятся от заголовка.
+    # Правило одно на весь проект, живёт в backend/german_grammar_tables.py.
+    if _GRAMMAR_LOOKS_LIKE_ZU_INFINITIVE(normalized_lemma):
+        stripped = _GRAMMAR_STRIP_ZU_INFINITIVE(normalized_lemma)
+        if stripped:
+            normalized_lemma = stripped
     if normalized_pos == "noun" and normalized_article:
         bare_noun = normalized_lemma[:1].upper() + normalized_lemma[1:] if normalized_lemma else normalized_lemma
         return f"{normalized_article} {bare_noun}".strip()
@@ -10035,6 +10085,26 @@ def _prepare_dictionary_response_json_for_save(
     if "article" in payload:
         payload["article"] = _normalize_german_article(payload.get("article"))
     payload["target_text"] = target_text or str(translation_de or translation_ru or word_de or "").strip()
+    # Обе стороны карточки не могут быть ОДНИМ И ТЕМ ЖЕ текстом: учить по такой нечему.
+    # Замер 14.08.2026: две карточки на 24 906, и одна из них лежала у человека в очереди
+    # повторения — он открывал её и видел «Это того не стоит» и вопросом, и ответом.
+    # Причина: в target_text попал текст исходной стороны, хотя правильный перевод всё это
+    # время лежал в колонке word_de. Данные были целы, испорчено одно поле разбора.
+    # Поэтому чиним не выдумкой, а подстановкой из колонки нужной стороны.
+    if payload["target_text"] and _normalize_space(payload.get("source_text")).casefold() == \
+            _normalize_space(payload["target_text"]).casefold():
+        german_side = str(word_de or translation_de or "").strip()
+        native_side = str(word_ru or translation_ru or "").strip()
+        rescue = german_side if _normalize_short_lang_code(target_lang, fallback="") == "de" else native_side
+        if rescue and _normalize_space(rescue).casefold() != _normalize_space(payload["source_text"]).casefold():
+            payload["target_text"] = rescue
+        else:
+            # Спасать нечем — перевода нет нигде. Пусть карточка считается неполной и
+            # уедет на дообогащение, а не ляжет в тренировку пустышкой.
+            logging.warning(
+                "dictionary save: обе стороны совпадают и перевод не найден (%r)",
+                str(payload.get("source_text"))[:60],
+            )
     payload["source_lang"] = source_lang
     payload["target_lang"] = target_lang
     payload["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
@@ -10059,8 +10129,22 @@ def _prepare_dictionary_response_json_for_save(
         senses = _build_dictionary_senses(payload, payload["target_text"])
         if senses:
             payload["dictionary_senses"] = senses
-    else:
-        payload.pop("dictionary_senses", None)
+    # Раньше здесь стояло `payload.pop("dictionary_senses", None)` — у всего, что не
+    # опознано словом, разбивка по значениям СТИРАЛАСЬ перед записью, молча и навсегда.
+    #
+    # Снято 14.08.2026 по трём независимым проверкам:
+    #   • цена ошибки несимметрична. Там, где метка «фраза/предложение» верна, стирание
+    #     отнимает 10-13 записей из ста — у настоящего предложения «значение» и так
+    #     дословно равно переводу. Там, где метка неверна, отнимает 99,6 из ста;
+    #   • неверной метка была часто: 2961 личная карточка помечена фразой или
+    #     предложением при одиночном немецком слове (замер 13.08.2026);
+    #   • экономии стирание не давало: очередь ночного обогащения с этим гейтом 20
+    #     кандидатов, без него 22 — он связывал ровно две записи.
+    # Причину (проверку по исходной стороне вместо немецкой) чинит сам детектор выше,
+    # но угадайка на пути СОХРАНЕНИЯ не должна удалять ни при какой точности: ошибка
+    # удаления необратима, ошибка пометки — нет. Значения остаются лежать; экран и так
+    # решает по entry_kind, показывать их или нет, и это решение обратимо.
+
     payload = _apply_german_headword_normalization(
         payload=payload,
         source_lang=source_lang,
@@ -10202,6 +10286,21 @@ def _dictionary_payload_needs_enrichment(response_json: dict | None) -> bool:
     # The caller still gates on _is_single_word_dictionary_entry before spending an LLM call.
     if entry_kind and entry_kind != "word":
         return False
+    # Существительное БЕЗ АРТИКЛЯ — карточка неполная, сколько бы в ней ни было примеров.
+    #
+    # Проверка стоит ВЫШЕ всех «есть примеры → значит полная»: без неё карточка, у которой
+    # не хватает только рода, объявлялась полной и не пересматривалась больше никогда.
+    # Для немецкого это не мелочь — род и есть половина слова.
+    # Замер 14.08.2026: таких карточек 32 на 5156 существительных, то есть проверка
+    # добирает ровно недостающее и лавины платных перезапросов не устраивает.
+    # Множественное сюда не попадает: у него артикль «die» выводится из числа, спрашивать
+    # модель незачем (см. compose_german_headword в backend/database.py).
+    if (
+        str(payload.get("part_of_speech") or "").strip().lower() == "noun"
+        and not str(payload.get("article") or "").strip()
+        and str(payload.get("grammatical_number") or "").strip().lower() not in {"pl", "plural"}
+    ):
+        return True
     # Примеры и таблицы — самый надёжный признак настоящей карточки. Без этой проверки
     # карточка с двумя примерами и формами (но одним смыслом без контекста) считалась
     # «пустой», и мы платили за её обогащение СНОВА при каждом открытии и каждом проходе
@@ -12174,6 +12273,23 @@ def _list_srs_queue_cards(
                     "srs": None,
                 }
             )
+
+        # Разбор берём с ОБЩЕГО СЛОВА, как и все остальные экраны.
+        #
+        # До 14.08.2026 этот путь был единственным, который этого НЕ делал: он отдавал
+        # человеку только его собственный снимок разбора, снятый в момент подписки.
+        # А это главный экран учёбы — тренировка и предзагрузка карточек. Получалось,
+        # что владелец правит слово в словаре, все прочие экраны правку показывают, а
+        # ровно тот экран, где человек учит, продолжает показывать копию.
+        # Замер 14.08.2026: у 1607 карточек собственный снимок расходится с общим словом,
+        # и у всех 1607 слово улучшали ПОСЛЕ того, как снимок сняли (в среднем на 105 дней
+        # позже). Правило то же, что везде: только дополняем, и только если слово про это же.
+        try:
+            from backend.database import attach_unit_content_to_cards
+
+            attach_unit_content_to_cards(items)
+        except Exception:
+            logging.debug("разбор с общего слова не подтянулся в очередь", exc_info=True)
 
         diagnostics = {
             "selection_strategy": "manual_subset_queue" if normalized_queue_source == "manual" else "fsrs_core_queue",
@@ -39545,8 +39661,15 @@ def lookup_webapp_dictionary():
             word=word_ru,
         )
 
-        # Кеш живёт 10 лет и раздаётся ВСЕМ, поэтому обрезанная карточка в нём — это
-        # обрезанная карточка навсегда и для каждого. Отдаём из кеша только полный разбор;
+        # Кеш раздаётся ВСЕМ, поэтому обрезанная карточка в нём — это обрезанная карточка
+        # для каждого, пока не протухнет. Живёт он НЕ 10 лет (так было написано здесь до
+        # 11.08.2026 и вводило в заблуждение), а ровно столько, сколько стоит в
+        # DICTIONARY_PERSISTENT_CACHE_TTL_SEC: в проде 604800 секунд = 7 суток
+        # (railway variables, MY_THIRD_BOT / production / BACKEND_WEB).
+        # Практическое следствие: любая правка словарных полок проявляется на экране
+        # не сразу — до недели слово может отдаваться из кеша по-старому. Замер, который
+        # этого не учитывает, легко «не увидит» уже сделанную починку.
+        # Отдаём из кеша только полный разбор;
         # тонкий трактуем как промах и переспрашиваем (свежий результат его перезапишет).
         # Проверка только для ОДИНОЧНЫХ слов: у фраз и предложений разбора и не бывает,
         # иначе мы бы гоняли GPT на каждый их запрос.

@@ -1093,6 +1093,62 @@ def _normalize_dictionary_headword_key(value: str | None) -> str:
     return _GERMAN_LEADING_ARTICLE_RE.sub("", _normalize_dictionary_text_key(value)).strip()
 
 
+_MULTI_SPACE_RE = re.compile(r"\s+")
+
+
+def _squash_space(value: str | None) -> str:
+    """Схлопнуть пробелы и обрезать края. В соседних модулях это `_normalize_space`,
+    но в этом файле такой функции нет — своя, чтобы не тащить импорт ради одной строки."""
+    return _MULTI_SPACE_RE.sub(" ", str(value or "").strip())
+
+
+_GERMAN_NOUN_SURFACE_RE = re.compile(r"^[A-ZÄÖÜ][^\s]*$")
+# Отдельный, НЕЧУВСТВИТЕЛЬНЫЙ к регистру: в банке лежат и «die Fahne», и «Die Fahne»,
+# а соседний _GERMAN_LEADING_ARTICLE_RE ловит только строчный вариант — с ним заголовок
+# «Die Fahne» получил бы второй артикль.
+_LEADING_ARTICLE_ANY_CASE_RE = re.compile(r"^(?:der|die|das|ein|eine|einen|einem|einer|eines)\s+", re.I)
+
+
+def compose_german_headword(
+    word: str | None,
+    *,
+    article: str | None = None,
+    gender: str | None = None,
+    number: str | None = None,
+) -> str:
+    """Немецкий заголовок так, как его видит человек: слово вместе с артиклем.
+
+    ОДНА формула на всё приложение. До 14.08.2026 их было две: список «мои слова» брал
+    голую колонку `word_de`, а карточка складывала заголовок из разбора. Артикль живёт
+    отдельным полем (`article`) и родом единицы (`gender`), в колонку попадает не всегда —
+    и одно и то же слово выглядело по-разному: «die Sternschnuppen» в карточке и
+    «Sternschnuppen» в списке. Замер 13.08.2026: из голых заголовков это больше половины,
+    и род при этом известен почти у всех — добывать ничего не нужно, не хватало склейки.
+
+    Правила те же, что у общей карточки (frontend/src/dictionary/WordBreakdown.jsx,
+    resolveArticle), чтобы фронт и бэкенд не разъезжались:
+      • у множественного числа артикль всегда «die» — род тут ни при чём;
+      • иначе берётся артикль из разбора, а если его нет — род единицы;
+      • артикль клеится ТОЛЬКО к одному слову с заглавной буквы: фразе и предложению он
+        не положен, а к строке, где артикль уже стоит, второй не добавляется.
+
+    Ничего не выдумывает: нет артикля и нет рода — возвращает слово как есть.
+    """
+    surface = _squash_space(word)
+    if not surface:
+        return ""
+    if _LEADING_ARTICLE_ANY_CASE_RE.match(surface):
+        return surface  # артикль уже на месте
+    if not _GERMAN_NOUN_SURFACE_RE.match(surface):
+        return surface  # фраза, предложение или не немецкое существительное
+    if str(number or "").strip().lower() in {"pl", "plural"}:
+        return f"die {surface}"
+    chosen = str(article or "").strip().lower() or str(gender or "").strip().lower()
+    if chosen in {"der", "die", "das"}:
+        return f"{chosen} {surface}"
+    return surface
+
+
 def _resolve_dictionary_source_target_texts(
     *,
     source_lang: str,
@@ -1212,6 +1268,64 @@ def _apply_ru_de_dictionary_pair_alignment(
     }, source_text, target_text, payload
 
 
+def _record_dedup_deleted_cards(cursor, *, user_id: int, keep_entry_id: int,
+                                deleted_ids: list[int], origin: str) -> None:
+    """Снять ПОЛНЫЙ снимок карточек прямо перед их удалением.
+
+    До 13.08.2026 удаление дублей не оставляло следа вообще: писались только счётчики
+    («за ночь удалено 6»), а что именно исчезло — не записывалось нигде. Восстановить
+    было нечего и неоткуда: ни архивной таблицы, ни пометки «удалено», ни отмены.
+    За два месяца так ушли 732 карточки, и что в них было — уже не узнать.
+
+    Поэтому здесь лежит не запись о факте, а САМА карточка целиком, вместе с разбором,
+    папкой и метками. Из этой таблицы карточку можно вернуть.
+
+    Пишется в той же транзакции, что и удаление: если удаление откатится, откатится и
+    след, и наоборот — не бывает удаления без записи."""
+    if not deleted_ids:
+        return
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bt_3_dict_dedup_deleted (
+            id BIGSERIAL PRIMARY KEY,
+            deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            user_id BIGINT NOT NULL,
+            entry_id BIGINT NOT NULL,
+            kept_entry_id BIGINT,
+            origin TEXT,
+            word_de TEXT,
+            word_ru TEXT,
+            translation_de TEXT,
+            translation_ru TEXT,
+            source_lang TEXT,
+            target_lang TEXT,
+            folder_id BIGINT,
+            semantic_tag TEXT,
+            response_json JSONB
+        );
+        """
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bt_3_dict_dedup_deleted_user_time "
+        "ON bt_3_dict_dedup_deleted (user_id, deleted_at DESC);"
+    )
+    cursor.execute(
+        """
+        INSERT INTO bt_3_dict_dedup_deleted (
+            user_id, entry_id, kept_entry_id, origin,
+            word_de, word_ru, translation_de, translation_ru,
+            source_lang, target_lang, folder_id, semantic_tag, response_json
+        )
+        SELECT q.user_id, q.id, %s, %s,
+               q.word_de, q.word_ru, q.translation_de, q.translation_ru,
+               q.source_lang, q.target_lang, q.folder_id, q.semantic_tag, q.response_json
+        FROM bt_3_webapp_dictionary_queries q
+        WHERE q.user_id = %s AND q.id = ANY(%s);
+        """,
+        (int(keep_entry_id), str(origin or "")[:40], int(user_id), list(deleted_ids)),
+    )
+
+
 def _dedupe_webapp_dictionary_entry_after_insert(
     conn,
     *,
@@ -1241,9 +1355,30 @@ def _dedupe_webapp_dictionary_entry_after_insert(
     if not normalized_source_text or not normalized_target_text:
         return 0
 
+    # Отбор кандидатов сужен до ОДНОГО написания. Раньше здесь читались ВСЕ карточки
+    # человека вместе с их разбором: замер 13.08.2026 — 14 170 карточек, 22 мс на сервере
+    # и мегабайты JSON по сети. На пути сохранения такое недопустимо, а на масштабе
+    # (2000 человек × 25 слов в сутки = 50 000 сохранений) — тем более.
+    #
+    # ⚠ Выражение обязано совпадать с индексом ДОСЛОВНО: индекс построен как
+    # `(user_id, lower(btrim(word_de)))`, и стоит написать `lower(btrim(COALESCE(word_de,'')))`,
+    # как планировщик уходит в полный перебор. Замер той же даты: 0,064 мс по индексу
+    # против 22 мс с COALESCE — разница в 350 раз на ровном месте.
+    #
+    # Сужение может пропустить кандидата, у которого слово лежит только внутри
+    # response_json, а колонка пуста. Это осознанный размен: непойманный дубль остаётся
+    # лежать (его подберёт разовый прогон), а лишнего удаления не будет никогда.
+    narrow_word = _squash_space(word_de).casefold()
+    narrow_column = "LOWER(BTRIM(word_de))"
+    if not narrow_word:
+        narrow_word = _squash_space(word_ru).casefold()
+        narrow_column = "LOWER(BTRIM(word_ru))"
+    if not narrow_word:
+        return 0
+
     with conn.cursor() as cursor:
         cursor.execute(
-            """
+            f"""
             SELECT
                 id,
                 word_ru,
@@ -1256,13 +1391,15 @@ def _dedupe_webapp_dictionary_entry_after_insert(
             WHERE user_id = %s
               AND id <> %s
               AND COALESCE(source_lang, '') = %s
-              AND COALESCE(target_lang, '') = %s;
+              AND COALESCE(target_lang, '') = %s
+              AND {narrow_column} = %s;
             """,
             (
                 int(user_id),
                 int(keep_entry_id),
                 normalized_source_lang,
                 normalized_target_lang,
+                narrow_word,
             ),
         )
         rows = cursor.fetchall() or []
@@ -1297,6 +1434,10 @@ def _dedupe_webapp_dictionary_entry_after_insert(
             )
 
         if duplicate_ids:
+            _record_dedup_deleted_cards(
+                cursor, user_id=user_id, keep_entry_id=keep_entry_id,
+                deleted_ids=duplicate_ids, origin="сохранение",
+            )
             # История обучения не должна пропадать вместе с дубликатом. Раньше строки
             # удалялись напрямую, а прогресс и журнал ответов оставались висеть в воздухе
             # (18 таких записей нашлось в проде) — то есть человек проходил слово, а после
@@ -1349,6 +1490,76 @@ def _dedupe_webapp_dictionary_entry_after_insert(
     return len(duplicate_ids)
 
 
+def dedupe_personal_entry_after_save(user_id: int, entry_id: int) -> int:
+    """Прибрать повторы ОДНОГО слова у ОДНОГО человека. Зовётся ИЗ ФОНА, после сохранения.
+
+    Зачем отдельная дверь. Сохранение обязано оставаться мгновенным: человек нажал
+    «сохранить» — увидел подтверждение и работает дальше. Поэтому уборка не висит в
+    запросе, а уезжает в очередь и выполняется воркером (backend/job_queue.py,
+    enqueue_dictionary_dedupe_after_save).
+
+    Почему точечно, а не ночным проходом по всей базе (замерено 13.08.2026):
+      • точечный поиск по индексу — 0,064 мс; ночной проход по словарю одного человека —
+        60 мс, и он повторяется КАЖДУЮ ночь независимо от того, добавили что-то или нет;
+      • расход точечной уборки растёт от НОВЫХ слов и выходит на полку, расход ночного
+        прохода растёт от НАКОПЛЕННОГО и не остановится никогда;
+      • ночной проход берёт максимум 500 человек за раз (bot_3.py) и 100 (веб-тир): на
+        2000 пользователей он доходит до каждого раз в четыре дня, на 10 000 — раз в три
+        недели. Это ломается раньше, чем становится дорого;
+      • и главное: ночью правило ВЫНУЖДЕНО гадать, какая из двух карточек лучше (отсюда
+        и «оставляем ту, где перевод длиннее» — прямой замер показал, что удаляемая
+        оказывается богаче чаще, чем победитель). Здесь гадать нечего: мы знаем, какую
+        карточку человек только что сохранил, и сносим лишь ПОЛНОЕ совпадение —
+        совпали и слово, и перевод.
+
+    Возвращает число убранных повторов. Ошибки не поднимает наружу: это уборка, она не
+    имеет права уронить ничего выше себя.
+    """
+    safe_user_id = int(user_id or 0)
+    safe_entry_id = int(entry_id or 0)
+    if safe_user_id <= 0 or safe_entry_id <= 0:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT source_lang, target_lang, word_ru, translation_de,
+                           word_de, translation_ru, response_json
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE id = %s AND user_id = %s;
+                    """,
+                    (safe_entry_id, safe_user_id),
+                )
+                row = cursor.fetchone()
+            if not row:
+                return 0
+            removed = _dedupe_webapp_dictionary_entry_after_insert(
+                conn,
+                keep_entry_id=safe_entry_id,
+                user_id=safe_user_id,
+                source_lang=row[0],
+                target_lang=row[1],
+                word_ru=row[2],
+                translation_de=row[3],
+                word_de=row[4],
+                translation_ru=row[5],
+                response_json=_coerce_json_object(row[6]),
+            )
+        if removed:
+            logging.info(
+                "dedupe_personal_entry_after_save: user=%s entry=%s убрано повторов=%s",
+                safe_user_id, safe_entry_id, removed,
+            )
+        return removed
+    except Exception:
+        logging.exception(
+            "dedupe_personal_entry_after_save failed user=%s entry=%s",
+            safe_user_id, safe_entry_id,
+        )
+        return 0
+
+
 def dedupe_user_dictionary_by_source(
     user_id: int,
     since_datetime,  # datetime — only process groups that contain at least one entry newer than this
@@ -1386,6 +1597,14 @@ def dedupe_user_dictionary_by_source(
                             LENGTH(NULLIF(TRIM(COALESCE(translation_de, '')), '')),
                             0
                         ) AS translation_len,
+                        -- Сам ТЕКСТ перевода, а не только его длина. Без него нельзя
+                        -- отличить настоящий повтор от разных значений одного слова:
+                        -- «die Fahne → перегар» и «die Fahne → Флаг, знамя» — не дубли.
+                        LOWER(TRIM(REGEXP_REPLACE(
+                            COALESCE(NULLIF(TRIM(COALESCE(translation_ru, '')), ''),
+                                     TRIM(COALESCE(translation_de, '')), ''),
+                            E'\\\\s+', ' ', 'g'
+                        ))) AS translation_norm,
                         is_learned,
                         created_at
                     FROM bt_3_webapp_dictionary_queries
@@ -1406,7 +1625,8 @@ def dedupe_user_dictionary_by_source(
                     e.target_lang,
                     e.translation_len,
                     e.is_learned,
-                    e.created_at
+                    e.created_at,
+                    e.translation_norm
                 FROM all_entries e
                 JOIN dup_groups d
                   ON d.source_norm = e.source_norm
@@ -1426,29 +1646,54 @@ def dedupe_user_dictionary_by_source(
         from collections import defaultdict
         groups: dict = defaultdict(list)
         for row in rows:
-            entry_id, source_norm, source_lang, target_lang, translation_len, is_learned, created_at = row
+            (entry_id, source_norm, source_lang, target_lang, translation_len,
+             is_learned, created_at, translation_norm) = row
             key = (source_norm, source_lang or "", target_lang or "")
             groups[key].append({
                 "id": int(entry_id),
                 "translation_len": int(translation_len or 0),
                 "is_learned": bool(is_learned),
+                "translation_norm": str(translation_norm or ""),
             })
 
         all_delete_ids: list[int] = []
         keep_learned_ids: list[int] = []  # keep_ids that should have is_learned set TRUE
+        # Кому переезжает журнал ответов: (какая карточка остаётся, какие удаляются).
+        # Без этого журнал уходил в никуда по каскаду — см. комментарий у самого переноса.
+        review_moves: list[tuple[int, list[int]]] = []
 
         for key, entries in groups.items():
             if len(entries) < 2:
                 continue
-            groups_found += 1
             keep = entries[0]  # already ordered: best translation len, newest id first
-            duplicates = entries[1:]
+            # ─────────────────────────────────────────────────────────────────────────
+            # ПРАВИЛО ИЗМЕНЕНО 13.08.2026 (решение владельца). Раньше удалялись ВСЕ
+            # записи группы, кроме одной, а «лучшей» считалась та, где перевод длиннее
+            # в символах. Прямой замер на живой базе показал, что посылка неверна:
+            # из 309 записей, стоявших под удалением, точных близнецов было 10, а
+            # удаляемая карточка оказывалась БОГАЧЕ победителя в 52 случаях против 45.
+            # То есть правило чаще выбрасывало лучшее.
+            # Хуже того, оно сносило разные значения одного слова:
+            #     die Fahne → «перегар»       (7 знаков)  — удалялась
+            #     die Fahne → «Флаг, знамя»  (11 знаков)  — оставалась
+            # Теперь удаляется ТОЛЬКО полное совпадение: одинаковое слово И одинаковый
+            # перевод. Всё остальное — разные значения, они остаются жить.
+            # ─────────────────────────────────────────────────────────────────────────
+            keep_translation = keep["translation_norm"]
+            duplicates = [
+                e for e in entries[1:]
+                if e["translation_norm"] and e["translation_norm"] == keep_translation
+            ]
+            if not duplicates:
+                continue
+            groups_found += 1
             keep_id = keep["id"]
             delete_ids = [e["id"] for e in duplicates]
             any_learned = keep["is_learned"] or any(e["is_learned"] for e in duplicates)
             if any_learned and not keep["is_learned"]:
                 keep_learned_ids.append(keep_id)
             all_delete_ids.extend(delete_ids)
+            review_moves.append((keep_id, list(delete_ids)))
 
             # SRS: find best state among all entries in group, move it to keep_id
             all_group_ids = [keep_id] + delete_ids
@@ -1499,6 +1744,28 @@ def dedupe_user_dictionary_by_source(
                     (int(user_id), keep_learned_ids),
                 )
             # Remove SRS states for entries about to be deleted (weaker ones)
+            # Журнал ответов ПЕРЕЕЗЖАЕТ на выжившую карточку, а не сгорает вместе с
+            # удаляемой. У bt_3_card_review_log внешний ключ стоит ON DELETE CASCADE
+            # (как и у bt_3_flashcard_stats, _seen, _manual_training_selection), поэтому
+            # без этого переноса удаление тихо стирало историю: замер 13.08.2026 — 100
+            # записей журнала на текущих кандидатах. В соседней функции этого файла
+            # перенос сделан давно и с прямой пометкой «История обучения не должна
+            # пропадать вместе с дубликатом» — здесь его просто забыли.
+            for keep_target, moved_ids in review_moves:
+                if not moved_ids:
+                    continue
+                _record_dedup_deleted_cards(
+                    cursor, user_id=user_id, keep_entry_id=keep_target,
+                    deleted_ids=moved_ids, origin="ночной прогон",
+                )
+                cursor.execute(
+                    """
+                    UPDATE bt_3_card_review_log
+                    SET card_id = %s
+                    WHERE user_id = %s AND card_id = ANY(%s);
+                    """,
+                    (int(keep_target), int(user_id), moved_ids),
+                )
             cursor.execute(
                 """
                 DELETE FROM bt_3_card_srs_state
@@ -4611,34 +4878,87 @@ def _card_block_is_filled(value) -> bool:
     return value not in (None, "", [], {})
 
 
-def merge_unit_card_for_serve(card: dict | None, unit_card: dict | None) -> dict:
-    """Дополнить личный разбор тем, что собрано на общей единице.
+def _block_is_more_structured(candidate, other) -> bool:
+    """Список словарей содержательнее списка голых строк, даже если он короче.
 
-    ТОЛЬКО ДОПОЛНЯЕМ. Личная карточка задаёт направление и заголовок, а с единицы
-    берём блок лишь когда своего блока нет или он беднее. Поэтому человек физически
-    не может увидеть меньше, чем видел вчера, — только столько же или больше.
+    Живой случай, из-за которого это правило и появилось (замер 14.08.2026, 292 карточки):
+        у человека:  ["Die Arbeit ist belohnend.", "Es fühlt sich belohnend an.", …]  — 3 строки
+        на слове:    [{"source": "…", "target": "После работы она ощутила…"}]        — 1 пара
+    По длине побеждает список человека — и человек видит примеры БЕЗ ПЕРЕВОДА, хотя
+    перевод лежит рядом на общем слове. Длина оказалась плохой мерой богатства."""
+    if not isinstance(candidate, list) or not candidate:
+        return False
+    if not isinstance(other, list) or not other:
+        return True
+    return (any(isinstance(x, dict) for x in candidate)
+            and not any(isinstance(x, dict) for x in other))
 
-    Замена целиком была бы проще, но опаснее: у 0.9% карточек указатель ведёт на
-    соседнее слово (мусорные единицы старой сборки), и замена показала бы чужой разбор.
-    Здесь такой случай отсекает сверка заголовка у вызывающей стороны, а дополнение
-    само по себе безопаснее подмены."""
-    if not isinstance(unit_card, dict) or not unit_card:
-        return card if isinstance(card, dict) else {}
-    merged = dict(card) if isinstance(card, dict) else {}
-    changed = False
-    for key in CARD_CONTENT_KEYS:
-        theirs = unit_card.get(key)
-        if not _card_block_is_filled(theirs):
-            continue
-        mine = merged.get(key)
-        if not _card_block_is_filled(mine):
-            merged[key] = theirs
-            changed = True
-        elif (isinstance(mine, (list, dict)) and isinstance(theirs, (list, dict))
-              and len(theirs) > len(mine)):
-            merged[key] = theirs
-            changed = True
-    return merged if changed else (card if isinstance(card, dict) else {})
+
+def _prefer_shared_without_losing(mine, theirs):
+    """Взять общее, но не потерять то, чего в общем нет.
+
+    Три случая:
+      • оба словаря  → сливаем по ключам: общее побеждает там, где заполнено, своё
+        остаётся там, где на общем пусто. Так спасаются 70 карточек, где у человека
+        заполнено прошедшее время, а на слове стоит пусто (замер 14.08.2026);
+      • список  → общее побеждает, кроме случая, когда СВОЁ структурнее (см. выше);
+      • всё остальное → общее побеждает.
+    Правило одно: человек не должен увидеть меньше, чем видел вчера."""
+    if isinstance(mine, dict) and isinstance(theirs, dict):
+        merged = dict(mine)
+        for key, value in theirs.items():
+            if _card_block_is_filled(value):
+                merged[key] = value
+        return merged
+    if not _card_block_is_filled(mine):
+        return theirs
+    # Порядок проверок значим.
+    if _block_is_more_structured(theirs, mine):
+        return theirs          # общее содержательнее — примеры с переводом против голых строк
+    if _block_is_more_structured(mine, theirs):
+        return mine            # своё содержательнее — не отнимаем
+    if isinstance(mine, list) and isinstance(theirs, list) and len(mine) > len(theirs):
+        return mine            # одинаковой формы, но своих больше: три синонима против одного
+    return theirs
+
+
+def merge_unit_card_for_serve(card: dict | None, unit_card: dict | None,
+                              overrides: dict | None = None) -> dict:
+    """Собрать то, что человек увидит: ОБЩЕЕ СЛОВО, сверху личные правки.
+
+    Правило (решение владельца 14.08.2026, схема WaniKani + AnkiHub):
+      • содержимое живёт на общем слове — оно и есть источник правды;
+      • поле, которое человек написал СВОЕЙ РУКОЙ, побеждает общее (`overrides`);
+      • у общего слова блок пуст — остаётся то, что лежит в карточке: лучше старое,
+        чем ничего. На этом держатся 153 карточки, у слов которых разбора нет вовсе.
+
+    ЧТО ИЗМЕНИЛОСЬ И ПОЧЕМУ. Раньше правило было «только дополняем, никогда не
+    заменяем»: с общего слова брался блок, лишь если своего нет или он короче.
+    Обоснование в коде звучало так: «у 0.9% карточек указатель ведёт на соседнее
+    слово, и замена показала бы чужой разбор».
+
+    Замер 14.08.2026 это опроверг: битых указателей практически нет (1 из 24 908 без
+    указателя, 0 в несуществующее слово), а 1095 «несовпадений» были формами одного и
+    того же слова, и 1077 из них подтвердил справочник форм. То есть правило защищало
+    от беды, которой нет, а заодно защищало устаревшие копии: 4 703 карточки показывали
+    свой перевод, разошедшийся с общим словом, и у ВСЕХ у них слово улучшали позже.
+
+    Теперь личное защищается точечно — тем, что человек правил сам, а не тем, что
+    когда-то скопировалось. Отличить одно от другого стало можно: см.
+    bt_3_user_word_overrides и ensure_user_word_overrides_schema()."""
+    base = dict(card) if isinstance(card, dict) else {}
+    if isinstance(unit_card, dict) and unit_card:
+        for key in CARD_CONTENT_KEYS:
+            theirs = unit_card.get(key)
+            if not _card_block_is_filled(theirs):
+                continue
+            base[key] = _prefer_shared_without_losing(base.get(key), theirs)
+    # Личные правки — последними, поверх всего. Их не перебивает ничто.
+    if isinstance(overrides, dict):
+        for key, value in overrides.items():
+            if key in USER_EDITABLE_CARD_FIELDS and value not in (None, "", [], {}):
+                base[key] = value
+    return base
 
 
 def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "response_json"):
@@ -4673,7 +4993,12 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
                     -- Заметки человека берём тем же запросом: они лежат в этой же
                     -- строке, отдельный поход в базу был бы ради ничего. Связь с
                     -- единицей здесь необязательна — заметка есть и у слова без неё.
-                    SELECT q.id, q.word_de, u.card, u.lemma_key, q.user_notes
+                    SELECT q.id, q.word_de, u.card, u.lemma_key, q.user_notes,
+                           -- Принадлежит ли написание карточки этому слову — спрашиваем
+                           -- справочник форм, а не сравниваем буквы. Без этого «Die
+                           -- Strümpfe» не признаётся формой слова «Strumpf», и разбор с
+                           -- общего слова не показывается вовсе (1077 таких карточек).
+                           COALESCE(""" + UNIT_OWNS_CARD_SURFACE_SQL.format(q="q", u="u") + """, FALSE)
                     FROM bt_3_webapp_dictionary_queries q
                     LEFT JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
                     WHERE q.id = ANY(%s)
@@ -4686,9 +5011,11 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
         return items
 
     by_card = {
-        int(row[0]): (row[1], _coerce_json_object(row[2]), row[3], normalize_user_notes(row[4]))
+        int(row[0]): (row[1], _coerce_json_object(row[2]), row[3], normalize_user_notes(row[4]), bool(row[5]))
         for row in rows
     }
+    # Личные правки человека — то, что он написал своей рукой. Ложатся поверх общего.
+    overrides = get_user_word_overrides(ids)
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -4698,7 +5025,7 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
             found = None
         if not found:
             continue
-        word_de, unit_card, lemma_key, user_notes = found
+        word_de, unit_card, lemma_key, user_notes, surface_confirms = found
         # Заметки человека — рядом с разбором, но НИКОГДА не внутри него: разбор общий
         # и обновляется, заметка личная и обновлениям не подлежит.
         if user_notes:
@@ -4706,26 +5033,114 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
         if not unit_card:
             continue
         card = _coerce_json_object(item.get(json_key))
-        if not unit_card_is_about_the_same_word(
+        if not unit_card_is_about_the_same_word_sql(
             unit_lemma_key=lemma_key,
             card_word=word_de or card.get("word_de"),
+            surface_confirms=surface_confirms,
         ):
             continue
-        item[json_key] = merge_unit_card_for_serve(card, unit_card)
+        item[json_key] = merge_unit_card_for_serve(card, unit_card, overrides.get(int(item.get(id_key) or 0)))
     return items
 
 
 def unit_card_is_about_the_same_word(*, unit_lemma_key: str | None, card_word: str | None) -> bool:
     """Разбор с единицы можно показывать, только если единица про ЭТО слово.
 
-    Указатель у карточки проставлялся разными путями и у части старых карточек ведёт
-    на соседнее слово: «einen Fusselrasierer benutzen» → единица «использовать машинку
-    для удаления катышков». Замер 05.08.2026: таких 219 из 24 075, у 77 на единице есть
-    разбор. Не сошлось — отдаём то, что лежит в самой карточке."""
+    ЭТО БЫСТРАЯ ПРОВЕРКА ПО БУКВАМ. Она отвечает «да» только на точное совпадение, а
+    значит говорит «нет» на любую ФОРМУ слова. Одной её недостаточно — см. ниже.
+    Полная проверка: unit_card_is_about_the_same_word_sql().
+
+    ╔══════════════════════════════════════════════════════════════════════════════╗
+    ║  УКАЗАТЕЛИ НЕ БИТЫЕ. ПЕРЕСЧИТЫВАТЬ ЗАНОВО НЕ НАДО. Замер 14.08.2026.          ║
+    ║                                                                              ║
+    ║  Что такое указатель: колонка lex_unit_id в карточке человека — номер общего  ║
+    ║  слова в bt_3_lex_units. Одно слово на всех, карточек на него много.          ║
+    ║                                                                              ║
+    ║  Эта функция сравнивает ЗАГОЛОВОК карточки с ЛЕММОЙ слова буква в букву.      ║
+    ║  Поэтому она отвечает «не то слово» на всё, что стоит в форме:                ║
+    ║        Die Strümpfe   → Strumpf      множественное с умлаутом                 ║
+    ║        angekündigt    → ankündigen   причастие                                ║
+    ║        des Umbruchs   → Umbruch      родительный падеж                        ║
+    ║        umgewandelt    → umwandeln    причастие с отделяемой приставкой        ║
+    ║  Это ОДНО И ТО ЖЕ слово, указатель ведёт правильно.                           ║
+    ║                                                                              ║
+    ║  ЧИСЛА (24 908 карточек людей):                                              ║
+    ║    указателя нет вовсе ................................. 1                   ║
+    ║    указатель в несуществующее слово .................... 0                   ║
+    ║    сравнение по буквам не сошлось ...................... 1095 (4,4%)         ║
+    ║      из них подтверждает таблица написаний ............. 1077 (98%)          ║
+    ║      осталось разобрать глазами ........................ 18                  ║
+    ║                                                                              ║
+    ║  ЭТИ 18 РАЗОБРАНЫ 14.08.2026. Указателей «на чужое слово» среди них НОЛЬ.     ║
+    ║  Поломано не указание, а НАЗВАНИЕ САМОГО СЛОВА в словаре:                     ║
+    ║     ernten → «ernen» (потеряна буква) · ansonsten → «ansonst» (обрублено)      ║
+    ║     Der Umfang → «umfa» · Ärgernisse → «argernisse» (потерян умлаут)           ║
+    ║     die Beförderung → «diebeförderung» (артикль вклеен без пробела)            ║
+    ║     auferlegen → «auferlegen - auferlegt» (приклеено причастие)                ║
+    ║     Er will ins Freibad gehen → «pov: er will ins freibad gehen!» (мусор)      ║
+    ║  Плюс 6 случаев, где у слова просто снят артикль, и 1 русская карточка,        ║
+    ║  указывающая на английское слово («дерзкий поступок» → «a bold act»).          ║
+    ║  Это семья дефектов «испорченный заголовок», а НЕ «битый указатель».           ║
+    ║                                                                              ║
+    ║  СКОЛЬКО КАРТОЧЕК ДЕРЖИТСЯ НА СВОЕЙ КОПИИ РАЗБОРА (замер 14.08.2026):         ║
+    ║    было по СТАРОЙ проверке (сравнение букв) ............ 926                  ║
+    ║       у слова разбора нет вообще ....................... 153                  ║
+    ║       сверка заголовка не пускала ...................... 773                  ║
+    ║    стало по НОВОЙ проверке (справочник форм) ........... 153                  ║
+    ║       из 773 новая проверка пропускает ................. 773  (все)          ║
+    ║                                                                              ║
+    ║  То есть замена проверки сама вылечила 773 карточки из 926. Осталось 153, и   ║
+    ║  их копия — ЕДИНСТВЕННЫЙ источник: у слова нет разбора, снимешь копию —       ║
+    ║  человек останется с пустой карточкой. Их разбирать отдельно.                  ║
+    ║                                                                              ║
+    ║  ⚠ ЛОВУШКА ПРИ ЛЮБОМ ПОВТОРНОМ ЗАМЕРЕ: считать надо НОВОЙ проверкой           ║
+    ║    (unit_card_is_about_the_same_word_sql со справочником форм). Посчитаешь     ║
+    ║    старой — получишь 926 и решишь, что дело в шесть раз хуже, чем есть.        ║
+    ║                                                                              ║
+    ║  КАК СЧИТАТЬ ПРАВИЛЬНО: не сравнивать строки, а спросить bt_3_lex_surfaces —  ║
+    ║  справочник «какая форма какому слову принадлежит», 56 тысяч записей. Он для  ║
+    ║  того и заведён. Строковые правила («снять умлаут», «убрать ge-») пробовались ║
+    ║  трижды и каждый раз давали завышенный ответ: 510, 539, 585 — все три числа   ║
+    ║  разваливались при проверке глазами.                                          ║
+    ║                                                                              ║
+    ║  ЧЕМ ЭТО ВАЖНО: на «битые указатели» ссылается merge_unit_card_for_serve,     ║
+    ║  оправдывая правило «только дополняем, никогда не заменяем». Битых указателей ║
+    ║  нет — значит и это правило держится на мисмежерении, а не на факте.          ║
+    ╚══════════════════════════════════════════════════════════════════════════════╝
+    """
     key = _normalize_dictionary_headword_key(card_word)
     if not key:
         return False
     return key == _normalize_dictionary_headword_key(unit_lemma_key)
+
+
+# Кусок SQL, отвечающий «принадлежит ли написание из карточки этому слову».
+# Спрашивает справочник форм bt_3_lex_surfaces вместо сравнения букв. Подставляется
+# в запросы, которые и так тянут карточку с единицей, — отдельного похода в базу не нужно.
+# %(q)s — псевдоним таблицы карточек, %(u)s — псевдоним таблицы единиц.
+UNIT_OWNS_CARD_SURFACE_SQL = """
+    EXISTS (
+        SELECT 1 FROM bt_3_lex_surfaces s
+        WHERE s.unit_id = {u}.id
+          AND s.lang = {u}.lang
+          AND s.surface_key = LOWER(BTRIM(REGEXP_REPLACE(
+                  COALESCE({q}.word_de, ''),
+                  '^(der|die|das|ein|eine|einen|einem|einer|eines)[[:space:]]+', '', 'i')))
+    )
+"""
+
+
+def unit_card_is_about_the_same_word_sql(
+    *, unit_lemma_key: str | None, card_word: str | None, surface_confirms: bool
+) -> bool:
+    """Полная проверка: совпали буквы ИЛИ справочник форм подтвердил связь.
+
+    surface_confirms приходит из запроса, куда подставлен UNIT_OWNS_CARD_SURFACE_SQL.
+    Замер 14.08.2026: справочник подтверждает 1077 из 1095 случаев, которые проверка
+    по буквам объявляла «не то слово»."""
+    if surface_confirms:
+        return True
+    return unit_card_is_about_the_same_word(unit_lemma_key=unit_lemma_key, card_word=card_word)
 
 
 # Принимает ли общий пул НОВЫЙ разбор. Выключено с 05.08.2026: дом разбора — единица,
@@ -18238,6 +18653,24 @@ def _attach_entry_to_lex_unit_quietly(
         logging.debug("attach entry to lex unit skipped", exc_info=True)
 
 
+def _enqueue_dedupe_after_save_quietly(user_id: int, entry_id: int) -> None:
+    """Отправить уборку повторов в фон. Только ПОСЛЕ фиксации в базе.
+
+    Порядок здесь не косметика: воркер читает карточку по её id, и если поставить задание
+    внутри транзакции, он может прийти раньше, чем строка станет видимой, и не найти её.
+
+    Молча — потому что сохранение уже состоялось и подтверждено человеку. Никакая беда с
+    очередью не имеет права превратиться в ошибку сохранения."""
+    if int(entry_id or 0) <= 0:
+        return
+    try:
+        from backend.job_queue import enqueue_dictionary_dedupe_after_save
+
+        enqueue_dictionary_dedupe_after_save(user_id=int(user_id), entry_id=int(entry_id))
+    except Exception:
+        logging.debug("dedupe enqueue skipped user=%s entry=%s", user_id, entry_id, exc_info=True)
+
+
 def save_webapp_dictionary_query_returning_id(
     user_id: int,
     word_ru: str | None,
@@ -18272,6 +18705,7 @@ def save_webapp_dictionary_query_returning_id(
         inserted_id, word_de=word_de, word_ru=word_ru,
         source_lang=source_lang, target_lang=target_lang,
     )
+    _enqueue_dedupe_after_save_quietly(int(user_id), inserted_id)
     return inserted_id if inserted_id > 0 else 0
 
 
@@ -18309,6 +18743,7 @@ def save_webapp_dictionary_query_returning_id_with_inserted(
         inserted_id, word_de=word_de, word_ru=word_ru,
         source_lang=source_lang, target_lang=target_lang,
     )
+    _enqueue_dedupe_after_save_quietly(int(user_id), inserted_id)
     return (inserted_id if inserted_id > 0 else 0, bool(inserted))
 
 
@@ -18431,6 +18866,18 @@ def get_webapp_dictionary_entries(
             "folder_id": row[10],
             "created_at": row[11].isoformat() if row[11] else None,
         })
+    # Разбор берём с ОБЩЕГО слова, а личную копию только достраиваем им. Одно слово
+    # разбирается один раз и живёт в одном месте (bt_3_lex_units): уточнили слово —
+    # уточнилось у всех, кто на него подписан, без переписывания тысяч карточек.
+    # Личные правки человека ложатся сверху и общим не затираются — это внутри
+    # attach_unit_content_to_cards (bt_3_user_word_overrides).
+    #
+    # ЗАЧЕМ ЗДЕСЬ, А НЕ В ЭНДПОИНТЕ. Эту выборку читают четыре поверхности сразу:
+    # быстрый словарь (/api/webapp/dictionary/cards), главный экран
+    # (/api/mobile/dashboard), тренажёр предложений и фоновый прогрев. Слияние в
+    # одном месте — и все четыре видят одно и то же. Перепись читателей разбора:
+    # docs/tasks/dictionary_readers_census.md.
+    attach_unit_content_to_cards(items)
     return items
 
 
@@ -22723,10 +23170,23 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 conn.commit()
                 return result
 
+            chosen_ru = ""
             if decision == "accept":
                 variants = phrase_review_variants(judges, old_text, arbiter)
                 idx = int(variant or 0)
-                new_text = variants[idx]["text"] if 0 <= idx < len(variants) else ""
+                chosen = variants[idx] if 0 <= idx < len(variants) else {}
+                new_text = str(chosen.get("text") or "")
+                # Перевод, который владелец ВИДЕЛ НА КНОПКЕ, когда нажимал «Принять».
+                #
+                # До 14.08.2026 здесь бралась только немецкая половина выбора, а поле "ru"
+                # не читалось нигде во всём файле — при том, что экран рисует его прямо на
+                # кнопке (frontend/src/answer/PhraseReviewScreen.jsx:349). Русский после
+                # этого заново выдумывала модель в rebuild_unit_breakdown и вставала
+                # ГЛАВНЫМ переводом, а выбор владельца оставался вторым.
+                # Замер 14.08.2026: из 49 решений владельца его перевод заменён машинным
+                # в 30. Не все замены безобидны — «Говорят, что они развелись» стало
+                # «Им следует развестись», то есть смысл перевернулся.
+                chosen_ru = str(chosen.get("ru") or "").strip()
             else:
                 new_text = str(own_text or "").strip()
             if not new_text or new_text == old_text:
@@ -22774,27 +23234,29 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
     # поэтому разбор СОБИРАЕТСЯ ЗАНОВО под новый текст. Событие редкое (правки идут
     # поштучно), так что расход копеечный. Решение владельца 06.08.2026.
     try:
-        rebuild_unit_breakdown(int(result["unit_id"]), new_text)
+        rebuild_unit_breakdown(int(result["unit_id"]), new_text, owner_translation=chosen_ru)
     except Exception as exc:
         logging.warning("разбор для %r не пересобрался: %s", new_text[:60], exc)
     return result
 
 
-def rebuild_unit_breakdown(unit_id: int, text: str) -> bool:
+def rebuild_unit_breakdown(unit_id: int, text: str, *, owner_translation: str = "") -> bool:
     """Собрать разбор заново для изменённого текста и положить его на слово.
 
-    Старый разбор снимаем ДО запроса: если запрос сорвётся, лучше пустая карточка, чем
-    карточка с разбором чужой фразы. Пустую доберёт ночь, а неверная учит неправде."""
+    Старый разбор снимается ПОСЛЕ того, как получен новый.
+    Раньше было наоборот — «лучше пустая карточка, чем карточка чужой фразы», с расчётом
+    на то, что «пустую доберёт ночь». Расчёт неверный: ночной добор берёт только одиночные
+    слова (backend/lex_units.py:427 и :785), а сюда приходят ФРАЗЫ, и он их не подбирает
+    никогда. Замер 14.08.2026: три фразы так и остались без разбора вовсе, потому что
+    запрос к модели сорвался после обнуления. Теперь сорвался запрос — остаётся старый
+    разбор, он хотя бы про ту же фразу.
+
+    owner_translation — перевод, который владелец выбрал руками на экране спорных фраз.
+    Он ставится ГЛАВНЫМ, выше машинного: человек смотрел на оба варианта и выбрал этот,
+    его решение не должна перебивать модель."""
     import asyncio
     if not unit_id or not str(text or "").strip():
         return False
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                "UPDATE bt_3_lex_units SET card = NULL, card_source = NULL WHERE id = %s;",
-                (int(unit_id),),
-            )
-        conn.commit()
     try:
         from backend.openai_manager import run_dictionary_lookup_multilang_core_fast
         raw = asyncio.run(run_dictionary_lookup_multilang_core_fast(
@@ -22806,11 +23268,48 @@ def rebuild_unit_breakdown(unit_id: int, text: str) -> bool:
     if not isinstance(raw, dict) or not raw:
         return False
     from backend.lex_units import save_unit_card_if_richer, sync_unit_links_from_card
+    # Разбор про новую фразу получен — только теперь снимаем старый.
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_lex_units SET card = NULL, card_source = NULL WHERE id = %s;",
+                (int(unit_id),),
+            )
+        conn.commit()
     save_unit_card_if_richer(int(unit_id), raw, source="пересборка после правки")
     try:
         sync_unit_links_from_card(int(unit_id), raw)
     except Exception:
         logging.debug("связи после пересборки не обновились", exc_info=True)
+    # Выбор владельца — ГЛАВНЫЙ перевод. Машинный, только что пришедший от модели,
+    # уступает ему место: человек видел оба варианта на экране и выбрал этот.
+    owner_ru = str(owner_translation or "").strip()
+    if owner_ru:
+        try:
+            from backend.lex_units import ensure_unit
+            owner_unit = ensure_unit(owner_ru, "ru")
+            if owner_unit:
+                with get_db_connection_context() as conn:
+                    with conn.cursor() as cursor:
+                        # Всем связям слова уступить первое место…
+                        cursor.execute(
+                            "UPDATE bt_3_lex_links SET rank = GREATEST(rank, 20) "
+                            "WHERE from_unit = %s AND rank < 20;",
+                            (int(unit_id),),
+                        )
+                        # …и поставить выбор владельца первым.
+                        cursor.execute(
+                            """
+                            INSERT INTO bt_3_lex_links (from_unit, to_unit, rank, source)
+                            VALUES (%s, %s, 1, 'вычитка')
+                            ON CONFLICT (from_unit, to_unit)
+                            DO UPDATE SET rank = 1, source = 'вычитка', updated_at = NOW();
+                            """,
+                            (int(unit_id), int(owner_unit)),
+                        )
+                    conn.commit()
+        except Exception:
+            logging.warning("перевод владельца не удалось поставить главным", exc_info=True)
     return True
 
 
@@ -29601,6 +30100,10 @@ def list_user_vocabulary(
                     q.user_notes,
                     lu.card         AS unit_card,
                     lu.lemma_key    AS unit_lemma_key,
+                    -- Голый запасной заголовок. Артикль сюда НЕ приклеивается намеренно:
+                    -- склейка живёт в одном месте — compose_german_headword() ниже, — иначе
+                    -- формул становится две и слово начинает выглядеть по-разному на разных
+                    -- экранах. Ради этого сюда же добавлен lu.gender в выборку.
                     COALESCE(
                         NULLIF(q.word_de, ''),
                         q.word_ru
@@ -29608,7 +30111,20 @@ def list_user_vocabulary(
                     COALESCE(
                         NULLIF(q.translation_ru, ''),
                         q.translation_de
-                    ) AS display_translation
+                    ) AS display_translation,
+                    -- ДОБАВЛЯТЬ ТОЛЬКО В КОНЕЦ: ниже строки разбираются по номерам
+                    -- (row[24], row[25] …), и колонка, вставленная в середину, молча
+                    -- сдвинет всё, что за ней.
+                    lu.gender       AS unit_gender,
+                    -- Принадлежит ли написание карточки этому слову — по справочнику форм.
+                    COALESCE(EXISTS (
+                        SELECT 1 FROM bt_3_lex_surfaces s
+                        WHERE s.unit_id = lu.id
+                          AND s.lang = lu.lang
+                          AND s.surface_key = LOWER(BTRIM(REGEXP_REPLACE(
+                                  COALESCE(q.word_de, ''),
+                                  '^(der|die|das|ein|eine|einen|einem|einer|eines)[[:space:]]+', '', 'i')))
+                    ), FALSE) AS surface_confirms
                 FROM bt_3_webapp_dictionary_queries q
                 LEFT JOIN bt_3_card_srs_state s
                     ON s.user_id = q.user_id AND s.card_id = q.id
@@ -29625,6 +30141,9 @@ def list_user_vocabulary(
             rows = cursor.fetchall()
 
     items = []
+    # Личные правки на всю пачку одним запросом: то, что человек написал своей рукой,
+    # ложится поверх общего слова и не перебивается ничем.
+    personal_overrides = get_user_word_overrides([r[0] for r in rows])
     for row in rows:
         response_json = _coerce_json_object(row[20])
         # Разбор живёт на ЕДИНИЦЕ — одной на всех. Личная карточка задаёт направление и
@@ -29632,11 +30151,13 @@ def list_user_vocabulary(
         # увидели все, кто на него подписан. Только дополняем, никогда не заменяем.
         if DICTIONARY_UNITS_SERVE_ENABLED:
             unit_card = _coerce_json_object(row[22])
-            if unit_card and unit_card_is_about_the_same_word(
+            if unit_card and unit_card_is_about_the_same_word_sql(
                 unit_lemma_key=row[23],
                 card_word=row[3] or response_json.get("word_de"),
+                surface_confirms=bool(row[27]),
             ):
-                response_json = merge_unit_card_for_serve(response_json, unit_card)
+                response_json = merge_unit_card_for_serve(
+                    response_json, unit_card, personal_overrides.get(int(row[0] or 0)))
         entry_source_lang = str(row[5] or "").strip().lower()
         entry_target_lang = str(row[6] or "").strip().lower()
         # Serve guard: a mis-oriented lookup can leave a Russian value in response_json.word_de
@@ -29717,7 +30238,15 @@ def list_user_vocabulary(
             "folder_icon": row[18] or None,
             "folder_color": row[19] or None,
             "response_json": response_json,
-            "display_word": german_display or row[24] or "",
+            # Заголовок собирается ОДНОЙ общей формулой — той же, что у карточки.
+            # Раньше здесь стояло голое `german_display or row[24]`, и слово ехало на
+            # экран без артикля, хотя род лежал рядом в разборе или на единице.
+            "display_word": compose_german_headword(
+                german_display or row[24] or "",
+                article=response_json.get("article"),
+                gender=row[26],
+                number=response_json.get("grammatical_number"),
+            ),
             "display_translation": native_display or row[25] or "",
             "user_notes": normalize_user_notes(row[21]),
         })
@@ -30309,6 +30838,106 @@ def split_vocabulary_entry_senses(
     return {"ok": True, "created": created, "kept": first}
 
 
+# Поля, которые человек правит руками на карточке. Ровно те три, что принимает
+# edit_vocabulary_entry ниже. Список закрытый: всё остальное — общее и правится централизованно.
+USER_EDITABLE_CARD_FIELDS = ("word_de", "translation_ru", "dictionary_senses")
+
+
+def ensure_user_word_overrides_schema() -> None:
+    """Личный слой поверх общего слова: ТОЛЬКО то, что человек поправил сам.
+
+    Зачем отдельная таблица, а не поле в карточке
+    ─────────────────────────────────────────────
+    Так устроено у всех, кто решал эту задачу до нас: WaniKani (`study_materials` рядом
+    с общими `subjects`), Skritter («личные определения существуют только в вашем
+    аккаунте»), AnkiHub и AnkiCollab (защита конкретных ПОЛЕЙ конкретной заметки).
+
+    Anki показал, чем кончается обратный путь — когда личное кладут внутрь общей записи,
+    меняя её форму: связь с обновлениями рвётся навсегда, и человек выбирает между
+    «настроить под себя» и «получать исправления». У нас сегодня ровно это: правка
+    человека ложится в тот же `response_json`, куда легла копия разбора, и отличить
+    «человек написал сам» от «остатки старой копии» невозможно.
+
+    Правило чтения: берём общее слово, сверху накладываем только те поля, которые
+    человек правил. Всё остальное продолжает обновляться централизованно.
+
+    Защита включается САМА при первой правке поля — без галочек. AnkiHub пришёл к этому
+    не сразу: пока пометку ставили руками, люди её забывали и теряли свою работу.
+    Обратная сторона, о которой они же предупреждают: защитил — перестал получать
+    исправления в это поле. Поэтому здесь есть `released_at`: человек может вернуть поле
+    «как в словаре», и запись перестаёт действовать, но остаётся видимой.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_user_word_overrides (
+                    id          BIGSERIAL PRIMARY KEY,
+                    user_id     BIGINT NOT NULL,
+                    entry_id    BIGINT NOT NULL,
+                    unit_id     BIGINT,
+                    field_key   TEXT   NOT NULL,
+                    value       JSONB  NOT NULL,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    released_at TIMESTAMPTZ,
+                    UNIQUE (user_id, entry_id, field_key)
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_word_overrides_entry "
+                "ON bt_3_user_word_overrides (entry_id) WHERE released_at IS NULL;"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_word_overrides_unit "
+                "ON bt_3_user_word_overrides (unit_id) WHERE released_at IS NULL;"
+            )
+        conn.commit()
+
+
+def record_user_word_override(cursor, *, user_id: int, entry_id: int, unit_id: int | None,
+                              field_key: str, value) -> None:
+    """Запомнить, что ЭТО поле человек написал сам. Централизованное обогащение его не тронет."""
+    if field_key not in USER_EDITABLE_CARD_FIELDS:
+        return
+    cursor.execute(
+        """
+        INSERT INTO bt_3_user_word_overrides (user_id, entry_id, unit_id, field_key, value)
+        VALUES (%s, %s, %s, %s, %s::jsonb)
+        ON CONFLICT (user_id, entry_id, field_key)
+        DO UPDATE SET value = EXCLUDED.value, unit_id = EXCLUDED.unit_id,
+                      updated_at = NOW(), released_at = NULL;
+        """,
+        (int(user_id), int(entry_id), int(unit_id) if unit_id else None,
+         str(field_key), json.dumps(value, ensure_ascii=False)),
+    )
+
+
+def get_user_word_overrides(entry_ids) -> dict[int, dict]:
+    """Личные правки для пачки карточек: {entry_id: {field_key: value}}.
+
+    Отпущенные (`released_at` заполнен) не возвращаются — человек сам сказал «верни как
+    в словаре», и поле снова живёт общей жизнью."""
+    ids = [int(x) for x in (entry_ids or []) if x]
+    if not ids:
+        return {}
+    out: dict[int, dict] = {}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT entry_id, field_key, value FROM bt_3_user_word_overrides "
+                    "WHERE entry_id = ANY(%s) AND released_at IS NULL;",
+                    (ids,),
+                )
+                for entry_id, field_key, value in cursor.fetchall():
+                    out.setdefault(int(entry_id), {})[str(field_key)] = value
+    except Exception:
+        logging.debug("личные правки не прочитались", exc_info=True)
+    return out
+
+
 def edit_vocabulary_entry(
     user_id: int,
     entry_id: int,
@@ -30512,6 +31141,36 @@ def edit_vocabulary_entry(
             row = cursor.fetchone()
             if not row:
                 return None
+
+            # Запоминаем, какие поля человек написал СВОЕЙ рукой. С этого момента
+            # централизованное обогащение их не трогает, а остальные поля продолжает
+            # обновлять. Защита включается сама, без галочек: AnkiHub пришёл к этому не
+            # сразу — пока пометку ставили руками, люди её забывали и теряли свою работу.
+            try:
+                ensure_user_word_overrides_schema()
+                cursor.execute(
+                    "SELECT lex_unit_id FROM bt_3_webapp_dictionary_queries WHERE id = %s;",
+                    (int(entry_id),),
+                )
+                unit_row = cursor.fetchone()
+                unit_id = int(unit_row[0]) if unit_row and unit_row[0] else None
+                if word_de is not None:
+                    record_user_word_override(cursor, user_id=user_id, entry_id=entry_id,
+                                              unit_id=unit_id, field_key="word_de",
+                                              value=normalized_word)
+                if translation_ru is not None:
+                    record_user_word_override(cursor, user_id=user_id, entry_id=entry_id,
+                                              unit_id=unit_id, field_key="translation_ru",
+                                              value=normalized_translation)
+                if dictionary_senses is not None:
+                    record_user_word_override(cursor, user_id=user_id, entry_id=entry_id,
+                                              unit_id=unit_id, field_key="dictionary_senses",
+                                              value=normalized_senses)
+            except Exception:
+                # Правка человека уже сохранена — пометка о ней второстепенна и не имеет
+                # права уронить сохранение.
+                logging.warning("личная правка не помечена как защищённая", exc_info=True)
+
             return {
                 "id": row[0],
                 "word_ru": row[1] or "",
@@ -48226,10 +48885,13 @@ def pick_next_rebus(*, cooldown_days: int = 30, exclude_ids: list | None = None)
                       last_sent_at IS NULL
                       OR last_sent_at < NOW() - (%s || ' days')::INTERVAL
                   )
+                """
+                + ("  AND compound_id::text <> ALL(%s)\n" if skip else "")
+                + """
                 ORDER BY last_sent_at NULLS FIRST, send_count ASC, compound_id
                 LIMIT 1
                 """,
-                (int(cooldown_days),),
+                ((int(cooldown_days), skip) if skip else (int(cooldown_days),)),
             )
             row = cursor.fetchone()
     if not row:
@@ -49057,10 +49719,13 @@ def pick_next_crossword(*, cooldown_days: int = 14, exclude_ids: list | None = N
                   AND retired = FALSE
                   AND (last_sent_at IS NULL
                        OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
+                """
+                + ("  AND crossword_id::text <> ALL(%s)\n" if skip else "")
+                + """
                 ORDER BY last_sent_at NULLS FIRST, created_at
                 LIMIT 10
                 """,
-                (int(cooldown_days),),
+                ((int(cooldown_days), skip) if skip else (int(cooldown_days),)),
             )
             rows = cursor.fetchall() or []
     cols = ["crossword_id", "topic", "difficulty", "grid_json", "words_json",
@@ -49666,6 +50331,86 @@ def get_user_task_state(user_id: int, kind: str, task_keys: list) -> dict:
         logging.warning("get_user_task_state failed user=%s kind=%s", user_id, kind,
                         exc_info=True)
         return {}
+
+
+# Вид задания → (таблица банка, колонка-ключ, условие «годен к выдаче»).
+# Отсюда берётся размер банка для расчёта запаса; правило годности — то же самое,
+# каким пользуется выдача, чтобы отчёт не мог разойтись с тем, что видит человек.
+_TASK_BANKS = {
+    "rb": ("bt_3_rebus_bank", "compound_id",
+           "composed_status = 'ready' AND retired = FALSE"),
+    "cw": ("bt_3_crossword_bank", "crossword_id",
+           "image_status = 'ready' AND retired = FALSE"),
+    "ag": ("bt_3_anagram_cards", "card_id", "retired = FALSE"),
+    "au": ("bt_3_aufgabe_bank", "aufgabe_id",
+           "retired = FALSE AND review_status = 'approved'"),
+    "article_quiz": ("bt_3_article_quiz_bank", "word_id",
+                     "image_status = 'ready' AND retired = FALSE"),
+}
+
+# Как вид называется в отчёте владельцу — человеческим словом, а не кодом.
+TASK_KIND_TITLES = {
+    "rb": "Ребусы", "cw": "Кроссворды", "ag": "Анаграммы",
+    "au": "Задания пула", "article_quiz": "Картиночный квиз артиклей",
+}
+
+
+def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
+    """На сколько дней хватает банка этого вида самому продвинутому человеку.
+
+    Расход берём ПО ФАКТУ из истории за окно, а не по весам ротации на бумаге: веса и
+    расписание меняются, а замер не врёт. Глубину считаем по 95-му процентилю, чтобы
+    один аномальный человек не завысил потребность для всех.
+    """
+    from backend.task_supply import percentile, shortfall, supply_days
+    bank = _TASK_BANKS.get(str(kind))
+    if not bank:
+        return {"kind": kind, "error": "неизвестный вид задания"}
+    table, id_col, ready = bank
+    try:
+        ensure_task_rotation_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE {ready};")
+                bank_total = int((cursor.fetchone() or [0])[0])
+                # Расход на человека в сутки и его личный «закрытый» список — одним
+                # запросом, чтобы отчёт не расходился между двумя замерами.
+                cursor.execute(
+                    """SELECT user_id,
+                              COUNT(*)::float / GREATEST(%s, 1) AS per_day,
+                              SUM(CASE WHEN retired_at IS NOT NULL
+                                        OR next_eligible_at > NOW()
+                                       THEN 1 ELSE 0 END) AS blocked
+                       FROM bt_3_user_task_state
+                       WHERE kind = %s
+                         AND last_seen_at > NOW() - (%s || ' days')::interval
+                       GROUP BY user_id;""",
+                    (int(window_days), str(kind), int(window_days)),
+                )
+                rows = cursor.fetchall() or []
+    except Exception:
+        logging.warning("measure_task_supply failed kind=%s", kind, exc_info=True)
+        return {"kind": kind, "error": "замер не удался"}
+
+    rates = [float(r[1] or 0.0) for r in rows]
+    blocked = [int(r[2] or 0) for r in rows]
+    per_day = percentile(rates, 0.95)
+    # Запас считаем у самого «глубокого»: у него закрыто больше всего.
+    deepest_blocked = int(percentile(blocked, 0.95))
+    available = max(0, bank_total - deepest_blocked)
+    days = supply_days(available, per_day)
+    return {
+        "kind": str(kind), "title": TASK_KIND_TITLES.get(str(kind), str(kind)),
+        "bank_total": bank_total, "people": len(rows),
+        "per_day": round(per_day, 2), "blocked_deepest": deepest_blocked,
+        "available": available, "supply_days": days,
+        "order_now": shortfall(available, per_day),
+    }
+
+
+def measure_all_task_supply(*, window_days: int = 30) -> list:
+    """Замер по всем видам сразу — основа ночного отчёта владельцу."""
+    return [measure_task_supply(k, window_days=window_days) for k in _TASK_BANKS]
 
 
 def get_user_blocked_content_ids(user_id: int, kind: str) -> list:
@@ -50306,10 +51051,14 @@ def pick_next_aufgabe(*, cooldown_days: int = 14, format: str | None = None,
                   AND review_status = 'approved'
                   AND (%s IS NULL OR format = %s)
                   AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
+                """
+                + ("  AND aufgabe_id::text <> ALL(%s)\n" if skip else "")
+                + """
                 ORDER BY last_sent_at NULLS FIRST, created_at
                 LIMIT 12
                 """,
-                (format, format, int(cooldown_days)),
+                ((format, format, int(cooldown_days), skip) if skip
+                 else (format, format, int(cooldown_days))),
             )
             rows = cursor.fetchall() or []
             picked = None
@@ -55096,10 +55845,14 @@ def pick_next_anagram(*, cooldown_days: int = 14, exclude_ids: list | None = Non
                 WHERE retired = FALSE
                   AND {_ANAGRAM_LETTERS_LEN} >= %s
                   AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
+                """
+                + ("  AND card_id::text <> ALL(%s)\n" if skip else "")
+                + """
                 ORDER BY last_sent_at NULLS FIRST, created_at
                 LIMIT 1
                 """,
-                (int(ANAGRAM_MIN_LETTERS), int(cooldown_days)),
+                ((int(ANAGRAM_MIN_LETTERS), int(cooldown_days), skip) if skip
+                 else (int(ANAGRAM_MIN_LETTERS), int(cooldown_days))),
             )
             row = cursor.fetchone()
     if not row:

@@ -162,6 +162,63 @@ def _present_du_er(stem: str) -> tuple[str, str]:
     return stem + "st", stem + "t"
 
 
+# Отделяемые приставки: с них начинается zu-инфинитив «klar-zu-kommen».
+_SEPARABLE_PREFIXES = (
+    "ab", "an", "auf", "aus", "bei", "durch", "ein", "fest", "her", "hin", "los", "mit",
+    "nach", "über", "um", "unter", "vor", "weg", "weiter", "zurück", "zusammen", "klar",
+    "fort", "heim", "statt", "teil", "wieder", "zu",
+)
+
+
+def looks_like_zu_infinitive(word: str) -> bool:
+    """«klarzukommen», «anzulehnen» — это zu-инфинитив, а не словарная форма глагола.
+
+    Спрягать такое нельзя: наш движок режет «-en» и печатает «ich klarzukomme,
+    du klarzukommst» — форм, которых в языке не существует. Замер 14.08.2026: таких
+    заголовков пять (klarzukommen, anzulehnen, auszulaugen, aufzudecken, umzukrempeln),
+    и у всех пяти была напечатана выдуманная парадигма.
+
+    Признак: слово начинается отделяемой приставкой, сразу за ней «zu», а дальше
+    остаётся настоящая глагольная основа на -en/-eln/-ern. «hinzufügen» под правило не
+    попадает: там приставка «hinzu-», и после снятия «zu» остаётся «higen» — не глагол.
+    """
+    body = str(word or "").strip().lower()
+    if not body or " " in body or not body.endswith(("en", "eln", "ern")):
+        return False
+    # Приставки, которые сами КОНЧАЮТСЯ на «zu»: «hinzufügen», «dazugeben» — обычные
+    # глаголы, никакого zu-инфинитива там нет.
+    if body.startswith(("hinzu", "dazu", "herzu", "wozu", "darzu")):
+        return False
+    for prefix in _SEPARABLE_PREFIXES:
+        if not body.startswith(prefix + "zu"):
+            continue
+        rest = body[len(prefix) + 2:]
+        # Основа не короче пяти букв. Иначе «zusammenzucken» разбирается как
+        # «zusammen» + «zu» + «cken» — обрывок, а не глагол. У всех пяти настоящих
+        # случаев основа от шести букв: kommen, lehnen, laugen, decken, krempeln.
+        if len(rest) >= 5 and rest.endswith(("en", "eln", "ern")):
+            return True
+    return False
+
+
+def strip_zu_infinitive(word: str) -> str:
+    """«klarzukommen» → «klarkommen». Пустая строка, если это не zu-инфинитив.
+
+    Снятие безопасно и проверяемо: «zu» между отделяемой приставкой и основой — частица,
+    а не часть слова. Этим оно отличается от лемматизации spaCy, которую из пути
+    сохранения убрали за откусывание окончаний (Felge→Felg, beibringen→beibring)."""
+    if not looks_like_zu_infinitive(word):
+        return ""
+    body = str(word or "").strip()
+    low = body.lower()
+    for prefix in _SEPARABLE_PREFIXES:
+        if low.startswith(prefix + "zu"):
+            rest = body[len(prefix) + 2:]
+            if len(rest) >= 5:
+                return body[: len(prefix)] + rest
+    return ""
+
+
 def build_verb_conjugation(
     *,
     word_de: str,
@@ -174,6 +231,11 @@ def build_verb_conjugation(
     Regular cells are computed; seed cells override when present."""
     inf = _strip_article(word_de)
     if not inf or " " in inf:
+        return None
+    # Лучше НЕ показать таблицу, чем показать выдуманную. Заголовок в форме zu-инфинитива
+    # спрягать нельзя — получается «ich klarzukomme», чего в языке нет. Раньше движок брал
+    # любой одиночный токен за инфинитив без единой проверки.
+    if looks_like_zu_infinitive(inf):
         return None
     seed = seed or {}
     stem, pl_end = _verb_stem(inf)
@@ -275,6 +337,36 @@ def _parse_perfekt(perfekt: str, infinitive: str) -> tuple[str, str]:
 
 
 # ── Adjective comparison ────────────────────────────────────────────────────────
+# Окончания, которые прилагательное получает при склонении, и суффиксы, по которым
+# видно, что перед нами именно прилагательное, а не существительное на -e.
+_ADJ_DECLENSION_ENDINGS = ("en", "em", "es", "er", "e")
+_ADJ_SUFFIXES = ("ig", "lich", "isch", "bar", "sam", "haft", "los", "voll", "iv", "abel")
+
+
+def looks_like_declined_adjective(word: str) -> bool:
+    """«schlammigen», «winzigen», «beispiellosen» — это склонённые формы, а не словарная.
+
+    Строить от них степени сравнения нельзя: получается «schlammigener» и
+    «am schlammigensten» — таких слов нет.
+
+    Признак осторожный, намеренно: требуем И падежное окончание, И под ним настоящий
+    прилагательный суффикс. Поэтому «sauber» и «teuer» под правило не попадают (снимешь
+    «er» — останется «saub», это не суффикс), а «richtig» не попадает вовсе, потому что
+    падежного окончания на нём нет. Цена осторожности — пропустим склонённое
+    прилагательное без такого суффикса; пропустить безопаснее, чем испортить хорошее.
+    """
+    body = str(word or "").strip().lower()
+    if not body or " " in body:
+        return False
+    for ending in _ADJ_DECLENSION_ENDINGS:
+        if not body.endswith(ending):
+            continue
+        stem = body[: -len(ending)]
+        if len(stem) >= 4 and stem.endswith(_ADJ_SUFFIXES):
+            return True
+    return False
+
+
 def build_adjective_comparison(
     *,
     word_de: str,
@@ -286,13 +378,22 @@ def build_adjective_comparison(
     positive = _strip_article(word_de)
     if not positive or " " in positive:
         return None
+    # Лучше НЕ показать таблицу, чем показать выдуманную: от склонённой формы степени
+    # сравнения выходят несуществующими («schlammigen» → «schlammigener»,
+    # «am schlammigensten»). Замер 14.08.2026: 11 таких заголовков среди размеченных
+    # прилагательных, и у каждого печаталась своя выдуманная лесенка.
+    if looks_like_declined_adjective(positive):
+        return None
     comp = str(comparative or "").strip()
     sup = str(superlative or "").strip()
     if not comp:
         comp = positive + "er"
     if not sup:
         stem = positive
-        sup = f"am {stem}{'sten' if stem.lower().endswith(('t', 'd', 's', 'ß', 'z', 'x')) else 'sten'}"
+        # Было `'sten' if … else 'sten'` — обе ветки одинаковые, то есть проверка стояла,
+        # но ничего не делала: «alt» давало «am altsten» вместо «am ältesten», «hart» —
+        # «am hartsten». После t/d/s/ß/z/x положено «-esten».
+        sup = f"am {stem}{'esten' if stem.lower().endswith(('t', 'd', 's', 'ß', 'z', 'x')) else 'sten'}"
     elif not sup.lower().startswith("am "):
         sup = "am " + sup
     return {"positive": positive, "comparative": comp, "superlative": sup}
