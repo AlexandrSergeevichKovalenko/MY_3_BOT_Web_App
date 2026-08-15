@@ -9317,13 +9317,15 @@ def _attach_saved_entry_to_lex_unit(entry_id, kwargs: dict) -> None:
         )
     except Exception:
         logging.debug("attach saved entry to lex unit failed", exc_info=True)
-    # Слово могли разобрать раньше — для другого человека или ночью. Тогда новая карточка
-    # получает готовый разбор сразу же и бесплатно, вместо того чтобы лежать пустой до
-    # следующей ночи. Один SELECT и один UPDATE, к модели обращений нет.
-    try:
-        fill_thin_cards_from_units(limit=1, entry_id=int(entry_id))
-    except Exception:
-        logging.debug("перенос готового разбора в новую карточку не удался", exc_info=True)
+    # Копию разбора новой карточке НЕ кладём: содержимое приезжает с общего слова при
+    # показе (перепись читателей — docs/tasks/dictionary_readers_census.md). Раньше здесь
+    # шёл перенос, потому что читатели умели читать только личную карточку.
+    # Рубильник UNIT_CARD_NIGHT_SPREAD=1 возвращает прежнее поведение.
+    if UNIT_CARD_NIGHT_SPREAD_ENABLED:
+        try:
+            fill_thin_cards_from_units(limit=1, entry_id=int(entry_id))
+        except Exception:
+            logging.debug("перенос готового разбора в новую карточку не удался", exc_info=True)
 
 
 def _db_rule_that_refused(exc) -> str:
@@ -10765,6 +10767,12 @@ POOL_NIGHT_ENRICH_DAILY_CAP = int((os.getenv("POOL_NIGHT_ENRICH_DAILY_CAP") or "
 UNIT_CARD_SPREAD_NIGHT_LIMIT = int(
     (os.getenv("UNIT_CARD_SPREAD_NIGHT_LIMIT") or "2000").strip() or "2000"
 )
+# Ночная раздача выключена 15.08.2026 — читатели берут содержимое с общего слова, и
+# копии в личных карточках больше не нужны (подробности у самого вызова). Переменная
+# оставлена как рубильник: поставить 1 — раздача снова пойдёт.
+UNIT_CARD_NIGHT_SPREAD_ENABLED = str(
+    os.getenv("UNIT_CARD_NIGHT_SPREAD") or "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 # Одно слово могут держать у себя несколько человек; больше сотни копий одной карточки
 # не бывает, а потолок страхует от бесконечного прохода при странных данных.
 UNIT_CARD_SPREAD_PER_WORD_LIMIT = 100
@@ -10898,10 +10906,27 @@ def _run_units_night_enrichment(
     except Exception:
         logging.debug("привязка карточек перед добором не удалась", exc_info=True)
 
-    # Сначала раздаём то, что уже оплачено: разбор, собранный прошлыми ночами, до личных
-    # карточек сам не доходит, а без него тренажёру нечего показать. Это бесплатно, так
-    # что идёт до GPT и с запасом по объёму — очередь на повторение впереди остальных.
-    if not dry_run:
+    # ─────────────────────────────────────────────────────────────────────────────
+    # НОЧНАЯ РАЗДАЧА РАЗБОРА ПО ЛИЧНЫМ КАРТОЧКАМ ВЫКЛЮЧЕНА 15.08.2026.
+    #
+    # Она вписывала содержимое слова в карточку каждого человека. Нужна была ровно
+    # затем, что читатели умели читать только личную карточку: пусто в карточке —
+    # пусто на экране, хотя разбор давно собран и оплачен.
+    #
+    # Читатели переведены на общее слово (перепись: docs/tasks/dictionary_readers_census.md):
+    # словарь, «Мои слова», главный экран, тренажёр предложений, квизы в чате, очередь
+    # повторения — все берут содержимое из справочника. Раздавать копии больше незачем.
+    #
+    # ЧЕМ ЭТО БЫЛО ВРЕДНО: копия — фотография. Слово уточняют, а у человека остаётся
+    # вчерашнее. Замер 14.08.2026: у всех 3 990 тяжёлых копий слово улучшали ПОЗЖЕ, в
+    # среднем на 105 дней. И она же возвращала снятые копии: 2 315 сняли — за одну ночь
+    # вернулись 1 994.
+    #
+    # Функция fill_thin_cards_from_units НЕ удалена: её по-прежнему зовут точечно,
+    # когда слово только что разобрали (там она уместна — один раз, по одному слову).
+    # Если понадобится вернуть ночной прогон, ставь переменную UNIT_CARD_NIGHT_SPREAD=1.
+    # ─────────────────────────────────────────────────────────────────────────────
+    if not dry_run and UNIT_CARD_NIGHT_SPREAD_ENABLED:
         try:
             spread = fill_thin_cards_from_units(
                 limit=UNIT_CARD_SPREAD_NIGHT_LIMIT, lang=learning_lang,
@@ -10967,18 +10992,20 @@ def _run_units_night_enrichment(
                 # Без этого шага слово остаётся «неизвестно чем»: род требуется только
                 # существительным, и в отчётах оно так и висит без артикля.
                 lex_units.adopt_pos_gender_from_card(int(unit["id"]), enrich_data)
-                # Разбор собран — тут же отдаём его всем, у кого это слово лежит пустой
-                # карточкой. Ждать следующей ночи незачем: перенос ничего не стоит.
-                try:
-                    fill_thin_cards_from_units(
-                        limit=UNIT_CARD_SPREAD_PER_WORD_LIMIT,
-                        unit_id=int(unit["id"]),
-                        lang=learning_lang,
-                    )
-                except Exception:
-                    logging.debug(
-                        "раздача разбора слова %r по карточкам не удалась", german, exc_info=True,
-                    )
+                # Разбор собран — и этого достаточно: он лежит на СЛОВЕ, а карточки
+                # читают его оттуда при показе. Раскладывать копии по людям больше не
+                # нужно (см. пояснение у ночной раздачи). Рубильник — UNIT_CARD_NIGHT_SPREAD=1.
+                if UNIT_CARD_NIGHT_SPREAD_ENABLED:
+                    try:
+                        fill_thin_cards_from_units(
+                            limit=UNIT_CARD_SPREAD_PER_WORD_LIMIT,
+                            unit_id=int(unit["id"]),
+                            lang=learning_lang,
+                        )
+                    except Exception:
+                        logging.debug(
+                            "раздача разбора слова %r по карточкам не удалась", german, exc_info=True,
+                        )
                 # Разбор знает про слово больше, чем старая строка перевода из банка:
                 # у «die Scheide» в связях было только «влагалище», хотя есть и «ножны».
                 # Поэтому сразу перечитываем переводы из разбора и раскладываем по
@@ -11166,11 +11193,13 @@ def resweep_thin_unit_cards(
             if lex_units.save_unit_card(unit["id"], enrich_data, source="пересбор"):
                 report["enriched"] += 1
                 lex_units.adopt_pos_gender_from_card(int(unit["id"]), enrich_data)
-                spread = fill_thin_cards_from_units(
-                    limit=UNIT_CARD_SPREAD_PER_WORD_LIMIT,
-                    unit_id=int(unit["id"]), lang=learning_lang,
-                )
-                report["cards_filled"] += int(spread.get("filled") or 0)
+                # Копии по людям не раскладываем: карточка читает слово при показе.
+                if UNIT_CARD_NIGHT_SPREAD_ENABLED:
+                    spread = fill_thin_cards_from_units(
+                        limit=UNIT_CARD_SPREAD_PER_WORD_LIMIT,
+                        unit_id=int(unit["id"]), lang=learning_lang,
+                    )
+                    report["cards_filled"] += int(spread.get("filled") or 0)
                 lex_units.sync_unit_links_from_card(
                     unit["id"], enrich_data, native_lang=native_lang,
                 )
@@ -54549,12 +54578,13 @@ def enrich_flashcard_entry():
             }
         )
 
-    # Слово могли разобрать раньше — ночью или для другого человека. Тогда карточка
-    # наполняется прямо сейчас и даром: перенос из слоя единиц, обычный UPDATE.
-    try:
-        fill_thin_cards_from_units(limit=1, entry_id=int(entry_id))
-    except Exception:
-        logging.debug("перенос готового разбора при открытии слова не удался", exc_info=True)
+    # Копию не кладём — карточка читает общее слово при показе. См. пояснение у ночной
+    # раздачи; рубильник UNIT_CARD_NIGHT_SPREAD=1 возвращает прежнее поведение.
+    if UNIT_CARD_NIGHT_SPREAD_ENABLED:
+        try:
+            fill_thin_cards_from_units(limit=1, entry_id=int(entry_id))
+        except Exception:
+            logging.debug("перенос готового разбора при открытии слова не удался", exc_info=True)
 
     refreshed = get_dictionary_entry_by_id(int(entry_id)) or {}
     fresh_json = refreshed.get("response_json")
