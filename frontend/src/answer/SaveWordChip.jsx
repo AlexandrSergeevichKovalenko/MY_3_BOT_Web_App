@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import Toast, { useToast } from './Toast.jsx';
 import { saveErrorToast } from './saveNotice.js';
+import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
 import './saveWordChip.css';
 
 /**
@@ -11,10 +12,16 @@ import './saveWordChip.css';
  * слово на экране, а чтобы его забрать, должен нажать «Спросить» — глухо. Теперь дискетка
  * стоит в углу того самого блока, где слово написано, а «Спросить» занимается вопросами.
  *
- * Сохраняем тем же каноническим путём, что читалка и словарь: сперва разбор
- * (/api/webapp/dictionary даёт настоящий русский перевод, артикль и начальную форму),
- * потом запись карточки. Если слать немецкий текст сразу в /save, у слов из игр не было
- * перевода и карточка показывала немецкий с обеих сторон.
+ * Порядок «сначала разбор, потом запись» стоил людям слов. Разбор нового слова на
+ * бесплатном тарифе — 1 в день; на втором слове он отвечал 429, исключение рвало весь
+ * try, и до записи дело не доходило: человек видел плашку про лимит и терял слово.
+ * 15.08.2026 в живом журнале за одно утро так пропало 7 слов подряд, причём сохранений у
+ * человека было потрачено 11 из 20 — то есть его останавливал лимит, к сохранению
+ * отношения не имеющий.
+ *
+ * Теперь работаем через общий saveGermanWordViaLookup: у заданий русский перевод уже
+ * есть (проп `translation`), значит платить за него второй раз незачем — слово ложится
+ * сразу, а разбор добирается фоном и молча. Разбор нужен только там, где перевода нет.
  */
 export default function SaveWordChip({
   api,
@@ -38,27 +45,13 @@ export default function SaveWordChip({
     try { window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* ignore */ }
     (async () => {
       try {
-        const lookup = await api('/api/webapp/dictionary', { word: text });
-        const item = (lookup && lookup.item) || {};
-        const direction = String(lookup?.direction || '').toLowerCase();
-        const isDeRu = direction !== 'ru-de'; // слова заданий немецкие → de-ru
-        const sourceText = String(
-          (isDeRu ? (item.word_de || item.translation_de) : (item.word_ru || item.translation_ru)) || text,
-        ).trim();
-        const targetText = String(
-          (isDeRu ? (item.translation_ru || item.word_ru) : (item.translation_de || item.word_de))
-          || translation || '',
-        ).trim();
-        await api('/api/webapp/dictionary/save', {
-          source_text: sourceText,
-          target_text: targetText,
-          translation_ru: String(item.translation_ru || (isDeRu ? targetText : '')).trim(),
-          translation_de: String(item.translation_de || (isDeRu ? '' : targetText)).trim(),
-          direction: direction || 'de-ru',
-          response_json: item,
-          origin_process: originProcess,
+        const res = await saveGermanWordViaLookup({
+          api,
+          word: text,
+          fallbackTranslation: translation,
+          origin: originProcess,
         });
-        const ru = (isDeRu ? targetText : sourceText) || translation;
+        const ru = String(res?.targetText || translation || '').trim();
         toast.show({ kind: 'ok', text: ru ? `«${text}» — ${ru} · в словаре` : `«${text}» в словаре` });
       } catch (err) {
         // Причина важнее факта: чаще всего это дневной лимит бесплатного тарифа, и

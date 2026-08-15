@@ -10,6 +10,13 @@
 
 const LIMIT_CODES = new Set(['free_limit_exceeded', 'limit_exceeded', 'daily_limit_exceeded']);
 
+// Услуга, про которую честно говорить «сохранено N слов». Сервер в любом отказе 429
+// присылает поле feature с названием того, что кончилось (backend/database.py,
+// build_free_limit_error), но раньше мы это поле выбрасывали и подписывали ЛЮБОЙ лимит
+// как лимит сохранений. 15.08.2026 человек упёрся в «Разбор новых слов» (1 в день) и
+// прочитал «Сегодня сохранено 1 слов — это дневной лимит», имея 11 сохранений из 20.
+const SAVE_LIMIT_FEATURE = 'dictionary_lookup_save_daily';
+
 // Тариф живёт в основном мини-приложении, раздел «Подписка». Открываем его в том же окне
 // Telegram: адрес свой, домен тот же, так что это обычный переход, а не новая вкладка.
 export function openFullAccess() {
@@ -27,10 +34,34 @@ export function describeSaveError(err) {
   const payload = (err && typeof err.payload === 'object' && err.payload) || {};
   const code = String(payload.error || err?.message || '').trim();
 
+  // Дневной потолок расходов — не лимит услуги: числа «сколько осталось» у него нет,
+  // и называть его лимитом словаря было прямой неправдой.
+  if (code === 'cost_cap_exceeded') {
+    return {
+      kind: 'limit',
+      title: 'На сегодня хватит',
+      text: 'Бесплатные возможности на сегодня закончились. Завтра всё снова откроется.',
+      hint: 'На «Полном доступе» этой границы нет.',
+      action: { label: 'Открыть «Полный доступ»', onClick: openFullAccess },
+    };
+  }
   if (status === 429 || LIMIT_CODES.has(code)) {
     const limit = Number(payload.limit);
     const used = Number(payload.used);
     const count = Number.isFinite(limit) && limit > 0 ? limit : null;
+    const feature = String(payload.feature || '').trim();
+    const featureTitle = String(payload.feature_title || '').trim();
+    if (feature && feature !== SAVE_LIMIT_FEATURE) {
+      return {
+        kind: 'limit',
+        title: featureTitle || 'Дневной лимит',
+        text: count
+          ? `Бесплатно это доступно ${count} раз(а) в день, на сегодня уже израсходовано. Завтра лимит обновится.`
+          : 'На сегодня бесплатный лимит исчерпан. Завтра обновится.',
+        hint: 'На «Полном доступе» лимита нет.',
+        action: { label: 'Открыть «Полный доступ»', onClick: openFullAccess },
+      };
+    }
     return {
       kind: 'limit',
       title: 'Дневной лимит словаря',

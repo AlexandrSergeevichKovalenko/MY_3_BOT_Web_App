@@ -47646,6 +47646,60 @@ def export_webapp_dictionary_card_pdf():
         return jsonify({"error": f"Ошибка генерации PDF карточки: {exc}"}), 500
 
 
+def _dictionary_save_costs_us_nothing(*, word: str, source_lang: str, target_lang: str) -> bool:
+    """Знаем ли МЫ это слово сами — своей базой, без единого обращения к модели.
+
+    Правило владельца (15.08.2026): лимит стоит там, где мы платим. Слово из задания уже
+    переведено и лежит у нас; сохранить его — это одна запись в таблицу, модель тут не
+    участвует. Брать за это из дневной нормы в 20 слов не за что.
+
+    Спрашиваем ТОЛЬКО свои источники и НИКОГДА — то, что прислал браузер. Если бы решение
+    принималось по присланному полю `translation_ru`, лимит обходился бы подделкой одной
+    строки: написал что угодно — получил бесплатное сохранение.
+
+    Порядок источников — от дешёвого к дорогому по чтению:
+      1. слой статей (наши единицы + FreeDict) — оба поиска по индексу;
+      2. общий пул — по индексу source_headword_norm;
+      3. банк Artikel — по индексу lower(word), добавлен 15.08.2026.
+
+    Почему банк отдельным пунктом: замер 15.08.2026 (выборка 300 слов) — слой статей знает
+    57.3% банка. «die Richtlinie», «das Register», «der Schadensersatz» он не знает, а банк
+    знает, потому что перевод там обязательное поле. Без третьего пункта человек в игре
+    Artikel продолжал бы платить за слова, которые мы сами ему и показали.
+
+    Фразы и предложения сюда не попадают: слой статей отбрасывает всё с пробелом, пул и
+    банк спрашиваются одним словом. Это верно по сути — многословное человек набирает сам,
+    и перевода у нас на него нет."""
+    text = str(word or "").strip()
+    if not text:
+        return False
+    bare = _LEADING_GERMAN_ARTICLE_RE.sub("", text).strip()
+    if not bare or " " in bare:
+        return False
+    try:
+        from backend.dictionary_entries import entries_for_query
+        if entries_for_query(bare, source_lang=source_lang, target_lang=target_lang):
+            return True
+    except Exception:
+        logging.debug("слой статей не ответил про %r", bare[:60], exc_info=True)
+    try:
+        pooled = get_pool_dictionary_entry(
+            source_lang=source_lang, target_lang=target_lang, source_text=text,
+        )
+        if isinstance(pooled, dict) and str(pooled.get("target_text") or "").strip():
+            return True
+    except Exception:
+        logging.debug("пул не ответил про %r", bare[:60], exc_info=True)
+    try:
+        from backend.database import article_bank_knows_word
+        return article_bank_knows_word(bare)
+    except Exception:
+        logging.debug("банк Artikel не ответил про %r", bare[:60], exc_info=True)
+    # Не ответил никто — считаем слово незнакомым и пускаем обычным платным путём.
+    # Раздавать бесплатные сохранения из-за молчания базы нельзя.
+    return False
+
+
 @app.route("/api/webapp/dictionary/save", methods=["POST"])
 def save_webapp_dictionary_entry():
     payload = request.get_json(silent=True) or {}
@@ -47846,7 +47900,16 @@ def save_webapp_dictionary_entry():
         dictionary_save_feature_key = "dictionary_lookup_save_daily"
         entitlement = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
         effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
-        if effective_mode == "free" and existing_entry_id is None:
+        # Слово, которое мы и так знаем, сохраняется бесплатно и лимита не касается —
+        # ни при проверке, ни при списании. См. _dictionary_save_costs_us_nothing.
+        save_is_free_of_charge = False
+        if effective_mode == "free":
+            save_is_free_of_charge = _dictionary_save_costs_us_nothing(
+                word=resolved_word_de or source_text,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        if effective_mode == "free" and existing_entry_id is None and not save_is_free_of_charge:
             limit_meta = get_free_feature_limit_metadata(dictionary_save_feature_key) or {}
             limit_value = float(limit_meta.get("free_limit") or 0)
             used_today = get_free_feature_usage_today(
@@ -47888,7 +47951,7 @@ def save_webapp_dictionary_entry():
             origin_meta=origin_meta,
             semantic_tag=semantic_tag or None,
         )
-        if effective_mode == "free" and inserted:
+        if effective_mode == "free" and inserted and not save_is_free_of_charge:
             increment_free_feature_usage(
                 user_id=int(user_id),
                 feature_key=dictionary_save_feature_key,
@@ -51798,44 +51861,14 @@ def webapp_vocabulary_add_from_pool():
     translation_ru = str(entry.get("translation_ru") or "").strip()
     translation_de = str(entry.get("translation_de") or "").strip()
 
-    existing_entry_id = None
-    try:
-        existing_entry_id = get_existing_user_dictionary_entry_id_for_save(
-            user_id=int(user_id),
-            word_ru=word_ru or None,
-            translation_de=translation_de,
-            word_de=word_de or None,
-            translation_ru=translation_ru,
-            response_json=response_json,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-    except Exception:
-        logging.exception("add-from-pool: duplicate check failed for user=%s", user_id)
-
-    feature_key = "dictionary_lookup_save_daily"
-    entitlement = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
-    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
-    if effective_mode == "free" and existing_entry_id is None:
-        limit_meta = get_free_feature_limit_metadata(feature_key) or {}
-        limit_value = float(limit_meta.get("free_limit") or 0)
-        used_today = get_free_feature_usage_today(
-            user_id=int(user_id),
-            feature_key=feature_key,
-            tz="Europe/Vienna",
-        )
-        if limit_value >= 0 and used_today + 1.0 > limit_value:
-            log_limit_runtime_event(
-                user_id=int(user_id),
-                feature_code=feature_key,
-                event_type="blocked",
-                origin="vocabulary_add_from_pool",
-                metadata={"used": used_today, "limit": limit_value,
-                      "entry_id": entry_id, "unit_id": unit_id},
-            )
-            return jsonify(
-                build_free_limit_error(feature_key, used=used_today, limit=limit_value, tz="Europe/Vienna")
-            ), 429
+    # Лимита здесь нет и быть не может: сюда попадает СТРОКА ОБЩЕГО ПУЛА, то есть слово,
+    # которое у нас уже разобрано и переведено. Копирование своей же строки в личный
+    # словарь модели не стоит ничего, а лимит мы держим там, где платим (правило владельца
+    # от 15.08.2026; тот же принцип — в _dictionary_save_costs_us_nothing).
+    #
+    # Вместе с лимитом ушла и предварительная проверка на дубликат: она считалась ТОЛЬКО
+    # ради него. Повтор по-прежнему не создаёт второй карточки — это делает сама запись,
+    # и она же возвращает `inserted`, из которого собирается ответ «уже было».
 
     folder_id = None
     try:
@@ -51867,16 +51900,6 @@ def webapp_vocabulary_add_from_pool():
     except Exception:
         logging.exception("add-from-pool: save failed for user=%s entry=%s", user_id, entry_id)
         return jsonify({"error": "Не удалось добавить слово"}), 500
-
-    if effective_mode == "free" and inserted:
-        increment_free_feature_usage(
-            user_id=int(user_id),
-            feature_key=feature_key,
-            idempotency_key=f"{feature_key}:{int(user_id)}:{int(saved_id or 0)}",
-            source_lang=source_lang,
-            target_lang=target_lang,
-            metadata={"entry_id": int(saved_id or 0), "origin_process": "vocabulary_add_from_pool"},
-        )
 
     return jsonify({"ok": True, "entry_id": int(saved_id or 0), "already_had": not bool(inserted)})
 

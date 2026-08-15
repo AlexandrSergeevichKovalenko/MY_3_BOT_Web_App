@@ -27,8 +27,17 @@ class DictionarySaveFreeLimitTests(unittest.TestCase):
             },
         )
 
-    def _base_patches(self, *, mode="free", existing_entry_id=None, usage=0.0, save_result=(123, True), save_error=None):
+    def _base_patches(self, *, mode="free", existing_entry_id=None, usage=0.0, save_result=(123, True),
+                      save_error=None, costs_nothing=False):
         stack = ExitStack()
+        # Слово, которое мы уже знаем сами, сохраняется бесплатно и лимита не касается
+        # (правило владельца от 15.08.2026). Настоящая проверка ходит в базу — в слой
+        # статей, пул и банк Artikel, — поэтому здесь она заглушена: иначе тест зависел бы
+        # от содержимого живой базы. «Haus» там, кстати, есть, и без заглушки все проверки
+        # лимита разваливались именно поэтому.
+        costs_nothing_mock = stack.enter_context(
+            patch.object(server, "_dictionary_save_costs_us_nothing", return_value=costs_nothing)
+        )
         stack.enter_context(patch.object(server, "WEBAPP_SINGLE_INSTANCE_GUARD_ENABLED", False))
         stack.enter_context(patch.object(server, "_telegram_hash_is_valid", return_value=True))
         stack.enter_context(
@@ -66,6 +75,7 @@ class DictionarySaveFreeLimitTests(unittest.TestCase):
         tts_mock = stack.enter_context(patch.object(server, "_enqueue_dictionary_entry_tts_prewarm"))
         stack.enter_context(patch.object(server, "_build_language_pair_payload", return_value={"source": "de", "target": "ru"}))
         return stack, {
+            "costs_nothing": costs_nothing_mock,
             "existing": existing_mock,
             "limit_meta": limit_meta_mock,
             "usage": usage_mock,
@@ -128,6 +138,37 @@ class DictionarySaveFreeLimitTests(unittest.TestCase):
         self.assertEqual(response.status_code, 429)
         mocks["enrichment"].assert_not_called()
         mocks["tts"].assert_not_called()
+
+    def test_known_word_save_is_free_and_never_counted(self):
+        """Слово, которое у нас уже есть, сохраняется даже при выбранном лимите.
+
+        Это тот самый случай со скриншотов 15.08.2026: человек играл в Artikel, слова
+        приходили из НАШЕГО банка с готовым переводом, а сохранение упиралось в лимит.
+        Платить нам за них нечем — значит и считать их не за что."""
+        stack, mocks = self._base_patches(
+            mode="free", existing_entry_id=None, usage=20.0, save_result=(123, True), costs_nothing=True,
+        )
+        with stack:
+            response = self._post_save()
+
+        self.assertEqual(response.status_code, 200)
+        mocks["save"].assert_called_once()
+        mocks["usage"].assert_not_called()
+        mocks["increment"].assert_not_called()
+
+    def test_free_limit_gate_is_asked_about_the_german_word(self):
+        """Решение «платное или нет» принимается по слову, а не по присланному переводу:
+        клиент не должен уметь выпросить бесплатное сохранение своей же строкой."""
+        stack, mocks = self._base_patches(mode="free", existing_entry_id=None, usage=0.0)
+        with stack:
+            self._post_save()
+
+        mocks["costs_nothing"].assert_called_once()
+        # Спрашивают про немецкое слово в том виде, в каком оно легло в карточку —
+        # с артиклем, который к этому моменту уже проставлен. Артикль снимает сама
+        # проверка (см. _dictionary_save_costs_us_nothing), поэтому «das Haus»
+        # находится наравне с «Haus».
+        self.assertEqual(mocks["costs_nothing"].call_args.kwargs["word"], "das Haus")
 
     def test_pro_save_is_not_blocked_by_free_limit(self):
         stack, mocks = self._base_patches(mode="pro", existing_entry_id=None, usage=20.0, save_result=(123, True))
