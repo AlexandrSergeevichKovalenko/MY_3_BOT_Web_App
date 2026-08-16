@@ -1067,10 +1067,12 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
     try:
         if cursor is not None:
             cursor.execute(sql, params)
+            _adopt_pos_gender_inline(cursor, unit_id, card)
             return True
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
+                _adopt_pos_gender_inline(cur, unit_id, card)
             conn.commit()
         return True
     except Exception as exc:
@@ -1130,6 +1132,63 @@ def _gender_from_card(card: dict | None) -> str:
     return _ARTICLE_TO_GENDER.get(str(card.get("article") or "").strip().lower(), "")
 
 
+# Одна и та же правка нужна и на живой двери (разбор кладут НА слово), и в ночном
+# доборе. Держим её одним текстом запроса, чтобы две копии не разошлись.
+#
+# ⚠ kind = 'word' обязателен. Артикль в разборе фразы принадлежит существительному
+# ВНУТРИ неё, а не самой фразе: у «Bei der Schlägerei wurde er übel zugerichtet» в
+# разборе лежит «die», и без этой строки фраза стала бы существительным женского рода.
+_ADOPT_POS_GENDER_SQL = """
+    UPDATE bt_3_lex_units
+       SET pos = 'noun',
+           gender = COALESCE(NULLIF(gender, ''), %s),
+           pos_source = COALESCE(pos_source, 'card'),
+           gender_source = COALESCE(gender_source, 'card'),
+           updated_at = NOW()
+     WHERE id = %s AND pos IS NULL AND kind = 'word' AND lemma ~ '^[A-ZÄÖÜ]'
+       AND NOT EXISTS (
+           SELECT 1 FROM bt_3_lex_units o
+            WHERE o.lang = bt_3_lex_units.lang
+              AND o.kind = bt_3_lex_units.kind
+              AND o.lemma_key = bt_3_lex_units.lemma_key
+              AND o.pos = 'noun'
+              AND COALESCE(o.gender, '') = %s
+              AND o.id <> bt_3_lex_units.id
+       );
+"""
+
+
+def _adopt_pos_gender_inline(cur, unit_id: int, card: dict | None) -> None:
+    """Разбор лёг на слово — значит слово тут же получает часть речи и род.
+
+    Зачем на двери, а не только ночью
+    ─────────────────────────────────
+    Механика подбора рода существовала и раньше, но звалась ТОЛЬКО из ночного добора.
+    Замер 16.08.2026: десять слов, заведённых в тот же день («Dill», «Trüffel»,
+    «Chrysantheme», «Register»…), лежали с артиклем в разборе и пустым родом — то есть
+    дыра открывалась заново каждый день, а чинилась раз в ночь. Человек, открывший
+    слово днём, видел его без артикля.
+
+    Опознание единицы — это лемма + часть речи + род, поэтому правка МЕНЯЕТ ключ, по
+    которому слово находят, и может упереться в уникальный индекс. Запрос от этого
+    защищён (NOT EXISTS), но если гонка всё же случится, ошибка не имеет права утащить
+    за собой сохранение самого разбора — а внутри чужой транзакции она утащила бы всё.
+    Поэтому точка отката: не вышло проставить род — разбор всё равно сохранён."""
+    gender = _gender_from_card(card)
+    if not gender or not unit_id:
+        return
+    try:
+        cur.execute("SAVEPOINT adopt_pos_gender;")
+        try:
+            cur.execute(_ADOPT_POS_GENDER_SQL, (gender, int(unit_id), gender))
+        except Exception as exc:
+            cur.execute("ROLLBACK TO SAVEPOINT adopt_pos_gender;")
+            logging.debug("adopt pos/gender inline for unit %s failed: %s", unit_id, exc)
+        cur.execute("RELEASE SAVEPOINT adopt_pos_gender;")
+    except Exception as exc:
+        logging.debug("adopt pos/gender savepoint for unit %s failed: %s", unit_id, exc)
+
+
 def adopt_pos_gender_from_card(unit_id: int, card: dict | None, *, lemma: str = "") -> bool:
     """Проставить слову часть речи и род, взяв их из собранного разбора. Без модели.
 
@@ -1149,27 +1208,7 @@ def adopt_pos_gender_from_card(unit_id: int, card: dict | None, *, lemma: str = 
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE bt_3_lex_units
-                       SET pos = 'noun',
-                           gender = COALESCE(NULLIF(gender, ''), %s),
-                           pos_source = COALESCE(pos_source, 'card'),
-                           gender_source = COALESCE(gender_source, 'card'),
-                           updated_at = NOW()
-                     WHERE id = %s AND pos IS NULL AND lemma ~ '^[A-ZÄÖÜ]'
-                       AND NOT EXISTS (
-                           SELECT 1 FROM bt_3_lex_units o
-                            WHERE o.lang = bt_3_lex_units.lang
-                              AND o.kind = bt_3_lex_units.kind
-                              AND o.lemma_key = bt_3_lex_units.lemma_key
-                              AND o.pos = 'noun'
-                              AND COALESCE(o.gender, '') = %s
-                              AND o.id <> bt_3_lex_units.id
-                       );
-                    """,
-                    (gender, int(unit_id), gender),
-                )
+                cur.execute(_ADOPT_POS_GENDER_SQL, (gender, int(unit_id), gender))
                 changed = cur.rowcount
             conn.commit()
         return bool(changed)

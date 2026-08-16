@@ -66,12 +66,25 @@ with get_db_connection_context() as conn:
                        AND NOT EXISTS (SELECT 1 FROM bt_3_lex_links l
                                        JOIN bt_3_lex_units t ON t.id=CASE WHEN l.from_unit=u.id THEN l.to_unit ELSE l.from_unit END
                                        WHERE (l.from_unit=u.id OR l.to_unit=u.id) AND t.lang='ru' AND l.rank<900)""")
-        print("   %-52s %s" % ("немых карточек (разбор есть, перевода нет)", cur.fetchone()[0]))
+        check("немых карточек (разбор есть, перевода нет)", cur.fetchone()[0], 0)
 
-# 7. живая выдача
+        # 7. перевод оказался немецким текстом — переводом это не является
+        cur.execute("""SELECT count(*) FROM bt_3_lex_units u
+                       JOIN bt_3_lex_links l ON (l.from_unit=u.id OR l.to_unit=u.id) AND l.rank<900
+                       JOIN bt_3_lex_units t ON t.id=CASE WHEN l.from_unit=u.id THEN l.to_unit ELSE l.from_unit END
+                        AND t.lang='ru'
+                       WHERE u.lang='de' AND t.display !~ '[А-Яа-яЁё]'""")
+        check("«перевод» без единой русской буквы", cur.fetchone()[0], 0)
+
+# 8. живая выдача
 for q, want in (("schlammig", "schlammig"), ("Gericht", "das Gericht"), ("die Habe", "die Habe")):
     it = LU.lookup(q, source_lang="de", target_lang="ru")
     check("выдача «%s»" % q, (it or {}).get("word_de"), want)
+
+# 9. русская сторона у той, где перевода не было нигде
+it = LU.lookup("Das Risiko willkürlicher Festnahmen.", source_lang="de", target_lang="ru") or {}
+check("перевод «Das Risiko willkürlicher Festnahmen.»",
+      str(it.get("word_ru") or "").rstrip("."), "Риск произвольных арестов")
 
 print()
 print("ИТОГ:", "ВСЁ ПРОШЛО" if ok else "ЕСТЬ НЕ ПРОШЕДШИЕ")
