@@ -2020,6 +2020,18 @@ def ensure_aufgabe_mistakes_schema() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_bt3_mistakes_due "
                 "ON bt_3_aufgabe_mistakes (user_id, mastered, due_at);"
             )
+            # Отметка «это задание разобрали вот тогда». Нужна отдельная от updated_at:
+            # updated_at двигает и запись НОВОЙ ошибки, а порция дня должна считать
+            # только разборы. Старые строки остаются NULL — в первый день после
+            # выкладки человек просто получит полную порцию, дальше счёт точный.
+            cur.execute(
+                "ALTER TABLE bt_3_aufgabe_mistakes "
+                "ADD COLUMN IF NOT EXISTS last_review_at TIMESTAMPTZ;"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt3_mistakes_reviewed "
+                "ON bt_3_aufgabe_mistakes (user_id, last_review_at);"
+            )
         conn.commit()
 
 
@@ -5182,6 +5194,53 @@ def merge_unit_card_for_serve(card: dict | None, unit_card: dict | None,
     return dedupe_card_meanings(base)
 
 
+def normalize_card_meanings_for_storage(card: dict, *, german_pos: str = "") -> dict:
+    """Привести значения и переводы к тому виду, в каком они должны ЛЕЖАТЬ В БАЗЕ.
+
+    ЗАЧЕМ ОТДЕЛЬНО ОТ ПОКАЗА. Три дня чинились правила показа: свалки с номерами
+    разрезаются, повторы отсеиваются, регистр опускается. Но всё это спасало ЭКРАН, а
+    в базу продолжало ложиться прежнее. Владелец 16.08.2026: «мы просто работаем с
+    последствиями, а в будущем ничего не защитили?» — верно, и это тот же заслон, но
+    на входе.
+
+    Почему правило показа при этом остаётся: базу оно не чинит задним числом, а
+    накопленное всё ещё лежит. Уберут одно — второе прикроет.
+
+    Чем это важнее «и так же показывается правильно»: базу читают не только экраны —
+    выгрузки, квизы, задания, переезды. Им правило показа не достаётся.
+
+    Порядок шагов значим:
+      1. разрезать свалку с номерами («1 колоть 2 жалить» — два значения, не одно);
+      2. опустить регистр («Аккуратный, опрятный» — словарная статья, не предложение);
+      3. убрать перевод, целиком сидящий внутри соседнего («скобка» ⊂ «Скобка, скрепка»);
+      4. убрать полные повторы («утилизировать» дважды с разным пояснением).
+    Иначе шаги мешают друг другу: неразрезанная свалка не считается повтором, а
+    неопущенный регистр делает «Перемена» и «перемена» разными строками.
+    """
+    if not isinstance(card, dict):
+        return card
+    from backend.lex_units import (
+        drop_nested_translations,
+        normalize_translation_case,
+        split_numbered_senses,
+    )
+    for key in _MEANING_LIST_KEYS:
+        values = card.get(key)
+        if not isinstance(values, list) or not values:
+            continue
+        pieces: list = []
+        for item in values:
+            text = item.get("value") if isinstance(item, dict) else item
+            for part in split_numbered_senses(str(text or "")):
+                part = normalize_translation_case(part, german_pos=german_pos)
+                pieces.append({**item, "value": part} if isinstance(item, dict) else part)
+        kept = set(drop_nested_translations([
+            (p.get("value") if isinstance(p, dict) else p) for p in pieces
+        ]))
+        card[key] = [p for p in pieces if (p.get("value") if isinstance(p, dict) else p) in kept]
+    return dedupe_card_meanings(card)
+
+
 # Поля, где модель повторяет одно и то же значение по два раза.
 _MEANING_LIST_KEYS = ("dictionary_senses", "translations")
 
@@ -5213,13 +5272,27 @@ def dedupe_card_meanings(card: dict) -> dict:
         values = card.get(key)
         if not isinstance(values, list) or len(values) < 2:
             continue
-        kept, seen = [], set()
+        kept, seen = [], {}
         for item in values:
             text = item.get("value") if isinstance(item, dict) else item
             marker = _meaning_key(text)
-            if not marker or marker in seen:
+            if not marker:
                 continue
-            seen.add(marker)
+            if marker in seen:
+                # Рядом лежит тот же перевод со СТРОЧНОЙ — значит это обычное слово, а
+                # не имя собственное, и заглавная в нём лишняя. Только здесь это и можно
+                # доказать: правило регистра само по себе одиночное слово не трогает,
+                # потому что под ним прячутся «Афины» и «Марокко».
+                index = seen[marker]
+                current = kept[index].get("value") if isinstance(kept[index], dict) else kept[index]
+                fresh = str(text or "")
+                if str(current or "")[:1].isupper() and fresh[:1].islower():
+                    if isinstance(kept[index], dict):
+                        kept[index] = {**kept[index], "value": fresh}
+                    else:
+                        kept[index] = fresh
+                continue
+            seen[marker] = len(kept)
             kept.append(item)
         if len(kept) == len(values):
             continue

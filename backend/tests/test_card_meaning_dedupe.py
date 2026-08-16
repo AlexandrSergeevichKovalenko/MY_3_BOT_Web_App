@@ -71,3 +71,46 @@ def test_serving_a_card_removes_repeats():
 def test_junk_input_survives():
     assert dedupe_card_meanings({}) == {}
     assert dedupe_card_meanings({"dictionary_senses": None}) == {"dictionary_senses": None}
+
+
+# ── заслон на приёмке ─────────────────────────────────────────────────────────
+# Три дня чинились правила ПОКАЗА, а в базу продолжало ложиться прежнее. Владелец
+# 16.08.2026: «мы просто работаем с последствиями?» Эти тесты держат вход.
+
+from backend.database import normalize_card_meanings_for_storage as for_storage
+
+
+def test_storage_splits_a_numbered_dump():
+    card = {"dictionary_senses": [{"rank": 1, "value": "1 колоть 2 жалить"}]}
+    values = [s["value"] for s in for_storage(card, german_pos="verb")["dictionary_senses"]]
+    assert values == ["колоть", "жалить"]
+
+
+def test_storage_lowercases_an_ordinary_translation():
+    card = {"translations": [{"value": "Аккуратный, опрятный"}]}
+    assert for_storage(card, german_pos="adjective")["translations"][0]["value"] == "аккуратный, опрятный"
+
+
+def test_storage_drops_a_translation_nested_in_another():
+    card = {"translations": [{"value": "скобка"}, {"value": "Скобка, скрепка"}, {"value": "зажим"}]}
+    values = [t["value"] for t in for_storage(card, german_pos="noun")["translations"]]
+    assert values == ["скобка", "зажим"]
+
+
+def test_lowercase_twin_proves_it_is_not_a_proper_name():
+    """«Скобка» и «скобка» рядом — значит обычное слово, заглавная лишняя.
+
+    Само по себе одиночное слово правило регистра не трогает: под ним прячутся
+    «Афины» и «Марокко»."""
+    card = {"translations": [{"value": "Скобка"}, {"value": "скобка"}]}
+    assert [t["value"] for t in for_storage(card, german_pos="noun")["translations"]] == ["скобка"]
+
+
+def test_proper_name_alone_keeps_its_capital():
+    card = {"translations": [{"value": "Афины"}]}
+    assert [t["value"] for t in for_storage(card, german_pos="noun")["translations"]] == ["Афины"]
+
+
+def test_sentence_translation_keeps_its_capital():
+    card = {"translations": [{"value": "Прогноз оправдался."}]}
+    assert for_storage(card, german_pos="")["translations"][0]["value"] == "Прогноз оправдался."

@@ -334,7 +334,15 @@ def split_numbered_senses(value: str) -> list[str]:
     tail = text[last:].strip()
     if tail:
         parts.append(tail)
-    return [p.strip(" ,;.") for p in parts if p.strip(" ,;.")] or ([text] if text else [])
+    cleaned = [p.strip(" ,;.") for p in parts if p.strip(" ,;.")]
+    if not cleaned:
+        return [text] if text else []
+    # Ничего не разрезали — отдаём строку КАК ЕСТЬ. Иначе у предложения срезается точка,
+    # оно перестаёт выглядеть предложением, и правило регистра опускает ему первую букву:
+    # «Прогноз оправдался.» → «прогноз оправдался». Поймано тестом 16.08.2026.
+    if len(cleaned) == 1 and cleaned[0] == text.strip(" ,;."):
+        return [text]
+    return cleaned
 
 
 def _translation_key(value: str) -> str:
@@ -373,8 +381,15 @@ def drop_nested_translations(values: list[str]) -> list[str]:
             if short == long_:
                 # «венчик» и «венчик.» — одно значение: отличается только знак в конце
                 # (12 слов в замере). Полное сравнение строк в _build_item такое не
-                # ловит, оно точку считает частью перевода. Оставляем первый.
-                drop.add(max(i, j))
+                # ловит, оно точку считает частью перевода.
+                #
+                # Из двух одинаковых оставляем ту, что со СТРОЧНОЙ: её наличие рядом и
+                # доказывает, что слово обычное, а не имя собственное. Само по себе
+                # одиночное слово правило регистра не трогает — под ним прячутся
+                # «Афины» и «Марокко».
+                a, b = values[i], values[j]
+                keep = i if (str(a)[:1].islower() or not str(b)[:1].islower()) else j
+                drop.add(j if keep == i else i)
                 continue
             inside = (
                 short in [part.strip() for part in long_.split(",")]
