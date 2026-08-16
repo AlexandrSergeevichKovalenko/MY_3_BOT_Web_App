@@ -56,13 +56,25 @@ def same_text(a: str, b: str) -> bool:
     return _SPACE.sub(" ", str(a or "").strip()).casefold() == \
            _SPACE.sub(" ", str(b or "").strip()).casefold()
 
+# ⚠ СТАРЫЙ ТЕКСТ ЛЕЖИТ В ЧЕТЫРЁХ МЕСТАХ, А НЕ В ОДНОМ. Первый прогон 16.08.2026 починил
+# только word_de — и владелец тут же прислал скриншот, где заголовок по-прежнему старый:
+# экран читает и translation_de, и поля внутри разбора (word_de, target_text).
+# Поэтому берём карточку, если старый текст остался ХОТЬ ГДЕ-ТО.
 PICK_SQL = """
-    SELECT q.id, q.user_id, q.word_de, u.id, u.display
+    SELECT q.id, q.user_id, q.word_de, u.id, u.display,
+           q.translation_de,
+           q.response_json ->> 'word_de',
+           q.response_json ->> 'target_text',
+           q.response_json ->> 'source_text'
     FROM bt_3_webapp_dictionary_queries q
     JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
     WHERE u.lang = 'de' AND u.kind <> 'word'
-      AND q.word_de IS NOT NULL AND BTRIM(q.word_de) <> ''
-      AND LOWER(BTRIM(q.word_de)) <> LOWER(BTRIM(u.display))
+      AND (
+            LOWER(BTRIM(COALESCE(q.word_de, ''))) <> LOWER(BTRIM(u.display))
+         OR LOWER(BTRIM(COALESCE(q.translation_de, ''))) <> LOWER(BTRIM(u.display))
+         OR LOWER(BTRIM(COALESCE(q.response_json ->> 'word_de', ''))) <> LOWER(BTRIM(u.display))
+         OR LOWER(BTRIM(COALESCE(q.response_json ->> 'target_text', ''))) <> LOWER(BTRIM(u.display))
+      )
     ORDER BY q.id;
 """
 
@@ -78,12 +90,21 @@ def main() -> None:
             rows = cur.fetchall()
 
     # Отличие только в регистре или пробелах — не правка, а шум.
-    targets = [r for r in rows if not same_text(r[2], r[4])]
+    # Карточку берём, если старый текст остался хоть в одном из мест. Пустое поле —
+    # не расхождение: его просто нет.
+    def stale(row) -> bool:
+        display = row[4]
+        return any(
+            value and not same_text(value, display)
+            for value in (row[2], row[5], row[6], row[7])
+        )
+
+    targets = [r for r in rows if stale(r)]
     print("карточек-фраз с отставшим заголовком: %d" % len(targets))
     print("   (совпадают с точностью до регистра и пробелов: %d)"
           % (len(rows) - len(targets)))
     print()
-    for entry_id, user_id, word, unit_id, display in targets[:12]:
+    for entry_id, user_id, word, unit_id, display, *_rest in targets[:12]:
         print("   карточка %-7s человек %-11s" % (entry_id, user_id))
         print("      было:  %s" % str(word)[:70])
         print("      стало: %s" % str(display)[:70])
@@ -106,16 +127,29 @@ def main() -> None:
                 """
             )
             done = 0
-            for entry_id, _user_id, word, _unit_id, display in targets:
+            for entry_id, _user_id, word, _unit_id, display, *_rest in targets:
                 cur.execute(
                     "INSERT INTO bt_3_card_headword_backup (entry_id, word_de, reason) "
                     "VALUES (%s, %s, %s);",
                     (entry_id, word, "заголовок подтянут к исправленному слову, 16.08.2026"),
                 )
+                # Правим ВСЕ четыре места сразу: заголовок, вторую колонку и два поля
+                # внутри разбора. Экран читает их вперемешку, и починка одного оставляет
+                # старый текст на виду.
                 cur.execute(
-                    "UPDATE bt_3_webapp_dictionary_queries SET word_de = %s, updated_at = NOW() "
-                    "WHERE id = %s;",
-                    (display, entry_id),
+                    """
+                    UPDATE bt_3_webapp_dictionary_queries
+                       SET word_de = %(text)s,
+                           translation_de = CASE WHEN translation_de IS NULL THEN NULL
+                                                 ELSE %(text)s END,
+                           response_json = jsonb_set(
+                               jsonb_set(COALESCE(response_json, '{}'::jsonb),
+                                         '{word_de}', to_jsonb(%(text)s::text), TRUE),
+                               '{target_text}', to_jsonb(%(text)s::text), TRUE),
+                           updated_at = NOW()
+                     WHERE id = %(id)s;
+                    """,
+                    {"text": display, "id": entry_id},
                 )
                 done += 1
         conn.commit()
