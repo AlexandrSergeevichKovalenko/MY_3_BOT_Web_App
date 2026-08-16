@@ -4692,6 +4692,12 @@ theme + subtopic. For each noun return:
 STRICT:
 - Only nouns whose article is UNAMBIGUOUS. NEVER include nouns whose article depends
   on meaning (e.g. der/die See, der/das Band) or that have two genders.
+- NEVER give a PLURAL form as the "word". The drill asks for the singular article, so
+  "die Zitate" (← das Zitat), "die Mängel" (← der Mangel), "die Handschuhe" (← der
+  Handschuh), "die Papiere" (← das Papier) are WRONG — return the singular instead.
+  EXCEPTION — nouns that normally have NO singular: keep them plural and give "die"
+  (die Eltern, die Kosten, die Leute, die Ferien, die Geschwister, die Lebensmittel).
+  Test: if the singular exists and is the ordinary dictionary form, use the singular.
 - NO nominalized adjectives/participles that denote a PERSON (e.g. Vorsitzende,
   Vorstandsvorsitzende, Angestellte, Abgeordnete, Studierende, Reisende, Verwandte,
   Beamte, Deutsche, Erwachsene, Jugendliche, Kranke, Gefangene): their article follows
@@ -4718,6 +4724,13 @@ For EACH item decide whether "<article> <word>" is correct, standard, UNAMBIGUOU
   Angestellte, Abgeordnete, Studierende, Reisende, Verwandte, Beamte, Deutsche,
   Erwachsene, Kranke, Gefangene). These decline like adjectives and have no single
   fixed article — reject them.
+- ok=false ALSO if `word` is a PLURAL form of a noun whose singular is the ordinary
+  dictionary form: die Zitate (← das Zitat), die Mängel (← der Mangel), die Handschuhe
+  (← der Handschuh), die Papiere (← das Papier), die Beiträge (← der Beitrag). The drill
+  asks for the singular article, so a plural headword makes the question unanswerable.
+  Use reason "plural_form".
+  Do NOT reject nouns that normally have no singular — die Eltern, die Kosten, die Leute,
+  die Ferien, die Geschwister, die Lebensmittel, die Schulden are CORRECT as they are.
 - COMPOUND RULE (apply ALWAYS): a compound noun takes the gender of its LAST element.
   e.g. der Schädelbruch (← der Bruch), der Bandriss (← der Riss), das Röntgengerät
   (← das Gerät), die Tagesklinik (← die Klinik). Decide the article from the head word.
@@ -4728,9 +4741,11 @@ Return STRICT JSON ONLY, one entry per input item, in the SAME ORDER, and ALWAYS
 the word back so the caller can match answers to questions:
 {"results": [ {"word": "<exactly as given>", "ok": true|false,
                "article": "der|die|das",
-               "reason": "ok" | "not_noun" | "misspelled" | "ambiguous" | "person_adjective" }, ... ]}.
-Use "ambiguous" when different meanings take different articles (See, Band, Steuer) and
-"person_adjective" for nominalized adjectives denoting a person (Erwachsene, Angestellte).
+               "reason": "ok" | "not_noun" | "misspelled" | "ambiguous"
+                       | "person_adjective" | "plural_form" }, ... ]}.
+Use "ambiguous" when different meanings take different articles (See, Band, Steuer),
+"person_adjective" for nominalized adjectives denoting a person (Erwachsene, Angestellte),
+and "plural_form" for a plural headword whose singular is the ordinary form (Zitate, Mängel).
 """,
 "article_translate": """
 You translate German nouns to short Russian meanings for a der/die/das drill.
