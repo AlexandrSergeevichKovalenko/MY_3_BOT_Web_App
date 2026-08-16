@@ -15,6 +15,7 @@ still produces a usable (if smaller) table.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -225,6 +226,54 @@ _LOWERCASE_POS = {"verb", "adjective", "adverb", "adj", "adv",
                   "preposition", "conjunction", "particle", "pronoun", "numeral"}
 
 
+_INDEFINITE_HEAD_RE = re.compile(r"^(?:ein|eine|einen|einem|einer|eines)\s+", re.I)
+_DEFINITE_HEAD_RE = re.compile(r"^((?:der|die|das)\s+)", re.I)
+
+
+def german_dictionary_headword(word: str | None) -> str:
+    """Заголовок словарной статьи: то, что имеет право стоять крупно над карточкой.
+
+    ОДНО правило на весь проект. Раньше каждый класс дефекта чинился отдельным
+    скриптом по факту, и класс возвращался: замер 16.08.2026 нашёл zu-инфинитивы и
+    неопределённые артикли в заголовках, заведённых уже ПОСЛЕ прошлой уборки.
+
+    1. zu-инфинитив → словарная форма: «klarzukommen» → «klarkommen». «zu» между
+       отделяемой приставкой и основой — синтаксическая частица; словарной формы с
+       ней нет ни у одного немецкого глагола, а таблицы строятся от заголовка и
+       печатали «ich klarzukomme».
+    2. Неопределённый артикль у одиночного существительного снимается: «eine Pleite»
+       → «Pleite», «die eine Pleite» → «die Pleite». В словарной статье «ein» не
+       бывает — статья описывает слово, а не один его экземпляр. Экран же дописывает
+       свой артикль по роду, и владелец видел «die eine Pleite».
+
+    ⚠ ФРАЗУ НЕ ТРОГАЕМ. В «eine Pressekonferenz abhalten» артикль принадлежит фразе,
+    и снять его значит испортить пример. Признак — после снятия остаётся РОВНО ОДНО
+    слово. Проверено на живых данных: из 463 заголовков с «ein» фразами оказались 458.
+
+    ⚠ Определённый артикль остаётся: «die Fahne» — это и есть наш формат заголовка.
+
+    Ничего не выдумывает: не подошло ни одно правило — возвращает как было."""
+    text = re.sub(r"\s+", " ", str(word or "").strip())
+    if not text:
+        return ""
+
+    if " " not in text and looks_like_zu_infinitive(text):
+        stripped = strip_zu_infinitive(text)
+        if stripped:
+            return stripped
+
+    head = _DEFINITE_HEAD_RE.match(text)
+    prefix = head.group(1) if head else ""
+    rest = text[len(prefix):]
+    if _INDEFINITE_HEAD_RE.match(rest):
+        bare = _INDEFINITE_HEAD_RE.sub("", rest).strip()
+        # Заглавная где-то внутри — признак существительного; длина от трёх букв
+        # отсекает мусор вроде «Einer n», где после снятия остаётся «n».
+        if bare and " " not in bare and len(bare) >= 3 and any(c.isupper() for c in bare):
+            return (prefix + bare).strip()
+    return text
+
+
 def german_headword_case(word: str | None, pos: str | None) -> str:
     """Заголовок немецкого слова в правильном регистре.
 
@@ -244,6 +293,13 @@ def german_headword_case(word: str | None, pos: str | None) -> str:
         return text
     if str(pos or "").strip().lower() not in _LOWERCASE_POS:
         return text
+    # Заголовок КАПСОМ («ERNEUERBARE») опускается целиком. Правило «снять заглавную с
+    # первой буквы» дало бы «eRNEUERBARE» — поймано сухим прогоном 16.08.2026. Капс в
+    # словарной статье не бывает осмысленным: он приходит из текста, где слово было
+    # выделено, а не из языка.
+    letters = [c for c in text if c.isalpha()]
+    if len(letters) > 1 and all(c.isupper() for c in letters):
+        return text.lower()
     return text[:1].lower() + text[1:]
 
 

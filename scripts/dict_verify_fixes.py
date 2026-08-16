@@ -76,7 +76,52 @@ with get_db_connection_context() as conn:
                        WHERE u.lang='de' AND t.display !~ '[А-Яа-яЁё]'""")
         check("«перевод» без единой русской буквы", cur.fetchone()[0], 0)
 
-# 8. живая выдача
+        # 8. заголовок словарной статьи — правило продукта, все три хранилища.
+        #    Проверяем НЕ ту таблицу, которую правили, а каждую, откуда читает экран.
+        from backend.german_grammar_tables import german_dictionary_headword
+        from backend.database import _fix_plural_article_on_headword
+        for table, column, title, where in (
+            ("bt_3_lex_units", "display", "слово в справочнике",
+             "lang='de' AND display <> ''"),
+            ("bt_3_webapp_dictionary_queries", "word_de", "карточка word_de",
+             "word_de IS NOT NULL AND word_de !~ '[А-Яа-яЁё]'"),
+            ("bt_3_webapp_dictionary_queries", "translation_de", "карточка translation_de",
+             "translation_de IS NOT NULL AND translation_de !~ '[А-Яа-яЁё]'"),
+            ("bt_3_dictionary_entries", "source_text", "пул",
+             "source_text IS NOT NULL AND source_text !~ '[А-Яа-яЁё]'"),
+        ):
+            cur.execute("SELECT %s FROM %s WHERE %s;" % (column, table, where))
+            bad = 0
+            for (value,) in cur.fetchall():
+                if not value:
+                    continue
+                if _fix_plural_article_on_headword(german_dictionary_headword(value)) != value:
+                    bad += 1
+            check("заголовок не в словарной форме: %s" % title, bad, 0)
+
+        # 9. капс в заголовке: «ERNEUERBARE», «SCHNECKE» — это выделение из текста, не
+        #    язык. Аббревиатуры (USA, NASA) остаются: признак точный — русская сторона
+        #    у них тоже капсом, потому что аббревиатура ею и остаётся в любом языке.
+        cur.execute("""
+            SELECT count(*) FROM bt_3_lex_units u
+             WHERE u.lang='de' AND u.display ~ '^[A-ZÄÖÜ]{3,}$'
+               AND COALESCE((SELECT t.display FROM bt_3_lex_links l
+                               JOIN bt_3_lex_units t
+                                 ON t.id = CASE WHEN l.from_unit=u.id THEN l.to_unit ELSE l.from_unit END
+                              WHERE (l.from_unit=u.id OR l.to_unit=u.id)
+                                AND t.lang='ru' AND l.rank < 900 LIMIT 1), '') !~ '^[А-ЯЁ\\-]+$'
+        """)
+        check("заголовок капсом (кроме аббревиатур)", cur.fetchone()[0], 0)
+
+        # 10. банк артиклей: форма множественного числа словом для тренировки
+        cur.execute("""SELECT count(*) FROM bt_3_article_sprint_nouns b
+                       JOIN bt_3_german_form_index f
+                         ON lower(f.surface)=lower(b.word) AND f.number_tag='pl'
+                       WHERE NOT b.retired AND lower(f.lemma)<>lower(b.word)
+                         AND b.id NOT IN (9943, 13, 7062, 7134, 10096, 7966)""")
+        check("банк Artikel: множественное число словом", cur.fetchone()[0], 0)
+
+# 11. живая выдача
 for q, want in (("schlammig", "schlammig"), ("Gericht", "das Gericht"), ("die Habe", "die Habe")):
     it = LU.lookup(q, source_lang="de", target_lang="ru")
     check("выдача «%s»" % q, (it or {}).get("word_de"), want)

@@ -30,6 +30,10 @@ _CACHE_TTL_SEC = 900
 _lock = threading.Lock()
 _genus: dict[str, str] = {}
 _ambiguous: set[str] = set()
+# Слова, чей род известен только из НАШЕГО банка артиклей, а не из справочника
+# de.wiktionary. Их ответ честно называется «банк артиклей»: он годится как «что-то
+# известно», но не годится как подтверждение — банк не может подтверждать сам себя.
+_bank_sourced: set[str] = set()
 _loaded_at = 0.0
 
 # Похожи на существительные, но это СУФФИКСЫ: Wirt+schaft — не композит, и род задаёт
@@ -80,11 +84,25 @@ def _load() -> tuple[dict[str, str], set[str]]:
         return {}, set()
 
     ambiguous = {w for w, arts in by_word.items() if len(arts) > 1} | _two_gender()
+    # ⚠ Слова, чей род взят ИЗ БАНКА, а не из справочника, помечаются отдельно и
+    # отдаются под своим именем. Раньше они возвращались с источником «wiktionary», и
+    # получалась кольцевая проверка: банк подтверждал сам себя.
+    #
+    # Это не теория. 16.08.2026: в банке жила строка «die Handschuhe» — форма
+    # множественного числа. Через эту подмену german_surface объявлял «Handschuhe»
+    # документированным существительным женского рода в ЕДИНСТВЕННОМ числе, правило
+    # «у множественного артикль всегда die» не срабатывало, и в базу легла карточка
+    # «der Handschuhe». Владелец нашёл её глазами.
+    from_bank: set[str] = set()
     for w, arts in by_word.items():
-        if len(arts) == 1:
-            genus.setdefault(w, next(iter(arts)))
+        if len(arts) == 1 and w not in genus:
+            genus[w] = next(iter(arts))
+            from_bank.add(w)
     for w in ambiguous:
         genus.pop(w, None)
+        from_bank.discard(w)
+    _bank_sourced.clear()
+    _bank_sourced.update(from_bank)
     with _lock:
         _genus, _ambiguous, _loaded_at = genus, ambiguous, now
     return genus, ambiguous
@@ -107,6 +125,18 @@ def compound_article(word: str) -> str | None:
     w = str(word or "").strip().lower()
     if len(w) < 8 or w in ambiguous or w.endswith(_COMPOUND_EXCEPTIONS):
         return None
+
+    # Композит через дефис разбирать не нужно — он уже разобран автором написания:
+    # «Stumm-Modus», «Corona-Regel», «Online-Termin». Род берёт последняя часть, и
+    # догадки здесь нет ни одной, в отличие от слитного композита, который приходится
+    # резать перебором. Часть после дефиса проверяется по тем же правилам: она должна
+    # быть известным однозначным словом, иначе молчим.
+    if "-" in w:
+        head = w.rsplit("-", 1)[-1].strip()
+        if len(head) >= 4 and head not in ambiguous and head in genus:
+            return genus[head]
+        return None
+
     verdicts: set[str] = set()
     for cut in range(4, len(w) - 3):
         pre_raw = w[:cut]
@@ -138,7 +168,7 @@ def authoritative_article(word: str, *, allow_network: bool = False) -> tuple[st
     if low in ambiguous:
         return None, "двухродовое (артикль зависит от значения)"
     if low in genus:
-        return genus[low], "wiktionary"
+        return genus[low], ("банк артиклей" if low in _bank_sourced else "wiktionary")
     if allow_network:
         live = _wiktionary_live(w)
         if live:

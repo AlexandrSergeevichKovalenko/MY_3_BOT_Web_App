@@ -188,6 +188,21 @@ def _documented_singular(word: str, *, allow_network: bool) -> str:
     return ""
 
 
+def _bank_article(word: str) -> str:
+    """Артикль из НАШЕГО банка артиклей, если он там подтверждён. Иначе ''.
+
+    Отдельная функция, а не ветка внутри _documented_singular: у справочника языка и у
+    нашего банка разный вес, и путать их нельзя. Двухродовые слова банк не отдаёт —
+    у них артикль зависит от значения, и authoritative_article там молчит сам."""
+    try:
+        from backend.article_authority import authoritative_article
+        article, source = authoritative_article(word, allow_network=False)
+    except Exception:
+        logging.warning("german_surface: банк артиклей недоступен для %s", word, exc_info=True)
+        return ""
+    return article if article and source == "банк артиклей" else ""
+
+
 def _unumlaut(text: str) -> str:
     return (text.replace("ä", "a").replace("ö", "o").replace("ü", "u")
                 .replace("Ä", "A").replace("Ö", "O").replace("Ü", "U"))
@@ -261,7 +276,21 @@ def german_surface(word: str, *, allow_network: bool = False) -> dict:
         return {"number": SG, "lemma": lemma or surface, "article": article,
                 "source": source or "form_index", "confidence": "high"}
 
-    # 4. Догадка по окончанию: годится, чтобы промолчать, но не чтобы утверждать.
+    # 4. Наш собственный банк артиклей — но ТОЛЬКО когда молчат оба справочника выше.
+    #
+    # Это настоящий источник, а не заглушка: строки банка подтверждены (verified) через
+    # разбор с владельцем, и для 1642 слов другого документированного ответа у нас нет.
+    # Важно только, что он стоит ПОСЛЕ указателя форм и отвечает под своим именем.
+    # Раньше банк подмешивался в справочник и возвращался с источником «wiktionary» —
+    # кольцевая проверка: строка «die Handschuhe» (форма мн. ч., ошибочно заведённая
+    # словом) объявляла «Handschuhe» существительным женского рода в единственном
+    # числе, и правило «у множественного артикль всегда die» не срабатывало.
+    from_bank = _bank_article(surface)
+    if from_bank:
+        return {"number": SG, "lemma": surface, "article": from_bank,
+                "source": "банк артиклей", "confidence": "high"}
+
+    # 5. Догадка по окончанию: годится, чтобы промолчать, но не чтобы утверждать.
     for candidate in _singular_candidates(surface):
         if _documented_singular(candidate, allow_network=False):
             return {"number": PL, "lemma": candidate, "article": "",

@@ -6041,6 +6041,51 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
     return int(row[0]) if row and row[0] is not None else 0, True
 
 
+def _fix_plural_article_on_headword(value: str | None) -> str | None:
+    """У формы множественного числа артикль может быть только «die».
+
+    «der Handschuhe» — невозможная строка: род принадлежит слову, а множественное
+    число рода не имеет. Владелец нашёл такую карточку 16.08.2026, и заведена она была
+    в тот же день — то есть правило существовало (compose_german_headword ставит «die»
+    на показе), но на ЗАПИСЬ не стояло, и в базу легло невозможное.
+
+    Судим ТОЛЬКО по справочнику форм: german_surface отвечает «множественное» с высокой
+    уверенностью лишь тогда, когда это подтверждено страницей de.wiktionary. Догадка по
+    окончанию сюда не допускается — «der Streifen», «das Abkommen», «der Laster»
+    окончанием от множественного неотличимы, и правило-угадайка сделало бы из них
+    «die». Не знаем — не трогаем: строка остаётся ровно такой, какой пришла.
+    """
+    text = _squash_space(value)
+    if not text:
+        return value
+    match = _LEADING_ARTICLE_ANY_CASE_RE.match(text)
+    if not match:
+        return value
+    article = match.group(0).strip().lower()
+    if article == "die":
+        return value
+    bare = text[match.end():].strip()
+    if not bare or " " in bare:
+        return value
+    # ⚠ «das» + окончание -en — единственная форма, где мы обязаны ПРОМОЛЧАТЬ.
+    # Так выглядит субстантивированный инфинитив: «das Schleifen» (шлифовка), «das
+    # Putzen» (уборка), «das Essen», «das Leben». Наши источники его не отличают от
+    # множественного: de.wiktionary не заводит на такие слова страницу существительного
+    # (проверено живым запросом 16.08.2026 — на «Schleifen» и «Putzen» отвечает «рода
+    # нет»), а указатель форм честно знает их как мн. ч. от «die Schleife» и «die Putze».
+    # Догадаться тут нечем, поэтому строку не трогаем.
+    #
+    # С «der» такой неоднозначности НЕТ: у субстантивированного инфинитива артикль
+    # всегда «das», значит «der Handschuhe» ничем иным, кроме ошибки, быть не может.
+    if article == "das" and bare.casefold().endswith("en"):
+        return value
+    from backend.german_surface import PL, german_surface
+    verdict = german_surface(bare)
+    if verdict["number"] == PL and verdict["confidence"] == "high":
+        return f"die {bare}"
+    return value
+
+
 def _save_webapp_dictionary_query_returning_id_with_conn(
     conn,
     *,
@@ -6058,6 +6103,16 @@ def _save_webapp_dictionary_query_returning_id_with_conn(
     semantic_tag: str | None = None,
 ) -> tuple[int, bool]:
     normalized_response_json = _coerce_json_object(response_json)
+    # Заголовок приводится к словарной форме ЗДЕСЬ — это единственное место, через
+    # которое проходит запись любой карточки: и бот, и веб, и импорт. Прежде правило
+    # стояло выше по течению, в веб-слое, и обходилось: замер 16.08.2026 нашёл
+    # «klarzukommen» и «die eine Pleite» в колонке translation_de при уже исправленной
+    # word_de — а крупный заголовок на экране разбора берётся именно из translation_de.
+    from backend.german_grammar_tables import german_dictionary_headword
+    word_de = german_dictionary_headword(word_de) if word_de else word_de
+    translation_de = german_dictionary_headword(translation_de) if translation_de else translation_de
+    word_de = _fix_plural_article_on_headword(word_de)
+    translation_de = _fix_plural_article_on_headword(translation_de)
     normalized_source_lang = _normalize_lang_code(source_lang)
     normalized_target_lang = _normalize_lang_code(target_lang)
     source_text, target_text = _resolve_dictionary_source_target_texts(
