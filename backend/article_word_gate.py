@@ -27,6 +27,9 @@ FREQ_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "de
 DEFAULT_MAX_RANK = 20000   # до этого места слово берём без вопросов
 SECOND_OPINION_RANK = 60000  # дальше — спрашиваем модель, нужно ли слово в быту
 FAMILY_CAP = 2             # сколько производных одного корня оставляем в теме
+# Сколько раз спрашиваем модель об одном и том же. Один голос давал 12% разнобоя на
+# повторе (замер 16.08.2026) — слово попадало в игру или в карантин по сути жребием.
+EVERYDAY_VOTES = max(1, int((os.getenv("EVERYDAY_JUDGE_VOTES") or "3").strip() or "3"))
 MIN_HEAD_LEN = 4           # корень короче — совпадение случайное («Zirrhose» ≠ «Hose»)
 MIN_PREFIX_LEN = 4         # приставка короче — тоже не составное слово
 _PLURAL_SUFFIXES = ("en", "e", "n", "er", "s")
@@ -101,8 +104,8 @@ class EverydayJudgeUnavailable(Exception):
     обрыв сети занёс бы в стоп-лист целую пачку нормальных слов."""
 
 
-def judge_everyday_words(words: list[str]) -> dict[str, bool]:
-    """Спросить модель, нужны ли эти слова человеку в быту.
+def _judge_everyday_once(words: list[str]) -> dict[str, bool]:
+    """ОДИН голос модели: нужны ли эти слова человеку в быту.
 
     Второе мнение нужно там, где частотность подводит: предметы, техника, инструменты,
     геометрия. Одним запросом на всю пачку — дёшево. Сбой запроса — не «нет», а
@@ -113,7 +116,9 @@ def judge_everyday_words(words: list[str]) -> dict[str, bool]:
     обычной жизни» — и пропускала погружной блендер, тёрку для муската и лопатку для
     спагетти: предметы вроде бы бытовые, а по-русски их никто так не называет. Владелец
     31.07 разобрал словник глазами и подтвердил именно эту границу: слово нужно, если
-    человек знает его ПО-РУССКИ и вещь у него была."""
+    человек знает его ПО-РУССКИ и вещь у него была.
+
+    Один голос неустойчив — наружу ходить только через judge_everyday_words."""
     clean = [str(w).strip() for w in words if str(w or "").strip()]
     if not clean:
         return {}
@@ -156,6 +161,47 @@ def judge_everyday_words(words: list[str]) -> dict[str, bool]:
         logging.warning("второе мнение по словам не получено", exc_info=True)
         raise EverydayJudgeUnavailable(str(exc)) from exc
     return {w: bool(data.get(w, False)) for w in clean}
+
+
+def judge_everyday_words(words: list[str], *, votes: int = EVERYDAY_VOTES) -> dict[str, bool]:
+    """Нужны ли эти слова человеку в быту — БОЛЬШИНСТВОМ из нескольких голосов.
+
+    Зачем не один вопрос. Замер 16.08.2026: один и тот же вопрос про одни и те же слова,
+    заданный дважды подряд (модель gpt-4.1, температура 0), дал РАЗНЫЕ ответы по 12%
+    слов. Тот же судья, спрошенный заново про 859 слов, которые он сам же пропустил в
+    игру, 15% из них теперь выбрасывал (Überfahrt, Inventur, Ebbe, Archäologe, Montage).
+    А из 150 отвергнутых им слов 36% теперь получали «да». То есть попадёт слово в игру
+    или в карантин — во многом зависело от того, в какой день его спросили. Так в
+    карантине и скопилось 454 слова, которые владелец разбирал руками по 10 в день.
+
+    Планка НЕ меняется: в промпте как стояло «сомневаешься — отвечай НЕТ», так и стоит.
+    Меняется только устойчивость ответа.
+
+    Большинство считаем от ДОШЕДШИХ голосов, а ничья — это «нет» (та же осторожность,
+    что и в промпте). Не дошёл ни один голос — это не «нет», а EverydayJudgeUnavailable:
+    один обрыв сети не должен хоронить пачку нормальных слов."""
+    clean = [str(w).strip() for w in words if str(w or "").strip()]
+    if not clean:
+        return {}
+    yes: dict[str, int] = {w: 0 for w in clean}
+    heard = 0
+    last_exc: Exception | None = None
+    for _ in range(max(1, int(votes))):
+        try:
+            verdict = _judge_everyday_once(clean)
+        except EverydayJudgeUnavailable as exc:
+            last_exc = exc
+            continue
+        heard += 1
+        for word, ok in verdict.items():
+            if ok and word in yes:
+                yes[word] += 1
+    if not heard:
+        raise EverydayJudgeUnavailable(str(last_exc or "нет ни одного голоса"))
+    if heard < max(1, int(votes)):
+        import logging
+        logging.warning("второе мнение: дошло %s голосов из %s", heard, votes)
+    return {w: yes[w] * 2 > heard for w in clean}
 
 
 def check_word(
