@@ -23642,6 +23642,149 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
     return out
 
 
+# Поля, куда исправленный текст НЕ пишем ни при каких условиях.
+#
+#   original_query, raw_text  — история: чем человек искал. Переписать её значит соврать,
+#                               что он искал другое.
+#   corrected_form            — след ПРОШЛОЙ правки, а не текущий текст.
+#   pronunciation             — там разметка ударений «Ich HAbe SEInem RAT geFOLGT»: она
+#                               совпадает с текстом только по буквам, замена её убьёт, а
+#                               ipa рядом останется от старого слова.
+#   translation_ru, word_ru   — русская сторона. Немецкий туда не пишем никогда, даже если
+#                               в конкретной карточке стороны когда-то перепутали.
+#   sentence_gap_v2           — заготовка задания с пропуском «___». Строкой её не
+#                               починить: вопрос и ответ разойдутся. Её СНОСИМ, чтобы
+#                               собралась заново.
+_CORRECTION_UNTOUCHED_KEYS = frozenset({
+    "original_query", "raw_text", "corrected_form", "pronunciation",
+    "translation_ru", "word_ru", "sentence_gap_v2",
+})
+
+
+def _same_phrase(a, b) -> bool:
+    return _squash_space(str(a or "")).casefold() == _squash_space(str(b or "")).casefold()
+
+
+def _replace_phrase_deep(node, old_text: str, new_text: str) -> tuple:
+    """Заменить фразу всюду в дереве разбора, кроме полей-исключений."""
+    if isinstance(node, str):
+        return (new_text, 1) if _same_phrase(node, old_text) else (node, 0)
+    if isinstance(node, list):
+        out, hits = [], 0
+        for item in node:
+            value, n = _replace_phrase_deep(item, old_text, new_text)
+            out.append(value)
+            hits += n
+        return out, hits
+    if isinstance(node, dict):
+        out, hits = {}, 0
+        for name, item in node.items():
+            if name in _CORRECTION_UNTOUCHED_KEYS:
+                out[name] = item
+                continue
+            value, n = _replace_phrase_deep(item, old_text, new_text)
+            out[name] = value
+            hits += n
+        return out, hits
+    return node, 0
+
+
+def spread_correction_everywhere(cursor, *, unit_id: int, old_text: str, new_text: str) -> dict:
+    """Развезти принятое исправление по ВСЕМ местам, где лежал старый текст.
+
+    ЗАЧЕМ. Владелец правит спорную фразу, судья предлагает вариант, человек принимает —
+    и правка меняла ОДНУ строку: слово в справочнике. А тот же текст к этому моменту
+    скопирован в карточку человека, в разбор внутри карточки, в примеры, в общий пул и в
+    заготовку задания. Замер 16.08.2026: 856 правок владельца осели в 3381 месте, то есть
+    по четыре на правку. Человек продолжал видеть старое и присылать скриншоты.
+
+    Поэтому здесь НЕТ списка полей: берём старый текст и вычищаем его рекурсивно.
+    Исключения — в _CORRECTION_UNTOUCHED_KEYS, у каждого написано почему.
+
+    Заготовки заданий не правим, а сносим: у них пропуск «___», и заменой строки вопрос
+    разойдётся с ответом. Проверка 16.08.2026 показала это на пяти живых заданиях —
+    сходились 5 из 5, после наивной замены сошлось бы 0.
+    """
+    report = {"cards": 0, "places": 0, "pool": 0, "tasks_dropped": 0}
+    if not old_text or _same_phrase(old_text, new_text):
+        return report
+
+    # разбор на самом слове
+    cursor.execute("SELECT card FROM bt_3_lex_units WHERE id = %s;", (unit_id,))
+    row = cursor.fetchone()
+    if row and isinstance(row[0], dict):
+        fixed, hits = _replace_phrase_deep(row[0], old_text, new_text)
+        if hits:
+            cursor.execute(
+                "UPDATE bt_3_lex_units SET card = %s::jsonb, updated_at = NOW() WHERE id = %s;",
+                (json.dumps(fixed, ensure_ascii=False), unit_id),
+            )
+            report["places"] += hits
+
+    # карточки людей, которые указывают на это слово
+    cursor.execute(
+        "SELECT id, word_de, translation_de, response_json, canonical_entry_id "
+        "FROM bt_3_webapp_dictionary_queries WHERE lex_unit_id = %s;",
+        (unit_id,),
+    )
+    rows = cursor.fetchall()
+    pool_ids = set()
+    for entry_id, word_de, translation_de, payload, canonical_id in rows:
+        card = payload if isinstance(payload, dict) else {}
+        fixed, hits = _replace_phrase_deep(card, old_text, new_text)
+        new_word = new_text if _same_phrase(word_de, old_text) else None
+        new_tr = new_text if _same_phrase(translation_de, old_text) else None
+        gap = card.get("sentence_gap_v2")
+        gap_stale = bool(gap) and _squash_space(old_text).casefold() in \
+            json.dumps(gap, ensure_ascii=False).casefold()
+        if gap_stale:
+            fixed.pop("sentence_gap_v2", None)
+            report["tasks_dropped"] += 1
+        if not (hits or new_word or new_tr or gap_stale):
+            continue
+        cursor.execute(
+            "UPDATE bt_3_webapp_dictionary_queries "
+            "SET response_json = %s::jsonb, "
+            "    word_de = COALESCE(%s, word_de), "
+            "    translation_de = COALESCE(%s, translation_de), updated_at = NOW() "
+            "WHERE id = %s;",
+            (json.dumps(fixed, ensure_ascii=False), new_word, new_tr, entry_id),
+        )
+        report["cards"] += 1
+        report["places"] += hits + bool(new_word) + bool(new_tr)
+        if canonical_id:
+            pool_ids.add(int(canonical_id))
+
+    # общий пул: из него собирается карточка при поиске, и без этого шага человек,
+    # набравший фразу, получал бы старую версию и клал её себе в словарь заново.
+    for pool_id in pool_ids:
+        cursor.execute(
+            "SELECT source_text, response_json FROM bt_3_dictionary_entries WHERE id = %s;",
+            (pool_id,),
+        )
+        pool_row = cursor.fetchone()
+        if not pool_row:
+            continue
+        source_text, payload = pool_row
+        fixed, hits = _replace_phrase_deep(payload if isinstance(payload, dict) else {},
+                                           old_text, new_text)
+        new_source = new_text if _same_phrase(source_text, old_text) else None
+        if not (hits or new_source):
+            continue
+        cursor.execute(
+            "UPDATE bt_3_dictionary_entries SET response_json = %s::jsonb, "
+            "source_text = COALESCE(%s, source_text), updated_at = NOW() WHERE id = %s;",
+            (json.dumps(fixed, ensure_ascii=False), new_source, pool_id),
+        )
+        report["pool"] += 1
+
+    logging.info(
+        "исправление развезено: слово=%s карточек=%d мест=%d пул=%d заданий снесено=%d",
+        unit_id, report["cards"], report["places"], report["pool"], report["tasks_dropped"],
+    )
+    return report
+
+
 def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = "",
                                  variant: int = 0) -> dict:
     """Решение владельца по спорной фразе: принять правку, удалить или вписать свою.
@@ -23755,23 +23898,9 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 "UPDATE bt_3_lex_units SET display=%s, lemma=%s, lemma_key=%s WHERE id=%s;",
                 (new_text, new_text, key, unit_id),
             )
-            # ЗАГОЛОВОК В КАРТОЧКАХ ЛЮДЕЙ ТОЖЕ. Раньше правка меняла только слово в
-            # справочнике, а карточка продолжала показывать старый текст — и именно он
-            # виден крупно на повторении. Владелец 16.08.2026 показал это на фразе
-            # «Daher vornehme ich Korrekturen selbst»: в справочнике уже лежало верное
-            # «Daher nehme ich Korrekturen selbst vor», разбор и пример были верные, а
-            # заголовок карточки — прежний, с неправильно оторванной приставкой.
-            #
-            # Меняем ТОЛЬКО те карточки, где лежит ровно старый текст: карточка может
-            # хранить свою форму слова («Die Strümpfe» при слове «Strumpf»), и её
-            # трогать нельзя.
-            for _column in ("word_de", "translation_de"):
-                cursor.execute(
-                    "UPDATE bt_3_webapp_dictionary_queries SET " + _column + " = %s, "
-                    "updated_at = NOW() WHERE lex_unit_id = %s "
-                    "AND lower(btrim(" + _column + ")) = lower(btrim(%s));",
-                    (new_text, unit_id, old_text),
-                )
+            # Правка доезжает ДО ВСЕХ мест сразу — см. spread_correction_everywhere.
+            spread_correction_everywhere(cursor, unit_id=unit_id,
+                                         old_text=old_text, new_text=new_text)
             cursor.execute(
                 """INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
                    VALUES ('de', %s, %s, 'exact') ON CONFLICT DO NOTHING;""",
