@@ -22,6 +22,8 @@ export default function ArtikelReviewGame({ api, haptic, onClose, onBack }) {
   const [chosen, setChosen] = useState(null);
   const [stats, setStats] = useState({ correct: 0, answered: 0 });
   const [remaining, setRemaining] = useState(0);
+  // Порция дня добита, а очередь ещё не пуста — концовка должна говорить именно это.
+  const [portionDone, setPortionDone] = useState(false);
   const touchX = useRef(null);
   const audioRef = useRef(null);
   // Длинные составные слова ужимаются под ширину карточки общим хуком: в нём есть
@@ -50,6 +52,7 @@ export default function ArtikelReviewGame({ api, haptic, onClose, onBack }) {
       if (!data.ok) { setError(data.error || 'Fehler'); setPhase('error'); return; }
       cardsRef.current = data.cards || [];
       setRemaining(data.remaining || 0);
+      setPortionDone(!!data.portion_done);
       setIdx(0); setChosen(null); setStats({ correct: 0, answered: 0 });
       setPhase(cardsRef.current.length ? 'learning' : 'done');
     } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); }
@@ -108,7 +111,10 @@ export default function ArtikelReviewGame({ api, haptic, onClose, onBack }) {
         <div className="as-cert-medal">{answered > 0 ? '🎉' : '✨'}</div>
         <div className="as-cert-place">{answered > 0 ? 'Fehler wiederholt!' : 'Keine Artikel-Fehler'}</div>
         {answered > 0 ? <div className="as-cert-sub">{correct} из {answered} верно · {pct}%</div> : null}
-        <div className="as-cert-foot">Следующие вернутся в нужное время 🔁</div>
+        <div className="as-cert-foot">
+          {portionDone ? 'На сегодня всё — завтра ждут следующие 30 🔁'
+                       : 'Следующие вернутся в нужное время 🔁'}
+        </div>
       </div>
       {onBack ? <button className="ans-btn" onClick={onBack}>← К разделам</button> : null}
       <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>

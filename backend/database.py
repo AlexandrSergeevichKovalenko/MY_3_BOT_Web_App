@@ -2898,22 +2898,67 @@ def purge_retired_artikel_mistakes(user_id: int | None = None) -> int:
         return 0
 
 
-# Порция на день: человеку показываем не всю кучу, а самые старые 30 ошибок.
+# Порция на день: человеку показываем не всю кучу, а 30 самых старых ошибок.
 # Замер 15.08.2026: у людей копилось до 188 просроченных заданий, а за один заход
 # разбиралось 20-50 — куча была физически неразбираема и только росла. Решение
 # владельца: «давал бы короткими порциями по 30 ошибок за день, все ошибки собираем,
 # показываем самые старшие 30». Очередь при этом не режется: копится всё, меняется
 # только то, сколько видно за раз.
+#
+# 16.08.2026 — ДЕФЕКТ и починка. Первая версия брала «30 самых старых из просроченных»
+# заново ПОСЛЕ КАЖДОГО ОТВЕТА. Разобранное уходило на завтра, а на его место тут же
+# вставало 31-е по старшинству — окно всегда полное. Владелец видел вечное «Weiter (30)»
+# при очереди в 185 и не видел своего продвижения; дневного предела при этом не было
+# вовсе — окно доливалось бесконечно, ограничена была только надпись.
+# Теперь порция считается ОТ ДНЯ: сколько из 30 ещё не разобрано сегодня
+# (review_portion_left). Дошёл до нуля — на сегодня всё, следующие 30 завтра.
 REVIEW_DAILY_PORTION = 30
 
+# Окно порции. LIMIT — параметр (сколько осталось на сегодня), а не константа:
+# при нуле запрос честно отдаёт пусто, и экран говорит «на сегодня всё».
 _DAILY_PORTION_SQL = (
     " AND m.id IN (SELECT id FROM bt_3_aufgabe_mistakes "
     "              WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW() "
-    f"             ORDER BY due_at ASC, id ASC LIMIT {REVIEW_DAILY_PORTION})")
+    "              ORDER BY due_at ASC, id ASC LIMIT %s)")
 
 
-def count_due_mistakes(user_id: int, *, family: str | None = None) -> int:
+def _local_day_start_sql() -> str:
+    """SQL-выражение (timestamptz) = полночь СЕГОДНЯШНЕГО местного дня в _REVIEW_TZ.
+    Та же граница суток, по которой назначается due_at, — иначе порция обнулялась бы
+    не тогда, когда для человека наступает новый день."""
+    return ("(date_trunc('day', (NOW() AT TIME ZONE '" + _REVIEW_TZ + "'))"
+            " AT TIME ZONE '" + _REVIEW_TZ + "')")
+
+
+def count_mistakes_reviewed_today(user_id: int) -> int:
+    """Сколько ошибок человек уже разобрал сегодня (по местному дню)."""
     try:
+        ensure_aufgabe_mistakes_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM bt_3_aufgabe_mistakes "
+                    "WHERE user_id=%s AND last_review_at >= " + _local_day_start_sql() + ";",
+                    (int(user_id),),
+                )
+                return int((cur.fetchone() or [0])[0])
+    except Exception:
+        return 0
+
+
+def review_portion_left(user_id: int) -> int:
+    """Сколько ошибок человеку ещё осталось из сегодняшней порции. 0 = на сегодня всё."""
+    return max(0, REVIEW_DAILY_PORTION - count_mistakes_reviewed_today(int(user_id)))
+
+
+def count_due_mistakes(user_id: int, *, family: str | None = None,
+                       portion_left: int | None = None) -> int:
+    """Сколько человеку осталось разобрать СЕГОДНЯ (а не сколько лежит в очереди).
+    `portion_left` можно передать, если он уже посчитан, — чтобы не ходить в базу дважды."""
+    try:
+        left = review_portion_left(int(user_id)) if portion_left is None else max(0, int(portion_left))
+        if left <= 0:
+            return 0
         ensure_aufgabe_mistakes_schema()
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
@@ -2922,7 +2967,25 @@ def count_due_mistakes(user_id: int, *, family: str | None = None) -> int:
                     "WHERE m.user_id=%s AND m.mastered=FALSE AND m.due_at<=NOW() "
                     f"{_mistake_family_clause(family)}{_ARTIKEL_LIVE_WORD_SQL}"
                     f"{_DAILY_PORTION_SQL};",
-                    (int(user_id), int(user_id)),
+                    (int(user_id), int(user_id), int(left)),
+                )
+                return int((cur.fetchone() or [0])[0])
+    except Exception:
+        return 0
+
+
+def count_due_mistakes_in_queue(user_id: int) -> int:
+    """Вся очередь просроченных ошибок, БЕЗ дневной порции. Нужна ровно для одного:
+    отличить «разобрал всё» от «на сегодня всё, но куча ещё есть»."""
+    try:
+        ensure_aufgabe_mistakes_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM bt_3_aufgabe_mistakes m "
+                    "WHERE m.user_id=%s AND m.mastered=FALSE AND m.due_at<=NOW()"
+                    + _ARTIKEL_LIVE_WORD_SQL + ";",
+                    (int(user_id),),
                 )
                 return int((cur.fetchone() or [0])[0])
     except Exception:
@@ -2934,6 +2997,9 @@ def count_due_mistakes_by_family(user_id: int) -> dict:
     {'artikel': n, 'wofrage': w, 'grammar': m, 'total': t}. Powers the review
     overview/section picker (each grammar-game family gets its own block)."""
     try:
+        left = review_portion_left(int(user_id))
+        if left <= 0:
+            return {"artikel": 0, "wofrage": 0, "grammar": 0, "total": 0}
         ensure_aufgabe_mistakes_schema()
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
@@ -2946,7 +3012,7 @@ def count_due_mistakes_by_family(user_id: int) -> dict:
                     "FROM bt_3_aufgabe_mistakes m "
                     "WHERE m.user_id=%s AND m.mastered=FALSE AND m.due_at<=NOW()"
                     + _ARTIKEL_LIVE_WORD_SQL + _DAILY_PORTION_SQL + ";",
-                    (int(user_id), int(user_id)),
+                    (int(user_id), int(user_id), int(left)),
                 )
                 row = cur.fetchone() or [0, 0, 0, 0]
                 return {"artikel": int(row[0] or 0), "wofrage": int(row[1] or 0),
@@ -2985,6 +3051,9 @@ def force_due_mistakes(user_id: int, *, fmt: str | None = None) -> int:
 
 def get_next_due_mistake(user_id: int, *, family: str | None = None) -> dict | None:
     try:
+        left = review_portion_left(int(user_id))
+        if left <= 0:
+            return None
         ensure_aufgabe_mistakes_schema()
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
@@ -2995,7 +3064,7 @@ def get_next_due_mistake(user_id: int, *, family: str | None = None) -> dict | N
                     + _mistake_family_clause(family) + _ARTIKEL_LIVE_WORD_SQL
                     + _DAILY_PORTION_SQL +
                     """ ORDER BY m.due_at ASC, m.id ASC LIMIT 12;""",
-                    (int(user_id), int(user_id)),
+                    (int(user_id), int(user_id), int(left)),
                 )
                 rows = cur.fetchall() or []
                 # Serve-time self-heal (mirrors pick_next_aufgabe for the pool): the review
@@ -3046,6 +3115,9 @@ def get_aufgabe_mistake(user_id: int, mistake_id: int) -> dict | None:
 
 
 def reschedule_mistake(*, mistake_id: int, user_id: int, is_correct: bool) -> None:
+    # last_review_at — «эту ошибку разобрали вот тогда». Порция дня считает СТРОКИ с
+    # сегодняшней отметкой, а не события, поэтому повторная досылка одного и того же
+    # ответа (очередь досылки в браузере) порцию не съедает дважды.
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
@@ -3060,21 +3132,23 @@ def reschedule_mistake(*, mistake_id: int, user_id: int, is_correct: bool) -> No
                     if nxt is None:
                         cur.execute(
                             "UPDATE bt_3_aufgabe_mistakes SET mastered=TRUE, "
-                            "review_count=review_count+1, updated_at=NOW() WHERE id=%s AND user_id=%s;",
+                            "review_count=review_count+1, last_review_at=NOW(), "
+                            "updated_at=NOW() WHERE id=%s AND user_id=%s;",
                             (int(mistake_id), int(user_id)),
                         )
                     else:
                         cur.execute(
                             "UPDATE bt_3_aufgabe_mistakes SET interval_days=%s, "
                             f"due_at={_due_at_next_local_day_sql('%s')}, "
-                            "review_count=review_count+1, updated_at=NOW() WHERE id=%s AND user_id=%s;",
+                            "review_count=review_count+1, last_review_at=NOW(), "
+                            "updated_at=NOW() WHERE id=%s AND user_id=%s;",
                             (int(nxt), int(nxt), int(mistake_id), int(user_id)),
                         )
                 else:
                     cur.execute(
                         "UPDATE bt_3_aufgabe_mistakes SET interval_days=1, "
                         f"due_at={_due_at_next_local_day_sql('1')}, review_count=review_count+1, "
-                        "updated_at=NOW() WHERE id=%s AND user_id=%s;",
+                        "last_review_at=NOW(), updated_at=NOW() WHERE id=%s AND user_id=%s;",
                         (int(mistake_id), int(user_id)),
                     )
             conn.commit()
@@ -3083,17 +3157,30 @@ def reschedule_mistake(*, mistake_id: int, user_id: int, is_correct: bool) -> No
 
 
 def list_users_with_due_mistakes(*, min_count: int = 1, limit: int = 5000) -> list[dict]:
-    """For the daily DM reminder: users with >= min_count due (not-mastered) mistakes."""
+    """Для ежедневного напоминания в личку: кому есть что разобрать СЕГОДНЯ и сколько.
+
+    `count` — размер сегодняшней порции, а не всей кучи. Иначе в личку уходило «у тебя
+    185 на повтор»: такое число не зовёт разбирать, а отпугивает (замер 15.08.2026).
+    Кто сегодняшнюю порцию уже добил, напоминания не получает вовсе.
+    """
     try:
         ensure_aufgabe_mistakes_schema()
+        day_start = _local_day_start_sql()
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT user_id, COUNT(*) AS n
-                       FROM bt_3_aufgabe_mistakes
-                       WHERE mastered=FALSE AND due_at<=NOW()
-                       GROUP BY user_id HAVING COUNT(*) >= %s
-                       ORDER BY n DESC LIMIT %s;""",
+                    f"""SELECT q.user_id,
+                               LEAST(q.n, GREATEST(0, {REVIEW_DAILY_PORTION} - COALESCE(d.done, 0))) AS portion
+                        FROM (SELECT user_id, COUNT(*) AS n
+                              FROM bt_3_aufgabe_mistakes
+                              WHERE mastered=FALSE AND due_at<=NOW()
+                              GROUP BY user_id) q
+                        LEFT JOIN (SELECT user_id, COUNT(*) AS done
+                                   FROM bt_3_aufgabe_mistakes
+                                   WHERE last_review_at >= {day_start}
+                                   GROUP BY user_id) d ON d.user_id = q.user_id
+                        WHERE LEAST(q.n, GREATEST(0, {REVIEW_DAILY_PORTION} - COALESCE(d.done, 0))) >= %s
+                        ORDER BY portion DESC LIMIT %s;""",
                     (int(min_count), int(limit)),
                 )
                 return [{"user_id": int(r[0]), "count": int(r[1])} for r in (cur.fetchall() or [])]
@@ -37842,7 +37929,7 @@ def consume_video_review(*, user_id: int, mistake_id: int) -> bool:
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE bt_3_aufgabe_mistakes SET mastered=TRUE, "
-                    "review_count=review_count+1, updated_at=NOW() "
+                    "review_count=review_count+1, last_review_at=NOW(), updated_at=NOW() "
                     "WHERE id=%s AND user_id=%s AND format='video';",
                     (int(mistake_id), int(user_id)),
                 )
@@ -52921,6 +53008,9 @@ def get_due_artikel_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
     удаляются из очереди — очередь хранит свою копию карточки и сама об уборке не
     узнаёт."""
     try:
+        left = review_portion_left(int(user_id))
+        if left <= 0:
+            return []
         ensure_aufgabe_mistakes_schema()
         purge_retired_artikel_mistakes(int(user_id))
         with get_db_connection_context() as conn:
@@ -52945,7 +53035,7 @@ def get_due_artikel_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
                     ORDER BY m.due_at ASC, m.id ASC
                     LIMIT %s;
                     """,
-                    (int(user_id), int(user_id), int(limit)),
+                    (int(user_id), int(user_id), int(left), min(int(limit), int(left))),
                 )
                 rows = cur.fetchall() or []
         # A word can have several noun-bank rows (theme dupes) → keep the first non-null media.
@@ -52981,18 +53071,19 @@ def get_due_wofrage_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
     deterministic answer ships with the card) — no per-card round-trip. Returns dicts
     with id + the raw payload."""
     try:
+        left = review_portion_left(int(user_id))
+        if left <= 0:
+            return []
         ensure_aufgabe_mistakes_schema()
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, payload FROM bt_3_aufgabe_mistakes "
-                    "WHERE user_id=%s AND format='wofrage' "
-                    "  AND mastered=FALSE AND due_at<=NOW() "
-                    + "  AND id IN (SELECT id FROM bt_3_aufgabe_mistakes "
-                    "              WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW() "
-                    f"             ORDER BY due_at ASC, id ASC LIMIT {REVIEW_DAILY_PORTION}) "
-                    "ORDER BY due_at ASC, id ASC LIMIT %s;",
-                    (int(user_id), int(user_id), int(limit)),
+                    "SELECT m.id, m.payload FROM bt_3_aufgabe_mistakes m "
+                    "WHERE m.user_id=%s AND m.format='wofrage' "
+                    "  AND m.mastered=FALSE AND m.due_at<=NOW() "
+                    + _DAILY_PORTION_SQL +
+                    " ORDER BY m.due_at ASC, m.id ASC LIMIT %s;",
+                    (int(user_id), int(user_id), int(left), min(int(limit), int(left))),
                 )
                 rows = cur.fetchall() or []
         out = []

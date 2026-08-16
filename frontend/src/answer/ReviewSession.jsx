@@ -27,6 +27,10 @@ export default function ReviewSession({ api, haptic, onClose }) {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [reviewed, setReviewed] = useState(0);
+  // Порция дня добита, а очередь ещё не пуста. Тогда финальный экран говорит «на сегодня
+  // всё, завтра следующие», а не «все ошибки разобраны» — второе было бы неправдой.
+  const [portionDone, setPortionDone] = useState(false);
+  const [portionSize, setPortionSize] = useState(30);
 
   const loadOverview = useCallback(async () => {
     setPhase('overview');
@@ -38,6 +42,8 @@ export default function ReviewSession({ api, haptic, onClose }) {
       if (!data.ok) { setError(data.error || 'Fehler'); setPhase('error'); return; }
       const ov = { sections: data.sections || [], total: data.total || 0 };
       setOverview(ov);
+      setPortionDone(!!data.portion_done);
+      if (data.portion_size > 0) setPortionSize(Number(data.portion_size));
       if (ov.total <= 0) { setPhase('done'); return; }
       setPhase('overview');
     } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); }
@@ -52,7 +58,7 @@ export default function ReviewSession({ api, haptic, onClose }) {
     try {
       const data = await api('/api/answer/review/next', fam ? { family: fam } : {});
       if (!data.ok) { setError(data.error || 'Fehler'); setPhase('error'); return; }
-      if (data.done) { await loadOverview(); return; }
+      if (data.done) { setPortionDone(!!data.portion_done); await loadOverview(); return; }
       setMistakeId(data.mistake_id);
       setTask(data.task);
       setRemaining(data.remaining || 0);
@@ -80,6 +86,7 @@ export default function ReviewSession({ api, haptic, onClose }) {
       if (data.ok && data.video_done) {
         const rem = data.remaining || 0;
         setRemaining(rem);
+        setPortionDone(!!data.portion_done);
         setReviewed((n) => n + 1);
         if (rem > 0) { loadNext(family); } else { loadOverview(); }
         return;
@@ -87,6 +94,7 @@ export default function ReviewSession({ api, haptic, onClose }) {
       if (!data.ok || !data.result) { setError(data.error || 'Fehler'); setPhase('error'); return; }
       setResult(data.result);
       setRemaining(data.remaining || 0);
+      setPortionDone(!!data.portion_done);
       setReviewed((n) => n + 1);
       try { haptic?.(data.result.is_correct ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
       setPhase('result');
@@ -153,17 +161,26 @@ export default function ReviewSession({ api, haptic, onClose }) {
     );
   }
   if (phase === 'done') {
+    // Три разных конца, и путать их нельзя: порция дня добита (в очереди ещё есть) /
+    // разобрано всё до конца / ошибок не было вовсе.
+    const title = portionDone
+      ? 'Für heute geschafft!'
+      : (reviewed > 0 ? 'Alle Fehler wiederholt!' : 'Keine Fehler zur Wiederholung');
+    let sub;
+    if (portionDone) {
+      // Число берём с сервера, а не из счётчика сессии: человек мог добить порцию
+      // раньше и зайти снова — тогда reviewed равен нулю, и «ты разобрал 0» было бы враньём.
+      sub = `Die Tagesportion von ${portionSize} Fehlern ist geschafft. Morgen warten die nächsten ${portionSize} 🔁`;
+    } else if (reviewed > 0) {
+      sub = `Du hast ${reviewed} ${reviewed === 1 ? 'Fehler' : 'Fehler'} wiederholt. Die nächsten kommen zur richtigen Zeit wieder 🔁`;
+    } else {
+      sub = 'Sobald du irgendwo einen Fehler machst, taucht er hier zur Wiederholung auf.';
+    }
     return (
       <Root>
-        <div className="ans-verdict" style={{ fontSize: 44, textAlign: 'center' }}>{reviewed > 0 ? '🎉' : '✨'}</div>
-        <div className="ans-verdict" style={{ textAlign: 'center' }}>
-          {reviewed > 0 ? 'Alle Fehler wiederholt!' : 'Keine Fehler zur Wiederholung'}
-        </div>
-        <p className="ans-sub" style={{ textAlign: 'center' }}>
-          {reviewed > 0
-            ? `Du hast ${reviewed} ${reviewed === 1 ? 'Fehler' : 'Fehler'} wiederholt. Die nächsten kommen zur richtigen Zeit wieder 🔁`
-            : 'Sobald du irgendwo einen Fehler machst, taucht er hier zur Wiederholung auf.'}
-        </p>
+        <div className="ans-verdict" style={{ fontSize: 44, textAlign: 'center' }}>{(portionDone || reviewed > 0) ? '🎉' : '✨'}</div>
+        <div className="ans-verdict" style={{ textAlign: 'center' }}>{title}</div>
+        <p className="ans-sub" style={{ textAlign: 'center' }}>{sub}</p>
         <button className="ans-btn" onClick={onClose}>Schließen</button>
       </Root>
     );

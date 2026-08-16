@@ -35285,10 +35285,12 @@ async def _send_mistake_review_reminders(context: CallbackContext) -> None:
         n = int(u.get("count") or 0)
         if uid <= 0 or n <= 0:
             continue
+        # n — сегодняшняя порция (максимум 30), а не вся очередь. Число вроде «185»
+        # не зовёт разбирать, а отпугивает: догнать такое нельзя.
         caption = (
             f"🔁 <b>Работа над ошибками</b>\n\n"
-            f"У тебя <b>{n}</b> на повтор — разбери их, пока не закрепились неправильно. "
-            f"Это самый быстрый способ реально подтянуть грамматику 👇"
+            f"На сегодня — <b>{n}</b> на повтор. Разбери их, пока не закрепились неправильно: "
+            f"это самый быстрый способ реально подтянуть грамматику 👇"
         )
         try:
             if poster:
@@ -35329,8 +35331,8 @@ async def review_mistakes_command(update: Update, context: CallbackContext) -> N
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         "🧩 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
     if n > 0:
-        caption = (f"🔁 <b>Работа над ошибками</b>\n\nУ тебя <b>{n}</b> на повтор — "
-                   "разбери их, пока не закрепились неправильно 👇")
+        caption = (f"🔁 <b>Работа над ошибками</b>\n\nНа сегодня — <b>{n}</b> на повтор. "
+                   "Разбери их, пока не закрепились неправильно 👇")
         poster = None
         try:
             from backend.interactive_card import render_review_card

@@ -25,6 +25,8 @@ export default function WoFrageReviewGame({ api, haptic, onClose, onBack }) {
   const [pick, setPick] = useState(null);
   const [stats, setStats] = useState({ correct: 0, answered: 0 });
   const [remaining, setRemaining] = useState(0);
+  // Порция дня добита, а очередь ещё не пуста — концовка должна говорить именно это.
+  const [portionDone, setPortionDone] = useState(false);
   const card = cards[idx];
   const wide = useWideScreen();   // планшет: потолок кегля задаёт CSS
   const phraseFit = useFitText(`${wide}|${card ? String(card.s || '') : idx}`, { max: wide ? 'css' : 30 });
@@ -40,6 +42,7 @@ export default function WoFrageReviewGame({ api, haptic, onClose, onBack }) {
       const list = data.cards || [];
       setCards(list);
       setRemaining(data.remaining || 0);
+      setPortionDone(!!data.portion_done);
       setIdx(0); setPick(null); setStats({ correct: 0, answered: 0 });
       setPhase(list.length ? 'learning' : 'done');
     } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); }
@@ -87,7 +90,10 @@ export default function WoFrageReviewGame({ api, haptic, onClose, onBack }) {
         <div className="as-cert-medal">{answered > 0 ? '🎉' : '✨'}</div>
         <div className="as-cert-place">{answered > 0 ? 'Fehler wiederholt!' : 'Keine Wo-Fragen-Fehler'}</div>
         {answered > 0 ? <div className="as-cert-sub">{correct} из {answered} верно · {pct}%</div> : null}
-        <div className="as-cert-foot">Следующие вернутся в нужное время 🔁</div>
+        <div className="as-cert-foot">
+          {portionDone ? 'На сегодня всё — завтра ждут следующие 30 🔁'
+                       : 'Следующие вернутся в нужное время 🔁'}
+        </div>
       </div>
       {onBack ? <button className="ans-btn" onClick={onBack}>← К разделам</button> : null}
       <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>

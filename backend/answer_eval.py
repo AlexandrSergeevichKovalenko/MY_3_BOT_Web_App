@@ -1900,11 +1900,23 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
 _REVIEW_FORMATS = {"cloze", "wortbildung", "wortgruppe", "transform", "error", "satzbau", "adjektiv", "video"}
 
 
+def _portion_done(user_id: int) -> bool:
+    """Сегодняшняя порция добита, но в очереди ещё есть — значит «на сегодня всё»,
+    а не «все ошибки разобраны»."""
+    from backend.database import review_portion_left, count_due_mistakes_in_queue
+    return review_portion_left(int(user_id)) <= 0 and count_due_mistakes_in_queue(int(user_id)) > 0
+
+
 def review_overview(*, user_id: int) -> dict:
     """Sections of работа над ошибками with their due-counts, so the client can show a
-    dedicated 'Artikel' block separate from the grammar drills. Empty sections are omitted."""
-    from backend.database import count_due_mistakes_by_family
+    dedicated 'Artikel' block separate from the grammar drills. Empty sections are omitted.
+
+    `portion_done` — сегодняшняя порция разобрана, а очередь ещё не пуста. Экран тогда
+    говорит «на сегодня всё, завтра следующие 30», а не «все ошибки разобраны»: второе
+    было бы неправдой при 155 в очереди."""
+    from backend.database import count_due_mistakes_by_family, REVIEW_DAILY_PORTION
     c = count_due_mistakes_by_family(int(user_id))
+    portion_done = int(c.get("total", 0)) <= 0 and _portion_done(int(user_id))
     sections = []
     if int(c.get("artikel", 0)) > 0:
         sections.append({"family": "artikel", "emoji": "⚡",
@@ -1918,7 +1930,8 @@ def review_overview(*, user_id: int) -> dict:
         sections.append({"family": "grammar", "emoji": "🧩",
                          "title_de": "Grammatik", "title_ru": "Грамматика",
                          "subtitle_de": "Sätze, Lücken, Wortgruppen", "count": int(c["grammar"])})
-    return {"kind": "review", "sections": sections, "total": int(c.get("total", 0))}
+    return {"kind": "review", "sections": sections, "total": int(c.get("total", 0)),
+            "portion_done": bool(portion_done), "portion_size": REVIEW_DAILY_PORTION}
 
 
 def load_review_next(*, user_id: int, family: str | None = None) -> dict:
@@ -1930,10 +1943,12 @@ def load_review_next(*, user_id: int, family: str | None = None) -> dict:
         fam = None
     remaining = count_due_mistakes(int(user_id), family=fam)
     if remaining <= 0:
-        return {"kind": "review", "done": True, "remaining": 0, "family": fam}
+        return {"kind": "review", "done": True, "remaining": 0, "family": fam,
+                "portion_done": _portion_done(int(user_id))}
     m = get_next_due_mistake(int(user_id), family=fam)
     if not m:
-        return {"kind": "review", "done": True, "remaining": 0, "family": fam}
+        return {"kind": "review", "done": True, "remaining": 0, "family": fam,
+                "portion_done": _portion_done(int(user_id))}
     return {
         "kind": "review",
         "done": False,
@@ -1984,7 +1999,8 @@ def load_artikel_review_batch(*, user_id: int, limit: int = 20) -> dict:
         import logging
         logging.debug("artikel review lazy audio fill skipped", exc_info=True)
     return {"kind": "artikel_review", "cards": cards,
-            "remaining": count_due_mistakes(int(user_id), family="artikel")}
+            "remaining": count_due_mistakes(int(user_id), family="artikel"),
+            "portion_done": bool(not cards and _portion_done(int(user_id)))}
 
 
 def answer_artikel_review(*, user_id: int, mistake_id: int, is_correct: bool) -> dict:
@@ -2027,7 +2043,8 @@ def load_wofrage_review_batch(*, user_id: int, limit: int = 20) -> dict:
             "frage_ru": frage_ru_for_item(p),
         })
     return {"kind": "wofrage_review", "cards": cards,
-            "remaining": count_due_mistakes(int(user_id), family="wofrage")}
+            "remaining": count_due_mistakes(int(user_id), family="wofrage"),
+            "portion_done": bool(not cards and _portion_done(int(user_id)))}
 
 
 def answer_wofrage_review(*, user_id: int, mistake_id: int, is_correct: bool) -> dict:
@@ -2059,8 +2076,9 @@ def evaluate_review(*, user_id: int, mistake_id: int, answer: str,
         # it never resurfaces, and hand the client a plain "done, load next" signal.
         from backend.database import consume_video_review
         consume_video_review(user_id=int(user_id), mistake_id=int(mistake_id))
-        return {"kind": "review", "video_done": True,
-                "remaining": count_due_mistakes(int(user_id), family=fam)}
+        rem = count_due_mistakes(int(user_id), family=fam)
+        return {"kind": "review", "video_done": True, "remaining": rem,
+                "portion_done": bool(rem <= 0 and _portion_done(int(user_id)))}
     # Grade with the EXACT same logic (incl. LLM-judge fallbacks) as the live task, so a
     # valid answer isn't rejected here — otherwise the item would never advance to
     # "mastered" and would reappear forever ("I answered correctly but it keeps coming back").
@@ -2071,8 +2089,9 @@ def evaluate_review(*, user_id: int, mistake_id: int, answer: str,
         is_correct=is_correct, already_answered=False, user_answer=str(answer or ""),
         wrong_reason=wrong_reason,
     )
-    return {"kind": "review", "result": result,
-            "remaining": count_due_mistakes(int(user_id), family=fam)}
+    rem = count_due_mistakes(int(user_id), family=fam)
+    return {"kind": "review", "result": result, "remaining": rem,
+            "portion_done": bool(rem <= 0 and _portion_done(int(user_id)))}
 
 
 def _norm_sentence(s: str) -> str:

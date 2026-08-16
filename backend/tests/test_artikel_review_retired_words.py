@@ -70,6 +70,13 @@ class ArtikelReviewSkipsRetiredWordsTests(unittest.TestCase):
         self.assertIn("bt_3_article_sprint_nouns", sql, where)
         self.assertIn("COALESCE(an.retired, FALSE) = FALSE", sql, where)
 
+    def _due_query(self, cur, where: str) -> str:
+        """Запрос выборки просроченного среди всех, что ушли в базу. По номеру его брать
+        нельзя: перед ним идёт свой запрос — сколько осталось из сегодняшней порции."""
+        found = [s for s in cur.sql_log if "m.due_at<=NOW()" in s or "m.due_at <= NOW()" in s]
+        self.assertTrue(found, f"{where}: не нашёл запрос по просроченным")
+        return found[0]
+
     def test_two_gender_flag_reaches_the_card(self):
         # Двуродовое слово отвечаемо только с переводом, значит признак должен доехать
         # до карточки разбора — иначе игрок видит «Flur» и гадает.
@@ -99,13 +106,16 @@ class ArtikelReviewSkipsRetiredWordsTests(unittest.TestCase):
     def test_counters_do_not_count_retired_words(self):
         # Счётчик «осталось N» должен совпадать с тем, что реально покажут.
         _, cur = self._run(lambda: db.count_due_mistakes(1, family="artikel"), one=(0,))
-        self._asserts_live_word_guard(cur.sql_log[0], "счётчик count_due_mistakes")
+        self._asserts_live_word_guard(self._due_query(cur, "счётчик count_due_mistakes"),
+                                      "счётчик count_due_mistakes")
         _, cur2 = self._run(lambda: db.count_due_mistakes_by_family(1), one=(0, 0, 0, 0))
-        self._asserts_live_word_guard(cur2.sql_log[0], "счётчик по секциям")
+        self._asserts_live_word_guard(self._due_query(cur2, "счётчик по секциям"),
+                                      "счётчик по секциям")
 
     def test_next_due_mistake_skips_retired_words(self):
         _, cur = self._run(lambda: db.get_next_due_mistake(1, family="artikel"), rows=[])
-        self._asserts_live_word_guard(cur.sql_log[0], "get_next_due_mistake")
+        self._asserts_live_word_guard(self._due_query(cur, "get_next_due_mistake"),
+                                      "get_next_due_mistake")
 
     def test_learn_deck_review_skips_retired_words(self):
         _, cur = self._run(lambda: db.get_article_learn_review_words(1, 8), rows=[])
