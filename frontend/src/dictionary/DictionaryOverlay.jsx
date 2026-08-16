@@ -7,6 +7,7 @@ import LiveExamples from './LiveExamples';
 import { guessPair, buildDictionarySavePayload } from './saveUtils';
 import { languageName, resolvePair, parsePairCode, pairCode, flipPair, DEFAULT_PAIR } from './langPair.js';
 import { humanizeDictError } from './errors.js';
+import ProFeatureModal from '../components/ProFeatureModal';
 
 /**
  * Lightweight "quick dictionary" overlay — a compact bottom-sheet translator
@@ -65,6 +66,34 @@ function dirToPair(dir) {
 // thin local alias so the ~9 call sites below stay unchanged.
 const friendlyError = humanizeDictError;
 
+// «20 слов», «21 слово», «22 слова» — окно нормы называет число так, как человек говорит.
+function wordsPlural(n) {
+  const abs = Math.abs(Number(n) || 0) % 100;
+  const tail = abs % 10;
+  if (abs > 10 && abs < 20) return 'слов';
+  if (tail === 1) return 'слово';
+  if (tail >= 2 && tail <= 4) return 'слова';
+  return 'слов';
+}
+
+// Время сброса нормы берём ИЗ ОТВЕТА СЕРВЕРА (reset_at — ближайшая полночь по Вене) и
+// печатаем по Вене же. Поля нет или оно нечитаемо — предложение про сброс не печатаем
+// вовсе: назвать час, которого нам не сказали, значит соврать человеку.
+function resetClause(resetAt) {
+  const raw = String(resetAt || '').trim();
+  if (!raw) return '';
+  const at = new Date(raw);
+  if (Number.isNaN(at.getTime())) return '';
+  try {
+    const hhmm = new Intl.DateTimeFormat('ru-RU', {
+      timeZone: 'Europe/Vienna', hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(at);
+    return ` Норма обновится в ${hhmm} по Вене.`;
+  } catch (_e) {
+    return '';
+  }
+}
+
 // The German side of a quick result when it's a lone noun (single capitalized token)
 // still lacking an article — mirrors the backend's noun-candidate check. When this is
 // non-empty the article is being filled in the background and we should poll for it.
@@ -122,29 +151,37 @@ function bumpChipHintCount() {
 // Hardcoded final fallback so the button always has a real handle even if the API omits it.
 const DICT_BOT_USERNAME_FALLBACK = 'Ich_Deutsch_bot';
 
-function DictBlockedGate({ botUsername }) {
+// Открыть бота (при желании — сразу на нужном экране мини-аппа через startapp).
+// Одна реализация на оба места: экран «бот заблокирован» и окно дневной нормы. Раньше
+// она лежала внутри экрана-заглушки, и второй вызывающий получил бы её копию.
+function openBotLink(botUsername, startParam = '') {
   const uname = (String(botUsername || '').replace(/^@/, '').trim()) || DICT_BOT_USERNAME_FALLBACK;
-  const openBot = () => {
-    const https = `https://t.me/${uname}`;
-    const tg = window?.Telegram?.WebApp;
-    try {
-      // Inside Telegram (initData present) → native opener. Otherwise we're the detached PWA.
-      if (tg && tg.initData && typeof tg.openTelegramLink === 'function') {
-        tg.openTelegramLink(https);
-        return;
-      }
-    } catch (_e) { /* fall through */ }
-    // Detached home-screen PWA: jump straight into the Telegram app via the tg:// scheme.
-    // If that scheme isn't handled (no app), fall back to the universal https link — but skip
-    // the fallback if the app actually opened (page went hidden), so we don't also load t.me.
-    let done = false;
-    try { window.location.href = `tg://resolve?domain=${uname}`; } catch (_e) { /* ignore */ }
-    setTimeout(() => {
-      if (done || document.hidden) return;
-      done = true;
-      try { window.location.href = https; } catch (_e) { /* ignore */ }
-    }, 800);
-  };
+  const start = String(startParam || '').trim();
+  const https = `https://t.me/${uname}${start ? `?startapp=${start}` : ''}`;
+  const tgApp = window?.Telegram?.WebApp;
+  try {
+    // Inside Telegram (initData present) → native opener. Otherwise we're the detached PWA.
+    if (tgApp && tgApp.initData && typeof tgApp.openTelegramLink === 'function') {
+      tgApp.openTelegramLink(https);
+      return;
+    }
+  } catch (_e) { /* fall through */ }
+  // Detached home-screen PWA: jump straight into the Telegram app via the tg:// scheme.
+  // If that scheme isn't handled (no app), fall back to the universal https link — but skip
+  // the fallback if the app actually opened (page went hidden), so we don't also load t.me.
+  let done = false;
+  try {
+    window.location.href = `tg://resolve?domain=${uname}${start ? `&startapp=${start}` : ''}`;
+  } catch (_e) { /* ignore */ }
+  setTimeout(() => {
+    if (done || document.hidden) return;
+    done = true;
+    try { window.location.href = https; } catch (_e) { /* ignore */ }
+  }, 800);
+}
+
+function DictBlockedGate({ botUsername }) {
+  const openBot = () => openBotLink(botUsername);
   return (
     <div className="ans-root dq-scroll">
       <div className="ans-card dq-card">
@@ -179,6 +216,9 @@ export default function DictionaryOverlay({ onClose } = {}) {
   const [sharing, setSharing] = useState(false);
   const [save, setSave] = useState('idle');   // idle|saving|done
   const [cardSave, setCardSave] = useState('idle'); // idle|done — «Учить» (SRS)
+  // Дневная норма сохранений кончилась. Держим ответ сервера целиком: числа в окне —
+  // его, а не наши. {used, limit, resetAt}
+  const [saveLimit, setSaveLimit] = useState(null);
   const [savedChips, setSavedChips] = useState(() => new Set()); // synonyms/collocations tapped to save
   const [error, setError] = useState('');
   const [forcedDir, setForcedDir] = useState(null); // null=auto, else 'ru-de'|'de-ru'
@@ -835,15 +875,46 @@ export default function DictionaryOverlay({ onClose } = {}) {
     }));
   }, [item, enrich, quick, query, proofreadSource, chosenEntry]);
 
+  // Сохранение не прошло. Дневная норма — это не ошибка, а понятное состояние, и у
+  // приложения для него есть своё окно (ProFeatureModal, им же закрыты озвучка книги и
+  // русские субтитры). Всё остальное — прежней строкой.
+  //
+  // Почему окно, а не строка: строка ошибки в этом экране рисуется только при
+  // phase === 'error', а после удачного перевода phase === 'done'. Отказ сохранения
+  // менял только текст ошибки — и не показывал его никому. 16.08.2026 сервер отказал
+  // пять раз подряд, человек видел лишь мигнувшую галочку.
+  const reportSaveFailure = useCallback((e) => {
+    haptic('bad');
+    const payload = (e && e.payload) || {};
+    // Именно норма сохранений. Другой лимит (например «Разбор новых слов») сюда не
+    // попадает: у него свой текст, и подписать его этим окном значило бы соврать.
+    //
+    // Числа в окне — только настоящие, из ответа сервера. Пустого места вместо цифры и
+    // придуманной «двадцатки» здесь нет: если сервер прислал отказ без чисел, это
+    // сломанный контракт (build_free_limit_error всегда кладёт used и limit) — тогда
+    // окно не открываем, печатаем его же готовое сообщение строкой и кричим в консоль,
+    // чтобы поломка была видна, а не замазана.
+    if (payload.error === 'free_limit_exceeded' && payload.feature === 'dictionary_lookup_save_daily') {
+      const used = Number(payload.used);
+      const limit = Number(payload.limit);
+      if (Number.isFinite(used) && Number.isFinite(limit)) {
+        setSaveLimit({ used, limit, resetAt: String(payload.reset_at || '').trim() });
+        return;
+      }
+      console.error('save limit refusal without numbers', payload);
+    }
+    setError(friendlyError(e));
+  }, []);
+
   const onSave = useCallback(() => {
     if (save !== 'idle') return;
     setSave('done'); setError('');
     haptic('ok');
     (async () => {
       try { await persistEntry(); }
-      catch (e) { setSave('idle'); setError(friendlyError(e)); haptic('bad'); }
+      catch (e) { setSave('idle'); reportSaveFailure(e); }
     })();
-  }, [save, persistEntry]);
+  }, [save, persistEntry, reportSaveFailure]);
 
   // «Учить»: save the word AND queue it into the manual SRS training selection.
   const onAddToCards = useCallback(() => {
@@ -859,10 +930,10 @@ export default function DictionaryOverlay({ onClose } = {}) {
         }
       } catch (e) {
         setCardSave('idle');
-        setError(friendlyError(e)); haptic('bad');
+        reportSaveFailure(e);
       }
     })();
-  }, [cardSave, persistEntry]);
+  }, [cardSave, persistEntry, reportSaveFailure]);
 
   // Tap a synonym / collocation / antonym / related word → save it to the dictionary.
   const saveChip = useCallback((text) => {
@@ -908,10 +979,10 @@ export default function DictionaryOverlay({ onClose } = {}) {
         }));
       } catch (e) {
         setSavedChips((prev) => { const n = new Set(prev); n.delete(t); return n; });
-        setError(friendlyError(e)); haptic('bad');
+        reportSaveFailure(e);
       }
     })();
-  }, []);
+  }, [reportSaveFailure]);
 
   // Tap an example SENTENCE → save it through the SAME canonical pipeline as chips,
   // but as a full sentence (not a noun lookup): we already have its German text + the
@@ -953,10 +1024,10 @@ export default function DictionaryOverlay({ onClose } = {}) {
         }));
       } catch (e) {
         setSavedChips((prev) => { const n = new Set(prev); n.delete(src); return n; });
-        setError(friendlyError(e)); haptic('bad');
+        reportSaveFailure(e);
       }
     })();
-  }, []);
+  }, [reportSaveFailure]);
 
   // Share this breakdown — SAME pattern as «Полный разбор»: one fast call mints a
   // durable share token, then open Telegram's native share sheet with the deep-link.
@@ -1398,6 +1469,11 @@ export default function DictionaryOverlay({ onClose } = {}) {
                   {cardSave === 'done' ? '✅ В карточках' : '📚 Учить'}
                 </button>
               </div>
+              {/* Отказ сохранения виден ЗДЕСЬ, у кнопок, которыми человек его вызвал.
+                  Обе плашки выше показываются только при phase === 'error', а после
+                  удачного перевода phase === 'done' — из-за этого любой отказ (сеть,
+                  сервер, лимит) уходил в невидимое состояние. */}
+              {error && phase !== 'error' && <div className="dd-err" role="status">{error}</div>}
             </div>
           </div>
         )}
@@ -1417,6 +1493,28 @@ export default function DictionaryOverlay({ onClose } = {}) {
             Нажми на слово в блоках <b>«Синонимы»</b>, <b>«Антонимы»</b> или в примерах — и оно сохранится в твой словарь для изучения.
           </span>
         </div>
+      )}
+
+      {/* Дневная норма сохранений кончилась. Числа — из ответа сервера. */}
+      {saveLimit && (
+        <ProFeatureModal
+          isOpen
+          onClose={() => setSaveLimit(null)}
+          onUpgrade={() => {
+            setSaveLimit(null);
+            openBotLink(DICT_BOT_USERNAME_FALLBACK, 'subscription');
+          }}
+          tr={(ru) => ru}
+          badge="💾 Дневная норма"
+          emoji="💾"
+          title={`Сегодня сохранено ${saveLimit.used} ${wordsPlural(saveLimit.used)} — это дневная норма`}
+          intro={`На бесплатном тарифе можно сохранять ${saveLimit.limit} новых ${wordsPlural(saveLimit.limit)} и фраз в день.${resetClause(saveLimit.resetAt)}`}
+          bullets={[
+            'Слова из заданий, игр и видео норму не тратят — их сохраняй сколько угодно',
+            'Норму тратят только новые слова и фразы, которых у нас ещё нет',
+            'С «Полным доступом» нормы нет совсем',
+          ]}
+        />
       )}
     </div>
   );

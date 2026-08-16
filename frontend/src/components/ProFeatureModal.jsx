@@ -8,6 +8,10 @@ import './ProFeatureModal.css';
  * fullscreen overlay like the reader, had no back button and wouldn't scroll).
  * Generic: pass a title, an intro line and optional bullets. Primary CTA → onUpgrade
  * (open the subscription cleanly), secondary → onClose (stay where you are).
+ *
+ * `badge` переопределяет верхнюю плашку. Нужно там, где окно показывается НЕ из-за
+ * платной функции, а из-за дневной нормы: норма бесплатная, просто закончилась, и
+ * подпись «Функция «Полного доступа»» там врёт. Не передали — остаётся прежняя.
  */
 export default function ProFeatureModal({
   isOpen,
@@ -18,6 +22,7 @@ export default function ProFeatureModal({
   title,
   intro,
   bullets = [],
+  badge,
 }) {
   if (!isOpen) return null;
   // Portal to <body> so the plaque sits above the fullscreen reader (which establishes
@@ -28,7 +33,7 @@ export default function ProFeatureModal({
       <button type="button" className="profeat-backdrop" aria-label={tr('Закрыть', 'Schließen')} onClick={onClose} />
       <div className="profeat-card" onClick={(e) => e.stopPropagation()}>
         <button type="button" className="profeat-close" aria-label={tr('Закрыть', 'Schließen')} onClick={onClose}>×</button>
-        <div className="profeat-badge">👑 {tr('Функция «Полного доступа»', 'Funktion mit vollem Zugang')}</div>
+        <div className="profeat-badge">{badge || <>👑 {tr('Функция «Полного доступа»', 'Funktion mit vollem Zugang')}</>}</div>
         <div className="profeat-emoji">{emoji}</div>
         <h3 className="profeat-title">{title}</h3>
         {intro ? <p className="profeat-intro">{intro}</p> : null}
