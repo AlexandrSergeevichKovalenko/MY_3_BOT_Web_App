@@ -4697,6 +4697,9 @@ STRICT:
   Handschuh), "die Papiere" (← das Papier) are WRONG — return the singular instead.
   EXCEPTION — nouns that normally have NO singular: keep them plural and give "die"
   (die Eltern, die Kosten, die Leute, die Ferien, die Geschwister, die Lebensmittel).
+  Also fine (these are SINGULARS that merely look plural, keep them): nominalized verbs
+  das Angeln, das Duschen, das Leuchten; and der Westen, der Fächer, die Winde,
+  das Leinen, die Kohle, die Montage, der Felsen.
   Test: if the singular exists and is the ordinary dictionary form, use the singular.
 - NO nominalized adjectives/participles that denote a PERSON (e.g. Vorsitzende,
   Vorstandsvorsitzende, Angestellte, Abgeordnete, Studierende, Reisende, Verwandte,
@@ -4729,8 +4732,20 @@ For EACH item decide whether "<article> <word>" is correct, standard, UNAMBIGUOU
   (← der Handschuh), die Papiere (← das Papier), die Beiträge (← der Beitrag). The drill
   asks for the singular article, so a plural headword makes the question unanswerable.
   Use reason "plural_form".
-  Do NOT reject nouns that normally have no singular — die Eltern, die Kosten, die Leute,
-  die Ferien, die Geschwister, die Lebensmittel, die Schulden are CORRECT as they are.
+  Reject ONLY a form that is genuinely the plural of THIS same noun. Do NOT reject:
+   • nouns that normally have no singular: die Eltern, die Kosten, die Leute, die Ferien,
+     die Geschwister, die Lebensmittel, die Schulden;
+   • nominalized verbs, which are neuter singulars and only LOOK like plurals:
+     das Angeln (fishing), das Duschen (showering), das Leuchten (glowing),
+     das Streben (striving), das Essen (food), das Leben (life);
+   • standalone singulars that merely resemble the plural of a DIFFERENT word:
+     der Westen (west — NOT the plural of die Weste), der Fächer (fan — NOT of das Fach),
+     die Winde (bindweed/winch — NOT of der Wind), das Leinen (linen — NOT of die Leine),
+     die Kohle (coal — NOT of der Kohl), die Montage (assembly — NOT of der Montag),
+     der Felsen (rock — a valid singular next to der Fels), der Socken (sock — a valid
+     singular variant of die Socke).
+  The test is meaning, not spelling: if "<article> <word>" is a normal singular with its
+  own meaning, it is ok=true even when some other noun's plural is spelled the same.
 - COMPOUND RULE (apply ALWAYS): a compound noun takes the gender of its LAST element.
   e.g. der Schädelbruch (← der Bruch), der Bandriss (← der Riss), das Röntgengerät
   (← das Gerät), die Tagesklinik (← die Klinik). Decide the article from the head word.
