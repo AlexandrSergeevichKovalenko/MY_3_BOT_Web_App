@@ -468,6 +468,16 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
     from backend.german_grammar_tables import german_headword_case
     german_display = german_headword_case((de_side or {}).get("display") or "",
                                           (de_side or {}).get("pos"))
+    # АРТИКЛЬ К СУЩЕСТВИТЕЛЬНОМУ. Род у слова есть, а в написании его может не быть:
+    # часть единиц заведена как «das Haus», часть как «Gericht». Владелец 16.08.2026:
+    # «Gericht → суд · блюдо, а где артикль?» — род у него стоял, das, просто выдача
+    # справочника его не приклеивала, в отличие от карточки (compose_german_headword).
+    # Существительное без артикля учить нельзя: род — половина слова.
+    _gender = str((de_side or {}).get("gender") or "").strip().lower()
+    if (german_display and _gender in {"der", "die", "das"}
+            and (de_side or {}).get("pos") == "noun"
+            and not _ANY_ARTICLE_RE.match(german_display)):
+        german_display = f"{_gender} {german_display}"
     native_display = (ru_side or {}).get("display") or ""
 
     item: dict[str, Any] = dict(card)

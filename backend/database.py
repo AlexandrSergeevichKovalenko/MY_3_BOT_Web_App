@@ -23755,6 +23755,23 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 "UPDATE bt_3_lex_units SET display=%s, lemma=%s, lemma_key=%s WHERE id=%s;",
                 (new_text, new_text, key, unit_id),
             )
+            # ЗАГОЛОВОК В КАРТОЧКАХ ЛЮДЕЙ ТОЖЕ. Раньше правка меняла только слово в
+            # справочнике, а карточка продолжала показывать старый текст — и именно он
+            # виден крупно на повторении. Владелец 16.08.2026 показал это на фразе
+            # «Daher vornehme ich Korrekturen selbst»: в справочнике уже лежало верное
+            # «Daher nehme ich Korrekturen selbst vor», разбор и пример были верные, а
+            # заголовок карточки — прежний, с неправильно оторванной приставкой.
+            #
+            # Меняем ТОЛЬКО те карточки, где лежит ровно старый текст: карточка может
+            # хранить свою форму слова («Die Strümpfe» при слове «Strumpf»), и её
+            # трогать нельзя.
+            for _column in ("word_de", "translation_de"):
+                cursor.execute(
+                    "UPDATE bt_3_webapp_dictionary_queries SET " + _column + " = %s, "
+                    "updated_at = NOW() WHERE lex_unit_id = %s "
+                    "AND lower(btrim(" + _column + ")) = lower(btrim(%s));",
+                    (new_text, unit_id, old_text),
+                )
             cursor.execute(
                 """INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
                    VALUES ('de', %s, %s, 'exact') ON CONFLICT DO NOTHING;""",

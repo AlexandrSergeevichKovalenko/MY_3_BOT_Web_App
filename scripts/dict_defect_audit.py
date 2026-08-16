@@ -318,6 +318,45 @@ def audit_visible_dumps(cur, screen, names, examples: int) -> None:
         print("      %-22s → %s" % (german[:22], russian[:80]))
 
 
+def audit_card_headword_vs_unit(cur, examples: int) -> None:
+    """Заголовок карточки против слова справочника.
+
+    ЗАЧЕМ ЭТОТ ПУНКТ ПОЯВИЛСЯ. 16.08.2026 владелец показал фразу, где в карточке
+    стояло «Daher vornehme ich Korrekturen selbst», а в справочнике — верное
+    «Daher nehme ich Korrekturen selbst vor». Он сам принимал это исправление на
+    экране разбора спорных фраз; правка ушла на слово, а карточка осталась прежней —
+    и именно её заголовок виден крупно на повторении.
+
+    Отчёт этого не ловил, потому что мерил ТОЛЬКО справочник. Заголовок карточки —
+    отдельное поле (word_de), и с ним никто ничего не сравнивал. Нашлось 837 расхождений,
+    из них 804 — после принятых исправлений.
+
+    Считаем только ФРАЗЫ: у слова карточка может законно держать свою форму
+    («Die Strümpfe» при слове «Strumpf»)."""
+    print("\n" + "═" * 78)
+    print("6. ЗАГОЛОВОК КАРТОЧКИ ОТСТАЛ ОТ ИСПРАВЛЕННОГО СЛОВА")
+    print("═" * 78)
+    cur.execute(
+        """
+        SELECT q.id, q.word_de, u.display, u.card_source
+        FROM bt_3_webapp_dictionary_queries q
+        JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
+        WHERE u.lang = 'de' AND u.kind <> 'word'
+          AND q.word_de IS NOT NULL AND BTRIM(q.word_de) <> ''
+          AND LOWER(BTRIM(q.word_de)) <> LOWER(BTRIM(u.display));
+        """
+    )
+    rows = [r for r in cur.fetchall() if norm(r[1]) != norm(r[2])]
+    after_review = [r for r in rows if r[3] == "пересборка после правки"]
+    say("ДЕФЕКТ" if rows else "ЧИСТО",
+        "карточка показывает не то, что лежит в справочнике",
+        "%d (после принятых правок %d)" % (len(rows), len(after_review)),
+        "0 — подтянуто 16.08.2026", "16.08.2026")
+    for entry_id, word, display, _src in rows[:examples]:
+        print("      карточка %-7s %s" % (entry_id, str(word)[:56]))
+        print("                     %s" % str(display)[:56])
+
+
 # ═══ 3. Регистр ═════════════════════════════════════════════════════════════════
 def audit_capitals(cur, screen, names, examples: int) -> None:
     print("\n" + "═" * 78)
@@ -521,6 +560,7 @@ def main() -> None:
             audit_demoted(cur, args.list)
             audit_visible_dumps(cur, screen, names, args.list)
             audit_capitals(cur, screen, names, args.list)
+            audit_card_headword_vs_unit(cur, args.list)
             audit_duplicates(cur, screen, names, args.list)
             audit_german_capitals(cur, args.list)
             audit_separable_gap_tasks(cur, args.list)
