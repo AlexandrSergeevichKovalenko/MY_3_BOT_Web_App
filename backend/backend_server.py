@@ -196,6 +196,7 @@ from backend.job_queue import (
 from backend.translation_workflow import _extract_correct_translation
 from backend.german_grammar_tables import (
     build_grammar_tables,
+    german_headword_case,
     looks_like_zu_infinitive as _GRAMMAR_LOOKS_LIKE_ZU_INFINITIVE,
     strip_zu_infinitive as _GRAMMAR_STRIP_ZU_INFINITIVE,
 )
@@ -10153,6 +10154,21 @@ def _prepare_dictionary_response_json_for_save(
         source_lang=source_lang,
         target_lang=target_lang,
     )
+    # СТРАЖ НА ВХОДЕ: регистр немецкого заголовка. В немецком с заглавной пишутся
+    # только существительные, а сохранение приносит «Abbuchen», «Akut», «Nahtlos» —
+    # особенно когда слово попало в словарь из начала предложения. Замер 15.08.2026:
+    # 357 карточек уже лежат так. На ПОКАЗЕ это правило стоит (compose_german_headword,
+    # _build_item), но без заслона здесь каждое новое слово ложилось бы криво снова.
+    # Работает только для ОДНОГО слова и только при явно неименной части речи: у фразы
+    # заглавная законна, а пустая часть речи прячет имена собственные.
+    _pos_for_case = str(payload.get("part_of_speech") or "").strip()
+    for _key in ("word_de", "translation_de"):
+        _value = str(payload.get(_key) or "").strip()
+        if _value and " " not in _value:
+            _fixed = german_headword_case(_value, _pos_for_case)
+            if _fixed != _value:
+                payload[_key] = _fixed
+
     # СТРАЖ НА ВХОДЕ: одно значение не ложится в базу дважды. Модель повторяет его,
     # меняя пояснение («утилизировать — процесс удаления отходов» и «утилизировать —
     # основное значение»), и человек видит пять значений там, где их три. Замер

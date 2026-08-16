@@ -69,3 +69,47 @@ def test_unknown_part_of_speech_is_not_touched():
 def test_already_lowercase_is_untouched():
     assert headword("gehen", "verb") == "gehen"
     assert headword("", "verb") == ""
+
+
+# ── страж на сохранении ───────────────────────────────────────────────────────
+
+def test_save_lowercases_a_verb_headword():
+    """Без заслона на входе каждое новое слово ложилось бы криво снова.
+
+    Правило показа чинит уже накопленное, но новое обязано ложиться правильно сразу.
+    """
+    import backend.backend_server as bs
+    payload = bs._prepare_dictionary_response_json_for_save(
+        response_json={"part_of_speech": "verb", "word_de": "Abbuchen",
+                       "translation_de": "Abbuchen"},
+        source_text="списывать", target_text="Abbuchen",
+        source_lang="ru", target_lang="de",
+        word_ru="списывать", word_de="Abbuchen",
+        translation_de="Abbuchen", translation_ru="списывать",
+    )
+    assert payload["word_de"] == "abbuchen"
+    assert payload["translation_de"] == "abbuchen"
+
+
+def test_save_keeps_a_noun_capital():
+    import backend.backend_server as bs
+    payload = bs._prepare_dictionary_response_json_for_save(
+        response_json={"part_of_speech": "noun", "word_de": "Haus", "article": "das"},
+        source_text="дом", target_text="Haus",
+        source_lang="ru", target_lang="de",
+        word_ru="дом", word_de="Haus", translation_de="Haus", translation_ru="дом",
+    )
+    assert payload["word_de"].endswith("Haus"), "существительное остаётся с заглавной"
+
+
+def test_save_does_not_touch_a_phrase():
+    """У фразы заглавная законна — это начало предложения."""
+    import backend.backend_server as bs
+    payload = bs._prepare_dictionary_response_json_for_save(
+        response_json={"part_of_speech": "verb", "word_de": "Ich gehe nach Hause"},
+        source_text="я иду домой", target_text="Ich gehe nach Hause",
+        source_lang="ru", target_lang="de",
+        word_ru="я иду домой", word_de="Ich gehe nach Hause",
+        translation_de="Ich gehe nach Hause", translation_ru="я иду домой",
+    )
+    assert payload["word_de"].startswith("Ich")
