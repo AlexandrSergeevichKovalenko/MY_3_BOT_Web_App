@@ -6009,11 +6009,20 @@ async def handle_autosave_digest_save_callback(update: Update, context: Callback
 
     async def _bg_save() -> None:
         saved = 0
+        skipped_no_translation = 0
         for it in chosen_items:
             # Save the CANONICAL form (noun with article / verb infinitive), not raw OCR text.
             source_text = str(it.get("canonical") or it.get("term") or it.get("content") or "").strip()
             target_text = str(it.get("translation") or "").strip()
-            if not source_text or not target_text:
+            if not source_text:
+                continue
+            # Слово без перевода сохранить нельзя — карточке нужна обе стороны. Такие
+            # строки в подборку больше не попадают (backend_server), но если одна всё
+            # же дошла, мы её СЧИТАЕМ, а не глотаем: иначе на весь список приходит
+            # «Не удалось», и непонятно, что произошло. Владелец, 17.08.2026.
+            if not target_text:
+                skipped_no_translation += 1
+                logging.warning("autosave digest: пропущено без перевода item=%r", source_text)
                 continue
             # Pass the semantic_category computed at flush so the save routes to the right
             # folder WITHOUT a per-word GPT call (same folders as manual saves).
@@ -6037,6 +6046,10 @@ async def handle_autosave_digest_save_callback(update: Update, context: Callback
                 logging.exception("autosave digest save failed item=%r", source_text)
         if saved > 0:
             label = "✅ Сохранено" if saved == 1 else f"✅ Сохранено ({saved})"
+        elif skipped_no_translation:
+            # Честно называем причину: повторное нажатие тут не поможет, слова придут
+            # заново следующей ночью — уже с переводами.
+            label = "⚠️ Без перевода — придут заново ночью"
         else:
             label = "⚠️ Не удалось — попробуйте ещё раз"
         try:

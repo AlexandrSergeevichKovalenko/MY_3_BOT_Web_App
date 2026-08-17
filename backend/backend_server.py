@@ -50050,6 +50050,18 @@ _AUTOSAVE_SEMANTIC_CATEGORIES = (
 )
 
 
+def _autosave_match_key(value) -> str:
+    """Ключ, по которому ответ модели возвращается к своей входной строке.
+
+    Сравнивать «как есть» нельзя: модель поправляет разговорное написание («hab'» →
+    «habe») и иногда меняет регистр. Поэтому ключ — это строка без регистра, без
+    повторных пробелов и без апострофов и завершающей пунктуации, то есть без того,
+    что модель правит, и со всем, что она сохраняет."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    text = text.replace("'", "").replace("’", "")
+    return text.rstrip(" .!?…,;:")
+
+
 def _autosave_prepare_cards(terms: list[str], *, source_lang: str, target_lang: str) -> list[dict]:
     """ONE LLM call that, per term, returns its DICTIONARY form (noun with article, verb
     infinitive, …), a short translation, AND a semantic_category — so saved cards match manual
@@ -50065,7 +50077,11 @@ def _autosave_prepare_cards(terms: list[str], *, source_lang: str, target_lang: 
     categories = ", ".join(_AUTOSAVE_SEMANTIC_CATEGORIES)
     system_prompt = (
         f"You are a concise bilingual dictionary editor for {source_name} learners. For EACH input "
-        f"learning unit return three fields:\n"
+        f"learning unit return four fields:\n"
+        f'- "input": the input string COPIED VERBATIM, character for character. Do not fix, '
+        f"translate, shorten or re-spell it — this field is how the answer is matched back to "
+        f"the request. Never invent an entry whose input was not in the list, and never split "
+        f"one input into several entries.\n"
         f'- "canonical": its clean dictionary headword form. A NOUN → nominative singular WITH its '
         f"definite article (der/die/das). A VERB → infinitive. An adjective/adverb → base form. A "
         f"fixed phrase, grammar construction, or a full sentence → keep it as-is, only cleaned. "
@@ -50074,8 +50090,9 @@ def _autosave_prepare_cards(terms: list[str], *, source_lang: str, target_lang: 
         f"(empty string if already in {target_name} or untranslatable).\n"
         f'- "semantic_category": the single best-fitting topic from this EXACT list (use the '
         f"Russian word verbatim, or \"\" if none fits): {categories}.\n"
-        f'Return ONLY valid JSON: {{"cards": [{{"canonical": "...", "translation": "...", '
-        f'"semantic_category": "..."}}]}} with EXACTLY one object per input item, in the SAME order.'
+        f'Return ONLY valid JSON: {{"cards": [{{"input": "...", "canonical": "...", '
+        f'"translation": "...", "semantic_category": "..."}}]}} with EXACTLY one object per '
+        f"input item, in the SAME order."
     )
     user_payload = json.dumps({"items": terms}, ensure_ascii=False)
     model = _shortcut_split_model("autosave_translate", "gpt-4.1-mini")
@@ -50100,25 +50117,75 @@ def _autosave_prepare_cards(terms: list[str], *, source_lang: str, target_lang: 
         return response.choices[0].message.content or "{}"
 
     valid_categories = set(_AUTOSAVE_SEMANTIC_CATEGORIES)
-    try:
-        raw = asyncio.run(_call())
-        parsed = json.loads(raw)
+    result: list[dict] = [dict(item) for item in fallback]
+    filled: set[int] = set()
+
+    def _absorb(raw_text: str) -> None:
+        """Разложить ответ модели по входным строкам — ПО СОДЕРЖИМОМУ, не по счёту."""
+        parsed = json.loads(raw_text)
         cards = parsed.get("cards") if isinstance(parsed, dict) else None
-        if isinstance(cards, list) and len(cards) == len(terms):
-            result = []
-            for i, card in enumerate(cards):
-                card = card if isinstance(card, dict) else {}
-                canonical = str(card.get("canonical") or "").strip() or terms[i]
-                translation = str(card.get("translation") or "").strip()
-                category = str(card.get("semantic_category") or "").strip()
-                if category not in valid_categories:
-                    category = ""
-                result.append({"canonical": canonical, "translation": translation, "semantic_category": category})
-            return result
-        logging.warning("autosave: prepare-cards length mismatch terms=%d got=%s", len(terms), type(cards))
+        if not isinstance(cards, list):
+            raise ValueError("в ответе нет списка cards")
+        # Счёт совпал — сопоставляем по порядку: это самый точный способ, и именно так
+        # ответ приходит в подавляющем большинстве случаев. Не совпал — идём по эху
+        # входной строки, и тогда лишняя запись просто не находит себе места.
+        aligned = len(cards) == len(pending)
+        for position, card in enumerate(cards):
+            if not isinstance(card, dict):
+                continue
+            index = pending[position] if aligned else by_key.get(
+                _autosave_match_key(card.get("input") or card.get("canonical"))
+            )
+            if index is None:
+                # Модель придумала лишнюю запись, которой на входе не было
+                # («der Ärmel» из «Sie krempelte die Ärmel hoch»). Не наша строка —
+                # молча выбрасываем её, а не весь ответ.
+                continue
+            translation = str(card.get("translation") or "").strip()
+            if not translation:
+                continue
+            category = str(card.get("semantic_category") or "").strip()
+            result[index] = {
+                "canonical": str(card.get("canonical") or "").strip() or terms[index],
+                "translation": translation,
+                "semantic_category": category if category in valid_categories else "",
+            }
+            filled.add(index)
+
+    by_key = {}
+    for i, term in enumerate(terms):
+        by_key.setdefault(_autosave_match_key(term), i)
+
+    pending = list(range(len(terms)))
+    try:
+        _absorb(asyncio.run(_call()))
     except Exception:
         logging.exception("autosave: batch prepare-cards failed terms=%d", len(terms))
-    return fallback
+
+    # Добор: у кого перевода нет — спрашиваем ПОВТОРНО и только про них.
+    # Пустой перевод молча пропускать нельзя: кнопка сохранения такие слова
+    # отбрасывает (bot_3.py), и человек получает список без переводов, который
+    # к тому же не сохраняется. Именно это владелец увидел утром 17.08.2026.
+    for attempt in (1, 2):
+        pending = [i for i in range(len(terms)) if i not in filled]
+        if not pending:
+            break
+        retry_terms = [terms[i] for i in pending]
+        user_payload = json.dumps({"items": retry_terms}, ensure_ascii=False)
+        try:
+            _absorb(asyncio.run(_call()))
+            logging.info("autosave: добор переводов, попытка=%d спрошено=%d осталось=%d",
+                         attempt, len(retry_terms),
+                         len([i for i in range(len(terms)) if i not in filled]))
+        except Exception:
+            logging.exception("autosave: добор переводов не удался terms=%d", len(retry_terms))
+            break
+
+    still_missing = [terms[i] for i in range(len(terms)) if i not in filled]
+    if still_missing:
+        logging.warning("autosave: без перевода осталось %d из %d: %s",
+                        len(still_missing), len(terms), still_missing[:5])
+    return result
 
 
 def _autosave_html_escape(text: str) -> str:
@@ -50209,6 +50276,21 @@ def _autosave_send_digest_from_blocks(user_id: int, blocks: list[tuple[str, str]
         }
         for i in range(len(terms))
     ]
+    # Строка без перевода в подборке бесполезна дважды: человек не понимает, что это за
+    # слово, а кнопка «Сохранить выбранные» такие строки пропускает — и на весь список
+    # отвечает «Не удалось». Поэтому в сообщение они не идут вовсе, а факт пишется в лог
+    # числом: молча терять слова нельзя, но и показывать нерабочую строку нельзя.
+    without_translation = [it["term"] for it in items if not it["translation"]]
+    if without_translation:
+        logging.warning(
+            "autosave: в подборку не попало %d из %d — перевода нет даже после добора: %s",
+            len(without_translation), len(items), without_translation[:5],
+        )
+        items = [it for it in items if it["translation"]]
+    if not items:
+        logging.error("autosave: подборка не отправлена — переводов нет ни у одной строки user_id=%s",
+                      safe_user_id)
+        return 0
     # Paginate: split into pages so a big batch is several clean digests (nothing dropped).
     pages = [items[i:i + _AUTOSAVE_DIGEST_PAGE_SIZE] for i in range(0, len(items), _AUTOSAVE_DIGEST_PAGE_SIZE)]
     total_pages = len(pages)
