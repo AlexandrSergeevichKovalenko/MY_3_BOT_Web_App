@@ -52874,6 +52874,17 @@ def ensure_article_sprint_schema() -> None:
                 "ALTER TABLE bt_3_article_sprint_nouns "
                 "ADD COLUMN IF NOT EXISTS retire_reviewed BOOLEAN NOT NULL DEFAULT FALSE;"
             )
+            # ПОЧЕМУ слово сняли — на самой строке, а не в соседней таблице.
+            #
+            # 17.08.2026: справочник родов узнавал негодные написания по стоп-листу, а
+            # снятие и запись в стоп-лист были двумя разными действиями. Скрипт, снявший
+            # «die Schuhe» и «das Seifenblasen» без записи, оставил справочник слепым —
+            # и тот продолжал выдавать род у формы множественного числа. Причина на
+            # строке делает снятие и его причину ОДНИМ UPDATE: разлучить их нельзя.
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_nouns "
+                "ADD COLUMN IF NOT EXISTS retire_reason TEXT NOT NULL DEFAULT '';"
+            )
             # Стоп-лист: слова, которые набор УЖЕ отверг. Раньше отказ жил только в
             # логе, поэтому каждую ночь модель предлагала тот же «der Föhnsturm», и мы
             # заново платили за вопрос «нужно ли это слово в быту». Теперь отказ
@@ -54830,6 +54841,93 @@ def skip_article_noun(row_id: int) -> dict | None:
             row = cursor.fetchone()
         conn.commit()
     return {"word": str(row[0])} if row else None
+
+
+# Причина снятия, означающая «это написание вообще не слово, а его форма». Такому
+# написанию нельзя ни попадать в игру, ни поставлять род: у формы множественного числа
+# артикль всегда die, и род леммы ей навязывать нельзя — именно так рождалась карточка
+# «der Handschuhe». Строка живёт здесь, а не в трёх скриптах: по ней справочник родов
+# (article_authority) и узнаёт негодные написания.
+RETIRE_REASON_BAD_FORM = "форма множественного числа"
+
+
+def retire_bad_word_forms(words, *, reason: str = RETIRE_REASON_BAD_FORM) -> dict:
+    """ОДНА дверь для «это написание — негодная форма слова».
+
+    Делает три вещи, которые раньше делались порознь и потому расходились:
+      1. снимает строку с показа и помечает разобранной (в личку не поедет);
+      2. пишет ПРИЧИНУ на саму строку — по ней справочник родов и молчит;
+      3. заносит написание в стоп-лист, чтобы ночной набор не предложил его заново.
+
+    Всё одним соединением и одним коммитом. Раньше пункт 3 был отдельным вызовом в
+    отдельном скрипте, и 17.08.2026 «die Schuhe» с «das Seifenblasen» были сняты без
+    него — справочник продолжал отдавать по ним род.
+
+    В стоп-лист идёт САМО написание («Mängel»), поэтому единственное («Mangel») остаётся
+    свободным и может прийти в набор той же ночью.
+    """
+    norm = [str(w).strip() for w in (words or []) if str(w).strip()]
+    if not norm:
+        return {"retired": 0, "blacklisted": 0}
+    low = [w.lower() for w in norm]
+    try:
+        ensure_article_sprint_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_article_sprint_nouns "
+                    "SET retired = TRUE, retire_reviewed = TRUE, retire_reason = %s, "
+                    "    updated_at = NOW() "
+                    "WHERE lower(word) = ANY(%s);",
+                    (str(reason), low),
+                )
+                retired = int(cursor.rowcount or 0)
+                for word in norm:
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_3_article_word_blacklist (word, reason, theme_key)
+                        VALUES (%s, %s, '')
+                        ON CONFLICT (word) DO UPDATE
+                          SET hits = bt_3_article_word_blacklist.hits + 1,
+                              reason = EXCLUDED.reason,
+                              updated_at = NOW();
+                        """,
+                        (word.lower(), str(reason)),
+                    )
+            conn.commit()
+        return {"retired": retired, "blacklisted": len(norm)}
+    except Exception:
+        logging.warning("retire_bad_word_forms failed words=%s", low[:5], exc_info=True)
+        return {"retired": 0, "blacklisted": 0}
+
+
+def list_bad_word_forms() -> set[str]:
+    """Написания, признанные негодной формой слова. Читается справочником родов.
+
+    Источника два и это НАМЕРЕННО: причина на строке — основной (её нельзя записать
+    отдельно от снятия), стоп-лист — исторический, там лежат записи, сделанные до
+    появления колонки. Объединение, а не выбор: иначе старые решения потерялись бы.
+
+    Схему тут НЕ трогаем. Это чтение, и его зовёт справочник родов на горячем пути:
+    ALTER TABLE ждёт монопольной блокировки, и один долгий читатель рядом подвесил бы
+    выдачу артиклей всему продукту. Поймано 17.08.2026 на собственной проверке —
+    read-only соединение держало таблицу, и ensure-схема висела девять минут.
+    """
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT lower(word) FROM bt_3_article_sprint_nouns "
+                    "WHERE retire_reason ILIKE %s "
+                    "UNION "
+                    "SELECT lower(word) FROM bt_3_article_word_blacklist "
+                    "WHERE reason ILIKE %s;",
+                    (f"%{RETIRE_REASON_BAD_FORM}%", f"%{RETIRE_REASON_BAD_FORM}%"),
+                )
+                return {str(r[0]).strip().lower() for r in cursor.fetchall() or [] if r and r[0]}
+    except Exception:
+        logging.warning("list_bad_word_forms failed", exc_info=True)
+        return set()
 
 
 def retire_article_sprint_noun(row_id: int) -> None:

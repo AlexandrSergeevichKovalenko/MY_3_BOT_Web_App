@@ -24,10 +24,10 @@ import backend.article_authority as auth
 
 
 class _Cur:
-    """Отдаёт ответы по порядку запросов _load(): роды Wiktionary → стоп-лист → банк."""
+    """Отдаёт ответы по порядку запросов _load(): роды Wiktionary → банк."""
 
-    def __init__(self, wiki, bad_forms, bank):
-        self._answers = [wiki, [(w,) for w in bad_forms], bank]
+    def __init__(self, wiki, bank):
+        self._answers = [wiki, bank]
         self._i = -1
 
     def execute(self, sql, params=None):
@@ -52,7 +52,7 @@ class _Conn:
 
 
 def _load_with(*, wiki=(), bad_forms=(), bank=()):
-    cur = _Cur(list(wiki), list(bad_forms), list(bank))
+    cur = _Cur(list(wiki), list(bank))
 
     @contextmanager
     def ctx(*a, **k):
@@ -60,7 +60,9 @@ def _load_with(*, wiki=(), bad_forms=(), bank=()):
 
     import backend.database as db
     auth._genus, auth._ambiguous, auth._loaded_at = {}, set(), 0.0
+    auth._bad_forms.clear()
     with patch.object(db, "get_db_connection_context", ctx), \
+         patch.object(db, "list_bad_word_forms", lambda: {w.lower() for w in bad_forms}), \
          patch.object(auth, "_two_gender", lambda: set()):
         return auth._load()
 
@@ -132,13 +134,22 @@ class NoStageAnswersForABadFormTests(unittest.TestCase):
 
 
 class TheFilterIsNarrowOnPurposeTests(unittest.TestCase):
-    def test_only_the_plural_form_reason_is_filtered(self):
+    def test_only_the_bad_form_reason_is_filtered(self):
         """Причина «не нужно в быту» (8369 записей в стоп-листе) НЕ должна лишать слово
         рода: это про полезность в игре, а не про правильность написания."""
+        import backend.database as db
+        self.assertEqual(db.RETIRE_REASON_BAD_FORM, "форма множественного числа")
+        import inspect
+        self.assertNotIn("не нужно в быту", inspect.getsource(db.list_bad_word_forms))
+
+    def test_authority_asks_the_retire_door_not_the_blacklist_itself(self):
+        """Причина живёт на строке и пишется тем же UPDATE, что снимает слово. Если
+        справочник собирает список своим запросом по стоп-листу, снятие снова можно
+        сделать без причины — ровно так 17.08.2026 ослепли Schuhe и Seifenblasen."""
         import inspect
         src = inspect.getsource(auth._load)
-        self.assertIn("форма множественного числа", src)
-        self.assertNotIn("не нужно в быту", src)
+        self.assertIn("list_bad_word_forms", src)
+        self.assertNotIn("bt_3_article_word_blacklist", src)
 
     def test_retired_rows_are_not_excluded_wholesale(self):
         import inspect

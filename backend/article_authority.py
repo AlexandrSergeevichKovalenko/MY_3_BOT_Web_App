@@ -71,7 +71,28 @@ def _load() -> tuple[dict[str, str], set[str]]:
     genus: dict[str, str] = {}
     by_word: dict[str, set] = {}
     try:
-        from backend.database import get_db_connection_context
+        from backend.database import get_db_connection_context, list_bad_word_forms
+        # Написания, которые мы САМИ признали негодной формой слова, родов не
+        # поставляют. Иначе снятая строка продолжает решать род во всём продукте:
+        # 17.08.2026 «das Fotos» уже был снят из игры, а справочник на вопрос про
+        # «Fotos» по-прежнему отвечал «das» — строка осталась в таблице, а выборка
+        # не смотрела на решение.
+        #
+        # Условие узкое НАМЕРЕННО. Замер 17.08.2026 обеих правок:
+        #   «не брать все снятые строки»  → род потеряли бы 1307 слов, приобрело 1,
+        #                                   изменилось 0;
+        #   «не брать негодные написания» → род потеряли ровно 8, изменилось 0, и это
+        #                                   ровно те формы множественного числа,
+        #                                   которые убрали руками.
+        # Снятие само по себе НЕ означает «слово неправильное»: строку снимают и за
+        # дубль, и за ротацию освоенного — род у них верный.
+        #
+        # Список берём у двери снятия (database.list_bad_word_forms), а не собираем
+        # своим запросом: там причина живёт на самой строке и записывается тем же
+        # UPDATE, что снимает слово, — забыть её нельзя.
+        bad_forms = list_bad_word_forms()
+        _bad_forms.clear()
+        _bad_forms.update(bad_forms)
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT title, genus FROM bt_3_wiktionary_genus_cache "
@@ -81,25 +102,6 @@ def _load() -> tuple[dict[str, str], set[str]]:
                     c = str(code or "").strip().lower()
                     if len(c) == 1 and c in g2a:      # 'mf'/'nf' = два рода → не берём
                         genus[str(title).strip().lower()] = g2a[c]
-                # Написания, которые мы САМИ признали негодной формой слова, родов не
-                # поставляют. Иначе снятая строка продолжает решать род во всём
-                # продукте: 17.08.2026 «das Fotos» уже был снят из игры, а справочник
-                # на вопрос про «Fotos» по-прежнему отвечал «das» — потому что строка
-                # осталась в таблице, а выборка не смотрела на решение.
-                #
-                # Условие узкое НАМЕРЕННО. Замер 17.08.2026 обеих правок:
-                #   «не брать все снятые строки»  → род потеряли бы 1307 слов,
-                #                                   приобрело бы 1, изменилось 0;
-                #   «не брать негодные написания» → род потеряли ровно 8, изменилось 0,
-                #                                   и это ровно те 8 форм множественного
-                #                                   числа, которые мы убрали руками.
-                # Снятие само по себе НЕ означает «слово неправильное»: строку снимают
-                # и за дубль, и за ротацию освоенного — род у них верный.
-                cur.execute("SELECT word FROM bt_3_article_word_blacklist "
-                            "WHERE reason ILIKE %s", ("%форма множественного числа%",))
-                bad_forms = {str(r[0]).strip().lower() for r in cur.fetchall() or []}
-                _bad_forms.clear()
-                _bad_forms.update(bad_forms)
                 cur.execute("SELECT word, article FROM bt_3_article_sprint_nouns "
                             "WHERE COALESCE(article,'') <> ''")
                 for w, a in cur.fetchall() or []:

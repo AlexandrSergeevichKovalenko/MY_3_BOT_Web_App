@@ -221,6 +221,13 @@ def main() -> int:
     print("\nснимаю:")
     for what, n in apply([(w, "форма множественного числа") for w in guilty]).items():
         print(f"  {what}: {n}")
+    # Причина — на саму строку, одной дверью со стоп-листом. Без неё справочник родов
+    # продолжит отдавать род у формы множественного числа: 17.08.2026 так и вышло со
+    # снятыми «die Schuhe» и «das Seifenblasen».
+    from backend.database import retire_bad_word_forms
+    res = retire_bad_word_forms(guilty)
+    print(f"  причина записана на строках: {res['retired']}, "
+          f"написаний в стоп-листе: {res['blacklisted']}")
     return 0
 
 
