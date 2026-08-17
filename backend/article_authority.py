@@ -40,6 +40,18 @@ _bank_sourced: set[str] = set()
 # вопрос следующей: 17.08.2026 «Seifenblasen» перестал брать род из банка и тут же взял
 # «das» у правила композита — ответ остался неверным, поменялся только источник.
 _bad_forms: set[str] = set()
+# Написания, которые ДРУГАЯ строка банка держит своим полем «множественное число».
+# Это защита, которой не нужна ничья дисциплина: она читает только те данные, что уже
+# лежат в таблице, и работает, даже если снятие сделали в обход двери и причину забыли.
+#
+# Замер 17.08.2026 на живой базе: ответ не изменился НИ У ОДНОГО слова, род потеряли
+# ровно 25 написаний — и у всех молчание и есть правильный ответ: формы множественного
+# (die Zitate, die Mängel, die Bögen), законные pluralia tantum (die Schulden),
+# субстантивированные прилагательные (die Erwachsene — у них артикль по полу человека)
+# и сломанные строки вроде «der Pins». Законные слова, похожие на множественное
+# (die Kohle, die Montage, der Westen), правило НЕ задевает: их род даёт Wiktionary,
+# а он идёт первым.
+_plural_spellings: set[str] = set()
 _loaded_at = 0.0
 
 # Похожи на существительные, но это СУФФИКСЫ: Wirt+schaft — не композит, и род задаёт
@@ -102,11 +114,22 @@ def _load() -> tuple[dict[str, str], set[str]]:
                     c = str(code or "").strip().lower()
                     if len(c) == 1 and c in g2a:      # 'mf'/'nf' = два рода → не берём
                         genus[str(title).strip().lower()] = g2a[c]
-                cur.execute("SELECT word, article FROM bt_3_article_sprint_nouns "
+                cur.execute("SELECT word, article, COALESCE(plural, '') "
+                            "FROM bt_3_article_sprint_nouns "
                             "WHERE COALESCE(article,'') <> ''")
-                for w, a in cur.fetchall() or []:
+                bank_rows = cur.fetchall() or []
+                plural_spellings = set()
+                for w, _a, pl in bank_rows:
+                    p_low = str(pl or "").strip().lower()
+                    if p_low and p_low != str(w).strip().lower():
+                        plural_spellings.add(p_low)
+                _plural_spellings.clear()
+                _plural_spellings.update(plural_spellings)
+                for w, a, _pl in bank_rows:
                     lw = str(w).strip().lower()
-                    if lw in bad_forms:
+                    # Банк не поставляет род ни негодным написаниям (решение записано),
+                    # ни тем, что числятся чужим множественным (видно по самим данным).
+                    if lw in bad_forms or lw in plural_spellings:
                         continue
                     by_word.setdefault(lw, set()).add(str(a).strip().lower())
     except Exception:
@@ -153,7 +176,8 @@ def compound_article(word: str) -> str | None:
     """Род по правилу композита — только если ВСЕ разборы слова согласны между собой."""
     genus, ambiguous = _load()
     w = str(word or "").strip().lower()
-    if len(w) < 8 or w in ambiguous or w in _bad_forms or w.endswith(_COMPOUND_EXCEPTIONS):
+    if (len(w) < 8 or w in ambiguous or w in _bad_forms or w in _plural_spellings
+            or w.endswith(_COMPOUND_EXCEPTIONS)):
         return None
 
     # Композит через дефис разбирать не нужно — он уже разобран автором написания:
@@ -204,6 +228,11 @@ def authoritative_article(word: str, *, allow_network: bool = False) -> tuple[st
         return None, "двухродовое (артикль зависит от значения)"
     if low in genus:
         return genus[low], ("банк артиклей" if low in _bank_sourced else "wiktionary")
+    # Сюда доходим, только когда ни Wiktionary, ни банк слова не знают. Если оно при
+    # этом числится чужим множественным — молчим и в сеть не идём: у формы
+    # множественного числа артикль всегда die, и род леммы ей навязывать нельзя.
+    if low in _plural_spellings:
+        return None, "форма множественного числа другого слова"
     if allow_network:
         live = _wiktionary_live(w)
         if live:
