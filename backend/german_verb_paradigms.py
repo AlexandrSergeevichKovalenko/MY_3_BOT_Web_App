@@ -1,0 +1,338 @@
+# -*- coding: utf-8 -*-
+"""Спряжение глагола — ДОСЛОВНО из таблицы de.wiktionary. Своих правил здесь нет.
+
+ЗАЧЕМ ЭТОТ МОДУЛЬ ПОЯВИЛСЯ
+──────────────────────────
+Владелец 17.08.2026, открыв карточку «klarkommen»: «мы не пользуемся грамматическими
+словарями, базами данных, реальными данными, а ты выдумываешь какие-то правила сам».
+Про спряжение это было верно. Род и число в проекте давно берутся из справочника
+(`bt_3_wiktionary_genus_cache`, `bt_3_german_form_index`), а таблица спряжения строилась
+иначе: регулярные окончания приклеивал код, а неправильные части присылала МОДЕЛЬ в поле
+`seed`. Отсюда «ich klarzukomme», «kam klarst», «ich ankomme» — форм, которых нет в языке.
+
+Источник есть, и он покрывает нас. У de.wiktionary для каждого глагола есть страница
+`Flexion:<глагол>` с ПОЛНОЙ напечатанной таблицей. Замер 17.08.2026 на случайной выборке
+100 глаголов справочника: страница есть у 95.
+
+ПОЧЕМУ ЧИТАЕМ ГОТОВУЮ ТАБЛИЦУ, А НЕ ШАБЛОН
+──────────────────────────────────────────
+Первая версия этого модуля разбирала шаблон `{{Deutsch Verb unregelmäßig|…}}` и получала
+основы: `2=halt`, `6=hält`, `7=e`. Основы документированы, но окончания 2-3 лица из них
+НЕ выводятся: у сильного глагола «du hältst» (а не «hältest»), у слабого «du arbeitest»
+(а не «arbeitst»), у «lesen» — «du liest». Параметры 7/8/9 это кодируют, но их разбор —
+снова мои правила поверх источника. Прогон это и показал: «du hältest», «er arbeit».
+
+Поэтому берём формы там, где они УЖЕ НАПЕЧАТАНЫ. На странице Flexion таблица устроена
+одинаково для всех глаголов:
+
+    Präsens │ Person             │ Indikativ      │ Konjunktiv I │ …пассивы…
+            │ 1. Person Singular │ ich halte      │ ich halte    │
+            │ 2. Person Singular │ du hältst      │ du haltest   │
+            │ 3. Person Singular │ er/sie/es hält │ …            │
+
+Мы читаем столбец Indikativ и кладём форму как есть. Ни одного окончания код не
+дописывает.
+
+ОТДЕЛЯЕМАЯ ПРИСТАВКА ТОЖЕ ПРИХОДИТ ИЗ ИСТОЧНИКА
+───────────────────────────────────────────────
+В таблице «klarkommen» напечатано «ich komme klar» — приставка стоит там, где ей место в
+главном предложении. Списка приставок и правил отделения здесь нет вовсе.
+
+⚠ В той же таблице есть и «ich klarkomme» — это конъюгация ПРИДАТОЧНОГО предложения
+(«…, dass ich klarkomme»). Она документирована и верна, но принадлежит другому столбцу,
+и в таблице главного предложения ей не место. Именно эту подмену владелец и увидел.
+
+⚠ НЕТ СТРАНИЦЫ — НЕТ ТАБЛИЦЫ. Спряжение, не подтверждённое справочником, не
+показывается. То же правило, что для артикля: «не знаем — не печатаем».
+
+⚠ ТЕМП. Массовый залп запрещён: жадный прогон по внешнему API уже приносил HTTP 429 и
+2737 ложных пометок «страницы нет». Ночная порция с паузой, при первом молчании — стоп
+до следующей ночи. На выдаче спрашиваем про ОДНО слово и только если его нет в кэше.
+Молчание справочника НЕ записывается как «нет страницы»: авария — не данные.
+"""
+from __future__ import annotations
+
+import html as _html
+import json
+import logging
+import os
+import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any
+
+API_URL = "https://de.wiktionary.org/w/api.php"
+USER_AGENT = "DerSchlaufuchs/1.0 (German learning app)"
+FETCH_TIMEOUT_SEC = float((os.getenv("VERB_PARADIGM_TIMEOUT_SEC") or "8").strip() or "8")
+
+_PERSON_LABELS = {
+    "1. Person Singular": "ich",
+    "2. Person Singular": "du",
+    "3. Person Singular": "er/sie/es",
+    "1. Person Plural": "wir",
+    "2. Person Plural": "ihr",
+    "3. Person Plural": "sie/Sie",
+}
+_PRONOUNS = ("ich", "du", "er/sie/es", "wir", "ihr", "sie/Sie", "sie", "Sie")
+
+
+def ensure_german_verb_paradigm_schema() -> None:
+    from backend.database import get_db_connection_context
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bt_3_german_verb_paradigms (
+                        verb        TEXT PRIMARY KEY,
+                        tables      JSONB,
+                        documented  BOOLEAN NOT NULL DEFAULT TRUE,
+                        checked_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("парадигмы глаголов: схема не создана", exc_info=True)
+
+
+def _api(params: dict) -> dict | None:
+    """Ответ справочника. None — справочник МОЛЧИТ (сеть, 429), а не «данных нет»."""
+    url = API_URL + "?" + urllib.parse.urlencode(params)
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SEC) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        logging.warning("парадигмы глаголов: HTTP %s от справочника", exc.code)
+        return None
+    except Exception:
+        logging.warning("парадигмы глаголов: справочник не ответил", exc_info=True)
+        return None
+
+
+def _table_cells(rendered_html: str) -> list[str]:
+    text = _html.unescape(re.sub(r"<[^>]+>", "\t", str(rendered_html or "")))
+    cells = [re.sub(r"\s+", " ", chunk).strip() for chunk in text.split("\t")]
+    return [c for c in cells if c]
+
+
+def _strip_pronoun(form: str) -> str:
+    """«ich halte» → «halte»: в таблице форма напечатана вместе с местоимением."""
+    text = str(form or "").strip().rstrip(",").strip()
+    for pronoun in _PRONOUNS:
+        if text.lower().startswith(pronoun.lower() + " "):
+            return text[len(pronoun) + 1:].strip()
+    return text
+
+
+def _column_forms(cells: list[str], start: int, *, column: int) -> dict[str, str]:
+    """Формы одного столбца для шести лиц, начиная от заголовка блока.
+
+    Две особенности разметки, обе поймал прогон:
+      • у третьего лица местоимение вынесено отдельной ячейкой
+        («3. Person Singular» | «er/sie/es» | «hält»);
+      • запятая на конце ячейки значит, что следующая — ВТОРОЙ вариант той же клетки
+        («du hieltest,» | «du hieltst»), а не соседний столбец. Без этого конъюнктив
+        съезжал на форму из другого столбца."""
+    out: dict[str, str] = {}
+    index, limit = start, min(len(cells), start + 240)
+    while index < limit and len(out) < 6:
+        person = _PERSON_LABELS.get(cells[index])
+        if not person:
+            index += 1
+            continue
+        group: list[str] = []
+        cursor, pending_variant = index + 1, False
+        while cursor < limit and cells[cursor] not in _PERSON_LABELS:
+            value = cells[cursor]
+            if value in _PRONOUNS:
+                cursor += 1
+                continue
+            if pending_variant:
+                pending_variant = value.endswith(",")
+                cursor += 1
+                continue
+            group.append(value)
+            pending_variant = value.endswith(",")
+            cursor += 1
+        if len(group) > column and person not in out:
+            form = _strip_pronoun(group[column]).rstrip("!,")
+            if form:
+                out[person] = form
+        index = cursor
+    return out if len(out) == 6 else {}
+
+
+def documented_tables(rendered_html: str) -> dict[str, Any]:
+    """Präsens / Präteritum / Konjunktiv II / Perfekt / Imperativ — как напечатано."""
+    cells = _table_cells(rendered_html)
+    tables: dict[str, Any] = {}
+
+    def at(header: str) -> int:
+        for i, cell in enumerate(cells):
+            if cell == header:
+                return i
+        return -1
+
+    for header, key, column in (
+        ("Präsens", "praesens", 0),
+        ("Präteritum", "praeteritum", 0),
+        ("Präteritum", "konjunktiv2", 1),
+        ("Perfekt", "perfekt", 0),
+    ):
+        start = at(header)
+        if start < 0:
+            continue
+        forms = _column_forms(cells, start, column=column)
+        if forms:
+            tables[key] = forms
+
+    imperative_at = at("Imperative")
+    if imperative_at >= 0:
+        # Берём ПЕРВОЕ вхождение каждой строки: дальше по странице те же метки лиц
+        # встречаются в блоке презенса, и без остановки повелительное перезаписывалось
+        # формой «du hältst» вместо «halt».
+        imperativ: dict[str, str] = {}
+        index = imperative_at
+        while index + 1 < len(cells) and index < imperative_at + 60 and len(imperativ) < 2:
+            if cells[index] == "2. Person Singular" and "du" not in imperativ:
+                imperativ["du"] = _strip_pronoun(cells[index + 1]).rstrip("!,")
+            elif cells[index] == "2. Person Plural" and "ihr" not in imperativ:
+                imperativ["ihr"] = _strip_pronoun(cells[index + 1]).rstrip("!,")
+            index += 1
+        if imperativ:
+            tables["imperativ"] = imperativ
+
+    if tables.get("perfekt"):
+        first = str((tables["perfekt"] or {}).get("ich") or "")
+        parts = first.split()
+        if len(parts) >= 2:
+            tables["auxiliary"] = "sein" if parts[0].lower() in ("bin", "ist", "sind") else "haben"
+            tables["partizip2"] = parts[-1]
+    return tables
+
+
+def fetch_documented_tables(verb: str) -> dict[str, Any] | None:
+    """Скачать напечатанную таблицу. {} — страницы нет. None — справочник молчит."""
+    name = str(verb or "").strip()
+    if not name:
+        return {}
+    payload = _api({"action": "parse", "page": "Flexion:" + name,
+                    "prop": "text", "format": "json", "formatversion": "2"})
+    if payload is None:
+        return None
+    if payload.get("error"):
+        return {}
+    rendered = (payload.get("parse") or {}).get("text") or ""
+    return documented_tables(rendered)
+
+
+def store_paradigm(verb: str, tables: dict | None) -> None:
+    """Записать результат. tables={} значит «страницы нет», None не пишем вовсе."""
+    from backend.database import get_db_connection_context
+    key = str(verb or "").strip().lower()
+    if not key or tables is None:
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO bt_3_german_verb_paradigms (verb, tables, documented, checked_at)
+                    VALUES (%s, %s::jsonb, %s, NOW())
+                    ON CONFLICT (verb) DO UPDATE
+                       SET tables = EXCLUDED.tables,
+                           documented = EXCLUDED.documented,
+                           checked_at = NOW();
+                    """,
+                    (key, json.dumps(tables, ensure_ascii=False), bool(tables.get("praesens"))),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("парадигмы глаголов: не записал %s", key, exc_info=True)
+
+
+def load_paradigm(verb: str) -> dict | None:
+    """Из кэша. None — не спрашивали. {} — спрашивали, страницы нет."""
+    from backend.database import get_db_connection_context
+    key = str(verb or "").strip().lower()
+    if not key:
+        return None
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT tables, documented FROM bt_3_german_verb_paradigms WHERE verb = %s;",
+                    (key,),
+                )
+                row = cur.fetchone()
+    except Exception:
+        logging.debug("парадигмы глаголов: чтение кэша не удалось", exc_info=True)
+        return None
+    if not row:
+        return None
+    tables, documented = row
+    if not documented or not isinstance(tables, dict):
+        return {}
+    return tables
+
+
+def paradigm_for_verb(infinitive: str, *, allow_network: bool = False) -> dict | None:
+    """Документированная таблица спряжения или None, если справочник её не подтвердил."""
+    verb = str(infinitive or "").strip()
+    if not verb or " " in verb:
+        return None
+    tables = load_paradigm(verb)
+    if tables is None and allow_network:
+        fetched = fetch_documented_tables(verb)
+        store_paradigm(verb, fetched)
+        tables = fetched if fetched is not None else None
+    if not tables or not tables.get("praesens"):
+        return None
+    return {**tables, "infinitive": verb, "source": "wiktionary-flexion"}
+
+
+def warm_verb_paradigms(*, limit: int = 200, pause_sec: float = 1.5) -> dict:
+    """Ночной прогрев: спросить справочник про глаголы, о которых ещё не спрашивали.
+
+    Порция маленькая и с паузой. При первом молчании справочника проход прекращается —
+    иначе упор в лимит превратился бы в сотни ложных «страницы нет»."""
+    from backend.database import get_db_connection_context
+    ensure_german_verb_paradigm_schema()
+    report = {"asked": 0, "documented": 0, "no_page": 0, "stopped_early": False}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT lower(u.display) FROM bt_3_lex_units u
+                     WHERE u.lang = 'de' AND u.kind = 'word'
+                       AND (u.pos = 'verb' OR u.card->>'part_of_speech' = 'verb')
+                       AND u.display ~ '^[a-zäöüßA-ZÄÖÜ]+$'
+                       AND NOT EXISTS (SELECT 1 FROM bt_3_german_verb_paradigms p
+                                        WHERE p.verb = lower(u.display))
+                     ORDER BY 1 LIMIT %s;
+                    """,
+                    (int(limit),),
+                )
+                verbs = [r[0] for r in cur.fetchall()]
+    except Exception:
+        logging.warning("парадигмы глаголов: не выбрал кандидатов", exc_info=True)
+        return report
+
+    for verb in verbs:
+        tables = fetch_documented_tables(verb)
+        if tables is None:
+            report["stopped_early"] = True
+            break
+        store_paradigm(verb, tables)
+        report["asked"] += 1
+        if tables.get("praesens"):
+            report["documented"] += 1
+        else:
+            report["no_page"] += 1
+        time.sleep(pause_sec)
+    return report

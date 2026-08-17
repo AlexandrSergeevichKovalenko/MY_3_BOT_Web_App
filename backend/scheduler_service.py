@@ -96,6 +96,7 @@ from backend.background_jobs import (  # noqa: E402
     run_wiktionary_warm_actor,
     run_monthly_budget_policy_actor,
     run_german_form_index_warm_actor,
+    run_verb_paradigm_warm_actor,
     run_wiktionary_warm_report_actor,
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
@@ -417,6 +418,10 @@ def _dispatch_wiktionary_warm_report() -> None:
 
 def _dispatch_german_form_index_warm() -> None:
     run_german_form_index_warm_actor.send()
+
+
+def _dispatch_verb_paradigm_warm() -> None:
+    run_verb_paradigm_warm_actor.send()
 
 
 def _dispatch_article_review_dm() -> None:
@@ -778,6 +783,22 @@ def _build_scheduler():
             "cron",
             hour=_int_env("WIKTIONARY_WARM_HOUR", 3),
             minute=_int_env("WIKTIONARY_WARM_MINUTE", 40),
+            timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
+    # -- Ночной прогрев таблиц спряжения: их печатает de.wiktionary, а не наш код.
+    # Ставим 04:40 — третьей и последней из ночных задач к справочнику, чтобы они не
+    # стучались разом и не ловили общий 429. Справочник уходит в лимит примерно на
+    # десятом запросе подряд, поэтому берём его медленно и много ночей.
+    if _enabled("VERB_PARADIGM_WARM_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_verb_paradigm_warm,
+            "cron",
+            hour=_int_env("VERB_PARADIGM_WARM_HOUR", 4),
+            minute=_int_env("VERB_PARADIGM_WARM_MINUTE", 40),
             timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
             max_instances=1,
             coalesce=True,

@@ -2521,6 +2521,18 @@ def run_german_form_index_warm_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_verb_paradigm_warm_actor() -> None:
+    """Ночной прогрев таблиц спряжения: их печатает de.wiktionary, а не наш код.
+
+    Пока парадигма глагола не спрошена, таблица считается от основы, а окончания
+    2-3 лица из основы не выводятся («du hältst» против «du arbeitest»). Порция
+    маленькая: справочник уходит в лимит примерно на десятом запросе подряд."""
+    from backend.german_verb_paradigms import warm_verb_paradigms
+    report = warm_verb_paradigms()
+    logging.info("парадигмы глаголов: прогрев %s", report)
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_wiktionary_warm_report_actor() -> None:
     """Утренний отчёт: что вчера спросили у Wiktionary и чем это кончилось."""
     from backend.wiktionary_warm import send_warm_report

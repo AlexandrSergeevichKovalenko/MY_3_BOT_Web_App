@@ -15,6 +15,7 @@ still produces a usable (if smaller) table.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -391,6 +392,26 @@ def german_headword_case(word: str | None, pos: str | None) -> str:
     return text[:1].lower() + text[1:]
 
 
+def _documented_conjugation(infinitive: str) -> dict[str, Any] | None:
+    """Таблица из справочника. Модуль подключается внутри: он ходит в базу и в сеть,
+    а этот модуль обязан оставаться чистым для тех, кто зовёт его без базы (тесты,
+    оффлайн-скрипты). Справочник молчит — возвращаем None, и таблица считается по
+    основе, как раньше."""
+    # Тесты в боевую базу не ходят — это правило проекта. Метка та же, что уже стоит
+    # в backend/tests/conftest.py; под ней проверяется чистый счёт по основе, а
+    # обращение к справочнику покрыто своими тестами на подставном источнике.
+    # Скрипты уборки включают справочник явно: VERB_PARADIGM_LOOKUP=1.
+    import os
+    if os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") == "1" and not os.getenv("VERB_PARADIGM_LOOKUP"):
+        return None
+    try:
+        from backend.german_verb_paradigms import paradigm_for_verb
+        return paradigm_for_verb(infinitive)
+    except Exception:
+        logging.debug("справочник спряжений недоступен для %s", infinitive, exc_info=True)
+        return None
+
+
 def build_verb_conjugation(
     *,
     word_de: str,
@@ -404,6 +425,15 @@ def build_verb_conjugation(
     inf = _strip_article(word_de)
     if not inf or " " in inf:
         return None
+    # СНАЧАЛА СПРАВОЧНИК. У de.wiktionary для глагола напечатана полная таблица, и
+    # формы берутся из неё дословно — включая то, что правилом не выводится: «du hältst»
+    # против «du arbeitest», «du liest», и место отделяемой приставки («ich komme klar»).
+    # Владелец 17.08.2026: «это лингвистическое приложение, тут не должно быть
+    # придуманного». Ниже — прежний счёт от основы; он остаётся только для глаголов,
+    # которых в справочнике нет, и живёт под своим именем в поле `source`.
+    documented = _documented_conjugation(inf)
+    if documented:
+        return documented
     # Лучше НЕ показать таблицу, чем показать выдуманную. Заголовок в форме zu-инфинитива
     # спрягать нельзя — получается «ich klarzukomme», чего в языке нет. Раньше движок брал
     # любой одиночный токен за инфинитив без единой проверки.
