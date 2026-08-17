@@ -171,6 +171,94 @@ _SEPARABLE_PREFIXES = (
 )
 
 
+# Приставки, отделяемость которых ЗАВИСИТ ОТ СМЫСЛА, а не от написания:
+# «übersetzen» — переводить (неотделяемая) и переправлять через реку (отделяемая),
+# «umfahren» — объезжать и сбивать, «durchschauen» — просматривать и раскусывать.
+# Написание у обоих значений одно, поэтому по нему решать нельзя: молчим и оставляем
+# слитную форму, которая верна хотя бы для одного из значений.
+_AMBIGUOUS_SEPARABLE_PREFIXES = ("über", "um", "unter", "durch", "wider", "wieder")
+
+# Составные приставки: «hinein», «heraus», «zurecht». Их обязательно проверять ЦЕЛИКОМ и
+# РАНЬШЕ коротких, иначе «hineingehen» разбирается как «hin» + «eingehen» и печатается
+# «ich eingehe hin». Поймано существующим тестом до записи в прод.
+_COMPOUND_SEPARABLE_PREFIXES = (
+    "hinein", "heraus", "herein", "hinauf", "hinaus", "hinunter", "hinüber",
+    "herunter", "herüber", "hervor", "herbei", "heran", "herab", "einher",
+    "voran", "voraus", "vorbei", "vorüber", "entlang", "entgegen", "empor",
+    "zurecht", "zusammen", "davon", "dabei", "daran", "darauf", "hinweg",
+    # Наречия и прилагательные, приросшие к глаголу. Список собран не на глаз, а
+    # прогоном по всем 439 отделяемым глаголам справочника 17.08.2026: без них
+    # «zunichtemachen» разбирался как «zu» + «nichtemachen», «herumkommandieren» как
+    # «her» + «umkommandieren», «hinterherkommen» как «hin» + «terherkommen».
+    "aufrecht", "herum", "hinterher", "zufrieden", "zugute", "zunichte",
+    "fehl", "frei", "gut", "kaputt", "kennen", "krank", "leer", "still", "übrig",
+)
+
+
+# Глаголы, которые ДЕЙСТВИТЕЛЬНО начинаются с «ge-». Список в языке закрытый, поэтому
+# всё остальное на «ge-» и «-en» — причастие, а не основа («geordneten», «gearbeiteten»).
+_GE_VERBS = frozenset({
+    "geben", "gehen", "geraten", "gefallen", "gelingen", "genießen", "gewinnen",
+    "gestehen", "gelten", "geschehen", "gewöhnen", "gedeihen", "gehören",
+    "gestalten", "genehmigen", "gedenken", "gebären", "gebrauchen", "gehorchen",
+})
+
+
+def split_separable_verb(word: str) -> tuple[str, str]:
+    """«klarkommen» → («klar», «kommen»). Не отделяемый — ('', слово).
+
+    Зачем: у отделяемого глагола в личной форме приставка УХОДИТ В КОНЕЦ —
+    «ich komme klar», а не «ich klarkomme». Движок таблиц приклеивал окончания к
+    целому слову и печатал «ich ankomme», «ich aufstehe», «ich klarkomme» — форм,
+    которых в немецком нет. Владелец увидел это 17.08.2026 на «klarkommen».
+
+    Признак жёсткий: слово начинается ОДНОЗНАЧНО отделяемой приставкой, а остаток —
+    настоящая глагольная основа (от четырёх букв, на -en/-eln/-ern). Приставки, чья
+    отделяемость зависит от значения, исключены списком выше."""
+    body = str(word or "").strip()
+    low = body.casefold()
+    if not low or " " in low or not low.endswith(("en", "eln", "ern")):
+        return "", body
+    # От самой ДЛИННОЙ приставки к самой короткой: иначе «hineingehen» разберётся как
+    # «hin» + «eingehen», а «zusammenarbeiten» как «zu» + «sammenarbeiten».
+    candidates = sorted(
+        set(_SEPARABLE_PREFIXES) | set(_COMPOUND_SEPARABLE_PREFIXES),
+        key=len, reverse=True,
+    )
+    for prefix in candidates:
+        if prefix in _AMBIGUOUS_SEPARABLE_PREFIXES or not low.startswith(prefix):
+            continue
+        rest = body[len(prefix):]
+        if len(rest) < 4 or not rest.casefold().endswith(("en", "eln", "ern")):
+            continue
+        # Причастие основой быть не может: «abgeordneten» — это существительное «die
+        # Abgeordneten», а не «ab» + «geordneten». Настоящих глаголов на «ge-» в языке
+        # закрытый десяток, они перечислены; всё остальное на «ge-» + «-en» — причастие.
+        low_rest = rest.casefold()
+        if low_rest.startswith("ge") and low_rest not in _GE_VERBS:
+            continue
+        return body[:len(prefix)], rest
+    return "", body
+
+
+def _detach(form: str, prefix: str) -> str:
+    """Личная форма отделяемого глагола: приставка становится отдельным словом в конце.
+
+    Умеет и починить уже склеенную форму («klarkommst» → «kommst klar»): именно
+    такие лежат в разборах, собранных до этой правки, и приходят в `seed`."""
+    if not prefix:
+        return form
+    text = str(form or "").strip()
+    if not text:
+        return text
+    low, low_prefix = text.casefold(), prefix.casefold()
+    if low.startswith(low_prefix) and len(text) > len(prefix):
+        text = text[len(prefix):]
+    elif low.endswith(" " + low_prefix):
+        return text  # приставка уже отделена
+    return f"{text} {prefix}".strip()
+
+
 def looks_like_zu_infinitive(word: str) -> bool:
     """«klarzukommen», «anzulehnen» — это zu-инфинитив, а не словарная форма глагола.
 
@@ -329,7 +417,13 @@ def build_verb_conjugation(
     # gehen/Gehen, arbeiten/Arbeiten, Aufwachen, Hineingehen.
     inf = inf[:1].lower() + inf[1:]
     seed = seed or {}
-    stem, pl_end = _verb_stem(inf)
+    # Отделяемая приставка: спрягаем ОСНОВНОЙ глагол, а приставку ставим в конец личной
+    # формы. Разбор сам сообщает `is_separable`; когда он молчит, решает список
+    # однозначно отделяемых приставок. Слитная форма «ich ankomme» — не немецкий язык.
+    prefix, base_verb = split_separable_verb(inf)
+    if seed.get("is_separable") is False:
+        prefix, base_verb = "", inf
+    stem, pl_end = _verb_stem(base_verb)
     reg_du, reg_er = _present_du_er(stem)
 
     du = str(seed.get("present_2sg") or "").strip() or reg_du
@@ -343,7 +437,9 @@ def build_verb_conjugation(
 
     ihr_present = stem + ("et" if stem.lower().endswith(("t", "d")) else "t")
     praesens = dict(zip(_PRON, [
-        stem + "e", du, er, stem + pl_end, ihr_present, stem + pl_end,
+        _detach(stem + "e", prefix), _detach(du, prefix), _detach(er, prefix),
+        _detach(stem + pl_end, prefix), _detach(ihr_present, prefix),
+        _detach(stem + pl_end, prefix),
     ]))
 
     tables: dict[str, Any] = {"praesens": praesens}
@@ -351,7 +447,7 @@ def build_verb_conjugation(
     # Präteritum: expand from the ich/er base form.
     praet_base = _strip_article(str(seed.get("praeteritum") or "").strip())
     if praet_base:
-        tables["praeteritum"] = _expand_from_base(praet_base, ends_in_e_default=True)
+        tables["praeteritum"] = _expand_with_prefix(praet_base, prefix)
 
     # Konjunktiv II: the ich form already ends in -e for strong verbs (ginge),
     # weak verbs fall back to "würde + Infinitiv".
@@ -362,7 +458,7 @@ def build_verb_conjugation(
             "würden " + inf, "würdet " + inf, "würden " + inf,
         ]))
     elif konj2_base:
-        tables["konjunktiv2"] = _expand_from_base(konj2_base, ends_in_e_default=True)
+        tables["konjunktiv2"] = _expand_with_prefix(konj2_base, prefix)
 
     # Perfekt: conjugate the parsed auxiliary; keep the participle fixed.
     aux, participle = _parse_perfekt(str(seed.get("perfekt") or ""), inf)
@@ -378,14 +474,35 @@ def build_verb_conjugation(
     # Imperativ (du / ihr / Sie).
     imp_du = str(seed.get("imperative_sg") or "").strip() or stem
     tables["imperativ"] = {
-        "du": imp_du,
-        "ihr": ihr_present,
-        "Sie": f"{stem + pl_end} Sie",
+        "du": _detach(imp_du, prefix),
+        "ihr": _detach(ihr_present, prefix),
+        # Вежливая форма: приставка уходит за «Sie» — «kommen Sie klar».
+        "Sie": f"{stem + pl_end} Sie{(' ' + prefix) if prefix else ''}",
     }
 
     tables["infinitive"] = inf
     tables["is_separable"] = seed.get("is_separable")
     return tables
+
+
+def _expand_with_prefix(base: str, prefix: str) -> dict[str, str]:
+    """Развернуть форму ich/er на все шесть лиц, помня про отделяемую приставку.
+
+    Разбор присылает основу уже с приставкой — иногда слитно («klarkam»), иногда
+    отдельным словом («kam klar»). Приклеивать окончания к такой строке нельзя: так
+    получались «kam klarst» и «kam klaren». Поэтому приставку снимаем, разворачиваем
+    чистую основу и возвращаем приставку на её место — в конец."""
+    text = str(base or "").strip()
+    if prefix:
+        low, low_prefix = text.casefold(), prefix.casefold()
+        if low.endswith(" " + low_prefix):
+            text = text[: -(len(prefix) + 1)].strip()
+        elif low.startswith(low_prefix) and len(text) > len(prefix):
+            text = text[len(prefix):].strip()
+    expanded = _expand_from_base(text, ends_in_e_default=True)
+    if not prefix:
+        return expanded
+    return {person: f"{form} {prefix}".strip() for person, form in expanded.items()}
 
 
 def _expand_from_base(base: str, *, ends_in_e_default: bool) -> dict[str, str]:

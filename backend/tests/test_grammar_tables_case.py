@@ -17,8 +17,18 @@ def test_capitalized_infinitive_is_conjugated_in_lowercase():
 
 
 def test_separable_verb_too():
+    """Ожидание обновлено 17.08.2026: «ich hineingehe» — не немецкий язык.
+
+    Тест писался про РЕГИСТР и проверял, что заглавная опущена, а форму брал такой,
+    какую тогда печатал движок. Форма была неверной: у отделяемого глагола приставка
+    в личной форме уходит в конец — «ich gehe hinein». Владелец нашёл это на карточке
+    «klarkommen», где таблица показывала «ich klarkomme». Правило отделения живёт в
+    split_separable_verb, проверки — в test_separable_verb_conjugation.py.
+
+    Регистр проверяется здесь по-прежнему: приставка приходит с заглавной
+    («Hineingehen»), а в форме стоит со строчной."""
     table = build_verb_conjugation(word_de="Hineingehen")
-    assert table["praesens"]["ich"] == "hineingehe"
+    assert table["praesens"]["ich"] == "gehe hinein"
 
 
 def test_lowercase_infinitive_is_unchanged():
