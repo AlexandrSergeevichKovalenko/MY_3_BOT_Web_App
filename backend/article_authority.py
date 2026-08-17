@@ -34,6 +34,12 @@ _ambiguous: set[str] = set()
 # de.wiktionary. Их ответ честно называется «банк артиклей»: он годится как «что-то
 # известно», но не годится как подтверждение — банк не может подтверждать сам себя.
 _bank_sourced: set[str] = set()
+# Написания, которые мы САМИ признали негодной формой слова (стоп-лист, причина «форма
+# множественного числа»). Такому написанию род не даёт НИ ОДНА ступень: ни банк, ни
+# Wiktionary, ни правило композита. Иначе перекрытие одной ступени просто передаёт
+# вопрос следующей: 17.08.2026 «Seifenblasen» перестал брать род из банка и тут же взял
+# «das» у правила композита — ответ остался неверным, поменялся только источник.
+_bad_forms: set[str] = set()
 _loaded_at = 0.0
 
 # Похожи на существительные, но это СУФФИКСЫ: Wirt+schaft — не композит, и род задаёт
@@ -75,10 +81,32 @@ def _load() -> tuple[dict[str, str], set[str]]:
                     c = str(code or "").strip().lower()
                     if len(c) == 1 and c in g2a:      # 'mf'/'nf' = два рода → не берём
                         genus[str(title).strip().lower()] = g2a[c]
+                # Написания, которые мы САМИ признали негодной формой слова, родов не
+                # поставляют. Иначе снятая строка продолжает решать род во всём
+                # продукте: 17.08.2026 «das Fotos» уже был снят из игры, а справочник
+                # на вопрос про «Fotos» по-прежнему отвечал «das» — потому что строка
+                # осталась в таблице, а выборка не смотрела на решение.
+                #
+                # Условие узкое НАМЕРЕННО. Замер 17.08.2026 обеих правок:
+                #   «не брать все снятые строки»  → род потеряли бы 1307 слов,
+                #                                   приобрело бы 1, изменилось 0;
+                #   «не брать негодные написания» → род потеряли ровно 8, изменилось 0,
+                #                                   и это ровно те 8 форм множественного
+                #                                   числа, которые мы убрали руками.
+                # Снятие само по себе НЕ означает «слово неправильное»: строку снимают
+                # и за дубль, и за ротацию освоенного — род у них верный.
+                cur.execute("SELECT word FROM bt_3_article_word_blacklist "
+                            "WHERE reason ILIKE %s", ("%форма множественного числа%",))
+                bad_forms = {str(r[0]).strip().lower() for r in cur.fetchall() or []}
+                _bad_forms.clear()
+                _bad_forms.update(bad_forms)
                 cur.execute("SELECT word, article FROM bt_3_article_sprint_nouns "
                             "WHERE COALESCE(article,'') <> ''")
                 for w, a in cur.fetchall() or []:
-                    by_word.setdefault(str(w).strip().lower(), set()).add(str(a).strip().lower())
+                    lw = str(w).strip().lower()
+                    if lw in bad_forms:
+                        continue
+                    by_word.setdefault(lw, set()).add(str(a).strip().lower())
     except Exception:
         logging.warning("article authority: не смог загрузить роды", exc_info=True)
         return {}, set()
@@ -123,7 +151,7 @@ def compound_article(word: str) -> str | None:
     """Род по правилу композита — только если ВСЕ разборы слова согласны между собой."""
     genus, ambiguous = _load()
     w = str(word or "").strip().lower()
-    if len(w) < 8 or w in ambiguous or w.endswith(_COMPOUND_EXCEPTIONS):
+    if len(w) < 8 or w in ambiguous or w in _bad_forms or w.endswith(_COMPOUND_EXCEPTIONS):
         return None
 
     # Композит через дефис разбирать не нужно — он уже разобран автором написания:
@@ -165,6 +193,11 @@ def authoritative_article(word: str, *, allow_network: bool = False) -> tuple[st
         return None, "пустое слово"
     genus, ambiguous = _load()
     low = w.lower()
+    if low in _bad_forms:
+        # Это не «не знаем», а «знаем, что спрашивать нечего»: у формы множественного
+        # числа артикль всегда die, и род леммы ей навязывать нельзя — именно так
+        # рождалась карточка «der Handschuhe».
+        return None, "негодная форма слова"
     if low in ambiguous:
         return None, "двухродовое (артикль зависит от значения)"
     if low in genus:
