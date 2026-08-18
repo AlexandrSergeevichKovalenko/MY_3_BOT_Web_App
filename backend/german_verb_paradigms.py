@@ -177,8 +177,18 @@ def documented_tables(rendered_html: str) -> dict[str, Any]:
     tables: dict[str, Any] = {}
 
     def at(header: str) -> int:
+        """Заголовок блока ЛИЧНЫХ ФОРМ, а не любое совпадение слова.
+
+        У возвратных глаголов страница начинается таблицей инфинитивов, и слово
+        «Präsens» встречается в ней раньше: «sich schämen | sich zu schämen». Взяв
+        первое вхождение, разбор не находил лиц и возвращал пустоту — «schämen»,
+        «sehnen», «nähern», «wehren» остались без таблицы, хотя страницы у них есть.
+        Поэтому берём то вхождение, за которым в ближайших ячейках ИДУТ метки лиц."""
         for i, cell in enumerate(cells):
-            if cell == header:
+            if cell != header:
+                continue
+            window = cells[i + 1:i + 40]
+            if any(w in _PERSON_LABELS for w in window):
                 return i
         return -1
 
@@ -376,6 +386,13 @@ def paradigm_for_verb(infinitive: str, *, allow_network: bool = False) -> dict |
         if from_full and from_full.get("praesens"):
             return {**from_full, "infinitive": verb, "full_form": full,
                     "source": "wiktionary-flexion:полная форма"}
+        # У полной формы своей страницы тоже нет — но её ОСНОВА документирована:
+        # «rausbringen» → «herausbringen» → «heraus» + «bringen» → «ich bringe heraus».
+        # Цепочка идёт до конца, и каждое звено остаётся справочником.
+        from_full_base = _paradigm_from_base_verb(full, allow_network=allow_network)
+        if from_full_base:
+            return {**from_full_base, "infinitive": verb, "full_form": full,
+                    "source": "wiktionary-flexion:полная форма, основа"}
 
     from_base = _paradigm_from_base_verb(verb, allow_network=allow_network)
     if from_base:
