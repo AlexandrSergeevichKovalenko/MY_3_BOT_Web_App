@@ -189,10 +189,16 @@ export default function ExplainErrorsModal({
                     <div className="explain-grammar-card" key={i}>
                       <div className="explain-grammar-head">
                         <span className="explain-grammar-num">{i + 1}</span>
-                        {g.part ? <span className="explain-grammar-part">{g.part}</span> : null}
+                        {/* Кусок правильного предложения — такая же готовая фраза, как
+                            альтернатива и пример: тап по слову и протяжка по фразе. */}
+                        {g.part ? (
+                          <span className="explain-grammar-part">{words(g.part, `explain-grammar-part-${i}`)}</span>
+                        ) : null}
                       </div>
+                      {/* Название конструкции — немецкие термины ('haben', 'zu', Partizip II),
+                          их тоже спрашивают у словаря. */}
                       {g.structure && (
-                        <div className="explain-grammar-structure">🧩 {g.structure}</div>
+                        <div className="explain-grammar-structure">🧩 {words(g.structure, `explain-grammar-structure-${i}`)}</div>
                       )}
                       {g.note && (
                         <div className="explain-line"><span className="explain-line-ico">💡</span><span>{g.note}</span></div>
