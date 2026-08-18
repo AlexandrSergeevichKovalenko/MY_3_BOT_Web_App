@@ -5315,6 +5315,7 @@ def normalize_card_meanings_for_storage(card: dict, *, german_pos: str = "") -> 
         values = card.get(key)
         if not isinstance(values, list) or not values:
             continue
+        values = [_swap_inverted_translation(item) for item in values]
         pieces: list = []
         for item in values:
             text = item.get("value") if isinstance(item, dict) else item
@@ -5330,6 +5331,48 @@ def normalize_card_meanings_for_storage(card: dict, *, german_pos: str = "") -> 
 
 # Поля, где модель повторяет одно и то же значение по два раза.
 _MEANING_LIST_KEYS = ("dictionary_senses", "translations")
+
+
+def _swap_inverted_translation(item):
+    """Перевод и пояснение поменялись местами — вернуть их на свои места.
+
+    Модель иногда кладёт в поле перевода САМ НЕМЕЦКИЙ текст, а русский перевод уносит
+    в пояснение:
+        value:   «obwohl es mir bewusst gewesen wäre»
+        context: «Хотя я бы это осознавал»
+    Такое слово становится немым: страж связей правильно отказывается считать немецкий
+    текст переводом, и человек открывает карточку, не узнавая, что слово значит.
+    Класс повторяющийся — 18.08.2026 он пришёл третий раз («Das Risiko willkürlicher
+    Festnahmen», «Ich möchte das noch einmal präzisieren», это слово), поэтому чиним не
+    записи, а вход.
+
+    Признак абсолютный и не требует модели: РУССКИЙ ТЕКСТ ПИШЕТСЯ КИРИЛЛИЦЕЙ. Меняем
+    местами только когда в переводе кириллицы нет ВООБЩЕ, а в пояснении она есть.
+    """
+    if not isinstance(item, dict):
+        return item
+    value = str(item.get("value") or "").strip()
+    context = str(item.get("context") or "").strip()
+    if not value or not context:
+        return item
+    if _CYRILLIC_TEXT_RE.search(value) or not _CYRILLIC_TEXT_RE.search(context):
+        return item
+    # ⚠ В пояснении не всегда лежит перевод. Часто там ОПИСАНИЕ: «перевод фразы с
+    # русского на немецкий», «общее слово для спортивных соревнований», «употребляется
+    # в официальных текстах». Переставив такое в перевод, мы поменяли бы одну неверную
+    # строку на другую. Поймано прогоном 18.08.2026: из 354 перестановок такими
+    # оказались десятки. Признак — служебные слова описания и длина.
+    if _MEANING_DESCRIPTION_RE.search(context) or len(context) > 70:
+        return item
+    return {**item, "value": context, "context": None}
+
+
+_CYRILLIC_TEXT_RE = re.compile(r"[А-Яа-яЁё]")
+# Слова, по которым видно, что перед нами ПОЯСНЕНИЕ, а не перевод.
+_MEANING_DESCRIPTION_RE = re.compile(
+    r"(перевод|буквальн|дословн|слово для|выражение|употребляется|используется|"
+    r"означает|обозначает|говорят|в смысле|синоним|фраза|оборот|конструкц|"
+    r"описыва|подчёркива|подчеркива)", re.I)
 
 
 def _meaning_key(value) -> str:

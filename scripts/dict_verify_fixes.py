@@ -138,7 +138,12 @@ with get_db_connection_context() as conn:
                          AND b.id NOT IN (9943, 13, 7062, 7134, 10096, 7966)""")
         check("банк Artikel: множественное число словом", cur.fetchone()[0], 0)
 
-# 11. живая выдача
+        # 11. решения владельца: то, что разобрано и оставлено намеренно
+        cur.execute("SELECT count(*), count(DISTINCT defect_class) FROM bt_3_lex_review_decisions")
+        n, classes = cur.fetchone()
+        print("   %-52s %s" % ("решений владельца в реестре (классов: %d)" % classes, n))
+
+# 12. живая выдача
 for q, want in (("schlammig", "schlammig"), ("Gericht", "das Gericht"), ("die Habe", "die Habe")):
     it = LU.lookup(q, source_lang="de", target_lang="ru")
     check("выдача «%s»" % q, (it or {}).get("word_de"), want)
