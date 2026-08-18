@@ -30145,6 +30145,12 @@ def _ensure_shortcut_runs_schema() -> None:
             cur.execute("ALTER TABLE bt_3_shortcut_runs ADD COLUMN IF NOT EXISTS is_pro BOOLEAN;")
             cur.execute("ALTER TABLE bt_3_shortcut_runs ADD COLUMN IF NOT EXISTS in_window BOOLEAN;")
             cur.execute("ALTER TABLE bt_3_shortcut_runs ADD COLUMN IF NOT EXISTS run_index INTEGER;")
+            # ДИАГНОСТИКА 18.08.2026. Замер показал: 920 из 971 запуска платящего человека
+            # записаны как «бесплатный» при живой подписке pro/active. Почему — установить
+            # нечем: решение нигде не объясняется, а журналы Railway живут 33 часа.
+            # Пишем ВЕРДИКТ ВМЕСТЕ С ЕГО ПРИЧИНОЙ (source_of_entitlement), чтобы завтра
+            # знать факт, а не рассуждение. Снять колонку можно, когда причина найдена.
+            cur.execute("ALTER TABLE bt_3_shortcut_runs ADD COLUMN IF NOT EXISTS entitlement_source TEXT;")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_shortcut_runs_user "
                         "ON bt_3_shortcut_runs (user_id, ran_at);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_shortcut_runs_ranat "
@@ -30242,6 +30248,7 @@ def record_shortcut_run_check(
     is_pro: bool | None = None,
     in_window: bool | None = None,
     run_index: int | None = None,
+    entitlement_source: str | None = None,
 ) -> bool:
     """Log a run-check decision (both approvals AND blocks) for enforcement + the admin
     report. Only allowed=True rows count toward the quotas (see count_* above)."""
@@ -30250,14 +30257,16 @@ def record_shortcut_run_check(
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO bt_3_shortcut_runs (user_id, allowed, reason, is_pro, in_window, run_index) "
-                    "VALUES (%s, %s, %s, %s, %s, %s);",
+                    "INSERT INTO bt_3_shortcut_runs "
+                    "(user_id, allowed, reason, is_pro, in_window, run_index, entitlement_source) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s);",
                     (
                         int(user_id), bool(allowed),
                         (str(reason) if reason else None),
                         (None if is_pro is None else bool(is_pro)),
                         (None if in_window is None else bool(in_window)),
                         (None if run_index is None else int(run_index)),
+                        (str(entitlement_source) if entitlement_source else None),
                     ),
                 )
             conn.commit()
@@ -43094,12 +43103,23 @@ def resolve_entitlement(
 
     plan_code = str(subscription.get("plan_code") or "free").strip().lower() or "free"
     status = _normalize_subscription_status(subscription.get("status"))
+    _plan_unreadable = False
     current_plan = (
         _get_billing_plan_with_cursor(cursor, plan_code)
         if cursor is not None
         else get_billing_plan(plan_code)
     ) or {}
     if not current_plan and plan_code != "free":
+        # ЕДИНСТВЕННЫЙ путь, которым человек с платной активной подпиской становится
+        # бесплатным. «Тариф не прочитался» здесь молча превращается в «тариф бесплатный»,
+        # и этот вердикт потом лежит в Redis 10 минут для веба, бота и воркеров.
+        # 18.08.2026: 920 таких записей у платящего, а причина нигде не сохранялась.
+        # Пока это только СИГНАЛ — поведение не меняем, иначе потеряем шанс увидеть причину.
+        logging.error(
+            "entitlement: тариф %r не прочитался, человек %s считается бесплатным",
+            plan_code, user_id,
+        )
+        _plan_unreadable = True
         plan_code = "free"
         current_plan = (
             _get_billing_plan_with_cursor(cursor, "free")
@@ -43116,7 +43136,10 @@ def resolve_entitlement(
         except Exception:
             trial_ends_at_dt = None
 
-    source_of_entitlement = "free_default"
+    # «Тариф не прочитался» и «человек правда бесплатный» — РАЗНЫЕ вещи, и запись о них
+    # обязана быть разной. Иначе завтрашний разбор снова упрётся в неразличимое
+    # «free_default», а журналы к тому времени уже стёрты (Railway хранит 33 часа).
+    source_of_entitlement = "plan_unreadable" if _plan_unreadable else "free_default"
     if bool(current_plan.get("is_paid")) and status in {"active", "trialing"}:
         # Paid plan with a Stripe card-added trial (status 'trialing') stays Pro — KEEP.
         effective_mode = "pro"

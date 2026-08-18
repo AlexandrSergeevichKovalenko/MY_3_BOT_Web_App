@@ -49617,7 +49617,8 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
     _gate_allowed, _gate_reason, _gate_extra = _shortcut_run_gate(int(user_id))
     record_shortcut_run_check(user_id, allowed=bool(_gate_allowed), reason=_gate_reason,
                               is_pro=_gate_extra.get("is_pro"), in_window=_gate_extra.get("in_window"),
-                              run_index=_gate_extra.get("total_runs"))
+                              run_index=_gate_extra.get("total_runs"),
+                              entitlement_source=_gate_extra.get("entitlement_source"))
     if not _gate_allowed:
         logging.info("shortcut_lookup: run BLOCKED user_id=%s reason=%s (enforced server-side)", user_id, _gate_reason)
         # Friendly DM so the user understands why nothing was translated (Free trial ended
@@ -51260,18 +51261,27 @@ def _shortcut_run_gate(user_id: int) -> tuple[bool, str, dict]:
     if the user hand-edits the shortcut to skip the pre-flight check. Pure decision —
     does NOT write to the DB (the caller records). Returns (allowed, reason, extra):
     extra carries used/limit/window/message on a block, or is_pro/in_window on approval."""
+    # ДИАГНОСТИКА 18.08.2026: вместе с вердиктом запоминаем ЕГО ПРИЧИНУ. Замер показал
+    # 920 запусков платящего человека, записанных как «бесплатный», и установить почему
+    # было нечем — решение нигде не объяснялось. Отдельно различаем «человек free» и
+    # «мы не смогли прочитать»: раньше и то и другое давало is_pro=False.
+    ent_source = ""
     try:
         ent = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
         is_pro = str(ent.get("effective_mode") or "free").strip().lower() in ("pro", "trial")
+        ent_source = str(ent.get("source_of_entitlement") or "")
     except Exception:
         is_pro = False
+        ent_source = "ошибка чтения прав"
+        logging.exception("shortcut gate: не смог прочитать права user_id=%s", user_id)
     try:
         is_admin = int(user_id) in {int(a) for a in get_admin_telegram_ids()}
     except Exception:
         is_admin = False
     total_runs = count_shortcut_runs_total(int(user_id))
     in_window, _local = _shortcut_within_send_window()
-    base = {"is_pro": is_pro, "is_admin": is_admin, "in_window": in_window, "total_runs": total_runs}
+    base = {"is_pro": is_pro, "is_admin": is_admin, "in_window": in_window,
+            "total_runs": total_runs, "entitlement_source": ent_source}
     # 0) first-day SETUP POOL — on the user's first-ever activation calendar day, hand out a
     # one-time «наладка» allowance that does NOT touch the Pro/Free quota (setup runs are
     # recorded with reason='setup' and excluded from the quota counters), so setup fumbling
@@ -51451,7 +51461,8 @@ def shortcut_run_check():
     if not allowed:
         record_shortcut_run_check(user_id, allowed=False, reason=reason,
                                   is_pro=extra.get("is_pro"), in_window=extra.get("in_window"),
-                                  run_index=extra.get("total_runs"))
+                                  run_index=extra.get("total_runs"),
+                                  entitlement_source=extra.get("entitlement_source"))
         _shortcut_check_abuse(int(user_id))  # alert admins if this user is hammering the endpoint
         payload = {"allowed": False, "reason": reason}
         for k in ("used", "limit", "window", "message"):
