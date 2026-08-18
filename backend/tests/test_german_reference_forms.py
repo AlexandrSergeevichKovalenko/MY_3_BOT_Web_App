@@ -125,6 +125,12 @@ def test_составное_слово_склоняется_по_голове():
     assert R._compose("Krankenwagen", "wagen", "dem Wagen") == "dem Krankenwagen"
 
 
+def test_после_дефиса_голова_остаётся_с_заглавной():
+    """Ошибка 18.08.2026: выходило «des Pro-Kopf-einkommens»."""
+    assert R._compose("Pro-Kopf-Einkommen", "einkommen",
+                      "des Einkommens") == "des Pro-Kopf-Einkommens"
+
+
 def test_модель_принимается_только_при_совпадении_двух_ответов():
     a = {"positive": "alt", "comparative": "älter", "superlative": "am ältesten"}
     b = {"positive": "alt", "comparative": "älter", "superlative": "am ältesten"}
@@ -146,3 +152,110 @@ def test_ни_одного_окончания_модуль_не_дописыва
     source = inspect.getsource(R)
     for invented in ('+ "en"', '+ "es"', '+ "er"', '+ "sten"', '+ "esten"'):
         assert invented not in source, f"в модуле появилось дописывание окончания: {invented}"
+
+
+# ── Быстрый путь: формы из ИСХОДНИКА страницы, пачкой по 50 слов ─────────────
+# Каждый тест ниже закрывает ошибку, пойманную сверкой исходника с разметкой 18.08.2026.
+
+MANN_SOURCE = """
+{{Deutsch Substantiv Übersicht
+|Genus=m
+|Nominativ Singular=Mann
+|Nominativ Plural 1=Männer
+|Nominativ Plural 2=Mann
+|Genitiv Singular=Mannes
+|Genitiv Plural 1=Männer
+|Dativ Singular=Mann
+|Dativ Plural 1=Männern
+|Akkusativ Singular=Mann
+|Akkusativ Plural 1=Männer
+}}
+"""
+
+HERZ_SOURCE = """
+{{Deutsch Substantiv Übersicht
+|Genus=n
+|Nominativ Singular=Herz
+|Nominativ Plural=Herzen
+|Genitiv Singular=Herzens
+|Genitiv Plural=Herzen
+|Dativ Singular=Herzen
+|Dativ Plural=Herzen
+|Akkusativ Singular=Herz
+|Akkusativ Plural=Herzen
+}}
+{{Deutsch Substantiv Übersicht
+|Nominativ Plural=Herzen
+}}
+"""
+
+ELTERN_SOURCE = """
+{{Deutsch Substantiv Übersicht
+|Genus=0
+|Nominativ Singular=—
+|Nominativ Plural=Eltern
+|Genitiv Singular=—
+|Genitiv Plural=Eltern
+|Dativ Singular=—
+|Dativ Plural=Eltern
+|Akkusativ Singular=—
+|Akkusativ Plural=Eltern
+}}
+"""
+
+ALT_SOURCE = "{{Deutsch Adjektiv Übersicht\n|Positiv=alt\n|Komparativ=älter\n|Superlativ=ältesten\n}}"
+
+
+def test_множественное_под_номером_варианта_не_теряется():
+    """Ошибка 18.08.2026: у Mann, Land, Wagen, Möbel, Junge множественное было записано
+    как «Nominativ Plural 1», код искал «Nominativ Plural» и терял всю колонку."""
+    tables = R.declension_from_source(MANN_SOURCE)
+    rows = {r["case"]: (r["singular"], r["plural"]) for r in tables["m"]["rows"]}
+    assert rows["nom"] == ("der Mann", "die Männer")
+    assert rows["dat"] == ("dem Mann", "den Männern")
+    assert rows["gen"][0] == "des Mannes"
+
+
+def test_блок_без_рода_не_добавляет_слову_чужую_таблицу():
+    """Ошибка 18.08.2026: второй блок без «Genus» ложился в «pl», и у Herz появлялось
+    несуществующее отдельное множественное число."""
+    tables = R.declension_from_source(HERZ_SOURCE)
+    assert set(tables) == {"n"}
+    assert tables["n"]["rows"][0] == {"case": "nom", "label": "Nominativ",
+                                      "singular": "das Herz", "plural": "die Herzen"}
+
+
+def test_pluralia_tantum_из_исходника():
+    tables = R.declension_from_source(ELTERN_SOURCE)
+    assert set(tables) == {"pl"}
+    assert tables["pl"]["has_singular"] is False
+    assert tables["pl"]["rows"][2]["plural"] == "den Eltern"
+
+
+def test_степени_из_исходника_получают_am():
+    """В исходнике превосходная записана без «am» — справочник дописывает его при показе."""
+    assert R.degrees_from_source(ALT_SOURCE) == {
+        "positive": "alt", "comparative": "älter", "superlative": "am ältesten",
+        "gradable": True}
+
+
+NICHT_STEIGERBAR_SOURCE = ("{{Deutsch Adjektiv Übersicht|Positiv=absichtlich"
+                           "|Komparativ=—|Superlativ=—}}")
+
+
+def test_несравнимое_слово_это_ответ_а_не_отсутствие_страницы():
+    """Ошибка 18.08.2026: «absichtlich» справочник ЗНАЕТ и говорит «степеней нет»
+    (Komparativ=—). Это складывалось в «страницы нет», и слово выглядело непокрытым —
+    217 из 300 в первом прогоне оказались как раз такими."""
+    degrees = R.degrees_from_source(NICHT_STEIGERBAR_SOURCE)
+    assert degrees["gradable"] is False
+    assert degrees["positive"] == "absichtlich"
+    assert degrees["comparative"] == ""
+
+
+def test_однострочный_шаблон_разбирается():
+    """Ошибка 18.08.2026: параметры резались по переносам строк, и однострочные шаблоны
+    («arrogant», «bestechlich») давали ноль параметров — ложное «страницы нет»."""
+    one_line = ("{{Deutsch Adjektiv Übersicht|Positiv=arrogant|Komparativ=arroganter"
+                "|Superlativ=arrogantesten}}")
+    assert R.degrees_from_source(one_line)["comparative"] == "arroganter"

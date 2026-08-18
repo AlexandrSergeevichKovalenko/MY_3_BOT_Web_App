@@ -35,11 +35,38 @@ def test_lowercase_infinitive_is_unchanged():
     assert build_verb_conjugation(word_de="gehen")["praesens"]["ich"] == "gehe"
 
 
-def test_adjective_degrees_are_lowercase():
+def test_adjective_degrees_are_lowercase(monkeypatch):
+    """Ожидание обновлено 18.08.2026: степени сравнения больше не считает код.
+
+    Тест писался про РЕГИСТР, а формы брал такие, какие тогда дописывал движок
+    («nahtloser», «am nahtlosesten»). Дописывание удалено: оно давало «gut → guter»,
+    «alt → am altesten», «hoch → hocher» — формы, которых в языке нет. Теперь степени
+    приходят из напечатанной таблицы справочника (`german_reference_forms`).
+
+    Правило регистра проверяется здесь по-прежнему: заголовок приходит с заглавной
+    («Nahtlos»), а справочник обязан спрашиваться о строчном слове, и в ответе
+    положительная степень стоит со строчной."""
+    asked: list[str] = []
+
+    def fake_reference(word):
+        asked.append(word)
+        return {"positive": "nahtlos", "comparative": "nahtloser",
+                "superlative": "am nahtlosesten", "source": "wiktionary-steigerung"}
+
+    import backend.german_grammar_tables as G
+    monkeypatch.setattr(G, "_documented_degrees", fake_reference)
+
     table = build_adjective_comparison(word_de="Nahtlos")
+    assert asked == ["nahtlos"], "справочник обязан спрашиваться о слове со строчной"
     assert table["positive"] == "nahtlos"
-    assert table["comparative"] == "nahtloser"
-    assert table["superlative"] == "am nahtlosesten"
+    assert table["source"] == "wiktionary-steigerung"
+
+
+def test_adjective_without_reference_has_no_invented_table(monkeypatch):
+    """Справочник молчит — таблицы нет. Раньше здесь появлялась выдуманная лесенка."""
+    import backend.german_grammar_tables as G
+    monkeypatch.setattr(G, "_documented_degrees", lambda word: None)
+    assert build_adjective_comparison(word_de="gut") is None
 
 
 def test_zu_infinitive_still_has_no_table():

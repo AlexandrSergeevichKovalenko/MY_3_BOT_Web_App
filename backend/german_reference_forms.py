@@ -431,7 +431,10 @@ def _compose(word: str, head: str, head_form: str) -> str:
     prefix = word[: len(word) - len(head)]
     if not prefix or not noun_form:
         return ""
-    tail = noun_form[:1].lower() + noun_form[1:]
+    # Внутри слитного композита голова пишется со строчной («Haustür» + «schlüssel»),
+    # а ПОСЛЕ ДЕФИСА сохраняет заглавную: «Pro-Kopf-Einkommen», а не «Pro-Kopf-einkommen».
+    # Поймано прогоном 18.08.2026 на этом самом слове.
+    tail = noun_form if prefix.endswith("-") else noun_form[:1].lower() + noun_form[1:]
     return f"{article} {prefix}{tail}"
 
 
@@ -699,7 +702,7 @@ def warm_reference_forms(*, limit: int = 200, pause_sec: float = 1.5,
                 cur.execute(
                     """
                     SELECT u.lemma, u.pos FROM bt_3_lex_units u
-                     WHERE u.pos IN ('noun','adjective','adverb')
+                     WHERE u.lang = 'de' AND u.pos IN ('noun','adjective','adverb')
                        AND u.lemma IS NOT NULL AND u.lemma <> '' AND position(' ' in u.lemma) = 0
                        AND NOT EXISTS (SELECT 1 FROM bt_3_german_noun_declensions d
                                         WHERE d.noun = lower(u.lemma))
@@ -751,4 +754,330 @@ def warm_reference_forms(*, limit: int = 200, pause_sec: float = 1.5,
         stats["композит" if source == "правило композита"
               else "модель" if source == "модель" else "справочник"] += 1
         clear_unresolved(word)
+    return stats
+
+
+# ── Быстрый путь: исходник страницы пачкой по 50 слов ────────────────────────
+# Разметку страницы приходится просить по одной (action=parse), и справочник уходит в
+# лимит примерно на десятом запросе. Но ФОРМЫ напечатаны и в исходнике страницы —
+# шаблоном «Deutsch Substantiv Übersicht» / «Deutsch Adjektiv Übersicht», — а исходник
+# отдаётся пачкой до 50 названий за один запрос. 6469 слов превращаются в ~130 запросов.
+#
+# Это НЕ другой источник и не вывод формы из основы: в шаблоне лежат ровно те же
+# напечатанные формы, из которых справочник и рисует свою таблицу. Мы дописываем только
+# артикль по роду и падежу — закрытая таблица из 16 клеток, та же, что рисует сам
+# справочник. Совпадение обоих путей проверяется тестом на реальных словах.
+_ART_SG_BY_GENDER = {
+    "m": {"nom": "der", "gen": "des", "dat": "dem", "akk": "den"},
+    "f": {"nom": "die", "gen": "der", "dat": "der", "akk": "die"},
+    "n": {"nom": "das", "gen": "des", "dat": "dem", "akk": "das"},
+}
+_ART_PL = {"nom": "die", "gen": "der", "dat": "den", "akk": "die"}
+_CASE_KEYS = (("nom", "Nominativ"), ("gen", "Genitiv"),
+              ("dat", "Dativ"), ("akk", "Akkusativ"))
+
+
+def _template_params(block: str) -> dict[str, str]:
+    """Параметры шаблона. Резать по переносам строк НЕЛЬЗЯ.
+
+    Ошибка 18.08.2026: часть шаблонов записана в ОДНУ строку
+    («{{Deutsch Adjektiv Übersicht|Positiv=arrogant|Komparativ=arroganter|…}}»), и разбор
+    по «\n|» не находил у них ни одного параметра. 71 слово из первой сотни получило
+    ложную пометку «страницы нет» — тот же класс, что стоил глаголам 2737 таких пометок.
+    Поэтому режем по «|» на нулевой глубине вложенности: внутри значений встречаются и
+    вложенные шаблоны {{...}}, и ссылки [[...|...]].
+    """
+    text = str(block or "")
+    text = text[text.find("|") + 1:] if "|" in text else ""
+    if text.endswith("}}"):
+        text = text[:-2]
+    parts, depth, current = [], 0, []
+    i = 0
+    while i < len(text):
+        two = text[i:i + 2]
+        if two in ("{{", "[["):
+            depth += 1
+            current.append(two)
+            i += 2
+            continue
+        if two in ("}}", "]]"):
+            depth = max(0, depth - 1)
+            current.append(two)
+            i += 2
+            continue
+        if text[i] == "|" and depth == 0:
+            parts.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(text[i])
+        i += 1
+    parts.append("".join(current))
+    params: dict[str, str] = {}
+    for chunk in parts:
+        if "=" not in chunk:
+            continue
+        key, _, value = chunk.partition("=")
+        params[key.strip()] = value.strip()
+    return params
+
+
+def _blocks(text: str, kind: str) -> list[str]:
+    out, needle = [], "{{Deutsch " + kind + " Übersicht"
+    start = text.find(needle)
+    while start >= 0:
+        depth, i = 0, start
+        while i < len(text):
+            if text.startswith("{{", i):
+                depth += 1
+                i += 2
+                continue
+            if text.startswith("}}", i):
+                depth -= 1
+                i += 2
+                if depth == 0:
+                    break
+                continue
+            i += 1
+        out.append(text[start:i])
+        start = text.find(needle, i)
+    return out
+
+
+def declension_from_source(text: str) -> dict[str, Any]:
+    """Исходник страницы → {'m': {...}, 'f': {...}} или {}."""
+    result: dict[str, Any] = {}
+    for block in _blocks(str(text or ""), "Substantiv"):
+        params = _template_params(block)
+        # У омографов и у слов с двумя множественными шаблон нумерует варианты:
+        # «Genus 1=m / Genus 2=n», «Nominativ Plural 1=Männer». Причём нумерация
+        # НЕЗАВИСИМА по полям: у «Kiefer» род пронумерован, а множественное — нет.
+        # Поэтому каждое поле ищем сначала под своим номером, потом без номера,
+        # потом под первым. Сверка с разметкой 18.08.2026 поймала ровно это: у Mann,
+        # Land, Wagen, Möbel, Junge множественное терялось.
+        suffixes = [x for x in ("", " 1", " 2", " 3") if f"Genus{x}" in params] or [""]
+
+        def pick(field: str, suffix: str) -> str:
+            for probe in (f"{field}{suffix}", field, f"{field} 1"):
+                value = params.get(probe)
+                if value:
+                    return value.strip()
+            return ""
+
+        for suffix in dict.fromkeys(suffixes):
+            gender = (params.get(f"Genus{suffix}") or "").strip().lower()
+            if not gender:
+                # Блок без рода — не наш случай (имя собственное, чужая часть речи).
+                # Раньше такой блок молча ложился в «pl» и добавлял слову несуществующее
+                # множественное: поймано на «Herz».
+                continue
+            rows = []
+            for case, label in _CASE_KEYS:
+                sg = pick(f"{label} Singular", suffix)
+                pl = pick(f"{label} Plural", suffix)
+                art_sg = _ART_SG_BY_GENDER.get(gender, {}).get(case, "")
+                rows.append({
+                    "case": case, "label": label,
+                    "singular": f"{art_sg} {sg}".strip() if sg and sg not in _ABSENT and art_sg else "",
+                    "plural": f"{_ART_PL[case]} {pl}".strip() if pl and pl not in _ABSENT else "",
+                })
+            if not any(r["singular"] or r["plural"] for r in rows):
+                continue
+            key = gender if gender in ("m", "f", "n") else "pl"
+            result.setdefault(key, {
+                "rows": rows,
+                "has_singular": any(r["singular"] for r in rows),
+                "has_plural": any(r["plural"] for r in rows),
+            })
+    return result
+
+
+def degrees_from_source(text: str) -> dict[str, str]:
+    """Исходник страницы → степени сравнения. «am» дописывается: так печатает справочник."""
+    for block in _blocks(str(text or ""), "Adjektiv"):
+        params = _template_params(block)
+        positive = (params.get("Positiv") or "").strip()
+        comparative = (params.get("Komparativ") or "").strip()
+        superlative = (params.get("Superlativ") or "").strip()
+        if not positive:
+            continue
+        if comparative in _ABSENT or superlative in _ABSENT or not comparative or not superlative:
+            # Справочник ЗНАЕТ это слово и говорит: степеней нет («absichtlich»,
+            # «außergewöhnlich» помечены Komparativ=—). Это ОТВЕТ, а не отсутствие
+            # страницы. Раньше он складывался в «страницы нет», и слово выглядело
+            # непокрытым — 217 из 300 в первом прогоне оказались как раз такими.
+            return {"positive": positive, "comparative": "", "superlative": "",
+                    "gradable": False}
+        if not superlative.lower().startswith("am "):
+            superlative = "am " + superlative
+        return {"positive": positive, "comparative": comparative,
+                "superlative": superlative, "gradable": True}
+    return {}
+
+
+def fetch_sources_bulk(titles: list[str]) -> dict[str, str] | None:
+    """{название: исходник} для пачки до 50 слов. None — справочник молчит."""
+    names = [str(t).strip() for t in titles if str(t or "").strip()][:50]
+    if not names:
+        return {}
+    payload = _api({"action": "query", "prop": "revisions", "rvprop": "content",
+                    "rvslots": "main", "format": "json", "formatversion": "2",
+                    "titles": "|".join(names)})
+    if payload is None:
+        return None
+    pages = (payload.get("query") or {}).get("pages")
+    if not isinstance(pages, list):
+        # Ответ БЕЗ списка страниц — это «справочник не ответил», а НЕ «страниц нет».
+        # Ошибка 18.08.2026: пустой список молча превращался в «страницы нет» у всей
+        # пачки, и 1002 слова получили ложную пометку. Тот же класс дефекта, что мы
+        # вычищаем из проекта: молчание нельзя записывать как отсутствие данных.
+        logging.warning("формы из справочника: ответ без списка страниц (%d слов)", len(names))
+        return None
+    out: dict[str, str] = {}
+    for page in pages:
+        title = str(page.get("title") or "")
+        if page.get("missing"):
+            out[title] = ""
+            continue
+        try:
+            out[title] = page["revisions"][0]["slots"]["main"]["content"]
+        except Exception:
+            out[title] = ""
+    return out
+
+
+def _reference_title(word: str, pos: str) -> str:
+    """Написание, о котором надо спрашивать справочник.
+
+    В нашем словаре заголовки бывают с заглавной — «Grundlegend», «Kaufmännisch»: так
+    слово пришло из сохранения. В немецком существительное пишется с заглавной, а
+    прилагательное и наречие — со строчной, и страницы «Grundlegend» не существует.
+    Замер 18.08.2026: из-за этого прилагательные закрылись только на 39%.
+
+    Правило регистра в проекте уже есть — `german_grammar_tables.german_headword_case`;
+    берём его, чтобы не завести второе.
+    """
+    name = str(word or "").strip()
+    if not name:
+        return ""
+    try:
+        from backend.german_grammar_tables import german_headword_case
+        fixed = german_headword_case(name, pos)
+        if fixed:
+            return fixed
+    except Exception:
+        logging.debug("формы из справочника: правило регистра недоступно", exc_info=True)
+    return name[:1].lower() + name[1:] if pos in ("adjective", "adverb") else name
+
+
+def warm_from_source_bulk(*, limit: int = 0, batch: int = 50,
+                          pause_sec: float = 1.5) -> dict:
+    """Полный прогрев через ИСХОДНИКИ страниц: до 50 слов за один запрос.
+
+    Почему так, а не по одной странице разметки: разметку приходится просить поштучно
+    (action=parse), и справочник уходит в лимит примерно на десятом запросе — 6469 слов
+    заняли бы недели. Формы напечатаны и в исходнике, а исходники отдаются пачкой.
+
+    Сверка обоих путей на 21 слове (18.08.2026) показала, что исходник ТОЧНЕЕ: на «Zeit»
+    разбор разметки хватал чужой раздел и выдавал «der Zeit / die Zeits», чего в языке
+    нет. Поэтому основной путь — исходник, а разбор разметки остаётся для проверок.
+    """
+    import time
+    from backend.database import get_db_connection_context
+
+    sql = """
+        SELECT u.lemma, u.pos FROM bt_3_lex_units u
+         WHERE u.lang = 'de' AND u.pos IN ('noun','adjective','adverb')
+           AND u.lemma IS NOT NULL AND u.lemma <> '' AND position(' ' in u.lemma) = 0
+           AND NOT EXISTS (SELECT 1 FROM bt_3_german_noun_declensions d
+                            WHERE d.noun = lower(u.lemma))
+           AND NOT EXISTS (SELECT 1 FROM bt_3_german_adjective_degrees a
+                            WHERE a.adjective = lower(u.lemma))
+         ORDER BY u.pos, u.lemma
+    """ + (f" LIMIT {int(limit)}" if limit else "")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            words = [(str(a), str(b)) for a, b in (cur.fetchall() or [])]
+
+    stats = {"слов": len(words), "склонений": 0, "степеней": 0, "несравнимое": 0,
+             "страницы нет": 0, "справочник молчал": 0}
+    for start in range(0, len(words), max(1, int(batch))):
+        chunk = words[start:start + max(1, int(batch))]
+        sources = None
+        for attempt in range(5):
+            sources = fetch_sources_bulk([_reference_title(w, p) for w, p in chunk])
+            if sources is not None:
+                break
+            time.sleep(10 * (attempt + 1))
+        if sources is None:
+            stats["справочник молчал"] += len(chunk)
+            continue
+        for word, pos in chunk:
+            text = (sources.get(_reference_title(word, pos)) or sources.get(word) or "")
+            if pos == "noun":
+                table = declension_from_source(text)
+                store_noun_declension(word, table)
+                stats["склонений" if table else "страницы нет"] += 1
+            else:
+                degrees = degrees_from_source(text)
+                store_adjective_degrees(word, degrees)
+                stats["степеней" if degrees.get("gradable")
+                      else "несравнимое" if degrees else "страницы нет"] += 1
+        time.sleep(max(0.0, float(pause_sec)))
+        if (start // max(1, int(batch))) % 10 == 0:
+            logging.info("формы из справочника: прогрет %d/%d", start + len(chunk), len(words))
+    return stats
+
+
+def warm_with_model(*, limit: int = 0) -> dict:
+    """Добить остаток моделью и ЗАПИСАТЬ ответ в кэш с пометкой происхождения.
+
+    Выдача ходит только в кэш (в сеть и к модели на горячем пути не идём), поэтому
+    ответ модели обязан туда лечь — иначе он не доедет до человека. Пометка
+    «модель» хранится ВНУТРИ записи: владелец 17.08.2026 решил пользователю
+    происхождение не показывать, но различать его мы обязаны.
+    """
+    from backend.database import get_db_connection_context
+    sql = """
+        SELECT u.lemma, u.pos FROM bt_3_lex_units u
+         WHERE u.lang = 'de' AND u.pos IN ('noun','adjective','adverb')
+           AND position(' ' in u.lemma) = 0
+           AND NOT EXISTS (SELECT 1 FROM bt_3_german_noun_declensions d
+                            WHERE d.noun = lower(u.lemma) AND d.documented)
+           AND NOT EXISTS (SELECT 1 FROM bt_3_german_adjective_degrees a
+                            WHERE a.adjective = lower(u.lemma) AND a.documented)
+         ORDER BY u.pos, u.lemma
+    """ + (f" LIMIT {int(limit)}" if limit else "")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            words = [(str(a), str(b)) for a, b in (cur.fetchall() or [])]
+
+    stats = {"слов": len(words), "композит": 0, "модель": 0, "не закрыто": 0}
+    for word, pos in words:
+        if pos == "noun":
+            table = declension_from_compound(word)
+            if table:
+                store_noun_declension(word, {**{k: v for k, v in table.items() if k != "head"},
+                                             "source": "правило композита",
+                                             "head": table.get("head")})
+                stats["композит"] += 1
+                clear_unresolved(word)
+                continue
+            guessed = declension_from_model(word)
+            if guessed:
+                store_noun_declension(word, {**guessed, "source": "модель"})
+                stats["модель"] += 1
+                clear_unresolved(word)
+                continue
+        else:
+            guessed = degrees_from_model(_reference_title(word, pos))
+            if guessed:
+                store_adjective_degrees(word, {**guessed, "source": "модель"})
+                stats["модель"] += 1
+                clear_unresolved(word)
+                continue
+        stats["не закрыто"] += 1
+        mark_unresolved(word, pos, "ни справочник, ни композит, ни модель")
     return stats

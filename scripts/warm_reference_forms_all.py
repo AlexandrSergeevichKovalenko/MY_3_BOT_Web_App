@@ -51,7 +51,7 @@ BACKOFF_SEC = (30, 60, 120, 300)
 SELECT_REMAINING = """
 SELECT u.lemma, u.pos
   FROM bt_3_lex_units u
- WHERE u.pos IN ('noun','adjective','adverb')
+ WHERE u.lang = 'de' AND u.pos IN ('noun','adjective','adverb')
    AND u.lemma IS NOT NULL AND u.lemma <> '' AND position(' ' in u.lemma) = 0
    AND NOT EXISTS (SELECT 1 FROM bt_3_german_noun_declensions d WHERE d.noun = lower(u.lemma))
    AND NOT EXISTS (SELECT 1 FROM bt_3_german_adjective_degrees a WHERE a.adjective = lower(u.lemma))

@@ -92,6 +92,33 @@ def _dative_plural(plural: str) -> str:
     return p + "n"
 
 
+def _documented_declension(noun: str) -> dict | None:
+    """Склонение из справочника (Wiktionary → композит). Модуль подключается внутри:
+    он ходит в базу, а этот модуль обязан оставаться чистым для тех, кто зовёт его без
+    базы (тесты, оффлайн-скрипты). Метка та же, что у спряжения."""
+    import os
+    if os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") == "1" and not os.getenv("REFERENCE_FORMS_LOOKUP"):
+        return None
+    try:
+        from backend.german_reference_forms import noun_declension_for
+        return noun_declension_for(noun)
+    except Exception:
+        logging.debug("справочник склонений недоступен для %s", noun, exc_info=True)
+        return None
+
+
+def _documented_degrees(adjective: str) -> dict | None:
+    import os
+    if os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") == "1" and not os.getenv("REFERENCE_FORMS_LOOKUP"):
+        return None
+    try:
+        from backend.german_reference_forms import adjective_degrees_for
+        return adjective_degrees_for(adjective)
+    except Exception:
+        logging.debug("справочник степеней недоступен для %s", adjective, exc_info=True)
+        return None
+
+
 def build_noun_declension(
     *,
     word_de: str,
@@ -102,36 +129,41 @@ def build_noun_declension(
     """Full 4-case × singular/plural declension table for a noun, with articles.
 
     Returns None when the gender can't be determined (no usable article)."""
-    gender = gender_from_article(article)
-    if not gender:
-        return None
     noun = _strip_article(word_de)
     if not noun:
         return None
+    gender = gender_from_article(article)
 
-    plural_noun = _strip_article(plural) if plural else ""
-    gen_sg = _genitive_singular(noun, gender, genitive)
+    # ТОЛЬКО СПРАВОЧНИК. Прежний счёт падежей отсюда УДАЛЁН: он брал из данных лишь
+    # родительный, а винительный и дательный печатал голым словом — «den Student»
+    # вместо «den Studenten». Наполнение данных это не лечило, потому что неверна была
+    # сама конструкция. Владелец 17.08.2026: «МЫ НИЧЕГО НЕ ПРИДУМЫВАЕМ. Вообще».
+    documented = _documented_declension(noun)
+    if not documented:
+        return None
+    picked = documented.get(gender) if gender else None
+    if not picked:
+        # Род не назван или таблицы под него нет — берём единственную, если она одна.
+        tables = [v for k, v in documented.items()
+                  if k in ("m", "f", "n", "pl") and isinstance(v, dict)]
+        picked = tables[0] if len(tables) == 1 else None
+        if not picked:
+            return None
+        gender = next(k for k, v in documented.items() if v is picked)
 
-    sg_forms = {"nom": noun, "akk": noun, "dat": noun, "gen": gen_sg}
-    rows = []
-    for case in _CASES:
-        sg_art = _ART_SG[gender][case]
-        row = {
-            "case": case,
-            "label": _CASE_LABELS_RU[case],
-            "singular": f"{sg_art} {sg_forms[case]}".strip(),
-        }
-        if plural_noun:
-            pl_noun = _dative_plural(plural_noun) if case == "dat" else plural_noun
-            row["plural"] = f"{_ART_PL[case]} {pl_noun}".strip()
-        rows.append(row)
-
+    rows = [{"case": r.get("case"), "label": _CASE_LABELS_RU.get(r.get("case"), r.get("label")),
+             "singular": r.get("singular") or "",
+             **({"plural": r.get("plural")} if r.get("plural") else {})}
+            for r in (picked.get("rows") or [])]
+    nominative = next((r["singular"] for r in rows if r["case"] == "nom"), "")
+    plural_form = next((r.get("plural") for r in rows if r["case"] == "nom"), "") or ""
     return {
-        "gender": gender,
-        "article": _ART_SG[gender]["nom"],
+        "gender": gender if gender in ("m", "f", "n") else None,
+        "article": nominative.split(" ")[0] if nominative else None,
         "singular": noun,
-        "plural": plural_noun or None,
-        "has_plural": bool(plural_noun),
+        "plural": " ".join(plural_form.split(" ")[1:]) or None,
+        "has_plural": bool(picked.get("has_plural")),
+        "source": documented.get("source"),
         "rows": rows,
     }
 
@@ -631,19 +663,19 @@ def build_adjective_comparison(
     # Прилагательное в степенях сравнения тоже со строчной: «Nahtlos» в заголовке —
     # след сохранения, а не немецкая орфография. См. пояснение у спряжения.
     positive = positive[:1].lower() + positive[1:]
-    comp = str(comparative or "").strip()
-    sup = str(superlative or "").strip()
-    if not comp:
-        comp = positive + "er"
-    if not sup:
-        stem = positive
-        # Было `'sten' if … else 'sten'` — обе ветки одинаковые, то есть проверка стояла,
-        # но ничего не делала: «alt» давало «am altsten» вместо «am ältesten», «hart» —
-        # «am hartsten». После t/d/s/ß/z/x положено «-esten».
-        sup = f"am {stem}{'esten' if stem.lower().endswith(('t', 'd', 's', 'ß', 'z', 'x')) else 'sten'}"
-    elif not sup.lower().startswith("am "):
-        sup = "am " + sup
-    return {"positive": positive, "comparative": comp, "superlative": sup}
+    # ТОЛЬКО СПРАВОЧНИК. Прежнее дописывание окончания отсюда УДАЛЕНО: оно давало
+    # «gut → guter / am gutesten», «alt → alter / am altesten», «hoch → hocher».
+    # Умлаут и супплетивные формы правилом не выводятся в принципе.
+    documented = _documented_degrees(positive)
+    if not documented:
+        return None
+    comp = str(documented.get("comparative") or "").strip()
+    sup = str(documented.get("superlative") or "").strip()
+    if not comp or not sup:
+        return None
+    return {"positive": str(documented.get("positive") or positive),
+            "comparative": comp, "superlative": sup,
+            "source": documented.get("source")}
 
 
 # ── Word formation (compound / affix breakdown) ─────────────────────────────────
