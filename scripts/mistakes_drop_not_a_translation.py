@@ -130,8 +130,16 @@ def main(apply: bool = False, ghosts: bool = False) -> None:
             return
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Выгрузка нужна как страховка на время удаления, а не как архив. Записи живых
+        # людей маленькие и остаются рядом со скриптом; выгрузку служебных аккаунтов
+        # держать в репозитории незачем — разбирать там нечего, а весит она мегабайты
+        # (решение владельца 18.08.2026). Каталог переопределяется переменной окружения.
+        default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        backup_dir = os.getenv("MISTAKES_DROP_DUMP_DIR") or (
+            os.path.join(os.sep, "tmp") if ghosts else default_dir
+        )
         backup_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "data", f"dropped_not_a_translation_{'ghosts' if ghosts else 'people'}_{stamp}.json"
+            backup_dir, f"dropped_not_a_translation_{'ghosts' if ghosts else 'people'}_{stamp}.json"
         )
         os.makedirs(os.path.dirname(backup_path), exist_ok=True)
         with open(backup_path, "w", encoding="utf-8") as handle:
