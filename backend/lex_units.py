@@ -1152,22 +1152,43 @@ def _gender_from_card(card: dict | None) -> str:
 # разборе лежит «die», и без этой строки фраза стала бы существительным женского рода.
 _ADOPT_POS_GENDER_SQL = """
     UPDATE bt_3_lex_units
-       SET pos = 'noun',
-           gender = COALESCE(NULLIF(gender, ''), %s),
+       SET pos = %(pos)s,
+           gender = CASE WHEN %(pos)s = 'noun'
+                         THEN COALESCE(NULLIF(gender, ''), NULLIF(%(gender)s, ''))
+                         ELSE gender END,
            pos_source = COALESCE(pos_source, 'card'),
-           gender_source = COALESCE(gender_source, 'card'),
+           gender_source = CASE WHEN %(pos)s = 'noun' AND %(gender)s <> ''
+                                THEN COALESCE(gender_source, 'card')
+                                ELSE gender_source END,
            updated_at = NOW()
-     WHERE id = %s AND pos IS NULL AND kind = 'word' AND lemma ~ '^[A-ZÄÖÜ]'
+     WHERE id = %(id)s AND pos IS NULL AND kind = 'word'
+       AND (%(pos)s <> 'noun' OR lemma ~ '^[A-ZÄÖÜ]')
        AND NOT EXISTS (
            SELECT 1 FROM bt_3_lex_units o
             WHERE o.lang = bt_3_lex_units.lang
               AND o.kind = bt_3_lex_units.kind
               AND o.lemma_key = bt_3_lex_units.lemma_key
-              AND o.pos = 'noun'
-              AND COALESCE(o.gender, '') = %s
+              AND o.pos = %(pos)s
+              AND COALESCE(o.gender, '') = %(gender)s
               AND o.id <> bt_3_lex_units.id
        );
 """
+
+# Части речи, которые разбор называет ОДНОЗНАЧНО. Всё остальное — не часть речи
+# («phrase», «sentence») или отказ модели («other», пусто), и брать его нельзя.
+# ⚠ Составные ответы вроде «adjective|adverb» тоже не берём: два ответа — это не ответ,
+# а часть речи входит в ключ опознания слова, и ошибка здесь разводит одно слово на два.
+_KNOWN_POS = frozenset({
+    "noun", "verb", "adjective", "adverb", "preposition", "conjunction",
+    "pronoun", "numeral", "interjection", "particle", "article", "participle",
+})
+
+
+def _pos_from_card(card: dict | None) -> str:
+    if not isinstance(card, dict):
+        return ""
+    said = str(card.get("part_of_speech") or "").strip().lower()
+    return said if said in _KNOWN_POS else ""
 
 
 def _adopt_pos_gender_inline(cur, unit_id: int, card: dict | None) -> None:
@@ -1185,14 +1206,34 @@ def _adopt_pos_gender_inline(cur, unit_id: int, card: dict | None) -> None:
     которому слово находят, и может упереться в уникальный индекс. Запрос от этого
     защищён (NOT EXISTS), но если гонка всё же случится, ошибка не имеет права утащить
     за собой сохранение самого разбора — а внутри чужой транзакции она утащила бы всё.
-    Поэтому точка отката: не вышло проставить род — разбор всё равно сохранён."""
+    Поэтому точка отката: не вышло проставить род — разбор всё равно сохранён.
+
+    ⚠ ПОЧЕМУ ЧАСТЬ РЕЧИ БЕРЁТСЯ ЛЮБАЯ, А НЕ ТОЛЬКО «существительное»
+    ───────────────────────────────────────────────────────────────
+    До 18.08.2026 здесь стояло жёсткое `pos = 'noun'`, и срабатывало оно лишь тогда,
+    когда в разборе был артикль. То есть часть речи получали ТОЛЬКО существительные и
+    ТОЛЬКО через артикль, а глагол, прилагательное, наречие и союз не получали её
+    никогда — хотя разбор называет её прямым текстом. Единица же создаётся вообще без
+    pos (INSERT выше её не заполняет), и заполнить было некому.
+
+    Отсюда и брались слова «неизвестно что»: владелец 18.08.2026 разбирал их списком
+    руками и справедливо спросил, почему это повторяется. Замер в тот день: разбор
+    называет часть речи у 6 349 слов, а перенесена она была только у существительных.
+
+    Теперь берётся то, что разбор назвал, — из закрытого списка настоящих частей речи.
+    «phrase», «sentence», «other» и составные ответы вроде «adjective|adverb» не берутся:
+    это не часть речи или не ответ, а pos входит в ключ опознания слова."""
+    pos = _pos_from_card(card)
     gender = _gender_from_card(card)
-    if not gender or not unit_id:
+    if not pos and gender:
+        pos = "noun"                      # артикль в разборе — само по себе показание
+    if not pos or not unit_id:
         return
     try:
         cur.execute("SAVEPOINT adopt_pos_gender;")
         try:
-            cur.execute(_ADOPT_POS_GENDER_SQL, (gender, int(unit_id), gender))
+            cur.execute(_ADOPT_POS_GENDER_SQL,
+                        {"pos": pos, "gender": gender, "id": int(unit_id)})
         except Exception as exc:
             cur.execute("ROLLBACK TO SAVEPOINT adopt_pos_gender;")
             logging.debug("adopt pos/gender inline for unit %s failed: %s", unit_id, exc)
@@ -1214,13 +1255,17 @@ def adopt_pos_gender_from_card(unit_id: int, card: dict | None, *, lemma: str = 
     пропускаем, сливать единицы без решения владельца нельзя.
 
     Ничего не перезаписываем: трогаем только слова, у которых части речи нет вовсе."""
+    pos = _pos_from_card(card)
     gender = _gender_from_card(card)
-    if not gender or not unit_id:
+    if not pos and gender:
+        pos = "noun"
+    if not pos or not unit_id:
         return False
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
-                cur.execute(_ADOPT_POS_GENDER_SQL, (gender, int(unit_id), gender))
+                cur.execute(_ADOPT_POS_GENDER_SQL,
+                            {"pos": pos, "gender": gender, "id": int(unit_id)})
                 changed = cur.rowcount
             conn.commit()
         return bool(changed)

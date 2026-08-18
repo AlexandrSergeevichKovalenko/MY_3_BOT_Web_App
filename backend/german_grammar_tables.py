@@ -350,7 +350,12 @@ def strip_zu_infinitive(word: str) -> str:
 # Части речи, которые в немецком пишутся со СТРОЧНОЙ. Существительных здесь нет
 # намеренно: они с заглавной всегда.
 _LOWERCASE_POS = {"verb", "adjective", "adverb", "adj", "adv",
-                  "preposition", "conjunction", "particle", "pronoun", "numeral"}
+                  "preposition", "conjunction", "particle", "pronoun", "numeral",
+                  # Междометие тоже со строчной: «danke», «schade», «nanu». С заглавной
+                  # в немецком пишется ТОЛЬКО существительное, и исключений у правила нет.
+                  # Добавлено 18.08.2026, когда служебным словам проставили часть речи и
+                  # стало видно, что «Danke» и «Abgemacht» остаются заглавными.
+                  "interjection", "participle"}
 
 
 _INDEFINITE_HEAD_RE = re.compile(r"^(?:ein|eine|einen|einem|einer|eines)\s+", re.I)
