@@ -571,7 +571,12 @@ def noun_declension_for(noun: str, *, allow_network: bool = False,
         store_noun_declension(word, fetched)
         tables = fetched
     if tables:
-        return {**tables, "source": "wiktionary-deklination"}
+        # Подпись источника берём ИЗ ЗАПИСИ, если она там есть: в кэше лежат и таблицы
+        # справочника, и положенные моделью или разбором составного слова. Раньше здесь
+        # стояла безусловная подпись «wiktionary», и ответ модели выдавал себя за
+        # справочник — происхождение мы обязаны различать, даже если человеку не
+        # показываем (решение владельца 17.08.2026).
+        return {**tables, "source": tables.get("source") or "wiktionary-deklination"}
     compound = declension_from_compound(word)
     if compound:
         return {**compound, "source": "правило композита"}
@@ -594,7 +599,7 @@ def adjective_degrees_for(adjective: str, *, allow_network: bool = False,
         store_adjective_degrees(word, fetched)
         degrees = fetched
     if degrees:
-        return {**degrees, "source": "wiktionary-steigerung"}
+        return {**degrees, "source": degrees.get("source") or "wiktionary-steigerung"}
     if allow_model:
         guessed = degrees_from_model(word)
         if guessed:

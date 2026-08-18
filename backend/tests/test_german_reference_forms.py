@@ -259,3 +259,14 @@ def test_однострочный_шаблон_разбирается():
     one_line = ("{{Deutsch Adjektiv Übersicht|Positiv=arrogant|Komparativ=arroganter"
                 "|Superlativ=arrogantesten}}")
     assert R.degrees_from_source(one_line)["comparative"] == "arroganter"
+
+
+def test_подпись_источника_не_затирается(monkeypatch):
+    """Ошибка 18.08.2026: выдача штамповала «wiktionary» на таблицу, положенную моделью."""
+    monkeypatch.setattr(R, "load_adjective_degrees",
+                        lambda word: {"positive": "x", "comparative": "y",
+                                      "superlative": "am z", "source": "модель"})
+    assert R.adjective_degrees_for("x")["source"] == "модель"
+    monkeypatch.setattr(R, "load_adjective_degrees",
+                        lambda word: {"positive": "x", "comparative": "y", "superlative": "am z"})
+    assert R.adjective_degrees_for("x")["source"] == "wiktionary-steigerung"
