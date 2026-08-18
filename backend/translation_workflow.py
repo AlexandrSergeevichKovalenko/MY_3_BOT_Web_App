@@ -8333,6 +8333,55 @@ def _log_translation_mistake_with_cursor(
     if subcategories:
         logging.info("Subcategories from log_translation_mistake: %s", ", ".join(subcategories))
 
+    # ── Ответ, который не является переводом, ошибкой не становится ──────────────
+    # Замер 18.08.2026 по живой базе: из 293 записей «тип не определён» у настоящих
+    # людей 270 (92%) стояли за ответами вида «Оашв», «Чттч», «Ich weiß nicht» или
+    # текстом по-русски. Они ложились в список ошибок и возвращались человеку как
+    # задания, вытесняя настоящие ошибки: у одного человека из 59 накопленных ошибок
+    # 58 были такими.
+    #
+    # Оба признака берутся У МОДЕЛИ, ничего не выдумывается своей арифметикой:
+    #   1) ноль — это её вердикт «пусто или не по делу» (системный промпт проверки
+    #      требует ровно этого: openai_manager.py, "If translation is empty or
+    #      unrelated, score must be 0");
+    #   2) ни одного названного типа ошибки — то есть разбирать в ответе нечего.
+    # Порознь ни один из признаков не годится: 68 записей с нулём оказались живыми
+    # обрывочными попытками («7. Auch wenn für uns schwierig war»), и типы ошибок
+    # модель у них назвала — такие мы обязаны сохранить.
+    #
+    # Оценку человеку это НЕ меняет: он написал ерунду, он видит свой ноль. Решение
+    # владельца 18.08.2026: «пользователя не трогай — давай смотреть, что сделать
+    # под капотом».
+    named_pairs = _normalize_category_pairs(
+        categories,
+        subcategories,
+        target_lang=target_lang,
+        fallback_to_other=False,
+    )
+    if not named_pairs and int(score or 0) == 0:
+        logging.info(
+            "mistake_skipped_not_a_translation user_id=%s score=0 lang=%s->%s: "
+            "модель не назвала ни одного типа ошибки — запись не создаётся",
+            user_id,
+            source_lang or "ru",
+            target_lang or "de",
+        )
+        return []
+    if not named_pairs:
+        # Ответ настоящий (балл выше нуля), но назвать тип не удалось. Запись нужна,
+        # однако это НЕ бесплатный случай: либо модель ответила мимо таксономии, либо
+        # мы сами выбросили её ответ при сборке пар. Отличить одно от другого сейчас
+        # нечем — сырой ответ модели нигде не хранится, — поэтому случай СЧИТАЕТСЯ
+        # вслух, а не проглатывается молча (правило ноль: где счётчик «не знаю»).
+        logging.warning(
+            "mistake_type_unknown user_id=%s score=%s lang=%s->%s categories=%s subcategories=%s",
+            user_id,
+            score,
+            source_lang or "ru",
+            target_lang or "de",
+            categories,
+            subcategories,
+        )
     valid_combinations = _normalize_category_pairs(
         categories,
         subcategories,
@@ -8971,7 +9020,19 @@ async def check_user_translation_webapp_item(
             "error": "Ошибка: не удалось проверить перевод.",
         }, None
 
-    score_value = int(score) if score and str(score).isdigit() else 0
+    # Ноль здесь имеет ДВА разных смысла, и это опасно: «модель оценила ответ в ноль»
+    # и «балл прочитать не удалось». Первый — вердикт источника, на него опирается
+    # страж «это не перевод» (_log_translation_mistake_with_cursor). Второй — наша
+    # подстановка. Поведение пока прежнее (иначе поедет то, что показывается человеку),
+    # но случай перестаёт быть невидимым: он считается вслух.
+    score_reported = bool(score and str(score).isdigit())
+    if not score_reported:
+        logging.warning(
+            "score_unreadable sentence_number=%s: модель не вернула читаемый балл, "
+            "записываем 0 — этот ноль НЕ является вердиктом «не перевод»",
+            sentence_number,
+        )
+    score_value = int(score) if score_reported else 0
     translation_id = None
     stored_user_translation = user_translation
     stored_score_value = score_value
