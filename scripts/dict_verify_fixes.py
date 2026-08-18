@@ -66,7 +66,18 @@ with get_db_connection_context() as conn:
                        AND NOT EXISTS (SELECT 1 FROM bt_3_lex_links l
                                        JOIN bt_3_lex_units t ON t.id=CASE WHEN l.from_unit=u.id THEN l.to_unit ELSE l.from_unit END
                                        WHERE (l.from_unit=u.id OR l.to_unit=u.id) AND t.lang='ru' AND l.rank<900)""")
-        check("немых карточек (разбор есть, перевода нет)", cur.fetchone()[0], 0)
+        # Считаем ДЕФЕКТ, а не очередь: перевод в разборе ЕСТЬ, а связи нет. Слово,
+        # у которого разбор пока без переводов, ждёт ночного обогащения — это не брак.
+        cur.execute("""SELECT count(*) FROM bt_3_lex_units u WHERE u.lang='de'
+                       AND jsonb_typeof(u.card->'translations')='array'
+                       AND jsonb_array_length(u.card->'translations') > 0
+                       AND NOT EXISTS (SELECT 1 FROM bt_3_lex_links l
+                                       JOIN bt_3_lex_units t ON t.id=CASE WHEN l.from_unit=u.id THEN l.to_unit ELSE l.from_unit END
+                                       WHERE (l.from_unit=u.id OR l.to_unit=u.id) AND t.lang='ru' AND l.rank<900)""")
+        check("перевод в разборе есть, а связи нет", cur.fetchone()[0], 0)
+        cur.execute("""SELECT count(*) FROM bt_3_lex_units u WHERE u.lang='de' AND u.card IS NOT NULL
+                       AND COALESCE(jsonb_array_length(u.card->'translations'), 0) = 0""")
+        print("   %-52s %s" % ("(ждут ночного обогащения: разбор без переводов)", cur.fetchone()[0]))
 
         # 7. перевод оказался немецким текстом — переводом это не является
         cur.execute("""SELECT count(*) FROM bt_3_lex_units u

@@ -42,7 +42,10 @@ os.environ.setdefault("SKIP_STARTUP_SCHEMA_BOOTSTRAP", "1")
 os.environ.setdefault("SKIP_BILLING_LEDGER_WRITES", "1")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.database import get_db_connection_context            # noqa: E402
+from backend.database import (                                    # noqa: E402
+    blacklist_article_words,
+    get_db_connection_context,
+)
 
 # id → (что лежит, единственное число, почему снимаем)
 RETIRE = {
@@ -112,6 +115,13 @@ def main() -> None:
                         "retire_reviewed = TRUE, updated_at = NOW() WHERE id = %s;",
                         (row_id,),
                     )
+                    # ⚠ ОДНОГО СНЯТИЯ НЕ ХВАТАЕТ. Замер 18.08.2026: шесть строк, снятых
+                    # накануне, снова были живыми. Слово возвращается в банк — либо
+                    # генератором, либо разбором снятого (restore_retired_article_noun
+                    # прямо ставит retired = FALSE). Вечное решение у нас одно:
+                    # стоп-лист с причиной. Формулировку не менять — по ней же
+                    # article_authority отказывается брать род у формы мн. числа.
+                    blacklist_article_words([(word, "форма множественного числа", "")])
                 retired += 1
 
             print()

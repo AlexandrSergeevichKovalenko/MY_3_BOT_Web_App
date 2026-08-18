@@ -144,24 +144,29 @@ def _column_forms(cells: list[str], start: int, *, column: int) -> dict[str, str
         if not person:
             index += 1
             continue
-        group: list[str] = []
+        # Клетка может содержать НЕСКОЛЬКО задокументированных вариантов, разделённых
+        # запятой: «ich dämm ein, ich dämme ein», «du hieltest, du hieltst». Собираем
+        # их вместе и берём ПОЛНУЮ форму — усечённая («dämm», «säuber») это разговорное
+        # выпадение -e, и словарной статье она не годится. Оба варианта из источника,
+        # выбор между ними — по длине, а не по порядку: порядок у Wiktionary разный.
+        group: list[list[str]] = []
         cursor, pending_variant = index + 1, False
         while cursor < limit and cells[cursor] not in _PERSON_LABELS:
             value = cells[cursor]
             if value in _PRONOUNS:
                 cursor += 1
                 continue
-            if pending_variant:
-                pending_variant = value.endswith(",")
-                cursor += 1
-                continue
-            group.append(value)
+            if pending_variant and group:
+                group[-1].append(value)
+            else:
+                group.append([value])
             pending_variant = value.endswith(",")
             cursor += 1
         if len(group) > column and person not in out:
-            form = _strip_pronoun(group[column]).rstrip("!,")
-            if form:
-                out[person] = form
+            variants = [_strip_pronoun(v).rstrip("!,") for v in group[column]]
+            variants = [v for v in variants if v]
+            if variants:
+                out[person] = max(variants, key=len)
         index = cursor
     return out if len(out) == 6 else {}
 
