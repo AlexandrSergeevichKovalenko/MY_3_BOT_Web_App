@@ -16,8 +16,19 @@
 («7. Auch wenn für uns schwierig war»), и типы ошибок модель у них назвала — такие
 записи правило не трогает.
 
-    python scripts/mistakes_drop_not_a_translation.py            # только показать
-    python scripts/mistakes_drop_not_a_translation.py --apply    # удалить
+    python scripts/mistakes_drop_not_a_translation.py                    # только показать
+    python scripts/mistakes_drop_not_a_translation.py --apply            # удалить
+    python scripts/mistakes_drop_not_a_translation.py --ghosts           # то же по аккаунтам прогонов
+    python scripts/mistakes_drop_not_a_translation.py --ghosts --apply
+
+По умолчанию работаем по живым людям (те, кто есть в bt_3_user_identity). Ключ
+`--ghosts` разворачивает ТО ЖЕ САМОЕ правило на аккаунты наших нагрузочных прогонов —
+они называют себя сами: `skill_v2_shadow` («Phase2 runtime validation synthetic user»),
+`timeout_fix_smoke_2026_04_17`, `repeated_preflight_smoke`. Проверено 18.08.2026:
+платежей у них нет, «переводили» залпами до 295 аккаунтов в день, id идут блоками
+91000…/99370…/отрицательные. На живых людей их записи не влияют (списки ошибок
+персональные), но любой отчёт по типам ошибок они портят: без них доля «тип не
+определён» по всей таблице была 70%.
 
 Перед удалением всё, что уходит, выгружается в JSON рядом со скриптом — чтобы удаление
 можно было разобрать потом, а не восстанавливать по памяти.
@@ -35,13 +46,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Локальный DATABASE_URL указывает на старый мёртвый хост, брать его нельзя.
 DSN_ENV = "DATABASE_URL_RAILWAY"
 
+# Популяция: живые люди — те, кто есть в таблице имён; аккаунты прогонов — все
+# остальные. Правило отбора записей от популяции НЕ зависит: оно одно на оба случая.
+PEOPLE = "EXISTS (SELECT 1 FROM bt_3_user_identity u WHERE u.user_id = d.user_id)"
+GHOSTS = "NOT EXISTS (SELECT 1 FROM bt_3_user_identity u WHERE u.user_id = d.user_id)"
+
 SELECT_DOOMED = """
 SELECT d.id, d.user_id, d.sentence_id, d.score, d.mistake_count,
        COALESCE(d.first_seen, d.added_data) AS created,
        LEFT(d.sentence, 90) AS sentence
 FROM bt_3_detailed_mistakes d
-JOIN bt_3_user_identity u ON u.user_id = d.user_id
-WHERE d.score = 0
+WHERE {population}
+  AND d.score = 0
   AND lower(COALESCE(NULLIF(d.main_category, ''), 'Other mistake'))
       IN ('other mistake', 'other mistakes')
   AND lower(COALESCE(NULLIF(d.sub_category, ''), 'Unclassified mistake'))
@@ -53,8 +69,8 @@ ORDER BY d.user_id, created;
 SELECT_SPARED = """
 SELECT COUNT(*)
 FROM bt_3_detailed_mistakes d
-JOIN bt_3_user_identity u ON u.user_id = d.user_id
-WHERE d.score = 0
+WHERE {population}
+  AND d.score = 0
   AND lower(COALESCE(NULLIF(d.sub_category, ''), 'Unclassified mistake'))
       NOT IN ('unclassified mistake', 'unclassified mistakes');
 """
@@ -64,28 +80,30 @@ SELECT COUNT(*) FILTER (WHERE TRUE) AS all_rows,
        COUNT(*) FILTER (WHERE lower(COALESCE(NULLIF(d.sub_category,''),'Unclassified mistake'))
              IN ('unclassified mistake','unclassified mistakes')) AS unclassified
 FROM bt_3_detailed_mistakes d
-JOIN bt_3_user_identity u ON u.user_id = d.user_id;
+WHERE {population};
 """
 
 
-def main(apply: bool = False) -> None:
+def main(apply: bool = False, ghosts: bool = False) -> None:
     import psycopg2
 
     dsn = os.getenv(DSN_ENV)
     if not dsn:
         sys.exit(f"нет {DSN_ENV} в окружении")
 
+    population = GHOSTS if ghosts else PEOPLE
+    who = "аккаунтов нагрузочных прогонов" if ghosts else "настоящих людей"
     conn = psycopg2.connect(dsn)
     try:
         with conn.cursor() as cursor:
-            cursor.execute(SELECT_TOTALS)
+            cursor.execute(SELECT_TOTALS.format(population=population))
             all_rows, unclassified = cursor.fetchone()
-            cursor.execute(SELECT_DOOMED)
+            cursor.execute(SELECT_DOOMED.format(population=population))
             doomed = cursor.fetchall()
-            cursor.execute(SELECT_SPARED)
+            cursor.execute(SELECT_SPARED.format(population=population))
             spared = cursor.fetchone()[0]
 
-        print("── что нашлось у настоящих людей ──")
+        print(f"── что нашлось у {who} ──")
         print(f"   всего записей об ошибках      : {all_rows}")
         print(f"   из них «тип не определён»     : {unclassified}")
         print(f"   под правило подпадает         : {len(doomed)}")
@@ -113,7 +131,7 @@ def main(apply: bool = False) -> None:
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "data", f"dropped_not_a_translation_{stamp}.json"
+            os.path.dirname(os.path.abspath(__file__)), "data", f"dropped_not_a_translation_{'ghosts' if ghosts else 'people'}_{stamp}.json"
         )
         os.makedirs(os.path.dirname(backup_path), exist_ok=True)
         with open(backup_path, "w", encoding="utf-8") as handle:
@@ -142,7 +160,7 @@ def main(apply: bool = False) -> None:
         print(f"удалено записей: {deleted}")
 
         with conn.cursor() as cursor:
-            cursor.execute(SELECT_TOTALS)
+            cursor.execute(SELECT_TOTALS.format(population=population))
             all_rows_after, unclassified_after = cursor.fetchone()
         print("\n── после уборки ──")
         print(f"   всего записей об ошибках  : {all_rows_after}")
@@ -152,4 +170,4 @@ def main(apply: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    main(apply="--apply" in sys.argv)
+    main(apply="--apply" in sys.argv, ghosts="--ghosts" in sys.argv)
