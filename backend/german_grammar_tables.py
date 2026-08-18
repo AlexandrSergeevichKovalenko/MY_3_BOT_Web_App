@@ -193,6 +193,12 @@ _COMPOUND_SEPARABLE_PREFIXES = (
     # «her» + «umkommandieren», «hinterherkommen» как «hin» + «terherkommen».
     "aufrecht", "herum", "hinterher", "zufrieden", "zugute", "zunichte",
     "fehl", "frei", "gut", "kaputt", "kennen", "krank", "leer", "still", "übrig",
+    # Добавлено 18.08.2026: без них «bereitlegen» и «kleinschneiden» не разбирались на
+    # приставку и основу, а значит не могли взять таблицу у своей основы («legen»,
+    # «schneiden»). Проверка разбора идёт по справочнику: остаток обязан оказаться
+    # документированным глаголом, иначе разбор не принимается.
+    "bereit", "klein", "fertig", "hoch", "tief", "wach", "satt", "wett", "wahr",
+    "nieder", "heim", "teil", "breit", "schief", "tot", "kurz",
 )
 
 

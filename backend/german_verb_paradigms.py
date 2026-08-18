@@ -285,8 +285,76 @@ def load_paradigm(verb: str) -> dict | None:
     return tables
 
 
+# Разговорные усечения приставок. Это НЕ догадка: «rauf-», «rein-», «runter-», «raus-»,
+# «ran-», «rum-» — стяжения от «herauf-», «herein-», «herunter-», «heraus-», «heran-»,
+# «herum-», и словарь описывает их именно так. Решение показывать полную форму принял
+# владелец 18.08.2026: «ну да, показывай».
+_COLLOQUIAL_PREFIX = {
+    "rauf": "herauf", "rein": "herein", "runter": "herunter", "raus": "heraus",
+    "ran": "heran", "rum": "herum", "rüber": "herüber", "raus": "heraus",
+}
+
+
+def _full_form_of_colloquial(verb: str) -> str:
+    """«rangehen» → «herangehen». Пустая строка, если это не усечение."""
+    low = str(verb or "").strip().casefold()
+    for short, full in _COLLOQUIAL_PREFIX.items():
+        if low.startswith(short) and len(low) > len(short) + 3:
+            return full + verb[len(short):]
+    return ""
+
+
+def _paradigm_from_base_verb(verb: str, *, allow_network: bool) -> dict | None:
+    """Таблица составного глагола из таблицы его ОСНОВЫ.
+
+    У части глаголов своей страницы в справочнике нет: «abschnallen», «einleben»,
+    «ausstecken». Но составной глагол спрягается РОВНО как его основа, а приставка в
+    личной форме уходит в конец — «ich schnalle ab» от «ich schnalle». Основа при этом
+    документирована: замер 18.08.2026 подтвердил schnallen, leben, stecken, sehen.
+
+    Это не догадка и не модель: обе части взяты из источника — формы у основы, а
+    отделяемость у самого написания составного глагола."""
+    from backend.german_grammar_tables import split_separable_verb
+    prefix, base = split_separable_verb(verb)
+    if not prefix or base.casefold() == verb.casefold():
+        return None
+    tables = load_paradigm(base)
+    if tables is None and allow_network:
+        fetched = fetch_documented_tables(base)
+        store_paradigm(base, fetched)
+        tables = fetched
+    if not tables or not tables.get("praesens"):
+        return None
+
+    def attach(form: str) -> str:
+        text = str(form or "").strip()
+        return f"{text} {prefix}".strip() if text and text != "—" else text
+
+    built: dict[str, Any] = {}
+    for key in ("praesens", "praeteritum", "konjunktiv2", "imperativ"):
+        block = tables.get(key)
+        if isinstance(block, dict):
+            built[key] = {person: attach(form) for person, form in block.items()}
+    # В Perfekt приставка НЕ отделяется: «habe abgeschnallt». Причастие основы
+    # («geschnallt») получает приставку впереди — так устроено причастие составного.
+    perfekt = tables.get("perfekt")
+    participle = str(tables.get("partizip2") or "").strip()
+    if isinstance(perfekt, dict) and participle:
+        joined = prefix + participle
+        built["perfekt"] = {p: str(f).replace(participle, joined) for p, f in perfekt.items()}
+        built["partizip2"] = joined
+        built["auxiliary"] = tables.get("auxiliary")
+    return built or None
+
+
 def paradigm_for_verb(infinitive: str, *, allow_network: bool = False) -> dict | None:
-    """Документированная таблица спряжения или None, если справочник её не подтвердил."""
+    """Документированная таблица спряжения или None, если справочник её не подтвердил.
+
+    Три пути, все опираются на источник:
+      1. своя страница Flexion;
+      2. полная форма разговорного усечения («rangehen» → «herangehen»);
+      3. таблица ОСНОВЫ составного глагола плюс отделяемая приставка.
+    Ни один не выдумывает форм: код нигде не дописывает окончаний."""
     verb = str(infinitive or "").strip()
     if not verb or " " in verb:
         return None
@@ -295,9 +363,24 @@ def paradigm_for_verb(infinitive: str, *, allow_network: bool = False) -> dict |
         fetched = fetch_documented_tables(verb)
         store_paradigm(verb, fetched)
         tables = fetched if fetched is not None else None
-    if not tables or not tables.get("praesens"):
-        return None
-    return {**tables, "infinitive": verb, "source": "wiktionary-flexion"}
+    if tables and tables.get("praesens"):
+        return {**tables, "infinitive": verb, "source": "wiktionary-flexion"}
+
+    full = _full_form_of_colloquial(verb)
+    if full:
+        from_full = load_paradigm(full)
+        if from_full is None and allow_network:
+            fetched = fetch_documented_tables(full)
+            store_paradigm(full, fetched)
+            from_full = fetched
+        if from_full and from_full.get("praesens"):
+            return {**from_full, "infinitive": verb, "full_form": full,
+                    "source": "wiktionary-flexion:полная форма"}
+
+    from_base = _paradigm_from_base_verb(verb, allow_network=allow_network)
+    if from_base:
+        return {**from_base, "infinitive": verb, "source": "wiktionary-flexion:основа"}
+    return None
 
 
 def warm_verb_paradigms(*, limit: int = 200, pause_sec: float = 1.5) -> dict:
