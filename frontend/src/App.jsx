@@ -3880,6 +3880,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
   handleToggleExplanationFollowupSaveVariant,
   handleSaveExplanationFollowupAnswer,
   renderExplanationContent,
+  renderExplainClickableWords,
   getResultCardIdentityKey,
   registerTranslationResultCardNode,
   parseExplanationFollowupAnswerPayload,
@@ -4072,8 +4073,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
                   ))}
                 </div>
                 {!hasSelectedTranslationLevel && (
-                  <div className="webapp-muted">
-                    {tr('Сначала выберите уровень.', 'Bitte zuerst ein Niveau wählen.')}
+                  <div className="tr-level-hint">
+                    {tr('Выберите уровень — без него предложения не подобрать.', 'Wähle ein Niveau — sonst lassen sich keine Sätze auswählen.')}
                   </div>
                 )}
               </div>
@@ -4189,13 +4190,15 @@ const TranslationsSection = React.memo(function TranslationsSection({
               type="button"
               className={`tr-start-cta ${(webappLoading || showPreparingTranslationEmptyState) ? 'is-loading' : ''}`}
               onClick={selectedTopicIsStoryTopic ? handleStartStory : handleStartTranslation}
+              /* Незаполненный уровень и пустой свой фокус кнопку больше НЕ гасят: гашёная
+                 кнопка ничего не объясняет — человек жмёт, ничего не происходит, и он не
+                 понимает, чего не хватает. Теперь нажатие доходит до handleStartTranslation,
+                 и тот показывает всплывающую подсказку, чего именно не хватает. */
               disabled={
                 webappLoading
                 || topicsLoading
                 || showPreparingTranslationEmptyState
                 || (selectedTopicIsStoryTopic && storySurfaceProRequired)
-                || (!selectedTopicIsStoryTopic && !hasSelectedTranslationLevel)
-                || (selectedTopicIsCustomTopic && !customTopicInput.trim())
               }
             >
               {(webappLoading || showPreparingTranslationEmptyState)
@@ -4728,6 +4731,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                           errorMsg={explainErr}
                           grammar={explainGrammarData}
                           grammarLoading={explainGrammarBusy}
+                          renderWords={renderExplainClickableWords}
                         >
                           {explainData && (
                             <div className="webapp-explanation-followup">
@@ -4825,7 +4829,14 @@ const TranslationsSection = React.memo(function TranslationsSection({
             type="button"
             onClick={handleFinishTranslation}
             className={`tr-finish-btn ${finishStatus === 'done' ? 'is-done' : ''}`}
-            disabled={webappLoading || finishStatus === 'done' || ((results.length === 0 && !storyResult) && sentences.length > 0)}
+            /* Пока предложения ещё готовятся, завершать нечего: раньше кнопка была
+               активна, потому что sentences ещё пуст, а результатов ещё нет. */
+            disabled={
+              webappLoading
+              || showPreparingTranslationEmptyState
+              || finishStatus === 'done'
+              || ((results.length === 0 && !storyResult) && sentences.length > 0)
+            }
           >
             {finishStatus === 'done'
               ? <><span>✓</span> {tr('День засчитан', 'Tag gezählt')}</>
@@ -21174,12 +21185,29 @@ function AppInner() {
       setWebappError(initDataMissingMsg);
       return;
     }
+    // Подсказка идёт всплывающим окном, а не красной строчкой внизу: строчку рисует
+    // рабочая область под конфигуратором, на телефоне она за пределами экрана — человек
+    // жал «Начать перевод» и не понимал, почему ничего не происходит.
     if (!hasSelectedTranslationLevel) {
-      setWebappError(tr('Выберите уровень перед началом перевода.', 'Wähle vor dem Start der Übersetzung ein Niveau.'));
+      showNoticeModal({
+        emoji: '🎯',
+        title: tr('Сначала выберите уровень', 'Zuerst ein Niveau wählen'),
+        message: tr(
+          'Отметьте свой уровень — от A1 до C2. По нему подбираются предложения для перевода.',
+          'Wähle dein Niveau — von A1 bis C2. Danach werden die Sätze zum Übersetzen ausgewählt.'
+        ),
+      });
       return;
     }
     if (isCustomTopic(selectedTopic) && !customTopicInput.trim()) {
-      setWebappError(tr('Введите свой грамматический фокус.', 'Gib deinen eigenen Grammatikfokus ein.'));
+      showNoticeModal({
+        emoji: '✍️',
+        title: tr('Напишите свой фокус', 'Eigenen Fokus eingeben'),
+        message: tr(
+          'Вы выбрали «свой фокус» — напишите, что тренируем: например, Genitiv или Passiv mit Modalverben.',
+          'Du hast «eigener Fokus» gewählt — schreib, was geübt wird: z.B. Genitiv oder Passiv mit Modalverben.'
+        ),
+      });
       return;
     }
     translationStartInFlightRef.current = true;
@@ -29861,9 +29889,49 @@ function AppInner() {
       .replace(/\n/g, '<br />');
   };
 
-  const stripMarkdownEmphasis = (text) => String(text || '')
-    .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/\*(.+?)\*/g, '$1');
+  // Ответы модели приходят телеграм-разметкой: *жирный*, _курсив_, `код`. Так требует
+  // системный промпт `language_learning_private_question_detailed`
+  // (backend/openai_manager.py, раздел STYLE RULES) — он же кормит бота в Telegram,
+  // где эта разметка рисуется клиентом. В мини-аппе её рисовать некому, поэтому раньше
+  // звёздочки молча срезались (эмфаза терялась), а подчёркивания и обратные кавычки
+  // уходили на экран сырыми: «_obwohl_», «`Subjunktion`».
+  // Разбираем разметку сами: возвращаем чистый текст И отрезки разметки в координатах
+  // этого чистого текста — по ним StructuredSelectableText красит токены, не ломая
+  // ни разбиение на слова, ни выделение фраз.
+  const INLINE_MARKUP_RE = /\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|__([^_\n]+)__|_([^_\n]+)_|`([^`\n]+)`/g;
+  const isMarkupWordChar = (char) => Boolean(char) && /[\p{L}\p{N}]/u.test(char);
+
+  const parseInlineMarkup = (raw) => {
+    const source = String(raw || '');
+    if (!source) return { text: '', ranges: [] };
+    const ranges = [];
+    let text = '';
+    let cursor = 0;
+    INLINE_MARKUP_RE.lastIndex = 0;
+    let match = INLINE_MARKUP_RE.exec(source);
+    while (match) {
+      const [full, bold2, bold1, italic2, italic1, code] = match;
+      text += source.slice(cursor, match.index);
+      // Подчёркивание внутри слова (an_zweifeln, snake_case) — часть слова, а не курсив.
+      const gluedToWord = isMarkupWordChar(source[match.index - 1])
+        || isMarkupWordChar(source[match.index + full.length]);
+      if (gluedToWord) {
+        text += full;
+      } else {
+        const inner = bold2 ?? bold1 ?? italic2 ?? italic1 ?? code ?? '';
+        const kind = (bold2 ?? bold1) != null ? 'bold' : (code != null ? 'code' : 'italic');
+        const start = text.length;
+        text += inner;
+        ranges.push({ start, end: text.length, kind });
+      }
+      cursor = match.index + full.length;
+      match = INLINE_MARKUP_RE.exec(source);
+    }
+    text += source.slice(cursor);
+    return { text, ranges };
+  };
+
+  const stripMarkdownEmphasis = (text) => parseInlineMarkup(text).text;
 
   const renderRichClickableText = (text, options = {}) => {
     const source = String(text || '');
@@ -29889,7 +29957,7 @@ function AppInner() {
     langHint = '',
     keyPrefix = 'structured',
   }) => {
-    const sourceText = stripMarkdownEmphasis(String(text || ''));
+    const { text: sourceText, ranges: markupRanges } = parseInlineMarkup(String(text || ''));
     const rootRef = useRef(null);
     const dragSelectionMetaRef = useRef(null);
     const phraseGestureRef = useRef({
@@ -30262,6 +30330,17 @@ function AppInner() {
 
     if (!sourceText) return null;
 
+    // Разметка ложится на уже нарезанные токены: отрезок из parseInlineMarkup пересекается
+    // с диапазоном токена — значит этот кусок был *жирным* / _курсивом_ / `кодом`.
+    const markupClass = (start, end) => {
+      if (!markupRanges.length) return '';
+      const kinds = new Set();
+      markupRanges.forEach((range) => {
+        if (start < range.end && end > range.start) kinds.add(range.kind);
+      });
+      return kinds.size ? ` ${Array.from(kinds).map((kind) => `is-md-${kind}`).join(' ')}` : '';
+    };
+
     return (
       <span
         ref={rootRef}
@@ -30286,7 +30365,7 @@ function AppInner() {
                 return (
                   <span
                     key={wordId || `${sentence.sid}-word-${tokenIndex}`}
-                    className={`reader-word ${selectedStructuredWordIds.has(wordId) ? 'is-selected' : ''}`}
+                    className={`reader-word ${selectedStructuredWordIds.has(wordId) ? 'is-selected' : ''}${markupClass(token.start, token.end)}`}
                     data-wid={wordId}
                     data-sid={sentence.sid}
                     data-start={token.start}
@@ -30300,7 +30379,7 @@ function AppInner() {
               return (
                 <span
                   key={`${sentence.sid}-${token.kind}-${token.start}-${token.end}-${tokenIndex}`}
-                  className="reader-token"
+                  className={`reader-token${markupClass(token.start, token.end)}`}
                   aria-hidden="true"
                 >
                   {token.value}
@@ -30312,6 +30391,21 @@ function AppInner() {
       </span>
     );
   };
+
+  // Немецкие слова в модалке «Разбор ошибок» кликабельны ровно так же, как в результате
+  // перевода: тап открывает мини-словарь (handleSelection → инлайн-перевод). Рендер живёт
+  // здесь, потому что здесь же состояние выделения; модалка получает его пропом.
+  const renderExplainClickableWords = (text, keyPrefix = 'explain-word') => renderClickableText(
+    String(text || ''),
+    {
+      compact: true,
+      inlineLookup: true,
+      lookupLang: getNormalizeLookupLang(),
+      selectionType: 'translation_result_word',
+      stopPropagation: true,
+      keyPrefix,
+    },
+  );
 
   const renderExplanationContent = (text) => {
     if (!text) return null;
@@ -30507,8 +30601,10 @@ function AppInner() {
 
       return (
         <div key={`fb-${index}`} className="webapp-feedback-line">
+          {/* Разметку снимает сам StructuredSelectableText — и не выбрасывает её,
+              а показывает жирным/курсивом/кодом (см. parseInlineMarkup). */}
           <StructuredSelectableText
-            text={stripMarkdownEmphasis(line)}
+            text={line}
             keyPrefix={`fb-${index}`}
           />
         </div>
@@ -32901,6 +32997,7 @@ function AppInner() {
   const handleToggleExplanationFollowupSaveVariantStable = useStableCallback(handleToggleExplanationFollowupSaveVariant);
   const handleSaveExplanationFollowupAnswerStable = useStableCallback(handleSaveExplanationFollowupAnswer);
   const renderExplanationContentStable = useStableCallback(renderExplanationContent);
+  const renderExplainClickableWordsStable = useStableCallback(renderExplainClickableWords);
   const handleFinishTranslationStable = useStableCallback(handleFinishTranslation);
   const handleArchiveResultsToHistoryStable = useStableCallback(handleArchiveResultsToHistory);
   const handleLoadDailyHistoryStable = useStableCallback(handleLoadDailyHistory);
@@ -36391,6 +36488,7 @@ function AppInner() {
                 handleToggleExplanationFollowupSaveVariant={handleToggleExplanationFollowupSaveVariantStable}
                 handleSaveExplanationFollowupAnswer={handleSaveExplanationFollowupAnswerStable}
                 renderExplanationContent={renderExplanationContentStable}
+                renderExplainClickableWords={renderExplainClickableWordsStable}
                 getResultCardIdentityKey={getResultCardIdentityKey}
                 registerTranslationResultCardNode={registerTranslationResultCardNode}
                 parseExplanationFollowupAnswerPayload={parseExplanationFollowupAnswerPayload}

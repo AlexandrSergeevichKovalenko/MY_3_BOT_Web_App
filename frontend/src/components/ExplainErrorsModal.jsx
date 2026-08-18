@@ -34,9 +34,16 @@ export default function ExplainErrorsModal({
   errorMsg,
   grammar: grammarProp,
   grammarLoading,
+  // Рендер немецкого слова кликабельным (тап → мини-словарь). Приходит из App, где живёт
+  // выделение; здесь только вызывается. Без него текст просто не будет кликаться.
+  renderWords,
   children,
 }) {
   if (!isOpen) return null;
+
+  const words = typeof renderWords === 'function'
+    ? renderWords
+    : (text) => text;
 
   const errors = Array.isArray(data?.errors) ? data.errors : [];
   const alternatives = Array.isArray(data?.alternatives) ? data.alternatives : [];
@@ -103,7 +110,9 @@ export default function ExplainErrorsModal({
                           <div className="explain-frag-row">
                             {err.your ? <span className="explain-frag-bad">{err.your}</span> : null}
                             {err.your && err.correct ? <span className="explain-frag-arrow">→</span> : null}
-                            {err.correct ? <span className="explain-frag-good">✅ {err.correct}</span> : null}
+                            {err.correct ? (
+                              <span className="explain-frag-good">✅ {words(err.correct, `explain-correct-${i}`)}</span>
+                            ) : null}
                           </div>
                         )}
                         {err.why && (
@@ -140,9 +149,18 @@ export default function ExplainErrorsModal({
                   <div className="explain-section-title">🔤 {tr('Синонимы', 'Synonyme')}</div>
                   {synonyms.map((syn, i) => (
                     <div className="explain-syn" key={i}>
-                      <b className="explain-syn-word">{syn.word}</b>
+                      <b className="explain-syn-word">{words(syn.word, `explain-syn-word-${i}`)}</b>
                       <span className="explain-syn-arrow"> → </span>
-                      <span className="explain-syn-opts">{(syn.options || []).join(', ')}</span>
+                      {/* Каждый синоним кликается сам по себе — запятая между ними
+                          остаётся обычным текстом, а не хвостом слова. */}
+                      <span className="explain-syn-opts">
+                        {(syn.options || []).map((option, optionIndex) => (
+                          <React.Fragment key={`${i}-${optionIndex}`}>
+                            {optionIndex > 0 ? ', ' : null}
+                            {words(option, `explain-syn-opt-${i}-${optionIndex}`)}
+                          </React.Fragment>
+                        ))}
+                      </span>
                     </div>
                   ))}
                 </div>

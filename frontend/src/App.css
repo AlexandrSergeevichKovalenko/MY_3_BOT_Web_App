@@ -6628,6 +6628,25 @@ body:has(.webapp-page.is-theme-light),
   line-height: inherit;
 }
 
+/* Телеграм-разметка из ответа модели (*жирный*, _курсив_, `код`): раньше звёздочки
+   срезались, а подчёркивания и кавычки уходили на экран сырыми. Теперь это оформление. */
+.translation-structured-text .is-md-bold {
+  font-weight: 700;
+}
+
+.translation-structured-text .is-md-italic {
+  font-style: italic;
+}
+
+.translation-structured-text .is-md-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.94em;
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: rgba(99, 102, 241, 0.12);
+  color: inherit;
+}
+
 .webapp-movies {
   margin-top: 24px;
   padding: 18px;
@@ -24417,6 +24436,19 @@ body.worldnews-active .webapp-topbar {
   cursor: default;
 }
 
+/* Пока уровень не выбран — тёплая заметная строка, а не серая мышь: раньше подсказка
+   была цвета фона и человек её просто не видел. */
+.tr-level-hint {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(245, 158, 11, 0.32);
+  background: rgba(245, 158, 11, 0.10);
+  color: #d9a441;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
 /* Focus row */
 .tr-focus-row {
   display: flex;
@@ -29554,6 +29586,23 @@ html[data-scheme="light"] .explain-grammar-structure,
 .explain-modal--fuchs .explain-grammar-part { color: #33425c; background: #e9e5fb; }
 .explain-modal--fuchs .explain-grammar-structure { color: #5b4fd6; }
 .explain-modal--fuchs .explain-modal-followup { border-top: 1px dashed #e6d8c2; }
+
+/* Кликабельное слово в разборе (зелёное исправление и синонимы): та же пунктирная
+   подсказка «по мне можно ткнуть», что и в тексте результата перевода. Цвет буквы
+   не трогаем — зелёный остаётся зелёным, синоним остаётся тёмным. */
+.explain-modal .clickable-word {
+  color: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 0.08em;
+  text-decoration-color: currentColor;
+  text-underline-offset: 0.16em;
+}
+.explain-modal .clickable-word:hover {
+  text-decoration-style: solid;
+}
 /* Пере-объявление светлых <b> из dead-override выше (там селектор .theme-light
    не матчится) — на светлой модалке жирный текст должен быть тёмным. */
 .webapp-page.is-theme-light .webapp-result-card .explain-modal--fuchs .explain-syn-word { color: #1c2536; }
