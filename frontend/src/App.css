@@ -29587,10 +29587,17 @@ html[data-scheme="light"] .explain-grammar-structure,
 .explain-modal--fuchs .explain-grammar-structure { color: #5b4fd6; }
 .explain-modal--fuchs .explain-modal-followup { border-top: 1px dashed #e6d8c2; }
 
+/* Синонимы лежат во flex-контейнере .explain-syn-opts (он нужен чипам «Загадочной
+   истории»), а flex выбрасывает текстовые узлы из одних пробелов. Поэтому каждый
+   синоним завёрнут в свой .explain-syn-opt — внутри него пробел между «sich» и
+   «fokussieren» жив, — а расстояние между синонимами задаётся здесь, а не пробелом. */
+.explain-syn-opt + .explain-syn-opt { margin-left: 5px; }
+
 /* Кликабельное слово в разборе (зелёное исправление и синонимы): та же пунктирная
    подсказка «по мне можно ткнуть», что и в тексте результата перевода. Цвет буквы
    не трогаем — зелёный остаётся зелёным, синоним остаётся тёмным. */
-.explain-modal .clickable-word {
+.explain-modal .clickable-word,
+.explain-modal .reader-word {
   color: inherit;
   font-weight: inherit;
   cursor: pointer;
@@ -29600,9 +29607,13 @@ html[data-scheme="light"] .explain-grammar-structure,
   text-decoration-color: currentColor;
   text-underline-offset: 0.16em;
 }
-.explain-modal .clickable-word:hover {
+.explain-modal .clickable-word:hover,
+.explain-modal .reader-word:hover {
   text-decoration-style: solid;
 }
+/* Подсветку выделенной фразы не переопределяем: берём читалкину
+   (.reader-word.is-selected), чтобы жест ощущался тем же самым. */
+
 /* Пере-объявление светлых <b> из dead-override выше (там селектор .theme-light
    не матчится) — на светлой модалке жирный текст должен быть тёмным. */
 .webapp-page.is-theme-light .webapp-result-card .explain-modal--fuchs .explain-syn-word { color: #1c2536; }

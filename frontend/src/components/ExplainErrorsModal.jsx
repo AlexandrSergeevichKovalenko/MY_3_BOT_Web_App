@@ -34,15 +34,16 @@ export default function ExplainErrorsModal({
   errorMsg,
   grammar: grammarProp,
   grammarLoading,
-  // Рендер немецкого слова кликабельным (тап → мини-словарь). Приходит из App, где живёт
-  // выделение; здесь только вызывается. Без него текст просто не будет кликаться.
-  renderWords,
+  // Рендер немецкого текста «как в читалке»: тап — слово, удержание с протяжкой — фраза
+  // целиком (её и сохраняют). Приходит из App, где живёт состояние выделения; здесь
+  // только вызывается. Без него текст просто не будет выделяться.
+  renderSelectableText,
   children,
 }) {
   if (!isOpen) return null;
 
-  const words = typeof renderWords === 'function'
-    ? renderWords
+  const words = typeof renderSelectableText === 'function'
+    ? renderSelectableText
     : (text) => text;
 
   const errors = Array.isArray(data?.errors) ? data.errors : [];
@@ -151,14 +152,17 @@ export default function ExplainErrorsModal({
                     <div className="explain-syn" key={i}>
                       <b className="explain-syn-word">{words(syn.word, `explain-syn-word-${i}`)}</b>
                       <span className="explain-syn-arrow"> → </span>
-                      {/* Каждый синоним кликается сам по себе — запятая между ними
-                          остаётся обычным текстом, а не хвостом слова. */}
+                      {/* Каждый синоним — отдельный островок, и это НЕ косметика:
+                          .explain-syn-opts — flex-контейнер, а он выбрасывает узлы из
+                          одних пробелов. Из-за этого «sich fokussieren» слипалось в
+                          «sichfokussieren», а запятая теряла пробел после себя.
+                          Внутри своего span пробелы живут нормально, отступ даёт CSS. */}
                       <span className="explain-syn-opts">
-                        {(syn.options || []).map((option, optionIndex) => (
-                          <React.Fragment key={`${i}-${optionIndex}`}>
-                            {optionIndex > 0 ? ', ' : null}
+                        {(syn.options || []).map((option, optionIndex, all) => (
+                          <span className="explain-syn-opt" key={`${i}-${optionIndex}`}>
                             {words(option, `explain-syn-opt-${i}-${optionIndex}`)}
-                          </React.Fragment>
+                            {optionIndex < all.length - 1 ? ',' : null}
+                          </span>
                         ))}
                       </span>
                     </div>

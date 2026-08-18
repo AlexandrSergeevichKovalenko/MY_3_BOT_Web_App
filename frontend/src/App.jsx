@@ -3880,7 +3880,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
   handleToggleExplanationFollowupSaveVariant,
   handleSaveExplanationFollowupAnswer,
   renderExplanationContent,
-  renderExplainClickableWords,
+  renderExplainSelectableText,
   getResultCardIdentityKey,
   registerTranslationResultCardNode,
   parseExplanationFollowupAnswerPayload,
@@ -4731,7 +4731,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                           errorMsg={explainErr}
                           grammar={explainGrammarData}
                           grammarLoading={explainGrammarBusy}
-                          renderWords={renderExplainClickableWords}
+                          renderSelectableText={renderExplainSelectableText}
                         >
                           {explainData && (
                             <div className="webapp-explanation-followup">
@@ -30392,20 +30392,17 @@ function AppInner() {
     );
   };
 
-  // Немецкие слова в модалке «Разбор ошибок» кликабельны ровно так же, как в результате
-  // перевода: тап открывает мини-словарь (handleSelection → инлайн-перевод). Рендер живёт
-  // здесь, потому что здесь же состояние выделения; модалка получает его пропом.
-  const renderExplainClickableWords = (text, keyPrefix = 'explain-word') => renderClickableText(
-    String(text || ''),
-    {
-      compact: true,
-      inlineLookup: true,
-      lookupLang: getNormalizeLookupLang(),
-      selectionType: 'translation_result_word',
-      stopPropagation: true,
-      keyPrefix,
-    },
-  );
+  // Текст в модалке «Разбор ошибок» работает как в читалке и в результате перевода:
+  // тап — слово, двойной тап — предложение, удержание с протяжкой пальца — ФРАЗА
+  // (её и надо уметь сохранить целиком, а не по одному слову). Всю эту механику уже
+  // умеет StructuredSelectableText — он же и режет текст на слова, поэтому здесь ровно
+  // он, а не поштучные кликабельные слова. Рендер живёт в App, где состояние выделения;
+  // модалка получает его пропом.
+  const renderExplainSelectableText = (text, keyPrefix = 'explain-text') => {
+    const value = String(text || '').trim();
+    if (!value) return null;
+    return <StructuredSelectableText text={value} keyPrefix={keyPrefix} />;
+  };
 
   const renderExplanationContent = (text) => {
     if (!text) return null;
@@ -32997,7 +32994,7 @@ function AppInner() {
   const handleToggleExplanationFollowupSaveVariantStable = useStableCallback(handleToggleExplanationFollowupSaveVariant);
   const handleSaveExplanationFollowupAnswerStable = useStableCallback(handleSaveExplanationFollowupAnswer);
   const renderExplanationContentStable = useStableCallback(renderExplanationContent);
-  const renderExplainClickableWordsStable = useStableCallback(renderExplainClickableWords);
+  const renderExplainSelectableTextStable = useStableCallback(renderExplainSelectableText);
   const handleFinishTranslationStable = useStableCallback(handleFinishTranslation);
   const handleArchiveResultsToHistoryStable = useStableCallback(handleArchiveResultsToHistory);
   const handleLoadDailyHistoryStable = useStableCallback(handleLoadDailyHistory);
@@ -36488,7 +36485,7 @@ function AppInner() {
                 handleToggleExplanationFollowupSaveVariant={handleToggleExplanationFollowupSaveVariantStable}
                 handleSaveExplanationFollowupAnswer={handleSaveExplanationFollowupAnswerStable}
                 renderExplanationContent={renderExplanationContentStable}
-                renderExplainClickableWords={renderExplainClickableWordsStable}
+                renderExplainSelectableText={renderExplainSelectableTextStable}
                 getResultCardIdentityKey={getResultCardIdentityKey}
                 registerTranslationResultCardNode={registerTranslationResultCardNode}
                 parseExplanationFollowupAnswerPayload={parseExplanationFollowupAnswerPayload}
