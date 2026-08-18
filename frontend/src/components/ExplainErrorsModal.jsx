@@ -122,8 +122,12 @@ export default function ExplainErrorsModal({
                         {err.rule && (
                           <div className="explain-line"><span className="explain-line-ico">📖</span><span><b>{tr('Правило', 'Regel')}:</b> {err.rule}</span></div>
                         )}
+                        {/* Пример — готовая немецкая фраза, её и сохраняют целиком:
+                            выделяется протяжкой пальца, как в читалке. Пояснение «почему»
+                            и текст правила остаются обычным текстом — это не материал
+                            для словаря. */}
                         {err.example && (
-                          <div className="explain-line explain-example"><span className="explain-line-ico">📌</span><span>{err.example}</span></div>
+                          <div className="explain-line explain-example"><span className="explain-line-ico">📌</span><span>{words(err.example, `explain-example-${i}`)}</span></div>
                         )}
                       </div>
                     );
@@ -138,7 +142,9 @@ export default function ExplainErrorsModal({
                   <div className="explain-section-title">🔁 {tr('Как ещё можно сказать', 'Alternative Formulierungen')}</div>
                   {alternatives.map((alt, i) => (
                     <div className="explain-alt" key={i}>
-                      <span className="explain-alt-variant">{alt.variant}</span>
+                      {/* Сама альтернатива — немецкое предложение, его выделяют и сохраняют;
+                          заметка после тире написана по-русски и остаётся текстом. */}
+                      <span className="explain-alt-variant">{words(alt.variant, `explain-alt-${i}`)}</span>
                       {alt.note ? <span className="explain-alt-note"> — {alt.note}</span> : null}
                     </div>
                   ))}
