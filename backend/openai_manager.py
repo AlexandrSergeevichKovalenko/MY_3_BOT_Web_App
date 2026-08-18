@@ -33,6 +33,14 @@ FEEL_THREAD_DELETE_TIMEOUT_SECONDS = 0.75
 _DEFAULT_GATEWAY_MODE = "assistants"
 _DEFAULT_GATEWAY_MODEL = "gpt-4.1-2025-04-14"
 _DEFAULT_TASK_MODELS = {
+    # ПОСЛЕДНЯЯ ступень каскада форм (backend/german_reference_forms.py): спрашиваем модель
+    # только про слова, которых нет ни в de.wiktionary, ни через разбор составного слова.
+    # Ответ принимается ТОЛЬКО при совпадении двух независимых спросов, поэтому цена одного
+    # слова — два вызова. Класс данных тот же, что у `enrich_word_multilang` (готовые
+    # словоформы), который в проекте уже доверен mini. Переопределяется через
+    # LLM_TASK_MODEL_GERMAN_NOUN_DECLENSION_REFERENCE / _GERMAN_ADJECTIVE_DEGREES_REFERENCE.
+    "german_noun_declension_reference": "gpt-4.1-mini",
+    "german_adjective_degrees_reference": "gpt-4.1-mini",
     "shortcut_split": "gpt-4.1-mini",
     "shortcut_split_fallback": "gpt-4.1-2025-04-14",
     # Translation-sentence generation is a simple, high-volume task — gpt-4.1-mini

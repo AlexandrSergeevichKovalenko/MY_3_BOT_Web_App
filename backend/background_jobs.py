@@ -2547,6 +2547,13 @@ def run_article_review_dm_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_reference_forms_review_dm_actor() -> None:
+    """Личка со словами, которым каскад не нашёл форм: пн/ср/пт."""
+    from backend.reference_forms_review import send_reference_forms_review_dm
+    send_reference_forms_review_dm()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_retire_review_dm_actor() -> None:
     """Личка со снятыми словами, которые по частотности выглядят ходовыми."""
     from backend.article_retire_review import send_retire_review_dm

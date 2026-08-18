@@ -91,6 +91,7 @@ from backend.background_jobs import (  # noqa: E402
     run_admin_economics_report_actor,
     run_cap_health_report_actor,
     run_article_review_dm_actor,
+    run_reference_forms_review_dm_actor,
     run_retire_review_dm_actor,
     run_fill_control_dm_actor,
     run_wiktionary_warm_actor,
@@ -426,6 +427,10 @@ def _dispatch_verb_paradigm_warm() -> None:
 
 def _dispatch_article_review_dm() -> None:
     run_article_review_dm_actor.send()
+
+
+def _dispatch_reference_forms_review_dm() -> None:
+    run_reference_forms_review_dm_actor.send()
 
 
 def _dispatch_retire_review_dm() -> None:
@@ -857,6 +862,24 @@ def _build_scheduler():
     # замолчит». Это неверно с тех пор, как появился карантин: отказы стража приёмки
     # льются в ту же очередь постоянно. Замер 16.08.2026 — 533 слова вместо 145.
     # Рассылка сама не замолчит, размер пачки держит владелец (RETIRE_REVIEW_BATCH).
+    # Слова, которым каскад форм не нашёл ответа ни справочником, ни разбором
+    # составного слова, ни моделью. Владелец 17.08.2026 просил ТРИ РАЗА В НЕДЕЛЮ —
+    # понедельник, среда, пятница. Очередь не конечная: новые слова приходят с каждым
+    # прогревом, поэтому рассылка сама не замолчит, размер пачки держит
+    # REFERENCE_FORMS_REVIEW_BATCH.
+    if _enabled("REFERENCE_FORMS_REVIEW_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_reference_forms_review_dm,
+            "cron",
+            day_of_week="mon,wed,fri",
+            hour=_int_env("REFERENCE_FORMS_REVIEW_HOUR", 11),
+            minute=_int_env("REFERENCE_FORMS_REVIEW_MINUTE", 0),
+            timezone=_tz(os.getenv("REFERENCE_FORMS_REVIEW_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
+
     if _enabled("RETIRE_REVIEW_ENABLED", "1"):
         scheduler.add_job(
             _dispatch_retire_review_dm,

@@ -172,26 +172,26 @@ def _wiktionary_live(word: str) -> str | None:
         return None
 
 
-def compound_article(word: str) -> str | None:
-    """Род по правилу композита — только если ВСЕ разборы слова согласны между собой."""
+def compound_heads(word: str) -> set[str]:
+    """Все ГОЛОВЫ, какие даёт разбор составного слова. Пусто — шва нет.
+
+    Вынесено из `compound_article` 18.08.2026, чтобы род и СКЛОНЕНИЕ пользовались одним
+    и тем же швом. Второго правила разреза в проекте быть не должно: именно наивное
+    отрезание хвоста когда-то дало «das Schwert → der» — «wert» похоже на «der Wert»,
+    хотя никакого шва в слове нет. Здесь шов ДОКАЗЫВАЕТСЯ: обе части обязаны быть
+    известными однозначными словами справочника.
+    """
     genus, ambiguous = _load()
     w = str(word or "").strip().lower()
     if (len(w) < 8 or w in ambiguous or w in _bad_forms or w in _plural_spellings
             or w.endswith(_COMPOUND_EXCEPTIONS)):
-        return None
-
-    # Композит через дефис разбирать не нужно — он уже разобран автором написания:
-    # «Stumm-Modus», «Corona-Regel», «Online-Termin». Род берёт последняя часть, и
-    # догадки здесь нет ни одной, в отличие от слитного композита, который приходится
-    # резать перебором. Часть после дефиса проверяется по тем же правилам: она должна
-    # быть известным однозначным словом, иначе молчим.
+        return set()
     if "-" in w:
         head = w.rsplit("-", 1)[-1].strip()
         if len(head) >= 4 and head not in ambiguous and head in genus:
-            return genus[head]
-        return None
-
-    verdicts: set[str] = set()
+            return {head}
+        return set()
+    heads: set[str] = set()
     for cut in range(4, len(w) - 3):
         pre_raw = w[:cut]
         pre_ok = None
@@ -207,8 +207,26 @@ def compound_article(word: str) -> str | None:
                 continue
             if head in _DERIV_SUFFIXES or head in ambiguous or head not in genus:
                 continue
-            verdicts.add(genus[head])
-    # Ровно один вердикт — правило сработало. Больше одного — разбор неоднозначен, молчим.
+            heads.add(head)
+    return heads
+
+
+def compound_head(word: str) -> str | None:
+    """Одна голова или None. Разборов несколько — молчим, склонять не по чему."""
+    heads = compound_heads(word)
+    return next(iter(heads)) if len(heads) == 1 else None
+
+
+def compound_article(word: str) -> str | None:
+    """Род по правилу композита — только если ВСЕ разборы слова согласны между собой.
+
+    Шов ищет `compound_heads` — он же обслуживает склонение. Здесь остаётся только
+    перевод голов в роды: разрезов у слова бывает несколько, а род у них обычно один
+    и тот же. Ровно один вердикт — правило сработало. Больше одного — разбор
+    неоднозначен, молчим.
+    """
+    genus, _ = _load()
+    verdicts = {genus[h] for h in compound_heads(word) if h in genus}
     return next(iter(verdicts)) if len(verdicts) == 1 else None
 
 
