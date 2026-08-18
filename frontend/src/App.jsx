@@ -3881,6 +3881,13 @@ const TranslationsSection = React.memo(function TranslationsSection({
   handleSaveExplanationFollowupAnswer,
   renderExplanationContent,
   renderExplainSelectableText,
+  savedExplainLangs,
+  savedExplainFollowups,
+  savedExplainModal,
+  openSavedExplainForResult,
+  openSavedExplainFromHistory,
+  closeSavedExplainModal,
+  showNoSavedExplainNotice,
   getResultCardIdentityKey,
   registerTranslationResultCardNode,
   parseExplanationFollowupAnswerPayload,
@@ -3931,6 +3938,31 @@ const TranslationsSection = React.memo(function TranslationsSection({
     && !hasActiveTranslationSentences
     && hasActiveRegularTranslationSession
     && (translationProgressiveFillActive || webappLoading)
+  );
+
+  // Значок «мой разбор» над предложением. Горит — разбор по этому предложению уже
+  // получен и лежит на сервере (до конца дня), тап открывает его без обращения к модели.
+  // Приглушён — разбор не запрашивали; тап объясняет это словами, а не молчит.
+  const renderSavedExplainBadge = ({ hasSaved, onOpen, keySuffix }) => (
+    <div className="tr-saved-explain-row">
+      <button
+        type="button"
+        className={`tr-saved-explain-btn ${hasSaved ? 'is-on' : 'is-off'}`}
+        onClick={hasSaved ? onOpen : showNoSavedExplainNotice}
+        aria-label={hasSaved
+          ? tr('Открыть мой разбор этого предложения', 'Meine Analyse dieses Satzes öffnen')
+          : tr('Разбор по этому предложению не запрашивали', 'Für diesen Satz wurde keine Analyse angefordert')}
+        title={hasSaved
+          ? tr('Открыть мой разбор', 'Meine Analyse öffnen')
+          : tr('Разбор не запрашивали', 'Keine Analyse angefordert')}
+        data-saved-explain={keySuffix}
+      >
+        <span className="tr-saved-explain-ico" aria-hidden="true">🧩</span>
+        <span className="tr-saved-explain-label">
+          {hasSaved ? tr('Мой разбор', 'Meine Analyse') : tr('Разбора нет', 'Keine Analyse')}
+        </span>
+      </button>
+    </div>
   );
 
   const selectFocusTopic = (value) => {
@@ -4663,6 +4695,12 @@ const TranslationsSection = React.memo(function TranslationsSection({
                             */}
                           </>
                         )}
+                        {renderSavedExplainBadge({
+                          hasSaved: Array.isArray(savedExplainLangs?.[Number(item?.translation_id || 0)])
+                            && savedExplainLangs[Number(item.translation_id)].length > 0,
+                          onOpen: () => openSavedExplainForResult(item),
+                          keySuffix: `result-${item?.translation_id ?? explanationKey}`,
+                        })}
                         <div className="webapp-result-text">
                           {renderFeedback(item.feedback)}
                         </div>
@@ -4732,6 +4770,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
                           grammar={explainGrammarData}
                           grammarLoading={explainGrammarBusy}
                           renderSelectableText={renderExplainSelectableText}
+                          savedFollowups={savedExplainFollowups?.[`${explanationKey}:${explainLang}`]}
+                          renderAnswer={renderExplanationContent}
                         >
                           {explainData && (
                             <div className="webapp-explanation-followup">
@@ -4887,6 +4927,12 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 <div className="webapp-result-list">
                   {restHistoryItems.map((item, index) => (
                     <div key={item.id ?? index} className="webapp-result-card">
+                      {renderSavedExplainBadge({
+                        hasSaved: Array.isArray(item?.saved_explanation_langs)
+                          && item.saved_explanation_langs.length > 0,
+                        onOpen: () => openSavedExplainFromHistory(item),
+                        keySuffix: `history-${item?.id ?? index}`,
+                      })}
                       <div
                         className="webapp-result-text tr-history-result-text"
                       >
@@ -4899,6 +4945,26 @@ const TranslationsSection = React.memo(function TranslationsSection({
             </section>
           );
         })()}
+
+        {/* Просмотр сохранённого разбора из истории. Отдельная модалка, а не живая:
+            в истории нечего дообъяснять — предложение уже закрыто, вопросы задают из
+            сегодняшней карточки. Сюда же ложится сохранённый диалог по разбору. */}
+        <ExplainErrorsModal
+          isOpen={Boolean(savedExplainModal)}
+          onClose={closeSavedExplainModal}
+          tr={tr}
+          satz={savedExplainModal?.satz}
+          score={savedExplainModal?.score}
+          langDe={Boolean(savedExplainModal?.langDe)}
+          data={savedExplainModal?.data}
+          loading={Boolean(savedExplainModal?.loading)}
+          errorMsg={savedExplainModal?.errorMsg || ''}
+          grammar={savedExplainModal?.grammar}
+          grammarLoading={false}
+          renderSelectableText={renderExplainSelectableText}
+          savedFollowups={savedExplainModal?.followups}
+          renderAnswer={renderExplanationContent}
+        />
         </div>{/* /.tr-workspace */}
       </section>
     </PerfProfiler>
@@ -6577,6 +6643,12 @@ function AppInner() {
   const [explainGrammarLoading, setExplainGrammarLoading] = useState({}); // `${key}:${lang}` -> bool
   const [explainLangDe, setExplainLangDe] = useState({});         // key -> bool (🇩🇪 explanation)
   const [explainErrorMap, setExplainErrorMap] = useState({});     // key -> fetch error message
+  // Разбор, СОХРАНЁННЫЙ на сервере (живёт текущий день). Нужен, чтобы человек мог
+  // вернуться к своему разбору после закрытия модалки и после перезагрузки мини-аппа —
+  // раньше это стоило нового запроса к модели и единицы дневного лимита.
+  const [savedExplainLangs, setSavedExplainLangs] = useState({});   // translation_id -> ['ru'|'de']
+  const [savedExplainFollowups, setSavedExplainFollowups] = useState({}); // `${key}:${lang}` -> [{question, answer}]
+  const [savedExplainModal, setSavedExplainModal] = useState(null); // просмотр разбора из истории
   const [explanationLoading, setExplanationLoading] = useState({});
   const [collapsedExplanationBlocks, setCollapsedExplanationBlocks] = useState({});
   const [collapsedFollowupAnswerBlocks, setCollapsedFollowupAnswerBlocks] = useState({});
@@ -29477,6 +29549,22 @@ function AppInner() {
     return String(item?.sentence_number ?? item?.original_text ?? '');
   }
 
+  // Значок «мой разбор» на сегодняшних карточках должен гореть и после перезагрузки
+  // мини-аппа, поэтому состояние берём с сервера, а не из памяти вкладки: один запрос
+  // на весь показанный список.
+  const shownResultTranslationIdsKey = results
+    .map((item) => Number(item?.translation_id || 0))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b)
+    .join(',');
+
+  useEffect(() => {
+    if (!shownResultTranslationIdsKey) return;
+    void refreshSavedExplainFlags(shownResultTranslationIdsKey.split(',').map(Number));
+    // refreshSavedExplainFlags пересоздаётся каждый рендер; следим за самим списком id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownResultTranslationIdsKey]);
+
   function parseExplanationFollowupAnswerPayload(value) {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       return {
@@ -29534,6 +29622,162 @@ function AppInner() {
     );
   }
 
+  // ─── Сохранённый разбор: «мой разбор» под значком ───────────────────────────
+  // Разбор, за который уже заплачено, лежит на сервере текущий день. Здесь — учёт
+  // того, у каких предложений он есть, и открытие его без обращения к модели.
+
+  const markSavedExplainLang = (translationId, lang) => {
+    const id = Number(translationId || 0);
+    if (!(id > 0)) return;
+    setSavedExplainLangs((prev) => {
+      const already = Array.isArray(prev[id]) ? prev[id] : [];
+      if (already.includes(lang)) return prev;
+      return { ...prev, [id]: [...already, lang] };
+    });
+  };
+
+  // Пачкой спрашиваем, у каких из показанных предложений разбор уже сохранён.
+  // Нужен именно запрос, а не память вкладки: после перезагрузки память пуста, а
+  // разбор на сервере есть — значок обязан гореть.
+  const refreshSavedExplainFlags = async (translationIds) => {
+    const ids = Array.from(new Set(
+      (Array.isArray(translationIds) ? translationIds : [])
+        .map((value) => Number(value || 0))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    ));
+    if (!ids.length || !initData) return;
+    try {
+      const response = await fetch('/api/webapp/explain/saved/flags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, translation_ids: ids }),
+      });
+      if (!response.ok) return;                 // значок просто останется приглушённым
+      const data = await response.json();
+      const items = data?.items && typeof data.items === 'object' ? data.items : {};
+      setSavedExplainLangs((prev) => {
+        const next = { ...prev };
+        Object.entries(items).forEach(([id, langs]) => {
+          if (Array.isArray(langs) && langs.length) next[Number(id)] = langs;
+        });
+        return next;
+      });
+    } catch (_error) {
+      /* сеть отвалилась — значок останется приглушённым, ничего не выдумываем */
+    }
+  };
+
+  // Забирает сохранённый разбор с сервера. Возвращает его или null — «не запрашивали».
+  const loadSavedExplain = async (translationId, lang) => {
+    const id = Number(translationId || 0);
+    if (!(id > 0) || !initData) return null;
+    const response = await fetch('/api/webapp/explain/saved', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData, translation_id: id, explanation_language: lang }),
+    });
+    if (!response.ok) {
+      throw new Error(await readApiError(
+        response,
+        'Не удалось открыть сохранённый разбор.',
+        'Die gespeicherte Analyse konnte nicht geöffnet werden.'
+      ));
+    }
+    const data = await response.json();
+    return data?.found ? data : null;
+  };
+
+  const showNoSavedExplainNotice = () => {
+    showNoticeModal({
+      emoji: '🧩',
+      title: tr('Разбора по этому предложению нет', 'Für diesen Satz gibt es keine Analyse'),
+      message: tr(
+        'Вы его не запрашивали. Разбор появляется здесь после кнопки «Объяснить ошибки» и хранится до конца дня.',
+        'Du hast sie nicht angefordert. Die Analyse erscheint hier nach dem Knopf «Fehler erklären» und bleibt bis zum Tagesende.'
+      ),
+    });
+  };
+
+  // Значок в СЕГОДНЯШНЕЙ карточке: открывает ту же живую модалку (с «Задать вопрос»),
+  // подложив в неё сохранённый разбор, если в памяти вкладки его уже нет.
+  const openSavedExplainForResult = async (item) => {
+    const key = getExplanationItemKey(item);
+    const lang = explainLangDe[key] ? 'de' : 'ru';
+    const cacheKey = `${key}:${lang}`;
+    if (explainStructured[cacheKey]) {
+      setExplainModalKey(key);
+      return;
+    }
+    try {
+      const saved = await loadSavedExplain(item?.translation_id, lang);
+      if (!saved) {
+        showNoSavedExplainNotice();
+        return;
+      }
+      setExplainStructured((prev) => ({ ...prev, [cacheKey]: saved.explanation_json }));
+      const grammarList = Array.isArray(saved?.grammar?.grammar) ? saved.grammar.grammar : [];
+      if (grammarList.length) {
+        setExplainGrammar((prev) => ({ ...prev, [cacheKey]: grammarList }));
+      }
+      setSavedExplainFollowups((prev) => ({
+        ...prev,
+        [cacheKey]: Array.isArray(saved.followups) ? saved.followups : [],
+      }));
+      setExplainModalKey(key);
+    } catch (error) {
+      showNoticeModal({
+        emoji: '⚠️',
+        title: tr('Не открылось', 'Nicht geöffnet'),
+        message: String(error.message || error),
+      });
+    }
+  };
+
+  // Значок в ИСТОРИИ: там нечего дообъяснять, поэтому отдельная модалка-просмотр.
+  const openSavedExplainFromHistory = async (historyItem) => {
+    const translationId = Number(historyItem?.id || 0);
+    const savedLangs = Array.isArray(historyItem?.saved_explanation_langs)
+      ? historyItem.saved_explanation_langs
+      : (savedExplainLangs[translationId] || []);
+    if (!savedLangs.length) {
+      showNoSavedExplainNotice();
+      return;
+    }
+    const lang = savedLangs.includes('ru') ? 'ru' : savedLangs[0];
+    setSavedExplainModal({
+      loading: true,
+      satz: historyItem?.sentence_number ?? null,
+      score: historyItem?.score ?? null,
+      langDe: lang === 'de',
+      data: null,
+      grammar: [],
+      followups: [],
+      errorMsg: '',
+    });
+    try {
+      const saved = await loadSavedExplain(translationId, lang);
+      if (!saved) {
+        setSavedExplainModal(null);
+        showNoSavedExplainNotice();
+        return;
+      }
+      setSavedExplainModal({
+        loading: false,
+        satz: historyItem?.sentence_number ?? null,
+        score: historyItem?.score ?? null,
+        langDe: lang === 'de',
+        data: saved.explanation_json,
+        grammar: Array.isArray(saved?.grammar?.grammar) ? saved.grammar.grammar : [],
+        followups: Array.isArray(saved.followups) ? saved.followups : [],
+        errorMsg: '',
+      });
+    } catch (error) {
+      setSavedExplainModal((prev) => (prev ? { ...prev, loading: false, errorMsg: String(error.message || error) } : prev));
+    }
+  };
+
+  const closeSavedExplainModal = () => setSavedExplainModal(null);
+
   // Fetch the teacher-grade structured breakdown for (item, lang); cached by `${key}:${lang}`.
   const fetchExplain = async (item, lang) => {
     const key = getExplanationItemKey(item);
@@ -29552,6 +29796,9 @@ function AppInner() {
           original_text: item.original_text,
           user_translation: item.user_translation,
           explanation_language: lang,
+          // По нему сервер кладёт разбор рядом с проверенным предложением, чтобы к нему
+          // можно было вернуться сегодня же бесплатно.
+          translation_id: Number(item?.translation_id || 0) || undefined,
         }),
       });
       if (!response.ok) {
@@ -29580,6 +29827,11 @@ function AppInner() {
       const json = data.explanation_json
         || { summary: String(data.explanation || ''), errors: [], alternatives: [], synonyms: [] };
       setExplainStructured((prev) => ({ ...prev, [cacheKey]: json }));
+      // Значок «мой разбор» зажигается только если сервер ПОДТВЕРДИЛ запись. Иначе
+      // человек нажал бы на него и не нашёл под ним ничего.
+      if (data.saved_for_replay && Number(item?.translation_id || 0) > 0) {
+        markSavedExplainLang(Number(item.translation_id), lang);
+      }
       // reset the follow-up Q&A for a fresh breakdown
       setExplanationQuestionOpen((prev) => ({ ...prev, [key]: false }));
       setExplanationQuestionDrafts((prev) => ({ ...prev, [key]: '' }));
@@ -29611,6 +29863,7 @@ function AppInner() {
           original_text: item.original_text,
           user_translation: item.user_translation,
           explanation_language: lang,
+          translation_id: Number(item?.translation_id || 0) || undefined,
         }),
       });
       if (!response.ok) return;                               // grammar is best-effort; stay silent
@@ -29729,6 +29982,10 @@ function AppInner() {
           explanation,
           learner_question: learnerQuestion,
           request_id: requestId,
+          // Ответ ляжет рядом с сохранённым разбором — вернувшись к предложению,
+          // человек найдёт и разбор, и свой диалог по нему.
+          translation_id: Number(item?.translation_id || 0) || undefined,
+          explanation_language: lang,
         }),
       });
       if (!response.ok) {
@@ -32995,6 +33252,13 @@ function AppInner() {
   const handleSaveExplanationFollowupAnswerStable = useStableCallback(handleSaveExplanationFollowupAnswer);
   const renderExplanationContentStable = useStableCallback(renderExplanationContent);
   const renderExplainSelectableTextStable = useStableCallback(renderExplainSelectableText);
+  const openSavedExplainForResultStable = useStableCallback(openSavedExplainForResult);
+  const openSavedExplainFromHistoryStable = useStableCallback(openSavedExplainFromHistory);
+  const closeSavedExplainModalStable = useStableCallback(closeSavedExplainModal);
+  const showNoSavedExplainNoticeStable = useStableCallback(showNoSavedExplainNotice);
+  // Карта «где есть сохранённый разбор» идёт в секцию КАК ДАННЫЕ, а не функцией:
+  // TranslationsSection обёрнут в React.memo, и стабильная функция не заставила бы его
+  // перерисоваться — значок бы не загорелся до следующего изменения любого другого пропа.
   const handleFinishTranslationStable = useStableCallback(handleFinishTranslation);
   const handleArchiveResultsToHistoryStable = useStableCallback(handleArchiveResultsToHistory);
   const handleLoadDailyHistoryStable = useStableCallback(handleLoadDailyHistory);
@@ -36486,6 +36750,13 @@ function AppInner() {
                 handleSaveExplanationFollowupAnswer={handleSaveExplanationFollowupAnswerStable}
                 renderExplanationContent={renderExplanationContentStable}
                 renderExplainSelectableText={renderExplainSelectableTextStable}
+                savedExplainLangs={savedExplainLangs}
+                savedExplainFollowups={savedExplainFollowups}
+                savedExplainModal={savedExplainModal}
+                openSavedExplainForResult={openSavedExplainForResultStable}
+                openSavedExplainFromHistory={openSavedExplainFromHistoryStable}
+                closeSavedExplainModal={closeSavedExplainModalStable}
+                showNoSavedExplainNotice={showNoSavedExplainNoticeStable}
                 getResultCardIdentityKey={getResultCardIdentityKey}
                 registerTranslationResultCardNode={registerTranslationResultCardNode}
                 parseExplanationFollowupAnswerPayload={parseExplanationFollowupAnswerPayload}

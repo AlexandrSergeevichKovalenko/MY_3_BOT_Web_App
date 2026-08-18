@@ -6810,6 +6810,12 @@ def get_daily_translation_history(
             )
             rows = cursor.fetchall()
 
+    # Один запрос на весь список: у каких предложений уже есть сохранённый разбор.
+    saved_langs_by_translation = get_saved_translation_explanation_langs(
+        user_id=int(user_id),
+        translation_ids=[int(row[0]) for row in rows if row and row[0]],
+    )
+
     items: list[dict[str, Any]] = []
     for row in rows:
         feedback = row[3]
@@ -6825,9 +6831,201 @@ def get_daily_translation_history(
                 "correct_translation": _extract_correct_translation(feedback, row[6]),
                 "source_lang": row[7] or source_lang,
                 "target_lang": row[8] or target_lang,
+                # Языки, на которых по этому предложению СОХРАНЁН разбор. Пустой список —
+                # разбор не запрашивали (значок в истории будет приглушённым). Тело сюда
+                # не кладём: 50 разборов по несколько килобайт в одном ответе не нужны,
+                # оно приходит по тапу отдельным запросом.
+                "saved_explanation_langs": saved_langs_by_translation.get(int(row[0]), []),
             }
         )
     return items
+
+
+# ─── Сохранённый разбор ошибок ────────────────────────────────────────────────
+# Разбор, за который мы уже заплатили модели, живёт СЕГОДНЯШНИЙ ДЕНЬ (решение
+# владельца 18.08.2026) и привязан к translation_id — он есть и в карточке
+# результата, и в строке истории.
+# Срок держат ДВА замка, и это не перестраховка ради красоты: чтение фильтрует
+# created_on = CURRENT_DATE, поэтому вчерашнее не покажется даже если уборка не
+# отработала; уборка же не даёт таблице расти.
+
+def _explanation_lang_key(explanation_lang: str | None) -> str:
+    """Язык объяснения в том же виде, в каком его прислал фронт ('ru' / 'de' / …)."""
+    key = str(explanation_lang or "").strip().lower()
+    if key not in {"ru", "de", "en", "es", "it"}:
+        raise ValueError(f"unsupported explanation_lang: {explanation_lang!r}")
+    return key
+
+
+def purge_stale_translation_explanations(*, user_id: int) -> int:
+    """Убирает разборы этого человека за прошлые дни. Возвращает число удалённых строк."""
+    with db_acquire_scope("translation_explanations_purge"):
+        conn = get_db_connection()
+    with conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_translation_explanations
+                WHERE user_id = %s
+                  AND created_on < CURRENT_DATE;
+                """,
+                (int(user_id),),
+            )
+            return int(cursor.rowcount or 0)
+
+
+def save_translation_explanation(
+    *,
+    user_id: int,
+    translation_id: int,
+    explanation_lang: str,
+    errors_json: dict[str, Any] | None = None,
+    grammar_json: dict[str, Any] | list[Any] | None = None,
+) -> None:
+    """Кладёт разбор (или его грамматическую половину) рядом с проверенным предложением.
+
+    Разбор и грамматика приходят ДВУМЯ параллельными запросами к модели, поэтому пишем
+    их по отдельности в одну строку: пришедшая половина перезаписывается, вторая
+    остаётся как была (COALESCE на EXCLUDED, а не на старое значение).
+    """
+    lang_key = _explanation_lang_key(explanation_lang)
+    if int(translation_id) <= 0:
+        raise ValueError("translation_id is required to save an explanation")
+    if errors_json is None and grammar_json is None:
+        raise ValueError("nothing to save: both errors_json and grammar_json are empty")
+    with db_acquire_scope("translation_explanations_save"):
+        conn = get_db_connection()
+    with conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_translation_explanations (
+                    user_id, translation_id, explanation_lang,
+                    errors_json, grammar_json, created_on, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, CURRENT_DATE, NOW(), NOW())
+                ON CONFLICT (translation_id, explanation_lang) DO UPDATE
+                SET errors_json = COALESCE(EXCLUDED.errors_json, bt_3_translation_explanations.errors_json),
+                    grammar_json = COALESCE(EXCLUDED.grammar_json, bt_3_translation_explanations.grammar_json),
+                    created_on = CURRENT_DATE,
+                    updated_at = NOW();
+                """,
+                (
+                    int(user_id),
+                    int(translation_id),
+                    lang_key,
+                    Json(errors_json) if errors_json is not None else None,
+                    Json(grammar_json) if grammar_json is not None else None,
+                ),
+            )
+
+
+def append_translation_explanation_followup(
+    *,
+    user_id: int,
+    translation_id: int,
+    explanation_lang: str,
+    question: str,
+    answer: str,
+) -> bool:
+    """Дописывает пару «вопрос — ответ» к сохранённому разбору.
+
+    Возвращает False, если разбора для этой пары ещё нет: вопрос задают ИЗ открытой
+    модалки, так что строка обязана существовать; её отсутствие — не повод молча
+    создавать полупустую запись, по которой потом откроется разбор без разбора.
+    """
+    lang_key = _explanation_lang_key(explanation_lang)
+    if int(translation_id) <= 0:
+        raise ValueError("translation_id is required to save a follow-up")
+    entry = {
+        "question": str(question or "").strip(),
+        "answer": str(answer or "").strip(),
+    }
+    with db_acquire_scope("translation_explanations_followup"):
+        conn = get_db_connection()
+    with conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_explanations
+                SET followups_json = COALESCE(followups_json, '[]'::jsonb) || %s::jsonb,
+                    updated_at = NOW()
+                WHERE translation_id = %s
+                  AND explanation_lang = %s
+                  AND user_id = %s
+                  AND created_on = CURRENT_DATE;
+                """,
+                (Json([entry]), int(translation_id), lang_key, int(user_id)),
+            )
+            return int(cursor.rowcount or 0) > 0
+
+
+def get_saved_translation_explanation(
+    *,
+    user_id: int,
+    translation_id: int,
+    explanation_lang: str,
+) -> dict[str, Any] | None:
+    """Отдаёт сохранённый разбор за СЕГОДНЯ или None, если его нет."""
+    lang_key = _explanation_lang_key(explanation_lang)
+    with db_acquire_scope("translation_explanations_get"):
+        conn = get_db_connection()
+    with conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT errors_json, grammar_json, followups_json, updated_at
+                FROM bt_3_translation_explanations
+                WHERE user_id = %s
+                  AND translation_id = %s
+                  AND explanation_lang = %s
+                  AND created_on = CURRENT_DATE;
+                """,
+                (int(user_id), int(translation_id), lang_key),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "translation_id": int(translation_id),
+        "explanation_language": lang_key,
+        "explanation_json": row[0],
+        "grammar": row[1],
+        "followups": row[2] or [],
+        "updated_at": row[3].isoformat() if row[3] else None,
+    }
+
+
+def get_saved_translation_explanation_langs(
+    *,
+    user_id: int,
+    translation_ids: list[int],
+) -> dict[int, list[str]]:
+    """Для списка предложений: у каких из них есть сохранённый разбор и на каком языке."""
+    safe_ids = sorted({int(value) for value in (translation_ids or []) if int(value or 0) > 0})
+    if not safe_ids:
+        return {}
+    with db_acquire_scope("translation_explanations_flags"):
+        conn = get_db_connection()
+    with conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT translation_id, explanation_lang
+                FROM bt_3_translation_explanations
+                WHERE user_id = %s
+                  AND created_on = CURRENT_DATE
+                  AND translation_id = ANY(%s)
+                  AND errors_json IS NOT NULL
+                ORDER BY translation_id, explanation_lang;
+                """,
+                (int(user_id), safe_ids),
+            )
+            rows = cursor.fetchall() or []
+    langs_by_id: dict[int, list[str]] = {}
+    for translation_id, lang in rows:
+        langs_by_id.setdefault(int(translation_id), []).append(str(lang))
+    return langs_by_id
 
 
 def _normalize_translation_session_id(session_id: str | int | None) -> str | int | None:

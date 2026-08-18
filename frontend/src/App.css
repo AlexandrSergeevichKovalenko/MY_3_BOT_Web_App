@@ -29587,6 +29587,71 @@ html[data-scheme="light"] .explain-grammar-structure,
 .explain-modal--fuchs .explain-grammar-structure { color: #5b4fd6; }
 .explain-modal--fuchs .explain-modal-followup { border-top: 1px dashed #e6d8c2; }
 
+/* ── Значок «мой разбор» над предложением ─────────────────────────────────────
+   Горит — разбор по этому предложению уже получен и лежит на сервере до конца дня,
+   тап открывает его без обращения к модели. Приглушён — разбор не запрашивали.
+   Размер и место у обоих состояний одинаковые: список не должен прыгать. */
+.tr-saved-explain-row {
+  display: flex;
+  margin-bottom: 8px;
+}
+
+.tr-saved-explain-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px 5px 8px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, transform 0.06s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tr-saved-explain-btn:active { transform: scale(0.97); }
+
+.tr-saved-explain-btn.is-on {
+  border: 1px solid rgba(224, 168, 60, 0.55);
+  background: rgba(224, 168, 60, 0.14);
+  color: #b8801f;
+  box-shadow: 0 0 0 3px rgba(224, 168, 60, 0.10);
+}
+
+.tr-saved-explain-btn.is-on:hover {
+  background: rgba(224, 168, 60, 0.22);
+  border-color: rgba(224, 168, 60, 0.8);
+}
+
+.tr-saved-explain-btn.is-off {
+  border: 1px dashed var(--tr-border, rgba(148, 163, 184, 0.4));
+  background: transparent;
+  color: var(--tr-text-muted, #8a7c66);
+  opacity: 0.72;
+}
+
+.tr-saved-explain-btn.is-off .tr-saved-explain-ico { filter: grayscale(1); opacity: 0.75; }
+
+.tr-saved-explain-ico { font-size: 14px; }
+
+/* Сохранённый диалог «Задать вопрос» внутри разбора */
+.explain-saved-qa {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(148, 163, 184, 0.10);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+}
+.explain-saved-q { font-weight: 700; margin-bottom: 6px; }
+.explain-saved-a { font-size: 14px; line-height: 1.5; }
+.explain-modal--fuchs .explain-saved-qa {
+  background: #fbf7ef;
+  border-color: #ece0cc;
+}
+.explain-modal--fuchs .explain-saved-q { color: #1c2536; }
+.explain-modal--fuchs .explain-saved-a { color: #33425c; }
+
 /* Синонимы лежат во flex-контейнере .explain-syn-opts (он нужен чипам «Загадочной
    истории»), а flex выбрасывает текстовые узлы из одних пробелов. Поэтому каждый
    синоним завёрнут в свой .explain-syn-opt — внутри него пробел между «sich» и

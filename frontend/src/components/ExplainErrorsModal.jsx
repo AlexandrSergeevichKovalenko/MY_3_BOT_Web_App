@@ -38,6 +38,12 @@ export default function ExplainErrorsModal({
   // целиком (её и сохраняют). Приходит из App, где живёт состояние выделения; здесь
   // только вызывается. Без него текст просто не будет выделяться.
   renderSelectableText,
+  // Сохранённый диалог «Задать вопрос» по этому же предложению: [{question, answer}].
+  // Приходит вместе с разбором, когда его открывают повторно, — вопросы человека и
+  // ответы модели тоже оплачены и тоже пропадали при закрытии.
+  savedFollowups,
+  // Рендер длинного ответа модели (там телеграм-разметка и кликабельные слова).
+  renderAnswer,
   children,
 }) {
   if (!isOpen) return null;
@@ -70,10 +76,15 @@ export default function ExplainErrorsModal({
           <button type="button" className="explain-modal-close" aria-label={tr('Закрыть', 'Schließen')} onClick={onClose}>×</button>
         </div>
 
-        <label className="explain-modal-langtoggle">
-          <input type="checkbox" checked={!!langDe} onChange={(e) => onToggleLang?.(e.target.checked)} />
-          <span>🇩🇪 {tr('Объяснение на немецком', 'Erklärung auf Deutsch')}</span>
-        </label>
+        {/* Переключатель языка есть только там, где разбор можно перезапросить. При
+            просмотре сохранённого он был бы мёртвой галочкой: язык уже выбран тогда,
+            когда разбор заказывали. */}
+        {typeof onToggleLang === 'function' && (
+          <label className="explain-modal-langtoggle">
+            <input type="checkbox" checked={!!langDe} onChange={(e) => onToggleLang(e.target.checked)} />
+            <span>🇩🇪 {tr('Объяснение на немецком', 'Erklärung auf Deutsch')}</span>
+          </label>
+        )}
 
         <div className="explain-modal-body">
           {loading && (
@@ -208,6 +219,22 @@ export default function ExplainErrorsModal({
                 </div>
               )}
             </>
+          )}
+
+          {Array.isArray(savedFollowups) && savedFollowups.length > 0 && (
+            <div className="explain-section explain-saved-dialog">
+              <div className="explain-section-title">💬 {tr('Ваши вопросы по этому разбору', 'Deine Fragen zu dieser Analyse')}</div>
+              {savedFollowups.map((entry, i) => (
+                <div className="explain-saved-qa" key={i}>
+                  <div className="explain-saved-q">❓ {String(entry?.question || '').trim()}</div>
+                  <div className="explain-saved-a">
+                    {typeof renderAnswer === 'function'
+                      ? renderAnswer(String(entry?.answer || ''))
+                      : String(entry?.answer || '')}
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
 
           {children ? <div className="explain-modal-followup">{children}</div> : null}

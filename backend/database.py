@@ -10233,6 +10233,37 @@ def ensure_webapp_tables() -> None:
                 END $$;
                 """
             )
+            # Разбор ошибок, который человек уже запросил (и за который мы уже заплатили
+            # модели), раньше жил только в памяти вкладки: закрыл модалку и перезагрузил
+            # мини-апп — разбор исчез, а повторный взгляд на него стоил нового запроса к
+            # модели и единицы дневного лимита. Теперь он лежит здесь.
+            # Срок жизни — ТЕКУЩИЙ ДЕНЬ (решение владельца 18.08.2026): экран истории
+            # переводов и сам показывает только сегодняшние предложения
+            # (translation_workflow.get_daily_translation_history: timestamp::date =
+            # CURRENT_DATE), так что вчерашний разбор негде было бы открыть.
+            # Ключ — translation_id (bt_3_translations.id): он есть и в карточке
+            # результата, и в строке истории, поэтому оба экрана находят одну и ту же
+            # запись. Внешнего ключа нет намеренно: bt_3_translations — legacy-таблица,
+            # её DDL живёт вне кода.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_translation_explanations (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    translation_id BIGINT NOT NULL,
+                    explanation_lang TEXT NOT NULL,
+                    errors_json JSONB,
+                    grammar_json JSONB,
+                    followups_json JSONB,
+                    created_on DATE NOT NULL DEFAULT CURRENT_DATE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (translation_id, explanation_lang)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_translation_explanations_user_day
+                ON bt_3_translation_explanations (user_id, created_on);
+            """)
             cursor.execute(
                 """
                 DO $$

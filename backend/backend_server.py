@@ -838,6 +838,11 @@ from backend.translation_workflow import (
     get_translation_session_progress,
     get_db_connection as get_translation_workflow_db_connection,
     get_daily_translation_history,
+    save_translation_explanation,
+    append_translation_explanation_followup,
+    get_saved_translation_explanation,
+    get_saved_translation_explanation_langs,
+    purge_stale_translation_explanations,
     start_translation_session_webapp,
     start_story_session_webapp,
     submit_story_translation_webapp,
@@ -3074,6 +3079,11 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     # for explain, ask_gpt_daily for ask) — NOT fully paid. Seeing the value once/day is the hook.
     "/api/webapp/explain": {"cap": True},
     "/api/webapp/explain/question": {"cap": True},
+    # Намеренно НЕ здесь: /api/webapp/explain/saved и /explain/saved/flags только читают
+    # уже полученный (и уже оплаченный) разбор из базы — модель они не зовут. Гейт матчит
+    # путь точно, поэтому под правило «/api/webapp/explain» они не попадают. Брать плату
+    # или списывать дневную единицу за повторный взгляд на своё же — это и был тот дефект,
+    # ради которого разбор начали сохранять.
     "/api/webapp/ask": {"cap": True},
     "/api/webapp/tts/generate": {"cap": True, "feature_code": "tts_chars_daily"},
     # Free: German subtitles (transcript) with the youtube_fetch_daily taster limit.
@@ -68561,6 +68571,44 @@ def explain_webapp_translation():
     except Exception as exc:
         return jsonify({"error": f"Ошибка объяснения: {exc}"}), 500
 
+    # Кладём разбор рядом с проверенным предложением, чтобы человек мог вернуться к нему
+    # сегодня же, не платя за него второй раз. Ключ — translation_id проверенной строки.
+    # Побочная запись НЕ имеет права утащить за собой сам ответ: разбор уже получен и
+    # оплачен, отдать его обязаны. Поэтому падение записи логируется и считается, а
+    # наружу уходит честный признак saved — по нему фронт и решает, показывать значок.
+    saved_for_replay = False
+    try:
+        translation_id = int(payload.get("translation_id") or 0)
+    except (TypeError, ValueError):
+        translation_id = 0
+    if mode != "selection_context" and explanation_json and translation_id > 0:
+        try:
+            purge_stale_translation_explanations(user_id=int(user_id))
+            save_translation_explanation(
+                user_id=int(user_id),
+                translation_id=translation_id,
+                explanation_lang=req_explain_lang,
+                errors_json=explanation_json if mode != "grammar" else None,
+                grammar_json=explanation_json if mode == "grammar" else None,
+            )
+            saved_for_replay = True
+        except Exception:
+            logging.exception(
+                "explain: не смогли сохранить разбор user_id=%s translation_id=%s mode=%s",
+                user_id,
+                translation_id,
+                mode or "translation",
+            )
+    elif mode != "selection_context" and explanation_json and translation_id <= 0:
+        # Разбор получен, но привязать его не к чему: фронт не прислал translation_id.
+        # Тихо это не проглатываем — иначе значок «разбор сохранён» просто не появится,
+        # и никто не узнает, почему.
+        logging.warning(
+            "explain: разбор не сохранён — нет translation_id user_id=%s mode=%s",
+            user_id,
+            mode or "translation",
+        )
+
     return jsonify(
         {
             "ok": True,
@@ -68570,6 +68618,7 @@ def explain_webapp_translation():
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
             "dictionary_item": dictionary_result_payload,
             "direction": dictionary_direction,
+            "saved_for_replay": saved_for_replay,
         }
     )
 
@@ -68685,6 +68734,40 @@ def explain_webapp_translation_followup_question():
     if not answer:
         return jsonify({"error": "Модель не вернула ответ"}), 500
 
+    # Ответ на вопрос — такой же оплаченный материал, как сам разбор: дописываем его к
+    # сохранённому разбору, чтобы человек нашёл свой диалог, вернувшись к предложению.
+    # Как и там: неудача записи не отменяет ответ, но и не проглатывается молча.
+    try:
+        followup_translation_id = int(payload.get("translation_id") or 0)
+    except (TypeError, ValueError):
+        followup_translation_id = 0
+    followup_lang = str(payload.get("explanation_language") or "").strip().lower()
+    if followup_lang not in {"ru", "de", "en", "es", "it"}:
+        followup_lang = source_lang
+    if followup_translation_id > 0:
+        try:
+            appended = append_translation_explanation_followup(
+                user_id=int(user_id),
+                translation_id=followup_translation_id,
+                explanation_lang=followup_lang,
+                question=learner_question,
+                answer=answer,
+            )
+            if not appended:
+                logging.warning(
+                    "explain/question: диалог не дописан — сохранённого разбора нет "
+                    "user_id=%s translation_id=%s lang=%s",
+                    user_id,
+                    followup_translation_id,
+                    followup_lang,
+                )
+        except Exception:
+            logging.exception(
+                "explain/question: не смогли сохранить ответ user_id=%s translation_id=%s",
+                user_id,
+                followup_translation_id,
+            )
+
     return jsonify(
         {
             "ok": True,
@@ -68693,6 +68776,73 @@ def explain_webapp_translation_followup_question():
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
+
+
+@app.route("/api/webapp/explain/saved", methods=["POST"])
+def get_saved_webapp_translation_explanation():
+    """Отдаёт УЖЕ полученный разбор по предложению — без нового обращения к модели.
+
+    Живёт ровно текущий день (решение владельца 18.08.2026): экран истории переводов
+    и сам показывает только сегодняшние предложения, вчерашний разбор открывать негде.
+    """
+    payload = request.get_json(silent=True) or {}
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        return jsonify({"error": error}), 401
+
+    try:
+        translation_id = int(payload.get("translation_id") or 0)
+    except (TypeError, ValueError):
+        translation_id = 0
+    if translation_id <= 0:
+        return jsonify({"error": "translation_id обязателен"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    explanation_lang = str(payload.get("explanation_language") or "").strip().lower()
+    if explanation_lang not in {"ru", "de", "en", "es", "it"}:
+        explanation_lang = source_lang
+
+    saved = get_saved_translation_explanation(
+        user_id=int(user_id),
+        translation_id=translation_id,
+        explanation_lang=explanation_lang,
+    )
+    # Разбора нет — это НЕ ошибка и не пустой разбор: человек его просто не запрашивал.
+    # Отдаём явное "found": false, чтобы фронт показал человеческую подсказку, а не
+    # пустую модалку.
+    if not saved:
+        return jsonify({"ok": True, "found": False, "translation_id": translation_id})
+    return jsonify({"ok": True, "found": True, **saved})
+
+
+@app.route("/api/webapp/explain/saved/flags", methods=["POST"])
+def list_saved_webapp_translation_explanations():
+    """По списку предложений: у каких есть сохранённый разбор и на каком языке."""
+    payload = request.get_json(silent=True) or {}
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        return jsonify({"error": error}), 401
+
+    raw_ids = payload.get("translation_ids")
+    if not isinstance(raw_ids, list):
+        return jsonify({"error": "translation_ids обязателен"}), 400
+    translation_ids: list[int] = []
+    for value in raw_ids[:200]:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            translation_ids.append(parsed)
+
+    langs_by_id = get_saved_translation_explanation_langs(
+        user_id=int(user_id),
+        translation_ids=translation_ids,
+    )
+    return jsonify({
+        "ok": True,
+        "items": {str(key): value for key, value in langs_by_id.items()},
+    })
 
 
 @app.route("/api/webapp/ask", methods=["POST"])
