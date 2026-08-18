@@ -92,6 +92,7 @@ from backend.background_jobs import (  # noqa: E402
     run_cap_health_report_actor,
     run_article_review_dm_actor,
     run_reference_forms_review_dm_actor,
+    run_reference_forms_warm_actor,
     run_retire_review_dm_actor,
     run_fill_control_dm_actor,
     run_wiktionary_warm_actor,
@@ -427,6 +428,10 @@ def _dispatch_verb_paradigm_warm() -> None:
 
 def _dispatch_article_review_dm() -> None:
     run_article_review_dm_actor.send()
+
+
+def _dispatch_reference_forms_warm() -> None:
+    run_reference_forms_warm_actor.send()
 
 
 def _dispatch_reference_forms_review_dm() -> None:
@@ -804,6 +809,21 @@ def _build_scheduler():
             "cron",
             hour=_int_env("VERB_PARADIGM_WARM_HOUR", 4),
             minute=_int_env("VERB_PARADIGM_WARM_MINUTE", 40),
+            timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
+    # -- Ночной прогрев склонений и степеней сравнения. Ставим 05:10 — ЧЕТВЁРТОЙ и
+    # последней из ночных задач к справочнику (03:40 роды, 04:10 индекс форм,
+    # 04:40 спряжения), чтобы они не стучались разом и не ловили общий 429.
+    if _enabled("REFERENCE_FORMS_WARM_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_reference_forms_warm,
+            "cron",
+            hour=_int_env("REFERENCE_FORMS_WARM_HOUR", 5),
+            minute=_int_env("REFERENCE_FORMS_WARM_MINUTE", 10),
             timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
             max_instances=1,
             coalesce=True,

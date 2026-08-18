@@ -2547,6 +2547,27 @@ def run_article_review_dm_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_reference_forms_warm_actor() -> None:
+    """Ночной прогрев склонений и степеней сравнения: их печатает de.wiktionary.
+
+    Пока слово не спрошено, движок не покажет по нему таблицу вовсе — придумывать
+    формы запрещено. Порция маленькая по той же причине, что у глаголов: справочник
+    уходит в лимит примерно на десятом запросе подряд. Разовый полный обход делает
+    scripts/warm_reference_forms_all.py."""
+    from backend.german_reference_forms import (
+        ensure_german_reference_forms_schema, warm_reference_forms,
+    )
+    import os as _os
+    ensure_german_reference_forms_schema()
+    report = warm_reference_forms(
+        limit=int((_os.getenv("REFERENCE_FORMS_WARM_BATCH") or "120").strip() or "120"),
+        pause_sec=float((_os.getenv("REFERENCE_FORMS_WARM_PAUSE_SEC") or "4").strip() or "4"),
+        allow_model=(_os.getenv("REFERENCE_FORMS_WARM_MODEL") or "0").strip() == "1",
+    )
+    logging.info("формы из справочника: прогрев %s", report)
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_reference_forms_review_dm_actor() -> None:
     """Личка со словами, которым каскад не нашёл форм: пн/ср/пт."""
     from backend.reference_forms_review import send_reference_forms_review_dm
