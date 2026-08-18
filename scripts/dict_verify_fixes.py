@@ -75,9 +75,15 @@ with get_db_connection_context() as conn:
                                        JOIN bt_3_lex_units t ON t.id=CASE WHEN l.from_unit=u.id THEN l.to_unit ELSE l.from_unit END
                                        WHERE (l.from_unit=u.id OR l.to_unit=u.id) AND t.lang='ru' AND l.rank<900)""")
         check("перевод в разборе есть, а связи нет", cur.fetchone()[0], 0)
+        # Пустой массив translations внутри разбора — ещё НЕ признак немоты: у фраз
+        # перевод живёт связью, и экран берёт именно её. Замер 18.08.2026: из 182 таких
+        # слов у 180 перевод на месте. Поэтому считаем тех, у кого его нет НИГДЕ.
         cur.execute("""SELECT count(*) FROM bt_3_lex_units u WHERE u.lang='de' AND u.card IS NOT NULL
-                       AND COALESCE(jsonb_array_length(u.card->'translations'), 0) = 0""")
-        print("   %-52s %s" % ("(ждут ночного обогащения: разбор без переводов)", cur.fetchone()[0]))
+                       AND COALESCE(jsonb_array_length(u.card->'translations'), 0) = 0
+                       AND NOT EXISTS (SELECT 1 FROM bt_3_lex_links l
+                                       JOIN bt_3_lex_units t ON t.id=CASE WHEN l.from_unit=u.id THEN l.to_unit ELSE l.from_unit END
+                                       WHERE (l.from_unit=u.id OR l.to_unit=u.id) AND t.lang='ru')""")
+        print("   %-52s %s" % ("(ждут ночного разбора: перевода нет нигде)", cur.fetchone()[0]))
 
         # 7. перевод оказался немецким текстом — переводом это не является
         cur.execute("""SELECT count(*) FROM bt_3_lex_units u
