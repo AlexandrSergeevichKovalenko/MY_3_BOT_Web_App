@@ -32159,7 +32159,7 @@ async def artikel_battle_command(update: Update, context: CallbackContext) -> No
     args = [a.strip() for a in (context.args or []) if a.strip()]
 
     def _resolve_theme():
-        from backend.article_sprint_sets import _pick_fallback_theme, MIN_PLAYABLE
+        from backend.article_sprint_sets import _pick_fallback_theme
         today_d = _get_quiz_schedule_now().date()
         tk = None
         if args and get_article_sprint_theme(args[0]):
@@ -32167,12 +32167,13 @@ async def artikel_battle_command(update: Update, context: CallbackContext) -> No
         if not tk:
             tk = get_article_sprint_theme_for_date(today_d)
         if not tk:
-            tk = _pick_fallback_theme(today_d, MIN_PLAYABLE)
+            # Любая непустая тема годится: размер темы батлу не помеха, как и дню.
+            tk = _pick_fallback_theme(today_d)
         return tk, today_d
 
     theme_key, today_d = await asyncio.to_thread(_resolve_theme)
     if not theme_key:
-        await message.reply_text("Нет темы с достаточным числом слов. Наполни через /artikel_fill.")
+        await message.reply_text("В банке пока нет ни одного проверенного слова. Наполни через /artikel_fill.")
         return
     deadline = datetime.now(ZoneInfo("Europe/Vienna")).replace(hour=23, minute=59, second=0, microsecond=0)
     creator_name = _display_user_name(user)

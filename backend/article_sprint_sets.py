@@ -10,20 +10,36 @@ from __future__ import annotations
 import logging
 import random
 
-DEFAULT_SET_SIZE = 140      # plenty for a 2-min game even for fast players
-MIN_PLAYABLE = 60           # below this we won't ship a daily set
+# ПОТОЛОК набора, а не цель. Больше этого игрок за две минуты не осилит, поэтому
+# длиннее набор замораживать незачем. Если в теме слов меньше — набор просто короче,
+# и игра честно заканчивается на последнем слове (ArtikelSprintGame: кончились
+# слова → результат). Ничего доливать не надо.
+DEFAULT_SET_SIZE = 140
 
-# Тема ведёт ДЕНЬ, только если её нельзя пройти насквозь за одну игру.
+# НИЖНЕГО ПОРОГА У ТЕМЫ ДНЯ НЕТ. Это решение владельца 19.08.2026, дословно:
 #
-# 19.08.2026 владелец сыграл «Computer & Geräte»: в теме было 80 живых слов, набор
-# строился на 140, и игра выдала 77 из 80 — 96% банка темы, весь её хвост подряд.
-# Порог 60 («хватит на две минуты») отвечал на вопрос «игрок успеет?», а вопрос
-# был другой: «останется ли в теме хоть что-то, чего он сегодня не видел?».
+#   «даже если в теме есть 50 слов, то значит она может быть темой дня, неважно.
+#    Человеку нужно выучить все слова со всех тем, и ему совершенно всё равно,
+#    сколько в этой теме слов. Если их нету столько — зачем тужиться и придумывать
+#    что-то, чего не существует?»
 #
-# Тема, которой не хватает на полный набор, из дня не исчезает — она уходит в
-# «Свою тему» (тренировка), где набор строится заново каждый раз и полнота банка
-# роли не играет.
-MIN_THEME_FOR_DAILY = DEFAULT_SET_SIZE
+# История вопроса, чтобы порог не завели заново. 19.08.2026 владелец сыграл
+# «Computer & Geräte» и увидел 77 слов из 80 живых — весь банк темы разом, вместе
+# с её мусорным хвостом. Первой правкой я поставил порог «тема ведёт день, только
+# если её нельзя пройти насквозь» (140 слов) — и это была ошибка двух сортов:
+#
+#   • цифра выдумана. 140 — это размер набора, который сам когда-то поставили
+#     на глаз. Подпирать одну произвольную цифру другой — не обоснование;
+#   • порог воссоздал ровно то давление, ради снятия которого в тот же день
+#     убрали цель «150 слов на тему»: «дорасти до числа, иначе не участвуешь».
+#     А именно оно и заставляло генератор скрести дно.
+#
+# Плохим тот экран делал МУСОР, а не размер темы. Мусор убран (92 англицизма вне
+# живой речи, слова без подтверждения справочником) и закрыт стражем на приёмке.
+# Тема из 50 честных слов даёт игру из 50 честных слов — с ней всё в порядке.
+#
+# Единственное, что мешает теме вести день, — отсутствие слов вообще. Это не порог,
+# а арифметика: набор не может быть пустым.
 
 
 def _dedup_words(words: list[dict]) -> list[dict]:
@@ -45,8 +61,12 @@ def _dedup_words(words: list[dict]) -> list[dict]:
     return uniq
 
 
-def _pick_fallback_theme(play_date, min_have: int) -> str | None:
-    """Deterministic theme rotation among themes that have enough verified words."""
+def _pick_fallback_theme(play_date, min_have: int = 1) -> str | None:
+    """Ротация тем по дате — среди тех, где вообще есть слова.
+
+    `min_have` по умолчанию 1: годится ЛЮБАЯ непустая тема. Числом больше единицы
+    его звать не надо — это снова будет порог, который заставляет тему «дорасти»
+    (см. длинный комментарий вверху файла)."""
     from backend.database import list_article_sprint_themes
     themes = [t for t in list_article_sprint_themes() if int(t.get("verified_count") or 0) >= min_have]
     if not themes:
@@ -65,37 +85,37 @@ def build_daily_set(play_date, *, size: int = DEFAULT_SET_SIZE) -> dict:
     )
     ensure_article_sprint_schema()
 
-    # The set's CONTENT must match its LABEL. The scheduled theme is used ONLY if it
-    # actually has enough verified words; otherwise we switch to a theme that does
-    # (and relabel to it) instead of topping up with foreign-theme words — that
-    # top-up was what put medical nouns under a "Technik & Computer" header.
+    # Содержимое набора обязано соответствовать его ЗАГОЛОВКУ. Тему дня НЕ подменяем
+    # из-за размера: маленькая тема — полноценная тема дня, набор просто короче.
+    # Меняем только если темы на день нет вовсе или в ней нет ни одного слова.
+    # Доливать слова из чужих тем нельзя ни при каком размере — именно долив когда-то
+    # положил медицинские существительные под заголовок «Technik & Computer».
     scheduled = get_article_sprint_theme_for_date(play_date)
     theme_key = scheduled
-    if not theme_key or count_article_theme_verified(theme_key) < MIN_THEME_FOR_DAILY:
-        fallback = _pick_fallback_theme(play_date, min_have=MIN_THEME_FOR_DAILY)
+    if not theme_key or count_article_theme_verified(theme_key) < 1:
+        fallback = _pick_fallback_theme(play_date)
         if scheduled and fallback and fallback != scheduled:
             logging.warning(
-                "article_sprint: тема дня «%s» не набирает полный набор (<%s слов) → ведёт «%s»",
-                scheduled, MIN_THEME_FOR_DAILY, fallback,
+                "article_sprint: у темы дня «%s» нет ни одного проверенного слова → ведёт «%s»",
+                scheduled, fallback,
             )
         theme_key = fallback
     if not theme_key:
-        # No single theme has enough verified words yet → honest mixed set.
+        # Ни в одной теме нет слов → честный смешанный набор под своим заголовком.
         words = get_article_sprint_verified_sample(None, size)
         theme_key = "gemischt"
     else:
-        # Single coherent theme — no cross-theme top-up (a theme with >= MIN_PLAYABLE
-        # words is plenty for a 2-min game and a learning deck).
         words = get_article_sprint_verified_sample(theme_key, size)
 
     # dedup (by word+article) + shuffle
     uniq = _dedup_words(words)
     random.shuffle(uniq)
 
-    if len(uniq) < MIN_PLAYABLE:
-        return {"status": "insufficient", "theme_key": theme_key,
-                "available": len(uniq), "min_playable": MIN_PLAYABLE,
-                "hint": "наполни темы через /artikel_fill"}
+    # Единственная причина не выдать набор — слов нет вообще. Это не порог, а
+    # арифметика: играть в пустой набор нельзя.
+    if not uniq:
+        return {"status": "insufficient", "theme_key": theme_key, "available": 0,
+                "hint": "в банке нет ни одного проверенного слова"}
 
     set_id = f"asd_{play_date.isoformat()}"
     upsert_article_sprint_set(
