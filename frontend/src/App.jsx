@@ -2907,22 +2907,28 @@ class ErrorBoundary extends React.Component {
   render() {
     if (this.state.hasError) {
       const isDe = typeof navigator !== 'undefined' && String(navigator.language || '').toLowerCase().startsWith('de');
+      // Ни текста исключения, ни стека на экране: человек, который учит немецкий, не
+      // должен читать JS-трассировку. Всё техническое уже ушло в console.error выше
+      // (componentDidCatch). Здесь — только что случилось и одна понятная кнопка.
+      // Владелец, 19.08.2026: «Пользователь вообще не должен понимать, что такое ошибка!»
       return (
         <div className="webapp-page">
           <div className="webapp-card">
             <header className="webapp-header">
-              <span className="pill">Telegram Web App</span>
-              <h1>{isDe ? 'Ladefehler' : 'Ошибка загрузки'}</h1>
-              <p>{isDe ? 'Beim Starten der App ist ein Fehler aufgetreten. Bitte neu laden.' : 'Произошла ошибка при запуске приложения. Попробуйте перезагрузить.'}</p>
+              <h1>{isDe ? 'Kurz hängen geblieben' : 'Приложение подвисло'}</h1>
+              <p>
+                {isDe
+                  ? 'Nichts ist verloren gegangen — dein Fortschritt ist gespeichert. Lade die Seite einfach neu.'
+                  : 'Ничего не потерялось — ваш прогресс сохранён. Просто откройте приложение заново.'}
+              </p>
             </header>
-            <div className="webapp-error">
-              {this.state.error?.message || (isDe ? 'Unbekannter Fehler' : 'Неизвестная ошибка')}
-            </div>
-            {this.state.error?.stack && (
-              <pre className="webapp-error webapp-error-stack">
-                {String(this.state.error.stack).slice(0, 1200)}
-              </pre>
-            )}
+            <button
+              type="button"
+              className="webapp-crash-button"
+              onClick={() => { try { window.location.reload(); } catch (_e) { /* ignore */ } }}
+            >
+              {isDe ? 'Neu laden' : 'Открыть заново'}
+            </button>
           </div>
         </div>
       );
@@ -8102,7 +8108,7 @@ function AppInner() {
         keepalive: Boolean(options?.keepalive),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка старта', 'Startfehler'));
+        throw new Error(await readApiError(response, 'Не получилось начать. Попробуйте ещё раз через минуту.', 'Der Start hat nicht geklappt. Versuch es in einer Minute noch einmal.'));
       }
       return await response.json();
     } catch (error) {
@@ -8233,7 +8239,7 @@ function AppInner() {
         keepalive: Boolean(options?.keepalive),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка старта', 'Startfehler'));
+        throw new Error(await readApiError(response, 'Не получилось начать. Попробуйте ещё раз через минуту.', 'Der Start hat nicht geklappt. Versuch es in einer Minute noch einmal.'));
       }
       return await response.json();
     } catch (error) {
@@ -8926,8 +8932,8 @@ function AppInner() {
       || raw.includes('network request failed')
     ) {
       return tr(
-        'Сетевой сбой. Проверьте интернет и повторите.',
-        'Netzwerkfehler. Bitte Internet prüfen und erneut versuchen.'
+        'Связи нет. Проверьте интернет и попробуйте ещё раз.',
+        'Keine Verbindung. Prüf das Internet und versuch es noch einmal.'
       );
     }
     // Never surface raw server/DB internals to the user — log for us, show a clean message.
@@ -8951,16 +8957,16 @@ function AppInner() {
     }
   };
   const initDataMissingMsg = tr(
-    'initData не найдено. Откройте Web App внутри Telegram.',
-    'initData nicht gefunden. Öffne die Web App in Telegram.'
+    'Откройте приложение из чата с ботом в Telegram — тогда всё заработает.',
+    'Öffne die App aus dem Bot-Chat in Telegram — dann läuft alles.'
   );
   const initDataExpiredMsg = tr(
-    'Сессия Telegram устарела. Войдите заново.',
-    'Die Telegram-Sitzung ist abgelaufen. Bitte erneut anmelden.'
+    'Вход устарел. Войдите заново — это займёт секунду.',
+    'Die Anmeldung ist abgelaufen. Melde dich neu an — das dauert eine Sekunde.'
   );
   const initDataExpiredMiniAppMsg = tr(
-    'Сессия Telegram устарела. Закройте и заново откройте Mini App.',
-    'Die Telegram-Sitzung ist abgelaufen. Bitte die Mini App erneut öffnen.'
+    'Вход устарел. Закройте приложение и откройте его заново.',
+    'Die Anmeldung ist abgelaufen. Schließ die App und öffne sie neu.'
   );
   const isInitDataAuthFailureMessage = useCallback((message) => {
     const raw = String(message || '').trim().toLowerCase();
@@ -9281,7 +9287,7 @@ function AppInner() {
       if (isInitDataAuthFailureMessage(message)) {
         handleInitDataAuthFailure(message);
       }
-      throw new Error(message || tr('Ошибка техподдержки', 'Support-Fehler'));
+      throw new Error(message || tr('Поддержка пока не отвечает. Попробуйте ещё раз.', 'Der Support antwortet noch nicht. Versuch es noch einmal.'));
     }
     return response.json();
   }, [handleInitDataAuthFailure, initData, initDataMissingMsg, isInitDataAuthFailureMessage, tr]);
@@ -9844,7 +9850,7 @@ function AppInner() {
       if (!isAsyncGuardCurrent(browserAuthRequestIdRef, requestId)) {
         return;
       }
-      setBrowserAuthError(normalizeNetworkErrorMessage(error, 'Ошибка входа. Попробуйте позже.', 'Login-Fehler. Bitte später erneut versuchen.'));
+      setBrowserAuthError(normalizeNetworkErrorMessage(error, 'Войти пока не получилось. Попробуйте ещё раз через минуту.', 'Die Anmeldung hat noch nicht geklappt. Versuch es in einer Minute noch einmal.'));
     } finally {
       if (isAsyncGuardCurrent(browserAuthRequestIdRef, requestId)) {
         setBrowserAuthLoading(false);
@@ -9976,7 +9982,7 @@ function AppInner() {
       },
     });
     if (!response.ok) {
-      throw new Error(await readApiError(response, 'Ошибка запроса статуса TTS', 'Fehler beim TTS-Status'));
+      throw new Error(await readApiError(response, 'Озвучка пока не отвечает. Попробуйте ещё раз.', 'Die Vertonung antwortet noch nicht. Versuch es noch einmal.'));
     }
     return (await response.json()) || null;
   }, [initData, readApiError]);
@@ -9999,7 +10005,7 @@ function AppInner() {
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      throw new Error(await readApiError(response, 'Ошибка генерации TTS', 'Fehler bei der TTS-Generierung'));
+      throw new Error(await readApiError(response, 'Озвучка не получилась. Попробуйте ещё раз.', 'Die Vertonung hat nicht geklappt. Versuch es noch einmal.'));
     }
     return (await response.json()) || null;
   }, [initData, readApiError]);
@@ -10456,7 +10462,11 @@ function AppInner() {
       return queued;
     } catch (error) {
       const message = normalizeNetworkErrorMessage(error, 'Не удалось отправить Feel в очередь.', 'Feel konnte nicht in die Warteschlange gestellt werden.');
-      setWebappError(`${tr('Ошибка Feel', 'Feel-Fehler')}: ${message}`);
+      console.warn('[feel] dispatch failed:', message);
+      setWebappError(tr(
+        'Не получилось отправить слова на разбор. Попробуйте ещё раз через минуту.',
+        'Die Wörter konnten nicht zur Analyse gehen. Versuch es in einer Minute noch einmal.'
+      ));
       return 0;
     } finally {
       flashcardFeelDispatchInFlightRef.current = false;
@@ -10786,7 +10796,7 @@ function AppInner() {
         response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}&queue_source=${encodeURIComponent(resolvedQueueSource)}`, {}, FSRS_LOAD_TIMEOUT_MS);
       }
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte'));
+        throw new Error(await readApiError(response, 'Карточка не открылась. Потяните экран вниз, чтобы обновить.', 'Die Karte ging nicht auf. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const data = await response.json();
       applySrsPayload(data);
@@ -10824,7 +10834,11 @@ function AppInner() {
       }
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить Space Repetition карточку.', 'FSRS-Karte konnte nicht geladen werden.');
       setSrsError(friendly);
-      setWebappError(`${tr('Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte')}: ${friendly}`);
+      console.warn('[srs] card load failed:', friendly);
+      setWebappError(tr(
+        'Карточка не открылась. Потяните экран вниз, чтобы обновить.',
+        'Die Karte ging nicht auf. Zieh den Bildschirm nach unten, um zu aktualisieren.'
+      ));
     } finally {
       setSrsLoading(false);
       srsNextLoadInFlightRef.current = false;
@@ -11111,7 +11125,8 @@ function AppInner() {
       }, 15000);
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
-        setVocabError(err.error || tr('Ошибка загрузки словаря', 'Fehler beim Laden'));
+        if (err?.error) console.warn('[vocab] load failed:', err.error);
+        setVocabError(tr('Словарь не загрузился. Потяните экран вниз, чтобы обновить.', 'Das Wörterbuch ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
         return;
       }
       const data = await response.json();
@@ -11138,7 +11153,7 @@ function AppInner() {
         saveVocabBatch(userId, data.items, Number(data.total || 0)).catch(() => {});
       }
     } catch (err) {
-      setVocabError(tr('Ошибка загрузки', 'Fehler beim Laden'));
+      setVocabError(tr('Словарь не загрузился. Потяните экран вниз, чтобы обновить.', 'Das Wörterbuch ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
     } finally {
       setVocabLoading(false);
     }
@@ -11264,7 +11279,14 @@ function AppInner() {
     const editUserId = webappUser?.id ? Number(webappUser.id) : null;
 
     if (supportsMeanings && !primaryMeaning) {
-      setVocabEditError(tr('Основное значение не должно быть пустым.', 'Die Hauptbedeutung darf nicht leer sein.'));
+      showNoticeModal({
+        emoji: '💬',
+        title: tr('Нужно главное значение', 'Hauptbedeutung fehlt'),
+        message: tr(
+          'Впишите главный перевод слова — по нему потом строится карточка и тренировка.',
+          'Trag die Hauptbedeutung des Wortes ein — darauf bauen Karte und Training auf.'
+        ),
+      });
       setVocabEditLoading(false);
       return;
     }
@@ -11296,7 +11318,7 @@ function AppInner() {
         setVocabExpandedId(null);
         setVocabSearchCardItem(null);
       } catch (_err) {
-        setVocabEditError(tr('Ошибка сохранения офлайн', 'Offline-Speicherfehler'));
+        setVocabEditError(tr('Пока не сохранилось. Повторите, когда появится интернет.', 'Noch nicht gespeichert. Versuch es erneut, sobald Internet da ist.'));
       } finally {
         setVocabEditLoading(false);
       }
@@ -11322,7 +11344,8 @@ function AppInner() {
       }, 10000);
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
-        setVocabEditError(err.error || tr('Ошибка сохранения', 'Fehler beim Speichern'));
+        if (err?.error) console.warn('[vocab] edit save failed:', err.error);
+        setVocabEditError(tr('Правка пока не сохранилась. Попробуйте ещё раз.', 'Die Änderung ist noch nicht gespeichert. Versuch es noch einmal.'));
         return;
       }
       const data = await response.json();
@@ -11378,7 +11401,7 @@ function AppInner() {
       setVocabExpandedId(null);
       setVocabSearchCardItem(null);
     } catch (_err) {
-      setVocabEditError(tr('Ошибка сохранения', 'Fehler beim Speichern'));
+      setVocabEditError(tr('Правка пока не сохранилась. Попробуйте ещё раз.', 'Die Änderung ist noch nicht gespeichert. Versuch es noch einmal.'));
     } finally {
       setVocabEditLoading(false);
     }
@@ -11415,7 +11438,7 @@ function AppInner() {
       }, 10000);
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
-        setFolderRenameError(err.error || tr('Ошибка', 'Fehler'));
+        setFolderRenameError(tr('Название пока не сохранилось. Попробуйте ещё раз.', 'Der Name ist noch nicht gespeichert. Versuch es noch einmal.'));
         return;
       }
       const data = await response.json();
@@ -11429,7 +11452,7 @@ function AppInner() {
       }
       setFolderRenameItem(null);
     } catch (_err) {
-      setFolderRenameError(tr('Ошибка сохранения', 'Fehler beim Speichern'));
+      setFolderRenameError(tr('Правка пока не сохранилась. Попробуйте ещё раз.', 'Die Änderung ist noch nicht gespeichert. Versuch es noch einmal.'));
     } finally {
       setFolderRenameLoading(false);
     }
@@ -11629,8 +11652,8 @@ function AppInner() {
       if (!response.ok) {
         throw new Error(await readApiError(
           response,
-          syncFacts ? 'Ошибка синхронизации выполнения' : 'Ошибка загрузки плана на сегодня',
-          syncFacts ? 'Fehler bei der Fortschritt-Synchronisierung' : 'Fehler beim Laden des Tagesplans'
+          syncFacts ? 'Отметки не сохранились. Попробуйте ещё раз.' : 'План на сегодня не загрузился. Потяните экран вниз, чтобы обновить.',
+          syncFacts ? 'Die Markierungen sind nicht gespeichert. Versuch es noch einmal.' : 'Der Tagesplan ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'
         ));
       }
       const data = await response.json();
@@ -11716,8 +11739,8 @@ function AppInner() {
       if (!response.ok) {
         throw new Error(await readApiError(
           response,
-          syncFacts ? 'Ошибка синхронизации навыков' : 'Ошибка загрузки отчета по навыкам',
-          syncFacts ? 'Fehler bei der Skill-Synchronisierung' : 'Fehler beim Laden des Skills-Reports'
+          syncFacts ? 'Карта навыков не обновилась. Попробуйте ещё раз.' : 'Карта навыков не загрузилась. Потяните экран вниз, чтобы обновить.',
+          syncFacts ? 'Die Skill-Karte wurde nicht aktualisiert. Versuch es noch einmal.' : 'Die Skill-Karte ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'
         ));
       }
       const data = await response.json();
@@ -11786,8 +11809,8 @@ function AppInner() {
       if (!response.ok) {
         throw new Error(await readApiError(
           response,
-          syncFacts ? 'Ошибка синхронизации недельного плана' : 'Ошибка загрузки недельного плана',
-          syncFacts ? 'Fehler bei der Wochenplan-Synchronisierung' : 'Fehler beim Laden des Wochenplans'
+          syncFacts ? 'План недели не обновился. Попробуйте ещё раз.' : 'План недели не загрузился. Потяните экран вниз, чтобы обновить.',
+          syncFacts ? 'Der Wochenplan wurde nicht aktualisiert. Versuch es noch einmal.' : 'Der Wochenplan ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'
         ));
       }
       const data = await response.json();
@@ -11841,7 +11864,7 @@ function AppInner() {
       setPlanAnalyticsError('');
       const response = await fetchGetWithRetry(`/api/progress/plan-analytics?initData=${encodeURIComponent(initData)}&period=${encodeURIComponent(period)}`, 45000);
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки аналитики планов', 'Fehler beim Laden der Plan-Analytik'));
+        throw new Error(await readApiError(response, 'Данные плана не загрузились. Потяните экран вниз, чтобы обновить.', 'Die Plandaten sind nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const data = await response.json();
       setPlanAnalyticsMetrics(data?.metrics || {});
@@ -11882,10 +11905,10 @@ function AppInner() {
         fetchGetWithRetry(buildUrl(weeklySummaryVisitConfig.previousPeriod), 45000),
       ]);
       if (!currentResponse.ok) {
-        throw new Error(await readApiError(currentResponse, 'Ошибка загрузки weekly summary', 'Fehler beim Laden der Weekly Summary'));
+        throw new Error(await readApiError(currentResponse, 'Итоги недели не загрузились. Потяните экран вниз, чтобы обновить.', 'Die Wochenbilanz ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       if (!previousResponse.ok) {
-        throw new Error(await readApiError(previousResponse, 'Ошибка загрузки weekly summary', 'Fehler beim Laden der Weekly Summary'));
+        throw new Error(await readApiError(previousResponse, 'Итоги недели не загрузились. Потяните экран вниз, чтобы обновить.', 'Die Wochenbilanz ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const [currentData, previousData] = await Promise.all([
         currentResponse.json(),
@@ -11970,7 +11993,7 @@ function AppInner() {
           }),
         });
         if (!response.ok) {
-          throw new Error(await readApiError(response, 'Ошибка сохранения недельного плана', 'Fehler beim Speichern des Wochenplans'));
+          throw new Error(await readApiError(response, 'План недели пока не сохранился. Попробуйте ещё раз.', 'Der Wochenplan ist noch nicht gespeichert. Versuch es noch einmal.'));
         }
         const data = await response.json();
         // Update with canonical server response (week key may differ)
@@ -12028,7 +12051,7 @@ function AppInner() {
         }),
       });
       if (!prepareResponse.ok) {
-        throw new Error(await readApiError(prepareResponse, 'Ошибка запуска прокачки', 'Fehler beim Start der Skill-Übung'));
+        throw new Error(await readApiError(prepareResponse, 'Тренировка не запустилась. Попробуйте ещё раз.', 'Das Training ist nicht gestartet. Versuch es noch einmal.'));
       }
       const prepareData = await prepareResponse.json();
       const pack = prepareData?.package && typeof prepareData.package === 'object' ? prepareData.package : null;
@@ -12158,7 +12181,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка проверки тренировки', 'Fehler beim Prüfen des Trainings'));
+        throw new Error(await readApiError(response, 'Проверка не дошла до нас. Нажмите ещё раз — написанное на месте.', 'Die Prüfung kam nicht bei uns an. Drück noch einmal — dein Text bleibt stehen.'));
       }
       const data = await response.json();
       setSkillTrainingFeedback(data?.feedback || null);
@@ -12234,7 +12257,7 @@ function AppInner() {
         body: JSON.stringify({ initData }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка пересборки плана', 'Fehler beim Aktualisieren des Plans'));
+        throw new Error(await readApiError(response, 'План не обновился. Попробуйте ещё раз.', 'Der Plan wurde nicht aktualisiert. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const nextPlan = {
@@ -12270,7 +12293,7 @@ function AppInner() {
         body: JSON.stringify({ initData }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка тестовой отправки в личку', 'Fehler beim Testversand'));
+        throw new Error(await readApiError(response, 'Сообщение не ушло в чат с ботом. Попробуйте ещё раз.', 'Die Nachricht ging nicht in den Bot-Chat. Versuch es noch einmal.'));
       }
       setTodayPlanError(tr('Тест отправлен в личку. Проверьте диалог с ботом.', 'Test wurde in den privaten Chat gesendet.'));
     } catch (error) {
@@ -12299,7 +12322,7 @@ function AppInner() {
         return null;
       }
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка обновления статуса задачи', 'Fehler beim Aktualisieren des Aufgabenstatus'));
+        throw new Error(await readApiError(response, 'Отметка не сохранилась. Попробуйте ещё раз.', 'Die Markierung ist nicht gespeichert. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const updated = data?.item || null;
@@ -12530,7 +12553,7 @@ function AppInner() {
         return null;
       }
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка синхронизации таймера задачи', 'Fehler bei der Aufgaben-Timer-Synchronisierung'));
+        throw new Error(await readApiError(response, 'Время занятия не записалось. Попробуйте ещё раз.', 'Die Lernzeit wurde nicht erfasst. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const updated = data?.item || null;
@@ -12728,7 +12751,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка подготовки теории', 'Fehler beim Vorbereiten der Theorie'));
+        throw new Error(await readApiError(response, 'Правило не подготовилось. Попробуйте ещё раз.', 'Die Regel wurde nicht vorbereitet. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const pack = data?.package && typeof data.package === 'object' ? data.package : null;
@@ -12794,7 +12817,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка проверки теории', 'Fehler beim Prüfen der Theorie'));
+        throw new Error(await readApiError(response, 'Проверка не дошла до нас. Нажмите ещё раз — написанное на месте.', 'Die Prüfung kam nicht bei uns an. Drück noch einmal — dein Text bleibt stehen.'));
       }
       const data = await response.json();
       setTheoryFeedback(data?.feedback || null);
@@ -13004,10 +13027,14 @@ function AppInner() {
     const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
     const recommendationId = Number(payload?.recommendation_id || 0);
     if (!recommendationId) {
-      setTodayPlanError(tr(
-        'Сначала нажмите "Начать", чтобы подобрать видео для оценки.',
-        'Bitte zuerst "Starten" drücken, damit ein Video zur Bewertung gewählt wird.'
-      ));
+      showNoticeModal({
+        emoji: '🎬',
+        title: tr('Видео ещё не открыто', 'Video noch nicht geöffnet'),
+        message: tr(
+          'Нажмите «Начать» — мы подберём видео, и тогда его можно будет оценить.',
+          'Drück «Starten» — wir wählen ein Video aus, danach kannst du es bewerten.'
+        ),
+      });
       return;
     }
     const actionKey = vote === 'like' ? 'vote_like' : 'vote_dislike';
@@ -13025,7 +13052,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка сохранения оценки видео', 'Fehler beim Speichern der Videobewertung'));
+        throw new Error(await readApiError(response, 'Оценка не сохранилась. Попробуйте ещё раз.', 'Die Bewertung ist nicht gespeichert. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const updated = data?.updated_item || null;
@@ -13195,14 +13222,18 @@ function AppInner() {
             }, FSRS_REVIEW_TIMEOUT_MS);
           }
           if (!response.ok) {
-            throw new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
+            throw new Error(await readApiError(response, 'Ответ пока не сохранился. Проверьте связь — мы повторим отправку сами.', 'Die Antwort ist noch nicht gespeichert. Prüf die Verbindung — wir senden sie selbst erneut.'));
           }
           srsReviewBufferRef.current.shift();
         } catch (error) {
           job.attempt = Number(job.attempt || 0) + 1;
           const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить оценку.', 'Bewertung konnte nicht gespeichert werden.');
           setSrsError(friendly);
-          setWebappError(`${tr('Ошибка SRS review', 'Fehler bei SRS-Review')}: ${friendly}`);
+          console.warn('[srs] review submit failed:', friendly);
+          setWebappError(tr(
+            'Ответ пока не сохранился. Проверьте связь — мы повторим отправку сами.',
+            'Die Antwort ist noch nicht gespeichert. Prüf die Verbindung — wir senden sie selbst erneut.'
+          ));
           clearSrsReviewRetryTimer();
           const delayMs = Math.min(15000, 1200 * (2 ** Math.max(0, job.attempt - 1)));
           srsReviewRetryTimerRef.current = window.setTimeout(() => {
@@ -13227,12 +13258,12 @@ function AppInner() {
 
   const submitSrsReview = async (ratingValue) => {
     if (!initData) {
-      setSrsError(tr('Сессия Telegram не найдена. Откройте mini app через Telegram.', 'Telegram-Sitzung nicht gefunden. Bitte über Telegram öffnen.'));
+      setSrsError(tr('Откройте приложение из чата с ботом в Telegram — тогда всё заработает.', 'Öffne die App aus dem Bot-Chat in Telegram — dann läuft alles.'));
       return;
     }
     const cardId = srsCard?.id || srsCard?.entry_id;
     if (!cardId) {
-      setSrsError(tr('У карточки нет идентификатора. Обновите экран.', 'Karten-ID fehlt. Bitte Bildschirm aktualisieren.'));
+      setSrsError(tr('Карточка потерялась. Потяните экран вниз, чтобы обновить.', 'Die Karte ist verloren gegangen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       return;
     }
     // Response time for FSRS = active foreground ms since the answer was revealed
@@ -13270,7 +13301,7 @@ function AppInner() {
           setSrsPreview(null);
         }
       } catch (_err) {
-        setSrsError(tr('Ошибка сохранения офлайн', 'Offline-Speicherfehler'));
+        setSrsError(tr('Пока не сохранилось. Повторите, когда появится интернет.', 'Noch nicht gespeichert. Versuch es erneut, sobald Internet da ist.'));
       } finally {
         setSrsSubmitting(false);
         setSrsSubmittingRating(null);
@@ -13355,7 +13386,7 @@ function AppInner() {
         }, FSRS_REVIEW_TIMEOUT_MS);
       }
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
+        throw new Error(await readApiError(response, 'Ответ пока не сохранился. Проверьте связь — мы повторим отправку сами.', 'Die Antwort ist noch nicht gespeichert. Prüf die Verbindung — wir senden sie selbst erneut.'));
       }
       const data = await response.json();
       if (data?.next && typeof data.next === 'object') {
@@ -13366,7 +13397,11 @@ function AppInner() {
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить оценку.', 'Bewertung konnte nicht gespeichert werden.');
       setSrsError(friendly);
-      setWebappError(`${tr('Ошибка SRS review', 'Fehler bei SRS-Review')}: ${friendly}`);
+      console.warn('[srs] review submit failed:', friendly);
+      setWebappError(tr(
+        'Ответ пока не сохранился. Проверьте связь — мы повторим отправку сами.',
+        'Die Antwort ist noch nicht gespeichert. Prüf die Verbindung — wir senden sie selbst erneut.'
+      ));
       try {
         await loadSrsNextCard();
       } catch (_) {
@@ -13522,7 +13557,7 @@ function AppInner() {
             body: JSON.stringify({ initData }),
           });
           if (!response.ok) {
-            throw new Error(await readApiError(response, 'Ошибка статуса базового словаря', 'Fehler beim Basiswörterbuch-Status'));
+            throw new Error(await readApiError(response, 'Стартовый словарь пока не отвечает. Попробуйте ещё раз.', 'Das Startwörterbuch antwortet noch nicht. Versuch es noch einmal.'));
           }
           const data = await response.json();
           if (starterDictionaryPollTokenRef.current !== pollToken) return;
@@ -13576,7 +13611,7 @@ function AppInner() {
         body: JSON.stringify({ initData }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки базового словаря', 'Fehler beim Laden des Basiswörterbuchs'));
+        throw new Error(await readApiError(response, 'Стартовый словарь не загрузился. Попробуйте ещё раз.', 'Das Startwörterbuch ist nicht geladen. Versuch es noch einmal.'));
       }
       const data = await response.json();
       if (!isAsyncGuardCurrent(starterDictionaryStatusRequestIdRef, requestId)) {
@@ -13620,7 +13655,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка базового словаря', 'Fehler beim Basiswörterbuch'));
+        throw new Error(await readApiError(response, 'Со стартовым словарём пока не вышло. Попробуйте ещё раз.', 'Mit dem Startwörterbuch hat es noch nicht geklappt. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const offer = normalizeStarterDictionaryOffer(data?.offer);
@@ -13700,7 +13735,7 @@ function AppInner() {
       if (!isAsyncGuardCurrent(languageProfileRequestIdRef, requestId)) {
         return null;
       }
-      setLanguageProfileError(normalizeNetworkErrorMessage(error, 'Ошибка профиля языка. Попробуйте позже.', 'Sprachprofil-Fehler. Bitte später erneut versuchen.'));
+      setLanguageProfileError(normalizeNetworkErrorMessage(error, 'Настройки языка не загрузились. Попробуйте ещё раз через минуту.', 'Die Spracheinstellungen sind nicht geladen. Versuch es in einer Minute noch einmal.'));
       return null;
     } finally {
       if (isAsyncGuardCurrent(languageProfileRequestIdRef, requestId)) {
@@ -13794,7 +13829,7 @@ function AppInner() {
           }
         }
       } catch (error) {
-        setLanguageProfileError(normalizeNetworkErrorMessage(error, 'Ошибка сохранения профиля. Попробуйте позже.', 'Fehler beim Speichern des Profils. Bitte später erneut versuchen.'));
+        setLanguageProfileError(normalizeNetworkErrorMessage(error, 'Настройки пока не сохранились. Попробуйте ещё раз через минуту.', 'Die Einstellungen sind noch nicht gespeichert. Versuch es in einer Minute noch einmal.'));
         if (!silent) {
           showInlineToast(normalizeNetworkErrorMessage(error, 'Не удалось сохранить профиль. Попробуйте позже.', 'Profil konnte nicht gespeichert werden. Bitte später erneut versuchen.'));
           setLanguageProfileModalOpen(true);
@@ -16433,10 +16468,14 @@ function AppInner() {
     if (!['fsrs', 'quiz', 'blocks', 'sentence'].includes(normalizedMode)) return;
     if (normalizedMode !== 'sentence' && flashcardQueueSource === 'manual') {
       if (manualTrainingSelectionCount <= 0) {
-        setFlashcardsError(tr(
-          'Сначала выберите слова для текущей тренировки в словаре.',
-          'Bitte wähle zuerst Wörter für das aktuelle Training im Wörterbuch aus.'
-        ));
+        showNoticeModal({
+          emoji: '📚',
+          title: tr('Слова ещё не выбраны', 'Noch keine Wörter gewählt'),
+          message: tr(
+            'Откройте словарь и отметьте слова, которые хотите тренировать сейчас.',
+            'Öffne das Wörterbuch und markiere die Wörter, die du jetzt üben willst.'
+          ),
+        });
         setFlashcardsOnly(false);
         setFlashcardActiveMode(null);
         return;
@@ -16633,12 +16672,26 @@ function AppInner() {
     }
     const mimeType = String(file.type || '').toLowerCase();
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
-      setSupportError(tr('Можно прикрепить только JPG, PNG или WEBP.', 'Es können nur JPG, PNG oder WEBP angehängt werden.'));
+      showNoticeModal({
+        emoji: '🖼️',
+        title: tr('Такой файл не подойдёт', 'Diese Datei passt nicht'),
+        message: tr(
+          'Прикрепите картинку — JPG, PNG или WEBP. Например, снимок экрана.',
+          'Häng ein Bild an — JPG, PNG oder WEBP. Zum Beispiel einen Screenshot.'
+        ),
+      });
       clearSupportAttachment();
       return;
     }
     if (Number(file.size || 0) > 8 * 1024 * 1024) {
-      setSupportError(tr('Фото слишком большое. Максимум 8 МБ.', 'Das Bild ist zu groß. Maximal 8 MB.'));
+      showNoticeModal({
+        emoji: '🖼️',
+        title: tr('Картинка слишком тяжёлая', 'Bild ist zu schwer'),
+        message: tr(
+          'Подойдёт файл до 8 МБ. Снимок экрана обычно намного легче.',
+          'Bis 8 MB passt. Ein Screenshot ist meist deutlich kleiner.'
+        ),
+      });
       clearSupportAttachment();
       return;
     }
@@ -17034,7 +17087,7 @@ function AppInner() {
       );
 
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка получения токена', 'Token-Fehler'));
+        throw new Error(await readApiError(response, 'Разговор пока не подключился. Попробуйте ещё раз.', 'Das Gespräch ist noch nicht verbunden. Versuch es noch einmal.'));
       }
 
       const data = await response.json();
@@ -17083,7 +17136,7 @@ function AppInner() {
         `/api/token?user_id=${encodeURIComponent(userId)}&username=${encodeURIComponent(displayName)}&voice_session_id=${encodeURIComponent(boundSessionId)}`
       );
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка подключения ассистента', 'Assistent-Verbindungsfehler'));
+        throw new Error(await readApiError(response, 'Разговор пока не подключился. Попробуйте ещё раз.', 'Das Gespräch ist noch nicht verbunden. Versuch es noch einmal.'));
       }
       const data = await response.json();
       setAssistantToken(data.token);
@@ -17096,7 +17149,7 @@ function AppInner() {
       setAssistantError(
         message.includes(PAID_FEATURE_ERROR_PREFIX)
           ? message
-          : `${tr('Ошибка подключения ассистента', 'Assistent-Verbindungsfehler')}: ${message}`
+          : `${tr('Разговор пока не подключился. Попробуйте ещё раз.', 'Das Gespräch ist noch nicht verbunden. Versuch es noch einmal.')}: ${message}`
       );
     } finally {
       setAssistantConnecting(false);
@@ -17114,7 +17167,7 @@ function AppInner() {
         body: JSON.stringify({ initData }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка старта сессии ассистента', 'Fehler beim Start der Assistent-Session'));
+        throw new Error(await readApiError(response, 'Разговор не начался. Попробуйте ещё раз.', 'Das Gespräch ist nicht gestartet. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const nextSessionId = data?.session?.session_id;
@@ -17128,7 +17181,7 @@ function AppInner() {
       setAssistantError(
         message.includes(PAID_FEATURE_ERROR_PREFIX)
           ? message
-          : `${tr('Ошибка старта сессии ассистента', 'Fehler beim Start der Assistent-Session')}: ${message}`
+          : `${tr('Разговор не начался. Попробуйте ещё раз.', 'Das Gespräch ist nicht gestartet. Versuch es noch einmal.')}: ${message}`
       );
       if (message.includes(PAID_FEATURE_ERROR_PREFIX)) {
         throw error;
@@ -18280,7 +18333,7 @@ function AppInner() {
           body: JSON.stringify({ initData }),
         }, WEBAPP_BOOTSTRAP_TIMEOUT_MS);
         if (!response.ok) {
-          throw new Error(await readApiError(response, 'Ошибка инициализации', 'Initialisierungsfehler'));
+          throw new Error(await readApiError(response, 'Приложение открылось не до конца. Закройте его и откройте заново.', 'Die App ist nicht ganz geladen. Schließ sie und öffne sie noch einmal.'));
         }
         const data = await response.json();
         if (cancelled || !isAsyncGuardCurrent(bootstrapRequestIdRef, requestId)) {
@@ -18322,7 +18375,11 @@ function AppInner() {
         if (isInitDataAuthFailureMessage(message)) {
           handleInitDataAuthFailure(message);
         }
-        setWebappError(`${tr('Ошибка инициализации', 'Initialisierungsfehler')}: ${message}`);
+        console.warn('[bootstrap] init failed:', message);
+        setWebappError(tr(
+          'Приложение открылось не до конца. Закройте его и откройте заново.',
+          'Die App ist nicht ganz geladen. Schließ sie und öffne sie noch einmal.'
+        ));
       }
     };
 
@@ -20070,7 +20127,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки предложений', 'Fehler beim Laden der Sätze'));
+        throw new Error(await readApiError(response, 'Предложения не загрузились. Потяните экран вниз, чтобы обновить.', 'Die Sätze sind nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const data = await response.json();
       if (data?.language_pair) {
@@ -20112,13 +20169,13 @@ function AppInner() {
       }
       if (generationStatus === 'failed' && generationError && !options?.suppressError) {
         setWebappError(
-          `${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Sätze')}: ${generationError}`
+          `${tr('Предложения не загрузились. Потяните экран вниз, чтобы обновить.', 'Die Sätze sind nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.')}: ${generationError}`
         );
       }
       return data;
     } catch (error) {
       if (!options?.suppressError) {
-        setWebappError(normalizeNetworkErrorMessage(error, 'Ошибка загрузки предложений. Попробуйте позже.', 'Fehler beim Laden der Sätze. Bitte später erneut versuchen.'));
+        setWebappError(normalizeNetworkErrorMessage(error, 'Предложения не загрузились. Попробуйте ещё раз через минуту.', 'Die Sätze sind nicht geladen. Versuch es in einer Minute noch einmal.'));
       }
       return null;
     }
@@ -20177,7 +20234,7 @@ function AppInner() {
       if (generationStatus === 'failed') {
         setWebappError(
           generationError
-            ? `${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Sätze')}: ${generationError}`
+            ? `${tr('Предложения не загрузились. Потяните экран вниз, чтобы обновить.', 'Die Sätze sind nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.')}: ${generationError}`
             : tr('Не удалось подготовить предложения для перевода.', 'Die Übersetzungssätze konnten nicht vorbereitet werden.')
         );
         return;
@@ -20194,7 +20251,7 @@ function AppInner() {
     try {
       const response = await fetch('/api/webapp/topics');
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки тем', 'Fehler beim Laden der Themen'));
+        throw new Error(await readApiError(response, 'Темы не загрузились. Потяните экран вниз, чтобы обновить.', 'Die Themen sind nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const data = await response.json();
       const items = Array.isArray(data.items) ? data.items : [];
@@ -20203,7 +20260,7 @@ function AppInner() {
         setSelectedTopic(items.find((item) => !isStoryTopic(item) && !isCustomTopic(item)) || items[0]);
       }
     } catch (error) {
-      setTopicsError(normalizeNetworkErrorMessage(error, 'Ошибка тем. Попробуйте позже.', 'Themenfehler. Bitte später erneut versuchen.'));
+      setTopicsError(normalizeNetworkErrorMessage(error, 'Темы не загрузились. Попробуйте ещё раз через минуту.', 'Die Themen sind nicht geladen. Versuch es in einer Minute noch einmal.'));
     } finally {
       setTopicsLoading(false);
     }
@@ -21158,7 +21215,11 @@ function AppInner() {
         'Не удалось проверить переводы.',
         'Übersetzungen konnten nicht geprüft werden.'
       );
-      setWebappError(`${tr('Ошибка проверки', 'Prüfungsfehler')}: ${friendly}`);
+      console.warn('[translations] check failed:', friendly);
+      setWebappError(tr(
+        'Проверка не дошла до нас. Нажмите ещё раз — написанное на месте.',
+        'Die Prüfung kam nicht bei uns an. Drück noch einmal — dein Text bleibt stehen.'
+      ));
       return false;
     } finally {
       translationSubmitInFlightRef.current = false;
@@ -21176,12 +21237,29 @@ function AppInner() {
       setWebappError(initDataMissingMsg);
       return;
     }
+    // Подсказки идут всплывающим окном, а не строчкой внизу: строчку рисует рабочая
+    // область под предложениями, на телефоне она за пределами экрана, и выглядит она как
+    // сбой сервера — человек всего лишь ещё не напечатал перевод, пугать его нечем.
     if (sentences.length === 0) {
-      setWebappError(tr('Нет предложений для перевода.', 'Keine Sätze zur Übersetzung vorhanden.'));
+      showNoticeModal({
+        emoji: '📝',
+        title: tr('Предложений пока нет', 'Noch keine Sätze'),
+        message: tr(
+          'Нажмите «Начать перевод» — подберём для вас предложения по вашему уровню.',
+          'Drücke «Übersetzung starten» — wir wählen Sätze passend zu deinem Niveau aus.'
+        ),
+      });
       return;
     }
     if (Object.values(liveDrafts).every((text) => !String(text || '').trim())) {
-      setWebappError(tr('Заполните хотя бы один перевод.', 'Bitte fülle mindestens eine Übersetzung aus.'));
+      showNoticeModal({
+        emoji: '✍️',
+        title: tr('Пока нечего проверять', 'Noch nichts zum Prüfen'),
+        message: tr(
+          'Напишите перевод хотя бы к одному предложению — и жмите «Проверить перевод».',
+          'Schreib die Übersetzung zu mindestens einem Satz — dann drück «Übersetzung prüfen».'
+        ),
+      });
       return;
     }
 
@@ -21214,7 +21292,14 @@ function AppInner() {
     const liveDrafts = getActiveTranslationDraftMap();
     const translationText = String(liveDrafts[String(normalizedSentenceId)] || '').trim();
     if (!translationText) {
-      setWebappError(tr('Сначала введите перевод этого предложения.', 'Bitte gib zuerst die Übersetzung dieses Satzes ein.'));
+      showNoticeModal({
+        emoji: '✍️',
+        title: tr('Здесь пока пусто', 'Hier ist noch nichts'),
+        message: tr(
+          'Напишите свой перевод этого предложения в поле выше — тогда проверим его.',
+          'Schreib deine Übersetzung dieses Satzes in das Feld oben — dann prüfen wir sie.'
+        ),
+      });
       return;
     }
     setSingleSentenceCheckLoadingId(normalizedSentenceId);
@@ -21326,7 +21411,7 @@ function AppInner() {
           ));
           return;
         }
-        throw new Error(await readApiError(response, 'Ошибка старта', 'Startfehler'));
+        throw new Error(await readApiError(response, 'Не получилось начать. Попробуйте ещё раз через минуту.', 'Der Start hat nicht geklappt. Versuch es in einer Minute noch einmal.'));
       }
       const data = await response.json();
       if (data?.language_pair) {
@@ -21365,7 +21450,11 @@ function AppInner() {
         setFinishMessage(activeTranslationSessionWarning);
       }
       if (generationStatus === 'failed' && generationError) {
-        setWebappError(`${tr('Ошибка старта', 'Startfehler')}: ${generationError}`);
+        console.warn('[translations] generation failed:', generationError);
+        setWebappError(tr(
+          'Предложения не подобрались. Попробуйте начать ещё раз через минуту.',
+          'Die Sätze kamen nicht zusammen. Versuch in einer Minute noch einmal zu starten.'
+        ));
       }
       if (generationInProgress && nextSessionId) {
         const pollToken = translationProgressiveFillPollTokenRef.current + 1;
@@ -21381,7 +21470,7 @@ function AppInner() {
       setWebappError(
         message.startsWith(TRANSLATION_LIMIT_NOTICE_PREFIX)
           ? message
-          : `${tr('Ошибка старта', 'Startfehler')}: ${message}`
+          : `${tr('Не получилось начать. Попробуйте ещё раз через минуту.', 'Der Start hat nicht geklappt. Versuch es in einer Minute noch einmal.')}: ${message}`
       );
     } finally {
       translationStartInFlightRef.current = false;
@@ -21405,7 +21494,7 @@ function AppInner() {
       const data = await response.json();
       setStoryHistory(Array.isArray(data.items) ? data.items : []);
     } catch (error) {
-      setStoryHistoryError(normalizeNetworkErrorMessage(error, 'Ошибка истории. Попробуйте позже.', 'Story-Fehler. Bitte später erneut versuchen.'));
+      setStoryHistoryError(normalizeNetworkErrorMessage(error, 'С историей пока не вышло. Попробуйте ещё раз через минуту.', 'Mit der Geschichte hat es noch nicht geklappt. Versuch es in einer Minute noch einmal.'));
     } finally {
       setStoryHistoryLoading(false);
     }
@@ -21535,7 +21624,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка старта истории', 'Story-Startfehler'));
+        throw new Error(await readApiError(response, 'История не началась. Попробуйте ещё раз.', 'Die Geschichte ist nicht gestartet. Versuch es noch einmal.'));
       }
       const data = await response.json();
       if (data.blocked) {
@@ -21553,7 +21642,7 @@ function AppInner() {
       await loadSessionInfo();
       await loadSentences({ sessionId: storySessionId });
     } catch (error) {
-      setWebappError(normalizeNetworkErrorMessage(error, 'Ошибка старта истории. Попробуйте позже.', 'Story-Startfehler. Bitte später erneut versuchen.'));
+      setWebappError(normalizeNetworkErrorMessage(error, 'История не началась. Попробуйте ещё раз через минуту.', 'Die Geschichte ist nicht gestartet. Versuch es in einer Minute noch einmal.'));
     } finally {
       setWebappLoading(false);
     }
@@ -21613,7 +21702,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка проверки истории', 'Fehler beim Prüfen der Story'));
+        throw new Error(await readApiError(response, 'Проверка не дошла до нас. Нажмите ещё раз — написанное на месте.', 'Die Prüfung kam nicht bei uns an. Drück noch einmal — dein Text bleibt stehen.'));
       }
       const data = await response.json();
       // Capture the story text for the modal's follow-up Q&A BEFORE clearing sentences.
@@ -21633,7 +21722,7 @@ function AppInner() {
       await loadSessionInfo();
       if (data.story_id) void handleLoadStoryLeaderboard(data.story_id);
     } catch (error) {
-      setWebappError(normalizeNetworkErrorMessage(error, 'Ошибка истории. Попробуйте позже.', 'Story-Fehler. Bitte später erneut versuchen.'));
+      setWebappError(normalizeNetworkErrorMessage(error, 'С историей пока не вышло. Попробуйте ещё раз через минуту.', 'Mit der Geschichte hat es noch nicht geklappt. Versuch es in einer Minute noch einmal.'));
     } finally {
       setWebappLoading(false);
     }
@@ -21654,7 +21743,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка разбора', 'Analyse-Fehler'));
+        throw new Error(await readApiError(response, 'Разбор пока не собрался. Попробуйте ещё раз.', 'Die Analyse ist noch nicht fertig geworden. Versuch es noch einmal.'));
       }
       const data = await response.json();
       setStoryExplain(data.explanation_json || null);
@@ -21723,7 +21812,7 @@ function AppInner() {
           story_id: arenaStoryId,
         }),
       });
-      if (!response.ok) throw new Error(await readApiError(response, 'Ошибка старта арены', 'Arena-Startfehler'));
+      if (!response.ok) throw new Error(await readApiError(response, 'Арена не началась. Попробуйте ещё раз.', 'Die Arena ist nicht gestartet. Versuch es noch einmal.'));
       const data = await response.json();
       if (data.blocked) {
         setFinishMessage(activeTranslationSessionWarning);
@@ -21737,7 +21826,7 @@ function AppInner() {
       await loadSessionInfo();
       await loadSentences({ sessionId: storySessionId });
     } catch (error) {
-      setWebappError(normalizeNetworkErrorMessage(error, 'Ошибка старта арены. Попробуйте позже.', 'Arena-Startfehler. Bitte später erneut versuchen.'));
+      setWebappError(normalizeNetworkErrorMessage(error, 'Арена не началась. Попробуйте ещё раз через минуту.', 'Die Arena ist nicht gestartet. Versuch es in einer Minute noch einmal.'));
     } finally {
       setWebappLoading(false);
     }
@@ -23095,7 +23184,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка быстрого перевода', 'Fehler bei Schnellübersetzung'));
+        throw new Error(await readApiError(response, 'Перевод не пришёл. Попробуйте ещё раз.', 'Die Übersetzung kam nicht an. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const rawTranslation = String(data?.translation || '').trim();
@@ -23145,7 +23234,7 @@ function AppInner() {
       setSelectionInlineLookup({
         loading: false,
         word: cleaned,
-        translation: String(error?.message || tr('Ошибка перевода', 'Übersetzungsfehler')),
+        translation: tr('Перевод не пришёл. Попробуйте ещё раз.', 'Die Übersetzung kam nicht an. Versuch es noch einmal.'),
         direction: '',
         provider: '',
       });
@@ -23291,13 +23380,17 @@ function AppInner() {
             setDictionaryError(getDictionarySaveLimitText());
             showDictionarySaveLimitToast();
           } else {
-            setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${message}`);
+            console.warn('[dictionary] save failed:', message);
+            setDictionaryError(tr(
+              'Слово пока не сохранилось. Попробуйте ещё раз.',
+              'Das Wort ist noch nicht gespeichert. Versuch es noch einmal.'
+            ));
             showInlineToast((console.warn('[dict-save]', message), tr('Не удалось сохранить. Попробуйте ещё раз.', 'Speichern fehlgeschlagen. Bitte erneut versuchen.')));
           }
         }
       })();
     } catch (error) {
-      setDictionaryError(normalizeNetworkErrorMessage(error, 'Ошибка сохранения. Попробуйте позже.', 'Speicherfehler. Bitte später erneut versuchen.'));
+      setDictionaryError(normalizeNetworkErrorMessage(error, 'Пока не сохранилось. Попробуйте ещё раз через минуту.', 'Noch nicht gespeichert. Versuch es in einer Minute noch einmal.'));
     } finally {
       setDictionaryLoading(false);
     }
@@ -23360,7 +23453,7 @@ function AppInner() {
       }, 90);
       clearSelection();
     } catch (error) {
-      setDictionaryError(normalizeNetworkErrorMessage(error, 'Ошибка словаря. Попробуйте позже.', 'Wörterbuchfehler. Bitte später erneut versuchen.'));
+      setDictionaryError(normalizeNetworkErrorMessage(error, 'Словарь пока не ответил. Попробуйте ещё раз через минуту.', 'Das Wörterbuch hat noch nicht geantwortet. Versuch es in einer Minute noch einmal.'));
     } finally {
       setDictionaryLoading(false);
     }
@@ -23377,7 +23470,7 @@ function AppInner() {
       setSelectionInlineLookup({
         loading: false,
         word: cleaned,
-        translation: String(error?.message || tr('Ошибка перевода', 'Übersetzungsfehler')),
+        translation: tr('Перевод не пришёл. Попробуйте ещё раз.', 'Die Übersetzung kam nicht an. Versuch es noch einmal.'),
         direction: '',
         provider: '',
       });
@@ -23648,7 +23741,7 @@ function AppInner() {
       }),
     });
     if (!lookupResponse.ok) {
-      throw new Error(await readApiError(lookupResponse, 'Ошибка словаря', 'Wörterbuchfehler'));
+      throw new Error(await readApiError(lookupResponse, 'Словарь пока не ответил. Попробуйте ещё раз.', 'Das Wörterbuch hat noch nicht geantwortet. Versuch es noch einmal.'));
     }
     const data = await lookupResponse.json();
     const item = data?.item || {};
@@ -23762,7 +23855,14 @@ function AppInner() {
     const originalWord = getSelectionGptWordText();
     const shouldSaveOriginal = Boolean(selectionGptSaveOriginalChecked && originalWord);
     if (!shouldSaveOriginal && selectedExamples.length === 0) {
-      setSelectionGptSaveError(tr('Выберите слово или минимум один пример.', 'Wähle ein Wort oder mindestens ein Beispiel.'));
+      showNoticeModal({
+        emoji: '✅',
+        title: tr('Ничего не отмечено', 'Nichts markiert'),
+        message: tr(
+          'Отметьте галочкой само слово или хотя бы один пример — и тогда сохраним.',
+          'Markiere das Wort selbst oder mindestens ein Beispiel — dann speichern wir es.'
+        ),
+      });
       setSelectionGptSaveMessage('');
       return;
     }
@@ -23842,7 +23942,7 @@ function AppInner() {
         }),
       });
       if (!explainResponse.ok) {
-        throw new Error(await readApiError(explainResponse, 'Ошибка GPT-объяснения', 'Fehler bei GPT-Erklärung'));
+        throw new Error(await readApiError(explainResponse, 'Объяснение не собралось. Попробуйте ещё раз.', 'Die Erklärung ist nicht fertig geworden. Versuch es noch einmal.'));
       }
       const explainData = await explainResponse.json();
       setSelectionGptData(parseSelectionGptPayload(explainData?.explanation, quick.translation, explainData));
@@ -23856,7 +23956,7 @@ function AppInner() {
     } catch (error) {
       // Soft toast instead of a raw red banner inside the sheet — there's nothing to
       // show on error, so close the sheet and float a friendly self-dismissing message.
-      const msg = String(error?.message || tr('Не удалось получить объяснение. Попробуй ещё раз.', 'Erklärung fehlgeschlagen. Bitte nochmal versuchen.'));
+      const msg = tr('Объяснение не собралось. Попробуйте ещё раз.', 'Die Erklärung ist nicht fertig geworden. Versuch es noch einmal.');
       setSelectionGptOpen(false);
       setSelectionGptWord('');
       resetSelectionGptSaveState();
@@ -24651,7 +24751,7 @@ function AppInner() {
     if (processingStatus === 'pending' || processingStatus === 'processing') {
       bits.push(tr('Обработка…', 'Wird verarbeitet…'));
     } else if (processingStatus === 'failed') {
-      bits.push(tr('Ошибка', 'Fehler'));
+      bits.push(tr('Не обработалась', 'Nicht verarbeitet'));
     }
     if (dateLabel) bits.push(dateLabel);
     return bits.join(' • ');
@@ -24688,7 +24788,7 @@ function AppInner() {
         body: JSON.stringify({ initData, limit: 20, include_archived: includeArchivedOverride }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки библиотеки', 'Fehler beim Laden der Bibliothek'));
+        throw new Error(await readApiError(response, 'Библиотека не загрузилась. Потяните экран вниз, чтобы обновить.', 'Die Bibliothek ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const data = await response.json();
       setReaderDocuments(Array.isArray(data?.items) ? data.items : []);
@@ -24743,7 +24843,7 @@ function AppInner() {
         continue;
       }
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка статуса книги', 'Fehler beim Dokumentstatus'));
+        throw new Error(await readApiError(response, 'Книга пока не отвечает. Попробуйте ещё раз.', 'Das Buch antwortet noch nicht. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const doc = data?.document || {};
@@ -24843,10 +24943,14 @@ function AppInner() {
           tg.readTextFromClipboard((text) => {
             if (!applyUrl(text) && opts.manual) {
               setReaderAddOpen(true);
-              setReaderError(tr(
-                'Ссылка не найдена в буфере. Вставь её в поле выше и нажми «Открыть».',
-                'Kein Link in der Zwischenablage. Füge ihn oben ein und tippe «Öffnen».'
-              ));
+              showNoticeModal({
+                emoji: '🔗',
+                title: tr('В буфере нет ссылки', 'Kein Link in der Zwischenablage'),
+                message: tr(
+                  'Скопируйте ссылку на статью, вставьте её в поле выше и нажмите «Открыть».',
+                  'Kopier den Link zum Artikel, füg ihn oben ein und tipp «Öffnen».'
+                ),
+              });
             }
           });
           return;
@@ -24854,10 +24958,14 @@ function AppInner() {
       } catch (_e) { /* ignore */ }
       if (opts.manual) {
         setReaderAddOpen(true);
-        setReaderError(tr(
-          'Не удалось прочитать буфер. Вставь ссылку в поле выше и нажми «Открыть».',
-          'Zwischenablage nicht lesbar. Füge den Link oben ein und tippe «Öffnen».'
-        ));
+        showNoticeModal({
+          emoji: '🔗',
+          title: tr('Буфер не открылся', 'Zwischenablage bleibt zu'),
+          message: tr(
+            'Вставьте ссылку в поле выше вручную и нажмите «Открыть» — так точно сработает.',
+            'Füg den Link oben von Hand ein und tipp «Öffnen» — so klappt es sicher.'
+          ),
+        });
       }
     };
     try {
@@ -25063,7 +25171,7 @@ function AppInner() {
       }
       resolve(result.slice(idx + marker.length));
     };
-    reader.onerror = () => reject(new Error('Ошибка чтения файла'));
+    reader.onerror = () => reject(new Error('Файл не прочитался. Попробуйте ещё раз.'));
     reader.readAsDataURL(file);
   });
 
@@ -25153,7 +25261,7 @@ function AppInner() {
         body: JSON.stringify({ initData, document_id: safeDocumentId }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка открытия книги', 'Fehler beim Öffnen des Dokuments'));
+        throw new Error(await readApiError(response, 'Книга не открылась. Попробуйте ещё раз.', 'Das Buch ging nicht auf. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const doc = data?.document || {};
@@ -25286,7 +25394,7 @@ function AppInner() {
         body: JSON.stringify({ initData, document_id: documentId, title: nextTitle }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка переименования', 'Fehler beim Umbenennen'));
+        throw new Error(await readApiError(response, 'Переименовать пока не вышло. Попробуйте ещё раз.', 'Das Umbenennen hat noch nicht geklappt. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const doc = data?.document || {};
@@ -25308,7 +25416,7 @@ function AppInner() {
         body: JSON.stringify({ initData, document_id: documentId, archived }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка архивации', 'Fehler bei der Archivierung'));
+        throw new Error(await readApiError(response, 'Убрать в архив пока не вышло. Попробуйте ещё раз.', 'Das Archivieren hat noch nicht geklappt. Versuch es noch einmal.'));
       }
       if (!readerIncludeArchived || archived) {
         setReaderDocuments((prev) => prev.filter((item) => Number(item?.id) !== Number(documentId)));
@@ -25338,7 +25446,7 @@ function AppInner() {
         body: JSON.stringify({ initData, document_id: documentId }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка удаления', 'Fehler beim Löschen'));
+        throw new Error(await readApiError(response, 'Удалить пока не вышло. Попробуйте ещё раз.', 'Das Löschen hat noch nicht geklappt. Versuch es noch einmal.'));
       }
       setReaderDocuments((prev) => prev.filter((item) => Number(item?.id) !== Number(documentId)));
       if (Number(readerDocumentId) === Number(documentId)) {
@@ -25385,7 +25493,7 @@ function AppInner() {
         body: JSON.stringify({ initData, video_ids: videoIds }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка удаления', 'Fehler beim Löschen'));
+        throw new Error(await readApiError(response, 'Удалить пока не вышло. Попробуйте ещё раз.', 'Das Löschen hat noch nicht geklappt. Versuch es noch einmal.'));
       }
       const removed = new Set(videoIds);
       setMovies((prev) => prev.filter((item) => !removed.has(item?.video_id)));
@@ -25464,7 +25572,7 @@ function AppInner() {
             // ignore non-JSON limit payload parsing errors
           }
         }
-        throw new Error(await readApiError(response, 'Ошибка аудио-конвертации', 'Fehler bei Audio-Konvertierung'));
+        throw new Error(await readApiError(response, 'Озвучка не получилась. Попробуйте ещё раз.', 'Die Vertonung hat nicht geklappt. Versuch es noch einmal.'));
       }
       const blob = await response.blob();
       const contentDisposition = String(response.headers.get('content-disposition') || '');
@@ -26590,22 +26698,37 @@ function AppInner() {
     const selectedFile = liveSelectedFile || null;
     const looksLikeLocalReaderFileName = /^[^:/\\\n]+?\.(epub|pdf|txt|md)$/i.test(rawInput);
     if (!rawInput && !selectedFile) {
-      setReaderError(tr('Вставьте ссылку или текст.', 'Füge einen Link oder Text ein.'));
+      showNoticeModal({
+        emoji: '📖',
+        title: tr('Что будем читать?', 'Was lesen wir?'),
+        message: tr(
+          'Вставьте ссылку на статью, вложите свой текст или выберите файл книги.',
+          'Füge einen Link zu einem Artikel ein, setz deinen Text ein oder wähl eine Buchdatei.'
+        ),
+      });
       return;
     }
     if (!selectedFile && looksLikeLocalReaderFileName) {
-      setReaderError(tr(
-        'Файл не выбран. Выберите EPUB/PDF через поле загрузки файла.',
-        'Keine Datei ausgewählt. Bitte wähle die EPUB/PDF-Datei über das Datei-Feld aus.'
-      ));
+      showNoticeModal({
+        emoji: '📎',
+        title: tr('Нужен сам файл', 'Die Datei selbst fehlt'),
+        message: tr(
+          'Одного названия мало — выберите книгу через кнопку загрузки файла, EPUB или PDF.',
+          'Der Name allein reicht nicht — wähl das Buch über den Datei-Knopf aus, EPUB oder PDF.'
+        ),
+      });
       return;
     }
     if (!selectedFile && readerSelectedFile) {
       clearReaderSelectedFile();
-      setReaderError(tr(
-        'Файл сбросился в браузере. Выберите EPUB/PDF заново и повторите.',
-        'Die Datei wurde im Browser zurückgesetzt. Bitte wähle die EPUB/PDF erneut aus.'
-      ));
+      showNoticeModal({
+        emoji: '📎',
+        title: tr('Файл потерялся', 'Die Datei ist weg'),
+        message: tr(
+          'Браузер отпустил выбранный файл. Выберите книгу ещё раз и повторите — всё получится.',
+          'Der Browser hat die Datei losgelassen. Wähl das Buch noch einmal aus und versuch es erneut.'
+        ),
+      });
       return;
     }
     if (!initData && !hasStandaloneAppSession()) {
@@ -26671,7 +26794,7 @@ function AppInner() {
           }),
         });
         if (!response.ok) {
-          throw await buildReaderApiError(response, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
+          throw await buildReaderApiError(response, 'Читалка не открылась. Попробуйте ещё раз.', 'Der Lesemodus ging nicht auf. Versuch es noch einmal.');
         }
         data = await response.json();
       } else {
@@ -26687,7 +26810,7 @@ function AppInner() {
           }),
         });
         if (!response.ok) {
-          throw await buildReaderApiError(response, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
+          throw await buildReaderApiError(response, 'Читалка не открылась. Попробуйте ещё раз.', 'Der Lesemodus ging nicht auf. Versuch es noch einmal.');
         }
         data = await response.json();
       }
@@ -27580,7 +27703,11 @@ function AppInner() {
         'Karten konnten nicht geladen werden.'
       );
       setFlashcardsEmptyState(null);
-      setFlashcardsError(`${tr('Ошибка карточек', 'Kartenfehler')}: ${friendly}`);
+      console.warn('[flashcards] load failed:', friendly);
+      setFlashcardsError(tr(
+        'Карточки не загрузились. Потяните экран вниз, чтобы обновить.',
+        'Die Karten sind nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'
+      ));
     } finally {
       setFlashcardsLoading(false);
       flashcardsLoadInFlightRef.current = false;
@@ -27662,12 +27789,12 @@ function AppInner() {
         body: JSON.stringify({ initData }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка папок', 'Ordnerfehler'));
+        throw new Error(await readApiError(response, 'Папки не загрузились. Потяните экран вниз, чтобы обновить.', 'Die Ordner sind nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const data = await response.json();
       setFolders(data.items || []);
     } catch (error) {
-      setFoldersError(normalizeNetworkErrorMessage(error, 'Ошибка папок. Попробуйте позже.', 'Ordnerfehler. Bitte später erneut versuchen.'));
+      setFoldersError(normalizeNetworkErrorMessage(error, 'Папки не загрузились. Попробуйте ещё раз через минуту.', 'Die Ordner sind nicht geladen. Versuch es in einer Minute noch einmal.'));
     } finally {
       setFoldersLoading(false);
     }
@@ -27679,7 +27806,14 @@ function AppInner() {
       return;
     }
     if (!newFolderName.trim()) {
-      setFoldersError(tr('Введите название папки.', 'Bitte gib einen Ordnernamen ein.'));
+      showNoticeModal({
+        emoji: '📁',
+        title: tr('Как назовём папку?', 'Wie soll der Ordner heißen?'),
+        message: tr(
+          'Впишите название — например, «Работа» или «Слова из книги».',
+          'Trag einen Namen ein — zum Beispiel «Arbeit» oder «Wörter aus dem Buch».'
+        ),
+      });
       return;
     }
     setFoldersLoading(true);
@@ -27705,7 +27839,7 @@ function AppInner() {
       setShowNewFolderForm(false);
       setNewFolderName('');
     } catch (error) {
-      setFoldersError(normalizeNetworkErrorMessage(error, 'Ошибка создания папки. Попробуйте позже.', 'Fehler beim Erstellen des Ordners. Bitte später erneut versuchen.'));
+      setFoldersError(normalizeNetworkErrorMessage(error, 'Папка пока не создалась. Попробуйте ещё раз через минуту.', 'Der Ordner wurde noch nicht angelegt. Versuch es in einer Minute noch einmal.'));
     } finally {
       setFoldersLoading(false);
     }
@@ -28256,7 +28390,7 @@ function AppInner() {
         '✓ Erklärung wurde an Telegram gesendet'
       ));
     } catch (_e) {
-      setYoutubeDictFeelStatus(tr('Ошибка. Попробуйте ещё раз.', 'Fehler. Bitte erneut versuchen.'));
+      setYoutubeDictFeelStatus(tr('Не отправилось. Попробуйте ещё раз.', 'Nicht rausgegangen. Versuch es noch einmal.'));
     } finally {
       setYoutubeDictFeelLoading(false);
     }
@@ -29356,7 +29490,7 @@ function AppInner() {
       }
       setMovies([]);
     } catch (error) {
-      setYoutubeTranscriptError(normalizeNetworkErrorMessage(error, 'Ошибка сохранения субтитров. Попробуйте позже.', 'Fehler beim Speichern der Untertitel. Bitte später erneut versuchen.'));
+      setYoutubeTranscriptError(normalizeNetworkErrorMessage(error, 'Субтитры пока не сохранились. Попробуйте ещё раз через минуту.', 'Die Untertitel sind noch nicht gespeichert. Versuch es in einer Minute noch einmal.'));
     }
   };
 
@@ -29468,7 +29602,7 @@ function AppInner() {
       translationCheckPollTokenRef.current += 1;
       setTranslationCheckProgress({ active: false, done: 0, total: 0 });
     } catch (error) {
-      setWebappError(normalizeNetworkErrorMessage(error, 'Ошибка завершения. Попробуйте позже.', 'Abschlussfehler. Bitte später erneut versuchen.'));
+      setWebappError(normalizeNetworkErrorMessage(error, 'Завершить пока не вышло. Попробуйте ещё раз через минуту.', 'Das Abschließen hat noch nicht geklappt. Versuch es in einer Minute noch einmal.'));
     } finally {
       translationFinishInFlightRef.current = false;
       setWebappLoading(false);
@@ -29962,11 +30096,25 @@ function AppInner() {
     const lang = explainLangDe[key] ? 'de' : 'ru';
     const explanation = buildExplanationContextText(explainStructured[`${key}:${lang}`]).trim();
     if (!learnerQuestion) {
-      setWebappError(tr('Сначала напишите вопрос.', 'Bitte schreibe zuerst deine Frage.'));
+      showNoticeModal({
+        emoji: '💬',
+        title: tr('О чём спросить?', 'Was möchtest du fragen?'),
+        message: tr(
+          'Напишите свой вопрос в поле — например, почему здесь именно этот падеж.',
+          'Schreib deine Frage ins Feld — zum Beispiel, warum hier genau dieser Fall steht.'
+        ),
+      });
       return;
     }
     if (!explanation) {
-      setWebappError(tr('Сначала получите объяснение ошибок.', 'Bitte hole zuerst die Fehlererklärung.'));
+      showNoticeModal({
+        emoji: '📘',
+        title: tr('Сначала откройте разбор', 'Zuerst die Erklärung öffnen'),
+        message: tr(
+          'Нажмите «Объяснить» под предложением — и по этому разбору можно будет задать вопрос.',
+          'Drück «Erklären» unter dem Satz — danach kannst du dazu eine Frage stellen.'
+        ),
+      });
       return;
     }
     setExplanationQuestionLoading((prev) => ({ ...prev, [key]: true }));
@@ -29989,7 +30137,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка вопроса', 'Fragefehler'));
+        throw new Error(await readApiError(response, 'Вопрос не дошёл. Попробуйте ещё раз.', 'Die Frage kam nicht an. Versuch es noch einmal.'));
       }
       const data = await response.json();
       setExplanationQuestionAnswers((prev) => ({
@@ -30007,7 +30155,7 @@ function AppInner() {
       setExplanationQuestionOpen((prev) => ({ ...prev, [key]: false }));
       setExplanationQuestionDrafts((prev) => ({ ...prev, [key]: '' }));
     } catch (error) {
-      setWebappError(normalizeNetworkErrorMessage(error, 'Ошибка вопроса. Попробуйте позже.', 'Fragefehler. Bitte später erneut versuchen.'));
+      setWebappError(normalizeNetworkErrorMessage(error, 'Вопрос не дошёл. Попробуйте ещё раз через минуту.', 'Die Frage kam nicht an. Versuch es in einer Minute noch einmal.'));
     } finally {
       setExplanationQuestionLoading((prev) => ({ ...prev, [key]: false }));
     }
@@ -30047,10 +30195,14 @@ function AppInner() {
       .map((variant, index) => ({ ...variant, index }))
       .filter((variant) => Boolean(checkedMap[variant.index]));
     if (!selectedVariants.length) {
-      setExplanationQuestionSaveError((prev) => ({
-        ...prev,
-        [key]: tr('Выберите минимум один пример для сохранения.', 'Wähle mindestens ein Beispiel zum Speichern.'),
-      }));
+      showNoticeModal({
+        emoji: '✅',
+        title: tr('Ничего не отмечено', 'Nichts markiert'),
+        message: tr(
+          'Отметьте галочкой хотя бы один пример — и он уедет к вам в словарь.',
+          'Markiere mindestens ein Beispiel — dann wandert es in dein Wörterbuch.'
+        ),
+      });
       setExplanationQuestionSaveMessage((prev) => ({ ...prev, [key]: '' }));
       return;
     }
@@ -30091,7 +30243,7 @@ function AppInner() {
     } catch (error) {
       setExplanationQuestionSaveError((prev) => ({
         ...prev,
-        [key]: String(error?.message || tr('Ошибка сохранения', 'Speicherfehler')),
+        [key]: tr('Пример пока не сохранился. Попробуйте ещё раз.', 'Das Beispiel ist noch nicht gespeichert. Versuch es noch einmal.'),
       }));
     } finally {
       setExplanationQuestionSaveLoading((prev) => ({ ...prev, [key]: false }));
@@ -30119,7 +30271,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка сохранения аудио-галочки', 'Fehler beim Speichern der Audio-Markierung'));
+        throw new Error(await readApiError(response, 'Настройка звука не сохранилась. Попробуйте ещё раз.', 'Die Audio-Einstellung ist nicht gespeichert. Versuch es noch einmal.'));
       }
       setTranslationAudioGrammarOptIn((prev) => ({ ...prev, [translationId]: Boolean(enabled) }));
     } catch (error) {
@@ -30990,7 +31142,7 @@ function AppInner() {
             body: JSON.stringify({ initData, lookup_id: id }),
           });
           if (!statusResponse.ok) {
-            throw new Error(await readApiError(statusResponse, 'Ошибка статуса словаря', 'Wörterbuch-Statusfehler'));
+            throw new Error(await readApiError(statusResponse, 'Словарь пока не ответил. Попробуйте ещё раз.', 'Das Wörterbuch hat noch nicht geantwortet. Versuch es noch einmal.'));
           }
           const statusData = await statusResponse.json();
           if (dictionaryLookupPollTokenRef.current !== pollToken) return;
@@ -31178,7 +31330,14 @@ function AppInner() {
   const handleDictionaryLookup = async (event) => {
     if (event && event.preventDefault) event.preventDefault();
     if (!dictionaryWord.trim()) {
-      setDictionaryError(tr('Введите слово или фразу для словаря.', 'Bitte gib ein Wort oder eine Phrase fürs Wörterbuch ein.'));
+      showNoticeModal({
+        emoji: '🔎',
+        title: tr('Какое слово ищем?', 'Welches Wort suchen wir?'),
+        message: tr(
+          'Впишите слово или фразу в поле поиска — на любом из двух языков.',
+          'Trag ein Wort oder eine Phrase ins Suchfeld ein — in einer der beiden Sprachen.'
+        ),
+      });
       return;
     }
     // Нет сети — идём в офлайн-запас САМИ. Раньше это была кнопка «📖 Офлайн», и в метро
@@ -31220,7 +31379,14 @@ function AppInner() {
   const handleDictionaryBaseLookup = async () => {
     const sourceWord = String(dictionaryWord || '').trim();
     if (!sourceWord) {
-      setDictionaryError(tr('Введите слово для поиска.', 'Bitte gib ein Wort ein.'));
+      showNoticeModal({
+        emoji: '🔎',
+        title: tr('Какое слово ищем?', 'Welches Wort suchen wir?'),
+        message: tr(
+          'Впишите слово в поле поиска — и мы найдём его в словаре.',
+          'Trag ein Wort ins Suchfeld ein — wir finden es im Wörterbuch.'
+        ),
+      });
       return;
     }
     const queryLang = /[А-Яа-яЁё]/.test(sourceWord) ? 'ru' : 'de';
@@ -31402,11 +31568,27 @@ function AppInner() {
       return;
     }
     if (!dictionaryResult) {
-      setDictionaryError(tr('Сначала выполните перевод в словаре.', 'Führe zuerst eine Übersetzung im Wörterbuch aus.'));
+      showNoticeModal({
+        emoji: '🔎',
+        title: tr('Сохранять пока нечего', 'Noch nichts zum Speichern'),
+        message: tr(
+          'Найдите слово в словаре — и его карточку можно будет сохранить себе.',
+          'Such das Wort im Wörterbuch — dann kannst du seine Karte speichern.'
+        ),
+      });
       return;
     }
+    // Не «дождитесь GPT-разбора»: человеку незачем знать, кто и что у нас считает.
+    // Ему важно одно — карточка ещё собирается, через секунду сохранится целиком.
     if (dictionaryLookupProgress.saveLocked) {
-      setDictionaryError(tr('Сначала дождитесь полного GPT-разбора, потом можно сохранять.', 'Warte zuerst auf die vollständige GPT-Analyse, dann kannst du speichern.'));
+      showNoticeModal({
+        emoji: '⏳',
+        title: tr('Карточка ещё собирается', 'Die Karte wird noch gebaut'),
+        message: tr(
+          'Пара секунд — и карточка будет готова целиком. Тогда сохраним её со всеми примерами.',
+          'Ein paar Sekunden noch — dann ist die Karte komplett und wird mit allen Beispielen gespeichert.'
+        ),
+      });
       return;
     }
     setCollocationsVisible(true);
@@ -31494,7 +31676,14 @@ function AppInner() {
       selectedCollocations.includes(`${String(option.source)}|||${String(option.target)}`)
     ));
     if (selectedOptions.length === 0) {
-      setCollocationsError(tr('Выберите минимум один вариант для сохранения.', 'Wähle mindestens eine Option zum Speichern.'));
+      showNoticeModal({
+        emoji: '✅',
+        title: tr('Ничего не отмечено', 'Nichts markiert'),
+        message: tr(
+          'Отметьте хотя бы одно сочетание — так слово запомнится живым, а не в одиночку.',
+          'Markiere mindestens eine Wendung — so bleibt das Wort lebendig im Kopf, nicht allein.'
+        ),
+      });
       return;
     }
     const label = tr('Добавлено в словарь ✅', 'Zum Wörterbuch hinzugefügt ✅');
@@ -31570,7 +31759,11 @@ function AppInner() {
           setDictionaryError(getDictionarySaveLimitText());
           showDictionarySaveLimitToast();
         } else {
-          setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${message}`);
+          console.warn('[dictionary] save failed:', message);
+          setDictionaryError(tr(
+            'Слово пока не сохранилось. Попробуйте ещё раз.',
+            'Das Wort ist noch nicht gespeichert. Versuch es noch einmal.'
+          ));
           showInlineToast((console.warn('[dict-save]', message), tr('Не удалось сохранить. Попробуйте ещё раз.', 'Speichern fehlgeschlagen. Bitte erneut versuchen.')));
         }
         setCollocationsVisible(true);
@@ -31925,7 +32118,14 @@ function AppInner() {
       return;
     }
     if (!dictionaryResult) {
-      setDictionaryError(tr('Сначала выполните перевод в словаре.', 'Führe zuerst eine Übersetzung im Wörterbuch aus.'));
+      showNoticeModal({
+        emoji: '🔎',
+        title: tr('Делиться пока нечем', 'Noch nichts zum Teilen'),
+        message: tr(
+          'Найдите слово в словаре — тогда его карточку можно будет отправить другу.',
+          'Such das Wort im Wörterbuch — dann kannst du seine Karte an einen Freund schicken.'
+        ),
+      });
       return;
     }
     setDictionaryShareLoading(true);
@@ -31945,7 +32145,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка подготовки карточки', 'Fehler beim Vorbereiten der Karte'));
+        throw new Error(await readApiError(response, 'Карточка не собралась. Попробуйте ещё раз.', 'Die Karte ist nicht fertig geworden. Versuch es noch einmal.'));
       }
 
       const blob = await response.blob();
@@ -32010,7 +32210,11 @@ function AppInner() {
         'Не удалось подготовить карточку для отправки.',
         'Karte konnte nicht zum Teilen vorbereitet werden.',
       );
-      setDictionaryError(`${tr('Ошибка шаринга', 'Share-Fehler')}: ${friendly}`);
+      console.warn('[dictionary] share failed:', friendly);
+      setDictionaryError(tr(
+        'Карточка не отправилась. Попробуйте ещё раз.',
+        'Die Karte ist nicht rausgegangen. Versuch es noch einmal.'
+      ));
     } finally {
       setDictionaryShareLoading(false);
     }
@@ -32133,7 +32337,7 @@ function AppInner() {
       }
     } catch (error) {
       setYoutubeSearchResults([]);
-      setYoutubeSearchError(normalizeNetworkErrorMessage(error, 'Ошибка поиска YouTube. Попробуйте позже.', 'YouTube-Suchfehler. Bitte später erneut versuchen.'));
+      setYoutubeSearchError(normalizeNetworkErrorMessage(error, 'Поиск видео не ответил. Попробуйте ещё раз через минуту.', 'Die Videosuche hat nicht geantwortet. Versuch es in einer Minute noch einmal.'));
     } finally {
       setYoutubeSearchLoading(false);
     }
@@ -32195,7 +32399,7 @@ function AppInner() {
       }
     } catch (error) {
       setYoutubeSearchResults([]);
-      setYoutubeSearchError(normalizeNetworkErrorMessage(error, 'Ошибка поиска YouTube. Попробуйте позже.', 'YouTube-Suchfehler. Bitte später erneut versuchen.'));
+      setYoutubeSearchError(normalizeNetworkErrorMessage(error, 'Поиск видео не ответил. Попробуйте ещё раз через минуту.', 'Die Videosuche hat nicht geantwortet. Versuch es in einer Minute noch einmal.'));
     } finally {
       setYoutubeSearchLoading(false);
     }
@@ -32345,7 +32549,11 @@ function AppInner() {
       if (message.startsWith(YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX)) {
         setYoutubeTranscriptError(message);
       } else {
-        setYoutubeTranscriptError(`${tr('Авто-субтитры недоступны', 'Auto-Untertitel nicht verfügbar')}: ${message}`);
+        console.warn('[youtube] transcript unavailable:', message);
+        setYoutubeTranscriptError(tr(
+          'У этого видео нет субтитров, которые мы умеем читать. Попробуйте другое.',
+          'Dieses Video hat keine Untertitel, die wir lesen können. Probier ein anderes.'
+        ));
       }
     } finally {
       setYoutubeTranscriptLoading(false);
@@ -32625,7 +32833,7 @@ function AppInner() {
       })
       .catch((err) => {
         if (cancelled) return;
-        setMoviesError(normalizeNetworkErrorMessage(err, 'Ошибка каталога. Попробуйте позже.', 'Katalogfehler. Bitte später erneut versuchen.'));
+        setMoviesError(normalizeNetworkErrorMessage(err, 'Каталог не загрузился. Попробуйте ещё раз через минуту.', 'Der Katalog ist nicht geladen. Versuch es in einer Minute noch einmal.'));
       })
       .finally(() => {
         if (!cancelled) setMoviesLoading(false);
@@ -33219,7 +33427,7 @@ function AppInner() {
       setHistoryItems(data.items || []);
       setHistoryVisible(true);
     } catch (error) {
-      setHistoryError(normalizeNetworkErrorMessage(error, 'Ошибка загрузки истории. Попробуйте позже.', 'Fehler beim Laden der Historie. Bitte später erneut versuchen.'));
+      setHistoryError(normalizeNetworkErrorMessage(error, 'История занятий не загрузилась. Попробуйте ещё раз через минуту.', 'Der Lernverlauf ist nicht geladen. Versuch es in einer Minute noch einmal.'));
     } finally {
       setHistoryLoading(false);
     }
@@ -33401,7 +33609,7 @@ function AppInner() {
         }
         const response = await postJsonWithRetry('/api/webapp/analytics/scope', body);
         if (!response.ok) {
-          throw new Error(await readApiError(response, 'Ошибка загрузки режима участия', 'Fehler beim Laden des Teilnahme-Modus'));
+          throw new Error(await readApiError(response, 'Настройка участия не загрузилась. Попробуйте ещё раз.', 'Die Teilnahme-Einstellung ist nicht geladen. Versuch es noch einmal.'));
         }
         const data = await response.json();
         applyAnalyticsScopePayload(data);
@@ -33409,7 +33617,11 @@ function AppInner() {
       } catch (error) {
         if (!silent) {
           const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить режим участия.', 'Teilnahme-Modus konnte nicht geladen werden.');
-          setAnalyticsScopeError(`${tr('Ошибка режима участия', 'Fehler beim Teilnahme-Modus')}: ${friendly}`);
+          console.warn('[analytics] scope save failed:', friendly);
+          setAnalyticsScopeError(tr(
+            'Настройка пока не сохранилась. Попробуйте ещё раз.',
+            'Die Einstellung ist noch nicht gespeichert. Versuch es noch einmal.'
+          ));
         }
         return null;
       } finally {
@@ -33443,7 +33655,7 @@ function AppInner() {
     try {
       const response = await postJsonWithRetry('/api/webapp/progress-reset/status', { initData });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки reset progress', 'Fehler beim Laden des Reset-Status'));
+        throw new Error(await readApiError(response, 'Настройка отсчёта не загрузилась. Попробуйте ещё раз.', 'Die Zähl-Einstellung ist nicht geladen. Versuch es noch einmal.'));
       }
       const data = await response.json();
       setProgressResetInfo(data || null);
@@ -33451,7 +33663,11 @@ function AppInner() {
     } catch (error) {
       if (!silent) {
         const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить reset progress.', 'Reset-Status konnte nicht geladen werden.');
-        setProgressResetError(`${tr('Ошибка reset progress', 'Fehler beim Reset-Status')}: ${friendly}`);
+        console.warn('[progress-reset] failed:', friendly);
+        setProgressResetError(tr(
+          'Не получилось начать отсчёт заново. Попробуйте ещё раз.',
+          'Der Neustart der Zählung hat nicht geklappt. Versuch es noch einmal.'
+        ));
       }
       return null;
     } finally {
@@ -33480,7 +33696,14 @@ function AppInner() {
     }
     const resetDate = String(progressResetDraftDate || '').trim();
     if (!resetDate) {
-      setProgressResetError(tr('Выберите дату для новой точки отсчета.', 'Wähle ein Datum für den Neustart.'));
+      showNoticeModal({
+        emoji: '📅',
+        title: tr('Выберите день', 'Wähl einen Tag'),
+        message: tr(
+          'Отметьте в календаре день, с которого начнём считать прогресс заново.',
+          'Markiere im Kalender den Tag, ab dem wir den Fortschritt neu zählen.'
+        ),
+      });
       return;
     }
     setProgressResetSaving(true);
@@ -33491,7 +33714,7 @@ function AppInner() {
         reset_date: resetDate,
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка сохранения reset progress', 'Fehler beim Speichern des Reset-Status'));
+        throw new Error(await readApiError(response, 'Не получилось начать отсчёт заново. Попробуйте ещё раз.', 'Der Neustart der Zählung hat nicht geklappt. Versuch es noch einmal.'));
       }
       const data = await response.json();
       setProgressResetInfo((prev) => ({
@@ -33508,7 +33731,11 @@ function AppInner() {
       ]);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить reset progress.', 'Reset-Status konnte nicht gespeichert werden.');
-      setProgressResetError(`${tr('Ошибка reset progress', 'Fehler beim Reset-Status')}: ${friendly}`);
+      console.warn('[progress-reset] failed:', friendly);
+      setProgressResetError(tr(
+        'Не получилось начать отсчёт заново. Попробуйте ещё раз.',
+        'Der Neustart der Zählung hat nicht geklappt. Versuch es noch einmal.'
+      ));
     } finally {
       setProgressResetSaving(false);
     }
@@ -33563,7 +33790,7 @@ function AppInner() {
         body: JSON.stringify(body),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки social signal', 'Fehler beim Laden des Social Signals'));
+        throw new Error(await readApiError(response, 'Сравнение с другими не загрузилось. Попробуйте ещё раз.', 'Der Vergleich mit anderen ist nicht geladen. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const items = Array.isArray(data?.items) ? data.items : [];
@@ -33623,13 +33850,17 @@ function AppInner() {
       }
       const response = await postJsonWithRetry('/api/webapp/analytics/scope/select', body);
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка сохранения режима участия', 'Fehler beim Speichern des Teilnahme-Modus'));
+        throw new Error(await readApiError(response, 'Настройка пока не сохранилась. Попробуйте ещё раз.', 'Die Einstellung ist noch nicht gespeichert. Versuch es noch einmal.'));
       }
       await loadAnalyticsScope({ silent: true });
     } catch (error) {
       setAnalyticsScopeKey(previousScopeKey);
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить режим участия.', 'Teilnahme-Modus konnte nicht gespeichert werden.');
-      setAnalyticsScopeError(`${tr('Ошибка режима участия', 'Fehler beim Teilnahme-Modus')}: ${friendly}`);
+      console.warn('[analytics] scope save failed:', friendly);
+      setAnalyticsScopeError(tr(
+        'Настройка пока не сохранилась. Попробуйте ещё раз.',
+        'Die Einstellung ist noch nicht gespeichert. Versuch es noch einmal.'
+      ));
     } finally {
       setAnalyticsScopeSaving(false);
     }
@@ -33777,7 +34008,7 @@ function AppInner() {
       const { personalPayloadBase } = resolveAnalyticsLoadContext(overridePeriod, undefined, overrideRange);
       const summaryResponse = await postJsonWithRetry('/api/webapp/analytics/summary', personalPayloadBase);
       if (!summaryResponse.ok) {
-        throw new Error(await readApiError(summaryResponse, 'Ошибка загрузки аналитики', 'Fehler beim Laden der Analytik'));
+        throw new Error(await readApiError(summaryResponse, 'Статистика не загрузилась. Потяните экран вниз, чтобы обновить.', 'Die Statistik ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const summaryData = await summaryResponse.json();
       if (analyticsSummaryRequestIdRef.current !== requestId) {
@@ -33790,7 +34021,11 @@ function AppInner() {
         return;
       }
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить аналитику.', 'Analytik konnte nicht geladen werden.');
-      setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
+      console.warn('[analytics] load failed:', friendly);
+      setAnalyticsError(tr(
+        'Статистика не загрузилась. Потяните экран вниз, чтобы обновить.',
+        'Die Statistik ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'
+      ));
     } finally {
       if (analyticsSummaryRequestIdRef.current === requestId) {
         setAnalyticsLoading(false);
@@ -33822,7 +34057,7 @@ function AppInner() {
       const { granularity, personalPayloadBase } = resolveAnalyticsLoadContext(overridePeriod, overrideScopeKey, overrideRange);
       const response = await postJsonWithRetry('/api/webapp/analytics/timeseries', { ...personalPayloadBase, granularity });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки динамики', 'Fehler beim Laden des Verlaufs'));
+        throw new Error(await readApiError(response, 'График не загрузился. Потяните экран вниз, чтобы обновить.', 'Der Verlauf ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const data = await response.json();
       if (analyticsTimeseriesRequestIdRef.current !== requestId) {
@@ -33836,7 +34071,11 @@ function AppInner() {
         return null;
       }
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить динамику.', 'Verlauf konnte nicht geladen werden.');
-      setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
+      console.warn('[analytics] load failed:', friendly);
+      setAnalyticsError(tr(
+        'Статистика не загрузилась. Потяните экран вниз, чтобы обновить.',
+        'Die Statistik ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'
+      ));
       return null;
     }
   }, [
@@ -33864,7 +34103,7 @@ function AppInner() {
       const { payloadBase, scope } = resolveAnalyticsLoadContext(overridePeriod, overrideScopeKey, overrideRange);
       const response = await postJsonWithRetry('/api/webapp/analytics/compare', { ...payloadBase, limit: 8 });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки сравнения', 'Fehler beim Laden des Vergleichs'));
+        throw new Error(await readApiError(response, 'Сравнение не загрузилось. Потяните экран вниз, чтобы обновить.', 'Der Vergleich ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const data = await response.json();
       if (analyticsCompareRequestIdRef.current !== requestId) {
@@ -33879,7 +34118,11 @@ function AppInner() {
         return null;
       }
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить сравнение.', 'Vergleich konnte nicht geladen werden.');
-      setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
+      console.warn('[analytics] load failed:', friendly);
+      setAnalyticsError(tr(
+        'Статистика не загрузилась. Потяните экран вниз, чтобы обновить.',
+        'Die Statistik ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'
+      ));
       return null;
     }
   }, [
@@ -33911,7 +34154,14 @@ function AppInner() {
 
   const applyAnalyticsCalendarRange = useCallback(() => {
     if (!analyticsCalendarDraftValid) {
-      setAnalyticsError(tr('Выберите корректный диапазон дат для аналитики.', 'Wähle einen gültigen Datumsbereich für die Analytik.'));
+      showNoticeModal({
+        emoji: '📅',
+        title: tr('Проверьте даты', 'Schau die Daten an'),
+        message: tr(
+          'Начало периода должно быть раньше конца. Отметьте в календаре две даты по порядку.',
+          'Der Anfang muss vor dem Ende liegen. Markiere im Kalender zwei Daten der Reihe nach.'
+        ),
+      });
       return;
     }
     const nextRange = {
@@ -33965,13 +34215,13 @@ function AppInner() {
         `/api/economics/summary?initData=${encodeURIComponent(initData)}&period=${encodeURIComponent(period)}&provider=${encodeURIComponent(provider)}&sync_fixed=1`,
       );
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки экономики', 'Fehler beim Laden der Kosten'));
+        throw new Error(await readApiError(response, 'Расходы не загрузились. Потяните экран вниз, чтобы обновить.', 'Die Kosten sind nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const data = await response.json();
       setEconomicsSummary(data?.summary || null);
     } catch (error) {
       setEconomicsSummary(null);
-      setEconomicsError(normalizeNetworkErrorMessage(error, 'Ошибка экономики. Попробуйте позже.', 'Kostenfehler. Bitte später erneut versuchen.'));
+      setEconomicsError(normalizeNetworkErrorMessage(error, 'Расходы не загрузились. Попробуйте ещё раз через минуту.', 'Die Kosten sind nicht geladen. Versuch es in einer Minute noch einmal.'));
     } finally {
       setEconomicsLoading(false);
     }
@@ -33990,12 +34240,12 @@ function AppInner() {
         headers: { 'X-Telegram-InitData': initData },
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки статуса подписки', 'Fehler beim Laden des Abo-Status'));
+        throw new Error(await readApiError(response, 'Статус подписки не загрузился. Потяните экран вниз, чтобы обновить.', 'Der Abo-Status ist nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const data = await response.json();
       setBillingStatus(data || null);
     } catch (error) {
-      setBillingStatusError(normalizeNetworkErrorMessage(error, 'Ошибка подписки. Попробуйте позже.', 'Abo-Fehler. Bitte später erneut versuchen.'));
+      setBillingStatusError(normalizeNetworkErrorMessage(error, 'Статус подписки не загрузился. Попробуйте ещё раз через минуту.', 'Der Abo-Status ist nicht geladen. Versuch es in einer Minute noch einmal.'));
     } finally {
       setBillingStatusLoading(false);
     }
@@ -34009,7 +34259,7 @@ function AppInner() {
         cache: 'no-store',
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки тарифов', 'Fehler beim Laden der Tarife'));
+        throw new Error(await readApiError(response, 'Тарифы не загрузились. Потяните экран вниз, чтобы обновить.', 'Die Tarife sind nicht geladen. Zieh den Bildschirm nach unten, um zu aktualisieren.'));
       }
       const data = await response.json();
       const normalizedPlans = Array.isArray(data?.plans)
@@ -34021,7 +34271,7 @@ function AppInner() {
         : [];
       setBillingPlans(normalizedPlans);
     } catch (error) {
-      setBillingPlansError(normalizeNetworkErrorMessage(error, 'Ошибка тарифов. Попробуйте позже.', 'Tarif-Fehler. Bitte später erneut versuchen.'));
+      setBillingPlansError(normalizeNetworkErrorMessage(error, 'Тарифы не загрузились. Попробуйте ещё раз через минуту.', 'Die Tarife sind nicht geladen. Versuch es in einer Minute noch einmal.'));
     } finally {
       setBillingPlansLoading(false);
     }
@@ -34210,7 +34460,7 @@ function AppInner() {
         body: JSON.stringify({ initData }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка открытия портала', 'Fehler beim Öffnen des Portals'));
+        throw new Error(await readApiError(response, 'Страница оплаты не открылась. Попробуйте ещё раз.', 'Die Zahlungsseite ging nicht auf. Versuch es noch einmal.'));
       }
       const data = await response.json();
       const url = String(data?.url || '').trim();
@@ -34219,7 +34469,7 @@ function AppInner() {
       }
       openBillingUrl(url);
     } catch (error) {
-      setBillingStatusError(normalizeNetworkErrorMessage(error, 'Ошибка управления подпиской. Попробуйте позже.', 'Fehler bei der Abo-Verwaltung. Bitte später erneut versuchen.'));
+      setBillingStatusError(normalizeNetworkErrorMessage(error, 'Управление подпиской пока недоступно. Попробуйте ещё раз через минуту.', 'Die Abo-Verwaltung ist gerade nicht erreichbar. Versuch es in einer Minute noch einmal.'));
     } finally {
       setBillingActionLoading(false);
     }
@@ -39444,7 +39694,7 @@ function AppInner() {
                         )}
                         {dictionaryLookupProgress.status === 'enriching' && (
                           <div className="webapp-muted">
-                            {tr('Уточняем полный GPT-разбор... Сохранение станет доступно сразу после догрузки.', 'Die vollständige GPT-Analyse wird noch geladen... Speichern wird direkt danach verfügbar.')}
+                            {tr('Карточка ещё собирается — пара секунд, и её можно будет сохранить целиком.', 'Die Karte wird noch gebaut — ein paar Sekunden, dann kann sie komplett gespeichert werden.')}
                           </div>
                         )}
                         {dictionaryLookupProgress.error && dictionaryLookupProgress.status !== 'failed' && (

@@ -5451,16 +5451,19 @@ body:has(.webapp-page.is-theme-light),
   color: rgba(248, 250, 252, 0.55);
 }
 
-/* Мягкая фирменная плашка-внимание вместо жёсткого «технического» красного бокса.
-   Тёплый rose-тон, скруглённая, лёгкий левый акцент и тень — читается как аккуратное
-   сообщение для человека, а не error-код для программиста. [[feedback_consumer_app_not_for_programmers]] */
+/* Спокойная фирменная плашка-сообщение. Красного «error»-бокса в приложении НЕТ:
+   это приложение для человека, который учит язык, а не консоль программиста — он не
+   должен видеть слово «ошибка» и не должен пугаться красного. Тёплый песочный тон —
+   тот же, что у NoticeModal и paid-feature-card, чтобы всё говорило одним голосом.
+   [[feedback_consumer_app_not_for_programmers]] [[feedback_user_facing_error_copy]]
+   Владелец, 19.08.2026: «Пользователь вообще не должен понимать, что такое ошибка!» */
 .webapp-error {
-  color: #f7b8ab;
-  background: linear-gradient(180deg, #2a1a1a 0%, #241717 100%);
+  color: #f4e3c4;
+  background: linear-gradient(180deg, rgba(224, 168, 60, 0.15) 0%, rgba(32, 27, 20, 0.72) 100%);
   padding: 13px 15px;
   border-radius: 14px;
-  border: 1px solid rgba(224, 138, 125, 0.28);
-  border-left: 3px solid #e0745e;
+  border: 1px solid rgba(224, 168, 60, 0.30);
+  border-left: 3px solid #e0a83c;
   font-size: 14px;
   line-height: 1.45;
   overflow-wrap: anywhere;
@@ -5468,25 +5471,34 @@ body:has(.webapp-page.is-theme-light),
 }
 
 .webapp-page.is-theme-light .webapp-error {
-  color: #9a3528;
-  background: linear-gradient(180deg, #fff5f3 0%, #fdecea 100%);
-  border: 1px solid #f2cec7;
-  border-left: 3px solid #e0745e;
-  box-shadow: 0 8px 20px rgba(150, 60, 40, 0.10);
+  color: #6b5326;
+  background: linear-gradient(180deg, #fffaf0 0%, #fbf3e4 100%);
+  border: 1px solid #e4d2b0;
+  border-left: 3px solid #e0a83c;
+  box-shadow: 0 8px 20px rgba(150, 110, 40, 0.10);
 }
 
 .webapp-error-inline {
   margin-bottom: 8px;
 }
 
-.webapp-error-stack {
-  margin-top: 8px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 220px;
-  overflow: auto;
-  font-size: 11px;
+/* Единственная кнопка на экране «приложение подвисло». Тот же янтарь, что у
+   NoticeModal — экран сбоя выглядит как часть приложения, а не как страница ошибки. */
+.webapp-crash-button {
+  display: block;
+  width: 100%;
+  margin-top: 16px;
+  border: none;
+  border-radius: 14px;
+  padding: 14px 16px;
+  font-size: 16px;
+  font-weight: 800;
+  color: #fff;
+  cursor: pointer;
+  background: linear-gradient(135deg, #e0a83c, #c07f2e);
+  box-shadow: 0 10px 22px rgba(192, 127, 46, 0.32);
 }
+.webapp-crash-button:active { transform: scale(0.985); }
 
 /* Spotlight: focus a paid-feature / limit notice over a blurred backdrop when
    it first appears, so it can't be missed below the fold. Portaled to <body>. */
@@ -29362,10 +29374,12 @@ body.worldnews-active .webapp-topbar {
 .explain-modal-langtoggle input { width: 17px; height: 17px; accent-color: #7c8cf8; }
 .explain-modal-body { padding-top: 6px; }
 .explain-modal-muted { color: #8fa2bb; font-size: 13px; margin: 8px 0 0; }
+/* Плашка сообщения внутри разбора. Красной она была зря: человек тут учится, а не
+   отлаживает сервер. Тёплый янтарь — как у NoticeModal. [[feedback_user_facing_error_copy]] */
 .explain-modal-errorbox {
   margin-top: 12px; padding: 12px 14px; border-radius: 12px;
-  background: rgba(248, 113, 113, 0.12); border: 1px solid rgba(248, 113, 113, 0.35);
-  color: #fecaca; font-size: 14px;
+  background: rgba(224, 168, 60, 0.14); border: 1px solid rgba(224, 168, 60, 0.34);
+  color: #f4e3c4; font-size: 14px;
 }
 .explain-skel {
   height: 14px; border-radius: 7px; margin: 10px 0;
@@ -29542,7 +29556,7 @@ html[data-scheme="light"] .explain-grammar-structure,
 .explain-modal--fuchs .explain-modal-langtoggle input { accent-color: #e0a83c; }
 .explain-modal--fuchs .explain-modal-muted { color: #8a7c66; }
 .explain-modal--fuchs .explain-modal-errorbox {
-  background: #fff1f1; border: 1px solid #f6c1c1; color: #b4232a;
+  background: #fffaf0; border: 1px solid #e4d2b0; color: #6b5326;
 }
 .explain-modal--fuchs .explain-skel {
   background: linear-gradient(90deg, rgba(180, 160, 120, 0.12), rgba(180, 160, 120, 0.26), rgba(180, 160, 120, 0.12));

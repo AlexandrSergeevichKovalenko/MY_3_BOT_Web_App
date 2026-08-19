@@ -979,9 +979,9 @@
 .webapp-reader .webapp-error {
   padding: 10px 12px;
   border-radius: var(--rd-r-md);
-  border: 1px solid rgba(248,113,113,0.35);
-  background: rgba(248,113,113,0.08);
-  color: #fca5a5;
+  border: 1px solid rgba(224,168,60,0.34);
+  background: rgba(224,168,60,0.12);
+  color: #f4e3c4;
   font-size: 12.5px;
   line-height: 1.45;
 }
@@ -3539,7 +3539,7 @@
 
 .reader-audio-mini-error {
   font-size: 11px;
-  color: rgba(239, 68, 68, 0.8);
+  color: rgba(224, 168, 60, 0.95);
   flex-shrink: 0;
   max-width: 120px;
   overflow: hidden;

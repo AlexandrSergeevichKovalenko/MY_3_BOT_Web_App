@@ -93,7 +93,7 @@ body { background: var(--dmps-bg, #0F172A); overflow-x: hidden; }
   width: 100%; margin-top: 16px; padding: 14px; border: none; border-radius: 16px;
   background: var(--dmps-primary, #2563EB); color: #fff; font-family: inherit; font-size: 16px; font-weight: 700; cursor: pointer;
 }
-.lb-error { color: #f2b3a6; text-align: center; padding: 14px 16px; margin: 10px 0; border-radius: 14px; background: rgba(224,116,94,0.12); border: 1px solid rgba(224,116,94,0.28); font-size: 14px; line-height: 1.45; }
+.lb-error { color: #f4e3c4; text-align: center; padding: 14px 16px; margin: 10px 0; border-radius: 14px; background: rgba(224,168,60,0.12); border: 1px solid rgba(224,168,60,0.28); font-size: 14px; line-height: 1.45; }
 html[data-scheme="light"] .lb-error { color: #9a3528; background: linear-gradient(180deg, #fff5f3 0%, #fdecea 100%); border: 1px solid #f2cec7; }
 .lb-skel { height: 60px; border-radius: 14px; background: linear-gradient(90deg, #1e293b, #243349, #1e293b); background-size: 200% 100%; animation: lb-sh 1.2s infinite; margin: 10px 0; }
 .lb-skel.sm { height: 180px; }

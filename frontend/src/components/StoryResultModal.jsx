@@ -208,7 +208,7 @@ export default function StoryResultModal({
   const [qDraft, setQDraft] = useState('');
   const [qLoading, setQLoading] = useState(false);
   const [qAnswer, setQAnswer] = useState('');
-  const [qError, setQError] = useState('');
+  const [qNotice, setQNotice] = useState('');
   const formRef = useRef(null);
 
   // When the question field opens, bring it into view + focus it (it renders below
@@ -257,10 +257,12 @@ export default function StoryResultModal({
 
   const askQuestion = async () => {
     const q = qDraft.trim();
-    if (!q) { setQError(tr('Сначала напишите вопрос.', 'Bitte schreibe zuerst deine Frage.')); return; }
-    if (!initData) { setQError(tr('Нет данных Telegram.', 'Keine Telegram-Daten.')); return; }
+    // Здесь мы уже внутри модалки — второе окно поверх неё было бы хуже, поэтому
+    // подсказка остаётся на месте, но спокойной плашкой, а не красной «ошибкой».
+    if (!q) { setQNotice(tr('Напишите свой вопрос в поле выше — и я отвечу.', 'Schreib deine Frage ins Feld oben — dann antworte ich.')); return; }
+    if (!initData) { setQNotice(tr('Откройте приложение из чата с ботом в Telegram — тогда всё заработает.', 'Öffne die App aus dem Bot-Chat in Telegram — dann läuft alles.')); return; }
     setQLoading(true);
-    setQError('');
+    setQNotice('');
     try {
       const response = await fetch('/api/webapp/explain/question', {
         method: 'POST',
@@ -285,7 +287,7 @@ export default function StoryResultModal({
       setQDraft('');
     } catch (error) {
       try { console.warn('[story] question failed', error); } catch (_e) { /* noop */ }
-      setQError(tr('Не удалось отправить вопрос. Попробуйте ещё раз.', 'Frage konnte nicht gesendet werden. Bitte erneut versuchen.'));
+      setQNotice(tr('Не удалось отправить вопрос. Попробуйте ещё раз.', 'Frage konnte nicht gesendet werden. Bitte erneut versuchen.'));
     } finally {
       setQLoading(false);
     }
@@ -346,7 +348,7 @@ export default function StoryResultModal({
           )}
 
           {!explanationLoading && explanationErr && (
-            <div className="explain-modal-errorbox">⚠️ {explanationErr}</div>
+            <div className="explain-modal-errorbox">{explanationErr}</div>
           )}
 
           {explanation && (
@@ -462,7 +464,7 @@ export default function StoryResultModal({
                 </div>
               </div>
             )}
-            {qError && <div className="explain-modal-errorbox">⚠️ {qError}</div>}
+            {qNotice && <div className="explain-modal-errorbox">{qNotice}</div>}
             {qAnswer && (
               <div className="webapp-explanation-followup-answer story-followup-answer">
                 <div className="story-followup-answer-label">💬 {tr('Ответ на ваш вопрос', 'Antwort auf deine Frage')}</div>

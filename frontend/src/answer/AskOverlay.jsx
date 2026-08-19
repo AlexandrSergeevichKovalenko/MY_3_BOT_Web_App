@@ -122,10 +122,14 @@ export default function AskOverlay({ api, context = '', onClose }) {
       if (res && res.ok && res.answer) {
         setMessages((m) => [...m, { role: 'bot', text: String(res.answer) }]);
       } else {
-        setErr((res && (res.error || res.message)) || 'Не удалось получить ответ');
+        // Текст сервера — в консоль, человеку — наш текст: сырое сообщение бэкенда
+        // на экране у изучающего немецкий не значит ничего.
+        try { console.warn('[ask] failed:', res && (res.error || res.message)); } catch (_e) { /* ignore */ }
+        setErr('Ответ не пришёл. Попробуйте ещё раз.');
       }
     } catch (e) {
-      setErr(String((e && e.message) || e));
+      try { console.warn('[ask] failed:', e); } catch (_e) { /* ignore */ }
+      setErr('Ответ не пришёл. Попробуйте ещё раз.');
     } finally {
       setBusy(false);
     }

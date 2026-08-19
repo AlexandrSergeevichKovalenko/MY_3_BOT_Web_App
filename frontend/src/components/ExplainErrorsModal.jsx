@@ -95,7 +95,7 @@ export default function ExplainErrorsModal({
           )}
 
           {!loading && errorMsg && (
-            <div className="explain-modal-errorbox">⚠️ {errorMsg}</div>
+            <div className="explain-modal-errorbox">{errorMsg}</div>
           )}
 
           {hasData && (

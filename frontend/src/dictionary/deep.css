@@ -413,7 +413,7 @@
 @keyframes deep-spin { to { transform: rotate(360deg); } }
 .deep-inline-err {
   font-size: 13px;
-  color: #fca5a5;
+  color: #e8c88a;
   text-align: center;
 }
 
