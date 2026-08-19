@@ -257,7 +257,7 @@ class ExhaustionSignalTests(unittest.TestCase):
                     {"key": "gefuehle", "target_count": 150}]), \
                 patch.object(gen, "fill_theme",
                              lambda k, **kw: filled.append(k) or {"added": 5}):
-            gen.autofill_themes_below_target(per_theme_cap=10, total_cap=50)
+            gen.autofill_growing_themes(per_theme_cap=10, total_cap=50)
         self.assertEqual(filled, ["gefuehle"], "остановленную тему ночной прогон не трогает")
 
     def test_an_exhausted_theme_is_reported_back(self):
@@ -268,7 +268,7 @@ class ExhaustionSignalTests(unittest.TestCase):
                 patch("backend.article_sprint_themes.article_sprint_themes",
                       lambda: [{"key": "party", "target_count": 150}]), \
                 patch.object(gen, "fill_theme", lambda k, **kw: {"added": 0}):
-            res = gen.autofill_themes_below_target(per_theme_cap=10, total_cap=50)
+            res = gen.autofill_growing_themes(per_theme_cap=10, total_cap=50)
         self.assertEqual(res["exhausted"], ["party"])
 
 

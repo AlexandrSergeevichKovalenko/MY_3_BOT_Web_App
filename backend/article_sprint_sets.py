@@ -13,6 +13,18 @@ import random
 DEFAULT_SET_SIZE = 140      # plenty for a 2-min game even for fast players
 MIN_PLAYABLE = 60           # below this we won't ship a daily set
 
+# Тема ведёт ДЕНЬ, только если её нельзя пройти насквозь за одну игру.
+#
+# 19.08.2026 владелец сыграл «Computer & Geräte»: в теме было 80 живых слов, набор
+# строился на 140, и игра выдала 77 из 80 — 96% банка темы, весь её хвост подряд.
+# Порог 60 («хватит на две минуты») отвечал на вопрос «игрок успеет?», а вопрос
+# был другой: «останется ли в теме хоть что-то, чего он сегодня не видел?».
+#
+# Тема, которой не хватает на полный набор, из дня не исчезает — она уходит в
+# «Свою тему» (тренировка), где набор строится заново каждый раз и полнота банка
+# роли не играет.
+MIN_THEME_FOR_DAILY = DEFAULT_SET_SIZE
+
 
 def _dedup_words(words: list[dict]) -> list[dict]:
     """Dedup by (word, article) — NOT word alone — so a two-gender noun keeps both
@@ -59,12 +71,12 @@ def build_daily_set(play_date, *, size: int = DEFAULT_SET_SIZE) -> dict:
     # top-up was what put medical nouns under a "Technik & Computer" header.
     scheduled = get_article_sprint_theme_for_date(play_date)
     theme_key = scheduled
-    if not theme_key or count_article_theme_verified(theme_key) < MIN_PLAYABLE:
-        fallback = _pick_fallback_theme(play_date, min_have=MIN_PLAYABLE)
+    if not theme_key or count_article_theme_verified(theme_key) < MIN_THEME_FOR_DAILY:
+        fallback = _pick_fallback_theme(play_date, min_have=MIN_THEME_FOR_DAILY)
         if scheduled and fallback and fallback != scheduled:
             logging.warning(
-                "article_sprint: scheduled theme '%s' too sparse (<%s verified) → using '%s'",
-                scheduled, MIN_PLAYABLE, fallback,
+                "article_sprint: тема дня «%s» не набирает полный набор (<%s слов) → ведёт «%s»",
+                scheduled, MIN_THEME_FOR_DAILY, fallback,
             )
         theme_key = fallback
     if not theme_key:

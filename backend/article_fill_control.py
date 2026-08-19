@@ -148,7 +148,20 @@ def send_fill_control_dm(*, force: bool = False) -> dict[str, Any]:
         # прислать стену, которую перестанут читать.
         need_decision = [r for r in rows
                          if r["state"] == "paused" and r["dry_streak"] >= 2]
-        text = "\n".join(report_lines(rows))
+        lines = report_lines(rows)
+        # Происхождение слов — отдельным блоком того же письма, а не отдельной
+        # рассылкой: у владельца и так «всё, что я должен вызывать командой, я забуду».
+        # Блок обязан приходить даже когда с наполнением всё хорошо: он несёт число
+        # слов, о происхождении которых справочник молчит, а это незакрытая задача.
+        try:
+            from backend.article_anglicism import origin_report_lines
+            lines += origin_report_lines()
+        except Exception:
+            # Отчёт не должен молчать целиком из-за одного блока — но и делать вид,
+            # что блока не было, нельзя: владелец увидит, что тут не досчитались.
+            logging.warning("fill control: блок происхождения не собрался", exc_info=True)
+            lines += ["", "<b>Происхождение слов</b>", "• ⚠️ блок не собрался, смотри логи"]
+        text = "\n".join(lines)
         if expired:
             text += ("\n\n⏳ Ждали твои слова и не дождались: "
                      + ", ".join(expired) + ". Эти темы вернул на паузу.")

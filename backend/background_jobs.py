@@ -1946,14 +1946,14 @@ def run_artikel_autofill_job(
         per_theme_cap, total_cap, chat_id, request_id,
     )
     try:
-        from backend.article_sprint_generator import autofill_themes_below_target
+        from backend.article_sprint_generator import autofill_growing_themes
 
         kwargs: dict = {}
         if per_theme_cap:
             kwargs["per_theme_cap"] = int(per_theme_cap)
         if total_cap:
             kwargs["total_cap"] = int(total_cap)
-        result = autofill_themes_below_target(**kwargs) or {}
+        result = autofill_growing_themes(**kwargs) or {}
         total_added = int(result.get("total_added") or 0)
         logging.info(
             "artikel_autofill_job done request_id=%s total_s=%s result=%s",

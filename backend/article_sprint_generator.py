@@ -429,6 +429,45 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             else:
                 _reject(why)
                 logging.info("артикли: %s мимо — %s", w, why)
+        # ── страж происхождения ───────────────────────────────────────────────
+        # Игра учит РОД НЕМЕЦКОГО существительного. У английского слова в немецком
+        # род держится на договорённости и часто спорен (der/das Tab, der/das Blog),
+        # поэтому учить артикль на нём нечему. Отсекаем ДО второго мнения модели:
+        # так мы за отброшенное слово ещё и не платим.
+        #
+        # Режем НЕ все англицизмы: der Bus, der Film, das Radio, der Sport — тоже
+        # заимствования, и это слова первого учебника. Режется хвост за 20 000 по
+        # частотному списку (решение владельца 19.08.2026). Источники происхождения
+        # называет backend/article_anglicism.py — de.wiktionary и en.wiktionary.
+        #
+        # Справочник промолчал — слово проходит: недоказанное не равно доказанному.
+        # Молчание при этом считается и уходит в отчёт, а не растворяется.
+        if candidates or maybe:
+            checked = [str(n.get("word") or "").strip() for n in (candidates + maybe)]
+            try:
+                from backend.article_anglicism import tail_anglicisms
+                blocked = tail_anglicisms(checked)
+            except Exception:
+                # Справочник происхождения недоступен. НЕ пускаем пачку «как есть» и
+                # НЕ выдумываем вердикт — прогон по этой подтеме просто не состоялся,
+                # следующий спросит снова. Тихо принять слова здесь значило бы вернуть
+                # в банк ровно тот мусор, ради которого страж и написан.
+                logging.warning("артикли: справочник происхождения недоступен, подтема «%s» отложена",
+                                subtopic, exc_info=True)
+                for _ in (candidates + maybe):
+                    _reject("справочник происхождения не ответил")
+                continue
+            if blocked:
+                for word, info in blocked.items():
+                    rank = info.get("rank")
+                    logging.info("артикли: %s мимо — англицизм вне ходового языка (ранг %s)",
+                                 word, rank if rank is not None else "нет в списке")
+                    # В стоп-лист навсегда: происхождение слова не изменится, и платить
+                    # за него второй раз незачем.
+                    to_blacklist.append((word, "англицизм вне ходового языка", theme_key))
+                    _reject("англицизм вне ходового языка")
+                candidates = [n for n in candidates if str(n.get("word") or "").strip() not in blocked]
+                maybe = [n for n in maybe if str(n.get("word") or "").strip() not in blocked]
         if maybe:
             try:
                 verdicts_everyday = judge_everyday_words([str(n["word"]).strip() for n in maybe])
@@ -541,6 +580,15 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             try:
                 from backend.article_authority import authoritative_article
                 verdict, src = authoritative_article(w, allow_network=True)
+                if verdict and src == "банк артиклей":
+                    # Род известен ТОЛЬКО из нашего же банка — это не подтверждение,
+                    # а эхо. Так «die Sync» (статьи в de.wiktionary нет вообще) один
+                    # раз попала в банк от модели и дальше подтверждала себя сама на
+                    # каждом прогоне. Сам модуль это различие знает (_bank_sourced),
+                    # приёмка его до 19.08.2026 не читала.
+                    logging.warning("article intake: %s — род есть только в нашем банке, "
+                                    "это не подтверждение, в игру не пускаем", w)
+                    verdict, src = None, "банк подтверждает сам себя"
                 if verdict:
                     if verdict != art:
                         logging.warning(
@@ -788,10 +836,26 @@ def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
             "target": int(theme["target_count"])}
 
 
-def autofill_themes_below_target(*, per_theme_cap: int = 40, total_cap: int = 120) -> dict:
-    """Nightly auto-grow: top up every theme that's below its target via fill_theme,
-    bounded per theme and overall (budget guard) so it walks all themes to ~target
-    over several nights. Reuses the full generate+verify pipeline."""
+def autofill_growing_themes(*, per_theme_cap: int = 40, total_cap: int = 120) -> dict:
+    """Ночной добор тем, которые ЕЩЁ РАСТУТ. Тему останавливает сигнал прироста.
+
+    Решение владельца 19.08.2026, дословно: «не обязательно догонять до 150, в этом
+    же и проблема — мы пытаемся догнать до 150, слов больше нет, из-за этого мы
+    дотягиваемся до ерунды».
+
+    Так и было: `room` считался как `target - have`, то есть двигателем добора была
+    цифра 150, а не наличие слов. Тема с 80 ходовыми словами каждую ночь получала
+    наряд «добрать 70» и приносила то, что нашлось: «die Sync», «der SMS-Ton»,
+    «der Linkshänder» в теме про интернет.
+
+    Теперь цель НЕ участвует в решении «добирать или нет». Тема растёт, пока она
+    честно растёт; два прогона подряд с приростом меньше трёх слов переводят её в
+    состояние «пауза» (`record_theme_fill_run` → `fill_state`), и добор её больше
+    не трогает. Сколько слов в теме в итоге — столько в ней и есть ходовых.
+
+    `target_count` остаётся в таблице, но теперь это СПРАВОЧНАЯ величина: по ней
+    видно, насколько тема не дотянула, и она же решает, вести ли теме день
+    (`article_sprint_sets`). Наполнением она не командует."""
     from backend.article_sprint_themes import article_sprint_themes
     from backend.database import count_article_sprint_nouns
 
@@ -810,9 +874,9 @@ def autofill_themes_below_target(*, per_theme_cap: int = 40, total_cap: int = 12
         key = str(t["key"])
         if states.get(key, "auto") != "auto":
             continue
-        target = int(t.get("target_count") or 0)
+        target = int(t.get("target_count") or 0)     # справочно, в отчёт — не двигатель
         have = count_article_sprint_nouns(key, verified_only=True)
-        room = min(int(per_theme_cap), target - have, total_cap - total_added)
+        room = min(int(per_theme_cap), total_cap - total_added)
         if room <= 0:
             continue
         try:
@@ -826,6 +890,6 @@ def autofill_themes_below_target(*, per_theme_cap: int = 40, total_cap: int = 12
         if run.get("exhausted"):
             exhausted.append(key)
         results.append({"theme": key, "added": added, "dry_streak": run.get("dry_streak"),
-                        "exhausted": bool(run.get("exhausted")),
+                        "exhausted": bool(run.get("exhausted")), "had": have,
                         "final_verified": res.get("final_verified"), "target": target})
     return {"total_added": total_added, "themes": results, "exhausted": exhausted}
