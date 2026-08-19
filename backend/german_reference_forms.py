@@ -1209,3 +1209,47 @@ def triage_unresolved(*, limit: int = 120) -> dict:
             out[where] += 1
         time.sleep(2)
     return out
+
+
+# ── Второй источник: существует ли слово вообще ──────────────────────────────
+_EXISTS_TASK = "german_word_exists_reference"
+_EXISTS_INSTRUCTION = """Du bist ein deutsches Wörterbuch.
+Antworte NUR mit JSON, sonst nichts.
+Format exakt: {"existiert": true, "wortart": "Substantiv", "korrekt": "Arbeitsumfeld"}
+Felder:
+  existiert — true, wenn das Wort ein echtes deutsches Wort ist (auch selten, fachlich
+              oder zusammengesetzt). false bei Tippfehlern, abgeschnittenen Wörtern,
+              Fremdwörtern und erfundenen Wörtern.
+  wortart   — Substantiv | Verb | Adjektiv | Adverb | Präposition | Konjunktion | ""
+  korrekt   — die richtige Schreibweise (Groß-/Kleinschreibung beachten). Bei
+              existiert=false gib "" zurück.
+Erfinde nichts. Im Zweifel existiert=false."""
+
+
+def word_exists_by_model(word: str) -> dict | None:
+    """Существует ли слово. Принимаем ТОЛЬКО при совпадении двух независимых спросов.
+
+    Зачем. Справочник неполон: «Arbeitsumfeld», «Beantragung», «Befundung» — настоящие
+    немецкие слова, которых в de.wiktionary просто нет. Объявлять их негодными и удалять
+    из словаря человека нельзя. Поэтому отсутствие страницы — не приговор, а повод
+    спросить второй источник.
+
+    Владелец 19.08.2026: показывать ему на удаление только то, что не подтвердил НИКТО.
+    """
+    from backend.openai_manager import system_message
+    system_message.setdefault(_EXISTS_TASK, _EXISTS_INSTRUCTION)
+    first = _ask_once(_EXISTS_TASK, word)
+    second = _ask_once(_EXISTS_TASK, word)
+    if not first or not second:
+        return None
+    if bool(first.get("existiert")) != bool(second.get("existiert")):
+        return None
+    if not bool(first.get("existiert")):
+        return {"existiert": False}
+    art_a = str(first.get("wortart") or "").strip()
+    art_b = str(second.get("wortart") or "").strip()
+    fix_a = str(first.get("korrekt") or "").strip()
+    fix_b = str(second.get("korrekt") or "").strip()
+    if art_a.lower() != art_b.lower() or fix_a.lower() != fix_b.lower():
+        return None
+    return {"existiert": True, "wortart": art_a, "korrekt": fix_a}
