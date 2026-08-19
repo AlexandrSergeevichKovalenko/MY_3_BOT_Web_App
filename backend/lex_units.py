@@ -716,6 +716,27 @@ def ensure_unit(text: str, lang: str) -> int | None:
         logging.warning("единица не заведена: %r — свалка значений, её надо разрезать",
                         str(text)[:60])
         return None
+    # ДВЕРЬ СЛОВА, дешёвая половина. Регистр заголовка правится ЗДЕСЬ, при заведении, а
+    # не только на показе. Замер 19.08.2026: правило `german_headword_case` стояло лишь
+    # в отрисовке, поэтому «Grundlegend» и «betäubung» ложились в базу как есть — экран
+    # выглядел правильным, а данные оставались кривыми. Тот же урок уже разбирался
+    # однажды в backend_server:10166, но до заведения единиц не дошёл.
+    #
+    # В сеть и к модели отсюда НЕ ходим: сохранение не должно ждать справочник и не
+    # должно стоить денег. Дорогие ступени (обрезка, умлаут, устаревшее написание,
+    # существует ли слово вообще) делает ночная работа, у неё для этого нет спешки.
+    if kind == "word" and lang == "de":
+        try:
+            from backend.german_word_gate import check_word
+            verdict = check_word(text, allow_network=False, allow_model=False)
+            fixed = str(verdict.get("text") or "").strip()
+            if fixed and fixed != text:
+                logging.info("дверь слова: заголовок исправлен %r → %r", text, fixed)
+                text = fixed
+                key = normalize_query(text)
+        except Exception:
+            logging.warning("дверь слова недоступна при заведении %r", str(text)[:60],
+                            exc_info=True)
     body = _ANY_ARTICLE_RE.sub("", _SPACE_RE.sub(" ", str(text).strip())).strip()
     display = _SPACE_RE.sub(" ", str(text).strip()) if kind != "word" else body
     try:

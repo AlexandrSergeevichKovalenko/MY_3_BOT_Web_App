@@ -1213,16 +1213,17 @@ def triage_unresolved(*, limit: int = 120) -> dict:
 
 # ── Второй источник: существует ли слово вообще ──────────────────────────────
 _EXISTS_TASK = "german_word_exists_reference"
-_EXISTS_INSTRUCTION = """Du bist ein deutsches Wörterbuch.
+_EXISTS_INSTRUCTION = """Du bist ein Wörterbuch.
 Antworte NUR mit JSON, sonst nichts.
-Format exakt: {"existiert": true, "wortart": "Substantiv", "korrekt": "Arbeitsumfeld"}
+Format exakt: {"existiert": true, "sprache": "de", "wortart": "Substantiv", "korrekt": "Sweatpants"}
 Felder:
-  existiert — true, wenn das Wort ein echtes deutsches Wort ist (auch selten, fachlich
-              oder zusammengesetzt). false bei Tippfehlern, abgeschnittenen Wörtern,
-              Fremdwörtern und erfundenen Wörtern.
+  existiert — true, wenn die Zeichenfolge ein ECHTES WORT irgendeiner Sprache ist.
+              false NUR bei Tippfehlern, abgeschnittenen Wortresten und erfundenen
+              Zeichenfolgen ("Abschiebu", "inkelgasse", "Scheinwerfergla").
+  sprache   — "de" wenn es ein deutsches Wort ist, sonst der Sprachcode ("en", "ru", …).
+              Englische Wörter, die im Deutschen gebraucht werden, sind "en".
   wortart   — Substantiv | Verb | Adjektiv | Adverb | Präposition | Konjunktion | ""
-  korrekt   — die richtige Schreibweise (Groß-/Kleinschreibung beachten). Bei
-              existiert=false gib "" zurück.
+  korrekt   — die richtige Schreibweise. Bei existiert=false gib "" zurück.
 Erfinde nichts. Im Zweifel existiert=false."""
 
 
@@ -1246,10 +1247,13 @@ def word_exists_by_model(word: str) -> dict | None:
         return None
     if not bool(first.get("existiert")):
         return {"existiert": False}
+    if str(first.get("sprache") or "").strip().lower() != str(second.get("sprache") or "").strip().lower():
+        return None
     art_a = str(first.get("wortart") or "").strip()
     art_b = str(second.get("wortart") or "").strip()
     fix_a = str(first.get("korrekt") or "").strip()
     fix_b = str(second.get("korrekt") or "").strip()
     if art_a.lower() != art_b.lower() or fix_a.lower() != fix_b.lower():
         return None
-    return {"existiert": True, "wortart": art_a, "korrekt": fix_a}
+    return {"existiert": True, "sprache": str(first.get("sprache") or "").strip().lower(),
+            "wortart": art_a, "korrekt": fix_a}
