@@ -7028,6 +7028,76 @@ def get_saved_translation_explanation_langs(
     return langs_by_id
 
 
+def get_check_quality_counters(*, days: int = 7) -> dict[str, int | float]:
+    """Два числа, которых владельцу раньше было НЕ ВИДНО: сколько ответов оказались не
+    переводом и сколько раз мы не смогли назвать тип настоящей ошибки.
+
+    Правило ноль требует счётчик у каждого «не знаю». Отдельной таблицы для него не
+    нужно — оба числа выводятся из уже записанных данных, и каждое считается ровно тем
+    же признаком, каким пользуется страж на входе:
+
+      • «не перевод» — балл 0, вердикт модели «пусто или не по делу»
+        (см. страж в _log_translation_mistake_with_cursor). Записи об ошибке такие
+        ответы больше не создают, поэтому увидеть их можно только здесь.
+      • «тип не назван» — настоящая попытка (балл выше нуля), но пара категорий
+        легла как «Other mistake / Unclassified mistake». Значит либо модель ответила
+        мимо таксономии, либо мы сами выбросили её ответ при сборке пар.
+
+    Замер 18.08.2026: до уборки мусора «не знаю» было 19,8% всех записей, после — 1,9%.
+    Если доля «тип не назван» поползёт вверх — это первый сигнал, что рассогласование
+    промпта и разбора перестало быть мелочью.
+    """
+    safe_days = max(1, int(days or 7))
+    with db_acquire_scope("check_quality_counters"):
+        conn = get_db_connection()
+    with conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FILTER (WHERE score = 0) AS not_a_translation,
+                       COUNT(*) AS checked
+                FROM bt_3_translations
+                WHERE timestamp > NOW() - (%s::int * INTERVAL '1 day');
+                """,
+                (safe_days,),
+            )
+            not_a_translation, checked = cursor.fetchone()
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_detailed_mistakes
+                WHERE COALESCE(first_seen, added_data) > NOW() - (%s::int * INTERVAL '1 day')
+                  AND COALESCE(score, 0) > 0
+                  AND lower(COALESCE(NULLIF(main_category, ''), 'Other mistake'))
+                      IN ('other mistake', 'other mistakes')
+                  AND lower(COALESCE(NULLIF(sub_category, ''), 'Unclassified mistake'))
+                      IN ('unclassified mistake', 'unclassified mistakes');
+                """,
+                (safe_days,),
+            )
+            type_unknown = cursor.fetchone()[0]
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_detailed_mistakes
+                WHERE COALESCE(first_seen, added_data) > NOW() - (%s::int * INTERVAL '1 day');
+                """,
+                (safe_days,),
+            )
+            mistakes_total = cursor.fetchone()[0]
+
+    return {
+        "days": safe_days,
+        "checked": int(checked or 0),
+        "not_a_translation": int(not_a_translation or 0),
+        "mistakes_total": int(mistakes_total or 0),
+        "type_unknown": int(type_unknown or 0),
+        "type_unknown_pct": round(100.0 * int(type_unknown or 0) / int(mistakes_total or 0), 1)
+        if mistakes_total
+        else 0.0,
+    }
+
+
 def _normalize_translation_session_id(session_id: str | int | None) -> str | int | None:
     normalized = session_id
     if isinstance(normalized, str):

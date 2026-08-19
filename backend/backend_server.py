@@ -838,6 +838,7 @@ from backend.translation_workflow import (
     get_translation_session_progress,
     get_db_connection as get_translation_workflow_db_connection,
     get_daily_translation_history,
+    get_check_quality_counters,
     save_translation_explanation,
     append_translation_explanation_followup,
     get_saved_translation_explanation,
@@ -27361,6 +27362,20 @@ def _build_translation_focus_pool_admin_report_caption(
     if bool(summary.get("missing_previous_snapshot")):
         lines.append("⚠️ Снэпшот вчерашнего дня отсутствует — дельта от нулевой базы")
 
+    # Счётчик «не знаю» на глазах у владельца, а не только в логах (правило ноль).
+    # «не переводов» — ответы, которые модель оценила в 0 как пустые/не по делу: они
+    # больше не становятся ошибками ученика, и увидеть их можно только здесь.
+    # «тип не назван» — настоящая попытка, тип которой мы не смогли определить.
+    quality = summary.get("check_quality") if isinstance(summary.get("check_quality"), dict) else {}
+    if quality:
+        lines.append(
+            f"Разбор за {int(quality.get('days') or 7)} дн.: "
+            f"проверено {int(quality.get('checked') or 0)} · "
+            f"не переводов {int(quality.get('not_a_translation') or 0)} · "
+            f"тип не назван {int(quality.get('type_unknown') or 0)}"
+            f" ({float(quality.get('type_unknown_pct') or 0.0):.1f}%)"
+        )
+
     # Top deficit themes — ALARM only on real shortfall (below the refill floor / forecast),
     # not on buffer headroom below the ceiling. This is the actionable "нужен долив" set.
     all_themes = _build_translation_focus_pool_report_themes(rows, top_limit=max(1, len(rows or [])))
@@ -27523,6 +27538,13 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
         # as a plain message.
         chart_png = None
         caption_started_perf = time.perf_counter()
+        # Числа считаются здесь, а не внутри сборщика подписи: тот работает без базы.
+        # Провал замера не имеет права утащить весь отчёт — строка просто не появится,
+        # и об этом останется запись в логе.
+        try:
+            summary = {**summary, "check_quality": get_check_quality_counters(days=7)}
+        except Exception:
+            logging.exception("translation pool digest: не смогли посчитать счётчики разбора")
         caption = _build_translation_focus_pool_admin_report_caption(
             rows=rows,
             summary=summary,
