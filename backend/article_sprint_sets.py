@@ -68,7 +68,13 @@ def _pick_fallback_theme(play_date, min_have: int = 1) -> str | None:
     его звать не надо — это снова будет порог, который заставляет тему «дорасти»
     (см. длинный комментарий вверху файла)."""
     from backend.database import list_article_sprint_themes
-    themes = [t for t in list_article_sprint_themes() if int(t.get("verified_count") or 0) >= min_have]
+    # `list_article_sprint_themes` отдаёт и погашенные темы тоже — флаг `active`
+    # надо спрашивать явно. Иначе тема, погашенная слиянием или самим владельцем,
+    # поведёт день, как только в ней окажется хоть одно слово. Сейчас это не
+    # стреляет только потому, что у слитых тем слов не осталось, — то есть держится
+    # на совпадении, а не на правиле.
+    themes = [t for t in list_article_sprint_themes()
+              if t.get("active", True) and int(t.get("verified_count") or 0) >= min_have]
     if not themes:
         return None
     themes.sort(key=lambda t: t["theme_key"])

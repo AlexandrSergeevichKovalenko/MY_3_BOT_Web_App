@@ -93,13 +93,24 @@ class NoSizeThresholdConstantsTests(unittest.TestCase):
                 f"{gone} вернулся: тема дня снова обязана «дорасти до цифры»")
 
     def test_the_fallback_accepts_any_non_empty_theme(self):
-        themes = [{"theme_key": "klein", "verified_count": 12},
-                  {"theme_key": "gross", "verified_count": 300}]
+        themes = [{"theme_key": "klein", "verified_count": 12, "active": True},
+                  {"theme_key": "gross", "verified_count": 300, "active": True}]
         with patch("backend.database.list_article_sprint_themes", return_value=themes):
             picked = {sets._pick_fallback_theme(datetime.date(2026, 8, 20) +
                                                 datetime.timedelta(days=d)) for d in range(2)}
         self.assertEqual(picked, {"klein", "gross"},
                          "маленькая тема обязана попадать в ротацию наравне с большой")
+
+    def test_a_switched_off_theme_never_leads_a_day(self):
+        # Погашенная тема (слитая с соседней или закрытая владельцем) не должна
+        # вести день, даже если слова в ней ещё лежат. Отсутствие порога по размеру
+        # не отменяет флага «активна».
+        themes = [{"theme_key": "aus", "verified_count": 300, "active": False},
+                  {"theme_key": "an", "verified_count": 40, "active": True}]
+        with patch("backend.database.list_article_sprint_themes", return_value=themes):
+            picked = {sets._pick_fallback_theme(datetime.date(2026, 8, 20) +
+                                                datetime.timedelta(days=d)) for d in range(7)}
+        self.assertEqual(picked, {"an"})
 
 
 if __name__ == "__main__":
