@@ -13402,6 +13402,17 @@ def ensure_webapp_tables() -> None:
                 ALTER TABLE bt_3_crossword_bank
                 ADD COLUMN IF NOT EXISTS fail_count INTEGER NOT NULL DEFAULT 0;
             """)
+            # По какому правилу нарисована КАРТИНКА этого кроссворда. Нужно ровно
+            # для одного: чтобы разовая перерисовка после смены правила отрисовки
+            # оставалась разовой. До 19.08.2026 ночная прополка решала «картинка
+            # старая» по СЛОВАМ кроссворда, а перерисовка слов не меняет — и одна
+            # и та же запись уходила на перерисовку каждую ночь, бесконечно
+            # (в живом банке такая крутилась с 31.07). Ноль — «правило неизвестно,
+            # нарисовано до появления этой отметки», такие перерисовываются один раз.
+            cursor.execute("""
+                ALTER TABLE bt_3_crossword_bank
+                ADD COLUMN IF NOT EXISTS image_rule_version SMALLINT NOT NULL DEFAULT 0;
+            """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_crossword_bank_available
                 ON bt_3_crossword_bank (image_status, retired, last_sent_at NULLS FIRST, difficulty);
@@ -50552,16 +50563,23 @@ def get_crossword_bank_entry(crossword_id: str) -> dict | None:
     return dict(zip(cols, row))
 
 
+# Правило отрисовки картинки кроссворда. Поднимается на единицу, когда меняется то,
+# КАКИЕ клетки открыты на картинке, — тогда и только тогда старые картинки надо
+# перерисовать. Прополка сверяется с этим числом, а не гадает по словам кроссворда.
+CROSSWORD_IMAGE_RULE_VERSION = 1
+
+
 def mark_crossword_image_ready(crossword_id: str, *, image_object_key: str) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 UPDATE bt_3_crossword_bank
-                SET image_object_key = %s, image_status = 'ready', updated_at = NOW()
+                SET image_object_key = %s, image_status = 'ready', updated_at = NOW(),
+                    image_rule_version = %s
                 WHERE crossword_id = %s
                 """,
-                (str(image_object_key), str(crossword_id)),
+                (str(image_object_key), CROSSWORD_IMAGE_RULE_VERSION, str(crossword_id)),
             )
         conn.commit()
 
@@ -56909,14 +56927,14 @@ def sweep_crossword_bank_shape(*, limit_re_render: int = 10) -> dict:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT crossword_id, words_json, image_status
+                SELECT crossword_id, words_json, image_status, image_rule_version
                 FROM bt_3_crossword_bank
                 WHERE retired = FALSE
                 """
             )
             rows = cursor.fetchall() or []
 
-        for crossword_id, words_json, image_status in rows:
+        for crossword_id, words_json, image_status, image_rule_version in rows:
             words = list(words_json or [])
             if giveaway_problem(words):
                 with conn.cursor() as cursor:
@@ -56928,8 +56946,14 @@ def sweep_crossword_bank_shape(*, limit_re_render: int = 10) -> dict:
                 stats["retired"] += 1
                 continue
             # min_open=0 — это в точности прежнее правило: опоры открывались всегда.
+            # Отметка правила обязательна: сравнение считается ПО СЛОВАМ кроссворда,
+            # а перерисовка слов не меняет — без отметки одна и та же запись уходила
+            # на перерисовку каждую ночь и не переставала никогда (разбор 19.08.2026:
+            # запись от 31.07 крутилась так три недели). Перерисовали — поставили
+            # версию, и эта запись больше сюда не попадает.
             if (
                 str(image_status) == "ready"
+                and int(image_rule_version or 0) < CROSSWORD_IMAGE_RULE_VERSION
                 and stats["re_render"] < int(limit_re_render)
                 and compute_revealed_cells(words, min_open=0) != compute_revealed_cells(words)
             ):

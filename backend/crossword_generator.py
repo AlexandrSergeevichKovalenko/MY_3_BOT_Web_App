@@ -787,6 +787,9 @@ def prepare_crossword_pool(
                      render["succeeded"], render["failed"])
     existing = count_crossword_bank_entries(ready_only=True)
     needed = max(0, target_ready - existing)
+    # Сколько на самом деле не хватало — отчёт сравнивает сделанное с этим числом,
+    # а не с попытками: банк мог за ночь подрасти из другого места.
+    stats["needed"] = needed
 
     if needed == 0:
         stats["skipped"] = existing
@@ -795,7 +798,17 @@ def prepare_crossword_pool(
 
     logging.info("crossword_pool: existing=%d needed=%d", existing, needed)
 
-    for _ in range(min(needed, max_attempts)):
+    # ── Заказ доводится до конца, а не «по одной попытке на штуку» ───────────────
+    # До 19.08.2026 здесь стояло `for _ in range(min(needed, max_attempts))`: на
+    # каждый недостающий кроссворд приходилась РОВНО ОДНА попытка, и запас попыток
+    # `max_attempts` в цикл не заходил вовсе. Приёмка отклоняла попытку (ночь на
+    # 19.08: «загаданы неходовые слова (TASTEN, TASTATUR)») — и задание не рождалось
+    # до следующей ночи, где повторялось то же самое. Владелец 19.08.2026: «мне нужно,
+    # чтобы то, что подавалось, было сгенерировано».
+    # Отказ приёмки — не поломка, а нормальный исход: у модели каждый раз новая тема
+    # и новый набор слов, поэтому следующая попытка обычно проходит. Пробуем, пока не
+    # наберём заказ или не кончится запас попыток.
+    while stats["succeeded"] < needed and stats["attempted"] < max_attempts:
         stats["attempted"] += 1
         try:
             cid = generate_crossword_entry()
@@ -810,4 +823,7 @@ def prepare_crossword_pool(
             logging.warning("crossword_pool: generation failed: %s", exc)
         time.sleep(2.0)  # respect OpenAI rate limits
 
+    if stats["succeeded"] < needed:
+        logging.warning("crossword_pool: заказ не добран — сделано %d из %d за %d попыток",
+                        stats["succeeded"], needed, stats["attempted"])
     return stats

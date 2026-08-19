@@ -312,6 +312,7 @@ def prepare_listening_pool(*, target_ready: int = 7, max_attempts: int = 10) -> 
     existing = count_listening_bank_entries(ready_only=True)
     needed = max(0, target_ready - existing)
 
+    stats["needed"] = needed
     if needed == 0:
         stats["skipped"] = existing
         logging.info("listening_pool: already at target existing=%d", existing)
@@ -320,7 +321,11 @@ def prepare_listening_pool(*, target_ready: int = 7, max_attempts: int = 10) -> 
     logging.info("listening_pool: existing=%d needed=%d", existing, needed)
     used_topics: list[str] = []
 
-    for _ in range(min(needed, max_attempts)):
+    # Заказ доводится до конца: одна попытка на штуку означала, что любой отказ
+    # модели оставлял дырку в банке до следующей ночи (разбор 19.08.2026, тот же
+    # дефект был у кроссвордов и словарных чисел). Пробуем, пока не наберём заказ
+    # или не кончится запас попыток.
+    while stats["succeeded"] < needed and stats["attempted"] < max_attempts:
         stats["attempted"] += 1
         # Rotate through topics to avoid repetition
         available = [t["id"] for t in _TOPICS if t["id"] not in used_topics]
@@ -337,4 +342,7 @@ def prepare_listening_pool(*, target_ready: int = 7, max_attempts: int = 10) -> 
             logging.warning("listening_pool: failed topic=%s: %s", topic_id, exc)
         time.sleep(3.0)
 
+    if stats["succeeded"] < needed:
+        logging.warning("listening_pool: заказ не добран — сделано %d из %d за %d попыток",
+                        stats["succeeded"], needed, stats["attempted"])
     return stats

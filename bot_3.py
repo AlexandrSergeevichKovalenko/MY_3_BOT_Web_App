@@ -38025,6 +38025,11 @@ def _topup_fact_line(title: str, tonight: int, made: int, failed: int,
     одной (проверено по банку: за 19.08 в bt_3_anagram_cards ноль строк). Отчёт,
     который не отличает намерение от результата, обучает владельца себя не читать.
     """
+    if tonight <= 0:
+        # Замер шёл до пополнения, а к моменту заказа банк уже дорос сам (дорисовались
+        # картинки, отработала соседняя ночная работа). Молчать об этом нельзя, иначе
+        # «сделано 0» читается как поломка.
+        return f"{title}: банк уже полон, доделывать было нечего"
     if made >= tonight and not failed:
         head = f"{title}: сделано {made}"
     else:
@@ -38077,6 +38082,9 @@ async def _run_task_supply_topup(item: dict) -> str:
                                             max_attempts=tonight * 3 + 10)
             made, failed = int(stats["succeeded"]), int(stats["failed"])
             reasons = list(stats["reasons"])
+            # Сравниваем с тем, чего не хватало ПО ФАКТУ на момент пополнения,
+            # а не с планом четырёхчасовой давности.
+            tonight = int(stats["needed"])
         elif kind == "article_quiz":
             from backend.article_quiz_generator import prepare_article_quiz_pool
             stats = await asyncio.to_thread(prepare_article_quiz_pool,
@@ -38088,18 +38096,23 @@ async def _run_task_supply_topup(item: dict) -> str:
             # Своего счётчика у анаграмм нет: карточки делаются по одной. Считаем
             # ровно то, что легло в банк, а обрыв цикла называем причиной — молчать
             # о нём нельзя, из-за него банк не рос при рапорте «заказано 1».
+            # Заказ доводится до конца. До 19.08.2026 цикл обрывался на ПЕРВОМ же
+            # повторе слова: карточка не рождалась, банк не рос, а отчёт рапортовал
+            # полный заказ. Повтор слова — не поломка, а обычный исход выбора из
+            # словарного журнала: следующая попытка берёт другое слово. Запас
+            # попыток тот же, что у остальных пополнялок.
             made = attempted = 0
-            for _ in range(tonight):
+            budget = tonight * 3 + 10
+            while made < tonight and attempted < budget:
                 attempted += 1
                 if await _ensure_anagram_card():
                     made += 1
-                else:
-                    reasons.append("модель повторила уже имеющееся слово "
-                                   "или не дала годного")
-                    break
-            # Считаем ПОПЫТКИ, а не остаток заказа: после обрыва цикла остальные
-            # карточки не провалились — их даже не пробовали делать. Записать их
-            # в «не вышло» значило бы придумать число, которого никто не мерил.
+            if made < tonight:
+                reasons.append(f"из {attempted} попыток годных слов не нашлось — "
+                               f"в словарном журнале кончились слова от 8 букв")
+            # Считаем ПОПЫТКИ, а не остаток заказа: если запас исчерпан, неначатых
+            # карточек нет вовсе, а вот записать в «не вышло» то, чего никто не
+            # пробовал, значило бы придумать число.
             failed = attempted - made
         elif kind == "ls":
             # Аудирование: банк самый тонкий из всех, и заказ ему нужен раньше прочих.
@@ -38109,6 +38122,7 @@ async def _run_task_supply_topup(item: dict) -> str:
             stats = await asyncio.to_thread(prepare_listening_pool, target_ready=target,
                                             max_attempts=tonight * 2 + 5)
             made, failed = int(stats["succeeded"]), int(stats["failed"])
+            tonight = int(stats["needed"])
         else:
             # Пул заданий наполняется по каждому формату отдельно своей ночной
             # работой — молча подменять её цель нельзя, поэтому честно говорим,

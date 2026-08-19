@@ -92,7 +92,7 @@ class TopupDispatchTests(unittest.IsolatedAsyncioTestCase):
         (банк 23 при расходе 0.87 в сутки), и оно единственное не было подключено."""
         with patch("backend.listening_generator.prepare_listening_pool",
                    return_value={"attempted": 3, "succeeded": 3, "failed": 0,
-                                 "skipped": 0}) as gen:
+                                 "skipped": 0, "needed": 3}) as gen:
             out = await bot_3._run_task_supply_topup(
                 {"kind": "ls", "title": "Аудирование", "tonight": 3, "target_ready": 26})
         gen.assert_called_once()
@@ -105,8 +105,8 @@ class TopupDispatchTests(unittest.IsolatedAsyncioTestCase):
         результат в отчёте владельцу обязаны отличаться."""
         with patch("backend.crossword_generator.prepare_crossword_pool",
                    return_value={"attempted": 2, "succeeded": 1, "failed": 1,
-                                 "skipped": 0, "retired": 0, "re_render": 0,
-                                 "rendered": 0, "render_failed": 0,
+                                 "needed": 2, "skipped": 0, "retired": 0,
+                                 "re_render": 0, "rendered": 0, "render_failed": 0,
                                  "reasons": ["загаданы неходовые слова (TASTEN)"]}):
             out = await bot_3._run_task_supply_topup(
                 {"kind": "cw", "title": "Кроссворды", "tonight": 2, "target_ready": 62})

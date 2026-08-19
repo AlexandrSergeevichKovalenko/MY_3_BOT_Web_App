@@ -66,6 +66,51 @@ class OneCounterTests(unittest.TestCase):
         self.assertEqual(stats["attempted"], 1)
         self.assertEqual(stats["skipped"], 0)
 
+    def _run_with_flaky_generator(self, *, ready: int, target: int, outcomes: list):
+        """Генератор, у которого часть попыток отклоняет приёмка."""
+        def _gen():
+            result = outcomes.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with patch("backend.database.count_crossword_bank_entries", return_value=ready), \
+             patch("backend.crossword_renderer.prepare_crossword_images_batch",
+                   return_value={"attempted": 0, "succeeded": 0, "failed": 0}), \
+             patch("backend.database.retire_undersized_crossword_bank_entries",
+                   return_value=0), \
+             patch("backend.database.sweep_crossword_bank_shape",
+                   return_value={"retired": 0, "re_render": 0}), \
+             patch.object(crossword_generator, "generate_crossword_entry",
+                          side_effect=_gen), \
+             patch.object(crossword_generator.time, "sleep", return_value=None):
+            return crossword_generator.prepare_crossword_pool(
+                target_ready=target, max_attempts=19)
+
+    def test_rejected_attempt_is_retried_until_the_order_is_filled(self):
+        """Владелец 19.08.2026: «мне нужно, чтобы то, что подавалось, было
+        сгенерировано». Приёмка отклонила две попытки из пяти — заказ на 3 всё
+        равно обязан быть выполнен этой же ночью, а не отложен до следующей."""
+        stats = self._run_with_flaky_generator(
+            ready=59, target=62,
+            outcomes=[RuntimeError("загаданы неходовые слова (TASTEN)"),
+                      "cid-1",
+                      RuntimeError("после приёмки осталось 4 слова"),
+                      "cid-2", "cid-3"])
+        self.assertEqual(stats["succeeded"], 3, "заказ обязан быть добран целиком")
+        self.assertEqual(stats["failed"], 2)
+        self.assertEqual(stats["attempted"], 5)
+
+    def test_attempts_stop_at_the_budget_and_the_shortfall_is_named(self):
+        """Бесконечно долбить модель нельзя: запас попыток кончается, и недобор
+        честно виден в отчёте — «сделано 1 из 3», а не «сделано 1»."""
+        stats = self._run_with_flaky_generator(
+            ready=59, target=62,
+            outcomes=["cid-1"] + [RuntimeError("нет") for _ in range(18)])
+        self.assertEqual(stats["attempted"], 19, "дальше запаса попыток не идём")
+        self.assertEqual(stats["succeeded"], 1)
+        self.assertEqual(stats["needed"], 3, "отчёт сравнивает с нехваткой, не с попытками")
+
     def test_failure_reason_reaches_the_report(self):
         with patch("backend.database.count_crossword_bank_entries",
                    return_value=59), \

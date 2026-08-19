@@ -362,7 +362,10 @@ def prepare_numdict_pool(*, target_ready: int = 20, max_attempts: int = 12) -> d
 
     logging.info("numdict_pool: existing=%d needed=%d", existing, needed)
     used: list[str] = []
-    for _ in range(min(needed, max_attempts)):
+    # Заказ доводится до конца, а не «по одной попытке на штуку»: отказ модели не
+    # имеет права оставлять дырку в банке до следующей ночи (разбор 19.08.2026,
+    # тот же дефект был у кроссвордов и аудирования).
+    while stats["succeeded"] < needed and stats["attempted"] < max_attempts:
         stats["attempted"] += 1
         available = [s["id"] for s in _SCENARIOS if s["id"] not in used]
         if not available:
