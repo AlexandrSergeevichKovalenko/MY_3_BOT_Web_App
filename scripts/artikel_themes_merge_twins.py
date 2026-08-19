@@ -83,8 +83,14 @@ def subtopics_of(cur, key: str) -> list[str]:
 
 def merge_one(cur, source: str, target: str, label_de: str, label_ru: str) -> dict:
     """Одна пара. Возвращает, что произошло — числами."""
-    # Дубли: слово+артикль уже есть у приёмника. Переносить нельзя (уникальный
-    # индекс), и терять нельзя — снимаем как дубль, с причиной.
+    # Слово, у которого в приёмнике уже есть ЖИВОЙ близнец, — настоящий дубль:
+    # снимаем с причиной, вторая карточка в игре остаётся.
+    #
+    # Проверка на «живой» здесь обязательна, и это не педантизм. 19.08.2026 её тут
+    # не было, и слияние сняло 36 живых слов — der Computer, der Bildschirm,
+    # die Tastatur, der Laptop, die Waschmaschine, — потому что в приёмнике лежала
+    # СНЯТАЯ копия каждого (их сняла дедупликация 31.07.2026, оставив живой как раз
+    # копию в поглощаемой теме). Чинилось скриптом artikel_merge_repair_live_dupes.
     cur.execute(
         """
         UPDATE bt_3_article_sprint_nouns s
@@ -93,9 +99,41 @@ def merge_one(cur, source: str, target: str, label_de: str, label_ru: str) -> di
          WHERE s.theme_key = %s AND s.retired = FALSE
            AND EXISTS (SELECT 1 FROM bt_3_article_sprint_nouns t
                         WHERE t.theme_key = %s AND lower(t.word) = lower(s.word)
-                          AND t.article = s.article);
+                          AND t.article = s.article
+                          AND t.retired = FALSE AND t.verified = TRUE);
         """, (source, target))
     dupes = cur.rowcount or 0
+
+    # Живое слово, у которого в приёмнике лежит только СНЯТАЯ копия, переехать не
+    # может: уникальный индекс тема+слово+артикль занят ею, а переставить снятую
+    # копию обратно нельзя — в поглощаемой теме тот же ключ занимает живая.
+    # Поэтому переезжает не строка, а содержимое: карточка приёмника получает от
+    # живой всё, чего у неё нет (перевод, мнемоника, озвучка, картинка) и
+    # возвращается в игру, а живая строка остаётся снятой как честный дубль.
+    content = ("meaning_ru", "plural", "mnemonic_ru", "mnemonic_method",
+               "mnemonic_head", "audio_object_key", "image_object_key")
+    fills = ", ".join(f"{f} = COALESCE(NULLIF(t.{f}, ''), s.{f})" for f in content)
+    cur.execute(
+        f"""
+        UPDATE bt_3_article_sprint_nouns t
+           SET {fills}, retired = FALSE, retire_reason = '', updated_at = NOW()
+          FROM bt_3_article_sprint_nouns s
+         WHERE t.theme_key = %s AND t.retired = TRUE AND t.verified = TRUE
+           AND s.theme_key = %s AND s.retired = FALSE AND s.verified = TRUE
+           AND lower(s.word) = lower(t.word) AND s.article = t.article;
+        """, (target, source))
+    revived = cur.rowcount or 0
+    cur.execute(
+        """
+        UPDATE bt_3_article_sprint_nouns s
+           SET retired = TRUE, retire_reason = 'дубль: карточка живёт в теме-приёмнике',
+               retire_reviewed = TRUE, updated_at = NOW()
+         WHERE s.theme_key = %s AND s.retired = FALSE
+           AND EXISTS (SELECT 1 FROM bt_3_article_sprint_nouns t
+                        WHERE t.theme_key = %s AND lower(t.word) = lower(s.word)
+                          AND t.article = s.article AND t.retired = FALSE);
+        """, (source, target))
+    dupes += cur.rowcount or 0
 
     cur.execute(
         """
@@ -133,7 +171,7 @@ def merge_one(cur, source: str, target: str, label_de: str, label_ru: str) -> di
     cur.execute(
         "UPDATE bt_3_article_sprint_themes SET active = FALSE, updated_at = NOW() "
         "WHERE theme_key = %s;", (source,))
-    return {"moved": moved, "dupes": dupes, "repointed": repointed,
+    return {"moved": moved, "dupes": dupes, "revived": revived, "repointed": repointed,
             "subtopics": len(merged_subtopics)}
 
 
@@ -159,6 +197,7 @@ def main() -> int:
             for source, target, label_de, label_ru in MERGES:
                 stats = merge_one(cur, source, target, label_de, label_ru)
                 print(f"\n{source} → {target}: перенесено {stats['moved']}, "
+                      f"поднято карточек в приёмнике {stats['revived']}, "
                       f"снято дублей {stats['dupes']}, ссылок переведено {stats['repointed']}, "
                       f"подтем у приёмника {stats['subtopics']}")
             conn.commit()
