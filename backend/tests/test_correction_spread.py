@@ -124,3 +124,26 @@ def test_nothing_happens_without_a_real_change():
     cur = _build()
     assert db.spread_correction_everywhere(cur, unit_id=1, old_text=OLD, new_text=OLD)["cards"] == 0
     assert db.spread_correction_everywhere(cur, unit_id=1, old_text="", new_text=NEW)["cards"] == 0
+
+
+def test_case_only_correction_is_a_real_change_in_german():
+    """Правка ОДНОЙ БУКВЫ по регистру — полноценная правка, а не пустая.
+
+    В немецком регистр это грамматика: «Es ist mir Latte» → «latte», «um Rund die
+    Hälfte» → «rund». Здесь стояло сравнение без учёта регистра, и такая правка
+    считалась пустой: справочник владелец чинил, а в карточке человека оставалось
+    старое написание. Замер 19.08.2026 на живой базе: обе правки регистра, сделанные
+    владельцем в тот день, разъехались — то есть класс ломался целиком, 2 из 2.
+    """
+    old = "Es ist mir Latte"
+    new = "Es ist mir latte"
+    cur = FakeCursor(
+        {"usage_examples": [{"source": old, "target": "Мне всё равно"}]},
+        [(18, old, None, {"word_de": old}, 900)],
+        {900: (old, {"source_text": old})},
+    )
+    report = db.spread_correction_everywhere(cur, unit_id=1, old_text=old, new_text=new)
+    assert cur.cards[0][1] == new, "карточка человека обязана получить новое написание"
+    assert cur.cards[0][3]["word_de"] == new
+    assert cur.pool[900][0] == new
+    assert report["cards"] == 1

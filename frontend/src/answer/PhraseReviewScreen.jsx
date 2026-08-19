@@ -18,6 +18,31 @@ const KIND_LABEL = {
   complete: 'дописано',
 };
 
+/**
+ * Приговор проверке правки судьи.
+ *
+ * Судья — модель, и ошибается он как модель: 19.08.2026 на «Steck das Portemonnaie in
+ * die Tasche» ОБА судьи предложили «in den Taschen» — это и неверный падеж, и другое
+ * число («в карманы» вместо «в карман»). Кнопки «Принять» у такой правки больше нет,
+ * но с экрана она не исчезает: владелец должен видеть, что судья предложил и почему
+ * это отклонено. Молчащий экран неотличим от сломанного.
+ */
+function FixCheck({ check }) {
+  if (!check) return null;
+  if (check.state === 'bad') {
+    return (
+      <em className="frrev-fix-bad">
+        ⛔ Судья ошибся{check.what ? `: ${check.what}` : ''}. Кнопки на этот вариант нет.
+        {check.why ? ` ${check.why}` : ''}
+      </em>
+    );
+  }
+  if (check.state === 'unknown') {
+    return <em className="frrev-fix-unknown">Проверить эту правку не удалось — решай сам.</em>;
+  }
+  return null;
+}
+
 export default function PhraseReviewScreen({ api, haptic, onClose }) {
   const [items, setItems] = useState(null);
   const [idx, setIdx] = useState(0);
@@ -224,6 +249,13 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
 
   const arbiter = card.arbiter || null;
 
+  // Сколько правок судей забраковала проверка. Нужно, чтобы отличить «судьи ничего не
+  // предложили» от «предложили, но это не прошло проверку» — это разные сообщения.
+  const rejectedCount = (card.judges || []).reduce((sum, j) => (
+    sum + (j.corrected_check?.state === 'bad' ? 1 : 0)
+        + (j.proposal_check?.state === 'bad' ? 1 : 0)
+  ), 0);
+
   return (
     <div className={`pinw frrev-w${typing ? ' typing' : ''}`}>
       <div className="pinw-top pinw-top-row">
@@ -265,20 +297,22 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
               </div>
               {j.why ? <div className="frrev-judge-why">{j.why}</div> : null}
               {j.corrected ? (
-                <div className="frrev-judge-fix">
+                <div className={`frrev-judge-fix${j.corrected_check?.state === 'bad' ? ' is-rejected' : ''}`}>
                   {j.corrected_slot != null ? <b>Вариант {j.corrected_slot + 1}</b> : null}
                   <code>{j.corrected}</code>
                   {/* Перевод замены — единственный способ увидеть, что судья сохранил
                       смысл, а не подменил его другим управлением глагола. */}
                   {j.corrected_ru ? <em>— {j.corrected_ru}</em> : null}
+                  <FixCheck check={j.corrected_check} />
                 </div>
               ) : null}
               {j.proposal ? (
-                <div className="frrev-judge-fix">
+                <div className={`frrev-judge-fix${j.proposal_check?.state === 'bad' ? ' is-rejected' : ''}`}>
                   {j.proposal_slot != null ? <b>Вариант {j.proposal_slot + 1}</b> : null}
                   <code>{j.proposal}</code>
                   {j.proposal_ru ? <em>— {j.proposal_ru}</em> : null}
                   <em>дописано недостающее</em>
+                  <FixCheck check={j.proposal_check} />
                 </div>
               ) : null}
             </div>
@@ -302,10 +336,24 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
             и она больше не вернётся в этот разбор.
           </div>
         ) : null}
+        {/* Кнопок нет по двум РАЗНЫМ причинам, и путать их нельзя: либо судьи вообще
+            ничего не предложили, либо предложили — и проверка это забраковала. Во
+            втором случае «варианта не дали» было бы враньём: варианты выше на экране,
+            перечёркнутые, с причиной. */}
         {!variants.length && !card.all_ok ? (
           <div className="frrev-nofix">
-            Готового варианта судьи не дали. Спроси заново — промпт с 08.08.2026 требует
-            показывать исправленный текст, а эта фраза судилась раньше.
+            {rejectedCount > 0 ? (
+              <>
+                Оба варианта судей проверку не прошли — принимать нечего. Посмотри
+                перечёркнутые выше: там написано, что с ними не так. Дальше — оставить
+                фразу как есть, вписать свой вариант или спросить заново.
+              </>
+            ) : (
+              <>
+                Готового варианта судьи не дали. Нажми «Пересудить» — сейчас судья обязан
+                показывать исправленный текст, а эта фраза разбиралась по старым правилам.
+              </>
+            )}
           </div>
         ) : null}
 

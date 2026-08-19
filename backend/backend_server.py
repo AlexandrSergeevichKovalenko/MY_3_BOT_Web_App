@@ -30638,6 +30638,27 @@ _PHRASE_REVIEW_CATEGORY_RU = {
 }
 
 
+def _phrase_fix_check_ru(judge: dict, field: str) -> dict | None:
+    """Приговор проверке правки — в том виде, в каком его читает человек.
+
+    Три состояния, и они РАЗНЫЕ: годится / судья ошибся / проверить не удалось.
+    Последнее не притворяется ни первым, ни вторым.
+    """
+    check = judge.get(f"{field}_check") if isinstance(judge, dict) else None
+    if not isinstance(check, dict) or not check.get("checked"):
+        return {"state": "unknown", "why": ""} if judge.get(field) else None
+    bad = []
+    if not check.get("grammar_ok"):
+        bad.append("немецкий неверен")
+    if not check.get("meaning_kept"):
+        bad.append("смысл другой")
+    return {
+        "state": "ok" if not bad else "bad",
+        "what": ", ".join(bad),
+        "why": str(check.get("why") or ""),
+    }
+
+
 def _phrase_review_payload(limit: int = 200) -> dict:
     """Открытые спорные фразы в том виде, в каком их показывает экран.
 
@@ -30687,6 +30708,11 @@ def _phrase_review_payload(limit: int = 200) -> dict:
                     "proposal_ru": str(j.get("proposal_ru") or ""),
                     "corrected_slot": slot_of.get(str(j.get("corrected") or "").strip()),
                     "proposal_slot": slot_of.get(str(j.get("proposal") or "").strip()),
+                    # Приговор проверке правки. Кнопки у забракованной правки нет, но
+                    # сама она с экрана НЕ пропадает: владелец должен видеть, что судья
+                    # предложил и почему это отклонено, — иначе экран врёт молчанием.
+                    "corrected_check": _phrase_fix_check_ru(j, "corrected"),
+                    "proposal_check": _phrase_fix_check_ru(j, "proposal"),
                 }
                 for n, j in enumerate(judges, 1)
             ],
@@ -30753,6 +30779,15 @@ def answer_phrase_review_decide():
         note = "Фраза удалена из общего словаря."
     elif result.get("text"):
         note = f"Записал: {result['text']}"
+        # Текст записан — а разбор под него мог не собраться (модель не ответила). Тогда
+        # на слове остаётся разбор ПРО СТАРУЮ ФРАЗУ, и молчать об этом нельзя: раньше
+        # экран рапортовал «Записал», владелец шёл дальше, а половина работы не сделана.
+        if result.get("breakdown_rebuilt") is False:
+            note += ("\n⚠️ Разбор под новую фразу пока не собрался — на слове остался "
+                     "прежний. Нажми «Пересудить» позже или открой слово в словаре.")
+        # Перевод владельца — его решение, и оно не должно теряться молча.
+        if result.get("owner_ru_set") is False:
+            note += "\n⚠️ Твой перевод не встал главным — на слове остался прежний."
     else:
         # Ни одна из веток не записала текст: либо такая фраза уже есть, либо вариант
         # совпал с исходным. Строка при этом закрыта — врать «готово» нельзя.

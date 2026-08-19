@@ -23756,6 +23756,8 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
     ничего не меняет, а выглядит как решение — поэтому такие варианты сюда не попадают.
     Нумерация вариантов идёт ПОСЛЕ этого отсева, и она одна и та же везде: и на кнопках
     экрана, и при применении решения."""
+    from backend.phrase_night_check import fix_passed_check
+
     original = str(text or "").strip()
     out: list[dict] = []
     seen: set[str] = set()
@@ -23768,9 +23770,18 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
                 continue
             if any(_phrase_same_text(value, prev) for prev in seen):
                 continue
+            # Правка не прошла проверку своей же грамотности или сменила смысл — кнопки
+            # «Принять» у неё быть не должно. Владелец её всё равно увидит: в разборе
+            # судьи она остаётся, но с приговором проверки, а не с кнопкой. Иначе мы
+            # отдаём человеку на глаз ровно то, что обязана была отсеять система.
+            # Разобрано 19.08.2026 на «in den Taschen» — неверный падеж и другое число.
+            if fix_passed_check(j, field) is False:
+                continue
             seen.add(value)
             out.append({"judge": n, "field": field, "text": value,
-                        "ru": str(j.get(f"{field}_ru") or "").strip()})
+                        "ru": str(j.get(f"{field}_ru") or "").strip(),
+                        # «Не проверено» — не то же самое, что «проверено и годится».
+                        "checked": fix_passed_check(j, field) is True})
     # Третейский судья может предложить СВОЙ текст — когда правы оба наполовину. Он
     # идёт последним, чтобы номера уже показанных вариантов не сдвинулись под рукой у
     # владельца: он мог смотреть на экран до того, как спор разрешили.
@@ -23802,7 +23813,22 @@ _CORRECTION_UNTOUCHED_KEYS = frozenset({
 
 
 def _same_phrase(a, b) -> bool:
+    """ИСКАТЬ старый текст можно без оглядки на регистр: в карточке он мог осесть с
+    заглавной из начала предложения, и найти его надо всё равно."""
     return _squash_space(str(a or "")).casefold() == _squash_space(str(b or "")).casefold()
+
+
+def _phrase_unchanged(old_text: str, new_text: str) -> bool:
+    """А вот РЕШАТЬ «правка пустая, разъезжать нечего» надо С УЧЁТОМ РЕГИСТРА.
+
+    В немецком регистр — это грамматика, а не оформление: «Es ist mir Latte» → «latte»
+    и «um Rund die Hälfte» → «rund» — тут вся правка ИМЕННО в букве. Пока здесь стоял
+    _same_phrase, такая правка считалась пустой, и spread_correction_everywhere выходил
+    на первой строке: справочник владелец поправил, а в карточке человека оставалось
+    старое написание. Замер 19.08.2026: обе правки регистра, сделанные владельцем в тот
+    день, разъехались — то есть класс ломался целиком, 2 из 2.
+    """
+    return _squash_space(str(old_text or "")) == _squash_space(str(new_text or ""))
 
 
 def _replace_phrase_deep(node, old_text: str, new_text: str) -> tuple:
@@ -23846,7 +23872,7 @@ def spread_correction_everywhere(cursor, *, unit_id: int, old_text: str, new_tex
     сходились 5 из 5, после наивной замены сошлось бы 0.
     """
     report = {"cards": 0, "places": 0, "pool": 0, "tasks_dropped": 0}
-    if not old_text or _same_phrase(old_text, new_text):
+    if not old_text or _phrase_unchanged(old_text, new_text):
         return report
 
     # разбор на самом слове
@@ -24055,16 +24081,73 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
             )
         conn.commit()
     result["text"] = new_text
+    # ВЫБОР ВЛАДЕЛЬЦА СТАВИТСЯ ДО ТОГО, КАК МЫ ПОЙДЁМ К МОДЕЛИ.
+    #
+    # Раньше перевод владельца поднимался главным ВНУТРИ пересборки разбора, то есть
+    # ПОСЛЕ запроса к модели. Сорвался запрос — и выбор человека пропадал целиком.
+    # Замер 19.08.2026: из 40 решений владельца за два дня так потерялись два
+    # (#138 «ein Stanizel Eis», #171 «Da Sie ja bereits…») — на слове не осталось ни
+    # одной связи «вычитка», сверху стоял перевод из пула. Решение человека не имеет
+    # права зависеть от того, ответила ли модель.
+    if chosen_ru:
+        result["owner_ru_set"] = promote_owner_translation(result["unit_id"], chosen_ru)
     # Фраза стала другой — значит и разбор к ней другой. Латать старый заменой текста
     # нельзя: если существительное внутри примера стоит в другом падеже, замена по
     # строке либо не сработает, либо испортит падеж. Мы делаем лингвистический продукт,
     # поэтому разбор СОБИРАЕТСЯ ЗАНОВО под новый текст. Событие редкое (правки идут
     # поштучно), так что расход копеечный. Решение владельца 06.08.2026.
+    #
+    # Не пересобрался — это НЕ «ничего страшного»: на слове остаётся разбор про старую
+    # фразу. Раньше это молча уходило в лог, экран рапортовал «Записал» и владелец не
+    # знал, что половина работы не сделана. Теперь исход едет наверх и его видно.
     try:
-        rebuild_unit_breakdown(int(result["unit_id"]), new_text, owner_translation=chosen_ru)
+        result["breakdown_rebuilt"] = bool(
+            rebuild_unit_breakdown(int(result["unit_id"]), new_text,
+                                   owner_translation=chosen_ru))
     except Exception as exc:
         logging.warning("разбор для %r не пересобрался: %s", new_text[:60], exc)
+        result["breakdown_rebuilt"] = False
     return result
+
+
+def promote_owner_translation(unit_id: int, owner_ru: str) -> bool:
+    """Поставить перевод, выбранный владельцем руками, ГЛАВНЫМ у этого слова.
+
+    Человек смотрел на экране на оба варианта и выбрал этот — его решение не должна
+    перебивать модель. Всем прочим связям слова уступить место, выбору владельца дать
+    rank = 1 и подпись «вычитка», чтобы потом было видно, откуда он взялся.
+    """
+    owner_ru = str(owner_ru or "").strip()
+    if not unit_id or not owner_ru:
+        return False
+    try:
+        from backend.lex_units import ensure_unit
+        owner_unit = ensure_unit(owner_ru, "ru")
+        if not owner_unit:
+            return False
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                # Всем связям слова уступить первое место…
+                cursor.execute(
+                    "UPDATE bt_3_lex_links SET rank = GREATEST(rank, 20) "
+                    "WHERE from_unit = %s AND rank < 20 AND to_unit <> %s;",
+                    (int(unit_id), int(owner_unit)),
+                )
+                # …и поставить выбор владельца первым.
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_lex_links (from_unit, to_unit, rank, source)
+                    VALUES (%s, %s, 1, 'вычитка')
+                    ON CONFLICT (from_unit, to_unit)
+                    DO UPDATE SET rank = 1, source = 'вычитка', updated_at = NOW();
+                    """,
+                    (int(unit_id), int(owner_unit)),
+                )
+            conn.commit()
+        return True
+    except Exception:
+        logging.warning("перевод владельца не удалось поставить главным", exc_info=True)
+        return False
 
 
 def rebuild_unit_breakdown(unit_id: int, text: str, *, owner_translation: str = "") -> bool:
@@ -24109,34 +24192,10 @@ def rebuild_unit_breakdown(unit_id: int, text: str, *, owner_translation: str = 
     except Exception:
         logging.debug("связи после пересборки не обновились", exc_info=True)
     # Выбор владельца — ГЛАВНЫЙ перевод. Машинный, только что пришедший от модели,
-    # уступает ему место: человек видел оба варианта на экране и выбрал этот.
-    owner_ru = str(owner_translation or "").strip()
-    if owner_ru:
-        try:
-            from backend.lex_units import ensure_unit
-            owner_unit = ensure_unit(owner_ru, "ru")
-            if owner_unit:
-                with get_db_connection_context() as conn:
-                    with conn.cursor() as cursor:
-                        # Всем связям слова уступить первое место…
-                        cursor.execute(
-                            "UPDATE bt_3_lex_links SET rank = GREATEST(rank, 20) "
-                            "WHERE from_unit = %s AND rank < 20;",
-                            (int(unit_id),),
-                        )
-                        # …и поставить выбор владельца первым.
-                        cursor.execute(
-                            """
-                            INSERT INTO bt_3_lex_links (from_unit, to_unit, rank, source)
-                            VALUES (%s, %s, 1, 'вычитка')
-                            ON CONFLICT (from_unit, to_unit)
-                            DO UPDATE SET rank = 1, source = 'вычитка', updated_at = NOW();
-                            """,
-                            (int(unit_id), int(owner_unit)),
-                        )
-                    conn.commit()
-        except Exception:
-            logging.warning("перевод владельца не удалось поставить главным", exc_info=True)
+    # уступает ему место: человек видел оба варианта на экране и выбрал этот. Здесь это
+    # делается ПОВТОРНО (первый раз — до похода к модели, в apply_phrase_review_decision):
+    # sync_unit_links_from_card только что развесил машинные связи и мог перебить ранг.
+    promote_owner_translation(int(unit_id), str(owner_translation or ""))
     return True
 
 

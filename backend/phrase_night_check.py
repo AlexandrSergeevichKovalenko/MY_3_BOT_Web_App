@@ -37,21 +37,104 @@ NIGHT_CAP = int(os.getenv("PHRASE_NIGHT_CHECK_CAP", "500") or "500")
 WORKERS = int(os.getenv("PHRASE_NIGHT_CHECK_WORKERS", "6") or "6")
 
 
+def _check_own_fixes(judge: dict, text: str, translation: str) -> dict:
+    """Проверить правки судьи ЕГО ЖЕ уровня качества — до того, как их кто-то увидит.
+
+    Судья ошибается двумя способами: выдаёт неграмотный немецкий и молча меняет смысл.
+    Живой случай 19.08.2026: «Steck das Portemonnaie in die Tasche» («в карман») оба
+    судьи предложили переписать в «in den Taschen» — это и неверный падеж (нужен
+    Akkusativ направления), и другое число («в карманы»). Проверять это строками мы
+    права не имеем — язык не арифметика, — поэтому спрашиваем модель отдельным вопросом
+    про ГОТОВЫЙ текст. Итог кладём рядом с правкой, в `corrected_check` /
+    `proposal_check`, и дальше по нему решают и ночь, и экран.
+    """
+    from backend.openai_manager import run_phrase_fix_check
+
+    for field in ("corrected", "proposal"):
+        fix = str(judge.get(field) or "").strip()
+        if not fix:
+            continue
+        try:
+            judge[f"{field}_check"] = _check_fix_twice(text, translation, fix)
+        except Exception as exc:
+            logging.debug("проверка правки судьи не прошла: %s", exc)
+            judge[f"{field}_check"] = {"checked": False}
+    return judge
+
+
+def _check_fix_twice(text: str, translation: str, fix: str) -> dict:
+    """Спросить проверяющего ДВАЖДЫ и забраковать правку только при единогласии.
+
+    Проверяющий — такая же модель, и на трудном месте ошибается: правку «Er war froh,
+    dass er das Schwein losgeworden war» один прогон забраковал со словами «слитное
+    написание неверно», хотя `losgeworden` — верное причастие от `loswerden`. Это тот же
+    приём, которым в этом файле держатся судьи: один голос — мнение, два совпавших —
+    основание. Здесь он развёрнут в сторону осторожности, потому что цена ошибок разная:
+
+      • ложно ЗАБРАКОВАТЬ — владелец теряет годную кнопку. Обидно, но текст и причина у
+        него перед глазами, и рядом есть поле «впиши свой вариант»;
+      • ложно ПРОПУСТИТЬ — неверный немецкий уезжает на кнопку, а при согласии судей и
+        молча в общий словарь, к людям.
+
+    Поэтому: забраковали оба — брак; разошлись — правка остаётся на кнопке, но помечена
+    спорной, и ночь её молча НЕ применяет (`fix_passed_check` вернёт None).
+    """
+    from backend.openai_manager import run_phrase_fix_check
+
+    first = run_phrase_fix_check(original=text, meaning_ru=translation, fix=fix) or {}
+    if not first.get("checked"):
+        return {"checked": False}
+    if first.get("grammar_ok") and first.get("meaning_kept"):
+        return first          # претензий нет — второй голос не нужен, это лишние деньги
+    second = run_phrase_fix_check(original=text, meaning_ru=translation, fix=fix) or {}
+    if not second.get("checked"):
+        return {"checked": False}
+    out = dict(first)
+    for key in ("grammar_ok", "meaning_kept"):
+        # Брак только тогда, когда его увидели ОБА.
+        out[key] = bool(first.get(key)) or bool(second.get(key))
+    if (bool(first.get("grammar_ok")) != bool(second.get("grammar_ok"))
+            or bool(first.get("meaning_kept")) != bool(second.get("meaning_kept"))):
+        out["disputed"] = True
+        out["why"] = str(second.get("why") or first.get("why") or "")
+    return out
+
+
 def _judge_twice(text: str, kind: str, translation: str = "") -> list[dict]:
     """Спросить судью дважды, независимо. Перевод передаём ОБОИМ: предлог и падеж в
     немецком выбираются по смыслу, и судья без перевода судит вслепую — на «Wappnen mit»
-    («запастись чем-то») оба независимо потребовали `gegen` и оба ошиблись."""
+    («запастись чем-то») оба независимо потребовали `gegen` и оба ошиблись.
+
+    Каждая предложенная правка сразу проходит проверку на грамотность и на сохранение
+    смысла (`_check_own_fixes`): показывать владельцу кнопку с неверным немецким —
+    это отдавать ему на проверку то, что должна была проверить система."""
     from backend.openai_manager import run_phrase_grammar_verdict
 
     out = []
     for _ in range(2):
         try:
-            out.append(run_phrase_grammar_verdict(
-                text=text, kind=kind, translation=translation) or {})
+            verdict = run_phrase_grammar_verdict(
+                text=text, kind=kind, translation=translation) or {}
         except Exception as exc:
             logging.debug("судья фраз не ответил: %s", exc)
-            out.append({})
+            verdict = {}
+        out.append(_check_own_fixes(verdict, text, translation) if verdict else verdict)
     return out
+
+
+def fix_passed_check(judge: dict, field: str) -> bool | None:
+    """Прошла ли эта правка проверку. True / False / None («не проверялась»).
+
+    None — честное третье состояние: проверка не отвечала, ответила не той формой или
+    два её прогона разошлись. Считать его «всё хорошо» нельзя, но и прятать вариант от
+    владельца из-за неуверенности проверки тоже нельзя — он остаётся на экране с
+    пометкой, а молча ночью не применяется."""
+    check = judge.get(f"{field}_check") if isinstance(judge, dict) else None
+    if not isinstance(check, dict) or not check.get("checked"):
+        return None
+    if not (bool(check.get("grammar_ok")) and bool(check.get("meaning_kept"))):
+        return False
+    return None if check.get("disputed") else True
 
 
 def _both_agree(judges: list[dict]) -> tuple[bool, str, str]:
@@ -71,6 +154,14 @@ def _both_agree(judges: list[dict]) -> tuple[bool, str, str]:
     fix_a = str(a.get("corrected") or "").strip()
     fix_b = str(b.get("corrected") or "").strip()
     if not fix_a or fix_a != fix_b:
+        return False, "", ""
+    # Согласие двух судей — это ещё не правильность. Оба могут ошибиться одинаково:
+    # 19.08.2026 оба дословно предложили «in den Taschen» — неверный падеж и другое
+    # число. Молча правим ТОЛЬКО то, что вдобавок прошло проверку своей же правки.
+    # «Не проверялась» (None) сюда тоже не пускаем: молчание проверки не согласие.
+    if fix_passed_check(a, "corrected") is not True:
+        return False, "", ""
+    if fix_passed_check(b, "corrected") is not True:
         return False, "", ""
     return True, str(a.get("category") or ""), fix_a
 

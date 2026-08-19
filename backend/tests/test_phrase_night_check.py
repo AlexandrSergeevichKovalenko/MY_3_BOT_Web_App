@@ -15,9 +15,20 @@ import unittest
 from backend.phrase_night_check import SILENT_CATEGORIES, _both_agree
 
 
-def v(verdict="error", category="rechtschreibung", corrected="", why="", proposal=""):
+# С 19.08.2026 согласия двух судей МАЛО: правка обязана ещё пройти проверку самой
+# себя — грамотна ли она и сохранён ли смысл. Оба судьи могут ошибиться одинаково:
+# на «Steck das Portemonnaie in die Tasche» оба дословно предложили «in den Taschen»
+# (неверный падеж + другое число). Поэтому судья в этих проверках по умолчанию несёт
+# пройденную проверку — иначе тесты мерили бы не то, ради чего написаны.
+# Что бывает, когда проверка НЕ пройдена или не отвечала — test_phrase_fix_is_checked.py.
+CHECK_PASSED = {"checked": True, "grammar_ok": True, "meaning_kept": True, "why": ""}
+
+
+def v(verdict="error", category="rechtschreibung", corrected="", why="", proposal="",
+      check=CHECK_PASSED):
     return {"verdict": verdict, "category": category, "corrected": corrected,
-            "proposal": proposal, "why": why}
+            "proposal": proposal, "why": why,
+            "corrected_check": check, "proposal_check": check}
 
 
 class JudgeVariantsTests(unittest.TestCase):

@@ -9055,6 +9055,128 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence",
     return out
 
 
+def run_phrase_fix_check(*, original: str, meaning_ru: str, fix: str) -> dict:
+    """Проверить ПРАВКУ САМОГО СУДЬИ, прежде чем показать её владельцу кнопкой.
+
+    ЗАЧЕМ. Судья — модель, и он ошибается ровно теми же способами, что и любая модель:
+    выдаёт неграмотный немецкий и молча меняет смысл. Разобрано с владельцем 19.08.2026
+    на живом случае:
+
+        фраза:   Steck das Portemonnaie in die Tasche.   («Положи кошелек в карман»)
+        правка:  Steck das Portemonnaie in den Taschen.  («Положи кошелек в карманы»)
+
+    Здесь два брака сразу. Первый: `in den Taschen` — Dativ, а «stecken in» про
+    направление и требует Akkusativ; судья объявил категорию «падеж» и в правке этот же
+    падеж сломал. Второй: единственное число стало множественным — и судья САМ это
+    написал в своём переводе, то есть расписался в подмене смысла. Оба судьи выдали
+    этот текст дословно; от молчаливой записи в общий словарь нас отделило только то,
+    что они назвали разные категории. Это случайность, а не защита.
+
+    ПОЧЕМУ СПРАШИВАЕМ МОДЕЛЬ, А НЕ СРАВНИВАЕМ СТРОКИ. «Поменялся ли смысл» и «грамотен
+    ли немецкий» — это язык, а не арифметика над буквами. Механическое правило здесь
+    запрещено (CLAUDE.md, правило ноль): мы не имеем права выводить немецкую форму или
+    смысл своей регуляркой. Поэтому источник ответа — отдельный вопрос к модели, где
+    она НЕ судит исходную фразу, а проверяет ГОТОВЫЙ текст по двум прямым вопросам.
+
+    Возвращает {"grammar_ok": bool, "meaning_kept": bool, "why": "<по-русски>"}.
+    Не ответила / не поняли ответ → {"checked": False}, и тогда правка остаётся
+    непроверенной: это НЕ «всё хорошо», и наверху это разные состояния.
+    """
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    fix = str(fix or "").strip()
+    original = str(original or "").strip()
+    if not api_key or not fix or len(fix) > 300:
+        return {"checked": False, "grammar_ok": None, "meaning_kept": None, "why": ""}
+    meaning = str(meaning_ru or "").strip()
+    system = (
+        "A grammar checker proposed a correction for a German dictionary entry. Check "
+        "the PROPOSED text - not the original. Answer two questions, separately.\n"
+        "1) grammar_ok: is the PROPOSED German text CLEARLY wrong German? Watch the case "
+        "after two-way prepositions in particular: a verb of putting/moving into something "
+        "takes the accusative (in die Tasche stecken), the dative marks a location (in der "
+        "Tasche liegen). A proposal that breaks this is grammar_ok=false.\n"
+        "   Answer grammar_ok=true unless you are sure a native speaker would call the text "
+        "wrong. A wrong `false` here silently hides a correct fix from the reader, so when "
+        "you hesitate, answer true. In particular these are NOT grammar errors:\n"
+        "   - punctuation at the very END (a missing or extra full stop, question or "
+        "exclamation mark). This is a dictionary entry, not running text;\n"
+        "   - capitalisation of the very first letter of the entry;\n"
+        "   - dictionary placeholders standing in for a real word: etwas, jemanden, jemandem, "
+        "sich, A, D, +Akk, +Dat, «...»;\n"
+        "   - an entry that is a fragment rather than a full sentence, and the word order "
+        "that follows from that;\n"
+        "   - colloquial but attested German.\n"
+        "2) meaning_kept: does the PROPOSED text still mean the same as the entry's saved "
+        "Russian meaning? Any change of number (one pocket -> several pockets), of person, "
+        "of tense or of the participants is meaning_kept=false. Wording may differ; the "
+        "situation described must not. If no Russian meaning was saved, answer true: with "
+        "nothing to compare against you must not invent a mismatch.\n"
+        "Judge only these two things. Do not comment on style.\n"
+        "If grammar_ok is false you MUST put the corrected German into `fixed`. A complaint "
+        "you cannot act on is an empty complaint: if your `fixed` would be the proposed text "
+        "itself, then the text is fine and grammar_ok is true.\n"
+        "`why` must be ONE short sentence IN RUSSIAN, for a reader who is learning German "
+        "and does not know grammar terms in German.\n"
+        "Answer STRICT JSON only: {\"grammar_ok\":true|false,\"meaning_kept\":true|false,"
+        "\"fixed\":\"<German or empty>\",\"why\":\"<RUSSIAN>\"}"
+    )
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=15)
+        resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(
+                    {"original": original, "meaning_ru": meaning, "proposed": fix},
+                    ensure_ascii=False)},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        logging.warning("run_phrase_fix_check failed fix=%s", fix[:64], exc_info=True)
+        return {"checked": False, "grammar_ok": None, "meaning_kept": None, "why": ""}
+    try:
+        u = getattr(resp, "usage", None)
+        if u:
+            _LAST_LLM_USAGE.set({
+                "model": "gpt-4.1-mini",
+                "prompt_tokens": int(getattr(u, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(u, "total_tokens", 0) or 0),
+            })
+    except Exception:
+        pass
+    try:
+        data = json.loads(resp.choices[0].message.content or "{}") or {}
+    except Exception:
+        return {"checked": False, "grammar_ok": None, "meaning_kept": None, "why": ""}
+    if not isinstance(data.get("grammar_ok"), bool) or not isinstance(data.get("meaning_kept"), bool):
+        # Ответ не той формы — считать его «проверено, всё хорошо» нельзя.
+        return {"checked": False, "grammar_ok": None, "meaning_kept": None, "why": ""}
+    grammar_ok = bool(data["grammar_ok"])
+    # ЖАЛОБА, КОТОРУЮ НЕЧЕМ ИСПРАВИТЬ, — НЕ ЖАЛОБА.
+    #
+    # Проверяющий страдает ровно тем же, за чем мы поставили его следить: объявляет
+    # ошибку и «исправляет» текст в самого себя. Живой пример 19.08.2026: правку
+    # «Er war froh, dass er das Schwein losgeworden war» он забраковал со словами
+    # «loswerden в причастии пишется слитно» — а в тексте оно слитно и написано.
+    # Сравнение двух строк на совпадение — это не языковое правило, а арифметика,
+    # поэтому здесь ей можно доверять: не смог показать ДРУГОЙ текст — претензии нет.
+    fixed = str(data.get("fixed") or "").strip()
+    if not grammar_ok and (not fixed or " ".join(fixed.split()) == " ".join(fix.split())):
+        logging.info("проверка правки объявила ошибку и не смогла её показать: %s", fix[:80])
+        grammar_ok = True
+    return {
+        "checked": True,
+        "grammar_ok": grammar_ok,
+        "meaning_kept": bool(data["meaning_kept"]),
+        "fixed": fixed,
+        "why": str(data.get("why") or "").strip(),
+    }
+
+
 def run_phrase_dispute_verdict(*, text: str, variants: list, translation: str = "",
                                kind: str = "collocation") -> dict:
     """Третейский судья: два первых разошлись — кто из них прав и почему.
