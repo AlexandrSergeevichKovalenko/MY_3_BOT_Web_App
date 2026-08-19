@@ -46,9 +46,16 @@ def build_task_supply_report(rows: list) -> str:
                      + (f" (в среднем {avg})" if avg is not None else "")
                      + f" + запас 20% = {r['per_day']}"
                      if measured is not None else f"расход {r['per_day']}/сутки")
-        lines.append(
-            f"    в банке {r['bank_total']}, человеку доступно {r['available']}, "
-            f"{rate_text}")
+        # «Дозревают» — сделанные, но пока не выдаваемые (кроссворду не нарисована
+        # картинка, аудированию не доехал звук). Без них отчёт читается как «банк
+        # не растёт»: замер идёт в 04:25, а дорисовка догоняет позже.
+        # Ключа нет только у рукописных строк в тестах — тогда приписки просто нет.
+        # Подставлять сюда число «на всякий случай» нельзя: приписка «+0 дозревают»
+        # соврала бы ровно там, где мы ничего не мерили.
+        ripening = int(r["bank_ripening"]) if "bank_ripening" in r else 0
+        bank_text = (f"в банке {r['bank_total']}"
+                     + (f" (+{ripening} дозревают)" if ripening else ""))
+        lines.append(f"    {bank_text}, человеку доступно {r['available']}, {rate_text}")
         if r["order_now"] > 0:
             lines.append(f"    ▸ дозаказать сегодня ночью: <b>{r['order_now']}</b>")
     if live:

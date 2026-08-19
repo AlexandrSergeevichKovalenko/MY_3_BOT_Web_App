@@ -60930,6 +60930,23 @@ def _bill_mistakes_audio_tts(
         logging.debug("mistakes-audio TTS billing skipped", exc_info=True)
 
 
+def vienna_day_bounds_utc(day: date) -> tuple[datetime, datetime]:
+    """Границы венских суток `day` в том виде, в каком время лежит в базе.
+
+    Колонки времени у нас `timestamp` БЕЗ зоны, а база живёт в UTC (`SHOW timezone`
+    → `Etc/UTC`), то есть в них записаны часы UTC. Сравнивать такую колонку с
+    `CURRENT_DATE` базы — значит сдвинуть сутки на смещение Вены: замер 19.08.2026
+    показал 54 задания, показанных человеку между 00:00 и 02:00 по Вене и помеченных
+    вчерашним днём. Поэтому границы считаются здесь, с настоящей зоной, и уходят в
+    запрос параметрами. Летом смещение +2, зимой +1 — брать его константой нельзя.
+    """
+    vienna = ZoneInfo("Europe/Vienna")
+    start_local = datetime(day.year, day.month, day.day, tzinfo=vienna)
+    end_local = start_local + timedelta(days=1)
+    return (start_local.astimezone(timezone.utc).replace(tzinfo=None),
+            end_local.astimezone(timezone.utc).replace(tzinfo=None))
+
+
 def _dispatch_daily_audio(target_date: date, *, only_user_id: int | None = None) -> dict:
     """Собрать и разослать «работу над ошибками» за дату.
 
@@ -60957,6 +60974,25 @@ def _dispatch_daily_audio(target_date: date, *, only_user_id: int | None = None)
 
     story_session_ids = {sid for sids in story_sessions.values() for sid in sids}
 
+    # ── Окно «вчера» ставится на САМУ ОШИБКУ, а не на выдачу задания ─────────────
+    # Замер 19.08.2026 по живой базе: в аудио за 18.08 ушло 15 фраз, из них 8 (53%)
+    # были ошибками, к которым человек в этот день не притрагивался. Разгадка в том,
+    # что план дня НАМЕРЕННО переподаёт старые ошибочные фразы (работа над ошибками,
+    # translation_workflow.py:4570), а строка в bt_3_detailed_mistakes живёт, пока
+    # человек фразу не закроет. Условия «ds.date = вчера» достаточно, чтобы мартовская
+    # ошибка зазвучала как вчерашняя: у владельца 4 фразы из 9 были именно такими,
+    # самой старой — пять месяцев (заведена 12.03, тронута 18.03).
+    # Решение владельца 19.08.2026: в аудио идёт ТОЛЬКО то, что человек делал вчера.
+    #
+    # Источник даты — last_seen: он проставляется NOW() и при первой, и при каждой
+    # повторной ошибке (translation_workflow.py, ON CONFLICT DO UPDATE SET last_seen),
+    # пустых значений нет ни в одной из 1198 строк базы (проверено 19.08.2026).
+    # Колонка типа timestamp БЕЗ зоны, а база живёт в UTC (SHOW timezone → Etc/UTC),
+    # поэтому границы венских суток считаем здесь и передаём параметрами: сравнивать
+    # их с CURRENT_DATE базы значит сдвинуть день на два часа (замер: 54 задания,
+    # показанных между 00:00 и 02:00 по Вене, помечены вчерашней датой).
+    mistake_window_from, mistake_window_to = vienna_day_bounds_utc(target_date)
+
     daily_rows = []
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -60972,6 +61008,8 @@ def _dispatch_daily_audio(target_date: date, *, only_user_id: int | None = None)
                           ON ds.id_for_mistake_table = dm.sentence_id
                          AND ds.user_id = dm.user_id
                         WHERE ds.date = %s
+                          AND dm.last_seen >= %s
+                          AND dm.last_seen < %s
                     )
                     SELECT
                         dm.user_id,
@@ -61010,7 +61048,8 @@ def _dispatch_daily_audio(target_date: date, *, only_user_id: int | None = None)
                     WHERE (latest_tr.session_id IS NULL OR latest_tr.session_id::text NOT IN %s)
                     ORDER BY dm.user_id, ds.unique_id;
                     """,
-                    (target_date, target_date, tuple(story_session_ids)),
+                    (target_date, mistake_window_from, mistake_window_to,
+                     target_date, tuple(story_session_ids)),
                 )
             else:
                 cursor.execute(
@@ -61024,6 +61063,8 @@ def _dispatch_daily_audio(target_date: date, *, only_user_id: int | None = None)
                           ON ds.id_for_mistake_table = dm.sentence_id
                          AND ds.user_id = dm.user_id
                         WHERE ds.date = %s
+                          AND dm.last_seen >= %s
+                          AND dm.last_seen < %s
                     )
                     SELECT
                         dm.user_id,
@@ -61061,9 +61102,38 @@ def _dispatch_daily_audio(target_date: date, *, only_user_id: int | None = None)
                     ) latest_tr ON TRUE
                     ORDER BY dm.user_id, ds.unique_id;
                     """,
-                    (target_date, target_date),
+                    (target_date, mistake_window_from, mistake_window_to, target_date),
                 )
             daily_rows = cursor.fetchall()
+            # Счётчик отсечённого: сколько ошибок лежало на вчерашних фразах, но
+            # сделано было НЕ вчера. Владелец должен видеть это число, а не гадать,
+            # почему выпуск стал короче: если оно вдруг обнулится на всех, значит
+            # переподача старых фраз перестала работать, и это уже другая беда.
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT dm.user_id, dm.sentence_id
+                    FROM bt_3_detailed_mistakes dm
+                    JOIN bt_3_daily_sentences ds
+                      ON ds.id_for_mistake_table = dm.sentence_id
+                     AND ds.user_id = dm.user_id
+                    WHERE ds.date = %s
+                    GROUP BY dm.user_id, dm.sentence_id
+                    -- фраза попадает сюда, только если НИ ОДНА её ошибка не вчерашняя:
+                    -- у одной фразы строк несколько (по типам ошибок), и достаточно
+                    -- одной свежей, чтобы фраза законно осталась в выпуске
+                    HAVING COUNT(*) FILTER (
+                        WHERE dm.last_seen >= %s AND dm.last_seen < %s) = 0
+                ) stale;
+                """,
+                (target_date, mistake_window_from, mistake_window_to),
+            )
+            # порядок параметров: ds.date, затем границы окна в HAVING
+            stale_left_out = int((cursor.fetchone() or [0])[0])
+    logging.info(
+        "mistakes-audio %s: в выпуск взято %s фраз, отсечено как не вчерашние %s",
+        target_date.isoformat(), len(daily_rows), stale_left_out,
+    )
 
     daily_by_user_pair: dict[tuple[int, str, str], list[dict]] = {}
     daily_names: dict[int, str] = {}

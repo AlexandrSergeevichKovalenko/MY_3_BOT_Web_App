@@ -50472,15 +50472,27 @@ def upsert_crossword_bank_entry(
         conn.commit()
 
 
-def count_crossword_bank_entries(*, exclude_retired: bool = True) -> int:
+def count_crossword_bank_entries(*, exclude_retired: bool = True,
+                                 ready_only: bool = False) -> int:
+    """Сколько кроссвордов в банке.
+
+    `ready_only=True` — считать ТЕМ ЖЕ правилом, каким банк меряет отчёт владельцу
+    (`_TASK_BANKS['cw']`): годен к выдаче только кроссворд с готовой картинкой.
+    Разбор 19.08.2026: пополнялка считала все неснятые (61), отчёт — готовые (59),
+    и заказ на 3 превращался в 1, потому что генератор считал уже сделанным то,
+    чего человек ещё не видит. Два счётчика на один банк — это и есть дефект.
+    """
+    where = []
+    if exclude_retired:
+        where.append("retired = FALSE")
+    if ready_only:
+        where.append("image_status = 'ready'")
+    sql = "SELECT COUNT(*) FROM bt_3_crossword_bank"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            if exclude_retired:
-                cursor.execute(
-                    "SELECT COUNT(*) FROM bt_3_crossword_bank WHERE retired = FALSE"
-                )
-            else:
-                cursor.execute("SELECT COUNT(*) FROM bt_3_crossword_bank")
+            cursor.execute(sql)
             row = cursor.fetchone()
             return int((row or [0])[0])
 
@@ -51271,6 +51283,14 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
             with conn.cursor() as cursor:
                 cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE {ready};")
                 bank_total = int((cursor.fetchone() or [0])[0])
+                # Отдельно — заготовки: они уже в банке и уже стоили денег, но
+                # человеку ещё не выдаются (кроссворду не нарисована картинка,
+                # аудированию не доехал звук, заданию пула не прошла приёмка).
+                # Без этого числа отчёт необъясним: 19.08.2026 владелец четвёртое
+                # утро подряд читал «в банке 60» при живом ночном пополнении —
+                # сделанное ночью просто не успевало стать выдаваемым к 04:25.
+                cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE retired = FALSE;")
+                bank_alive = int((cursor.fetchone() or [0])[0])
                 # Расход на человека в сутки и его личный «закрытый» список — одним
                 # запросом, чтобы отчёт не расходился между двумя замерами.
                 # Расход — СРЕДНИЙ по живым людям за окно, из журнала выдачи.
@@ -51333,7 +51353,8 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
     days = supply_days(available, per_day)
     return {
         "kind": str(kind), "title": TASK_KIND_TITLES.get(str(kind), str(kind)),
-        "bank_total": bank_total, "people": len(rows),
+        "bank_total": bank_total, "bank_ripening": max(0, bank_alive - bank_total),
+        "people": len(rows),
         "per_day": round(per_day, 2), "per_day_measured": round(top_rate, 2),
         "per_day_avg": round(avg_rate, 2),
         "people_active": len(rates), "blocked_deepest": deepest_blocked,

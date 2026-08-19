@@ -38014,50 +38014,110 @@ async def admin_task_supply_command(update: Update, context: CallbackContext) ->
     await message.reply_text(build_task_supply_report(rows), parse_mode="HTML")
 
 
+def _topup_fact_line(title: str, tonight: int, made: int, failed: int,
+                     reasons: list, deferred: int) -> str:
+    """Строка отчёта о ФАКТЕ дозаказа: что просили, что вышло, почему не вышло.
+
+    До 19.08.2026 здесь печаталось «заказано N» из плана, и владелец каждое утро
+    читал «Кроссворды: заказано 2, Анаграммы: заказано 1» независимо от того, что
+    случилось ночью. В ночь на 19.08 из этих трёх заданий родилось ОДНО: вторая
+    попытка кроссворда была отклонена приёмкой слов, а анаграмм не появилось ни
+    одной (проверено по банку: за 19.08 в bt_3_anagram_cards ноль строк). Отчёт,
+    который не отличает намерение от результата, обучает владельца себя не читать.
+    """
+    if made >= tonight and not failed:
+        head = f"{title}: сделано {made}"
+    else:
+        head = f"{title}: сделано {made} из {tonight}"
+    if failed:
+        head += f", не вышло {failed}"
+    # Причина — не украшение: без неё «мало заданий» повторяется каждое утро без
+    # единой зацепки, что именно чинить. Показываем разные причины, не повторяясь.
+    seen, uniq = set(), []
+    for r in reasons or []:
+        text = str(r).strip()
+        if text and text not in seen:
+            seen.add(text)
+            uniq.append(text)
+    if uniq:
+        head += " — " + "; ".join(uniq[:2])
+    if deferred:
+        head += f". Остаток {deferred} уйдёт следующей ночью"
+    return head
+
+
 async def _run_task_supply_topup(item: dict) -> str:
     """Дозаказать один вид заданий до нужного размера. Возвращает строку для отчёта.
 
     Пополнялки во всём проекте устроены как «дозаполни банк до N», поэтому заказ —
     это поднятая цель, а не отдельная порция.
+
+    Число сделанного берётся У САМОГО ГЕНЕРАТОРА и ничем не досчитывается: у одних
+    пополнялок оно называется `succeeded`, у других `generated`, поэтому читается
+    поимённо по видам, а не угадывается по словарю.
     """
     kind = str(item.get("kind") or "")
+    title = str(item.get("title") or kind)
     target = int(item.get("target_ready") or 0)
     tonight = int(item.get("tonight") or 0)
+    deferred = int(item.get("deferred") or 0)
+    reasons: list = []
     try:
         if kind == "rb":
             from backend.rebus_generator import prepare_rebus_pool
-            await asyncio.to_thread(prepare_rebus_pool, target_ready=target,
-                                    max_attempts=tonight * 3 + 10)
+            stats = await asyncio.to_thread(prepare_rebus_pool, target_ready=target,
+                                            max_attempts=tonight * 3 + 10)
+            made = int(stats["generated"])
+            # Ранний выход «уже хватает» ключа failed не заводит — это не дефолт
+            # вместо неизвестного, а честный ноль: попыток не было.
+            failed = int(stats["failed"]) if "failed" in stats else 0
         elif kind == "cw":
             from backend.crossword_generator import prepare_crossword_pool
-            await asyncio.to_thread(prepare_crossword_pool, target_ready=target,
-                                    max_attempts=tonight * 3 + 10)
+            stats = await asyncio.to_thread(prepare_crossword_pool, target_ready=target,
+                                            max_attempts=tonight * 3 + 10)
+            made, failed = int(stats["succeeded"]), int(stats["failed"])
+            reasons = list(stats["reasons"])
         elif kind == "article_quiz":
             from backend.article_quiz_generator import prepare_article_quiz_pool
-            await asyncio.to_thread(prepare_article_quiz_pool, target_ready=target,
-                                    max_attempts=tonight * 3 + 10)
+            stats = await asyncio.to_thread(prepare_article_quiz_pool,
+                                            target_ready=target,
+                                            max_attempts=tonight * 3 + 10)
+            made = int(stats["generated"])
+            failed = int(stats["failed"]) if "failed" in stats else 0
         elif kind == "ag":
+            # Своего счётчика у анаграмм нет: карточки делаются по одной. Считаем
+            # ровно то, что легло в банк, а обрыв цикла называем причиной — молчать
+            # о нём нельзя, из-за него банк не рос при рапорте «заказано 1».
+            made = attempted = 0
             for _ in range(tonight):
-                if not await _ensure_anagram_card():
+                attempted += 1
+                if await _ensure_anagram_card():
+                    made += 1
+                else:
+                    reasons.append("модель повторила уже имеющееся слово "
+                                   "или не дала годного")
                     break
+            # Считаем ПОПЫТКИ, а не остаток заказа: после обрыва цикла остальные
+            # карточки не провалились — их даже не пробовали делать. Записать их
+            # в «не вышло» значило бы придумать число, которого никто не мерил.
+            failed = attempted - made
         elif kind == "ls":
             # Аудирование: банк самый тонкий из всех, и заказ ему нужен раньше прочих.
             # Синтез озвучки идёт отдельной ночной работой (_backfill_listening_audio),
             # поэтому здесь только тексты — запись станет выдаваемой, когда доедет звук.
             from backend.listening_generator import prepare_listening_pool
-            await asyncio.to_thread(prepare_listening_pool, target_ready=target,
-                                    max_attempts=tonight * 2 + 5)
+            stats = await asyncio.to_thread(prepare_listening_pool, target_ready=target,
+                                            max_attempts=tonight * 2 + 5)
+            made, failed = int(stats["succeeded"]), int(stats["failed"])
         else:
             # Пул заданий наполняется по каждому формату отдельно своей ночной
             # работой — молча подменять её цель нельзя, поэтому честно говорим,
             # что этот вид заказан НЕ был.
-            return f"{item.get('title')}: не заказано (пул наполняется по форматам)"
-        return f"{item.get('title')}: заказано {tonight}" + (
-            f", остаток {item['deferred']} уйдёт следующей ночью"
-            if item.get("deferred") else "")
+            return f"{title}: не заказано (пул наполняется по форматам)"
+        return _topup_fact_line(title, tonight, made, failed, reasons, deferred)
     except Exception:
         logging.warning("task_supply: дозаказ не прошёл kind=%s", kind, exc_info=True)
-        return f"{item.get('title')}: ЗАКАЗ НЕ ПРОШЁЛ, смотри логи"
+        return f"{title}: ЗАКАЗ НЕ ПРОШЁЛ, смотри логи"
 
 
 async def _task_supply_watch_job(context: CallbackContext) -> None:
@@ -38082,11 +38142,18 @@ async def _task_supply_watch_job(context: CallbackContext) -> None:
             logging.info("task_supply topup: %s", "; ".join(ordered))
         if not alerts and not ordered:
             return
-        text = ("⚠️ <b>Заканчиваются задания</b>\n\n"
-                + "\n".join(f"• {a}" for a in alerts)
-                + ("\n\n🛠 <b>Дозаказано ночью:</b>\n"
-                   + "\n".join(f"• {o}" for o in ordered) if ordered else "")
-                + "\n\n" + build_task_supply_report(rows))
+        # Заголовок обязан совпадать с содержимым. «⚠️ Заканчиваются задания» —
+        # только когда правда заканчиваются (запас меньше недели, `task_supply_alerts`).
+        # Ночь, в которую просто дозаказали впрок при запасе в 29 дней, — это не
+        # тревога, а отчёт о работе; с тревожной шапкой и пустой строкой под ней
+        # (список alerts был пуст) письмо выглядело поломанным.
+        head = ("⚠️ <b>Заканчиваются задания</b>\n\n"
+                + "\n".join(f"• {a}" for a in alerts) + "\n\n") if alerts else \
+               "🛠 <b>Ночной дозаказ заданий</b>\n\n"
+        text = (head
+                + ("<b>Что вышло за ночь:</b>\n"
+                   + "\n".join(f"• {o}" for o in ordered) + "\n\n" if ordered else "")
+                + build_task_supply_report(rows))
         for admin_id in (get_admin_telegram_ids() or []):
             try:
                 await context.bot.send_message(chat_id=int(admin_id), text=text,

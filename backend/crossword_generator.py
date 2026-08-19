@@ -751,7 +751,7 @@ def prepare_crossword_pool(
     )
 
     stats = {"attempted": 0, "succeeded": 0, "failed": 0, "skipped": 0, "retired": 0,
-             "re_render": 0}
+             "re_render": 0, "rendered": 0, "render_failed": 0, "reasons": []}
     if force_fresh:
         stats["retired"] = retire_all_crossword_bank_entries()
         logging.info("crossword_pool: force_fresh retired=%d", stats["retired"])
@@ -770,7 +770,22 @@ def prepare_crossword_pool(
         if shape["retired"] or shape["re_render"]:
             logging.info("crossword_pool: форма — снято=%d, на перерисовку=%d",
                          shape["retired"], shape["re_render"])
-    existing = count_crossword_bank_entries()
+    # ── Один счётчик на банк ────────────────────────────────────────────────────
+    # И отчёт владельцу, и эта пополнялка считают ГОТОВЫЕ кроссворды
+    # (`image_status='ready'`, см. `_TASK_BANKS['cw']` в backend/database.py).
+    # Замер 19.08.2026: отчёт видел 59 готовых и просил наполнить до 62, а здесь
+    # считались ВСЕ неснятые (61, вместе с ненарисованными) — заказ на 3 молча
+    # превращался в 1. Чтобы «готовые» не отставали от «сделанных», сперва
+    # дорисовываем ждущие: рисование локальное (PNG + выгрузка в R2,
+    # backend/crossword_renderer.py:226), модели и денег не стоит.
+    from backend.crossword_renderer import prepare_crossword_images_batch
+    render = prepare_crossword_images_batch(limit=max(10, int(target_ready)))
+    stats["rendered"] = render["succeeded"]
+    stats["render_failed"] = render["failed"]
+    if render["attempted"]:
+        logging.info("crossword_pool: дорисовано %d, не вышло %d",
+                     render["succeeded"], render["failed"])
+    existing = count_crossword_bank_entries(ready_only=True)
     needed = max(0, target_ready - existing)
 
     if needed == 0:
@@ -788,6 +803,10 @@ def prepare_crossword_pool(
             logging.info("crossword_pool: generated crossword_id=%s", cid)
         except Exception as exc:
             stats["failed"] += 1
+            # Причина нужна не логу, а владельцу: ночной отчёт обязан сказать не
+            # только «сделано 1 из 3», но и почему остальные не родились. Иначе
+            # «мало заданий» будет повторяться каждое утро без единой зацепки.
+            stats["reasons"].append(str(exc))
             logging.warning("crossword_pool: generation failed: %s", exc)
         time.sleep(2.0)  # respect OpenAI rate limits
 

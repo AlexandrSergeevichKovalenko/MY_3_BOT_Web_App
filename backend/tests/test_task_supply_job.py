@@ -52,6 +52,21 @@ class NightlyTopupTests(unittest.IsolatedAsyncioTestCase):
                          "пополнялка наполняет банк ДО цели, а не делает N сверх")
         send.assert_awaited()
 
+    async def test_headline_matches_the_letter(self):
+        """Шапка «⚠️ Заканчиваются задания» — только когда правда заканчиваются.
+        При запасе 29 дней это обычный ночной дозаказ, а не тревога, и пустой
+        строки под тревожным заголовком быть не должно."""
+        _, send = await self._run_job([_row(available=61, supply_days=29.0,
+                                            order_now=2)])
+        text = send.await_args.kwargs["text"]
+        self.assertIn("Ночной дозаказ", text)
+        self.assertNotIn("Заканчиваются задания", text)
+
+        _, send = await self._run_job([_row(available=3, supply_days=3.0,
+                                            order_now=25)])
+        text = send.await_args.kwargs["text"]
+        self.assertIn("Заканчиваются задания", text)
+
     async def test_broken_measurement_orders_nothing(self):
         topup, _ = await self._run_job([{"kind": "cw", "error": "замер не удался"}])
         topup.assert_not_awaited()
@@ -75,12 +90,47 @@ class TopupDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_listening_is_actually_ordered(self):
         """15.08.2026: аудирование — единственный вид, которому заказ реально нужен
         (банк 23 при расходе 0.87 в сутки), и оно единственное не было подключено."""
-        with patch("backend.listening_generator.prepare_listening_pool") as gen:
+        with patch("backend.listening_generator.prepare_listening_pool",
+                   return_value={"attempted": 3, "succeeded": 3, "failed": 0,
+                                 "skipped": 0}) as gen:
             out = await bot_3._run_task_supply_topup(
                 {"kind": "ls", "title": "Аудирование", "tonight": 3, "target_ready": 26})
         gen.assert_called_once()
         self.assertEqual(gen.call_args.kwargs["target_ready"], 26)
-        self.assertIn("заказано 3", out)
+        self.assertIn("сделано 3", out)
+
+    async def test_report_tells_the_fact_not_the_plan(self):
+        """19.08.2026: отчёт четвёртое утро подряд писал «Кроссворды: заказано 2»,
+        а рождался один — вторую попытку отклоняла приёмка слов. Намерение и
+        результат в отчёте владельцу обязаны отличаться."""
+        with patch("backend.crossword_generator.prepare_crossword_pool",
+                   return_value={"attempted": 2, "succeeded": 1, "failed": 1,
+                                 "skipped": 0, "retired": 0, "re_render": 0,
+                                 "rendered": 0, "render_failed": 0,
+                                 "reasons": ["загаданы неходовые слова (TASTEN)"]}):
+            out = await bot_3._run_task_supply_topup(
+                {"kind": "cw", "title": "Кроссворды", "tonight": 2, "target_ready": 62})
+        self.assertIn("сделано 1 из 2", out)
+        self.assertIn("не вышло 1", out)
+        self.assertIn("TASTEN", out, "причина отказа обязана дойти до владельца")
+
+    async def test_anagram_break_is_not_reported_as_success(self):
+        """Дубль слова обрывал цикл, а строка рапортовала полный заказ: в ночь на
+        19.08 отчёт сказал «Анаграммы: заказано 1» при нуле новых карточек."""
+        with patch.object(bot_3, "_ensure_anagram_card",
+                          new=AsyncMock(return_value=None)):
+            out = await bot_3._run_task_supply_topup(
+                {"kind": "ag", "title": "Анаграммы", "tonight": 2, "target_ready": 62})
+        self.assertIn("сделано 0 из 2", out)
+        self.assertNotIn("заказано 2", out)
+
+    async def test_full_order_reads_plainly(self):
+        """Когда всё вышло — строка короткая, без «из N» и без причин."""
+        with patch.object(bot_3, "_ensure_anagram_card",
+                          new=AsyncMock(return_value={"card_id": "x"})):
+            out = await bot_3._run_task_supply_topup(
+                {"kind": "ag", "title": "Анаграммы", "tonight": 2, "target_ready": 62})
+        self.assertEqual(out, "Анаграммы: сделано 2")
 
     async def test_failure_is_reported_not_swallowed(self):
         with patch("backend.rebus_generator.prepare_rebus_pool",
