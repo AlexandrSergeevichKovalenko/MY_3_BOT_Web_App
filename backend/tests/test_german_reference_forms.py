@@ -270,3 +270,67 @@ def test_подпись_источника_не_затирается(monkeypatch
     monkeypatch.setattr(R, "load_adjective_degrees",
                         lambda word: {"positive": "x", "comparative": "y", "superlative": "am z"})
     assert R.adjective_degrees_for("x")["source"] == "wiktionary-steigerung"
+
+
+# ── Система на будущее: новое слово не должно повторять историю ──────────────
+# Владелец 19.08.2026: «когда я буду добавлять слова, которые справочник знает, но форм
+# не даёт, они опять будут попадать как непокрытые?» Эти тесты отвечают «нет».
+
+ADVERB_SOURCE = """
+== allerdings ({{Sprache|Deutsch}}) ==
+=== {{Wortart|Adverb|Deutsch}} ===
+{{Bedeutungen}}
+:[1] тем не менее
+"""
+
+VERB_SOURCE = """
+== ausstatten ({{Sprache|Deutsch}}) ==
+=== {{Wortart|Verb|Deutsch}} ===
+"""
+
+ADJ_NO_TABLE_SOURCE = """
+== facile ({{Sprache|Deutsch}}) ==
+=== {{Wortart|Adjektiv|Deutsch}} ===
+"""
+
+
+def test_наречие_без_степеней_это_ответ_а_не_пустота():
+    """«allerdings» — наречие, степеней у него не бывает. Это знание, а не пробел."""
+    degrees = R.degrees_from_source(ADVERB_SOURCE)
+    assert degrees["gradable"] is False
+    assert degrees["positive"] == "allerdings"
+
+
+def test_прилагательное_без_таблицы_остаётся_вопросом():
+    """У прилагательного таблица быть обязана — её отсутствие может быть пробелом
+    справочника, и молча звать слово несравнимым нельзя. Поймано на «facile»."""
+    assert R.degrees_from_source(ADJ_NO_TABLE_SOURCE) == {}
+
+
+def test_чужая_часть_речи_идёт_в_дефекты_заголовка_а_не_владельцу():
+    """«ausstatten» лежит у нас как прилагательное, а это глагол. Спрашивать
+    у человека «какой артикль у глагола» — впустую тратить его время."""
+    where, why = R.classify_uncovered("ausstatten", "adjective", VERB_SOURCE)
+    assert where == "заголовок"
+    assert "Verb" in why
+
+
+def test_страницы_нет_это_тоже_дефект_заголовка():
+    where, why = R.classify_uncovered("Bierhausschwätzer", "noun", "")
+    assert where == "заголовок"
+    assert "страницы" in why
+
+
+def test_настоящее_слово_остаётся_вопросом_владельцу():
+    where, _why = R.classify_uncovered("Gleichgesinnte", "noun",
+                                       "== Gleichgesinnte ({{Sprache|Deutsch}}) ==\n"
+                                       "=== {{Wortart|Substantiv|Deutsch}} ===")
+    assert where == "владельцу"
+
+
+def test_ночная_работа_идёт_тем_же_путём_что_разовая_чистка():
+    """Защита от расхождения: ночная работа обязана звать тот же разбор остатка."""
+    import inspect
+    source = inspect.getsource(R.warm_nightly)
+    assert "warm_from_source_bulk" in source, "ночью обязан работать быстрый путь по исходнику"
+    assert "triage_unresolved" in source, "ночью обязан работать разбор остатка"

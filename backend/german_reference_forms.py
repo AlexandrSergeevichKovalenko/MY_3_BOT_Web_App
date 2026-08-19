@@ -917,7 +917,31 @@ def degrees_from_source(text: str) -> dict[str, str]:
             superlative = "am " + superlative
         return {"positive": positive, "comparative": comparative,
                 "superlative": superlative, "gradable": True}
+    # Таблицы степеней на странице нет. Это НЕ пустота, если справочник объявил слово
+    # наречием: у наречий образа действия («allerdings», «ansonsten», «abermals»)
+    # степеней сравнения не бывает в языке, и отсутствие таблицы — это ОТВЕТ.
+    #
+    # Владелец 19.08.2026: «когда я буду добавлять слова, которые справочник знает, но
+    # форм не даёт, они опять будут попадать как непокрытые?» Раньше — да, попадали бы.
+    # Теперь правило стоит НА ВХОДЕ, а не в разовой чистке: 62 наречия ушли из очереди
+    # именно по нему, и новые туда больше не попадут.
+    #
+    # Слово, объявленное ПРИЛАГАТЕЛЬНЫМ без таблицы, сюда не попадает намеренно: это
+    # может быть пробел справочника, а не свойство языка. Проверка вреда 19.08.2026
+    # нашла ровно один такой случай («facile»), и он остаётся вопросом к владельцу.
+    kinds = set(re.findall(r"\{\{Wortart\|([^|}]+)", str(text or "")))
+    if kinds and "Adjektiv" not in kinds:
+        head = _first_headword(text)
+        if head:
+            return {"positive": head, "comparative": "", "superlative": "",
+                    "gradable": False}
     return {}
+
+
+def _first_headword(text: str) -> str:
+    """Заголовок из шапки немецкого раздела: «== allerdings ({{Sprache|Deutsch}}) ==»."""
+    match = re.search(r"==\s*([^=(]+?)\s*\(\{\{Sprache\|Deutsch\}\}\)", str(text or ""))
+    return match.group(1).strip() if match else ""
 
 
 def fetch_sources_bulk(titles: list[str]) -> dict[str, str] | None:
@@ -1086,3 +1110,102 @@ def warm_with_model(*, limit: int = 0) -> dict:
         stats["не закрыто"] += 1
         mark_unresolved(word, pos, "ни справочник, ни композит, ни модель")
     return stats
+
+
+# ── Разбор непокрытого: вопрос владельцу или дефект заголовка ────────────────
+_POS_OK = {"adjective": {"Adjektiv", "Adverb"}, "adverb": {"Adjektiv", "Adverb"},
+           "noun": {"Substantiv"}}
+
+
+def classify_uncovered(word: str, pos: str, source_text: str) -> tuple[str, str]:
+    """(куда деть, почему). Правило одно и то же для разовой чистки и для ночной работы.
+
+    Владелец 19.08.2026 требует, чтобы система была точной НА БУДУЩЕЕ, а не чинилась
+    разово. Поэтому разбор непокрытого слова живёт ЗДЕСЬ и вызывается ночным прогревом,
+    а не только скриптом: новое слово, у которого справочник не знает страницы или
+    объявляет другую часть речи, — это дефект НАШЕГО заголовка, а не вопрос к человеку.
+    Спрашивать «какой артикль у глагола ausstatten» бессмысленно.
+
+    Разбор очереди 19.08.2026 на 181 слове: 111 негодных заголовков, 62 наречия без
+    степеней, 8 настоящих вопросов.
+    """
+    text = str(source_text or "")
+    if not text:
+        return "заголовок", "страницы в справочнике нет"
+    kinds = set(re.findall(r"\{\{Wortart\|([^|}]+)", text))
+    if kinds and not (kinds & _POS_OK.get(pos, set())):
+        return "заголовок", f"часть речи не {pos}, а {sorted(kinds)[:3]}"
+    return "владельцу", "слово настоящее, форм справочник не дал"
+
+
+def mark_headword_defect(word: str, pos: str, why: str) -> None:
+    """Негодный заголовок: пишем с пометкой «разобрано», чтобы владельцу не приходило.
+
+    Строка остаётся в таблице — это список работ по заголовкам, а не мусорная корзина.
+    """
+    from backend.database import get_db_connection_context
+    key = str(word or "").strip()
+    if not key:
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO bt_3_reference_forms_unresolved
+                           (word, pos, reason, reviewed, checked_at)
+                    VALUES (%s, %s, %s, TRUE, NOW())
+                    ON CONFLICT (word) DO UPDATE
+                       SET reason = EXCLUDED.reason, reviewed = TRUE, checked_at = NOW();
+                    """,
+                    (key, str(pos or ""), f"негодный заголовок: {why}"),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("формы из справочника: не записал дефект заголовка %s", key, exc_info=True)
+
+
+def warm_nightly(*, limit: int = 120, allow_model: bool = True) -> dict:
+    """Ночная порция: тот же путь, каким шла разовая чистка. Никаких отличий.
+
+    Раньше ночная работа ходила старым путём (разметка по одной странице, модель
+    выключена, разбор непокрытого отсутствовал) — и новое слово повторяло всю историю
+    заново. Теперь порядок один: исходник пачкой → составное слово → модель → разбор
+    остатка на «вопрос владельцу» и «дефект заголовка».
+    """
+    stats = warm_from_source_bulk(limit=limit)
+    if allow_model:
+        stats["добор"] = warm_with_model(limit=limit)
+    stats["разбор остатка"] = triage_unresolved(limit=limit)
+    return stats
+
+
+def triage_unresolved(*, limit: int = 120) -> dict:
+    """Развести непокрытое на вопросы владельцу и дефекты заголовков."""
+    import time
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT word, pos FROM bt_3_reference_forms_unresolved "
+                        "WHERE NOT reviewed ORDER BY checked_at LIMIT %s;", (int(limit),))
+            queue = [(str(a), str(b)) for a, b in (cur.fetchall() or [])]
+    out = {"владельцу": 0, "заголовок": 0, "справочник молчал": 0}
+    for start in range(0, len(queue), 40):
+        chunk = queue[start:start + 40]
+        sources = None
+        for _ in range(3):
+            sources = fetch_sources_bulk([_reference_title(w, p) for w, p in chunk])
+            if sources is not None:
+                break
+            time.sleep(8)
+        if sources is None:
+            out["справочник молчал"] += len(chunk)
+            continue
+        for word, pos in chunk:
+            text = sources.get(_reference_title(word, pos)) or sources.get(word) or ""
+            where, why = classify_uncovered(word, pos, text)
+            if where == "заголовок":
+                mark_headword_defect(word, pos, why)
+            out[where] += 1
+        time.sleep(2)
+    return out

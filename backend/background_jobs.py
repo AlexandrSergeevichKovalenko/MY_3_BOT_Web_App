@@ -2555,14 +2555,21 @@ def run_reference_forms_warm_actor() -> None:
     уходит в лимит примерно на десятом запросе подряд. Разовый полный обход делает
     scripts/warm_reference_forms_all.py."""
     from backend.german_reference_forms import (
-        ensure_german_reference_forms_schema, warm_reference_forms,
+        ensure_german_reference_forms_schema, warm_nightly,
     )
     import os as _os
     ensure_german_reference_forms_schema()
-    report = warm_reference_forms(
+    # Ночная работа идёт ТЕМ ЖЕ путём, что разовая чистка 19.08.2026: исходник пачкой
+    # по 50 слов → разбор составного слова → модель с двумя совпавшими ответами →
+    # разбор остатка на «вопрос владельцу» и «дефект заголовка».
+    #
+    # Раньше здесь был старый путь: разметка по одной странице (медленнее и, как
+    # показала сверка, менее точный — на «Zeit» он выдавал «die Zeits»), модель
+    # выключена, разбора остатка нет. Новое слово повторяло бы всю историю заново, и
+    # наречие вроде «allerdings» опять числилось бы непокрытым.
+    report = warm_nightly(
         limit=int((_os.getenv("REFERENCE_FORMS_WARM_BATCH") or "120").strip() or "120"),
-        pause_sec=float((_os.getenv("REFERENCE_FORMS_WARM_PAUSE_SEC") or "4").strip() or "4"),
-        allow_model=(_os.getenv("REFERENCE_FORMS_WARM_MODEL") or "0").strip() == "1",
+        allow_model=(_os.getenv("REFERENCE_FORMS_WARM_MODEL") or "1").strip() == "1",
     )
     logging.info("формы из справочника: прогрев %s", report)
 
