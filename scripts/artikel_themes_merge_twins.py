@@ -49,6 +49,10 @@ MERGES: list[tuple[str, str, str, str]] = [
     ("bau_montage",      "werkzeug_material", "Werkzeug & Bau",    "Инструменты и стройка"),
     ("party_freizeit",   "feste_traditionen", "Feste & Feiern",    "Праздники и застолья"),
     ("einkauf_laden",    "dienstleistung",   "Einkauf & Service",  "Магазин и услуги"),
+    # 20.08.2026, вторая волна. Пару нашёл не глазомер, а проверка «слово на своём
+    # ли месте»: она ловила слова, кочующие между этими двумя темами (der Diamant
+    # из «Денег» в «Экономику»), то есть темы неразличимы и для судьи тоже.
+    ("wirtschaft_geld",  "geld_bank",        "Geld & Wirtschaft",  "Деньги и экономика"),
 ]
 
 # Таблицы, где тема встречается ссылкой и должна поехать за словами.
