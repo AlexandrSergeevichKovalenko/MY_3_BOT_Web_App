@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import os
+
 import json
 import logging
 import re
@@ -725,10 +727,26 @@ def ensure_unit(text: str, lang: str) -> int | None:
     # В сеть и к модели отсюда НЕ ходим: сохранение не должно ждать справочник и не
     # должно стоить денег. Дорогие ступени (обрезка, умлаут, устаревшее написание,
     # существует ли слово вообще) делает ночная работа, у неё для этого нет спешки.
-    if kind == "word" and lang == "de":
+    # Метка та же, что у парадигм глаголов: тесты и оффлайн-скрипты в боевую базу не
+    # ходят. Прогон 19.08.2026 упёрся в таймаут именно на этом — дверь тянула справочник
+    # родов из прода на каждом заведении единицы в тесте.
+    _gate_off = (os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") == "1"
+                 and not os.getenv("WORD_GATE_LOOKUP"))
+    if kind == "word" and lang == "de" and not _gate_off:
         try:
-            from backend.german_word_gate import check_word
+            from backend.german_word_gate import check_word, NOT_A_WORD
             verdict = check_word(text, allow_network=False, allow_model=False)
+            if verdict.get("status") == NOT_A_WORD:
+                # Дверь уже разбирала это написание и признала его не словом
+                # («Abschiebu», «inkelgasse»). Новую единицу не заводим.
+                #
+                # Именно так мусор и получал прописку: ночное дообогащение видело текст
+                # в чьей-то карточке и заводило его словом общего словаря. Замер
+                # 19.08.2026: семь мусорных слов из четырнадцати завели не люди, а мы.
+                # Карточка человека при этом остаётся — он её сохранил, это его право.
+                logging.warning("единица не заведена: %r — дверь слова признала не словом",
+                                str(text)[:60])
+                return None
             fixed = str(verdict.get("text") or "").strip()
             if fixed and fixed != text:
                 logging.info("дверь слова: заголовок исправлен %r → %r", text, fixed)

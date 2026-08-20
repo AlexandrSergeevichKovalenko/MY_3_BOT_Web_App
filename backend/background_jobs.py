@@ -2572,6 +2572,15 @@ def run_reference_forms_warm_actor() -> None:
         allow_model=(_os.getenv("REFERENCE_FORMS_WARM_MODEL") or "1").strip() == "1",
     )
     logging.info("формы из справочника: прогрев %s", report)
+    # Дорогая половина ДВЕРИ СЛОВА — здесь же, ночью. На сохранении работает только
+    # дешёвая (регистр, правила заголовка, наши данные): человек не должен ждать
+    # справочник, а мы не должны платить за каждое сохранение. Обрезки, умлауты,
+    # устаревшее написание и проверку существования делаем без спешки.
+    from backend.german_word_gate import ensure_word_check_schema, warm_word_gate
+    ensure_word_check_schema()
+    gate_report = warm_word_gate(
+        limit=int((_os.getenv("WORD_GATE_WARM_BATCH") or "150").strip() or "150"))
+    logging.info("дверь слова: ночной проход %s", gate_report)
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")

@@ -227,8 +227,29 @@ def check_word(word: str, *, pos_hint: str = "", allow_network: bool = True,
 
     verdict = _decide(asked, pos_hint=pos_hint, allow_network=allow_network,
                       allow_model=allow_model)
-    _remember(asked, verdict)
+    # ЗАПОМИНАЕМ ТОЛЬКО ОКОНЧАТЕЛЬНОЕ. Дефект, пойманный прогоном 19.08.2026: дешёвая
+    # половина (без сети и модели) записывала своё «не подтверждено» поверх сильного
+    # вердикта «не слово», и запрет на заведение мусора переставал срабатывать.
+    #
+    # «Не подтверждено» от дешёвого вызова означает всего лишь «мы не спрашивали», а не
+    # «мы проверили и не нашли». Такое в кеш не идёт — иначе слово никогда не дойдёт до
+    # ночной проверки.
+    if _is_final(verdict, allow_network=allow_network, allow_model=allow_model):
+        _remember(asked, verdict)
     return verdict
+
+
+def _is_final(verdict: dict, *, allow_network: bool, allow_model: bool) -> bool:
+    """Можно ли запомнить этот вердикт как окончательный."""
+    status = str(verdict.get("status") or "")
+    source = str(verdict.get("source") or "")
+    if source in ("справочник молчал", "ответы разошлись", "не спрашивали справочник",
+                  "модель не спрашивали"):
+        return False
+    if status in (CONFIRMED, REPAIRED, NOT_A_WORD):
+        return True
+    # «не подтверждено» окончательно только тогда, когда мы РЕАЛЬНО спросили всех.
+    return bool(allow_network and allow_model)
 
 
 def _decide(asked: str, *, pos_hint: str, allow_network: bool, allow_model: bool) -> dict:
@@ -320,3 +341,99 @@ def _finish(text: str, status: str, pos: str, source: str, asked: str) -> dict:
         status = REPAIRED
     return {"text": final, "status": status, "pos": pos or "", "source": source,
             "note": f"спрошено «{asked}»" if final != asked else ""}
+
+
+# ── Ночной проход: дорогая половина двери ────────────────────────────────────
+def warm_word_gate(*, limit: int = 150) -> dict:
+    """Прогнать через полную дверь слова, которых она ещё не видела.
+
+    На сохранении работает только дешёвая половина — человек не должен ждать справочник,
+    а мы не должны платить за каждое сохранение. Дорогие ступени (обрезка, умлаут,
+    устаревшее написание, существует ли слово вообще) делаются здесь, ночью.
+
+    ЧТО ПРИМЕНЯЕТСЯ САМО:
+        исправленное написание — если такого слова у нас ещё нет; если есть, это дубль,
+        и он помечается на слияние, а не сносится (на строку словаря ссылаются восемь
+        таблиц — проверено 19.08.2026).
+    ЧТО НЕ ПРИМЕНЯЕТСЯ САМО:
+        «не слово» — удаление показывается владельцу, решение его.
+    """
+    import time
+    from backend.database import get_db_connection_context
+
+    ensure_word_check_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT u.id, u.lemma, COALESCE(u.pos, '')
+                  FROM bt_3_lex_units u
+                 WHERE u.lang = 'de' AND u.kind = 'word'
+                   AND u.lemma IS NOT NULL AND position(' ' in u.lemma) = 0
+                   AND NOT EXISTS (SELECT 1 FROM bt_3_word_check w WHERE w.asked = u.lemma)
+                 ORDER BY u.updated_at DESC NULLS LAST
+                 LIMIT %s;
+                """,
+                (int(limit),),
+            )
+            words = [(int(a), str(b), str(c)) for a, b, c in (cur.fetchall() or [])]
+
+    stats = {"смотрели": len(words), "подтверждено": 0, "исправлено": 0,
+             "не подтверждено": 0, "не слово": 0, "дубль": 0, "справочник молчал": 0}
+    for unit_id, lemma, pos in words:
+        verdict = check_word(lemma, pos_hint=pos)
+        status = verdict.get("status") or ""
+        if verdict.get("source") == "справочник молчал":
+            stats["справочник молчал"] += 1
+            continue
+        stats[status] = stats.get(status, 0) + 1
+        fixed = str(verdict.get("text") or "").strip()
+        new_pos = str(verdict.get("pos") or "").strip()
+        if status == REPAIRED and fixed and fixed != lemma:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id FROM bt_3_lex_units WHERE lang='de' "
+                                "AND lower(lemma)=%s AND id<>%s", (fixed.lower(), unit_id))
+                    if cur.fetchone():
+                        stats["дубль"] += 1
+                        cur.execute(
+                            """INSERT INTO bt_3_reference_forms_unresolved
+                                      (word, pos, reason, reviewed, checked_at)
+                               VALUES (%s, %s, %s, TRUE, NOW())
+                               ON CONFLICT (word) DO UPDATE SET reason=EXCLUDED.reason;""",
+                            (lemma, pos, f"дубль формы: настоящее слово «{fixed}», нужно слияние"))
+                    else:
+                        cur.execute("UPDATE bt_3_lex_units SET lemma=%s, lemma_key=lower(%s), "
+                                    "updated_at=NOW() WHERE id=%s", (fixed, fixed, unit_id))
+                        logging.info("дверь слова: заголовок исправлен ночью %r → %r",
+                                     lemma, fixed)
+                conn.commit()
+        if new_pos and new_pos != pos:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE bt_3_lex_units SET pos=%s, pos_source='дверь слова', "
+                                "updated_at=NOW() WHERE id=%s", (new_pos, unit_id))
+                conn.commit()
+        time.sleep(1.0)
+    return stats
+
+
+def words_awaiting_owner(limit: int = 50) -> list[tuple[str, str, str]]:
+    """Слова с вердиктом «не слово» — их удаление показывается владельцу."""
+    from backend.database import get_db_connection_context
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT w.asked, w.source, COALESCE(u.pos, '')
+                         FROM bt_3_word_check w
+                         LEFT JOIN bt_3_lex_units u
+                                ON u.lang='de' AND lower(u.lemma) = lower(w.asked)
+                        WHERE w.status = %s
+                        ORDER BY w.checked_at DESC LIMIT %s;""",
+                    (NOT_A_WORD, int(limit)),
+                )
+                return [(str(a), str(b), str(c)) for a, b, c in (cur.fetchall() or [])]
+    except Exception:
+        logging.warning("дверь слова: не прочитал список на удаление", exc_info=True)
+        return []

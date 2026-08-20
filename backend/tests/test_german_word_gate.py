@@ -122,3 +122,18 @@ def test_дверь_не_ходит_в_сеть_когда_запрещено(mo
 
 def test_пустая_строка_не_слово():
     assert G.check_word("   ")["status"] == G.NOT_A_WORD
+
+
+def test_дешёвый_вызов_не_затирает_сильный_вердикт():
+    """Дефект 19.08.2026: дешёвая половина писала своё «не подтверждено» поверх
+    «не слово», и запрет на заведение мусора переставал срабатывать.
+
+    «Не подтверждено» без сети означает «мы не спрашивали», а не «мы проверили»."""
+    assert G._is_final({"status": G.NOT_A_WORD, "source": "модель: такого слова нет"},
+                       allow_network=True, allow_model=True) is True
+    assert G._is_final({"status": G.UNCONFIRMED, "source": "не спрашивали справочник"},
+                       allow_network=False, allow_model=False) is False
+    assert G._is_final({"status": G.UNCONFIRMED, "source": "справочник молчал"},
+                       allow_network=True, allow_model=True) is False
+    assert G._is_final({"status": G.UNCONFIRMED, "source": "модель: слово есть, язык en"},
+                       allow_network=True, allow_model=True) is True
