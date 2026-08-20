@@ -59,6 +59,33 @@ def test_unknown_rubric_is_an_error_not_a_default():
         get_profile("kabarett")
 
 
+# ── Задание модели у стендапа своё, не новостное ───────────────────────────────
+
+def test_standup_has_its_own_prompt():
+    """Новостное задание требует «существительные с артиклем, глаголы в инфинитиве» —
+    это словарная логика, и для сленга она вредна: «null Bock haben» под инфинитив не
+    приведёшь. Если кто-то однажды сведёт рубрики к одному промпту, тест это поймает."""
+    assert STANDUP_PROFILE.llm_system, "у стендапа должно быть собственное задание модели"
+    assert not NEWS_PROFILE.llm_system, "новости работают на своём исходном промпте"
+
+
+def test_standup_prompt_keeps_idioms_whole():
+    """Оборот обязан остаться целым. Разобранный на части («haben» вместо «Bock haben»)
+    он теряет ровно то, ради чего показан, — а страж на это поставить нельзя, потому что
+    механическое додумывание формы в этом репозитории запрещено. Стережём задание."""
+    prompt = STANDUP_PROFILE.llm_system
+    assert "Bock haben (auf etwas)" in prompt
+    assert "wie bestellt und nicht abgeholt" in prompt
+    assert "FALSCH" in prompt, "в задании должен быть явный пример НЕПРАВИЛЬНОГО разбора"
+
+
+def test_standup_prompt_demands_the_register_marking():
+    """Помета регистра — не украшение: по ней человек понимает, при ком так говорить
+    нельзя, и по ней же словарный слой может узнать живую речь среди словарных единиц."""
+    assert "register_ru" in STANDUP_PROFILE.llm_system
+    assert "derb/vulgär" in STANDUP_PROFILE.llm_system
+
+
 # ── Длительность берётся из профиля ────────────────────────────────────────────
 
 def test_length_priority_follows_the_profile():

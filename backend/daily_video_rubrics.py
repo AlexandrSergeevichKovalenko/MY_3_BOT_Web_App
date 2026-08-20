@@ -100,8 +100,15 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
    Der Nutzer dieser Rubrik ist fortgeschritten (B1–B2+): normale Grammatik und
    Alltagslexik beherrscht er, hier geht es um die Tiefe der lebendigen Sprache.
    Jede Einheit:
-     - "de": Wörterbuchform. Nomen MIT Artikel, Verben im Infinitiv, Wendungen so, wie man
-       sie nachschlägt (z. B. "Bock haben (auf etwas)").
+     - "de": die Einheit in der Form, in der man sie NACHSCHLÄGT — und NICHT mehr.
+       Bei einem einzelnen Nomen: MIT Artikel (die Kohle). Bei einem einzelnen Verb:
+       Infinitiv (abhauen).
+       ABER: eine Redewendung bleibt GANZ. Zerlege sie NICHT in ein Verb und zwinge sie
+       NICHT in eine „Wörterbuchnormalform“ — dabei stirbt genau das, was gelernt werden
+       soll. Richtig: "Bock haben (auf etwas)", "wie bestellt und nicht abgeholt",
+       "null Bock". FALSCH: "haben", "bestellen", "abholen".
+       Die Faustregel: Was der Lernende später SAGEN können soll, steht hier — in genau
+       der Form, in der man es sagt.
      - "register_ru": Stilmarkierung auf RUSSISCH, kurz: «разговорное», «сленг»,
        «грубое», «молодёжное», «ироничное», «региональное (баварское)», «нейтральное».
        Wenn es derb/vulgär ist, sag das offen — der Lernende muss wissen, wo er das NICHT
