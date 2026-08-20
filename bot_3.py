@@ -1823,17 +1823,34 @@ if DB_POOL_ALLOW_DIRECT_FALLBACK:
     )
 logging.info("✅ MY_3_BOT configured to use centralized pooled DB connections.")
 
-# Проверка подключения
-with db_acquire_scope("bot_startup_connection_test"):
-    conn = get_db_connection()
-cursor = conn.cursor()
-cursor.execute("SELECT version();")
-db_version = cursor.fetchone()
+# Проверка подключения к базе при старте.
+#
+# В СЕРВИСЕ это осознанная проверка: креденшелы не те или база недоступна — бот
+# обязан упасть сразу, а не на первом живом пользователе. Здесь ничего не меняется.
+#
+# В ПРОГОНЕ ТЕСТОВ это ровно то, чего делать нельзя. `import bot_3` стоит в десятках
+# тестовых модулей, а в окружении разработчика лежат БОЕВЫЕ креденшелы — значит
+# каждый такой импорт открывал соединение с живой базой. Когда публичный прокси
+# моргал, падал весь СБОР тестов (psycopg2 timeout), и pre-push объявлял пуш красным
+# на совершенно зелёном коде: 19–20.08.2026 это случилось дважды подряд, каждый раз
+# ценой двух прогонов по две минуты.
+#
+# Флаг тот же, которым уже глушатся стартовые фазы `backend_server`
+# (`ensure_phase1_projection_schema`, `ensure_shortcut_schema`), и ставит его
+# `backend/tests/conftest.py`. В проде он не ставится — там всё как было.
+if str(os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") or "").strip().lower() in {"1", "true", "yes", "on"}:
+    logging.info("Стартовая проверка соединения с базой пропущена: SKIP_STARTUP_SCHEMA_BOOTSTRAP")
+else:
+    with db_acquire_scope("bot_startup_connection_test"):
+        conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT version();")
+    db_version = cursor.fetchone()
 
-print(f"✅ База данных подключена! Версия: {db_version}")
+    print(f"✅ База данных подключена! Версия: {db_version}")
 
-cursor.close()
-conn.close()
+    cursor.close()
+    conn.close()
 
 
 async def _track_telegram_message_async(message, message_type: str = "text") -> None:
@@ -38825,9 +38842,13 @@ _ARTIKEL_ONPICK_FILLS_INFLIGHT: set[str] = set()
 
 
 async def _artikel_autofill_nightly_job(context: CallbackContext) -> None:
-    """Overnight: top up themes below target via GPT (generate+verify+insert),
-    bounded by ARTIKEL_AUTOFILL_PER_THEME / _TOTAL. Runs BEFORE the media prewarm so
-    today's/tomorrow's active themes get media for the fresh words the same night.
+    """Ночью: добор тем, которые ЕЩЁ РАСТУТ (generate+verify+insert), в пределах
+    ARTIKEL_AUTOFILL_PER_THEME / _TOTAL. Идёт ПЕРЕД прогревом медиа, чтобы свежие
+    слова активных тем получили картинку и озвучку в ту же ночь.
+
+    Цель темы (`target_count`) наполнением НЕ командует — решение владельца
+    19.08.2026: «не обязательно догонять до 150, в этом же и проблема». Тему
+    останавливает только сигнал прироста (два прогона подряд меньше трёх слов).
 
     Работу делает BACKGROUND_JOBS. В процессе бота она бота не морозила (уходила в
     поток), но деплой посреди ночного прогона терял её целиком. Ночные метрики пишет
