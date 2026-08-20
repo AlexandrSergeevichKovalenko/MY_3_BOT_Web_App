@@ -4417,22 +4417,24 @@ async def _pick_for_person(picker, *, cooldown_days: int, blocked: list, **kw):
     была не допустить. Владелец: «зачем человек, который правильно ответил, увидит его
     снова?»
 
-    Теперь послабления идут по одному: сперва отпускаем общий отдых (разным людям МОЖНО
-    дать одно задание — это закон роста банка), и только если и тогда ничего нет,
-    отпускаем личную память. Последний заход остаётся: пустой экран человеку хуже
-    повтора — то же правило, что в `order_candidates`.
+    Отпускается ТОЛЬКО общий отдых: разным людям дать одно задание можно — это закон
+    роста банка. Личная память не отпускается никогда.
+
+    Раньше третьим заходом снималась и она — «пустой экран хуже повтора». Владелец
+    20.08.2026 это отменил, и по делу: подставлять решённое (или другую игру вместо
+    кроссворда) значит прятать настоящую задачу — держать банк впереди расхода. Если
+    свежего не осталось, мы возвращаем «нечего», зовущий это СЧИТАЕТ и говорит вслух,
+    а чинится это дозаказом, а не подменой.
     """
     entry = await asyncio.to_thread(picker, cooldown_days=cooldown_days,
                                     exclude_ids=blocked, **kw)
     if entry:
         return entry
     entry = await asyncio.to_thread(picker, cooldown_days=0, exclude_ids=blocked, **kw)
-    if entry:
-        return entry
-    if blocked:
-        logging.info("ротация: человеку показываем пройденное — свободного не осталось "
-                     "kind=%s закрыто=%d", getattr(picker, "__name__", "?"), len(blocked))
-    return await asyncio.to_thread(picker, cooldown_days=0, **kw)
+    if not entry and blocked:
+        logging.warning("ротация: свежего не осталось — человек прошёл всё, что есть "
+                        "(закрыто %d)", len(blocked))
+    return entry
 
 
 async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, held: bool = False) -> bool:
@@ -33758,42 +33760,52 @@ async def _send_scheduled_crossword(context: CallbackContext) -> None:
     if not _is_crossword_slot(slot_now):
         return
 
-    try:
-        # Prefer a card past its cooldown; if the whole ready-pool is still in
-        # cooldown, fall back to cooldown=0 (least-recently-seen first) so we NEVER
-        # go dark — an occasional early repeat beats a silent blackout. Mirrors the
-        # per-user delivery path.
-        entry = (await asyncio.to_thread(pick_next_crossword, cooldown_days=CROSSWORD_COOLDOWN_DAYS)
-                 or await asyncio.to_thread(pick_next_crossword, cooldown_days=0))
-    except Exception:
-        logging.warning("cw_slot: pick_next_crossword failed", exc_info=True)
-        return
-
-    if not entry:
-        logging.info("cw_slot: no ready crossword available slot=%s/%s", slot_date, slot_hour)
-        return
-
-    crossword_id = str(entry.get("crossword_id") or "")
-    object_key   = str(entry.get("image_object_key") or "")
-    if not object_key:
-        logging.warning("cw_slot: no image key crossword_id=%s", crossword_id)
-        return
-
-    try:
-        image_url = r2_public_url(object_key)
-    except Exception:
-        logging.warning("cw_slot: r2_public_url failed key=%s", object_key, exc_info=True)
-        return
-
     delivery_targets = await _collect_quiz_delivery_user_targets(context)
     if not delivery_targets:
-        logging.info("cw_slot: no delivery targets crossword_id=%s", crossword_id)
+        logging.info("cw_slot: no delivery targets slot=%s/%s", slot_date, slot_hour)
         return
 
-    sent = 0
+    # ── Каждому — своё, а не одна карточка на всех ───────────────────────────────
+    # До 20.08.2026 слот брал ОДИН кроссворд и рассылал его всем подряд, не спрашивая,
+    # кто его уже решал. Отсюда и брался случай, который владелец назвал глупым: решил
+    # кроссворд — и он же приходит снова.
+    #
+    # Экономии в «одном на всех» нет, есть перерасход: слот и так шлёт каждому человеку
+    # ОТДЕЛЬНОЕ сообщение, картинка уже нарисована, а подбор личной карточки стоит
+    # 0.1 мс по индексу (замер на боевой базе 20.08.2026). Зато общая карточка
+    # расходуется сразу на всех: банк из 61 кроссворда при двух слотах в день
+    # проходится группой за месяц. При личном подборе тот же кроссворд обслуживает
+    # одного человека в августе, другого в октябре, новичка в декабре.
+    #
+    # Решение владельца 20.08.2026.
+    sent, nothing_fresh = 0, 0
     for target in delivery_targets:
         target_chat_id = int(target.get("chat_id") or 0)
         if target_chat_id == 0:
+            continue
+        try:
+            blocked = await _drip_blocked_ids(target_chat_id, "crossword")
+            entry = await _pick_for_person(pick_next_crossword,
+                                           cooldown_days=CROSSWORD_COOLDOWN_DAYS,
+                                           blocked=blocked)
+        except Exception:
+            logging.warning("cw_slot: подбор не удался chat=%s", target_chat_id, exc_info=True)
+            continue
+        if not entry:
+            # Свежего для этого человека не осталось. Решённое ему не подсовываем и
+            # другой игрой не подменяем — это решение владельца: банк обязан быть
+            # впереди расхода, а не выкручиваться подменами. Считаем и говорим вслух.
+            nothing_fresh += 1
+            continue
+        crossword_id = str(entry.get("crossword_id") or "")
+        object_key = str(entry.get("image_object_key") or "")
+        if not object_key:
+            logging.warning("cw_slot: no image key crossword_id=%s", crossword_id)
+            continue
+        try:
+            image_url = r2_public_url(object_key)
+        except Exception:
+            logging.warning("cw_slot: r2_public_url failed key=%s", object_key, exc_info=True)
             continue
         ok = await send_crossword_to_chat(
             context,
@@ -33807,38 +33819,42 @@ async def _send_scheduled_crossword(context: CallbackContext) -> None:
         )
         if ok:
             sent += 1
+            try:
+                await asyncio.to_thread(mark_crossword_sent, crossword_id)
+            except Exception:
+                logging.warning("cw_slot: mark_crossword_sent failed crossword_id=%s",
+                                crossword_id, exc_info=True)
+        else:
+            # Не дошло до человека — обычно битая картинка. Двигаем очередь и после
+            # череды неудач снимаем запись, иначе она навсегда останется первой в
+            # очереди (у неё самая старая отметка отправки).
+            try:
+                await asyncio.to_thread(mark_crossword_send_failed, crossword_id, retire_after=8)
+            except Exception:
+                logging.warning("cw_slot: mark_crossword_send_failed failed crossword_id=%s",
+                                crossword_id, exc_info=True)
 
-    if sent > 0:
-        try:
-            await asyncio.to_thread(mark_crossword_sent, crossword_id)
-        except Exception:
-            logging.warning("cw_slot: mark_crossword_sent failed crossword_id=%s", crossword_id, exc_info=True)
-    else:
-        # Zero recipients (e.g. a broken image → send_photo fails for everyone).
-        # Advance rotation + auto-retire after repeated failures so one bad entry
-        # can't monopolize the queue forever (it has the oldest last_sent_at).
-        logging.warning(
-            "cw_slot: zero recipients — advancing rotation crossword_id=%s slot=%s/%s",
-            crossword_id, slot_date, slot_hour,
-        )
-        try:
-            # retire_after=8 (not 3): a transient R2/image blip can zero-send several
-            # slots in a row for a perfectly good puzzle — a wider margin stops those
-            # blips from silently draining the pool into the retired graveyard.
-            await asyncio.to_thread(mark_crossword_send_failed, crossword_id, retire_after=8)
-        except Exception:
-            logging.warning("cw_slot: mark_crossword_send_failed failed crossword_id=%s", crossword_id, exc_info=True)
+    if nothing_fresh:
+        # Это не «мало заданий», это «человек уже прошёл всё, что у нас есть» —
+        # то есть ночной дозаказ не успел. Владельцу говорим только про это.
+        logging.warning("cw_slot: свежих кроссвордов не нашлось для %d человек", nothing_fresh)
         await _alert_admin_interactive(
             context,
-            f"⚠️ <b>Kreuzwort: отправка не удалась</b> (0 доставлено, возможно битая картинка) "
-            f"crossword_id={crossword_id}, слот {slot_date} {slot_hour}:00.",
+            f"⚠️ <b>Kreuzwort: людям нечего показать</b>\n"
+            f"{nothing_fresh} чел. прошли всё, что есть в банке — ночной дозаказ не успел "
+            f"за расходом. Слот {slot_date} {slot_hour}:00.",
+            throttle_key="cw_nothing_fresh",
+        )
+    if sent == 0 and not nothing_fresh:
+        await _alert_admin_interactive(
+            context,
+            f"⚠️ <b>Kreuzwort: отправка не удалась</b> (0 доставлено, возможно битая картинка), "
+            f"слот {slot_date} {slot_hour}:00.",
             throttle_key="cw_send_fail",
         )
 
-    logging.info(
-        "cw_slot_done slot=%s/%s crossword_id=%s sent=%d",
-        slot_date, slot_hour, crossword_id, sent,
-    )
+    logging.info("cw_slot_done slot=%s/%s sent=%d нечего_показать=%d",
+                 slot_date, slot_hour, sent, nothing_fresh)
 
 
 async def handle_crossword_callback(update: Update, context: CallbackContext) -> None:
@@ -34336,35 +34352,41 @@ async def _send_scheduled_anagram(context: CallbackContext) -> None:
     if not _is_anagram_slot(slot_now):
         return
 
-    # Pick a ready card from the pool; generate on demand only if the pool is empty.
-    try:
-        entry = await asyncio.to_thread(pick_next_anagram, cooldown_days=ANAGRAM_COOLDOWN_DAYS)
-    except Exception:
-        logging.warning("ag_slot: pick_next_anagram failed", exc_info=True)
-        entry = None
-    if not entry:
-        entry = await _ensure_anagram_card()
-    if not entry:
-        logging.info("ag_slot: no anagram card available slot=%s/%s", slot_date, slot_hour)
-        await _alert_admin_interactive(
-            context,
-            f"⚠️ <b>Anagramm не отправлена</b> — нет карточки в пуле и генерация не удалась "
-            f"(слот {slot_date} {slot_hour}:00). Проверь логи.",
-            throttle_key="ag_empty",
-        )
-        return
-
-    payload = {"word": entry["word"], "hint_ru": entry["hint_ru"], "scrambled": entry["scrambled"]}
-    card_id = str(entry["card_id"])
     delivery_targets = await _collect_quiz_delivery_user_targets(context)
     if not delivery_targets:
         logging.info("ag_slot: no delivery targets slot=%s/%s", slot_date, slot_hour)
         return
 
-    sent = 0
+    # Каждому — своё: та же правка, что у кроссвордов (решение владельца 20.08.2026).
+    # Общая карточка расходуется сразу на всех, личная — обслуживает разных людей в
+    # разное время. Подбор стоит доли миллисекунды, картинки тут нет вовсе.
+    sent, nothing_fresh = 0, 0
     for target in delivery_targets:
         target_chat_id = int(target.get("chat_id") or 0)
         if target_chat_id == 0:
+            continue
+        try:
+            blocked = await _drip_blocked_ids(target_chat_id, "anagram")
+            entry = await _pick_for_person(pick_next_anagram,
+                                           cooldown_days=ANAGRAM_COOLDOWN_DAYS,
+                                           blocked=blocked)
+        except Exception:
+            logging.warning("ag_slot: подбор не удался chat=%s", target_chat_id, exc_info=True)
+            continue
+        if not entry:
+            # Пустой пул — единственный случай, когда карточку делаем прямо сейчас.
+            # Пройденное этому человеку не подсовываем.
+            if not blocked:
+                entry = await _ensure_anagram_card()
+            if not entry:
+                nothing_fresh += 1
+                continue
+        try:
+            payload = {"word": entry["word"], "hint_ru": entry["hint_ru"],
+                       "scrambled": entry["scrambled"]}
+            card_id = str(entry["card_id"])
+        except Exception:
+            logging.warning("ag_slot: карточка без обязательных полей", exc_info=True)
             continue
         ok = await send_anagram_to_chat(
             context, card_id=card_id, payload=payload,
@@ -34374,16 +34396,26 @@ async def _send_scheduled_anagram(context: CallbackContext) -> None:
         )
         if ok:
             sent += 1
-    if sent > 0:
-        await asyncio.to_thread(mark_anagram_sent, card_id)
-    else:
-        await asyncio.to_thread(mark_anagram_send_failed, card_id)
+            await asyncio.to_thread(mark_anagram_sent, card_id)
+        else:
+            await asyncio.to_thread(mark_anagram_send_failed, card_id)
+
+    if nothing_fresh:
+        await _alert_admin_interactive(
+            context,
+            f"⚠️ <b>Anagramm: людям нечего показать</b>\n"
+            f"{nothing_fresh} чел. прошли всё, что есть в банке — ночной дозаказ не успел "
+            f"за расходом. Слот {slot_date} {slot_hour}:00.",
+            throttle_key="ag_nothing_fresh",
+        )
+    if sent == 0 and not nothing_fresh:
         await _alert_admin_interactive(
             context,
             f"⚠️ <b>Anagramm: отправка не удалась</b> (0 доставлено, слот {slot_date} {slot_hour}:00).",
             throttle_key="ag_send_fail",
         )
-    logging.info("ag_slot_done slot=%s/%s card_id=%s sent=%d", slot_date, slot_hour, card_id, sent)
+    logging.info("ag_slot_done slot=%s/%s sent=%d нечего_показать=%d",
+                 slot_date, slot_hour, sent, nothing_fresh)
 
 
 _CHALLENGE_KIND_LABELS = {

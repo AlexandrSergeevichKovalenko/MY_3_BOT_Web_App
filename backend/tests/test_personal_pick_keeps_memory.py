@@ -10,7 +10,10 @@
 всегда пуст, и на деле работал только запасной, возвращая человеку решённое.
 Владелец: «зачем человек, который правильно ответил, увидит его снова через 14 дней?»
 
-Теперь послабления идут по одному: сперва общий отдых, и только потом — личная память.
+Решение владельца 20.08.2026: отпускается ТОЛЬКО общий отдых. Личная память не
+отпускается никогда — ни ради «лишь бы не пусто», ни подменой на другую игру. Если
+свежего нет, честно возвращаем «нечего», считаем это и говорим владельцу: значит
+дозаказ не успел за расходом, и чинить надо банк, а не выдачу.
 """
 
 import asyncio
@@ -50,16 +53,20 @@ class PickOrderTests(unittest.IsolatedAsyncioTestCase):
                          "второй заход обязан ещё помнить, что человек уже прошёл")
         self.assertEqual(len(self.calls), 2)
 
-    async def test_personal_memory_is_dropped_only_as_the_last_resort(self):
-        """Пустой экран человеку хуже повтора — но это ПОСЛЕДНЯЯ черта, а не вторая."""
+    async def test_personal_memory_is_never_dropped(self):
+        """Решение владельца 20.08.2026: решённое не возвращается никогда. Раньше был
+        третий заход «пустой экран хуже повтора» — он снимал личную память и отдавал
+        человеку то, что тот уже прошёл. Подмена другой игрой тоже запрещена: банк
+        обязан быть впереди расхода, а не выкручиваться."""
         entry = await bot_3._pick_for_person(
             self._picker(("отдых снят", "память снята")), cooldown_days=14, blocked=["a"])
-        self.assertIsNotNone(entry)
-        self.assertEqual(len(self.calls), 3)
-        self.assertEqual(self.calls[2][1], (), "на третьем заходе память снята")
+        self.assertIsNone(entry, "лучше честное «нечего», чем решённое по второму разу")
+        self.assertEqual(len(self.calls), 2, "заходов ровно два, третьего больше нет")
+        self.assertTrue(all(c[1] == ("a",) for c in self.calls),
+                        "личная память учитывается на каждом заходе")
 
     async def test_extra_arguments_reach_every_attempt(self):
-        """У заданий пула есть формат — он обязан дойти до всех трёх заходов."""
+        """У заданий пула есть формат — он обязан дойти до обоих заходов."""
         seen = []
 
         def picker(*, cooldown_days, exclude_ids=None, format=None):
@@ -67,7 +74,7 @@ class PickOrderTests(unittest.IsolatedAsyncioTestCase):
             return None
         picker.__name__ = "picker"
         await bot_3._pick_for_person(picker, cooldown_days=15, blocked=[], format="lueckentext")
-        self.assertEqual(seen, ["lueckentext"] * 3)
+        self.assertEqual(seen, ["lueckentext"] * 2)
 
 
 if __name__ == "__main__":

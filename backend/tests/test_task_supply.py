@@ -45,8 +45,11 @@ class SupplyTests(unittest.TestCase):
     def test_unused_game_orders_nothing(self):
         self.assertEqual(shortfall(0, 0.0), 0)
 
-    def test_target_is_a_month(self):
-        self.assertEqual(TARGET_SUPPLY_DAYS, 30)
+    def test_target_is_a_month_and_a_half(self):
+        """Было 30 дней. Владелец поднял до 45 (20.08.2026) вместе с правилом
+        «решённое человеку не возвращается никогда»: раньше задание после отдыха
+        возвращалось в оборот, теперь расход идёт только в одну сторону."""
+        self.assertEqual(TARGET_SUPPLY_DAYS, 45)
 
 
 class TopupPlanTests(unittest.TestCase):
