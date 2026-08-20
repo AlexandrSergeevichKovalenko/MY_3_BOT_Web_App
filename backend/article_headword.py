@@ -24,6 +24,13 @@
     у них своя статья Substantiv, и справочник это говорит сам;
   • не задевает обычные слова: Computer, Bildschirm, Feier.
 
+СПРАВОЧНИКОВ ДВА. de.wiktionary бывает неполон: «Pocken» (оспа), «Windpocken»
+(ветрянка) и «Putzen» (уборка) он знает ТОЛЬКО как формы других слов, хотя все три —
+нормальные существительные. Поэтому у каждого осуждённого спрашиваем en.wiktionary:
+есть ли у этого написания раздел German → Noun. Есть — слово остаётся. Осудить
+заголовок можно, только если его не признаёт НИ ОДИН справочник. Второй справочник
+спрашивается только про осуждённых — за остальных мы за него не платим временем.
+
 Это дешевле и устойчивее голосования модели: справочник на один и тот же вопрос
 отвечает одинаково всегда, а модель 16.08.2026 давала 12% разнобоя на повторе.
 
@@ -44,6 +51,7 @@ import urllib.parse
 import urllib.request
 
 _API = "https://de.wiktionary.org/w/api.php"
+_EN_API = "https://en.wiktionary.org/w/api.php"
 _UA = "DeutschBot/1.0 (Artikel headword check; contact via Telegram bot)"
 _BATCH = 20
 _RETRY_CODES = (429, 503)
@@ -76,7 +84,39 @@ def glued_article(word: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def _fetch_wikitext(titles: list[str]) -> dict[str, str | None]:
+# Немецкое СУЩЕСТВИТЕЛЬНОЕ в en.wiktionary. Нужен второй справочник, потому что
+# первый бывает неполон: 20.08.2026 de.wiktionary знал «Pocken» (оспа), «Windpocken»
+# (ветрянка) и «Putzen» (уборка) ТОЛЬКО как формы других слов, хотя все три —
+# нормальные немецкие существительные. en.wiktionary даёт им раздел German → Noun,
+# причём у Windpocken прямо помечено `{{de-noun|fp}}` — законное pluralia tantum.
+# Осудить заголовок можно только если его не признаёт НИ ОДИН справочник.
+_EN_GERMAN_SECTION = re.compile(r"^==\s*German\s*==(.*?)(?=^==[^=]|\Z)", re.DOTALL | re.MULTILINE)
+# Смотреть надо не на ЗАГОЛОВОК раздела, а на ПОМЕТКУ: раздел «Noun» есть и у формы.
+#   слово: {{de-noun|fp}}   (Windpocken → chickenpox), {{de-noun|f}} (Schrecke → locust)
+#   форма: {{head|de|noun form|…}} + {{inflection of|…}} / {{plural of|…}}
+# Проверка по заголовку раздела 20.08.2026 спасала ВСЕХ подряд, включая заведомый
+# брак «Bänder» и «Sorten», — то есть обнуляла правило целиком.
+_EN_LEMMA = re.compile(r"\{\{de-noun[|}]")
+_EN_FORM = re.compile(r"\{\{head\|de\|noun form")
+
+
+def _is_noun_in_en(wikitext: str | None) -> bool:
+    """Признаёт ли en.wiktionary это написание САМОСТОЯТЕЛЬНЫМ существительным."""
+    if not wikitext:
+        return False
+    section = _EN_GERMAN_SECTION.search(wikitext)
+    if not section:
+        return False
+    body = section.group(1)
+    # Пометка СЛОВА перевешивает пометку формы — как и на немецкой стороне, где
+    # {{Wortart|Substantiv}} главнее {{Wortart|Deklinierte Form}}. У «Putzen» есть
+    # обе: {{de-noun|n.sg}} (уборка, отглагольное) и форма от «die Putze». Слово
+    # существует — значит заголовок законный, даже если написание совпало с чьей-то
+    # формой. Обратный порядок 20.08.2026 выносил «das Putzen» из игры.
+    return bool(_EN_LEMMA.search(body))
+
+
+def _fetch_wikitext(titles: list[str], *, api: str = "") -> dict[str, str | None]:
     """Викитекст статей одним запросом. None = статьи нет.
 
     Сеть либо отвечает, либо мы честно падаем: «статьи нет» и «мы не смогли
@@ -84,7 +124,7 @@ def _fetch_wikitext(titles: list[str]) -> dict[str, str | None]:
     params = {"action": "query", "prop": "revisions", "rvprop": "content",
               "rvslots": "main", "format": "json", "formatversion": "2",
               "titles": "|".join(titles)}
-    request = urllib.request.Request(_API + "?" + urllib.parse.urlencode(params),
+    request = urllib.request.Request((api or _API) + "?" + urllib.parse.urlencode(params),
                                      headers={"User-Agent": _UA})
     last_error: Exception | None = None
     for attempt in range(_FETCH_RETRIES):
@@ -101,7 +141,7 @@ def _fetch_wikitext(titles: list[str]) -> dict[str, str | None]:
             last_error = exc
             time.sleep(_FETCH_BACKOFF_SECONDS * (attempt + 1))
     else:
-        raise RuntimeError(f"de.wiktionary не ответил за {_FETCH_RETRIES} попыток: {last_error}")
+        raise RuntimeError(f"{api or _API} не ответил за {_FETCH_RETRIES} попыток: {last_error}")
     out: dict[str, str | None] = {}
     for page in payload.get("query", {}).get("pages", []):
         title = page.get("title") or ""
@@ -209,9 +249,21 @@ def headword_verdicts(words, *, use_cache: bool = True) -> dict[str, tuple[str, 
     for i in range(0, len(todo), _BATCH):
         chunk = todo[i:i + _BATCH]
         pages = _fetch_wikitext(chunk)
+        first: dict[str, tuple[str, str]] = {w: judge_page(pages.get(w)) for w in chunk}
+        # Второе мнение спрашиваем ТОЛЬКО про осуждённых. Справочник бывает неполон:
+        # у «Windpocken» и «Putzen» в de.wiktionary есть лишь страница формы, хотя
+        # оба — нормальные существительные. Осудить заголовок можно, только если его
+        # не признаёт ни один справочник.
+        accused = [w for w, (v, _) in first.items() if v == DECLINED]
+        if accused:
+            time.sleep(_PAUSE_BETWEEN_BATCHES_SECONDS)
+            en_pages = _fetch_wikitext(accused, api=_EN_API)
+            for word in accused:
+                if _is_noun_in_en(en_pages.get(word)):
+                    first[word] = (LEMMA, "")
         fresh: list[tuple[str, str, str]] = []
         for word in chunk:
-            verdict, lemma = judge_page(pages.get(word))
+            verdict, lemma = first[word]
             result[word] = (verdict, lemma)
             # «Не знаем» не кэшируем: одно молчание справочника не должно застыть
             # навсегда и превратиться в «проверено».

@@ -18,8 +18,13 @@
 эвристика, а прямое утверждение справочника: формам словоизменения de.wiktionary
 заводит отдельные страницы с пометкой `{{Wortart|Deklinierte Form}}`.
 
+Справочника ДВА, и это не перестраховка. de.wiktionary знает «Pocken» (оспа),
+«Windpocken» (ветрянка) и «Putzen» (уборка) только как формы других слов — отдельной
+статьи слова у них нет. Все три при этом нормальные существительные, и en.wiktionary
+даёт им раздел German → Noun. По одному справочнику правило вынесло бы «ветрянку».
+
 Тест держит главное: законные pluralia tantum (die Eltern, die Kosten, die Leute,
-die Ferien) НЕ должны попадать под нож — у них своя статья `{{Wortart|Substantiv}}`.
+die Ferien) НЕ должны попадать под нож.
 """
 import unittest
 from unittest.mock import patch
@@ -119,6 +124,63 @@ class ConfirmationDoesNotLetABrokenHeadwordIn(unittest.TestCase):
         self.assertIn("в игру не пустил", text)
         self.assertIn("Feier", text)
         self.assertNotIn("записано, слово в тренировке", text)
+
+
+
+
+class TheSecondReferenceRescuesRealWordsTests(unittest.TestCase):
+    """Один справочник бывает неполон — осуждать по нему одному нельзя.
+
+    Замер 20.08.2026: de.wiktionary знает «Pocken» (оспа), «Windpocken» (ветрянка)
+    и «Putzen» (уборка) ТОЛЬКО как формы других слов — отдельной статьи слова у них
+    нет. Все три при этом нормальные немецкие существительные, и en.wiktionary даёт
+    им раздел German → Noun (у Windpocken прямо `{{de-noun|fp}}` — законное
+    pluralia tantum). Без второго мнения правило вынесло бы из игры «ветрянку».
+    """
+
+    DE_FORM = ("== Windpocken ({{Sprache|Deutsch}}) ==\n"
+               "{{Wortart|Deklinierte Form|Deutsch}}\n"
+               "{{Grundformverweis Dekl|Windpocke}}\n")
+    EN_NOUN = "==German==\n===Noun===\n{{de-noun|fp}}\n# [[chickenpox]]\n"
+    EN_NOTHING = "==English==\n===Noun===\n"
+    # У формы раздел «Noun» ТОЖЕ есть — отличает только пометка.
+    EN_FORM = ("==German==\n===Noun===\n{{head|de|noun form|g=n}}\n"
+               "# {{inflection of|de|Band||nom//acc//gen|p}}\n")
+
+    def _verdict(self, en_page):
+        pages = iter([{"Windpocken": self.DE_FORM}, {"Windpocken": en_page}])
+        with patch.object(hw, "_cached", return_value={}), \
+             patch.object(hw, "_remember"), \
+             patch.object(hw, "_fetch_wikitext",
+                          side_effect=lambda titles, **kw: next(pages)):
+            return hw.headword_verdicts(["Windpocken"])["Windpocken"]
+
+    def test_a_word_the_second_reference_knows_is_kept(self):
+        self.assertEqual(self._verdict(self.EN_NOUN)[0], hw.LEMMA)
+
+    def test_a_form_neither_reference_calls_a_noun_is_still_cut(self):
+        self.assertEqual(self._verdict(self.EN_NOTHING)[0], hw.DECLINED)
+
+    def test_a_noun_section_alone_does_not_rescue_a_form(self):
+        # Раздел «Noun» есть и у формы. Смотреть надо на пометку, иначе правило
+        # спасает всех подряд — 20.08.2026 так и вышло с «Bänder» и «Sorten».
+        self.assertEqual(self._verdict(self.EN_FORM)[0], hw.DECLINED)
+
+    def test_a_word_that_is_also_someone_elses_form_stays(self):
+        # У «das Putzen» (уборка) есть И пометка слова, И пометка формы от «die Putze».
+        # Слово существует — заголовок законный. Обратный порядок вынес бы его из игры.
+        both = ("==German==\n===Noun===\n{{de-noun|n.sg}}\n# {{gerund of|de|putzen}}\n"
+                "===Noun===\n{{head|de|noun form}}\n# {{inflection of|de|Putze||dat|p}}\n")
+        self.assertEqual(self._verdict(both)[0], hw.LEMMA)
+
+    def test_the_second_reference_is_asked_only_about_the_accused(self):
+        # За слово, признанное словарной формой сразу, второй справочник не платим.
+        page = "== Feier ({{Sprache|Deutsch}}) ==\n{{Wortart|Substantiv|Deutsch}}\n"
+        with patch.object(hw, "_cached", return_value={}), \
+             patch.object(hw, "_remember"), \
+             patch.object(hw, "_fetch_wikitext", return_value={"Feier": page}) as fetch:
+            hw.headword_verdicts(["Feier"])
+        self.assertEqual(fetch.call_count, 1)
 
 
 if __name__ == "__main__":
