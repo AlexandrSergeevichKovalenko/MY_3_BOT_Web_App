@@ -222,7 +222,15 @@ def check_word(word: str, *, pos_hint: str = "", allow_network: bool = True,
                 "note": "пустая строка"}
 
     remembered = _cached(asked)
-    if remembered:
+    if remembered and _is_final(remembered, allow_network=True, allow_model=True):
+        return remembered
+    if remembered and (allow_network or allow_model):
+        # В кэше лежит СЛАБЫЙ вердикт («не спрашивали справочник») — он попал туда до
+        # того, как запись слабых была запрещена. Пересматриваем, раз нам разрешили
+        # спрашивать. Иначе слово навсегда застревает непроверенным: поймано на
+        # «Grundlegend» 20.08.2026.
+        remembered = None
+    elif remembered:
         return remembered
 
     verdict = _decide(asked, pos_hint=pos_hint, allow_network=allow_network,

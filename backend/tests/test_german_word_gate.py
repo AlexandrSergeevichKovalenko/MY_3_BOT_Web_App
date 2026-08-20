@@ -137,3 +137,22 @@ def test_дешёвый_вызов_не_затирает_сильный_верд
                        allow_network=True, allow_model=True) is False
     assert G._is_final({"status": G.UNCONFIRMED, "source": "модель: слово есть, язык en"},
                        allow_network=True, allow_model=True) is True
+
+
+def test_слабый_вердикт_в_кэше_пересматривается(monkeypatch):
+    """Дефект 20.08.2026: «Grundlegend» лежал в кэше с «не спрашивали справочник»
+    (запись сделана до запрета слабых вердиктов) и возвращался оттуда ВЕЧНО —
+    справочник о нём больше не спрашивали никогда."""
+    weak = {"text": "Grundlegend", "status": G.UNCONFIRMED, "pos": "",
+            "source": "не спрашивали справочник", "note": ""}
+    monkeypatch.setattr(G, "_cached", lambda asked: weak)
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"grundlegend": ["Adjektiv"]}))
+    verdict = G.check_word("Grundlegend")
+    assert verdict["text"] == "grundlegend", "слабый вердикт обязан пересматриваться"
+
+    # А сильный из кэша берётся как был — второй раз не переспрашиваем.
+    strong = {"text": "Abschiebu", "status": G.NOT_A_WORD, "pos": "",
+              "source": "модель: такого слова нет", "note": ""}
+    monkeypatch.setattr(G, "_cached", lambda asked: strong)
+    assert G.check_word("Abschiebu")["status"] == G.NOT_A_WORD

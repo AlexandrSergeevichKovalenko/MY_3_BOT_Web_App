@@ -48549,10 +48549,24 @@ WHAT TO DISCARD — NOT LEARNABLE UNITS:
   • OCR fragments: 1–2 letter scraps and broken tokens ("ch", "Il 66").
   • Any fragment that, translated in isolation, would produce a meaningless result.
 
-BOTH FIELDS PER BLOCK:
+FIX WHAT THE SOURCE GOT WRONG — THIS IS PART OF THE JOB:
+The input comes from screenshots of posts and Reels. Two things go wrong there, and
+both are yours to repair, because you cannot translate a unit you have not understood:
+  1) OCR damage — a word lost its ending or its beginning at the edge of the picture
+     ("Abschiebu" → "die Abschiebung", "inkelgasse" → "die Winkelgasse"), an umlaut
+     was dropped ("Argernisse" → "Ärgernisse"), ß/ss came out wrong.
+  2) Human error — the person who wrote the post made a spelling or grammar mistake.
+Return the CORRECT German. For a sentence, return it grammatically correct.
+If you cannot repair a unit with confidence, DISCARD it — never output a broken word.
+Do NOT rewrite style, do NOT translate, do NOT paraphrase. Repair only.
+
+THREE FIELDS PER BLOCK:
   "term"    — canonical form: bare infinitive for verbs, nominative singular for \
                nouns, the full sentence for sentence blocks.
   "content" — the clean display text of the SAME unit only.
+  "was"     — the ORIGINAL text as it stood in the input, if you repaired anything.
+               Empty string when nothing was repaired. The learner is shown this so
+               they can disagree with the repair.
 
 STRICT CLEANUP RULES:
 — Remove surrounding quotes, bullets, numbering, slashes, and dangling dashes.
@@ -48572,7 +48586,7 @@ SELF-CHECK BEFORE OUTPUTTING:
 — All genuinely learnable words, phrases, and sentences from the input are present
 
 Return ONLY valid json — no markdown, no explanation:
-{"blocks": [{"term": "unit 1", "content": "clean unit 1"}, ...]}"""
+{"blocks": [{"term": "unit 1", "content": "clean unit 1", "was": ""}, ...]}"""
 
 _SHORTCUT_SPLIT_PROMPT_FALLBACK = """\
 You are a senior computational linguist specialising in second-language acquisition.
@@ -49104,12 +49118,102 @@ def _shortcut_validate_coverage(blocks: list[tuple[str, str]], original: str) ->
     return extracted_len >= min(4, original_len)
 
 
+def _shortcut_gate_blocks(user_id: int, blocks: list[tuple[str, str]],
+                          repairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """ДВЕРЬ СЛОВА после модели: сверить с справочником то, что модель пропустила.
+
+    Порядок именно такой и он не случаен:
+      модель  — понимает смысл и чинит порчу источника (обрыв, умлаут, опечатку);
+      дверь   — сверяет результат со справочником: регистр по части речи, устаревшее
+                написание, ß/ss, форма вместо слова.
+
+    Справочник разрешён (разбор идёт НОЧЬЮ, человек не ждёт), модель — НЕТ: она только
+    что отработала на этом же тексте, платить второй раз незачем. Что дверь не смогла
+    решить без модели, доберёт ночной проход `warm_word_gate`.
+
+    Единица, которую дверь знает как НЕ СЛОВО, не сохраняется вовсе — именно так в базу
+    попадали «Abschiebu» и «inkelgasse».
+    """
+    try:
+        from backend.german_word_gate import check_word, NOT_A_WORD, REPAIRED
+    except Exception:
+        logging.warning("дверь слова недоступна на пути ярлыка", exc_info=True)
+        return blocks
+    out: list[tuple[str, str]] = []
+    for term, content in blocks:
+        # Фразы и предложения дверь не разбирает — она про ОДНО слово.
+        if " " in content.strip():
+            out.append((term, content))
+            continue
+        try:
+            verdict = check_word(content, allow_network=True, allow_model=False)
+        except Exception:
+            logging.warning("дверь слова: сбой на %r", content[:40], exc_info=True)
+            out.append((term, content))
+            continue
+        status = verdict.get("status")
+        fixed = str(verdict.get("text") or "").strip()
+        if status == NOT_A_WORD:
+            logging.info("дверь слова: единица не сохранена, это не слово: %r", content[:40])
+            continue
+        # Сравнение ТОЧНОЕ, не casefold: починка «betäubung» → «Betäubung» состоит ровно
+        # в регистре, и сравнение без учёта регистра её прятало (поймано прогоном 20.08).
+        if status == REPAIRED and fixed and fixed != content:
+            repairs.append((content, fixed))
+            logging.info("дверь слова: починено после модели %r → %r", content[:40], fixed[:40])
+            out.append((fixed, fixed))
+            continue
+        out.append((term, content))
+    return out
+
+
+def _shortcut_remember_repairs(user_id: int, repairs: list[tuple[str, str]]) -> None:
+    """Запомнить, что модель починила: утренняя подборка покажет «было → стало».
+
+    Человек должен видеть наши правки и иметь право не согласиться. Молча подменить
+    его текст — это ровно то, чего в проекте делать нельзя.
+    """
+    if not repairs:
+        return
+    try:
+        from backend.database import get_db_connection_context
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS bt_3_shortcut_repair (
+                        user_id BIGINT NOT NULL,
+                        fixed   TEXT NOT NULL,
+                        was     TEXT NOT NULL,
+                        made_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (user_id, fixed)
+                    );""")
+                for was, fixed in repairs:
+                    cur.execute("""INSERT INTO bt_3_shortcut_repair (user_id, fixed, was)
+                                   VALUES (%s, %s, %s)
+                                   ON CONFLICT (user_id, fixed) DO UPDATE
+                                      SET was=EXCLUDED.was, made_at=NOW();""",
+                                (int(user_id), fixed, was))
+            conn.commit()
+    except Exception:
+        logging.warning("shortcut split: не записал исправления", exc_info=True)
+
+
 def _shortcut_extract_blocks_from_json(
-    raw: str, original: str
+    raw: str, original: str, repairs: list[tuple[str, str]] | None = None
 ) -> list[tuple[str, str]] | None:
     """
-    Parse {"blocks": [{"term": "...", "content": "..."}, ...]} from LLM output.
+    Parse {"blocks": [{"term", "content", "was"}, ...]} from LLM output.
     Returns list of (term, content) tuples, or None if invalid or extraction looks empty.
+
+    `was` — что стояло в исходнике до починки. Скриншоты постов и Reels рвут слова на
+    краю картинки, теряют умлауты, а пишут их живые люди с опечатками. Модель и так
+    ОБЯЗАНА понять слово, чтобы его перевести, — значит правильное написание у неё уже
+    есть, и мы его просто забираем. Замер 20.08.2026: «die Abschiebu» → «die Abschiebung»,
+    «inkelgasse» → «die Winkelgasse», «Argernisse» → «das Ärgernis», «erfundet» →
+    «erfunden». Это НЕ новый вызов модели, а поле в ответе, который и так приходит.
+
+    Исправления собираются в `repairs`, чтобы показать их человеку утром: он должен
+    видеть, что мы поменяли, и иметь возможность не согласиться.
     """
     try:
         parsed = json.loads(raw)
@@ -49139,6 +49243,10 @@ def _shortcut_extract_blocks_from_json(
             if norm_content not in seen_contents:
                 seen_contents.add(norm_content)
                 result.append((term, content))
+                was = _shortcut_normalize_unit_text(item.get("was") or "")
+                if was and was.casefold() != content.casefold() and repairs is not None:
+                    repairs.append((was, content))
+                    logging.info("shortcut split: починено %r → %r", was[:40], content[:40])
     if not result:
         return None
     if not _shortcut_validate_coverage(result, original):
@@ -49221,6 +49329,9 @@ def _shortcut_split_blocks(
     from backend.openai_manager import client as _openai_async_client
 
     # Pre-compute input lines count — used to detect under-split LLM results
+    # Что модель починила в исходнике — покажем человеку утром, чтобы он мог
+    # не согласиться. Скриншоты рвут слова, а посты пишут люди с опечатками.
+    repairs: list[tuple[str, str]] = []
     input_lines = [line.strip() for line in text.splitlines() if line.strip()]
     multiline = len(input_lines) >= 2
     input_length = len(text or "")
@@ -49270,8 +49381,10 @@ def _shortcut_split_blocks(
     try:
         started_at = time.perf_counter()
         raw = asyncio.run(_call(primary_model, _SHORTCUT_SPLIT_PROMPT_PRIMARY, timeout=40))
-        blocks = _shortcut_extract_blocks_from_json(raw, text)
+        blocks = _shortcut_extract_blocks_from_json(raw, text, repairs)
         if blocks:
+            blocks = _shortcut_gate_blocks(user_id, blocks, repairs)
+            _shortcut_remember_repairs(user_id, repairs)
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             _log_shortcut_split_event(
                 origin=origin,
@@ -49330,7 +49443,7 @@ def _shortcut_split_blocks(
     try:
         started_at = time.perf_counter()
         raw = asyncio.run(_call(fallback_model, _SHORTCUT_SPLIT_PROMPT_FALLBACK, timeout=45))
-        blocks = _shortcut_extract_blocks_from_json(raw, text)
+        blocks = _shortcut_extract_blocks_from_json(raw, text, repairs)
         if blocks:
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             _log_shortcut_split_event(
