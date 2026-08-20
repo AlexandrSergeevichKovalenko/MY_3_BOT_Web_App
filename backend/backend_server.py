@@ -48495,7 +48495,10 @@ WHAT TO EXTRACT — LEARNABLE UNITS ONLY:
      block. A sentence and the phrase inside it are DIFFERENT learning units — \
      the phrase teaches the vocabulary item; the sentence teaches real-world usage. \
      NEVER skip a sentence just because it contains an already-extracted phrase.
-  C) A ✗/✓ correction pair — both the wrong and correct form together as ONE block.
+  C) A ✗/✓ correction pair — keep ONLY the correct form, as its own block. The wrong
+     half is a teaching device of the post, not something to save: after you repair it
+     (see the repair rules below) it becomes identical to the correct half anyway, and
+     a card must never carry broken German.
   D) A pedagogical grammar-construction fragment such as \
      "erinnert... an + Akkusativ", "ist... ähnlich + Dativ" IF worth saving. \
      Keep it as a learnable unit, remove raw ellipsis and obvious teaching noise.
@@ -48575,6 +48578,11 @@ STRICT CLEANUP RULES:
 — In normal cases, "term" and "content" should be identical or nearly identical.
 — If the input contains teaching shorthand like "...", "…" or case labels such as \
   "+ Akkusativ" / "+ Dativ", keep the grammar signal but normalize the text.
+
+DROP DUPLICATES AFTER REPAIRING:
+You receive the WHOLE recognised text at once, so you can see every unit together.
+Repair first, then remove units that became identical. This is what makes ✗/✓ pairs
+collapse into one correct block without any special handling.
 
 SELF-CHECK BEFORE OUTPUTTING:
 — Every extracted block passes the "would I save this to a dictionary?" test

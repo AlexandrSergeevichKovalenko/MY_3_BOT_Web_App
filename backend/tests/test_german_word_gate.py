@@ -156,3 +156,23 @@ def test_слабый_вердикт_в_кэше_пересматриваетс�
               "source": "модель: такого слова нет", "note": ""}
     monkeypatch.setattr(G, "_cached", lambda asked: strong)
     assert G.check_word("Abschiebu")["status"] == G.NOT_A_WORD
+
+
+def test_догадка_модели_не_применяется_молча(monkeypatch):
+    """Владелец 20.08.2026: «чиним только подтверждённое справочником, остальное —
+    в проверку». Модель может предложить написание, которого справочник не знает —
+    подставлять его молча нельзя, решение принимает человек."""
+    monkeypatch.setattr(G, "_reference_says_about_all", _reference({}))
+    monkeypatch.setattr("backend.german_reference_forms.word_exists_by_model",
+                        lambda w: {"existiert": True, "sprache": "de",
+                                   "wortart": "Substantiv", "korrekt": "Scheinwerferglas"})
+    verdict = G.check_word("Scheinwerfergla")
+    assert verdict["text"] == "Scheinwerfergla", "написание не должно подменяться догадкой"
+    assert verdict["status"] == G.UNCONFIRMED
+
+
+def test_подтверждённая_справочником_починка_применяется(monkeypatch):
+    """А вот это — факт, а не догадка: справочник знает исправленное написание."""
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"Ärgernisse": ["Deklinierte Form"]}))
+    assert G.check_word("Argernisse")["text"] == "Ärgernisse"
