@@ -33,7 +33,56 @@ Linkshänder` («левша») лежал в подтеме «интернет �
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
+import time
+
+# Публичный прокси базы периодически рвёт соединение (documented: имя перестаёт
+# резолвиться, SSL EOF). Лечится ПОВТОРОМ С ОЖИДАНИЕМ, а не пином IP. Без повтора
+# обход 20.08.2026 дважды умирал на середине — и терял уже оплаченные ответы модели.
+_DB_RETRIES = 4
+_DB_WAIT_SECONDS = 20
+
+
+def _with_retry(fn, *args, **kwargs):
+    last: Exception | None = None
+    for attempt in range(_DB_RETRIES):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:            # обрыв соединения, не логика
+            last = exc
+            if attempt + 1 < _DB_RETRIES:
+                print(f"  ⏳ база оборвалась ({type(exc).__name__}), жду {_DB_WAIT_SECONDS} с")
+                time.sleep(_DB_WAIT_SECONDS)
+    raise RuntimeError(f"база недоступна после {_DB_RETRIES} попыток: {last}")
+
+
+# Пройденные темы запоминаем на диск: ответы модели стоят денег, и повторный
+# прогон не должен платить за них второй раз.
+_DONE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+                          "artikel_theme_fit_done.jsonl")
+
+
+def _already_done() -> dict:
+    out: dict = {}
+    if not os.path.exists(_DONE_FILE):
+        return out
+    with open(_DONE_FILE, encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if row.get("theme"):
+                out[row["theme"]] = row
+    return out
+
+
+def _remember_done(theme_key: str, moves: list[dict]) -> None:
+    os.makedirs(os.path.dirname(_DONE_FILE), exist_ok=True)
+    with open(_DONE_FILE, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"theme": theme_key, "moves": moves}, ensure_ascii=False) + "\n")
 
 
 def theme_rows(theme_key: str) -> list[dict]:
@@ -76,14 +125,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--theme", default="", help="только одна тема")
+    parser.add_argument("--fresh", action="store_true",
+                        help="переспросить всё заново, забыв прошлый прогон")
     args = parser.parse_args()
 
     from backend.article_sprint_themes import article_sprint_themes
     from backend.article_theme_fit import (
         judge_theme_fit, suggest_theme, ThemeFitJudgeUnavailable, BATCH)
 
-    themes = article_sprint_themes()
+    themes = _with_retry(article_sprint_themes)
+    done = {} if args.fresh else _already_done()
     targets = [t for t in themes if not args.theme or t["key"] == args.theme]
+    if done:
+        print(f"уже пройдено ранее: {len(done)} тем — их не переспрашиваю\n")
     if not targets:
         print(f"темы «{args.theme}» нет")
         return 1
@@ -91,7 +145,9 @@ def main() -> int:
     total_moved = 0
     total_checked = 0
     for theme in targets:
-        rows = theme_rows(theme["key"])
+        if theme["key"] in done and not args.apply:
+            continue
+        rows = _with_retry(theme_rows, theme["key"])
         if not rows:
             continue
         total_checked += len(rows)
@@ -108,6 +164,7 @@ def main() -> int:
             misfits.extend(r for r in chunk if not fit.get(r["word"], True))
         if not misfits:
             print(f"{theme['label_ru']}: всё на своих местах ({len(rows)} слов)")
+            _remember_done(theme["key"], [])   # иначе следующий прогон заплатит за неё снова
             continue
         # Вторая ступень: куда именно. Она же лечит строгость первой.
         picks: dict[str, str] = {}
@@ -126,9 +183,11 @@ def main() -> int:
         for row, target in real:
             line = f"  {row['article']} {row['word']:20s} {(row['meaning_ru'] or '')[:24]:26s} → {labels.get(target)}"
             if args.apply:
-                line += "   [" + move(row, target) + "]"
+                line += "   [" + _with_retry(move, row, target) + "]"
             print(line)
             total_moved += 1
+        _remember_done(theme["key"], [{"word": r["word"], "article": r["article"],
+                                       "to": t} for r, t in real])
 
     print(f"\nпроверено слов: {total_checked}; на переезд: {total_moved}")
     if not args.apply:
