@@ -2581,6 +2581,22 @@ def run_reference_forms_warm_actor() -> None:
     gate_report = warm_word_gate(
         limit=int((_os.getenv("WORD_GATE_WARM_BATCH") or "150").strip() or "150"))
     logging.info("дверь слова: ночной проход %s", gate_report)
+    # Подсказки правильного написания для того, что признано не словом. Без них экран
+    # проверки показывает человеку голое «не нашли» и заставляет печатать.
+    from backend.german_word_gate import warm_suggestions
+    logging.info("дверь слова: подсказки %s", warm_suggestions(
+        limit=int((_os.getenv("WORD_SUGGESTION_WARM_BATCH") or "60").strip() or "60")))
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_word_audit_reminder_actor() -> None:
+    """Напоминание людям: «у тебя есть слова, которые мы не смогли подтвердить»."""
+    from backend.word_confirm_digest import (
+        ensure_word_confirm_schema, ensure_word_suggestion_schema, send_word_audit_reminders,
+    )
+    ensure_word_confirm_schema()
+    ensure_word_suggestion_schema()
+    logging.info("напоминание о словах: %s", send_word_audit_reminders())
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")

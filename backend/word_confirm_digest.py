@@ -267,3 +267,101 @@ def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, 
     except Exception:
         logging.warning("экран проверки: решения не применены для %s", user_id, exc_info=True)
     return counts
+
+
+# ── Напоминание в личку: два раза в неделю ──────────────────────────────────
+def _reminder_text(count: int) -> str:
+    """Текст без ребусов: что, откуда, зачем, что будет, как делать, сколько.
+
+    Владелец 20.08.2026: «в сообщении всё очень детально и без ребусов описать: что это
+    за слова, откуда они появились, зачем мы просим их проверить, что будет, если не
+    проверить, механику проверки, сколько делать, что потом происходит».
+    """
+    word = "слово" if count % 10 == 1 and count % 100 != 11 else (
+        "слова" if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14 else "слов")
+    return (
+        f"🦊 <b>{count} {word} в твоём словаре ждут проверки</b>\n\n"
+        "<b>Что это за слова.</b> Это слова, которые ты сам сохранил. Каждое сохранённое "
+        "слово мы сверяем с немецкими справочниками — эти не нашлись.\n\n"
+        "<b>Почему так вышло.</b> Причины бывают разные: слово редкое и его нет в "
+        "справочнике; слово из другого языка; при сохранении потерялась буква — так "
+        "бывает, когда текст распознаётся с картинки.\n\n"
+        "<b>Зачем проверять.</b> Если слово с ошибкой останется, ты будешь учить его "
+        "в таком виде и запомнишь неправильно. Мы не удаляем ничего сами — решаешь ты.\n\n"
+        "<b>Как это работает.</b> Откроется экран со списком. У каждого слова написано, "
+        "почему оно там. Если мы догадались, как оно пишется правильно, будет готовая "
+        "кнопка «Да, это …» — одно касание. Можно оставить слово как есть, можно "
+        "попросить переделать перевод, можно вписать правильное написание руками.\n\n"
+        "<b>Что будет с неотмеченными.</b> Они удалятся — из словаря и из тренировок. "
+        "Но только после того, как ты нажмёшь «Готово». До этого не меняется ничего.\n\n"
+        "<b>Сколько это займёт.</b> Меньше минуты на слово. Можно разобрать часть и "
+        "вернуться позже — непроверенные придут снова.\n\n"
+        "<b>Что потом.</b> Карточки достроим сами: часть речи, род, формы. "
+        "Подтверждённые слова больше не спросим."
+    )
+
+
+def send_word_audit_reminders(*, force: bool = False) -> dict[str, Any]:
+    """Разослать напоминания всем, у кого накопились неподтверждённые слова."""
+    import requests
+    from datetime import datetime, timezone
+    from backend.database import (
+        claim_scheduler_run_guard, finish_scheduler_run_guard, get_db_connection_context,
+    )
+
+    now = datetime.now(timezone.utc)
+    run_period = now.strftime("%Y-%m-%d")
+    if not force and not claim_scheduler_run_guard(
+            job_key=JOB_KEY, run_period=run_period, target_scope="global", metadata={}):
+        return {"ok": True, "skipped": True, "reason": "already_claimed"}
+
+    token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+    bot_username = os.getenv("TELEGRAM_BOT_USERNAME") or ""
+    if not token or not bot_username:
+        return {"ok": False, "error": "no_token_or_username"}
+
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT q.user_id, COUNT(DISTINCT q.word_de)
+                      FROM bt_3_webapp_dictionary_queries q
+                      JOIN bt_3_word_check w ON w.asked = q.word_de
+                     WHERE w.status IN ('не подтверждено', 'не слово')
+                       AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
+                                        WHERE d.user_id = q.user_id AND d.word = q.word_de
+                                          AND d.closed_at IS NOT NULL)
+                     GROUP BY q.user_id HAVING COUNT(DISTINCT q.word_de) > 0;
+                    """
+                )
+                targets = [(int(a), int(b)) for a, b in (cur.fetchall() or [])]
+    except Exception:
+        logging.warning("напоминание о словах: не собрал получателей", exc_info=True)
+        targets = []
+
+    link = f"https://t.me/{bot_username}?startapp=woerter"
+    delivered = 0
+    for user_id, count in targets:
+        try:
+            response = requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": user_id, "text": _reminder_text(count), "parse_mode": "HTML",
+                      "reply_markup": {"inline_keyboard": [[
+                          {"text": "Открыть проверку", "url": link}]]}},
+                timeout=20)
+            if response.status_code < 400:
+                delivered += 1
+            else:
+                logging.warning("напоминание о словах: не ушло uid=%s: %s",
+                                user_id, response.text[:200])
+        except Exception:
+            logging.warning("напоминание о словах: не ушло uid=%s", user_id, exc_info=True)
+
+    if not force:
+        # «Выполнено» ставится по ФАКТУ доставки, а не по факту отправки.
+        finish_scheduler_run_guard(
+            job_key=JOB_KEY, run_period=run_period, target_scope="global",
+            status="completed" if (delivered or not targets) else "failed",
+            metadata={"получателей": len(targets), "доставлено": delivered})
+    return {"ok": True, "получателей": len(targets), "доставлено": delivered}

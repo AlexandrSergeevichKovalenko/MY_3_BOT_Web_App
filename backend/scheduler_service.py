@@ -92,6 +92,7 @@ from backend.background_jobs import (  # noqa: E402
     run_cap_health_report_actor,
     run_article_review_dm_actor,
     run_reference_forms_review_dm_actor,
+    run_word_audit_reminder_actor,
     run_reference_forms_warm_actor,
     run_retire_review_dm_actor,
     run_fill_control_dm_actor,
@@ -432,6 +433,10 @@ def _dispatch_article_review_dm() -> None:
 
 def _dispatch_reference_forms_warm() -> None:
     run_reference_forms_warm_actor.send()
+
+
+def _dispatch_word_audit_reminder() -> None:
+    run_word_audit_reminder_actor.send()
 
 
 def _dispatch_reference_forms_review_dm() -> None:
@@ -882,6 +887,23 @@ def _build_scheduler():
     # замолчит». Это неверно с тех пор, как появился карантин: отказы стража приёмки
     # льются в ту же очередь постоянно. Замер 16.08.2026 — 533 слова вместо 145.
     # Рассылка сама не замолчит, размер пачки держит владелец (RETIRE_REVIEW_BATCH).
+    # Проверка слов ЧЕЛОВЕКОМ: два раза в неделю, вторник и пятница. Владелец
+    # 20.08.2026: «пусть приходит напоминание 2 раза в неделю с кнопкой открыть
+    # страничку мини-приложения для аудита слов». Не по команде: «всё, что я должен
+    # вызывать командой, я забуду».
+    if _enabled("WORD_AUDIT_REMINDER_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_word_audit_reminder,
+            "cron",
+            day_of_week="tue,fri",
+            hour=_int_env("WORD_AUDIT_REMINDER_HOUR", 18),
+            minute=_int_env("WORD_AUDIT_REMINDER_MINUTE", 30),
+            timezone=_tz(os.getenv("WORD_AUDIT_REMINDER_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
     # Слова, которым каскад форм не нашёл ответа ни справочником, ни разбором
     # составного слова, ни моделью. Владелец 17.08.2026 просил ТРИ РАЗА В НЕДЕЛЮ —
     # понедельник, среда, пятница. Очередь не конечная: новые слова приходят с каждым

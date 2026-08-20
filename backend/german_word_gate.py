@@ -437,3 +437,79 @@ def words_awaiting_owner(limit: int = 50) -> list[tuple[str, str, str]]:
     except Exception:
         logging.warning("дверь слова: не прочитал список на удаление", exc_info=True)
         return []
+
+
+# ── Подсказка правильного написания ──────────────────────────────────────────
+_MEANT_TASK = "german_word_meant"
+_MEANT_INSTRUCTION = """Du bist ein deutsches Wörterbuch.
+Die Eingabe ist ein FEHLERHAFTES oder ABGESCHNITTENES Wort.
+Antworte NUR mit JSON: {"gemeint": "die Abschiebung"}
+  gemeint — das vollständige, richtig geschriebene deutsche Wort; bei Substantiven MIT
+            Artikel. Kannst du es nicht eindeutig wiederherstellen, gib "" zurück.
+Erfinde nichts."""
+
+
+def suggest_spelling(word: str) -> str:
+    """Что человек, скорее всего, имел в виду. Принимаем ТОЛЬКО совпадение двух ответов.
+
+    Детерминированные правила такое не чинят: «Abschiebu» нужно дописать «ng», а не
+    «ung», а у «inkelgasse» потеряно НАЧАЛО слова — суффиксными правилами это
+    недостижимо. Модель восстанавливает такое надёжно, но только при согласии двух
+    независимых ответов: замер 20.08.2026 — Abschiebu → die Abschiebung, inkelgasse →
+    die Winkelgasse, -künfte → die Einkünfte (совпало), Scheinwerfergla — разошлось,
+    и подсказки не будет. Пустая строка честнее выдуманной.
+    """
+    from backend.german_reference_forms import _ask_once
+    from backend.openai_manager import system_message
+    system_message.setdefault(_MEANT_TASK, _MEANT_INSTRUCTION)
+    first = _ask_once(_MEANT_TASK, word)
+    second = _ask_once(_MEANT_TASK, word)
+    a = str((first or {}).get("gemeint") or "").strip()
+    b = str((second or {}).get("gemeint") or "").strip()
+    if not a or a.casefold() != b.casefold():
+        return ""
+    return a
+
+
+def warm_suggestions(*, limit: int = 60) -> dict:
+    """Ночью посчитать подсказки для слов, которые дверь признала не словом.
+
+    Без этого экран проверки показывает человеку голое «мы не нашли такое слово» и
+    заставляет печатать. С подсказкой — одно касание.
+    """
+    import time
+    from backend.database import get_db_connection_context
+    from backend.word_confirm_digest import ensure_word_suggestion_schema
+
+    ensure_word_suggestion_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT w.asked FROM bt_3_word_check w
+                    WHERE w.status = %s
+                      AND NOT EXISTS (SELECT 1 FROM bt_3_word_suggestion s
+                                       WHERE s.asked = w.asked)
+                    ORDER BY w.checked_at DESC LIMIT %s;""",
+                (NOT_A_WORD, int(limit)),
+            )
+            words = [str(r[0]) for r in (cur.fetchall() or [])]
+
+    stats = {"смотрели": len(words), "подсказка есть": 0, "не восстановили": 0}
+    for word in words:
+        guess = suggest_spelling(word)
+        stats["подсказка есть" if guess else "не восстановили"] += 1
+        try:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO bt_3_word_suggestion (asked, suggestion, checked_at)
+                           VALUES (%s, %s, NOW())
+                           ON CONFLICT (asked) DO UPDATE
+                              SET suggestion=EXCLUDED.suggestion, checked_at=NOW();""",
+                        (word, guess),
+                    )
+                conn.commit()
+        except Exception:
+            logging.warning("подсказка написания: не записал %s", word, exc_info=True)
+        time.sleep(0.5)
+    return stats
