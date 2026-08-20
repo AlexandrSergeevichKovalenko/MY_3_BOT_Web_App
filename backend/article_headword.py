@@ -190,6 +190,14 @@ def ensure_headword_cache_schema(conn, *, force: bool = False) -> None:
             );
             """
         )
+        # Решение владельца о заголовке. Справочники бывают согласны между собой и
+        # при этом расходиться с живым языком: «die Pocken» (оспа) оба считают формой
+        # от «die Pocke», хотя по-русски это слово, а не форма. Владелец 20.08.2026
+        # велел вернуть его в игру — и это решение обязано пережить любой следующий
+        # обход, иначе страж будет снимать слово снова и снова, а владелец — снова и
+        # снова возвращать.
+        cur.execute("ALTER TABLE bt_3_word_headword_cache "
+                    "ADD COLUMN IF NOT EXISTS decided_by TEXT NOT NULL DEFAULT '';")
     _schema_ready = True
 
 
@@ -215,12 +223,14 @@ def _remember(rows: list[tuple[str, str, str]]) -> None:
         ensure_headword_cache_schema(conn)
         with conn.cursor() as cur:
             for word, verdict, lemma in rows:
+                # Решение владельца не перезаписывается вердиктом справочника НИКОГДА.
                 cur.execute(
                     """
                     INSERT INTO bt_3_word_headword_cache (word, verdict, lemma, checked_at)
                     VALUES (%s, %s, %s, NOW())
                     ON CONFLICT (word) DO UPDATE
-                       SET verdict = EXCLUDED.verdict, lemma = EXCLUDED.lemma, checked_at = NOW();
+                       SET verdict = EXCLUDED.verdict, lemma = EXCLUDED.lemma, checked_at = NOW()
+                     WHERE bt_3_word_headword_cache.decided_by = '';
                     """, (word, verdict, lemma[:120]))
         conn.commit()
 
@@ -276,6 +286,23 @@ def headword_verdicts(words, *, use_cache: bool = True) -> dict[str, tuple[str, 
                 logging.warning("article_headword: кэш заголовков не записался", exc_info=True)
         time.sleep(_PAUSE_BETWEEN_BATCHES_SECONDS)
     return result
+
+
+def remember_owner_decision(word: str, *, verdict: str, who: str) -> None:
+    """Записать решение владельца о заголовке. Справочник его больше не перебьёт."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        ensure_headword_cache_schema(conn, force=True)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bt_3_word_headword_cache (word, verdict, lemma, decided_by, checked_at)
+                VALUES (%s, %s, '', %s, NOW())
+                ON CONFLICT (word) DO UPDATE
+                   SET verdict = EXCLUDED.verdict, lemma = '',
+                       decided_by = EXCLUDED.decided_by, checked_at = NOW();
+                """, (str(word).strip(), verdict, who[:120]))
+        conn.commit()
 
 
 def bad_headwords(words) -> dict[str, dict]:

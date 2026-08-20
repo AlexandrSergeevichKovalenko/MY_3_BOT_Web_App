@@ -183,5 +183,43 @@ class TheSecondReferenceRescuesRealWordsTests(unittest.TestCase):
         self.assertEqual(fetch.call_count, 1)
 
 
+class OwnerDecisionOutranksTheReferencesTests(unittest.TestCase):
+    """Решение владельца о заголовке справочник не перебивает.
+
+    Живой случай 20.08.2026: «die Pocken» (оспа) ОБА справочника считают формой от
+    «die Pocke». По-русски это слово, а не форма, и владелец велел вернуть его в игру.
+    Без этого правила следующий обход снял бы его снова — и так по кругу: страж
+    снимает, владелец возвращает, никто не замечает.
+    """
+
+    def test_a_decided_word_is_never_re_asked(self):
+        # Вердикт лежит в кэше как решение владельца — справочник не спрашивается.
+        with patch.object(hw, "_cached", return_value={"Pocken": (hw.LEMMA, "")}), \
+             patch.object(hw, "_fetch_wikitext") as fetch:
+            verdicts = hw.headword_verdicts(["Pocken"])
+        self.assertEqual(verdicts["Pocken"][0], hw.LEMMA)
+        fetch.assert_not_called()
+
+    def test_the_decision_is_written_with_its_author(self):
+        calls = []
+
+        class _Cur:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, sql, params=None): calls.append((sql, params))
+
+        class _Conn:
+            def cursor(self): return _Cur()
+            def commit(self): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        with patch("backend.database.get_db_connection_context", return_value=_Conn()):
+            hw.remember_owner_decision("Pocken", verdict=hw.LEMMA, who="владелец 20.08.2026")
+        wrote = [c for c in calls if c[1] and "Pocken" in str(c[1])]
+        self.assertTrue(wrote, "решение владельца должно записываться")
+        self.assertIn("владелец 20.08.2026", str(wrote[-1][1]))
+
+
 if __name__ == "__main__":
     unittest.main()
