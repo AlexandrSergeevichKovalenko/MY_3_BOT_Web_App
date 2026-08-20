@@ -153,8 +153,13 @@ def judge_herkunft(word: str, herkunft: str) -> bool:
             continue
         if norm == target:
             return True
+        # Источник назван ФРАЗОЙ, а не словом: «von englisch ''to go shopping''
+        # entlehnt» → das Shopping. Немецкое слово — одно из слов этой фразы, и
+        # это не догадка: справочник сам его в ней и написал.
+        if any(_norm(part) == target for part in re.split(r"[\s\-]+", cand)):
+            return True
         # Немецкое существительное образовано от английского глагола:
-        # «engl. to scan» → der Scanner. Суффикс немецкий, корень английский.
+        # «engl. to boil» → der Boiler. Суффикс немецкий, корень английский.
         if target in (norm + "er", norm + "ing"):
             return True
     return False
@@ -212,20 +217,48 @@ def _herkunft_of(word: str, wikitext: str | None) -> str:
     return ""
 
 
-def _en_direction(wikitext: str | None) -> bool | None:
-    """Немецкий взял слово у английского? None — en.wiktionary тоже молчит."""
+_EN_SOURCE_WORD = re.compile(r"\{\{u?bor\+?\|de\|en\|([^}|]+)")
+
+
+def _keeps_english_spelling(word: str, source_word: str) -> bool:
+    """Немецкое слово сохранило английское написание?
+
+    Это и есть граница между «язык переварил заимствование» и «взял как есть».
+    Переваренное (coalition → Koalition, harmonica → Harmonika) читается и
+    склоняется по-немецки, и род у него выводится немецкими правилами — учить
+    артикль на нём можно. Взятое как есть (upload → Upload) немецких признаков
+    рода не имеет вовсе, и в тренажёре артиклей от него пользы нет."""
+    if not source_word:
+        return False
+    target = _norm(word)
+    src = _norm(source_word)
+    if not target or not src:
+        return False
+    if target == src:
+        return True
+    # Составное с английской частью: SIM-Karte, T-Shirt, USB-Stick.
+    return any(_norm(part) == src for part in re.split(r"[\s\-]+", word) if part)
+
+
+def _en_direction(wikitext: str | None) -> tuple[bool | None, str]:
+    """(немецкий взял у английского?, английское слово-источник).
+
+    None в первом элементе — en.wiktionary тоже молчит."""
     if not wikitext:
-        return None
+        return None, ""
     section = _EN_GERMAN_SECTION.search(wikitext)
     if not section:
-        return None
+        return None, ""
     etymology = _EN_ETYMOLOGY.search(section.group(1))
     if not etymology:
-        return None
+        return None, ""
     text = re.sub(r"\s+", " ", etymology.group(1)).strip()
     if not text:
-        return None
-    return bool(_BORROWED_DE_FROM_EN.search(text))
+        return None, ""
+    if not _BORROWED_DE_FROM_EN.search(text):
+        return False, ""
+    named = _EN_SOURCE_WORD.search(text)
+    return True, (named.group(1).strip() if named else "")
 
 
 # --- кэш -------------------------------------------------------------------
@@ -316,19 +349,43 @@ def origin_of(words, *, use_cache: bool = True) -> dict[str, tuple[str, str]]:
             herkunft = _herkunft_of(word, de_pages.get(word))
             if herkunft and judge_herkunft(word, herkunft):
                 result[word] = (ANGLICISM, "de.wiktionary Herkunft: " + herkunft[:160])
-            elif herkunft and not _HERKUNFT_UNSOURCED.search(herkunft):
+            elif (herkunft and not _HERKUNFT_UNSOURCED.search(herkunft)
+                  and not _SAYS_ENGLISH.search(herkunft)):
+                # Происхождение описано, английский в нём не упомянут вовсе —
+                # это твёрдое «не англицизм», второй источник не нужен.
                 result[word] = (OTHER, "de.wiktionary Herkunft: " + herkunft[:160])
             else:
-                # Раздела нет — либо справочник сам пометил его неподтверждённым.
-                # И то и другое означает «здесь ответа нет», спрашиваем второй источник.
+                # Сюда попадают три случая, и все три означают «здесь ответа НЕТ»:
+                #   • раздела о происхождении нет;
+                #   • справочник сам пометил его неподтверждённым;
+                #   • английский упомянут, но написание не совпало ни с чем.
+                #
+                # Третий случай раньше давал «не англицизм», и это была ошибка:
+                # у «Shopping» написано «von englisch ''to go shopping'' entlehnt»,
+                # у «Brunch» — «englisch, zusammengezogen aus breakfast und lunch».
+                # Английское происхождение справочник назвал прямым текстом, а моё
+                # правило молчание о точном слове принимало за отрицание. Отсутствие
+                # подтверждения — не опровержение: спрашиваем второй справочник.
                 need_en.append(word)
         if need_en:
             time.sleep(_PAUSE_BETWEEN_BATCHES_SECONDS)
             en_pages = _fetch_wikitext(_EN_API, need_en)
             for word in need_en:
-                direction = _en_direction(en_pages.get(word))
-                if direction is True:
-                    result[word] = (ANGLICISM, "en.wiktionary: заимствование de←en")
+                direction, source_word = _en_direction(en_pages.get(word))
+                if direction is True and _keeps_english_spelling(word, source_word):
+                    result[word] = (ANGLICISM,
+                                    f"en.wiktionary: заимствование de←en ({source_word})")
+                elif direction is True:
+                    # Заимствование есть, но НЕМЕЦКИЙ ПЕРЕПИСАЛ СЛОВО ПОД СЕБЯ:
+                    # coalition → die Koalition, empathy → die Empathie,
+                    # harmonica → die Harmonika, closet → das Klosett, dog → die Dogge.
+                    # Такое слово язык уже переварил: оно читается по-немецки, а род
+                    # у него выводится немецкими правилами (-ion → die). Учить артикль
+                    # на нём МОЖНО и НУЖНО — в отличие от der Upload, где род держится
+                    # только на договорённости. Игра про немецкий род, а не про
+                    # этимологию, поэтому режем по написанию, а не по происхождению.
+                    result[word] = (OTHER,
+                                    f"из английского, но написание немецкое ({source_word})")
                 elif direction is False:
                     result[word] = (OTHER, "en.wiktionary: другая этимология")
                 else:

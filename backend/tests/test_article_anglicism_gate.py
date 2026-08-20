@@ -161,3 +161,54 @@ class UnknownIsNeverCachedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DigestedBorrowingsStayInTheGameTests(unittest.TestCase):
+    """Заимствование, у которого немецкий ПЕРЕПИСАЛ написание, — не наш случай.
+
+    Игра учит НЕМЕЦКИЙ РОД. У «der Upload» род держится только на договорённости —
+    учить на нём нечему. А «die Koalition», «die Empathie», «die Harmonika» немецкий
+    давно переварил: они читаются по-немецки, и род у них выводится немецкими
+    правилами (-ion → die). Такие слова в тренажёре артиклей как раз нужны.
+
+    Замер 20.08.2026: второй справочник (en.wiktionary) отвечает только на вопрос
+    «взял ли немецкий это у английского» и про написание не думает — поэтому по нему
+    в англицизмы уезжали coalition→Koalition, empathy→Empathie, harmonica→Harmonika,
+    closet→Klosett, dog→Dogge, mungos→Mungo, typhoon→Taifun. Четверо из них уже были
+    сняты с показа и вернулись.
+    """
+
+    def test_a_borrowing_kept_as_written_in_english_is_an_anglicism(self):
+        self.assertTrue(ang._keeps_english_spelling("Upload", "upload"))
+        self.assertTrue(ang._keeps_english_spelling("Airbag", "airbag"))
+
+    def test_a_respelled_borrowing_is_not(self):
+        for german, english in (("Koalition", "coalition"), ("Empathie", "empathy"),
+                                ("Harmonika", "harmonica"), ("Klosett", "closet"),
+                                ("Dogge", "dog"), ("Taifun", "typhoon")):
+            self.assertFalse(ang._keeps_english_spelling(german, english),
+                             f"{german} немецкий уже переварил — его род учится по правилам")
+
+    def test_a_compound_with_an_english_part_still_counts(self):
+        self.assertTrue(ang._keeps_english_spelling("USB-Stick", "stick"))
+
+    def test_an_unnamed_source_word_never_accuses(self):
+        # Справочник сказал «заимствование», но слова не назвал — сравнивать не с чем.
+        self.assertFalse(ang._keeps_english_spelling("Administrator", ""))
+
+
+class PhraseSourcesAreReadTests(unittest.TestCase):
+    """Источник назван фразой — немецкое слово может быть одним из её слов."""
+
+    def test_a_phrase_source_still_identifies_the_word(self):
+        # das Shopping: «von englisch ''to go shopping'' entlehnt». Раньше правило
+        # требовало совпадения со всей фразой и выносило вердикт «не англицизм».
+        self.assertTrue(ang.judge_herkunft(
+            "Shopping",
+            ":im 20. Jahrhundert von englisch ''to {{Ü|en|go shopping}}'' „einkaufen gehen“ entlehnt"))
+
+    def test_a_calque_phrase_still_does_not_count(self):
+        # У кальки ни одно слово фразы не совпадает с немецким написанием.
+        self.assertFalse(ang.judge_herkunft(
+            "Einbahnstraße",
+            ":[[Lehnübersetzung]] von [[englisch]] ''{{Ü|en|one-way street}}''"))
