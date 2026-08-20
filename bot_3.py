@@ -115,6 +115,7 @@ from backend.provider_cost_truth import (
     build_provider_cost_truth_text,
     send_provider_cost_truth_report,
 )
+from backend.telegram_delivery import send_telegram_message_to_all
 from backend.admin_economics import (
     _split_telegram_text,
     apply_admin_limit_change,
@@ -9757,13 +9758,10 @@ def _send_pool_enrich_morning_report() -> None:
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
         if not token or not admin_ids:
             return
-        for uid in admin_ids:
-            requests.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": uid, "text": text, "parse_mode": "HTML",
-                      "disable_web_page_preview": True},
-                timeout=20,
-            )
+        _, failures = send_telegram_message_to_all(
+            admin_ids, text=text, token=token, what="отчёт о доборе пула")
+        if failures:
+            logging.error("отчёт о доборе пула не дошёл: %s", failures)
     except Exception:
         logging.exception("pool enrich morning report failed")
 
@@ -9815,16 +9813,10 @@ def _send_reply_keyboard_health_report_safe() -> None:
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
         if not token or not admin_ids:
             return
-        for admin_id in admin_ids:
-            try:
-                requests.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": admin_id, "text": text, "parse_mode": "HTML",
-                          "disable_web_page_preview": True},
-                    timeout=20,
-                )
-            except Exception:
-                logging.warning("reply_keyboard_health notify failed admin=%s", admin_id, exc_info=True)
+        _, failures = send_telegram_message_to_all(
+            admin_ids, text=text, token=token, what="отчёт о кнопках")
+        if failures:
+            logging.error("отчёт о кнопках не дошёл: %s", failures)
     except Exception as exc:
         logging.exception("reply keyboard health report failed")
         _record_sched_heartbeat("reply_keyboard_health", "failed", {"error": str(exc)[:300]})
@@ -9917,18 +9909,14 @@ def _send_phrase_check_morning_report() -> None:
                                          "url": get_webapp_deeplink("ans_frv_0")}]]}
                   if open_reviews else None)
         import requests
-        for admin_id in admin_ids:
-            try:
-                payload = {"chat_id": admin_id, "text": text, "parse_mode": "HTML"}
-                if markup:
-                    payload["reply_markup"] = markup
-                requests.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json=payload,
-                    timeout=15,
-                )
-            except Exception:
-                logging.debug("phrase check report send failed admin=%s", admin_id, exc_info=True)
+        delivered, failures = send_telegram_message_to_all(
+            admin_ids, text=text, token=token, reply_markup=markup,
+            disable_web_page_preview=False, timeout=15,
+            what="отчёт о проверке фраз")
+        if failures:
+            logging.error("отчёт о проверке фраз не дошёл: %s", failures)
+        logging.info("отчёт о проверке фраз доставлен: %d из %d",
+                     delivered, len(admin_ids))
     except Exception:
         logging.exception("phrase check morning report failed")
 
@@ -10306,15 +10294,10 @@ def _run_classics_audio_readiness_report_safe() -> None:
     admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
     if not token or not admin_ids:
         return
-    for uid in admin_ids:
-        try:
-            _requests.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": uid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
-                timeout=20,
-            )
-        except Exception:
-            logging.exception("classics audio readiness DM failed admin=%s", uid)
+    _, failures = send_telegram_message_to_all(
+        admin_ids, text=text, token=token, what="готовность аудио Классики")
+    if failures:
+        logging.error("готовность аудио «Классики» не дошла: %s", failures)
 
 
 def _run_daily_audio_safe() -> None:
