@@ -231,7 +231,18 @@ def _en_direction(wikitext: str | None) -> bool | None:
 # --- кэш -------------------------------------------------------------------
 
 
-def ensure_origin_cache_schema(conn) -> None:
+# Таблица кэша создаётся ОДИН РАЗ на процесс, а не на каждую пачку слов.
+# 20.08.2026 прогон наполнения показал, зачем это нужно: `CREATE TABLE IF NOT EXISTS`
+# уходил в базу перед каждой пачкой, и когда публичный прокси разрывал соединение,
+# падал именно этот лишний поход — страж честно отказывался пропускать пачку, но
+# отказывался из-за служебного запроса, а не из-за самого справочника.
+_schema_ready = False
+
+
+def ensure_origin_cache_schema(conn, *, force: bool = False) -> None:
+    global _schema_ready
+    if _schema_ready and not force:
+        return
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -243,6 +254,7 @@ def ensure_origin_cache_schema(conn) -> None:
             );
             """
         )
+    _schema_ready = True
 
 
 def _cached(words: list[str]) -> dict[str, tuple[str, str]]:
