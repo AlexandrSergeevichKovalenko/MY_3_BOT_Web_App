@@ -294,6 +294,7 @@ function getAnswerStartParam() {
   if (path === '/settings') return 'settings';
   if (path === '/interactive') return 'interactive';
   if (path === '/battles') return 'battles';
+  if (path === '/woerter') return 'woerter';
   // Public shareable tour: /tour (or /onboarding) opens the onboarding wizard as a
   // presentation — works in a plain browser for people who don't have the bot yet.
   if (path === '/tour' || path === '/onboarding') return 'onboarding';
@@ -502,6 +503,19 @@ async function bootstrapInteractive() {
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <InteractiveHub />
+    </React.StrictMode>,
+  );
+}
+
+// Проверка слов: экран, куда ведёт напоминание из лички (startapp=woerter).
+// Отдельная страница, а не оверлей: человек приходит сюда по ссылке из сообщения и
+// занимается только этим — списком слов, которые дверь не смогла подтвердить.
+async function bootstrapWordAudit() {
+  tgReady();
+  const { default: WordAudit } = await import('./dictionary/WordAudit.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <WordAudit />
     </React.StrictMode>,
   );
 }
@@ -826,6 +840,10 @@ async function bootstrapApp() {
   }
   if (/^battles$/i.test(answerStartParam)) {
     await bootstrapBattles();
+    return;
+  }
+  if (/^woerter$/i.test(answerStartParam)) {
+    await bootstrapWordAudit();
     return;
   }
   if (/^lb/i.test(answerStartParam)) {

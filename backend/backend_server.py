@@ -50912,6 +50912,40 @@ def webapp_settings_window():
 _BATTLE_KINDS = {"artikel", "adjektiv", "wofrage"}
 
 
+@app.route("/api/webapp/word-audit/list", methods=["POST"])
+def webapp_word_audit_list():
+    """Слова человека, которые дверь не подтвердила: причина + подсказка написания."""
+    user_id, _n, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    try:
+        from backend.word_confirm_digest import audit_items
+        items = audit_items(int(user_id))
+    except Exception:
+        logging.warning("экран проверки слов: список не собрался", exc_info=True)
+        return jsonify({"ok": False, "message": "Не удалось загрузить список. Попробуй ещё раз."}), 200
+    return jsonify({"ok": True, "items": items}), 200
+
+
+@app.route("/api/webapp/word-audit/apply", methods=["POST"])
+def webapp_word_audit_apply():
+    """Решения человека. Удаляется ТОЛЬКО то, что он не отметил."""
+    user_id, _n, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    decisions = payload.get("decisions")
+    if not isinstance(decisions, list):
+        return jsonify({"ok": False, "message": "Пустой список решений."}), 200
+    try:
+        from backend.word_confirm_digest import apply_decisions
+        counts = apply_decisions(int(user_id), decisions)
+    except Exception:
+        logging.warning("экран проверки слов: решения не применились", exc_info=True)
+        return jsonify({"ok": False, "message": "Не удалось сохранить. Попробуй ещё раз."}), 200
+    return jsonify({"ok": True, "counts": counts}), 200
+
+
 @app.route("/api/webapp/battles/state", methods=["POST"])
 def webapp_battles_state():
     """Hub state: is_pro (create is Pro-only) + battle-readiness."""

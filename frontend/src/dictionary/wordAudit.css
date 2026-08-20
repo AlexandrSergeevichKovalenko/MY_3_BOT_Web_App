@@ -1,0 +1,151 @@
+:root{
+    --bg:#0b1220; --bg-2:#0e1729;
+    --surface:rgba(18,30,50,.92); --surface-2:rgba(24,38,62,.7);
+    --line:rgba(148,163,184,.16); --line-strong:rgba(148,163,184,.3);
+    --ink:#f2f6fc; --ink-2:#c9d6e8; --muted:#8497b2;
+    --primary:#58c8ec; --primary-soft:rgba(88,200,236,.14);
+    --keep:#4ade80; --keep-soft:rgba(74,222,128,.14);
+    --fix:#fbbf24; --fix-soft:rgba(251,191,36,.14);
+    --drop:#94a3b8; --drop-soft:rgba(148,163,184,.12);
+    --radius:16px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+    font-size:16px; line-height:1.45; -webkit-font-smoothing:antialiased;
+    padding-bottom:112px;
+  }
+  .wa{max-width:430px; margin:0 auto; padding:0 14px;}
+
+  /* ── шапка ─────────────────────────────────────────── */
+  .wa-head{padding:22px 2px 8px;}
+  .wa-kicker{
+    font-size:.72rem; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--primary); font-weight:700; margin-bottom:8px;
+  }
+  .wa h1{font-size:1.6rem; line-height:1.2; margin:0 0 10px; letter-spacing:-.02em;}
+  .wa-lede{color:var(--ink-2); font-size:.97rem; margin:0;}
+
+  .wa-why{
+    margin:16px 0 6px; background:var(--surface-2); border:1px solid var(--line);
+    border-radius:var(--radius); padding:14px 15px;
+  }
+  .wa-why summary{
+    cursor:pointer; font-weight:650; font-size:.94rem; list-style:none;
+    display:flex; justify-content:space-between; align-items:center; gap:10px;
+  }
+  .wa-why summary::-webkit-details-marker{display:none}
+  .wa-why summary::after{content:"▾"; color:var(--muted); transition:transform .2s}
+  .wa-why[open] summary::after{transform:rotate(180deg)}
+  .wa-why p{margin:11px 0 0; color:var(--ink-2); font-size:.92rem;}
+  .wa-why b{color:var(--ink)}
+
+  /* ── счётчик сверху ────────────────────────────────── */
+  .wa-tally{
+    display:flex; gap:8px; margin:14px 0 10px; font-size:.8rem;
+  }
+  .wa-tally span{
+    flex:1; text-align:center; padding:9px 6px; border-radius:12px;
+    border:1px solid var(--line); background:var(--surface-2); color:var(--muted);
+  }
+  .wa-tally b{display:block; font-size:1.15rem; color:var(--ink); font-variant-numeric:tabular-nums;}
+  .wa-tally .wa-t-keep b{color:var(--keep)} .wa-tally .wa-t-fix b{color:var(--fix)}
+
+  /* ── карточка слова ────────────────────────────────── */
+  .wa-card{
+    background:var(--surface); border:1px solid var(--line);
+    border-left:3px solid var(--drop); border-radius:var(--radius);
+    padding:14px 15px 12px; margin-bottom:10px; transition:border-color .18s, background .18s;
+  }
+  .wa-card[data-state="keep"]{border-left-color:var(--keep); background:linear-gradient(180deg,var(--keep-soft),transparent 60%),var(--surface)}
+  .wa-card[data-state="fix"]{border-left-color:var(--fix); background:linear-gradient(180deg,var(--fix-soft),transparent 60%),var(--surface)}
+
+  .wa-word-row{display:flex; align-items:baseline; gap:9px; flex-wrap:wrap;}
+  .wa-word{font-size:1.22rem; font-weight:700; letter-spacing:-.01em;}
+  .wa-tag{
+    font-size:.7rem; padding:3px 8px; border-radius:99px; font-weight:650;
+    background:var(--drop-soft); color:var(--muted); border:1px solid var(--line);
+  }
+  .wa-tag.en{background:var(--primary-soft); color:var(--primary); border-color:transparent}
+  .wa-trans{color:var(--ink-2); font-size:.95rem; margin:3px 0 0;}
+  .wa-reason{
+    display:flex; gap:7px; align-items:flex-start;
+    color:var(--muted); font-size:.85rem; margin:9px 0 12px;
+  }
+  .wa-reason svg{flex:0 0 auto; margin-top:2px}
+
+  .wa-suggest{
+    width:100%; font:inherit; font-size:.95rem; font-weight:650; cursor:pointer;
+    padding:12px 12px; border-radius:12px; margin-bottom:8px;
+    border:1px solid rgba(88,200,236,.45); background:var(--primary-soft); color:var(--primary);
+    display:flex; align-items:center; justify-content:center; gap:8px; text-align:center;
+  }
+  .wa-suggest:hover{border-color:var(--primary)}
+  .wa-suggest:focus-visible{outline:2px solid var(--primary); outline-offset:2px}
+  .wa-card[data-state="fixed"]{border-left-color:var(--primary); background:linear-gradient(180deg,var(--primary-soft),transparent 60%),var(--surface)}
+  .wa-card[data-state="fixed"] .wa-suggest{background:var(--primary); color:#052330; border-color:var(--primary)}
+  .wa-manual{
+    display:block; width:100%; margin-top:9px; background:none; border:none; cursor:pointer;
+    font:inherit; font-size:.85rem; color:var(--muted); text-decoration:underline;
+    text-underline-offset:3px; padding:4px;
+  }
+  .wa-manual:hover{color:var(--ink-2)}
+  .wa-edit{display:flex; gap:8px; margin-top:9px;}
+  .wa-edit input{
+    flex:1; font:inherit; font-size:.95rem; padding:10px 12px; border-radius:11px;
+    background:var(--bg-2); border:1px solid var(--line-strong); color:var(--ink);
+  }
+  .wa-edit input:focus{outline:2px solid var(--primary); outline-offset:1px}
+  .wa-edit button{
+    font:inherit; font-weight:650; padding:10px 14px; border-radius:11px; cursor:pointer;
+    border:none; background:var(--primary); color:#052330;
+  }
+  .wa-actions{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
+  .wa-act{
+    font:inherit; font-size:.92rem; font-weight:600; cursor:pointer;
+    padding:11px 10px; border-radius:12px; border:1px solid var(--line-strong);
+    background:transparent; color:var(--ink-2); transition:all .16s;
+    display:flex; align-items:center; justify-content:center; gap:7px;
+  }
+  .wa-act:hover{border-color:var(--muted)}
+  .wa-act:focus-visible{outline:2px solid var(--primary); outline-offset:2px}
+  .wa-card[data-state="keep"] .wa-act-keep{background:var(--keep); border-color:var(--keep); color:#052e16}
+  .wa-card[data-state="fix"] .wa-act-retrans{background:var(--fix); border-color:var(--fix); color:#422006}
+
+  /* ── нижняя панель ─────────────────────────────────── */
+  .wa-bar{
+    position:fixed; left:0; right:0; bottom:0; padding:12px 14px calc(14px + env(safe-area-inset-bottom,0px));
+    background:linear-gradient(180deg,rgba(11,18,32,0) 0%,rgba(11,18,32,.94) 26%,var(--bg) 60%);
+  }
+  .wa-bar-inner{max-width:430px; margin:0 auto;}
+  .wa-bar-note{font-size:.82rem; color:var(--muted); text-align:center; margin:0 0 9px;}
+  .wa-bar-note b{color:var(--ink-2)}
+  .wa-done{
+    width:100%; font:inherit; font-size:1rem; font-weight:700; cursor:pointer;
+    padding:15px; border-radius:14px; border:none;
+    background:var(--primary); color:#052330;
+  }
+  .wa-done:focus-visible{outline:2px solid #fff; outline-offset:2px}
+  .wa-done[disabled]{background:var(--surface-2); color:var(--muted); cursor:default}
+
+  .wa-tail{color:var(--muted); font-size:.83rem; text-align:center; margin:16px 4px 0;}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+
+/* ── состояния и служебные экраны, которых не было в макете ────────────── */
+.wa-loading, .wa-empty, .wa-final{
+  max-width:430px; margin:0 auto; padding:56px 22px; text-align:center; color:var(--ink-2);
+}
+.wa-empty h2, .wa-final h2{color:var(--ink); font-size:1.4rem; margin:12px 0 8px;}
+.wa-final-emoji{font-size:2.6rem}
+.wa-final-note{color:var(--muted); font-size:.9rem; margin-top:14px}
+.wa-retry{
+  margin-top:16px; font:inherit; font-weight:650; padding:12px 20px; border-radius:12px;
+  border:1px solid var(--line-strong); background:transparent; color:var(--ink); cursor:pointer;
+}
+.wa-error{
+  max-width:430px; margin:12px auto 0; padding:12px 14px; border-radius:12px;
+  background:rgba(251,191,36,.12); border:1px solid rgba(251,191,36,.35);
+  color:#fde68a; font-size:.9rem; text-align:center;
+}
