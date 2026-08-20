@@ -1823,17 +1823,34 @@ if DB_POOL_ALLOW_DIRECT_FALLBACK:
     )
 logging.info("✅ MY_3_BOT configured to use centralized pooled DB connections.")
 
-# Проверка подключения
-with db_acquire_scope("bot_startup_connection_test"):
-    conn = get_db_connection()
-cursor = conn.cursor()
-cursor.execute("SELECT version();")
-db_version = cursor.fetchone()
+# Проверка подключения к базе при старте.
+#
+# В СЕРВИСЕ это осознанная проверка: креденшелы не те или база недоступна — бот
+# обязан упасть сразу, а не на первом живом пользователе. Здесь ничего не меняется.
+#
+# В ПРОГОНЕ ТЕСТОВ это ровно то, чего делать нельзя. `import bot_3` стоит в десятках
+# тестовых модулей, а в окружении разработчика лежат БОЕВЫЕ креденшелы — значит
+# каждый такой импорт открывал соединение с живой базой. Когда публичный прокси
+# моргал, падал весь СБОР тестов (psycopg2 timeout), и pre-push объявлял пуш красным
+# на совершенно зелёном коде: 19–20.08.2026 это случилось дважды подряд, каждый раз
+# ценой двух прогонов по две минуты.
+#
+# Флаг тот же, которым уже глушатся стартовые фазы `backend_server`
+# (`ensure_phase1_projection_schema`, `ensure_shortcut_schema`), и ставит его
+# `backend/tests/conftest.py`. В проде он не ставится — там всё как было.
+if str(os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") or "").strip().lower() in {"1", "true", "yes", "on"}:
+    logging.info("Стартовая проверка соединения с базой пропущена: SKIP_STARTUP_SCHEMA_BOOTSTRAP")
+else:
+    with db_acquire_scope("bot_startup_connection_test"):
+        conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT version();")
+    db_version = cursor.fetchone()
 
-print(f"✅ База данных подключена! Версия: {db_version}")
+    print(f"✅ База данных подключена! Версия: {db_version}")
 
-cursor.close()
-conn.close()
+    cursor.close()
+    conn.close()
 
 
 async def _track_telegram_message_async(message, message_type: str = "text") -> None:
