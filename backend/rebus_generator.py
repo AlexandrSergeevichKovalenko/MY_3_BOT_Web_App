@@ -505,7 +505,13 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
     sync_stats = sync_rebus_bank_from_code()
     logging.info("rebus_generator: bank synced %s", sync_stats)
 
-    already_ready = count_available_rebuses()
+    # Считаем ТЕМ ЖЕ сроком отдыха, каким живёт выдача. У `count_available_rebuses`
+    # свой умолчательный срок в 30 дней, а людям ребус возвращается через 15
+    # (`backend/task_cooldowns.py`) — из-за этого счётчик показывал заниженный запас,
+    # и пополнялка рисовала лишние картинки. Рисование платное: 238 обращений к DALL·E
+    # за 30 дней, $5.00 — самая дорогая из всех пополнялок (замер 20.08.2026).
+    from backend.task_cooldowns import REBUS_COOLDOWN_DAYS
+    already_ready = count_available_rebuses(cooldown_days=REBUS_COOLDOWN_DAYS)
     if already_ready >= target_ready:
         return {"status": "sufficient", "ready": already_ready, "generated": 0}
 
