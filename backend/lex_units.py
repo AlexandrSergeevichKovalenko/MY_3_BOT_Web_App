@@ -65,6 +65,12 @@ _MAX_LINKS = 6
 #     разрезание трогало только свалки С НОМЕРАМИ. У 1147 слов из 1358 понижать нечего.
 _DEMOTED_RANK = 900
 
+# Подпись связи, которую поставил рукой ВЛАДЕЛЕЦ, разбирая спорную фразу. Пишет её
+# `promote_owner_translation` (backend/database.py) вместе с рангом 1. Имя вынесено в
+# константу, чтобы выдача и запись не разошлись строкой: 20.08.2026 они разошлись не
+# строкой, а правилом сортировки, и решение человека проигрывало машине на 56 словах.
+OWNER_CHOICE_SOURCE = "вычитка"
+
 # Служебные пометки, осевшие в банке под видом переводов: «приюта; хостела
 # (Genitiv/Dativ)». Человеку это не перевод, а мусор — в списке значений не показываем.
 # Из базы ничего не удаляем: фильтр только на выдаче.
@@ -187,15 +193,28 @@ def _fetch_units(cur, *, lang: str, surface_key: str) -> list[dict]:
 def _fetch_links(cur, unit_id: int, *, want_lang: str) -> list[dict]:
     cur.execute(
         """
-        SELECT u.id, u.lang, u.kind, u.display, u.lemma, u.pos, u.gender, l.rank, u.card
+        SELECT u.id, u.lang, u.kind, u.display, u.lemma, u.pos, u.gender, l.rank, u.card,
+               l.source
         FROM bt_3_lex_links l
         JOIN bt_3_lex_units u ON u.id = l.to_unit
         -- Заготовки упражнений отсекаем В ЗАПРОСЕ, а не после: у «anlegen» их 33 штуки,
         -- и при отборе «первых шести» они съедали выдачу целиком — слово оставалось
         -- вообще без перевода. Связи с разобранным значением идут первыми.
+        --
+        -- ВЫБОР ВЛАДЕЛЬЦА ИДЁТ ПЕРЕД ЛЮБОЙ МАШИННОЙ СОРТИРОВКОЙ. Отбор «сначала со
+        -- значением» появился 27.07.2026 вместе с разрезанием свалок и был верен: у
+        -- разрезанного значения номер есть, у старой свалки — нет. Но связь, которую
+        -- ставит рукой человек на экране спорных фраз (promote_owner_translation,
+        -- backend/database.py), номера значения не получает — и проигрывала машинному
+        -- переводу, хотя лежит с рангом 1. Замер 20.08.2026 по 119 решениям владельца:
+        -- в базе всё записано верно, а на экране его перевод стоял вторым в 56 случаях
+        -- («Es tut mir leid wegen der Verwirrung!» — выбрано «Извините из-за путаницы!»,
+        -- показано «Извините за путаницу!»). Тот же экран в списке слов брал перевод по
+        -- рангу и показывал ПРАВИЛЬНЫЙ — одно слово, два разных русских на двух экранах.
         WHERE l.from_unit = %s AND u.lang = %s AND l.rank < %s
           AND position('___' in u.display) = 0
-        ORDER BY (l.sense_id IS NULL), l.rank, u.id
+        ORDER BY (l.source IS DISTINCT FROM %s OR l.rank <> 1),
+                 (l.sense_id IS NULL), l.rank, u.id
         LIMIT %s;
         """,
         # Берём с запасом. Показать надо _MAX_LINKS штук, но часть из них — пересказы
@@ -203,13 +222,24 @@ def _fetch_links(cur, unit_id: int, *, want_lang: str) -> list[dict]:
         # коде. Если брать ровно шесть, дубли занимают места ДО отсева, и настоящие
         # значения человек не увидит: замер 11.08.2026 — 338 слов показывали ровно
         # шесть строк, где половина одно и то же. Отбор в _build_item.
-        (unit_id, want_lang, _DEMOTED_RANK, _MAX_LINKS * 4),
+        (unit_id, want_lang, _DEMOTED_RANK, OWNER_CHOICE_SOURCE, _MAX_LINKS * 4),
     )
     return [
         {"id": r[0], "lang": r[1], "kind": r[2], "display": r[3], "lemma": r[4],
-         "pos": r[5], "gender": r[6], "rank": r[7], "card": r[8] if isinstance(r[8], dict) else None}
+         "pos": r[5], "gender": r[6], "rank": r[7], "card": r[8] if isinstance(r[8], dict) else None,
+         "source": str(r[9] or "")}
         for r in cur.fetchall()
     ]
+
+
+def is_owner_choice(link: dict) -> bool:
+    """Эту связь поставил рукой ВЛАДЕЛЕЦ на экране спорных фраз, а не модель.
+
+    Подпись ставит `promote_owner_translation` (backend/database.py): source «вычитка»
+    и ранг 1. Ранг здесь обязателен — той же подписью помечены понижённые связи
+    (ранг 950) у слов, которые владелец разбирал раньше и признал негодными; поднимать
+    их обратно наверх нельзя."""
+    return str(link.get("source") or "") == OWNER_CHOICE_SOURCE and int(link.get("rank") or 0) == 1
 
 
 def _pick_unit(units: list[dict], *, requested_article: str) -> dict | None:
@@ -352,8 +382,17 @@ def _translation_key(value: str) -> str:
     return _SPACE_RE.sub(" ", str(value or "").strip()).casefold().rstrip(".")
 
 
-def drop_nested_translations(values: list[str]) -> list[str]:
+def drop_nested_translations(values: list[str], *, protected: set[str] | None = None) -> list[str]:
     """Убрать переводы, целиком сидящие внутри соседних.
+
+    `protected` — ключи переводов, которые выбрасывать НЕЛЬЗЯ ни при каких условиях: это
+    выбор владельца, сделанный руками на экране спорных фраз. Правило «остаётся короткий»
+    его съедало целиком: «перелезать» из пула сидит внутри выбранного «Перелезать через
+    что-то», и на экране оставался пул, а решение человека исчезало вовсе. Замер
+    20.08.2026: так пропали 3 выбора из 108 («Über etwas steigen», «Wappnen gegen etwas»,
+    карибский круиз — там от выбора остался обрубок «…такие как» вместо «…такие как эти»).
+    Когда защищён длинный, выбрасывается короткий: пересказ убрать всё равно надо, просто
+    не тот, который выбрал человек.
 
     ЗАЧЕМ. У слова показывают и «скобка», и «Скобка, скрепка» — это не два значения, а
     одно плюс пересказ. Замер 11.08.2026 (scripts/dict_defect_audit.py, п.4): такое у
@@ -375,7 +414,16 @@ def drop_nested_translations(values: list[str]) -> list[str]:
     только свалки с номерами.
     """
     keys = [_translation_key(v) for v in values]
+    safe = {index for index, key in enumerate(keys) if key in (protected or set())}
     drop: set[int] = set()
+
+    def _drop(index: int, instead: int) -> None:
+        """Выбросить `index`, а если он защищён — то `instead`. Защищены оба — не трогаем."""
+        if index not in safe:
+            drop.add(index)
+        elif instead not in safe:
+            drop.add(instead)
+
     for i, short in enumerate(keys):
         for j, long_ in enumerate(keys):
             if i == j or i in drop or j in drop:
@@ -391,7 +439,7 @@ def drop_nested_translations(values: list[str]) -> list[str]:
                 # «Афины» и «Марокко».
                 a, b = values[i], values[j]
                 keep = i if (str(a)[:1].islower() or not str(b)[:1].islower()) else j
-                drop.add(j if keep == i else i)
+                _drop(j if keep == i else i, i if keep == i else j)
                 continue
             inside = (
                 short in [part.strip() for part in long_.split(",")]
@@ -402,7 +450,10 @@ def drop_nested_translations(values: list[str]) -> list[str]:
                 continue
             note = _BRACKET_NOTE_RE.match(long_)
             # «деньги» ⊂ «деньги (разг.)» — оставляем помеченный, он информативнее.
-            drop.add(i if (note and _translation_key(note.group(1)) == short) else j)
+            if note and _translation_key(note.group(1)) == short:
+                _drop(i, j)
+            else:
+                _drop(j, i)
     return [value for index, value in enumerate(values) if index not in drop]
 
 
@@ -542,11 +593,18 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
     # значений («1 класть, положить 2 накладывать» — это два перевода, а не один).
     german_pos = str((de_side or {}).get("pos") or "")
     values: list[str] = []
+    # Выбор владельца — то, что он выбрал руками на экране спорных фраз. Его нельзя
+    # выбросить как «пересказ соседнего»: правило показа не имеет права отменять
+    # решение человека. Ключи собираем ДО отсева, потому что отсев работает по ним.
+    owner_keys: set[str] = set()
     for link in shown:
         for piece in split_numbered_senses(link["display"]):
             # Регистр правим ДО отсева повторов: иначе «Перемена, изменение» и
             # «перемена, изменение» считаются разными строками и остаются обе.
-            values.append(normalize_translation_case(piece, german_pos=german_pos))
+            value = normalize_translation_case(piece, german_pos=german_pos)
+            values.append(value)
+            if is_owner_choice(link):
+                owner_keys.add(_translation_key(value))
     # Свалка могла распасться на куски, уже лежащие рядом отдельными связями.
     deduped: list[str] = []
     seen_pieces: set[str] = set()
@@ -559,7 +617,7 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
     # Пересказы соседних переводов убираем ЗДЕСЬ, после разрезания и до обрезки до
     # _MAX_LINKS: иначе «Скобка, скрепка» занимает место, которое должно достаться
     # настоящему другому значению. Правило и числа — в drop_nested_translations.
-    values = drop_nested_translations(deduped)[:_MAX_LINKS]
+    values = drop_nested_translations(deduped, protected=owner_keys)[:_MAX_LINKS]
     if values:
         item["translations"] = [
             {"value": value, "context": "", "is_primary": index == 0}

@@ -77,6 +77,10 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   const [answer, setAnswer] = useState('');
   const [asking, setAsking] = useState(false);
   const [own, setOwn] = useState('');
+  // Русский к своему тексту. Без этого поля перевод после правки сочиняла модель, и
+  // выбор владельца пропадал: замер 20.08.2026 — 11 решений из 119 ушли в базу с
+  // машинным русским, «Die Zuschlagsstoffe» стали «заполнителями» вместо «добавок».
+  const [ownRu, setOwnRu] = useState('');
   const [typing, setTyping] = useState(false);
   // Отложенные на этом сеансе: в базе ничего не меняется, они просто уходят в конец
   // очереди, чтобы не крутиться перед глазами, пока разбираешь остальные.
@@ -125,6 +129,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
     setBlind(Number(r.blind) || 0);
     setNote('');
     setOwn('');
+    setOwnRu('');
     // Ответ был про ПРЕДЫДУЩУЮ фразу — на новой ему не место.
     setQuestion(''); setAnswer(''); setAsking(false);
     // Список сдвинулся на одну — остаёмся на той же позиции, то есть на следующей
@@ -217,6 +222,14 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
       setNote('');
       setError(e?.message || 'Не получилось ответить. Попробуйте ещё раз.');
     } finally { setBusy(false); }
+  };
+
+  // Свой текст владельца — вместе с его переводом, если он его написал. Перевод едет
+  // тем же полем, что и у «Всё равно принять»: сервер ставит его главным ДО похода к
+  // модели, поэтому он не зависит от того, ответила ли она.
+  const saveOwn = () => {
+    if (!own.trim()) return;
+    decide('replace', { text: own.trim(), translation: ownRu.trim() });
   };
 
   // «Всё равно принять» на забракованной правке: тот же путь, что у своего текста,
@@ -457,17 +470,31 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
           onFocus={() => setTyping(true)}
           onBlur={() => setTyping(false)}
           placeholder="или впиши свой вариант"
-          enterKeyHint="send"
+          enterKeyHint="next"
           onKeyDown={(e) => {
             if (e.key === 'Enter' && own.trim()) {
               e.target.blur();
-              decide('replace', { text: own.trim() });
+              saveOwn();
             }
           }}
         />
+        {/* Русский к своему тексту. Пустое поле — не беда: перевод тогда соберёт
+            модель, как и раньше. Но если владелец его вписал, главным встаёт он. */}
         {own.trim() ? (
-          <button className="ans-btn" disabled={busy}
-            onClick={() => decide('replace', { text: own.trim() })}>
+          <input
+            className="pinrev-word frrev-own-ru" value={ownRu} disabled={busy}
+            onChange={(e) => setOwnRu(e.target.value)}
+            onFocus={() => setTyping(true)}
+            onBlur={() => setTyping(false)}
+            placeholder="перевод по-русски (можно не писать)"
+            enterKeyHint="send"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.target.blur(); saveOwn(); }
+            }}
+          />
+        ) : null}
+        {own.trim() ? (
+          <button className="ans-btn" disabled={busy} onClick={saveOwn}>
             ✏️ Записать мой вариант
           </button>
         ) : null}

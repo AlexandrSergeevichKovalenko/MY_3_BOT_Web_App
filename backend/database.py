@@ -24126,7 +24126,7 @@ def promote_owner_translation(unit_id: int, owner_ru: str) -> bool:
     if not unit_id or not owner_ru:
         return False
     try:
-        from backend.lex_units import ensure_unit
+        from backend.lex_units import OWNER_CHOICE_SOURCE, ensure_unit
         owner_unit = ensure_unit(owner_ru, "ru")
         if not owner_unit:
             return False
@@ -24138,15 +24138,18 @@ def promote_owner_translation(unit_id: int, owner_ru: str) -> bool:
                     "WHERE from_unit = %s AND rank < 20 AND to_unit <> %s;",
                     (int(unit_id), int(owner_unit)),
                 )
-                # …и поставить выбор владельца первым.
+                # …и поставить выбор владельца первым. Подпись берётся из константы слоя
+                # единиц: по ней ЖЕ выдача узнаёт решение человека и ставит его выше
+                # машинной сортировки по значениям (lex_units._fetch_links). Разъедься
+                # эти две строки — и выбор владельца снова уедет вторым на экран.
                 cursor.execute(
                     """
                     INSERT INTO bt_3_lex_links (from_unit, to_unit, rank, source)
-                    VALUES (%s, %s, 1, 'вычитка')
+                    VALUES (%s, %s, 1, %s)
                     ON CONFLICT (from_unit, to_unit)
-                    DO UPDATE SET rank = 1, source = 'вычитка', updated_at = NOW();
+                    DO UPDATE SET rank = 1, source = EXCLUDED.source, updated_at = NOW();
                     """,
-                    (int(unit_id), int(owner_unit)),
+                    (int(unit_id), int(owner_unit), OWNER_CHOICE_SOURCE),
                 )
             conn.commit()
         return True
@@ -24182,6 +24185,17 @@ def rebuild_unit_breakdown(unit_id: int, text: str, *, owner_translation: str = 
         return False
     if not isinstance(raw, dict) or not raw:
         return False
+    # ЗАГОЛОВОК В РАЗБОРЕ — ТОТ, ЧТО ВЫБРАЛ ВЛАДЕЛЕЦ, а не тот, что вернула модель.
+    # Модель отвечает своим написанием и на «Der nie versiegende Zapfhahn…» возвращает
+    # «der nie versiegende…», а на «Die Zuschlagsstoffe» — «die Zuschlagsstoffe». В
+    # немецком регистр это грамматика, и правка владельца ровно в нём и состояла: разбор
+    # оставался про ДОправочный вид фразы. Замер 20.08.2026: 8 решений из 119.
+    # Ничего не додумывается — записывается текст, о котором мы и спрашивали.
+    asked = str(text or "").strip()
+    if asked and str(raw.get("word_source") or "").strip() != asked:
+        logging.info("разбор вернул заголовок %r, ставим выбор владельца %r",
+                     str(raw.get("word_source") or "")[:60], asked[:60])
+        raw["word_source"] = asked
     from backend.lex_units import save_unit_card_if_richer, sync_unit_links_from_card
     # Разбор про новую фразу получен — только теперь снимаем старый.
     with get_db_connection_context() as conn:
