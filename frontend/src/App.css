@@ -17901,6 +17901,43 @@ body.worldnews-active .webapp-topbar {
   font-weight: 600;
   color: var(--wn-text-2);
 }
+.worldnews-card-ru-label {
+  font-weight: 800;
+  color: #8fa0b8;
+}
+/* Помета регистра — только у стендапа. Стоит сразу под заголовком, потому что отвечает
+   на первый вопрос ученика: можно ли так говорить и при ком. */
+.worldnews-card-register {
+  align-self: start;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #eef2f8;
+  border: 1px solid #dfe4ec;
+  font-size: 12px;
+  font-weight: 700;
+  color: #5b6b85;
+}
+/* Слово в контексте: дословная строка из субтитров ролика и её перевод. Немецкая строка
+   набрана тем же засечным шрифтом, что и заголовок карточки, — это цитата, а не подпись. */
+.worldnews-card-quote {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--wn-accent, #2563eb);
+  border-radius: 0 10px 10px 0;
+  background: #f5f8fd;
+}
+.worldnews-card-quote-de {
+  font-family: Georgia, 'Noto Serif', serif;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--wn-text-1, #1b2536);
+}
+.worldnews-card-quote-ru {
+  font-size: 13.5px;
+  line-height: 1.4;
+  color: #6b7a92;
+}
 .worldnews-card-note {
   display: grid;
   gap: 4px;

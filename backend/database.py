@@ -10901,6 +10901,34 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_world_news_daily_status
                 ON bt_3_world_news_daily (status, news_date DESC);
             """)
+            # Рубрика дня: 'news' | 'standup' (см. backend/daily_video_rubrics.py). С
+            # 20.08.2026 одна и та же строка на дату обслуживает обе рубрики — они
+            # чередуются через день. Умолчание 'news' описывает то, чем все накопленные
+            # строки и были на момент появления колонки, а не подставляется вместо ответа.
+            cursor.execute(
+                "ALTER TABLE bt_3_world_news_daily "
+                "ADD COLUMN IF NOT EXISTS rubric TEXT NOT NULL DEFAULT 'news';"
+            )
+            # Вечный реестр показанного. Ночная чистка (purge_world_news_before) стирает
+            # вчерашние строки вместе с субтитрами, поэтому по самой bt_3_world_news_daily
+            # «что уже показывали» узнать нельзя дальше сегодня-завтра. Новостям это сходило
+            # с рук — они свежие каждый день. Стендап вечнозелёный: без этого реестра рубрика
+            # через месяц пойдёт по второму кругу. Чистка сюда НЕ ходит.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_daily_video_shown (
+                    video_id TEXT PRIMARY KEY,
+                    rubric TEXT NOT NULL,
+                    shown_on DATE NOT NULL,
+                    video_title TEXT,
+                    channel_title TEXT,
+                    had_manual_captions BOOLEAN,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_daily_video_shown_rubric
+                ON bt_3_daily_video_shown (rubric, shown_on DESC);
+            """)
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS bt_3_youtube_watch_state (
@@ -27148,7 +27176,7 @@ def _world_news_row_to_dict(row) -> dict | None:
         return None
     (news_date, video_id, video_url, video_title, channel_title, duration_seconds,
      transcript_lang, summary_ru, phrases, quiz, hero_object_key, status,
-     is_pinned, created_at, updated_at) = row
+     is_pinned, created_at, updated_at, rubric) = row
     if isinstance(phrases, str):
         try:
             phrases = json.loads(phrases)
@@ -27175,13 +27203,17 @@ def _world_news_row_to_dict(row) -> dict | None:
         "is_pinned": bool(is_pinned),
         "created_at": created_at.isoformat() if created_at else None,
         "updated_at": updated_at.isoformat() if updated_at else None,
+        # Чья это рубрика — «Новость дня» или «Стендап дня». Читается из строки, а не
+        # вычисляется заново по дате: если владелец переформировал день вручную, важно
+        # показать то, что вправду лежит в базе.
+        "rubric": str(rubric or "news").strip(),
     }
 
 
 _WORLD_NEWS_COLS = (
     "news_date, video_id, video_url, video_title, channel_title, duration_seconds, "
     "transcript_lang, summary_ru, phrases, quiz, hero_object_key, status, "
-    "is_pinned, created_at, updated_at"
+    "is_pinned, created_at, updated_at, rubric"
 )
 
 
@@ -27225,6 +27257,75 @@ def get_recent_world_news_video_ids(days: int = 14) -> set[str]:
             return {str(r[0]).strip() for r in cursor.fetchall() if r and r[0]}
 
 
+def record_daily_video_shown(
+    *,
+    video_id: str,
+    rubric: str,
+    shown_on,
+    video_title: str | None = None,
+    channel_title: str | None = None,
+    had_manual_captions: bool | None = None,
+) -> None:
+    """Записать ролик в вечный реестр показанного (bt_3_daily_video_shown).
+
+    Ночная чистка стирает саму строку дня вместе с субтитрами, поэтому «что уже
+    показывали» больше нигде не сохраняется. Для вечнозелёного стендапа это
+    единственная память, не дающая рубрике пойти по второму кругу.
+
+    Повторный вызов на тот же ролик (владелец переформировал день) не плодит строк и
+    не сдвигает дату первого показа — важна сама пометка «этот ролик уже был».
+    """
+    vid = str(video_id or "").strip()
+    if not vid or not shown_on:
+        raise ValueError("record_daily_video_shown: нужен video_id и дата показа")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_daily_video_shown
+                    (video_id, rubric, shown_on, video_title, channel_title,
+                     had_manual_captions, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (video_id) DO UPDATE
+                SET video_title = COALESCE(EXCLUDED.video_title, bt_3_daily_video_shown.video_title),
+                    channel_title = COALESCE(EXCLUDED.channel_title, bt_3_daily_video_shown.channel_title);
+                """,
+                (vid, str(rubric or "").strip(), shown_on, video_title, channel_title,
+                 had_manual_captions),
+            )
+
+
+def get_shown_daily_video_ids(rubric: str | None = None) -> set:
+    """Все ролики, когда-либо показанные рубрикой. Генератор вычитает их при выборе.
+
+    Пустое множество здесь означает ровно «мы ещё ничего не показывали», а не «спросить
+    не удалось»: ошибка запроса поднимается наверх, чтобы выбор не пошёл по второму кругу
+    молча, приняв сбой базы за чистую историю.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if rubric:
+                cursor.execute(
+                    "SELECT video_id FROM bt_3_daily_video_shown WHERE rubric = %s;",
+                    (str(rubric).strip(),),
+                )
+            else:
+                cursor.execute("SELECT video_id FROM bt_3_daily_video_shown;")
+            return {str(r[0]).strip() for r in cursor.fetchall() if r and r[0]}
+
+
+def count_shown_daily_videos(rubric: str) -> int:
+    """Сколько роликов рубрика уже израсходовала — идёт числом в отчёт владельцу."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_daily_video_shown WHERE rubric = %s;",
+                (str(rubric or "").strip(),),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+
+
 def is_world_news_video(video_id: str) -> bool:
     """True if this video_id was ever used by the world-news rubric. Curated news videos
     always have subtitles (we only pick captioned ones), so it's safe to live-fetch their
@@ -27258,6 +27359,7 @@ def upsert_world_news_daily(
     hero_object_key: str | None = None,
     status: str = "draft",
     is_pinned: bool = False,
+    rubric: str = "news",
 ) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -27266,10 +27368,11 @@ def upsert_world_news_daily(
                 INSERT INTO bt_3_world_news_daily
                     (news_date, video_id, video_url, video_title, channel_title,
                      duration_seconds, transcript_lang, summary_ru, phrases, quiz,
-                     hero_object_key, status, is_pinned, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                     hero_object_key, status, is_pinned, rubric, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                 ON CONFLICT (news_date) DO UPDATE
                 SET video_id = EXCLUDED.video_id,
+                    rubric = EXCLUDED.rubric,
                     video_url = EXCLUDED.video_url,
                     video_title = EXCLUDED.video_title,
                     channel_title = EXCLUDED.channel_title,
@@ -27288,7 +27391,7 @@ def upsert_world_news_daily(
                     duration_seconds, transcript_lang, summary_ru,
                     json.dumps(phrases or [], ensure_ascii=False),
                     json.dumps(quiz or [], ensure_ascii=False),
-                    hero_object_key, status, is_pinned,
+                    hero_object_key, status, is_pinned, rubric,
                 ),
             )
 

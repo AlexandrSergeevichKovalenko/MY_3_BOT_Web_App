@@ -26,6 +26,10 @@ WHITE = (255, 255, 255)
 # (see /admin_worldnews_image); a blue morning gradient is drawn until it's there.
 _WORLD_NEWS_BG_KEY = "worldnews/fox_news.png"
 
+# Стендап дня — своя картинка: лис с микрофоном на сцене. Ключ отдельный, чтобы рубрики
+# не перетирали фон друг другу; засевается той же командой /admin_worldnews_image.
+_STANDUP_BG_KEY = "standup/fox_standup.png"
+
 # gpt-image-1 prompt — brand mascot (Fox, see backend/mascot_style.py) reading a
 # morning newspaper. NO text/letters (the card draws its own). Empty lower area
 # for the headline + title + summary.
@@ -37,35 +41,44 @@ WORLD_NEWS_IMAGE_PROMPT = mascot_prompt(
     "space in the lower half. Encouraging 'start your day with short news' morning mood"
 )
 
-_bg_cache: dict = {"t": 0.0, "img": None}
+STANDUP_IMAGE_PROMPT = mascot_prompt(
+    "A Fox mascot standing on a small comedy club stage in front of a vintage microphone "
+    "on a stand, one paw raised mid-joke, laughing warmly with a wide confident grin, a "
+    "red brick wall behind him lit by a single warm spotlight, a dark cosy club atmosphere "
+    "with soft bokeh lights, plenty of empty space in the lower half. Lively, funny "
+    "stand-up comedy evening mood"
+)
+
+_bg_cache: dict = {}  # ключ фона → {"t", "img"}; у каждой рубрики свой фон
 _BG_CACHE_TTL = 600.0
 
 
-def world_news_bg_key() -> str:
-    return _WORLD_NEWS_BG_KEY
+def world_news_bg_key(rubric: str = "news") -> str:
+    return _STANDUP_BG_KEY if str(rubric or "").strip().lower() == "standup" else _WORLD_NEWS_BG_KEY
 
 
-def pick_world_news_background() -> bytes | None:
+def pick_world_news_background(rubric: str = "news") -> bytes | None:
     """Pre-generated Smurf-news background from R2 (cached ~10 min). None → the blue
     morning gradient fallback is drawn instead."""
     from backend.r2_storage import r2_get_bytes
+    key = world_news_bg_key(rubric)
+    slot = _bg_cache.setdefault(key, {"t": 0.0, "img": None})
     now = time.time()
-    if now - float(_bg_cache.get("t") or 0.0) > _BG_CACHE_TTL or not _bg_cache.get("img"):
+    if now - float(slot.get("t") or 0.0) > _BG_CACHE_TTL or not slot.get("img"):
         img = None
         try:
-            b = r2_get_bytes(_WORLD_NEWS_BG_KEY)
+            b = r2_get_bytes(key)
             if b:
                 img = bytes(b)
         except Exception:
             img = None
-        _bg_cache["img"] = img
-        _bg_cache["t"] = now
-    return _bg_cache.get("img")
+        slot["img"] = img
+        slot["t"] = now
+    return slot.get("img")
 
 
 def bust_world_news_bg_cache() -> None:
-    _bg_cache["t"] = 0.0
-    _bg_cache["img"] = None
+    _bg_cache.clear()
 
 
 def _plural_words_ru(n: int) -> str:
@@ -112,6 +125,10 @@ def render_world_news_card(entry: dict) -> bytes:
     from PIL import Image, ImageDraw, ImageOps
 
     entry = entry or {}
+    # Рубрика решает картинку и подписи. Выступление комика под шапкой «НОВОСТЬ ДНЯ»
+    # читалось бы как сбой, поэтому шапка, подпись и фон берутся по рубрике записи.
+    rubric = str(entry.get("rubric") or "news").strip().lower()
+    is_standup = rubric == "standup"
     title = _strip_emoji(str(entry.get("video_title") or "").strip())
     summary = _strip_emoji(str(entry.get("summary_ru") or "").strip())
     channel = _strip_emoji(str(entry.get("channel_title") or "").strip())
@@ -124,18 +141,19 @@ def render_world_news_card(entry: dict) -> bytes:
     # asset is seeded (before /admin_worldnews_image is run).
     bg = None
     try:
-        bg = pick_world_news_background()
+        bg = pick_world_news_background(rubric)
     except Exception:
         bg = None
+    grad_top, grad_bottom = ((120, 52, 48), (34, 16, 26)) if is_standup else ((48, 84, 150), (14, 24, 58))
     if bg:
         try:
             base = ImageOps.fit(
                 Image.open(io.BytesIO(bg)).convert("RGBA"), (W, H), Image.LANCZOS
             )
         except Exception:
-            base = _vgrad((48, 84, 150), (14, 24, 58)).convert("RGBA")
+            base = _vgrad(grad_top, grad_bottom).convert("RGBA")
     else:
-        base = _vgrad((48, 84, 150), (14, 24, 58)).convert("RGBA")
+        base = _vgrad(grad_top, grad_bottom).convert("RGBA")
 
     # Legibility scrim: darken (stronger toward the bottom, where the text lives).
     ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -150,7 +168,7 @@ def render_world_news_card(entry: dict) -> bytes:
     d = ImageDraw.Draw(base)
 
     # Top pill — headline.
-    pill = "НОВОСТЬ ДНЯ"
+    pill = "СТЕНДАП ДНЯ" if is_standup else "НОВОСТЬ ДНЯ"
     pf = _font(46, True)
     pw = d.textlength(pill, font=pf)
     ovp = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -162,11 +180,13 @@ def render_world_news_card(entry: dict) -> bytes:
 
     # The actual news text (title + theses) lives in the message caption — do NOT duplicate it
     # on the image. Keep the photo clean & branded: just the mascot + a generic tagline.
-    tagline = "Смотри · Учи слова · Проверь себя"
+    tagline = ("Смейся · Разбирай сленг · Проверь себя" if is_standup
+               else "Смотри · Учи слова · Проверь себя")
     tf = _fit_font(d, tagline, W - 160, 42, bold=True, floor=30)
     _ctext(d, W // 2, 912, tagline, tf, (255, 224, 130, 235))
 
-    _ctext(d, W // 2, 1016, "Deutsche Sprache · Новости", _font(30, False), (220, 232, 250, 175))
+    _ctext(d, W // 2, 1016, "Deutsche Sprache · " + ("Стендап" if is_standup else "Новости"),
+           _font(30, False), (220, 232, 250, 175))
 
     out = io.BytesIO()
     base.convert("RGB").save(out, format="PNG", optimize=True)

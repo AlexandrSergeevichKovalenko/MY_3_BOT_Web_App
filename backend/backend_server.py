@@ -56033,11 +56033,20 @@ def get_worldnews_today():
     if not entry:
         return jsonify({"available": False, "news_date": date_str})
 
+    # Карточка стендапа несёт больше, чем новостная: помету регистра, значение ИМЕННО ЗДЕСЬ,
+    # обычное значение (если оно вправду другое) и дословную цитату из ролика с переводом.
+    # Без контекста сленг заучивается неверно — `Bock` не козёл, `Alter` не старик.
+    # Поля добавлены, а не заменены: новостная карточка отдаёт ровно то же, что и раньше,
+    # а пустые поля фронт просто не рисует.
     phrases = [
         {
             "de": str(p.get("de") or "").strip(),
             "translation_ru": str(p.get("translation_ru") or "").strip(),
             "usage_ru": str(p.get("usage_ru") or "").strip(),
+            "register_ru": str(p.get("register_ru") or "").strip(),
+            "literal_ru": str(p.get("literal_ru") or "").strip(),
+            "quote_de": str(p.get("quote_de") or "").strip(),
+            "quote_ru": str(p.get("quote_ru") or "").strip(),
         }
         for p in (entry.get("phrases") or [])
         if isinstance(p, dict) and str(p.get("de") or "").strip()
@@ -56062,6 +56071,9 @@ def get_worldnews_today():
         "duration_seconds": int(entry.get("duration_seconds") or 0),
         "transcript_lang": entry.get("transcript_lang") or "de",
         "summary_ru": entry.get("summary_ru") or "",
+        # Чья это рубрика — 'news' или 'standup'. Экран мини-аппа один на обе, но подписать
+        # выступление комика «Новостью дня» нельзя, поэтому заголовок фронт берёт отсюда.
+        "rubric": str(entry.get("rubric") or "news").strip(),
         "phrases": phrases,
         "quiz": quiz,
     })

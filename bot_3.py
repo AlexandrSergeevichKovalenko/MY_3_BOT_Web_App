@@ -10511,6 +10511,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     # recorded from the job bodies under dedicated keys, so status='failed' on a bad prep raises a
     # ⚠️ alarm here, and a stalled/never-fired cron goes ПРОТУХЛО past 30h. ---
     ("world_news_evening_result", "Новость дня — вечерняя подготовка (20:00)", 30, True, "guard"),
+    ("standup_pool_report_result", "Стендап — отчёт о состоянии пула (вс 11:00)", 10, True, "guard"),
     ("world_news_morning_result", "Новость дня — утренняя рассылка (6:30)", 30, True, "guard"),
     # --- Nightly maintenance / cleanups (heartbeat from the job body in backend_server) ---
     ("system_message_cleanup", "Чистка системных сообщений", 30, True, "guard"),
@@ -11198,28 +11199,53 @@ async def admin_review_card_command(update: Update, context: CallbackContext):
 
 # ── «Начни день с коротких новостей» — admin preview + nightly prep ─────────────
 
+def _rubric_of(entry: dict) -> str:
+    """Чья это рубрика. Берётся из самой записи, а не пересчитывается по дате: если
+    владелец переформировал день вручную, показать надо то, что вправду лежит в базе."""
+    return str((entry or {}).get("rubric") or "news").strip().lower()
+
+
+def _rubric_title(entry: dict) -> str:
+    from backend.daily_video_rubrics import get_profile
+    try:
+        return get_profile(_rubric_of(entry)).title_ru
+    except ValueError:
+        return "Видео дня"
+
+
 def _world_news_preview_text(entry: dict, *, header: str) -> str:
-    """Compact admin-facing preview of a prepared daily news entry."""
+    """Compact admin-facing preview of a prepared daily entry (новости или стендап)."""
     phrases = entry.get("phrases") or []
     quiz = entry.get("quiz") or []
+    is_standup = _rubric_of(entry) == "standup"
     dur = int(entry.get("duration_seconds") or 0)
     dur_txt = f"{dur // 60}:{dur % 60:02d}" if dur else "—"
     lines = [
         header,
-        f"📅 <b>{entry.get('news_date')}</b> · статус: <code>{entry.get('status')}</code>"
+        f"📅 <b>{entry.get('news_date')}</b> · {_rubric_title(entry)}"
+        f" · статус: <code>{entry.get('status')}</code>"
         + (" · 📌 pinned" if entry.get("is_pinned") else ""),
         f"🎬 <b>{(entry.get('video_title') or '—')}</b>",
         f"📺 {entry.get('channel_title') or '—'} · ⏱ {dur_txt}",
         f"🔗 {entry.get('video_url')}",
     ]
     if entry.get("summary_ru"):
-        lines.append(f"\n📰 {entry['summary_ru']}")
-    lines.append(f"\n🔤 <b>Фразы ({len(phrases)}):</b>")
-    for p in phrases[:12]:
-        usage = f" — <i>{p['usage_ru']}</i>" if p.get("usage_ru") else ""
-        lines.append(f"• <b>{p.get('de')}</b> — {p.get('translation_ru')}{usage}")
-    if len(phrases) > 12:
-        lines.append(f"…ещё {len(phrases) - 12}")
+        lines.append(f"\n{'🎤' if is_standup else '📰'} {entry['summary_ru']}")
+    lines.append(f"\n🔤 <b>Разбор ({len(phrases)}):</b>")
+    # У стендапа карточка развёрнутая: помета регистра и цитата из ролика. Владелец должен
+    # видеть в превью ровно то, что увидит человек, — иначе одобрять нечего.
+    shown = 6 if is_standup else 12
+    for p in phrases[:shown]:
+        if is_standup:
+            register = f" <i>({p['register_ru']})</i>" if p.get("register_ru") else ""
+            lines.append(f"• <b>{p.get('de')}</b>{register} — {p.get('translation_ru')}")
+            if p.get("quote_de"):
+                lines.append(f"   🎬 «{p['quote_de']}»")
+        else:
+            usage = f" — <i>{p['usage_ru']}</i>" if p.get("usage_ru") else ""
+            lines.append(f"• <b>{p.get('de')}</b> — {p.get('translation_ru')}{usage}")
+    if len(phrases) > shown:
+        lines.append(f"…ещё {len(phrases) - shown}")
     lines.append(f"\n🧩 <b>Тест ({len(quiz)} вопр.):</b>")
     for i, q in enumerate(quiz, 1):
         opts = q.get("options") or []
@@ -11266,10 +11292,15 @@ def _world_news_words_to_digest_items(phrases: list) -> list[dict]:
     return items
 
 
-async def admin_world_news_command(update: Update, context: CallbackContext):
-    """Prepare / preview today's «Начни день с коротких новостей».
-    /worldnews             — auto-pick a fresh DW learner-news video and build the pack
-    /worldnews <youtube>   — build from a specific video (admin replace)."""
+async def admin_world_news_command(update: Update, context: CallbackContext,
+                                   rubric: str | None = None):
+    """Prepare / preview today's entry.
+    /worldnews             — auto-pick a fresh learner-news video and build the pack
+    /worldnews <youtube>   — build from a specific video (admin replace)
+    /standup[ <youtube>]   — то же самое, но принудительно рубрикой стендапа.
+
+    Без `rubric` рубрика берётся по дню (чередование), то есть команда делает ровно то,
+    что сделала бы вечерняя подготовка."""
     sender = update.effective_user
     message = update.effective_message
     if not sender or not message:
@@ -11278,29 +11309,102 @@ async def admin_world_news_command(update: Update, context: CallbackContext):
         await message.reply_text("⛔️ Команда доступна только администратору.")
         return
     manual_url = (context.args[0].strip() if context.args else None)
+    from backend.daily_video_rubrics import RUBRIC_STANDUP, get_profile, rubric_for_date
+    effective = (rubric or rubric_for_date(datetime.now().strftime("%Y-%m-%d")))
+    title = get_profile(effective).title_ru
+    cmd = "/standup" if effective == RUBRIC_STANDUP else "/worldnews"
     status = await message.reply_text(
-        "📰 Готовлю новость дня… (ищу свежий ролик с субтитрами и делаю разбор)"
+        f"{'🎤' if effective == RUBRIC_STANDUP else '📰'} Готовлю «{title}»… "
+        "(ищу ролик с субтитрами и делаю разбор)"
     )
     try:
         from backend.world_news_generator import prepare_world_news
-        entry = await asyncio.to_thread(prepare_world_news, None, manual_url=manual_url)
+        entry = await asyncio.to_thread(
+            prepare_world_news, None, rubric=effective, manual_url=manual_url
+        )
     except Exception as exc:
-        logging.exception("admin worldnews prep failed user_id=%s", int(sender.id))
+        logging.exception("admin worldnews prep failed user_id=%s rubric=%s", int(sender.id), effective)
         if "quota" in str(exc).lower():
             await status.edit_text(
-                "⏳ Дневная квота YouTube API исчерпана — свежий ролик сейчас не подобрать. "
+                "⏳ Дневная квота YouTube API исчерпана — ролик сейчас не подобрать. "
                 "Квота сбрасывается раз в сутки (≈утром по Киеву).\n"
-                "Можно задать ролик вручную: /worldnews <youtube_url>."
+                f"Можно задать ролик вручную: {cmd} <youtube_url>."
+            )
+        elif "непоказанных роликов не осталось" in str(exc):
+            await status.edit_text(
+                f"📭 В рубрике «{title}» закончились непоказанные ролики — нужно пополнить "
+                f"набор каналов.\nПока можно задать ролик вручную: {cmd} <youtube_url>."
             )
         else:
             await status.edit_text(
-                f"❌ Не удалось подготовить новость дня: {exc}\n"
-                "Попробуй ещё раз или задай ссылку: /worldnews <youtube_url>"
+                f"❌ Не удалось подготовить «{title}»: {exc}\n"
+                f"Попробуй ещё раз или задай ссылку: {cmd} <youtube_url>"
             )
         return
-    text = _world_news_preview_text(entry, header="✅ <b>Новость дня готова</b>")
+    text = _world_news_preview_text(entry, header=f"✅ <b>{_rubric_title(entry)} — готово</b>")
     kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
     await status.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def run_standup_pool_report(context: CallbackContext):
+    """Еженедельный отчёт о состоянии пула «Стендапа дня» — уходит владельцу САМ.
+
+    Рубрика никогда не повторяет показанное, значит её пул конечен и однажды кончится.
+    Кончится он молча, если никто не считает, — а молчащий механизм неотличим от
+    сломанного. Поэтому число оставшихся выступлений приходит в личку раз в неделю,
+    без всякой команды."""
+    from backend.database import get_admin_telegram_ids
+    try:
+        from backend.standup_pool_report import format_standup_pool_report, standup_pool_state
+        state = await asyncio.to_thread(standup_pool_state)
+        text = format_standup_pool_report(state)
+    except Exception as exc:
+        logging.exception("standup pool report failed")
+        _record_sched_heartbeat("standup_pool_report_result", "failed", {"error": str(exc)[:200]})
+        # Сорванный отчёт сам по себе новость: без него владелец не узнает, что пул кончается.
+        text = (f"⚠️ Не удалось посчитать состояние пула «Стендапа дня»: {exc}\n"
+                "Проверить вручную: /standup_pool")
+        state = {}
+    admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    sent = 0
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            logging.debug("standup pool report: admin DM failed id=%s", admin_id, exc_info=True)
+    if not sent:
+        logging.error("standup pool report: НИ ОДИН админ не получил отчёт. Текст: %s", text)
+    _record_sched_heartbeat("standup_pool_report_result", "completed",
+                            {"sent": sent, "remaining": state.get("remaining")})
+
+
+async def admin_standup_pool_command(update: Update, context: CallbackContext):
+    """/standup_pool — состояние пула стендапа по запросу. Тот же отчёт, что приходит сам
+    раз в неделю; команда нужна, когда владелец хочет посмотреть прямо сейчас."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    status = await message.reply_text("🎤 Считаю, сколько выступлений осталось…")
+    try:
+        from backend.standup_pool_report import format_standup_pool_report, standup_pool_state
+        state = await asyncio.to_thread(standup_pool_state)
+    except Exception as exc:
+        logging.exception("admin standup_pool failed user_id=%s", int(sender.id))
+        await status.edit_text(f"❌ Не удалось посчитать пул: {exc}")
+        return
+    await status.edit_text(format_standup_pool_report(state), parse_mode="HTML")
+
+
+async def admin_standup_command(update: Update, context: CallbackContext):
+    """/standup[ <youtube_url>] — подготовить стендап на СЕГОДНЯ, минуя чередование.
+    Нужна, когда владелец хочет посмотреть рубрику вне её дня или переформировать её вручную."""
+    from backend.daily_video_rubrics import RUBRIC_STANDUP
+    await admin_world_news_command(update, context, rubric=RUBRIC_STANDUP)
 
 
 def _world_news_preview_keyboard_rows(entry: dict) -> list[list[InlineKeyboardButton]]:
@@ -11468,7 +11572,8 @@ async def run_world_news_evening_prep(context: CallbackContext):
         # with the keyboard so it can still be re-formed if wanted.
         logging.info("world_news evening: %s already approved — notify only", target)
         text = _world_news_preview_text(
-            existing, header="🌙 <b>Новость на завтра уже одобрена</b> — уйдёт утром в 6:30"
+            existing,
+            header=f"🌙 <b>{_rubric_title(existing)} на завтра уже одобрено</b> — уйдёт утром в 6:30",
         )
         kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(existing))
         for admin_id in admin_ids:
@@ -11502,14 +11607,24 @@ async def run_world_news_evening_prep(context: CallbackContext):
         # /scheduler_health raise a ⚠️ alarm even if every admin DM below fails.
         _record_sched_heartbeat("world_news_evening_result", "failed",
                                 {"target": target, "timeout": is_timeout, "error": reason[:200]})
+        # Какая рубрика была на завтра — считаем по дате: записи-то нет, а владельцу нужно
+        # понимать, что именно не подготовилось и какой командой это чинить.
+        try:
+            from backend.daily_video_rubrics import RUBRIC_STANDUP, get_profile, rubric_for_date
+            failed_rubric = rubric_for_date(target)
+            failed_title = get_profile(failed_rubric).title_ru
+            manual_cmd = "/standup" if failed_rubric == RUBRIC_STANDUP else "/worldnews"
+        except Exception:
+            logging.exception("world_news evening: не удалось определить рубрику для %s", target)
+            failed_title, manual_cmd = "Видео дня", "/worldnews"
         await _world_news_alert_admins(
             context, admin_ids,
-            f"⚠️ Новость на завтра ({target}) не подготовилась: {reason}\n"
+            f"⚠️ {failed_title} на завтра ({target}) не подготовилось: {reason}\n"
             "Без одобрения утром рассылки не будет. "
-            "Можно задать вручную: /worldnews <youtube_url> → /worldnews_card.",
+            f"Можно задать вручную: {manual_cmd} <youtube_url> → /worldnews_card.",
         )
         return
-    text = _world_news_preview_text(entry, header="🌙 <b>Новость на завтра — проверь и одобри</b>")
+    text = _world_news_preview_text(entry, header=f"🌙 <b>{_rubric_title(entry)} на завтра — проверь и одобри</b>")
     kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
     for admin_id in admin_ids:
         try:
@@ -11542,7 +11657,7 @@ async def run_world_news_morning_broadcast(context: CallbackContext):
         return
 
     caption = _world_news_morning_card_text(entry)
-    kb = _world_news_morning_card_keyboard(context)
+    kb = _world_news_morning_card_keyboard(context, entry)
     try:
         from backend.world_news_card import render_world_news_card
         png = await asyncio.to_thread(render_world_news_card, entry)
@@ -11645,10 +11760,12 @@ async def run_world_news_startup_catchup(context: CallbackContext):
 
 
 def _world_news_morning_card_text(entry: dict) -> str:
-    """User-facing morning плашка «Начни день с коротких новостей» (title + summary + duration)."""
+    """User-facing morning плашка: «Начни день с коротких новостей» либо «Стендап дня»."""
+    is_standup = _rubric_of(entry) == "standup"
     dur = int(entry.get("duration_seconds") or 0)
     dur_txt = f"{dur // 60}:{dur % 60:02d}" if dur else None
-    lines = ["🌅 <b>Начни день с коротких новостей</b>"]
+    lines = ["🎤 <b>Стендап дня</b>" if is_standup
+             else "🌅 <b>Начни день с коротких новостей</b>"]
     title = str(entry.get("video_title") or "").strip()
     if title:
         lines.append(f"\n🎬 <b>{title}</b>")
@@ -11668,15 +11785,25 @@ def _world_news_morning_card_text(entry: dict) -> str:
         meta.append(f"🔤 {n_phrases} слов")
     if meta:
         lines.append(f"\n{' · '.join(meta)}")
-    lines.append("\nПосмотри короткое видео с субтитрами, сохрани слова и проверь себя — прямо в приложении 👇")
+    lines.append(
+        "\nЖивая разговорная речь: разбери сленг и обороты, посмотри выступление "
+        "с субтитрами и проверь себя — прямо в приложении 👇"
+        if is_standup else
+        "\nПосмотри короткое видео с субтитрами, сохрани слова и проверь себя — прямо в приложении 👇"
+    )
     return "\n".join(lines)
 
 
-def _world_news_morning_card_keyboard(context: CallbackContext) -> InlineKeyboardMarkup:
-    """Two Mini-App deep-link buttons for the morning card: watch (news page) + jump to quiz."""
+def _world_news_morning_card_keyboard(context: CallbackContext, entry: dict | None = None) -> InlineKeyboardMarkup:
+    """Two Mini-App deep-link buttons for the morning card: watch + jump to quiz.
+
+    Ссылки у обеих рубрик ОДНИ И ТЕ ЖЕ (`worldnews` / `worldnews_quiz`): экран мини-аппа
+    общий и открывает запись сегодняшнего дня, какой бы рубрики она ни была. Меняется
+    только подпись кнопки — «смотреть новости» под стендапом читалось бы как ошибка."""
     bot_username = getattr(getattr(context, "bot", None), "username", None)
+    watch = "🎤 Смотреть выступление" if _rubric_of(entry or {}) == "standup" else "▶️ Смотреть новости"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("▶️ Смотреть новости", url=get_webapp_deeplink("worldnews", bot_username=bot_username))],
+        [InlineKeyboardButton(watch, url=get_webapp_deeplink("worldnews", bot_username=bot_username))],
         [InlineKeyboardButton("🧩 Протестировать знания", url=get_webapp_deeplink("worldnews_quiz", bot_username=bot_username))],
     ])
 
@@ -11706,7 +11833,7 @@ async def admin_world_news_card_command(update: Update, context: CallbackContext
         )
         return
     caption = _world_news_morning_card_text(entry)
-    kb = _world_news_morning_card_keyboard(context)
+    kb = _world_news_morning_card_keyboard(context, entry)
     try:
         from backend.world_news_card import render_world_news_card
         png = await asyncio.to_thread(render_world_news_card, entry)
@@ -11842,7 +11969,7 @@ async def admin_world_news_tomorrow_command(update: Update, context: CallbackCon
             )
         return
     text = _world_news_preview_text(
-        entry, header="🌙 <b>Новость на завтра переформирована — проверь и одобри</b>"
+        entry, header=f"🌙 <b>{_rubric_title(entry)} на завтра переформировано — проверь и одобри</b>"
     )
     kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
     # Send the preview as a NEW message rather than editing the «Переформировываю…» bubble in
@@ -11910,7 +12037,7 @@ async def admin_world_news_show_command(update: Update, context: CallbackContext
                else "Подготовь: /worldnews")
         )
         return
-    text = _world_news_preview_text(entry, header=f"👁 <b>Новость на {target}</b>")
+    text = _world_news_preview_text(entry, header=f"👁 <b>{_rubric_title(entry)} на {target}</b>")
     kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
     try:
         await message.reply_text(text, parse_mode="HTML", reply_markup=kb)
@@ -11937,22 +12064,36 @@ async def admin_world_news_image_command(update: Update, context: CallbackContex
     if not _is_admin_user(user.id):
         await message.reply_text("⛔️ Команда доступна только администратору.")
         return
-    status_msg = await message.reply_text("Генерирую лис-картинку «читает новости»…")
+    # У каждой рубрики свой фон и свой ключ в R2: лис с газетой для новостей, лис с
+    # микрофоном на сцене для стендапа. Без аргумента засевается новостной — так команда
+    # вела себя раньше, и её прежние вызовы ничего не меняют.
+    arg = (context.args[0].strip().lower() if context.args else "news")
+    if arg not in ("news", "standup"):
+        await message.reply_text("Укажи рубрику: /admin_worldnews_image news | standup")
+        return
+    status_msg = await message.reply_text(
+        "Генерирую лис-картинку «на сцене с микрофоном»…" if arg == "standup"
+        else "Генерирую лис-картинку «читает новости»…"
+    )
 
     def _gen() -> dict:
         from backend.image_generation_provider import generate_image_bytes
         from backend.r2_storage import r2_put_bytes
-        from backend.world_news_card import WORLD_NEWS_IMAGE_PROMPT, world_news_bg_key, bust_world_news_bg_cache
+        from backend.world_news_card import (
+            WORLD_NEWS_IMAGE_PROMPT, STANDUP_IMAGE_PROMPT, world_news_bg_key,
+            bust_world_news_bg_cache,
+        )
+        prompt = STANDUP_IMAGE_PROMPT if arg == "standup" else WORLD_NEWS_IMAGE_PROMPT
         res = generate_image_bytes(
-            prompt=WORLD_NEWS_IMAGE_PROMPT, template_id=0, user_id=0, action_type="worldnews_image",
+            prompt=prompt, template_id=0, user_id=0, action_type="worldnews_image",
         )
         data = bytes(res.get("data") or b"")
         if not data:
             raise RuntimeError("empty image payload")
-        r2_put_bytes(world_news_bg_key(), data, content_type="image/png",
+        r2_put_bytes(world_news_bg_key(arg), data, content_type="image/png",
                      cache_control="public, max-age=86400")
         bust_world_news_bg_cache()
-        return {"key": world_news_bg_key(), "bytes": len(data)}
+        return {"key": world_news_bg_key(arg), "bytes": len(data)}
 
     try:
         result = await asyncio.to_thread(_gen)
@@ -43301,6 +43442,8 @@ def main():
     application.add_handler(CommandHandler("dedupenqueue", admin_dedup_enqueue_command))
     application.add_handler(CommandHandler("reviewcard", admin_review_card_command))
     application.add_handler(CommandHandler("worldnews", admin_world_news_command))
+    application.add_handler(CommandHandler("standup", admin_standup_command))
+    application.add_handler(CommandHandler("standup_pool", admin_standup_pool_command))
     application.add_handler(CommandHandler("worldnews_card", admin_world_news_card_command))
     application.add_handler(CommandHandler("admin_worldnews_image", admin_world_news_image_command))
     application.add_handler(CommandHandler("worldnews_approve", admin_world_news_approve_command))
@@ -43896,6 +44039,9 @@ def main():
         # Prepare «Начни день с коротких новостей» before the morning send (heavy work
         # once/day; the 5:05 broadcast only reads the prepared row).
         scheduler.add_job(lambda: submit_async(run_world_news_evening_prep,CallbackContext(application=application)),"cron", hour=20, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        # Состояние пула стендапа — раз в неделю, само. Владелец ничего не вызывает командой:
+        # «всё, что я должен вызывать командой, я забуду».
+        scheduler.add_job(lambda: submit_async(run_standup_pool_report,CallbackContext(application=application)),"cron", day_of_week="sun", hour=11, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Drain Mini-App «⚔️ Battles» create requests every few seconds (bot runs the
         # existing broadcast logic, so invites/images/nudges/digest are unchanged).

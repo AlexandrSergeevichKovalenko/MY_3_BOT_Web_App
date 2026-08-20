@@ -32788,6 +32788,12 @@ function AppInner() {
     })();
   }, [worldNewsData, worldNewsSelected, initData, initDataMissingMsg, showInlineToast, tr]);
 
+  // Экран один на обе рубрики, они чередуются через день. Подписать выступление комика
+  // «Новостью дня» нельзя, поэтому заголовок берётся из самой записи, а не угадывается.
+  const worldNewsIsStandup = String(worldNewsData?.rubric || '') === 'standup';
+  const worldNewsTitle = worldNewsIsStandup
+    ? tr('Стендап дня', 'Stand-up des Tages')
+    : tr('Новость дня', 'News des Tages');
   const worldNewsPhrases = Array.isArray(worldNewsData?.phrases) ? worldNewsData.phrases : [];
   const worldNewsQuiz = Array.isArray(worldNewsData?.quiz) ? worldNewsData.quiz : [];
 
@@ -37246,7 +37252,7 @@ function AppInner() {
 
                         {/* CENTER: заголовок (усечение) + таймер задачи */}
                         <div className="youtube-dock-center">
-                          <h3>{youtubeNewsMode ? tr('Новость дня', 'News des Tages') : tr('Видео YouTube', 'YouTube Video')}</h3>
+                          <h3>{youtubeNewsMode ? worldNewsTitle : tr('Видео YouTube', 'YouTube Video')}</h3>
                           {youtubeTaskDone && (
                             <span className="youtube-inline-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
                           )}
@@ -37394,7 +37400,7 @@ function AppInner() {
                       <div className="youtube-mobile-head">
                         <div className="youtube-player-first-title-row">
                           <div className="youtube-player-first-title-wrap">
-                            <h3>{youtubeNewsMode ? tr('📰 Новость дня', '📰 News des Tages') : tr('YouTube', 'YouTube')}</h3>
+                            <h3>{youtubeNewsMode ? `${worldNewsIsStandup ? '🎤' : '📰'} ${worldNewsTitle}` : tr('YouTube', 'YouTube')}</h3>
                             {youtubeTaskDone && (
                               <span className="youtube-inline-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
                             )}
@@ -37824,7 +37830,7 @@ function AppInner() {
                     )}
                     {youtubeNewsMode && worldNewsData && worldNewsData.available === false && (
                       <div className="youtube-empty-state">
-                        <div className="youtube-empty-state-badge">{tr('Новость дня', 'News des Tages')}</div>
+                        <div className="youtube-empty-state-badge">{worldNewsTitle}</div>
                         <h4>{tr('На сегодня новостей пока нет', 'Heute noch keine News')}</h4>
                         <p>{tr('Загляни утром — свежий ролик появится здесь.', 'Schau morgens vorbei — das frische Video erscheint hier.')}</p>
                       </div>
@@ -37863,7 +37869,37 @@ function AppInner() {
                               {article && <span className={`worldnews-art ${gClass}`}>{article} </span>}
                               <span className="worldnews-head-main">{headRest}</span>
                             </FitText>
-                            {phrase.translation_ru && <div className="worldnews-card-ru">{phrase.translation_ru}</div>}
+                            {/* Помета регистра — только у стендапа. Человек должен знать,
+                                можно ли так говорить и при ком: сленг легко унести в разговор
+                                с начальником, если мы промолчали. */}
+                            {phrase.register_ru && (
+                              <div className="worldnews-card-register">{phrase.register_ru}</div>
+                            )}
+                            {phrase.translation_ru && (
+                              <div className="worldnews-card-ru">
+                                {phrase.quote_de && (
+                                  <span className="worldnews-card-ru-label">{tr('Здесь: ', 'Hier: ')}</span>
+                                )}
+                                {phrase.translation_ru}
+                              </div>
+                            )}
+                            {/* Слово в контексте: дословная строка из субтитров этого ролика.
+                                Без неё сленг остаётся сухим переводом, а он у сленга неверный. */}
+                            {phrase.quote_de && (
+                              <div className="worldnews-card-quote">
+                                <span className="worldnews-card-quote-de">«{phrase.quote_de}»</span>
+                                {phrase.quote_ru && (
+                                  <span className="worldnews-card-quote-ru">{phrase.quote_ru}</span>
+                                )}
+                              </div>
+                            )}
+                            {/* Заполняется, только когда обычное значение вправду другое. */}
+                            {phrase.literal_ru && (
+                              <div className="worldnews-card-note">
+                                <span className="worldnews-card-note-label">{tr('Обычное значение', 'Wörtlich')}</span>
+                                <span className="worldnews-card-note-text">{phrase.literal_ru}</span>
+                              </div>
+                            )}
                             {phrase.usage_ru && (
                               <div className="worldnews-card-note">
                                 <span className="worldnews-card-note-label">{tr('Как употреблять', 'Verwendung')}</span>

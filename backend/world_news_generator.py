@@ -33,7 +33,9 @@ logger = logging.getLogger(__name__)
 # burning it: a short-lived candidate cache so repeated «переформировать» clicks reuse one
 # search sweep, and a quota flag so a 429/403 surfaces as a clear reason instead of "no videos".
 _QUOTA_EXCEEDED = False
-_CAND_CACHE: dict = {"ts": 0.0, "items": []}
+# Свип кандидатов кэшируется ОТДЕЛЬНО по рубрикам ('news' / 'standup'): иначе вечерняя
+# подготовка стендапа получила бы новостной список каналов из тёплого кэша.
+_CAND_CACHE: dict = {}
 
 # ── Config (env-overridable) ────────────────────────────────────────────────────
 
@@ -132,7 +134,14 @@ WORLD_NEWS_MAX_TRANSCRIPT_CHARS = _env_int("WORLD_NEWS_MAX_TRANSCRIPT_CHARS", 80
 WORLD_NEWS_PICK_BUDGET_SEC = _env_int("WORLD_NEWS_PICK_BUDGET_SEC", 210)
 
 
-def _model() -> str:
+def _model(profile=None) -> str:
+    """Модель для разбора. У стендапа своя переменная: разбор сленга и переносных значений
+    заметно тяжелее пересказа новости, и владелец должен иметь возможность поставить сюда
+    модель посильнее, не выкатывая код."""
+    if profile is not None and getattr(profile, "key", "") == "standup":
+        standup_model = (os.getenv("STANDUP_MODEL") or "").strip()
+        if standup_model:
+            return standup_model
     return (
         os.getenv("WORLD_NEWS_MODEL")
         or os.getenv("OPENAI_MODEL")
@@ -202,62 +211,90 @@ def _yt_api_search_recent(query: str, *, channel_id: str | None = None, max_resu
         return []
 
 
-def _yt_api_playlist_recent(playlist_id: str, *, max_results: int = 10) -> list[dict]:
-    """Recent uploads from a channel's uploads playlist. Costs 1 quota unit/call (vs 100 for
+def _yt_api_playlist_recent(playlist_id: str, *, max_results: int = 10, pages: int = 1) -> list[dict]:
+    """Uploads from a channel's uploads playlist. Costs 1 quota unit/call (vs 100 for
     search.list). Candidates are marked trusted (curated channel) so they bypass the channel
-    allow-filter downstream."""
+    allow-filter downstream.
+
+    `pages` — сколько страниц по `max_results` пройти. Новостям хватает одной (нужна
+    свежесть), стендапу нужен весь архив: ролики вечнозелёные, и выбирать приходится из
+    сотен, вычитая уже показанное.
+    """
     api_key = _youtube_api_key()
     if not api_key or not playlist_id:
         return []
-    params = {
-        "part": "snippet",
-        "playlistId": playlist_id,
-        "maxResults": max_results,
-        "key": api_key,
-    }
-    try:
-        resp = requests.get("https://www.googleapis.com/youtube/v3/playlistItems", params=params, timeout=12)
-        if resp.status_code >= 400:
-            if resp.status_code in (429, 403):
-                global _QUOTA_EXCEEDED
-                _QUOTA_EXCEEDED = True
-                logger.warning("world_news: YT playlistItems quota/rate-limited (HTTP %s) pl=%s", resp.status_code, playlist_id)
-            else:
-                logger.info("world_news: YT playlistItems HTTP %s for pl=%s", resp.status_code, playlist_id)
-            return []
-        out = []
-        for item in (resp.json().get("items") or []):
-            snip = item.get("snippet") or {}
-            vid = ((snip.get("resourceId") or {}).get("videoId") or "").strip()
-            if not vid:
-                continue
-            out.append({
-                "video_id": vid,
-                "title": (snip.get("title") or "").strip(),
-                "channel_title": (snip.get("videoOwnerChannelTitle") or snip.get("channelTitle") or "").strip(),
-                "published_at": (snip.get("publishedAt") or "").strip(),
-                "trusted": True,
-            })
-        return out
-    except Exception:
-        logger.warning("world_news: YT playlistItems failed for pl=%s", playlist_id, exc_info=True)
-        return []
+    out = []
+    page_token = ""
+    for _ in range(max(1, int(pages or 1))):
+        params = {
+            "part": "snippet",
+            "playlistId": playlist_id,
+            "maxResults": max_results,
+            "key": api_key,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        try:
+            resp = requests.get("https://www.googleapis.com/youtube/v3/playlistItems", params=params, timeout=12)
+            if resp.status_code >= 400:
+                if resp.status_code in (429, 403):
+                    global _QUOTA_EXCEEDED
+                    _QUOTA_EXCEEDED = True
+                    logger.warning("world_news: YT playlistItems quota/rate-limited (HTTP %s) pl=%s", resp.status_code, playlist_id)
+                else:
+                    logger.info("world_news: YT playlistItems HTTP %s for pl=%s", resp.status_code, playlist_id)
+                break
+            payload = resp.json()
+            for item in (payload.get("items") or []):
+                snip = item.get("snippet") or {}
+                vid = ((snip.get("resourceId") or {}).get("videoId") or "").strip()
+                if not vid:
+                    continue
+                out.append({
+                    "video_id": vid,
+                    "title": (snip.get("title") or "").strip(),
+                    "channel_title": (snip.get("videoOwnerChannelTitle") or snip.get("channelTitle") or "").strip(),
+                    "published_at": (snip.get("publishedAt") or "").strip(),
+                    "trusted": True,
+                })
+            page_token = (payload.get("nextPageToken") or "").strip()
+            if not page_token:
+                break
+        except Exception:
+            logger.warning("world_news: YT playlistItems failed for pl=%s", playlist_id, exc_info=True)
+            break
+    return out
 
 
 def _yt_api_video_details(video_ids: list[str]) -> dict[str, dict]:
+    """Длительность, канал и наличие ручных субтитров для списка роликов.
+
+    videos.list принимает максимум 50 id за вызов, поэтому список идёт пачками: у стендапа
+    кандидатов сотни, и обрезка до первых 50 оставила бы остальных без длительности — их
+    погнало бы качать субтитры вслепую. Один вызов стоит 1 единицу квоты.
+    """
     api_key = _youtube_api_key()
     if not api_key or not video_ids:
         return {}
+    details: dict[str, dict] = {}
+    for start in range(0, len(video_ids), 50):
+        chunk = video_ids[start:start + 50]
+        if not chunk:
+            continue
+        _yt_api_video_details_chunk(chunk, api_key, details)
+    return details
+
+
+def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dict) -> None:
     params = {
         "part": "contentDetails,snippet",
-        "id": ",".join(video_ids[:50]),
+        "id": ",".join(video_ids),
         "key": api_key,
     }
     try:
         resp = requests.get("https://www.googleapis.com/youtube/v3/videos", params=params, timeout=12)
         if resp.status_code >= 400:
-            return {}
-        details: dict[str, dict] = {}
+            return
         for item in (resp.json().get("items") or []):
             vid = (item.get("id") or "").strip()
             if not vid:
@@ -269,11 +306,15 @@ def _yt_api_video_details(video_ids: list[str]) -> dict[str, dict]:
                 "title": (snip.get("title") or "").strip(),
                 "channel_title": (snip.get("channelTitle") or "").strip(),
                 "published_at": (snip.get("publishedAt") or "").strip(),
+                # YouTube помечает здесь ТОЛЬКО субтитры, положенные автором руками
+                # ("true"); машинная расшифровка в этот флаг не попадает. Для стендапа это
+                # ровно та разница, по которой владелец 20.08.2026 велел ставить ролики с
+                # ручными субтитрами первыми: под стендап машина пишет без знаков препинания
+                # и угадывает слова на слух, а человек читает субтитры и заучивает их.
+                "has_manual_captions": str(content.get("caption") or "").strip().lower() == "true",
             }
-        return details
     except Exception:
         logger.warning("world_news: YT videos.list failed", exc_info=True)
-        return {}
 
 
 def _extract_video_id(url_or_id: str) -> str:
@@ -319,7 +360,7 @@ def _transcript_to_text(items: list) -> str:
 
 # ── Candidate selection ─────────────────────────────────────────────────────────
 
-def _gather_candidates() -> list[dict]:
+def _gather_candidates(profile=None) -> list[dict]:
     """Newest-first, de-duplicated candidate videos.
 
     PRIMARY: recent uploads from curated German-news channels via their uploads playlists
@@ -330,22 +371,32 @@ def _gather_candidates() -> list[dict]:
 
     Cached for WORLD_NEWS_CANDIDATE_TTL_SEC (default 6h) so repeated «переформировать» clicks
     re-pick from ONE sweep instead of re-hitting the API. Rotation/exclusion still runs on the
-    cached pool, so re-forms still yield a different video without re-fetching."""
+    cached pool, so re-forms still yield a different video without re-fetching.
+
+    Профиль рубрики (backend/daily_video_rubrics.py) задаёт каналы и стратегию обхода:
+    новостям нужна свежесть (одна страница последних загрузок), стендапу — глубина архива
+    (ролики вечнозелёные, важно не повториться). Кэш держится отдельно по рубрикам, иначе
+    вечерняя подготовка стендапа отдавала бы новостной свип."""
     global _QUOTA_EXCEEDED
+    from backend.daily_video_rubrics import NEWS_PROFILE, profile_channel_ids
+    profile = profile or NEWS_PROFILE
     ttl = _env_int("WORLD_NEWS_CANDIDATE_TTL_SEC", 6 * 3600)
     now = time.time()
-    if _CAND_CACHE["items"] and (now - _CAND_CACHE["ts"]) < ttl:
-        return list(_CAND_CACHE["items"])
+    slot = _CAND_CACHE.setdefault(profile.key, {"ts": 0.0, "items": []})
+    if slot["items"] and (now - slot["ts"]) < ttl:
+        return list(slot["items"])
 
     _QUOTA_EXCEEDED = False
     seen: set[str] = set()
     candidates: list[dict] = []
-    per_channel = _env_int("WORLD_NEWS_PER_CHANNEL", 8)
-    for cid in _channel_ids():
+    archive = profile.pick_strategy == "archive"
+    per_channel = 50 if archive else _env_int("WORLD_NEWS_PER_CHANNEL", 8)
+    pages = profile.archive_pages if archive else 1
+    for cid in profile_channel_ids(profile):
         pl = _uploads_playlist_id(cid)
         if not pl:
             continue
-        for row in _yt_api_playlist_recent(pl, max_results=per_channel):
+        for row in _yt_api_playlist_recent(pl, max_results=per_channel, pages=pages):
             vid = row["video_id"]
             if vid in seen:
                 continue
@@ -366,14 +417,23 @@ def _gather_candidates() -> list[dict]:
 
     # Sort newest-first by published_at (ISO 8601 sorts lexicographically).
     candidates.sort(key=lambda r: r.get("published_at") or "", reverse=True)
-    candidates = candidates[: max(1, WORLD_NEWS_CANDIDATES)]
+    # Новостям хватает верхушки списка — там самое свежее. У стендапа свежесть значения не
+    # имеет, а обрезка до 20 роликов убила бы весь смысл обхода архива: показанное
+    # вычитается, и через пару месяцев верхушка кончилась бы, хотя в архиве сотни роликов.
+    # Потолок архивного свипа. Измерено 20.08.2026: при потолке 1000 в пул попадали
+    # 204 годных ролика вместо 646 — список отсортирован по свежести, а свежие загрузки
+    # у стендап-каналов это в основном Shorts, и они съедали весь потолок. Потолок 4000
+    # покрывает весь обойдённый архив; по квоте это ~180 единиц из 10 000 в сутки и
+    # только раз в 6 часов (свип кэшируется).
+    cap = _env_int("STANDUP_CANDIDATES", 4000) if archive else max(1, WORLD_NEWS_CANDIDATES)
+    candidates = candidates[: max(1, cap)]
     if candidates:  # only cache a real sweep — never cache an empty (quota-exhausted) result
-        _CAND_CACHE["items"] = candidates
-        _CAND_CACHE["ts"] = now
+        slot["items"] = candidates
+        slot["ts"] = now
     return candidates
 
 
-def _length_priority(dur: int) -> tuple[int, int]:
+def _length_priority(dur: int, profile=None) -> tuple[int, int]:
     """Sort key (lower = tried first) that prefers the 5–7 min window for listening practice.
 
     Tiers: 0 = inside [PREF_MIN, PREF_MAX] (ideal) · 1 = longer than the window (fuller news, still
@@ -381,8 +441,8 @@ def _length_priority(dur: int) -> tuple[int, int]:
     (last resort). Ties within a tier keep the caller's newest-first order (Python sort is stable),
     so the freshest video wins among equally-good lengths. This only REORDERS the transcript walk —
     it never adds transcript fetches, so the quota/budget behaviour is unchanged."""
-    pref_min = WORLD_NEWS_PREF_MIN_SECONDS
-    pref_max = WORLD_NEWS_PREF_MAX_SECONDS
+    pref_min = profile.pref_min_seconds if profile else WORLD_NEWS_PREF_MIN_SECONDS
+    pref_max = profile.pref_max_seconds if profile else WORLD_NEWS_PREF_MAX_SECONDS
     if dur <= 0:
         return (2, 0)
     if pref_min <= dur <= pref_max:
@@ -394,15 +454,18 @@ def _length_priority(dur: int) -> tuple[int, int]:
     return (4, pref_min - dur)       # < 2 min — last resort
 
 
-def _pick_video_with_transcript(*, manual_url: str | None = None,
+def _pick_video_with_transcript(*, profile=None, manual_url: str | None = None,
                                 exclude_video_ids: set[str] | None = None) -> tuple[dict | None, dict]:
     """Return ({video_id, video_url, title, channel_title, duration_seconds, lang, text, items}
     or None, diag). `diag` counts why candidates were rejected (dur / no-captions / too-short)
     so a failure is diagnosable from the error message instead of a generic 'not found'.
     `exclude_video_ids` skips those videos (used by «переформировать» to pick a DIFFERENT one)."""
+    from backend.daily_video_rubrics import NEWS_PROFILE
+    profile = profile or NEWS_PROFILE
     exclude = {str(v).strip() for v in (exclude_video_ids or set()) if str(v).strip()}
-    diag: dict = {"candidates": 0, "dur_skipped": 0, "no_transcript": 0, "short_transcript": 0,
-                  "channel_rejected": 0, "excluded": 0, "manual": bool(manual_url), "has_yt_key": bool(_youtube_api_key())}
+    diag: dict = {"rubric": profile.key, "candidates": 0, "dur_skipped": 0, "no_transcript": 0,
+                  "short_transcript": 0, "channel_rejected": 0, "excluded": 0,
+                  "manual": bool(manual_url), "has_yt_key": bool(_youtube_api_key())}
     if manual_url:
         vid = _extract_video_id(manual_url)
         if not vid:
@@ -429,9 +492,10 @@ def _pick_video_with_transcript(*, manual_url: str | None = None,
             "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
             "items": data.get("items") or [],
             "is_generated": data.get("is_generated"),
+            "has_manual_captions": bool(details.get("has_manual_captions")),
         }, diag
 
-    candidates = _gather_candidates()
+    candidates = _gather_candidates(profile)
     diag["candidates"] = len(candidates)
     diag["quota_exceeded"] = _QUOTA_EXCEEDED
     if not candidates:
@@ -446,8 +510,21 @@ def _pick_video_with_transcript(*, manual_url: str | None = None,
     # a stable sort keeps recency as the tiebreak. Duration comes from videos.list metadata we
     # already fetched, so this costs no extra transcript fetches (those still stop at the first
     # valid candidate below). See _length_priority for the tiering.
-    candidates.sort(key=lambda c: _length_priority(
-        (details_map.get(c["video_id"], {}).get("duration_seconds") or 0)
+    if profile.pick_strategy == "archive":
+        # У вечнозелёного архива нет «свежести», по которой можно было бы разбивать ничьи,
+        # и без перемешивания рубрика месяцами шла бы по одному каналу — тому, чьи ролики
+        # оказались первыми в свипе. Перемешиваем ДО сортировки: устойчивая сортировка
+        # сохранит случайный порядок внутри одинаковых по приоритету роликов.
+        random.shuffle(candidates)
+    candidates.sort(key=lambda c: (
+        # Решение владельца 20.08.2026: ролики с субтитрами, положенными руками, идут
+        # первыми; машинная расшифровка — второй эшелон. Для новостей флаг выключен, и
+        # ключ вырождается в прежний порядок (все нули) — их поведение не меняется.
+        0 if (not profile.prefer_manual_captions
+              or details_map.get(c["video_id"], {}).get("has_manual_captions")) else 1,
+        _length_priority(
+            (details_map.get(c["video_id"], {}).get("duration_seconds") or 0), profile
+        ),
     ))
     _budget_started = time.monotonic()
     for cand in candidates:
@@ -471,7 +548,7 @@ def _pick_video_with_transcript(*, manual_url: str | None = None,
             diag["channel_rejected"] += 1
             continue
         dur = det.get("duration_seconds") or 0
-        if dur and not (WORLD_NEWS_MIN_SECONDS <= dur <= WORLD_NEWS_MAX_SECONDS):
+        if dur and not (profile.min_seconds <= dur <= profile.max_seconds):
             diag["dur_skipped"] += 1
             continue
         data = _fetch_transcript(vid)
@@ -492,6 +569,9 @@ def _pick_video_with_transcript(*, manual_url: str | None = None,
             "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
             "items": data.get("items") or [],
             "is_generated": data.get("is_generated"),
+            # Идёт в реестр показанного и в отчёт: так владелец видит числом, сколько
+            # роликов рубрика взяла с ручными субтитрами, а сколько — с машинными.
+            "has_manual_captions": bool(det.get("has_manual_captions")),
         }, diag
     diag["reason"] = "all_candidates_rejected"
     logger.warning("world_news: no candidate passed duration+transcript checks (diag=%s)", diag)
@@ -561,17 +641,21 @@ Erzeuge das JSON exakt in diesem Format:
 }}"""
 
 
-def _call_llm(title: str, transcript: str) -> dict:
+def _call_llm(title: str, transcript: str, profile=None) -> dict:
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not set")
+    # Задание берётся из профиля рубрики. У новостей его нет — там работает исходный
+    # новостной промпт этого модуля, и поведение рубрики не меняется.
+    system = profile.llm_system if (profile and profile.llm_system) else _LLM_SYSTEM
+    user_tmpl = profile.llm_user_tmpl if (profile and profile.llm_user_tmpl) else _LLM_USER_TMPL
     payload = {
-        "model": _model(),
+        "model": _model(profile),
         "temperature": 0.5,
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": _LLM_SYSTEM},
-            {"role": "user", "content": _LLM_USER_TMPL.format(title=title or "—", transcript=transcript)},
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_tmpl.format(title=title or "—", transcript=transcript)},
         ],
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -584,7 +668,10 @@ def _call_llm(title: str, transcript: str) -> dict:
     resp_json = resp.json()
     try:
         from backend.openai_usage_logging import log_openai_raw_usage
-        log_openai_raw_usage(action_type="pool_world_news", model=str(payload.get("model") or ""),
+        # Расход считается ОТДЕЛЬНО по рубрикам — иначе стендап растворился бы в новостях,
+        # и владелец не увидел бы, во что ему обходится каждая из них.
+        action = "pool_standup" if (profile and profile.key == "standup") else "pool_world_news"
+        log_openai_raw_usage(action_type=action, model=str(payload.get("model") or ""),
                              usage=resp_json.get("usage"), user_id=None)
     except Exception:
         pass
@@ -592,7 +679,14 @@ def _call_llm(title: str, transcript: str) -> dict:
     return json.loads(raw)
 
 
-def _validate_and_normalize_pack(data: dict) -> dict:
+def _quote_fingerprint(text: str) -> str:
+    """Отпечаток строки для сверки цитаты с субтитрами: только буквы и цифры в нижнем
+    регистре. Знаки препинания и пробелы выкидываются, потому что в субтитрах они стоят
+    иначе, чем их перепишет модель, а нам важно совпадение СЛОВ, а не вёрстки."""
+    return re.sub(r"[^0-9a-zäöüß]+", "", str(text or "").lower())
+
+
+def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str = "") -> dict:
     # Summary as 2–4 terse thesis lines (stored newline-joined). Fall back to splitting a
     # legacy paragraph summary_ru into sentences if the model still returns one.
     raw_points = (data or {}).get("summary_points")
@@ -607,6 +701,14 @@ def _validate_and_normalize_pack(data: dict) -> dict:
     raw_phrases = (data or {}).get("phrases")
     if not isinstance(raw_phrases, list):
         raise ValueError("phrases missing")
+
+    needs_quote = bool(profile and profile.requires_quote)
+    min_phrases = profile.min_phrases if profile else 6
+    max_phrases = profile.max_phrases if profile else 18
+    transcript_fp = _quote_fingerprint(transcript_text) if needs_quote else ""
+    dropped_no_quote = 0
+    dropped_thin = 0
+
     phrases = []
     for p in raw_phrases:
         if not isinstance(p, dict):
@@ -615,14 +717,49 @@ def _validate_and_normalize_pack(data: dict) -> dict:
         tr = str(p.get("translation_ru") or "").strip()
         if not de or not tr:
             continue
-        phrases.append({
+        item = {
             "de": de,
             "translation_ru": tr,
             "usage_ru": str(p.get("usage_ru") or "").strip(),
-        })
-    if len(phrases) < 6:
-        raise ValueError(f"need >=6 valid phrases, got {len(phrases)}")
-    phrases = phrases[:18]
+        }
+        if needs_quote:
+            # Карточка стендапа обязана показать слово В КОНТЕКСТЕ — без цитаты она
+            # вырождается в сухой перевод, из-за которого человек и заучивает неверное
+            # значение сленга. Поэтому неполная карточка не «показывается частично»,
+            # а выбрасывается и считается.
+            quote_de = str(p.get("quote_de") or "").strip()
+            quote_ru = str(p.get("quote_ru") or "").strip()
+            register = str(p.get("register_ru") or "").strip()
+            if not quote_de or not quote_ru or not register or not item["usage_ru"]:
+                dropped_thin += 1
+                continue
+            # СТРАЖ ПРОТИВ ВЫДУМКИ: цитата обязана дословно найтись в субтитрах ролика.
+            # Модель, которой велено «скопировать строку из транскрипта», иногда
+            # пересказывает её своими словами — и тогда мы показали бы человеку фразу,
+            # которой в ролике не звучало. Такая карточка не показывается.
+            if _quote_fingerprint(quote_de) not in transcript_fp:
+                dropped_no_quote += 1
+                continue
+            item["register_ru"] = register
+            item["quote_de"] = quote_de
+            item["quote_ru"] = quote_ru
+            # Обычное значение заполняется, только когда оно вправду другое: моделе прямо
+            # запрещено выдумывать второе значение там, где его нет.
+            item["literal_ru"] = str(p.get("literal_ru") or "").strip()
+        phrases.append(item)
+
+    if needs_quote and (dropped_no_quote or dropped_thin):
+        logger.info(
+            "daily_video[%s]: карточек отброшено — цитаты нет в субтитрах: %d, неполных: %d "
+            "(осталось %d)",
+            getattr(profile, "key", "?"), dropped_no_quote, dropped_thin, len(phrases),
+        )
+    if len(phrases) < min_phrases:
+        raise ValueError(
+            f"need >={min_phrases} valid phrases, got {len(phrases)} "
+            f"(quote_not_in_transcript={dropped_no_quote}, incomplete={dropped_thin})"
+        )
+    phrases = phrases[:max_phrases]
 
     raw_quiz = (data or {}).get("quiz")
     if not isinstance(raw_quiz, list) or len(raw_quiz) < 4:
@@ -673,6 +810,7 @@ def _today_str() -> str:
 def prepare_world_news(
     news_date: str | None = None,
     *,
+    rubric: str | None = None,
     manual_url: str | None = None,
     status: str = "ready",
     exclude_video_ids: set[str] | None = None,
@@ -687,34 +825,64 @@ def prepare_world_news(
     variety is preferred, but never at the cost of having no news at all."""
     from backend.database import (
         upsert_world_news_daily, get_world_news_for_date, get_recent_world_news_video_ids,
-        upsert_youtube_transcript_cache,
+        upsert_youtube_transcript_cache, get_shown_daily_video_ids, record_daily_video_shown,
     )
+    from backend.daily_video_rubrics import get_profile, rubric_for_date
 
     date_str = (news_date or _today_str()).strip()
+    rubric_key = (rubric or "").strip().lower() or rubric_for_date(date_str)
+    profile = get_profile(rubric_key)
     base_exclude = {str(v).strip() for v in (exclude_video_ids or set()) if str(v).strip()}
+    # Стендап вечнозелёный: повторить показанное — хуже, чем не показать ничего, потому что
+    # человек решит, что рубрика сломалась. Поэтому у архивной стратегии повтор запрещён, а
+    # пустой выбор поднимается ошибкой — вечерняя подготовка на неё уже умеет звать владельца.
+    # У новостей поведение прежнее: разнообразие желательно, но никогда ценой пустого утра.
+    allow_repeat_when_empty = profile.pick_strategy != "archive"
 
     picked, diag = None, {}
     if not manual_url:
-        rotate_days = _env_int("WORLD_NEWS_ROTATE_DAYS", 14)
         try:
-            recent = get_recent_world_news_video_ids(rotate_days)
+            shown = get_shown_daily_video_ids(profile.key)
         except Exception:
-            logger.warning("world_news: recent-video lookup failed — skipping rotation exclude", exc_info=True)
-            recent = set()
-        rotated_exclude = base_exclude | recent
+            # Пустой ответ от сбоя базы неотличим от честного «мы ещё ничего не показывали»,
+            # и молча приняв его, рубрика пошла бы по второму кругу. Поэтому падаем.
+            logger.exception("daily_video[%s]: не удалось прочитать реестр показанного", profile.key)
+            raise
+        if profile.pick_strategy == "newest":
+            # У новостей к вечному реестру добавляется прежнее окно в 14 дней по самой
+            # таблице дня — поведение рубрики не меняется.
+            rotate_days = _env_int("WORLD_NEWS_ROTATE_DAYS", 14)
+            try:
+                shown = shown | get_recent_world_news_video_ids(rotate_days)
+            except Exception:
+                logger.warning("world_news: recent-video lookup failed — оставляем вечный реестр",
+                               exc_info=True)
+        diag["shown_excluded"] = len(shown)
+        rotated_exclude = base_exclude | shown
         if rotated_exclude:
-            picked, diag = _pick_video_with_transcript(exclude_video_ids=rotated_exclude)
+            picked, diag = _pick_video_with_transcript(
+                profile=profile, exclude_video_ids=rotated_exclude
+            )
+            if not picked and not allow_repeat_when_empty:
+                raise RuntimeError(
+                    f"daily_video[{profile.key}]: непоказанных роликов не осталось — "
+                    f"нужно пополнить набор каналов. diag={diag}"
+                )
             if not picked:
                 logger.info(
-                    "world_news: rotation exclude (%d recent) left nothing pickable — retrying without it (diag=%s)",
-                    len(recent), diag,
+                    "world_news: rotation exclude (%d shown) left nothing pickable — retrying without it (diag=%s)",
+                    len(shown), diag,
                 )
     if not picked:
-        picked, diag = _pick_video_with_transcript(manual_url=manual_url, exclude_video_ids=base_exclude)
+        picked, diag = _pick_video_with_transcript(
+            profile=profile, manual_url=manual_url, exclude_video_ids=base_exclude
+        )
     if not picked:
         raise RuntimeError(f"world_news: no suitable video with transcript found — diag={diag}")
 
-    pack = _validate_and_normalize_pack(_call_llm(picked["title"], picked["text"]))
+    pack = _validate_and_normalize_pack(
+        _call_llm(picked["title"], picked["text"], profile), profile, picked["text"]
+    )
 
     upsert_world_news_daily(
         news_date=date_str,
@@ -728,6 +896,19 @@ def prepare_world_news(
         phrases=pack["phrases"],
         quiz=pack["quiz"],
         status=status,
+        rubric=profile.key,
+    )
+    # Вечный реестр показанного — единственная память рубрики о том, что уже было: ночная
+    # чистка стирает саму строку дня. Пишется СРАЗУ после сохранения пакета, а не в момент
+    # утренней рассылки: если владелец переформирует день, израсходованный ролик всё равно
+    # не должен вернуться завтра.
+    record_daily_video_shown(
+        video_id=picked["video_id"],
+        rubric=profile.key,
+        shown_on=date_str,
+        video_title=picked["title"],
+        channel_title=picked["channel_title"],
+        had_manual_captions=picked.get("has_manual_captions"),
     )
     # Warm the shared transcript library so EVERY user — not just the library admin — gets the
     # German subtitles for this curated video. Without this, non-admin users (free AND non-admin
