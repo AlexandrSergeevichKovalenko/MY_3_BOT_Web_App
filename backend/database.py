@@ -23952,7 +23952,7 @@ def spread_correction_everywhere(cursor, *, unit_id: int, old_text: str, new_tex
 
 
 def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = "",
-                                 variant: int = 0) -> dict:
+                                 variant: int = 0, own_ru: str = "") -> dict:
     """Решение владельца по спорной фразе: принять правку, удалить или вписать свою.
 
     Правило удаления, согласованное 06.08.2026. Фраза уходит из общего словаря, и вместе
@@ -24039,6 +24039,11 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 chosen_ru = str(chosen.get("ru") or "").strip()
             else:
                 new_text = str(own_text or "").strip()
+                # Свой текст владельца тоже может приехать со своим переводом — так
+                # работает «Всё равно принять» на забракованной проверкой правке: текст
+                # и перевод берутся с того же места, где владелец их прочитал. Без этого
+                # русский после правки выдумывала бы модель, а выбор человека пропадал.
+                chosen_ru = str(own_ru or "").strip()
             if not new_text or new_text == old_text:
                 cursor.execute(
                     "UPDATE bt_3_phrase_review SET status = 'closed' WHERE id = %s;", (int(review_id),)

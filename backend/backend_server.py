@@ -30772,7 +30772,11 @@ def answer_phrase_review_decide():
         # «Отложить» ничего не решает и не закрывает строку — фраза просто уезжает в
         # конец списка на этом экране. Никакой записи в базу.
         return jsonify({"ok": True, "result": "skipped", **_phrase_review_payload()})
-    result = apply_phrase_review_decision(review_id, decision, own_text, variant)
+    # Перевод к своему тексту. Приходит, когда владелец жмёт «Всё равно принять» на
+    # правке, забракованной проверкой: текст и перевод берутся с того же места, где он
+    # их прочитал, и его выбор не заменяется машинным.
+    own_ru = str(payload.get("translation") or "").strip()
+    result = apply_phrase_review_decision(review_id, decision, own_text, variant, own_ru)
     if decision == "keep":
         note = "Фраза оставлена как есть — вопрос закрыт."
     elif decision == "delete":

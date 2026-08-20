@@ -27,14 +27,25 @@ const KIND_LABEL = {
  * но с экрана она не исчезает: владелец должен видеть, что судья предложил и почему
  * это отклонено. Молчащий экран неотличим от сломанного.
  */
-function FixCheck({ check }) {
+function FixCheck({ check, text, ru, onOverride, busy }) {
   if (!check) return null;
   if (check.state === 'bad') {
     return (
-      <em className="frrev-fix-bad">
-        ⛔ Судья ошибся{check.what ? `: ${check.what}` : ''}. Кнопки на этот вариант нет.
-        {check.why ? ` ${check.why}` : ''}
-      </em>
+      <>
+        <em className="frrev-fix-bad">
+          ⛔ Судья ошибся{check.what ? `: ${check.what}` : ''}.{check.why ? ` ${check.why}` : ''}
+        </em>
+        {/* Последнее слово за владельцем, а не за проверкой. Проверка — тоже модель, и
+            на трудном месте ошибается: «losgeworden» она забраковала, хотя написание
+            верное. Поэтому забракованный вариант не пропадает и не заставляет
+            перепечатывать его руками — вот кнопка, тихая и отдельная от главных.
+            Вместе с текстом уезжает и перевод судьи, чтобы русский не выдумывала
+            модель. [[feedback_no_product_decisions_two_gender_stays]] */}
+        <button type="button" className="frrev-fix-anyway" disabled={busy}
+          onClick={() => onOverride(text, ru)}>
+          Всё равно принять — проверка ошиблась
+        </button>
+      </>
     );
   }
   if (check.state === 'unknown') {
@@ -208,6 +219,13 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
     } finally { setBusy(false); }
   };
 
+  // «Всё равно принять» на забракованной правке: тот же путь, что у своего текста,
+  // только текст и перевод берутся с экрана, а не печатаются руками.
+  const acceptAnyway = (text, ru) => {
+    if (!text) return;
+    decide('replace', { text, translation: ru || '' });
+  };
+
   const skip = () => {
     if (!card) return;
     setSkipped((prev) => new Set(prev).add(card.id));
@@ -303,7 +321,8 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
                   {/* Перевод замены — единственный способ увидеть, что судья сохранил
                       смысл, а не подменил его другим управлением глагола. */}
                   {j.corrected_ru ? <em>— {j.corrected_ru}</em> : null}
-                  <FixCheck check={j.corrected_check} />
+                  <FixCheck check={j.corrected_check} text={j.corrected}
+                    ru={j.corrected_ru} onOverride={acceptAnyway} busy={busy} />
                 </div>
               ) : null}
               {j.proposal ? (
@@ -312,7 +331,8 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
                   <code>{j.proposal}</code>
                   {j.proposal_ru ? <em>— {j.proposal_ru}</em> : null}
                   <em>дописано недостающее</em>
-                  <FixCheck check={j.proposal_check} />
+                  <FixCheck check={j.proposal_check} text={j.proposal}
+                    ru={j.proposal_ru} onOverride={acceptAnyway} busy={busy} />
                 </div>
               ) : null}
             </div>

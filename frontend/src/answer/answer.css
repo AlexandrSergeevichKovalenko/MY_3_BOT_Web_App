@@ -2399,6 +2399,22 @@ html[data-scheme="light"] .ans-toast.ok    { color: #14532D; background: #DCFCE7
    перечёркнута. Кнопки «Принять» у неё нет — её отсеяла проверка, а не владелец. */
 .frrev-judge-fix.is-rejected code { opacity: 0.55; text-decoration: line-through; }
 .frrev-fix-bad { flex-basis: 100%; font-size: 0.8125rem; color: #e8c88a; }
+/* Последнее слово за владельцем. Кнопка тихая и отдельная от главных: обычно прав
+   страж, но когда он ошибся — перепечатывать текст руками человек не должен. */
+.frrev-fix-anyway {
+  flex-basis: 100%;
+  margin-top: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(224, 168, 60, 0.35);
+  border-radius: 0.625rem;
+  background: transparent;
+  color: #e8c88a;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.frrev-fix-anyway:active { transform: scale(0.985); }
+.frrev-fix-anyway:disabled { opacity: 0.5; }
 .frrev-fix-unknown { flex-basis: 100%; font-size: 0.8125rem; opacity: 0.7; }
 .frrev-judge-fix b {
   font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase;
