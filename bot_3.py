@@ -806,7 +806,29 @@ def _visual_riddles_dry_run() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+# Как часто вообще бывает ребусный день. Решение владельца 20.08.2026: «они реально для
+# обучения не сильно полезны, при этом самые дорогие — ставить редко, а норму пусть
+# добирают другие задания». Цена подтверждена замером: рисование ребусов — 238 обращений
+# к DALL·E за 30 дней, $5.00 из $82.69 всей выработки моделью, дороже любой другой игры.
+# Плюс банк ребусов не растёт сам: это список из 107 слов, написанный руками в
+# `backend/rebus_bank.py`, ночь может только нарисовать к ним картинки.
+# Раз в неделю. Другое число — переменной REBUS_EVERY_N_DAYS.
+REBUS_EVERY_N_DAYS = max(1, int((os.getenv("REBUS_EVERY_N_DAYS") or "7").strip() or "7"))
+
+
+def _is_rebus_day(day) -> bool:
+    """Ребусный ли сегодня день.
+
+    Считаем от календаря (номер дня по порядку), а НЕ случайно: слот и личная выдача
+    решают это независимо друг от друга и в разных процессах — от случайного числа они
+    разошлись бы, и человек получил бы ребус в один день дважды или не получил вовсе.
+    """
+    return (int(day.toordinal()) % int(REBUS_EVERY_N_DAYS)) == 0
+
+
 def _is_rebus_slot(slot_dt: datetime) -> bool:
+    if not _is_rebus_day(slot_dt.date()):
+        return False
     return (int(slot_dt.hour), int(slot_dt.minute)) in REBUS_SLOT_TIMES
 
 
@@ -4691,6 +4713,12 @@ def _drip_kind_order_today(now: datetime | None = None) -> list:
     for kind in _DRIP_FALLBACK_ORDER:
         if kind not in order:
             order.append(kind)
+    # Ребус — редкая игра (см. `_is_rebus_day`). Убираем его из очереди в неребусный
+    # день ЗДЕСЬ, а не в момент отправки: иначе он занял бы место в дневной норме и
+    # человек получил бы на одно полезное задание меньше.
+    day = (now or _get_quiz_schedule_now()).date()
+    if not _is_rebus_day(day):
+        order = [k for k in order if k != "rebus"]
     return order
 
 
