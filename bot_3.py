@@ -494,7 +494,7 @@ VISUAL_RIDDLE_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("VISUAL_RIDDLE_POOL_TOP
 REBUS_SLOT_TIMES = {(12, 30)}
 REBUS_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("REBUS_POOL_TOPUP_TRIGGER") or "10").strip() or "10"))
 REBUS_POOL_TARGET = max(5, int((os.getenv("REBUS_POOL_TARGET") or "20").strip() or "20"))
-REBUS_COOLDOWN_DAYS = max(7, int((os.getenv("REBUS_COOLDOWN_DAYS") or "15").strip() or "15"))
+from backend.task_cooldowns import REBUS_COOLDOWN_DAYS  # срок отдыха — один на проект
 REBUS_GPT_REPLENISHMENT_ENABLED = (os.getenv("REBUS_GPT_REPLENISHMENT_ENABLED") or "0").strip().lower() in ("1", "true", "yes", "on")
 REBUS_ADMIN_LOW_POOL_THRESHOLD = max(1, int((os.getenv("REBUS_ADMIN_LOW_POOL_THRESHOLD") or "50").strip() or "50"))
 REBUS_ADMIN_LOW_POOL_ALERT_COOLDOWN_SECONDS = max(
@@ -507,13 +507,13 @@ _REBUS_LOW_POOL_LAST_ALERT_AT = 0.0
 FREEFORM_CARD_POLL_SECONDS = max(5, int((os.getenv("FREEFORM_CARD_POLL_SECONDS") or "15").strip() or "15"))
 CHALLENGE_NOTIF_POLL_SECONDS = max(15, int((os.getenv("CHALLENGE_NOTIF_POLL_SECONDS") or "60").strip() or "60"))
 ARTICLE_QUIZ_SLOT_TIMES = {(9, 15), (13, 15), (17, 15), (10, 15), (18, 15)}  # 3 photo + 2 grammar slots
-ARTICLE_QUIZ_COOLDOWN_DAYS = max(7, int((os.getenv("ARTICLE_QUIZ_COOLDOWN_DAYS") or "14").strip() or "14"))
+from backend.task_cooldowns import ARTICLE_QUIZ_COOLDOWN_DAYS
 ARTICLE_QUIZ_POOL_TARGET = max(5, int((os.getenv("ARTICLE_QUIZ_POOL_TARGET") or "30").strip() or "30"))
 ARTICLE_QUIZ_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("ARTICLE_QUIZ_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
 CROSSWORD_SLOT_TIMES = {(11, 45), (17, 45)}  # 2x/day at :45
 ANAGRAM_SLOT_TIMES   = {(12, 15), (19, 15)}  # 2x/day — assemble-the-word Mini-App card
 ANAGRAM_POOL_TARGET  = max(4, int((os.getenv("ANAGRAM_POOL_TARGET") or "12").strip() or "12"))
-ANAGRAM_COOLDOWN_DAYS = max(1, int((os.getenv("ANAGRAM_COOLDOWN_DAYS") or "10").strip() or "10"))
+from backend.task_cooldowns import ANAGRAM_COOLDOWN_DAYS
 # One daily slot pinned to each format → EVERY B2+ format is sent every day.
 # Satzbau (assemble-the-sentence) goes 2×/day per the product decision.
 AUFGABE_FORMAT_SLOTS = {
@@ -533,7 +533,7 @@ AUFGABE_FORMAT_SLOTS = {
 AUFGABE_PER_FORMAT_TARGET = max(3, int((os.getenv("AUFGABE_PER_FORMAT_TARGET") or "12").strip() or "12"))
 # Repeat cooldown raised to 15 days (was 6) so users rarely re-see an item; the
 # per-format target above is sized to cover ~15 days of sends.
-AUFGABE_SEND_COOLDOWN_DAYS = max(1, int((os.getenv("AUFGABE_SEND_COOLDOWN_DAYS") or "15").strip() or "15"))
+from backend.task_cooldowns import AUFGABE_SEND_COOLDOWN_DAYS
 
 # ── Crowd-mastery rotation knobs (retire items the active crowd has mastered →
 #    regenerate fresh). Threshold is sized off ACTIVE users, not nominal members. ──
@@ -556,7 +556,7 @@ POOL_PARK_DAYS  = max(7, int((os.getenv("POOL_PARK_DAYS") or "90").strip() or "9
 # пополнения, снятие слов по показам с ней конфликтует.
 POOL_ROUND_CAP_DOMAINS = {"listening", "anagram"}
 LISTENING_SLOT_TIME  = (18, 30)              # once/day at 18:30
-LISTENING_COOLDOWN_DAYS = max(5, int((os.getenv("LISTENING_COOLDOWN_DAYS") or "7").strip() or "7"))
+from backend.task_cooldowns import LISTENING_COOLDOWN_DAYS
 # Банк обязан быть БОЛЬШЕ, чем кулдаун × расход в день, иначе слот встаёт: при 7 текстах
 # и 7-дневном кулдауне свободных не остаётся вообще (проверено на проде 30.07 — слот
 # 18:30 не ушёл никому). Потребителей банка ТРИ: слот 18:30, капельная выдача и вечерний
@@ -582,7 +582,7 @@ NUMDICT_AUDIO_VERSION = "v4"  # v4 = alnum codes read digit runs in pairs (two-d
 # the live pool size, so the nightly top-up generated nothing and the pool slowly drained
 # to a cooldown-wall blackout). The group send also now falls back to cooldown=0 as a
 # hard no-blackout floor regardless of these numbers.
-CROSSWORD_COOLDOWN_DAYS = max(7, int((os.getenv("CROSSWORD_COOLDOWN_DAYS") or "14").strip() or "14"))
+from backend.task_cooldowns import CROSSWORD_COOLDOWN_DAYS
 CROSSWORD_POOL_TARGET = max(5, int((os.getenv("CROSSWORD_POOL_TARGET") or "50").strip() or "50"))
 CROSSWORD_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("CROSSWORD_POOL_TOPUP_TRIGGER") or "3").strip() or "3"))
 VISUAL_RIDDLE_POOL_TOPUP_HOUR = max(0, min(23, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_HOUR") or "6").strip() or "6")))
@@ -1823,34 +1823,17 @@ if DB_POOL_ALLOW_DIRECT_FALLBACK:
     )
 logging.info("✅ MY_3_BOT configured to use centralized pooled DB connections.")
 
-# Проверка подключения к базе при старте.
-#
-# В СЕРВИСЕ это осознанная проверка: креденшелы не те или база недоступна — бот
-# обязан упасть сразу, а не на первом живом пользователе. Здесь ничего не меняется.
-#
-# В ПРОГОНЕ ТЕСТОВ это ровно то, чего делать нельзя. `import bot_3` стоит в десятках
-# тестовых модулей, а в окружении разработчика лежат БОЕВЫЕ креденшелы — значит
-# каждый такой импорт открывал соединение с живой базой. Когда публичный прокси
-# моргал, падал весь СБОР тестов (psycopg2 timeout), и pre-push объявлял пуш красным
-# на совершенно зелёном коде: 19–20.08.2026 это случилось дважды подряд, каждый раз
-# ценой двух прогонов по две минуты.
-#
-# Флаг тот же, которым уже глушатся стартовые фазы `backend_server`
-# (`ensure_phase1_projection_schema`, `ensure_shortcut_schema`), и ставит его
-# `backend/tests/conftest.py`. В проде он не ставится — там всё как было.
-if str(os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") or "").strip().lower() in {"1", "true", "yes", "on"}:
-    logging.info("Стартовая проверка соединения с базой пропущена: SKIP_STARTUP_SCHEMA_BOOTSTRAP")
-else:
-    with db_acquire_scope("bot_startup_connection_test"):
-        conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT version();")
-    db_version = cursor.fetchone()
+# Проверка подключения
+with db_acquire_scope("bot_startup_connection_test"):
+    conn = get_db_connection()
+cursor = conn.cursor()
+cursor.execute("SELECT version();")
+db_version = cursor.fetchone()
 
-    print(f"✅ База данных подключена! Версия: {db_version}")
+print(f"✅ База данных подключена! Версия: {db_version}")
 
-    cursor.close()
-    conn.close()
+cursor.close()
+conn.close()
 
 
 async def _track_telegram_message_async(message, message_type: str = "text") -> None:
@@ -4402,20 +4385,52 @@ async def _drip_blocked_ids(uid: int, kind: str) -> list:
         return []
 
 
+async def _pick_for_person(picker, *, cooldown_days: int, blocked: list, **kw):
+    """Выбрать задание ЛИЧНО человеку. Три захода, и порядок здесь — весь смысл.
+
+    Общий отдых и личная память отвечают на РАЗНЫЕ вопросы:
+      • общий отдых — «это задание недавно показывали КОМУ-ТО»;
+      • личная память — «ЭТОТ человек его уже решил» (лестница 90/120/никогда,
+        `backend/task_rotation.py`).
+
+    До 19.08.2026 запасной заход снимал ОБА условия разом. Пока склад был просторный,
+    это не мешало; но замер 19.08 показал, что из 61 готового кроссворда свободны семь —
+    то есть первый заход почти всегда пуст, и на деле работал только запасной. А он
+    возвращал человеку то, что тот уже решил, — ровно то, чего личная ротация и должна
+    была не допустить. Владелец: «зачем человек, который правильно ответил, увидит его
+    снова?»
+
+    Теперь послабления идут по одному: сперва отпускаем общий отдых (разным людям МОЖНО
+    дать одно задание — это закон роста банка), и только если и тогда ничего нет,
+    отпускаем личную память. Последний заход остаётся: пустой экран человеку хуже
+    повтора — то же правило, что в `order_candidates`.
+    """
+    entry = await asyncio.to_thread(picker, cooldown_days=cooldown_days,
+                                    exclude_ids=blocked, **kw)
+    if entry:
+        return entry
+    entry = await asyncio.to_thread(picker, cooldown_days=0, exclude_ids=blocked, **kw)
+    if entry:
+        return entry
+    if blocked:
+        logging.info("ротация: человеку показываем пройденное — свободного не осталось "
+                     "kind=%s закрыто=%d", getattr(picker, "__name__", "?"), len(blocked))
+    return await asyncio.to_thread(picker, cooldown_days=0, **kw)
+
+
 async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, held: bool = False) -> bool:
     """Pull one item of `kind` from its pool and send it to the windowed user.
     cooldown first, then 0-cooldown fallback so a thin pool still delivers.
     held=True records it into the inbox WITHOUT sending the card.
 
-    Личная ротация: первым заходом человеку не предлагается то, что он уже прошёл.
-    Запасной заход (нулевой кулдаун) исключений НЕ применяет — человек скорее получит
-    повтор, чем пустоту."""
+    Личная ротация: пройденное человеком не предлагается, пока есть хоть что-то другое
+    (порядок послаблений — в `_pick_for_person`)."""
     blocked = await _drip_blocked_ids(uid, kind)
     if kind == "aufgabe":
         fmt = _DRIP_AUFGABE_FORMATS[int(idx) % len(_DRIP_AUFGABE_FORMATS)]
-        entry = (await asyncio.to_thread(pick_next_aufgabe, cooldown_days=AUFGABE_SEND_COOLDOWN_DAYS, format=fmt,
-                                          exclude_ids=blocked)
-                 or await asyncio.to_thread(pick_next_aufgabe, cooldown_days=0, format=fmt))
+        entry = await _pick_for_person(pick_next_aufgabe,
+                                       cooldown_days=AUFGABE_SEND_COOLDOWN_DAYS,
+                                       blocked=blocked, format=fmt)
         if not entry:
             return False
         ok = await send_aufgabe_to_chat(context, entry=entry, slot_date=slot_date,
@@ -4425,9 +4440,9 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             except Exception: pass
         return ok
     if kind == "listening":
-        entry = (await asyncio.to_thread(pick_next_listening, cooldown_days=LISTENING_COOLDOWN_DAYS,
-                                          exclude_ids=blocked)
-                 or await asyncio.to_thread(pick_next_listening, cooldown_days=0))
+        entry = await _pick_for_person(pick_next_listening,
+                                       cooldown_days=LISTENING_COOLDOWN_DAYS,
+                                       blocked=blocked)
         if not entry:
             return False
         ok = await send_listening_to_chat(context, entry=entry, slot_date=slot_date, chat_id=uid, target_user_id=uid, held=held)
@@ -4436,9 +4451,9 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             except Exception: pass
         return ok
     if kind == "anagram":
-        entry = (await asyncio.to_thread(pick_next_anagram, cooldown_days=ANAGRAM_COOLDOWN_DAYS,
-                                          exclude_ids=blocked)
-                 or await asyncio.to_thread(pick_next_anagram, cooldown_days=0))
+        entry = await _pick_for_person(pick_next_anagram,
+                                       cooldown_days=ANAGRAM_COOLDOWN_DAYS,
+                                       blocked=blocked)
         if not entry:
             return False
         try:
@@ -4453,9 +4468,9 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             except Exception: pass
         return ok
     if kind == "rebus":
-        entry = (await asyncio.to_thread(pick_next_rebus, cooldown_days=REBUS_COOLDOWN_DAYS,
-                                          exclude_ids=blocked)
-                 or await asyncio.to_thread(pick_next_rebus, cooldown_days=0))
+        entry = await _pick_for_person(pick_next_rebus,
+                                       cooldown_days=REBUS_COOLDOWN_DAYS,
+                                       blocked=blocked)
         if not entry:
             return False
         object_key = str(entry.get("composed_image_object_key") or "")
@@ -4472,9 +4487,9 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             except Exception: pass
         return ok
     if kind == "crossword":
-        entry = (await asyncio.to_thread(pick_next_crossword, cooldown_days=CROSSWORD_COOLDOWN_DAYS,
-                                          exclude_ids=blocked)
-                 or await asyncio.to_thread(pick_next_crossword, cooldown_days=0))
+        entry = await _pick_for_person(pick_next_crossword,
+                                       cooldown_days=CROSSWORD_COOLDOWN_DAYS,
+                                       blocked=blocked)
         if not entry:
             return False
         object_key = str(entry.get("image_object_key") or "")

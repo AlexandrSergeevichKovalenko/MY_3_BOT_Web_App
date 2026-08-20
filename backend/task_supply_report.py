@@ -56,6 +56,18 @@ def build_task_supply_report(rows: list) -> str:
         bank_text = (f"в банке {r['bank_total']}"
                      + (f" (+{ripening} дозревают)" if ripening else ""))
         lines.append(f"    {bank_text}, человеку доступно {r['available']}, {rate_text}")
+        # Свободно прямо сейчас — вторая мера запаса, и она нужна отдельно. Первая
+        # («хватит на N дней») отвечает, надолго ли банка хватит ОДНОМУ человеку.
+        # Эта отвечает, что мы можем показать СЕГОДНЯ: остальное лежит на отдыхе после
+        # недавнего показа. 19.08.2026 первая писала «29 дней», вторая была равна семи.
+        if "free_now" in r:
+            free = int(r["free_now"])
+            days_of_free = free / r["per_day"] if r["per_day"] > 0 else 0
+            tail = (f", это на {days_of_free:.0f} дн. — дальше пойдут повторы"
+                    if days_of_free < TARGET_SUPPLY_DAYS else "")
+            lines.append(
+                f"    свободно прямо сейчас {free} из {r['bank_total']}{tail}"
+                f"; остальные отдыхают {r['cooldown_days']} дн. после показа")
         if r["order_now"] > 0:
             lines.append(f"    ▸ дозаказать сегодня ночью: <b>{r['order_now']}</b>")
     if live:

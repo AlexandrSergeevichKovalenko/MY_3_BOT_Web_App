@@ -51373,6 +51373,23 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
                 # сделанное ночью просто не успевало стать выдаваемым к 04:25.
                 cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE retired = FALSE;")
                 bank_alive = int((cursor.fetchone() or [0])[0])
+                # Свободно ПРЯМО СЕЙЧАС: задание в банке, но недавно показанное лежит
+                # «на отдыхе» и никому не предлагается. Отдых общий: показали кому
+                # угодно — выпало у всех. Замер 19.08.2026: 61 готовый кроссворд, из них
+                # свободны СЕМЬ — а отчёт бодро писал «хватит на 29 дней», потому что
+                # делил весь банк на расход одного человека. Срок отдыха берётся оттуда
+                # же, откуда его берёт выдача (`backend/task_cooldowns.py`), иначе отчёт
+                # снова разойдётся с тем, что видит человек.
+                from backend.task_cooldowns import COOLDOWN_DAYS_BY_KIND
+                cooldown = int(COOLDOWN_DAYS_BY_KIND[str(kind)])
+                cursor.execute(
+                    f"""SELECT COUNT(*) FROM {table}
+                        WHERE {ready}
+                          AND (last_sent_at IS NULL
+                               OR last_sent_at < NOW() - (%s || ' days')::interval);""",
+                    (cooldown,),
+                )
+                free_now = int((cursor.fetchone() or [0])[0])
                 # Расход на человека в сутки и его личный «закрытый» список — одним
                 # запросом, чтобы отчёт не расходился между двумя замерами.
                 # Расход — СРЕДНИЙ по живым людям за окно, из журнала выдачи.
@@ -51436,6 +51453,7 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
     return {
         "kind": str(kind), "title": TASK_KIND_TITLES.get(str(kind), str(kind)),
         "bank_total": bank_total, "bank_ripening": max(0, bank_alive - bank_total),
+        "free_now": free_now, "cooldown_days": cooldown,
         "people": len(rows),
         "per_day": round(per_day, 2), "per_day_measured": round(top_rate, 2),
         "per_day_avg": round(avg_rate, 2),
