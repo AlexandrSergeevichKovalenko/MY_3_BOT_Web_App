@@ -7245,13 +7245,77 @@ def _proofread_dictionary_phrase(text: str, *, source_lang: str, user_id: int | 
     return corrected
 
 
+# ── Кто написал текст, который человек сохраняет ─────────────────────────────────
+# Решение владельца 20.08.2026, дословно: «я как пользователь вижу фразу и вижу его
+# перевод, почему я должен думать, что сохранение будет какое-то другое?»
+#
+# Вычитка моделью придумана для одного случая: человек НАБРАЛ слово руками, и в нём
+# может быть опечатка, чужой артикль, неверный падеж. Там она к месту.
+#
+# Но там, где текст показали МЫ САМИ — карточка «Новости дня», слово из читалки, оборот
+# из субтитров, вариант из нашего разбора, — вычитывать нечего: мы правим собственный
+# текст вслепую, без контекста, за время человека и у него на глазах. Если наш текст
+# плох, он плох УЖЕ НА ЭКРАНЕ, и чинить это надо там, где он рождается.
+#
+# Цена была не теоретической: вычитка вызывалась ВНУТРИ сохранения и ждала ответа
+# модели до 10 секунд (комментарий рядом уверял, что «сохранение никогда не ждёт» —
+# это было неправдой). Замер 20.08.2026: 1875 таких обращений за 30 дней.
+#
+# Списки закрытые и по именам: угадывать по маске нельзя, незнакомое имя — это не
+# «наверное набрал человек», а незакрытый случай, и он обязан быть в логе.
+_TYPED_BY_USER_ORIGINS = {
+    "webapp_dictionary_save",      # окно словаря: человек ввёл слово в поиск
+    "webapp_quick_dictionary",     # быстрый словарь: то же, ввод руками
+    "mobile_dictionary_save",      # мобильное приложение и Share Extension
+    "bot_private_save",            # личный чат с ботом: слово прислал человек
+}
+
+_SHOWN_BY_US_ORIGINS = {
+    "worldnews_phrase_save",             # карточка «Новость дня»
+    "reader",                            # тап по слову в книге/статье
+    "youtube",                           # слово из субтитров
+    "youtube_dict_widget",
+    "sentence_gpt_seed",                 # наш собственный посев
+    "artikel_sprint_save", "trainer_save", "adjektiv_trainer", "synonym_save",
+    "webapp_quick_dictionary_related", "webapp_quick_dictionary_example",
+    "webapp_related", "webapp_example",  # это наши подсказки, не ввод человека
+    "webapp_deep_analysis_option", "webapp_deep_analysis_example",
+    "webapp_deepdive_save", "translations_block", "ask_overlay",
+    "vocabulary_add_from_pool", "import", "subscription",
+}
+
+
+def _save_source_was_typed_by_user(origin_process: str) -> bool:
+    """Набрал ли текст человек — или показали его мы.
+
+    Незнакомое имя источника считаем НАШИМ показом и текст не трогаем: молча
+    подправить человеку то, что он видел на экране, хуже, чем не подправить. Но
+    молчать об этом нельзя — имя уходит в лог, чтобы случай закрыли явно.
+    """
+    origin = str(origin_process or "").strip().lower()
+    if origin in _TYPED_BY_USER_ORIGINS:
+        return True
+    if origin in _SHOWN_BY_US_ORIGINS:
+        return False
+    logging.warning("сохранение словаря: источник %r не отнесён ни к набранному "
+                    "человеком, ни к показанному нами — вычитку не делаем", origin)
+    return False
+
+
 def _apply_dictionary_source_proofread(
     *, source_text, word_ru, word_de, translation_ru, translation_de, source_lang, user_id,
+    origin_process,
 ):
     """Proofread the source phrase and propagate the fix to the columns that MIRROR the source
     side only (never the translation side, which is the other language). Returns the possibly-
     updated (source_text, word_ru, word_de, translation_ru, translation_de) tuple; a no-op when
-    there is nothing to fix."""
+    there is nothing to fix.
+
+    Вычитка идёт ТОЛЬКО там, где текст набрал человек (см. `_save_source_was_typed_by_user`).
+    Там, где показали мы, сохраняется ровно то, что человек видел на экране, — и сохраняется
+    мгновенно, без обращения к модели."""
+    if not _save_source_was_typed_by_user(origin_process):
+        return source_text, word_ru, word_de, translation_ru, translation_de
     corrected = _proofread_dictionary_phrase(source_text, source_lang=source_lang, user_id=user_id)
     original = source_text
     if corrected and corrected != original:
@@ -47992,10 +48056,9 @@ def save_webapp_dictionary_entry():
             translation_de = _sanitize_bilingual_dictionary_target(source_text, translation_de or target_text, target_lang) or target_text
             word_de = _sanitize_bilingual_dictionary_target(source_text, word_de or target_text, target_lang) or target_text
 
-    # Universal server-side proofread of the user's typed SOURCE phrase — runs for EVERY save
-    # surface, so a typo / wrong article / wrong case never reaches the personal card OR the
-    # shared pool regardless of where the user typed it. Best-effort + cached: on cap/offline/
-    # error the user's exact text is kept and the save proceeds normally.
+    # Вычитка сохраняемой фразы — ТОЛЬКО там, где текст набрал человек. Где показали мы,
+    # сохраняем ровно то, что было на экране, и мгновенно (см. `_save_source_was_typed_by_user`).
+    origin_process = str(payload_origin_process or "webapp_dictionary_save").strip().lower() or "webapp_dictionary_save"
     source_text, word_ru, word_de, translation_ru, translation_de = _apply_dictionary_source_proofread(
         source_text=source_text,
         word_ru=word_ru,
@@ -48004,6 +48067,7 @@ def save_webapp_dictionary_entry():
         translation_de=translation_de,
         source_lang=source_lang,
         user_id=int(user_id),
+        origin_process=origin_process,
     )
 
     if folder_id is None:
@@ -48018,7 +48082,6 @@ def save_webapp_dictionary_entry():
         except Exception:
             folder_id = None
 
-    origin_process = str(payload_origin_process or "webapp_dictionary_save").strip().lower() or "webapp_dictionary_save"
     origin_meta = payload_origin_meta if isinstance(payload_origin_meta, dict) else {}
     if "endpoint" not in origin_meta:
         origin_meta["endpoint"] = "/api/webapp/dictionary/save"
@@ -48292,6 +48355,9 @@ def save_mobile_dictionary_entry():
 
     # Universal server-side proofread of the user's typed SOURCE phrase (see the webapp save
     # endpoint) — origin-independent, best-effort, cached; keeps the user's text on any failure.
+    # Вычитка — только если текст набрал человек (см. `_save_source_was_typed_by_user`).
+    mobile_origin = str(payload_origin_process or "mobile_dictionary_save").strip().lower() \
+        or "mobile_dictionary_save"
     source_text, word_ru, word_de, translation_ru, translation_de = _apply_dictionary_source_proofread(
         source_text=source_text,
         word_ru=word_ru,
@@ -48300,6 +48366,7 @@ def save_mobile_dictionary_entry():
         translation_de=translation_de,
         source_lang=source_lang,
         user_id=int(user_id),
+        origin_process=mobile_origin,
     )
 
     if folder_id is None:
@@ -51795,13 +51862,14 @@ def save_bot_private_dictionary_entry():
         response_json=response_json if isinstance(response_json, dict) else None,
     )
 
-    # Вычитка на входе из ЛИЧНОГО ЧАТА С БОТОМ. Окно словаря и мобильное приложение
-    # вычитывают сохраняемую фразу давно, а эта дверь оставалась без языковой проверки:
-    # опечатка, неверный артикль или падеж уезжали в общий словарь как есть.
-    # Механическая чистка ниже по пути общая для всех входов, здесь именно язык.
+    # Вычитка на входе из ЛИЧНОГО ЧАТА С БОТОМ. Слово сюда ПРИСЛАЛ человек — значит это
+    # тот самый случай, ради которого вычитка и существует: опечатка, чужой артикль,
+    # неверный падеж не должны уехать в общий словарь. Правило одно на все двери и живёт
+    # в `_save_source_was_typed_by_user`; здесь оно спрашивается явно, чтобы дверь не
+    # разошлась с остальными, если ярлык источника когда-нибудь поменяется.
     corrected_source = _proofread_dictionary_phrase(
         source_text, source_lang=source_lang, user_id=int(user_id),
-    )
+    ) if _save_source_was_typed_by_user("bot_private_save") else ""
     if corrected_source and corrected_source != source_text:
         logging.info("бот: сохраняемая фраза исправлена %r → %r",
                      source_text[:60], corrected_source[:60])
