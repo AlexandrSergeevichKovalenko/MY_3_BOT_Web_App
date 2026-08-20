@@ -685,16 +685,19 @@ def _kind_for_text(text: str) -> str:
     return "sentence" if len(body.split()) > 4 or body.rstrip().endswith((".", "!", "?")) else "collocation"
 
 
-def ensure_unit(text: str, lang: str) -> int | None:
-    """Найти единицу по написанию, а если её нет — завести.
+def door_check(text: str, lang: str) -> tuple[str, str, str] | None:
+    """Дверь единицы, механическая половина. Возвращает (текст, ключ поиска, вид) или
+    None, если заводить нельзя.
 
-    Нужно на сохранении: слово, которое человек только что положил себе в словарь,
-    обязано сразу иметь дом в слое. Иначе указатель у карточки остаётся пустым, и
-    разрыв растёт с каждым новым сохранением.
+    Отдельной функцией она стала 20.08.2026. Причина: `sync_unit_links_from_card`
+    заводила единицы ПРЯМЫМ запросом в базу, минуя `ensure_unit`, — то есть без чистки,
+    без проверки языка и без запрета на свалку значений. Зовут её ночные работы и восемь
+    скриптов, так что мимо двери шёл не единичный случай, а целый поток. Тест «дверь на
+    каждом писателе» об этой функции не знал: она четвёртый заводчик единиц.
 
-    Механическая чистка здесь — последний заслон: единицы заводят и живой путь, и
-    разовые скрипты, и массовые сборки. Слово с невидимым знаком внутри выглядит
-    правильным, но заводит ВТОРУЮ единицу, которую поиск не найдёт никогда."""
+    Дорогая половина двери (справочник, модель, существует ли слово вообще) осталась в
+    `ensure_unit` — она ходит в сеть, и внутри чужой транзакции ей не место.
+    """
     text = clean_text(text)
     key = normalize_query(text)
     kind = _kind_for_text(text)
@@ -710,14 +713,31 @@ def ensure_unit(text: str, lang: str) -> int | None:
     # заведены русскими единицами со своими написаниями для поиска — попали при
     # массовом переезде банка 27.07. Показывать их мы перестали (правило разрезания),
     # но заводить новые нельзя вовсе.
-    #
-    # Тот, кто зовёт: сначала разрежь на значения (split_numbered_senses), потом заводи
-    # каждое отдельно. Отказ здесь не ломает вызывающего — все проверяют результат на
-    # пустоту, потому что единица и раньше могла не завестись.
     if len(split_numbered_senses(text)) > 1:
         logging.warning("единица не заведена: %r — свалка значений, её надо разрезать",
                         str(text)[:60])
         return None
+    return text, key, kind
+
+
+def ensure_unit(text: str, lang: str) -> int | None:
+    """Найти единицу по написанию, а если её нет — завести.
+
+    Нужно на сохранении: слово, которое человек только что положил себе в словарь,
+    обязано сразу иметь дом в слое. Иначе указатель у карточки остаётся пустым, и
+    разрыв растёт с каждым новым сохранением.
+
+    Механическая чистка здесь — последний заслон: единицы заводят и живой путь, и
+    разовые скрипты, и массовые сборки. Слово с невидимым знаком внутри выглядит
+    правильным, но заводит ВТОРУЮ единицу, которую поиск не найдёт никогда."""
+    # Механическая половина двери — общая с прямыми писателями (см. `door_check`).
+    # Тот, кто зовёт: сначала разрежь на значения (split_numbered_senses), потом заводи
+    # каждое отдельно. Отказ здесь не ломает вызывающего — все проверяют результат на
+    # пустоту, потому что единица и раньше могла не завестись.
+    checked = door_check(text, lang)
+    if not checked:
+        return None
+    text, key, kind = checked
     # ДВЕРЬ СЛОВА, дешёвая половина. Регистр заголовка правится ЗДЕСЬ, при заведении, а
     # не только на показе. Замер 19.08.2026: правило `german_headword_case` стояло лишь
     # в отрисовке, поэтому «Grundlegend» и «betäubung» ложились в базу как есть — экран
@@ -1024,8 +1044,15 @@ def sync_unit_links_from_card(unit_id: int, card: dict, *, native_lang: str = "r
                         (unit_id, sense_no, item["note"][:500] or None),
                     )
                     sense_id = cur.fetchone()[0]
-                    kind = "word" if " " not in value else (
-                        "sentence" if len(value.split()) > 4 else "collocation")
+                    # ДВЕРЬ. До 20.08.2026 здесь стоял прямой INSERT со своим правилом
+                    # вида и с `value` как есть: ни чистки, ни проверки языка, ни
+                    # запрета на свалку значений. Разбор — не человек, но и он приносит
+                    # мусор: склеенные значения, невидимые знаки, русское слово там, где
+                    # ждали немецкое. Заводим только то, что дверь пропустила.
+                    checked = door_check(value, native_lang)
+                    if not checked:
+                        continue
+                    clean_value, value_key, kind = checked
                     cur.execute(
                         """
                         INSERT INTO bt_3_lex_units (lang, kind, lemma, lemma_key, display, card_source)
@@ -1034,7 +1061,7 @@ def sync_unit_links_from_card(unit_id: int, card: dict, *, native_lang: str = "r
                         DO UPDATE SET updated_at = NOW()
                         RETURNING id;
                         """,
-                        (native_lang, kind, value, normalize_query(value), value),
+                        (native_lang, kind, clean_value, value_key, clean_value),
                     )
                     target_id = cur.fetchone()[0]
                     cur.execute(
@@ -1042,7 +1069,7 @@ def sync_unit_links_from_card(unit_id: int, card: dict, *, native_lang: str = "r
                         INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
                         VALUES (%s, %s, %s, 'exact') ON CONFLICT DO NOTHING;
                         """,
-                        (native_lang, normalize_query(value), target_id),
+                        (native_lang, value_key, target_id),
                     )
                     for a, b in ((unit_id, target_id), (target_id, unit_id)):
                         cur.execute(
