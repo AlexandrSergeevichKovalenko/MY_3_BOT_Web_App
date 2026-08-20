@@ -17,9 +17,17 @@
                           лежит связью rank=1 с source='вычитка'. Замер 14.08.2026:
                           из 49 решений перевод владельца был заменён машинным в 30.
   4. КАРТОЧКА ПРО ЭТУ ЖЕ ФРАЗУ. В `card` нет старого текста и есть новый.
-  5. ХВОСТОВ НЕТ.         Старого написания не осталось ни в поисковых ключах
-                          (`bt_3_lex_surfaces`), ни в карточках людей
+  5. ХВОСТОВ НЕТ.         Старого написания не осталось в карточках людей
                           (`bt_3_webapp_dictionary_queries`).
+
+ЧЕГО ЗДЕСЬ СОЗНАТЕЛЬНО НЕ ПРОВЕРЯЕТСЯ. Старое написание в указателе `bt_3_lex_surfaces`
+раньше числилось дефектом (87 из 89 решений) — и зря. Указатель для того и заведён, чтобы
+одно слово находилось по РАЗНЫМ написаниям: `der Held` ищется и как «der held»,
+`erklären` — как «erklärt», предложение с артиклем — и без него (`match_kind` = exact /
+inflected / no_article, всего 57 138 написаний, из них 15 765 не совпадают с заголовком —
+это норма, а не порча). Человек, сохранивший фразу криво, продолжает её находить по
+своему написанию и видит уже исправленный заголовок. Удалить эти ключи значило бы
+сломать поиск. Проверено и закрыто 20.08.2026. [[feedback_settle_it_once_in_code]]
 
     python3 scripts/phrase_review_landing_audit.py
     python3 scripts/phrase_review_landing_audit.py --list 10   # + примеры
@@ -35,6 +43,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SKIP_STARTUP_SCHEMA_BOOTSTRAP", "1")
 
 from backend.database import (  # noqa: E402
+    _CORRECTION_UNTOUCHED_KEYS,
+    _phrase_same_text as _phrase_same_text_ru,
     get_db_connection_context,
     phrase_review_variants,
 )
@@ -51,6 +61,24 @@ def same(a: str, b: str) -> bool:
     return str(a or "").strip() == str(b or "").strip()
 
 
+def _holds_value(node, needle: str) -> bool:
+    """Лежит ли `needle` в дереве разбора ОТДЕЛЬНОЙ строкой, а не куском другой.
+
+    Поля из `_CORRECTION_UNTOUCHED_KEYS` пропускаются: продукт хранит там старый текст
+    НАМЕРЕННО. `corrected_form` — это след прошлой правки, `original_query` и `raw_text` —
+    история, чем человек искал. Переписать их значило бы соврать, что он искал другое.
+    Список берётся у самого продукта, чтобы отчёт не разошёлся с ним через неделю.
+    """
+    if isinstance(node, str):
+        return same(node, needle)
+    if isinstance(node, list):
+        return any(_holds_value(item, needle) for item in node)
+    if isinstance(node, dict):
+        return any(_holds_value(value, needle) for name, value in node.items()
+                   if name not in _CORRECTION_UNTOUCHED_KEYS)
+    return False
+
+
 def applied(variant_text: str) -> str:
     """Текст в том виде, в каком его кладёт в базу apply_phrase_review_decision:
     он прогоняет выбор владельца через clean_text, поэтому сравнивать надо с ним."""
@@ -64,12 +92,12 @@ def main() -> int:
     args = parser.parse_args()
 
     findings: dict[str, list] = {
-        "german_not_applied": [],     # 1. немецкий не доехал
-        "text_not_a_variant": [],     # 2. в базе не то, что было на кнопке
+        "left_as_is": [],             # 1. фраза осталась как была
+        "punctuation_only": [],       # 2а. правка была только в пунктуации
+        "own_text": [],               # 2б. владелец вписал свой текст
         "owner_ru_missing": [],       # 3. русского владельца нет первым
         "owner_ru_unknown": [],       # 3b. на кнопке русского не было вовсе
         "card_stale": [],             # 4. карточка про старую фразу
-        "surface_stale": [],          # 5. старый ключ поиска остался
         "user_card_stale": [],        # 5b. старый текст в карточке человека
         "unit_gone": [],              # слово удалено после решения
     }
@@ -101,17 +129,31 @@ def main() -> int:
                 display, card = unit[0], unit[1]
 
                 # 1. немецкий доехал?
+                #
+                # Совпадение с исходным текстом — ЕЩЁ НЕ ДЕФЕКТ. «Принять» можно и на
+                # варианте, который в итоге не применился, потому что владелец решил
+                # оставить фразу как есть, а верный немецкий уже стоял. Дефект — только
+                # когда перевод при этом остался машинным; это проверяет пункт 3.
                 if same(display, old_text):
-                    findings["german_not_applied"].append(
-                        (review_id, unit_id, old_text, display))
+                    findings["left_as_is"].append(
+                        (review_id, unit_id, old_text))
                     continue
 
                 # 2. в базе лежит то, что было на кнопке?
                 match = next(
                     (v for v in variants if same(applied(v["text"]), display)), None)
                 if match is None and status == "accepted":
-                    findings["text_not_a_variant"].append(
-                        (review_id, unit_id, display,
+                    # Кнопку сегодня не всегда можно восстановить, и это НЕ значит, что
+                    # в базу легло не то. Две законные причины, разобранные 20.08.2026:
+                    #   • правка была только в концевой пунктуации — такие варианты
+                    #     `phrase_review_variants` теперь отсеивает как пустые придирки,
+                    #     поэтому список кнопок сегодня пуст, а тогда кнопка была;
+                    #   • владелец вписал СВОЙ текст, и он лучше всех кнопок
+                    #     («Gegessen hat sie nichts…» против судейского «am Seki Sippen»).
+                    # Дефектом это не является ни в том, ни в другом случае.
+                    only_punctuation = _phrase_same_text_ru(display, old_text)
+                    findings["punctuation_only" if only_punctuation else "own_text"].append(
+                        (review_id, unit_id, old_text, display,
                          [v["text"] for v in variants]))
 
                 # 3. русский владельца — главный?
@@ -143,19 +185,15 @@ def main() -> int:
                                  str((top or ("", 0, ""))[2] or "")))
 
                 # 4. карточка про эту же фразу?
-                card_text = json.dumps(card, ensure_ascii=False) if card else ""
-                if card_text and old_text and old_text in card_text:
+                #
+                # Сравниваем ЗНАЧЕНИЯ, а не ищем подстроку. Подстрока давала ложь на
+                # каждой правке пунктуации: «Er erlag der Versuchung» буквально входит
+                # в «Er erlag der Versuchung.», и отчёт объявлял дефектом карточку,
+                # которая на самом деле уже про новую фразу.
+                if card and _holds_value(card, old_text):
                     findings["card_stale"].append((review_id, unit_id, old_text, display))
 
-                # 5. хвосты старого написания
-                cursor.execute(
-                    """SELECT count(*) FROM bt_3_lex_surfaces
-                        WHERE unit_id = %s AND surface_key = %s;""",
-                    (unit_id, _key(old_text)),
-                )
-                if (cursor.fetchone() or (0,))[0]:
-                    findings["surface_stale"].append((review_id, unit_id, old_text))
-
+                # 5. хвосты старого написания в карточках людей
                 cursor.execute(
                     """SELECT count(*) FROM bt_3_webapp_dictionary_queries
                         WHERE lex_unit_id = %s
@@ -167,28 +205,28 @@ def main() -> int:
 
     print(f"\nРЕШЕНИЙ ВЛАДЕЛЬЦА РАЗОБРАНО: {total}\n")
     titles = {
-        "german_not_applied": "Немецкий НЕ доехал: в базе лежит старый текст",
-        "text_not_a_variant": "В базе НЕ то, что было на кнопке",
+        "left_as_is":         "Фраза осталась как была (владелец не менял немецкий)",
+        "punctuation_only":   "Правка была только в концевой пунктуации",
+        "own_text":           "Владелец вписал свой текст вместо вариантов судей",
         "owner_ru_missing":   "Русский владельца НЕ главный: сверху машинный",
         "owner_ru_unknown":   "На кнопке русского не было — перевод придумала модель",
         "card_stale":         "Карточка ещё про СТАРУЮ фразу",
-        "surface_stale":      "Старый ключ поиска остался",
         "user_card_stale":    "Старый текст остался в карточке человека",
         "unit_gone":          "Слова уже нет (удалено позже)",
     }
+    # Три пункта — не дефекты, а СВЕДЕНИЯ: так владелец распорядился фразой. Кричать
+    # о них красным значит приучить не читать отчёт. [[feedback_every_fact_needs_a_decision]]
+    just_facts = {"left_as_is", "punctuation_only", "own_text", "owner_ru_unknown"}
     for key, title in titles.items():
         hits = findings[key]
-        mark = "✅" if not hits else "❌"
+        mark = ("ℹ️" if key in just_facts else "✅") if not hits or key in just_facts else "❌"
+        if not hits:
+            mark = "✅"
         print(f"{mark} {title}: {len(hits)}")
         for item in hits[: args.list]:
             print(f"      {item}")
     print()
     return 0
-
-
-def _key(text: str) -> str:
-    from backend.lex_units import normalize_query
-    return normalize_query(text)
 
 
 if __name__ == "__main__":
