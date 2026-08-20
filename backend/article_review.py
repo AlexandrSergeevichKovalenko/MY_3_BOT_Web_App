@@ -148,6 +148,14 @@ def apply_review(action: str, row_id: int, *, admin_id: int | None = None) -> st
     res = confirm_article_noun(int(row_id), act, admin_id=admin_id)
     if not res:
         return "Слово уже обработано."
+    if res.get("rejected"):
+        # Заголовок негодный — тап владельца его не исправляет. Говорим прямо, что
+        # именно не так, и показываем правильное написание: решение всё равно за ним,
+        # но принимать его вслепую он больше не будет.
+        return (f"⛔️ <b>{res['word']}</b> — в игру не пустил.\n"
+                f"В заголовке карточки стоит артикль, а должно быть только слово: "
+                f"<b>{res['suggested']}</b>.\n"
+                f"Такая карточка показывала бы ответ прямо в вопросе.")
     left = count_unverified_article_nouns()
     tail = f"\nОсталось на подтверждение: {left}." if left else "\nБольше слов на подтверждение нет 🎉"
     return f"✅ <b>{res['article']} {res['word']}</b> — записано, слово в тренировке.{tail}"

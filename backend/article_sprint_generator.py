@@ -429,6 +429,44 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             else:
                 _reject(why)
                 logging.info("артикли: %s мимо — %s", w, why)
+        # ── страж заголовка ───────────────────────────────────────────────────
+        # Заголовок карточки обязан быть СЛОВАРНОЙ ФОРМОЙ. Два вида брака ловим
+        # здесь, потому что дальше их поймать уже некому:
+        #
+        #   • артикль вклеен в слово («Die Feier») — карточка показывает ответ
+        #     в самом вопросе. Проверка чисто строковая, справочник не нужен;
+        #   • заголовок — форма другого слова («Bänder» от «Band»): у множественного
+        #     артикль всегда die, спрашивать нечего.
+        #
+        # Почему именно на входе. Такое слово приходило в банк НЕПРОВЕРЕННЫМ, потом
+        # ехало владельцу в личку на подтверждение рода, он жал «die» — и
+        # `confirm_article_noun` ставил артикль, не глядя на написание. Поймать это
+        # владелец не мог: его спрашивали про род, а не про заголовок.
+        #
+        # Источник — `backend/article_headword.py` (de.wiktionary помечает формы
+        # словоизменения отдельным `{{Wortart|Deklinierte Form}}`). Законные
+        # pluralia tantum (die Eltern, die Kosten) он не задевает.
+        if candidates or maybe:
+            heads = [str(n.get("word") or "").strip() for n in (candidates + maybe)]
+            try:
+                from backend.article_headword import bad_headwords
+                broken = bad_headwords(heads)
+            except Exception:
+                logging.warning("артикли: справочник заголовков недоступен, подтема «%s» отложена",
+                                subtopic, exc_info=True)
+                for _ in (candidates + maybe):
+                    _reject("справочник заголовков не ответил")
+                continue
+            if broken:
+                for word, info in broken.items():
+                    logging.info("артикли: %s мимо — %s", word, info["verdict"])
+                    # В стоп-лист идёт САМО НАПИСАНИЕ: «Bänder» негодно навсегда,
+                    # а «Band» этим не задето и может прийти завтра же.
+                    to_blacklist.append((word, info["verdict"], theme_key))
+                    _reject(info["verdict"])
+                candidates = [n for n in candidates if str(n.get("word") or "").strip() not in broken]
+                maybe = [n for n in maybe if str(n.get("word") or "").strip() not in broken]
+
         # ── страж происхождения ───────────────────────────────────────────────
         # Игра учит РОД НЕМЕЦКОГО существительного. У английского слова в немецком
         # род держится на договорённости и часто спорен (der/das Tab, der/das Blog),

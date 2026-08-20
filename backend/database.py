@@ -55027,12 +55027,31 @@ def count_unverified_article_nouns() -> int:
 def confirm_article_noun(row_id: int, article: str, *, admin_id: int | None = None) -> dict | None:
     """Админ подтвердил род: ставим артикль, помечаем проверенным — слово идёт в игру.
 
-    Возвращает {word, article} для ответа в личку, либо None если строки нет."""
+    Возвращает {word, article} для ответа в личку, либо None если строки нет.
+
+    ЗАГОЛОВОК ПРОВЕРЯЕТСЯ ЗДЕСЬ ТОЖЕ. 20.08.2026 в банке нашлись карточки
+    «die Die Feier» и «die Die Fete» с источником admin:<id>: слово пришло от модели
+    с приклеенным артиклем, легло непроверенным, приехало владельцу на подтверждение
+    РОДА — и он честно нажал «die». Спросили его про род, а написание не показал
+    никто. Тап владельца не должен впускать в игру заведомо негодный заголовок:
+    «Die Feier» — это не написание немецкого слова, и карточка из него показывает
+    ответ в самом вопросе."""
     art = str(article or "").strip().lower()
     if art not in ("der", "die", "das"):
         return None
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            cursor.execute("SELECT word FROM bt_3_article_sprint_nouns WHERE id = %s;", (int(row_id),))
+            found = cursor.fetchone()
+            if found:
+                from backend.article_headword import glued_article
+                clean = glued_article(str(found[0] or ""))
+                if clean:
+                    logging.warning(
+                        "confirm_article_noun: заголовок «%s» содержит артикль — не подтверждаю",
+                        found[0])
+                    return {"word": str(found[0]), "article": art, "theme_key": "",
+                            "rejected": "артикль в заголовке", "suggested": clean}
             cursor.execute(
                 "UPDATE bt_3_article_sprint_nouns "
                 "SET article = %s, verified = TRUE, source = %s, updated_at = NOW() "
