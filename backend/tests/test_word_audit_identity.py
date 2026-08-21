@@ -78,5 +78,66 @@ class WithArticleTest(unittest.TestCase):
         self.assertEqual(self.mod._with_article("laufen"), "laufen")
 
 
+
+class SafeWordsAreNotDeletedBySilenceTest(unittest.TestCase):
+    """Молчание не удаляет слово, про которое известно, что оно настоящее.
+
+    Решение владельца 21.08.2026. Справочники неполны: «Vergleichbarkeit»,
+    «Arbeitsumfeld», «Sozialschmarotzer» — обычные слова, страниц у которых нет.
+    Экран удаляет всё неотмеченное, и без этого правила он предлагал бы человеку
+    стереть хорошие слова просто за то, что тот пролистал список.
+    """
+
+    def test_признак_ставится_по_ответу_модели(self):
+        from backend.word_confirm_digest import _model_confirmed
+        self.assertTrue(_model_confirmed("модель: слово есть, справочник не знает"))
+        self.assertTrue(_model_confirmed("модель: слово есть, язык en"))
+        # Слово есть, спорно только написание — тоже не удаляем молчанием.
+        self.assertTrue(_model_confirmed(
+            "модель предложила другое написание, справочник не подтвердил"))
+
+    def test_обрубок_признаком_не_защищён(self):
+        from backend.word_confirm_digest import _model_confirmed
+        self.assertFalse(_model_confirmed("модель: такого слова нет"))
+        self.assertFalse(_model_confirmed("справочник молчал"))
+        self.assertFalse(_model_confirmed(""))
+
+
+class SecondReferenceIsExactTest(unittest.TestCase):
+    """DWDS отвечает точным словом, а не похожим — иначе догадка стала бы источником."""
+
+    def test_чужой_заголовок_не_принимается(self):
+        import json
+        from unittest import mock
+        from backend import german_reference_dwds as D
+
+        class _Response:
+            def __init__(self, payload): self._p = json.dumps(payload).encode()
+            def read(self): return self._p
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        # Источник ответил про ДРУГОЕ слово — засчитывать нельзя.
+        with mock.patch.object(D.urllib.request, "urlopen",
+                               lambda *a, **k: _Response([{"lemma": "Abschiebung",
+                                                           "wortart": "Substantiv"}])):
+            self.assertEqual(D.dwds_pos("Abschiebu"), "")
+        # Тот же заголовок — ответ принимается вместе с частью речи.
+        with mock.patch.object(D.urllib.request, "urlopen",
+                               lambda *a, **k: _Response([{"lemma": "Abschiebung",
+                                                           "wortart": "Substantiv"}])):
+            self.assertEqual(D.dwds_pos("Abschiebung"), "Substantiv")
+
+    def test_сеть_молчит_это_не_приговор(self):
+        from unittest import mock
+        from backend import german_reference_dwds as D
+
+        def _boom(*a, **k):
+            raise OSError("сеть недоступна")
+
+        with mock.patch.object(D.urllib.request, "urlopen", _boom):
+            self.assertIsNone(D.dwds_pos("Vergleichbarkeit"))
+            self.assertIsNone(D.dwds_says_about_all(["Vergleichbarkeit"]))
+
 if __name__ == "__main__":
     unittest.main()

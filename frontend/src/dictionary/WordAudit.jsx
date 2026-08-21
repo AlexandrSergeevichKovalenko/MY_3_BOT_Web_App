@@ -142,9 +142,15 @@ export default function WordAudit() {
     );
   }
 
-  const keep = items.filter((it) => [KEEP, FIXED, MANUAL].includes(state[it.word])).length;
+  // Слово, про которое известно, что оно настоящее, молчанием НЕ удаляется — решение
+  // владельца 21.08.2026. Справочники неполны: «Vergleichbarkeit», «Arbeitsumfeld»,
+  // «Sozialschmarotzer» — обычные слова, страниц у которых просто нет. Предлагать
+  // человеку стереть их за то, что он пролистал экран, — вред, а не проверка.
+  const willDrop = (it) => !it.safe && ![KEEP, FIXED, MANUAL, RETRANS].includes(state[it.word]);
+  const keep = items.filter((it) => [KEEP, FIXED, MANUAL].includes(state[it.word])
+                                    || (it.safe && !state[it.word])).length;
   const retrans = items.filter((it) => state[it.word] === RETRANS).length;
-  const drop = items.length - keep - retrans;
+  const drop = items.filter(willDrop).length;
 
   return (
     <div className="wa">
@@ -169,8 +175,9 @@ export default function WordAudit() {
           слово верное, ничего не меняем. <b>«Перевод не тот»</b> — слово верное, а перевод
           плохой: соберём карточку заново этой ночью. <b>«Свой вариант»</b> — впиши слово
           так, как надо, и, если нужно, свой перевод: мы сохраним именно их.</p>
-        <p><b>Если ничего не нажать.</b> Слово удалится — из твоего словаря и из тренировок.
-          Ничего не произойдёт, пока не нажмёшь «Готово» внизу.</p>
+        <p><b>Если ничего не нажать.</b> Слово, про которое мы знаем, что оно настоящее,
+          останется — под ним так и написано. Остальные удалятся из словаря и из
+          тренировок. Ничего не произойдёт, пока не нажмёшь «Готово» внизу.</p>
         <p><b>Сколько делать.</b> Сколько хочешь. Непроверенные придут снова через несколько дней.</p>
       </details>
 
@@ -189,6 +196,9 @@ export default function WordAudit() {
             </div>
             {it.translation ? <p className="wa-trans">{it.translation}</p> : null}
             <div className="wa-reason">{it.why}</div>
+            {it.safe && !chosen ? (
+              <div className="wa-safe">Оставим его — трогать ничего не нужно.</div>
+            ) : null}
 
             {it.suggestion ? (
               <button type="button" className="wa-suggest"
@@ -235,8 +245,8 @@ export default function WordAudit() {
       <div className="wa-bar">
         <div className="wa-bar-inner">
           <p className="wa-bar-note">
-            {drop === items.length
-              ? `Ничего не отмечено — все ${items.length} ${plural(items.length, 'слово', 'слова', 'слов')} будут удалены`
+            {drop === 0
+              ? <>Ничего не удалим — оставим <b>{keep}</b>{retrans ? <> · переделаем <b>{retrans}</b></> : null}</>
               : <>Оставим <b>{keep}</b> · переделаем <b>{retrans}</b> · удалим <b>{drop}</b></>}
           </p>
           <button type="button" className="wa-done" disabled={busy} onClick={submit}>

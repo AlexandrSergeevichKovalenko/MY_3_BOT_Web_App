@@ -204,6 +204,24 @@ def _reference_says_about_all(words: list[str]) -> dict | None:
     return out
 
 
+def _second_reference_says(words: list[str]) -> dict[str, str] | None:
+    """Что говорит DWDS. Отдельной функцией — чтобы её было чем подменить в тесте.
+
+    В окружении разработчика и на прогоне тестов в сеть не ходим (тот же страж, что у
+    `lex_units`): иначе прогон зависит от чужого сервера и от чужих таймаутов. Ответ
+    тогда — None, «не спросили», а не «слова нет»: приговор без второго справочника
+    окончательным не считается и в кеш не попадает.
+    """
+    if os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") == "1" and not os.getenv("WORD_GATE_LOOKUP"):
+        return None
+    try:
+        from backend.german_reference_dwds import dwds_says_about_all
+        return dwds_says_about_all(words)
+    except Exception:
+        logging.debug("дверь слова: второй справочник недоступен", exc_info=True)
+        return None
+
+
 _POS_BY_WORTART = {
     "Substantiv": "noun", "Verb": "verb", "Adjektiv": "adjective", "Adverb": "adverb",
     "Präposition": "preposition", "Konjunktion": "conjunction", "Pronomen": "pronoun",
@@ -251,8 +269,8 @@ def _is_final(verdict: dict, *, allow_network: bool, allow_model: bool) -> bool:
     """Можно ли запомнить этот вердикт как окончательный."""
     status = str(verdict.get("status") or "")
     source = str(verdict.get("source") or "")
-    if source in ("справочник молчал", "ответы разошлись", "не спрашивали справочник",
-                  "модель не спрашивали"):
+    if source in ("справочник молчал", "второй справочник молчал", "ответы разошлись",
+                  "не спрашивали справочник", "модель не спрашивали"):
         return False
     if status in (CONFIRMED, REPAIRED, NOT_A_WORD):
         return True
@@ -301,6 +319,27 @@ def _decide(asked: str, *, pos_hint: str, allow_network: bool, allow_model: bool
     if modern:
         # Справочник сам назвал современное написание — берём его, не выдумывая.
         return _finish(modern, REPAIRED, pos_hint, "справочник (устаревшее написание)", asked)
+
+    # ВТОРОЙ СПРАВОЧНИК. Wiktionary неполон: «Vergleichbarkeit», «Arbeitsumfeld»,
+    # «Sozialschmarotzer» — обычные слова, страниц у которых там нет. Замер 21.08.2026:
+    # из 12 слов, ушедших человеку на проверку, 8 были такими. DWDS знает 5 из них и
+    # при этом не знает ни одного обрубка и ни одного англицизма — то есть режет шум,
+    # не пропуская мусор. Решение владельца 21.08.2026: «добавляй DWDS вторым».
+    #
+    # Он спрашивается ПОСЛЕ Wiktionary и ДО модели: печатный источник всегда весомее
+    # ответа модели, и слово, подтверждённое словарём, к человеку не попадает вовсе.
+    second = _second_reference_says(candidates)
+    if second:
+        found = next(iter(second))
+        pos = _POS_BY_WORTART.get(second[found], pos_hint)
+        if found == text:
+            return _finish(text, REPAIRED if repaired else CONFIRMED, pos, "DWDS", asked)
+        return _finish(found, REPAIRED, pos, "DWDS (исправлено написание)", asked)
+    if second is None:
+        # DWDS не ответил — это не «слова нет», а «не спросили». Приговор, вынесенный
+        # без второго справочника, не имеет права застрять в кеше навсегда.
+        return {"text": text, "status": UNCONFIRMED, "pos": pos_hint,
+                "source": "второй справочник молчал", "note": "спросим позже"}
 
     if not allow_model:
         return _finish(text, UNCONFIRMED, pos_hint, "модель не спрашивали", asked)

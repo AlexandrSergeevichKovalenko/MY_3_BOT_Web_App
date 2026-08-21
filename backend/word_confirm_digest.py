@@ -189,8 +189,27 @@ def audit_items(user_id: int, limit: int = 200) -> list[dict[str, Any]]:
         logging.warning("экран проверки: не прочитал список для %s", user_id, exc_info=True)
         return []
     return [{"word": str(a), "translation": str(b), "status": str(c),
-             "why": _human_reason(str(c), str(d)), "suggestion": str(e)}
+             "why": _human_reason(str(c), str(d)), "suggestion": str(e),
+             # Слово, существование которого подтвердила модель, молчанием НЕ удаляется:
+             # решение владельца 21.08.2026. Справочники неполны, и предлагать человеку
+             # стереть настоящее слово только потому, что страницы нет, — вред.
+             "safe": _model_confirmed(str(d))}
             for a, b, c, d, e in rows]
+
+
+def _model_confirmed(source: str) -> bool:
+    """Сказал ли источник, что слово СУЩЕСТВУЕТ. Тогда молчание его не удаляет.
+
+    Два таких случая, и оба означают «слово настоящее»:
+      «модель: слово есть, …»                  — редкое или иноязычное, страницы нет;
+      «модель предложила другое написание, …»  — слово есть, спорно лишь написание.
+
+    Второй случай попадает сюда по той же причине, что и первый: удалить слово
+    человека за то, что он пролистал экран, нельзя ни при каком из них. Написание
+    он поправит кнопкой, а стёртое слово не вернуть.
+    """
+    text = str(source or "")
+    return text.startswith("модель: слово есть") or text.startswith("модель предложила другое")
 
 
 def _human_reason(status: str, source: str) -> str:
@@ -268,6 +287,20 @@ def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, 
                 # «die Abschiebu», а решение пришло про «Abschiebu».
                 where_bare = ("user_id=%s AND "
                               + _BARE.format(col="word_de") + "=%s")
+                # Какие из присланных слов признаны настоящими. Молчание про такое
+                # слово НЕ удаляет его (решение владельца 21.08.2026): справочники
+                # неполны, и «Vergleichbarkeit» не должно исчезать оттого, что человек
+                # пролистал экран не нажимая. Спрашиваем базу, а не верим экрану:
+                # решение приходит с клиента, и подделать флаг «меня не удалять»
+                # не должно быть возможно.
+                asked_words = [bare_word(i.get("word") or "") for i in decisions]
+                asked_words = [w for w in asked_words if w]
+                safe: set[str] = set()
+                if asked_words:
+                    cur.execute("SELECT asked, source FROM bt_3_word_check "
+                                "WHERE asked = ANY(%s);", (asked_words,))
+                    safe = {str(a) for a, b in (cur.fetchall() or [])
+                            if _model_confirmed(str(b))}
                 for item in decisions:
                     word = bare_word(item.get("word") or "")
                     action = str(item.get("action") or "").strip()
@@ -301,6 +334,18 @@ def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, 
                                   SET decision='retrans', closed_at=NOW();""",
                             (int(user_id), word))
                         counts["на пересборку"] += 1
+                    elif word in safe:
+                        # Слово настоящее, человек ничего не выбрал — оставляем и
+                        # больше не спрашиваем. Удалять настоящее слово за молчание
+                        # мы не имеем права.
+                        cur.execute(
+                            """INSERT INTO bt_3_word_confirm_digest
+                                      (user_id, word, decision, closed_at)
+                               VALUES (%s, %s, 'keep', NOW())
+                               ON CONFLICT (user_id, word) DO UPDATE
+                                  SET decision='keep', closed_at=NOW();""",
+                            (int(user_id), word))
+                        counts["оставлено"] += 1
                     else:
                         cur.execute("DELETE FROM bt_3_webapp_dictionary_queries "
                                     "WHERE " + where_bare, (int(user_id), word))
@@ -352,12 +397,18 @@ def _reminder_text(count: int) -> str:
 
 
 def send_word_audit_reminders(*, force: bool = False) -> dict[str, Any]:
-    """Разослать напоминания всем, у кого накопились неподтверждённые слова."""
-    import requests
+    """Разослать напоминания всем, у кого накопились неподтверждённые слова.
+
+    Отправка идёт через `telegram_delivery`, а не своим `requests.post`: Telegram
+    отвечает на отказ не исключением, а телом `{"ok": false, "description": …}`,
+    и своя отправка печатала «доставлено» при мёртвом токене. Ровно из-за этого
+    владелец месяц не видел отчёт о фразах (разбор 20.08.2026).
+    """
     from datetime import datetime, timezone
     from backend.database import (
         claim_scheduler_run_guard, finish_scheduler_run_guard, get_db_connection_context,
     )
+    from backend.telegram_delivery import send_telegram_message
 
     now = datetime.now(timezone.utc)
     run_period = now.strftime("%Y-%m-%d")
@@ -375,15 +426,15 @@ def send_word_audit_reminders(*, force: bool = False) -> dict[str, Any]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT q.user_id, COUNT(DISTINCT q.word_de)
+                    SELECT q.user_id, COUNT(DISTINCT {bare})
                       FROM bt_3_webapp_dictionary_queries q
-                      JOIN bt_3_word_check w ON w.asked = q.word_de
+                      JOIN bt_3_word_check w ON w.asked = {bare}
                      WHERE w.status IN ('не подтверждено', 'не слово')
                        AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
-                                        WHERE d.user_id = q.user_id AND d.word = q.word_de
+                                        WHERE d.user_id = q.user_id AND d.word = {bare}
                                           AND d.closed_at IS NOT NULL)
-                     GROUP BY q.user_id HAVING COUNT(DISTINCT q.word_de) > 0;
-                    """
+                     GROUP BY q.user_id HAVING COUNT(DISTINCT {bare}) > 0;
+                    """.format(bare=_BARE.format(col="q.word_de"))
                 )
                 targets = [(int(a), int(b)) for a, b in (cur.fetchall() or [])]
     except Exception:
@@ -392,29 +443,26 @@ def send_word_audit_reminders(*, force: bool = False) -> dict[str, Any]:
 
     link = f"https://t.me/{bot_username}?startapp=woerter"
     delivered = 0
+    failures: list[tuple[int, str]] = []
     for user_id, count in targets:
-        try:
-            response = requests.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": user_id, "text": _reminder_text(count), "parse_mode": "HTML",
-                      "reply_markup": {"inline_keyboard": [[
-                          {"text": "Открыть проверку", "url": link}]]}},
-                timeout=20)
-            if response.status_code < 400:
-                delivered += 1
-            else:
-                logging.warning("напоминание о словах: не ушло uid=%s: %s",
-                                user_id, response.text[:200])
-        except Exception:
-            logging.warning("напоминание о словах: не ушло uid=%s", user_id, exc_info=True)
+        ok, reason = send_telegram_message(
+            chat_id=user_id, text=_reminder_text(count), token=token,
+            reply_markup={"inline_keyboard": [[{"text": "Открыть проверку", "url": link}]]},
+            what="напоминание о проверке слов")
+        if ok:
+            delivered += 1
+        else:
+            failures.append((user_id, reason))
 
     if not force:
         # «Выполнено» ставится по ФАКТУ доставки, а не по факту отправки.
         finish_scheduler_run_guard(
             job_key=JOB_KEY, run_period=run_period, target_scope="global",
             status="completed" if (delivered or not targets) else "failed",
-            metadata={"получателей": len(targets), "доставлено": delivered})
-    return {"ok": True, "получателей": len(targets), "доставлено": delivered}
+            metadata={"получателей": len(targets), "доставлено": delivered,
+                      "отказы": [f"{uid}: {why}" for uid, why in failures[:20]]})
+    return {"ok": True, "получателей": len(targets), "доставлено": delivered,
+            "отказы": failures}
 
 
 def suggestion_for(word: str) -> str:

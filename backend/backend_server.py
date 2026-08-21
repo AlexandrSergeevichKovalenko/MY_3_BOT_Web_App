@@ -51139,7 +51139,7 @@ def webapp_word_audit_check_one():
         return jsonify({"ok": True, "ask": False}), 200
     try:
         from backend.german_word_gate import check_word, CONFIRMED, REPAIRED, NOT_A_WORD
-        from backend.word_confirm_digest import suggestion_for
+        from backend.word_confirm_digest import suggestion_for, _model_confirmed
         verdict = check_word(word, allow_network=True, allow_model=False)
     except Exception:
         logging.warning("плашка сохранения: дверь недоступна", exc_info=True)
@@ -51152,6 +51152,12 @@ def webapp_word_audit_check_one():
     if status in (CONFIRMED, REPAIRED):
         return jsonify({"ok": True, "ask": False,
                         "fixed": fixed if fixed != word else ""}), 200
+    # Слово, существование которого подтверждено, — тоже не повод дёргать человека.
+    # Справочники неполны: «Nachtdämmerung», «Schwarzflieger» настоящие, страниц у них
+    # нет. Решение владельца 21.08.2026: такие не удалять и, значит, не пугать. Слово
+    # остаётся в экране проверки с пометкой «оставим сами», если он захочет заглянуть.
+    if _model_confirmed(str(verdict.get("source") or "")):
+        return jsonify({"ok": True, "ask": False}), 200
     suggestion = suggestion_for(word)
     return jsonify({
         "ok": True,

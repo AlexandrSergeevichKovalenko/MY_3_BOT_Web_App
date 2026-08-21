@@ -153,3 +153,9 @@
   background:rgba(251,191,36,.12); border:1px solid rgba(251,191,36,.35);
   color:#fde68a; font-size:.9rem; text-align:center;
 }
+
+/* Слово настоящее — молчание его не удаляет. Спокойная строка, а не тревожная:
+   человеку тут ничего делать не нужно, и экран обязан сказать это прямо. */
+.wa-safe{
+  margin-top:8px; font-size:.84rem; color:var(--keep, #4ade80);
+}

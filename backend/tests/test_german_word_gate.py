@@ -18,6 +18,9 @@ def _no_cache_no_network(monkeypatch):
     monkeypatch.setattr(G, "_cached", lambda asked: None)
     monkeypatch.setattr(G, "_remember", lambda asked, verdict: None)
     monkeypatch.setattr(G, "_known_by_our_data", lambda word: (False, "", ""))
+    # Второй справочник по умолчанию ОТВЕТИЛ и слова не знает: тест не ходит в сеть,
+    # а ступень «DWDS» не проглатывает случаи, ради которых написан каждый тест ниже.
+    monkeypatch.setattr(G, "_second_reference_says", lambda words: {})
 
 
 def _reference(pages: dict[str, list[str]]):
@@ -94,14 +97,45 @@ def test_английское_слово_сохраняется_с_пометк�
 
 
 def test_редкое_немецкое_слово_не_выбрасывается(monkeypatch):
-    """Справочник неполон: «Arbeitsumfeld» настоящее, но страницы у него нет."""
+    """Оба справочника молчат, модель говорит «слово есть» — не выбрасываем.
+
+    Раньше здесь стояло «Arbeitsumfeld»: страницы в Wiktionary у него нет. Теперь
+    его знает DWDS, и до модели дело не доходит вовсе — поэтому пример заменён на
+    слово, которого не знает ни один из двух справочников."""
     monkeypatch.setattr(G, "_reference_says_about_all", _reference({}))
     monkeypatch.setattr("backend.german_reference_forms.word_exists_by_model",
                         lambda w: {"existiert": True, "sprache": "de",
-                                   "wortart": "Substantiv", "korrekt": "Arbeitsumfeld"})
-    verdict = G.check_word("Arbeitsumfeld")
+                                   "wortart": "Substantiv", "korrekt": "Schwarzflieger"})
+    verdict = G.check_word("Schwarzflieger")
     assert verdict["status"] == G.UNCONFIRMED
-    assert verdict["text"] == "Arbeitsumfeld"
+    assert verdict["text"] == "Schwarzflieger"
+
+
+def test_второй_справочник_подтверждает_то_чего_нет_в_первом(monkeypatch):
+    """«Vergleichbarkeit» — обычное слово, страницы в Wiktionary нет, DWDS знает.
+
+    Замер 21.08.2026: из 12 слов, ушедших человеку на проверку, 8 были такими.
+    Подтверждённое вторым справочником к человеку не попадает вовсе."""
+    monkeypatch.setattr(G, "_reference_says_about_all", _reference({}))
+    monkeypatch.setattr(G, "_second_reference_says",
+                        lambda words: {"Vergleichbarkeit": "Substantiv"})
+    def _model_must_not_be_asked(word):
+        raise AssertionError("модель спрошена после того, как ответил справочник")
+    monkeypatch.setattr("backend.german_reference_forms.word_exists_by_model",
+                        _model_must_not_be_asked)
+    verdict = G.check_word("Vergleichbarkeit")
+    assert verdict["status"] == G.CONFIRMED
+    assert verdict["pos"] == "noun"
+    assert verdict["source"] == "DWDS"
+
+
+def test_молчание_второго_справочника_не_запоминается(monkeypatch):
+    """DWDS не ответил — это «не спросили», а не «слова нет»."""
+    monkeypatch.setattr(G, "_reference_says_about_all", _reference({}))
+    monkeypatch.setattr(G, "_second_reference_says", lambda words: None)
+    verdict = G.check_word("Nachtdämmerung")
+    assert verdict["status"] == G.UNCONFIRMED
+    assert not G._is_final(verdict, allow_network=True, allow_model=True)
 
 
 def test_молчание_справочника_не_приговор(monkeypatch):
