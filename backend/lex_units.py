@@ -1230,6 +1230,106 @@ def unit_display(unit_id: int) -> str:
         return ""
 
 
+# Поля разбора, у которых есть «сторона запроса» и «сторона ответа». Разворот меняет
+# их местами парами — по одному правилу, без исключений.
+_CARD_SIDE_PAIRS = (
+    ("word_source", "word_target"),
+    ("source_text", "target_text"),
+    ("source_lang", "target_lang"),
+)
+
+
+def card_is_facing_away(card: dict | None, lang: str) -> bool:
+    """Разбор собран НЕ на языке слова: спрашивали по-русски, а слово немецкое."""
+    if not isinstance(card, dict) or not card:
+        return False
+    head = ""
+    for name in ("word_source", "source_text"):
+        value = card.get(name)
+        if isinstance(value, str) and value.strip():
+            head = value
+            break
+    if not head:
+        return False
+    other = card.get("word_target") or card.get("target_text") or ""
+    # Разворачиваем, только когда ОБЕ стороны опознаны и они разные: одна сторона —
+    # это не улика, у фразы обе половины могут быть на одном языке.
+    return (not text_matches_language(head, lang)
+            and text_matches_language(str(other or ""), lang))
+
+
+def orient_card_to_unit_language(card: dict, lang: str) -> dict:
+    """Развернуть разбор лицом к языку слова. Ничего не выдумывает — меняет местами.
+
+    ЗАЧЕМ. Человек искал ПО-РУССКИ, разбор собрался «русский → немецкий» и лёг как есть
+    на НЕМЕЦКОЕ слово. Выдача читает его как «немецкий → русский», и в карточке слева
+    оказывается русский: у «die Tonne» пример выглядел «Эта машина может увезти десять
+    тонн.» → «Dieses Fahrzeug kann zehn Tonnen transportieren». Замер 21.08.2026: 410
+    немецких слов из 10 335 с разбором, у 224 по-русски был заголовок, у 378 — примеры.
+
+    Стражи «немецкое поле = латиница» существуют с 22.07.2026, но стоят на карточках
+    людей и на общем пуле; слой единиц появился позже и ими прикрыт не был.
+
+    ЧТО ТЕРЯЕТСЯ, честно: список `translations` у развёрнутого разбора хранил НЕМЕЦКИЕ
+    синонимы (это же был перевод русского запроса). Держать их под видом русских значений
+    нельзя, поэтому остаётся один — та сторона, что теперь стала переводом. Значения
+    слова на экран всё равно приходят из связей, а не отсюда (`_build_item`).
+    """
+    if not card_is_facing_away(card, lang):
+        return card
+    flipped = dict(card)
+    for left, right in _CARD_SIDE_PAIRS:
+        if left in flipped or right in flipped:
+            flipped[left], flipped[right] = flipped.get(right), flipped.get(left)
+    pair = flipped.get("language_pair")
+    if isinstance(pair, dict):
+        pair = dict(pair)
+        pair["source_lang"], pair["target_lang"] = pair.get("target_lang"), pair.get("source_lang")
+        pair["code"] = f"{pair.get('source_lang') or ''}-{pair.get('target_lang') or ''}"
+        flipped["language_pair"] = pair
+    native = str(flipped.get("word_target") or flipped.get("target_text") or "").strip()
+    if native:
+        flipped["translations"] = [{"value": native, "context": "", "is_primary": True}]
+        flipped.pop("dictionary_senses", None)
+    return orient_examples_to_unit_language(flipped, lang)
+
+
+def orient_examples_to_unit_language(card: dict, lang: str) -> dict:
+    """Примеры разбора: слева — язык слова, справа — перевод. По каждому примеру отдельно.
+
+    ⚠ ЭТО ОТДЕЛЬНОЕ ПРАВИЛО, А НЕ ЧАСТЬ ПРЕДЫДУЩЕГО. Замер 21.08.2026: из 410 слов с
+    перевёрнутым разбором у 224 развёрнут весь разбор, а у 186 заголовок правильный и
+    зеркальны ТОЛЬКО примеры («Wir werden höhere Kosten haben…» с примером «Компания
+    понесла большие затраты…» → «Das Unternehmen hat hohe Kosten…»). Разворачивать
+    у них весь разбор было бы ошибкой — портится верный заголовок.
+
+    Пример трогаем, только когда обе стороны опознаны и они разные: одна сторона —
+    не улика.
+    """
+    if not isinstance(card, dict):
+        return card
+    examples = card.get("usage_examples")
+    if not isinstance(examples, list) or not examples:
+        return card
+    fixed: list = []
+    changed = False
+    for item in examples:
+        if not isinstance(item, dict):
+            fixed.append(item)
+            continue
+        source, target = item.get("source"), item.get("target")
+        if (text_matches_language(str(target or ""), lang)
+                and str(source or "").strip()
+                and not text_matches_language(str(source or ""), lang)):
+            fixed.append({**item, "source": target, "target": source})
+            changed = True
+        else:
+            fixed.append(item)
+    if not changed:
+        return card
+    return {**card, "usage_examples": fixed}
+
+
 def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащение", cursor=None) -> bool:
     """Положить разбор НА единицу. Пишем только в слой; общий банк не трогаем.
 
@@ -1238,6 +1338,27 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
     делает вызывающий — запись должна попасть в ту же транзакцию, что и карточка."""
     if not isinstance(card, dict) or not card:
         return False
+    # РАЗБОР ЛОЖИТСЯ ЛИЦОМ К ЯЗЫКУ СЛОВА, всегда. Это единственная дверь, через которую
+    # разбор попадает на единицу (save_unit_card_if_richer зовёт её же), поэтому правило
+    # стоит здесь, а не копией у каждого пишущего.
+    # ⚠ Язык спрашиваем ПЕРЕДАННЫМ курсором, если он есть: вызывающий уже держит
+    # транзакцию, и второе соединение из пула здесь — известная ловушка проекта.
+    try:
+        if cursor is not None:
+            cursor.execute("SELECT lang FROM bt_3_lex_units WHERE id = %s;", (int(unit_id),))
+            _row = cursor.fetchone()
+        else:
+            with get_db_connection_context() as _conn:
+                with _conn.cursor() as _cur:
+                    _cur.execute("SELECT lang FROM bt_3_lex_units WHERE id = %s;", (int(unit_id),))
+                    _row = _cur.fetchone()
+        _lang = str((_row or ("",))[0] or "")
+        card = orient_card_to_unit_language(card, _lang)
+        card = orient_examples_to_unit_language(card, _lang)
+    except Exception as exc:
+        # Разворот не удался — кладём как есть: разбор важнее, а перевёрнутые ловит
+        # ночная сверка. Молча ошибку не глотаем.
+        logging.warning("разворот разбора для слова %s не удался: %s", unit_id, exc)
     sql = ("UPDATE bt_3_lex_units SET card = %s::jsonb, card_source = %s, updated_at = NOW() "
            "WHERE id = %s;")
     params = (json.dumps(card, ensure_ascii=False), source, int(unit_id))
