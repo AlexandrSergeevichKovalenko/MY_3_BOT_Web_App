@@ -287,9 +287,16 @@ def rejudge_open_phrase_reviews(limit: int = 60) -> dict:
 
 def _apply_silent_fix(unit_id: int, corrected: str) -> bool:
     """Записать исправленную фразу в слой слов. Ключ поиска пересобираем, старое
-    написание оставляем рядом: по нему уже могли сохраниться карточки."""
+    написание оставляем рядом: по нему уже могли сохраниться карточки.
+
+    Переименование идёт через `lex_units.retitle_unit` — ОДНИМ местом на всё приложение.
+    Здесь оно раньше делалось своим UPDATE, и вместе с написанием НЕ пересчитывался вид
+    записи (`kind`). А ночной добор берёт в работу только `kind = 'word'`: фраза, которую
+    ночь свела к одному слову, оставалась «предложением» и разбор не получала уже никогда.
+    Дыру нашёл соседний агент, собиравший карту мест записи, 21.08.2026.
+    """
     from backend.database import get_db_connection_context
-    from backend.lex_units import normalize_query
+    from backend.lex_units import normalize_query, retitle_unit
 
     key = normalize_query(corrected)
     if not key:
@@ -303,10 +310,7 @@ def _apply_silent_fix(unit_id: int, corrected: str) -> bool:
                 )
                 if cur.fetchone():
                     return False        # такое слово уже есть — сливать надо осознанно
-                cur.execute(
-                    "UPDATE bt_3_lex_units SET display=%s, lemma=%s, lemma_key=%s WHERE id=%s;",
-                    (corrected, corrected, key, int(unit_id)),
-                )
+                retitle_unit(cur, int(unit_id), corrected)
                 cur.execute(
                     """INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
                        VALUES ('de', %s, %s, 'exact') ON CONFLICT DO NOTHING;""",

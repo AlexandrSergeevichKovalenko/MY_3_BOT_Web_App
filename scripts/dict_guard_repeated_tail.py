@@ -15,8 +15,14 @@ Versuchung......», «vorbei. vorbei. vorbei. …»). Механизм дока�
 
 ЧТО ИМЕННО ЗАПРЕЩЕНО
 ────────────────────
-Хвост, повторённый ЧЕТЫРЕ и более раз подряд: один и тот же знак препинания в конце
-(«......», «??????») или одно и то же слово через пробел («ist ist ist ist»).
+Хвост, повторённый ЧЕТЫРЕ и более раз подряд, в трёх видах: один и тот же знак препинания
+в конце («......», «??????»), одно и то же слово через пробел («ist ist ist ist») и одна
+и та же БУКВА («sterile Gazennnnnn»).
+
+Третий вид добавлен 21.08.2026: первая версия стража его не знала и запись пропустила —
+там шаг порчи был короче слова, «sterile Gaze» плюс «n», применённое шесть раз. Нашёл её
+соседний агент, сверив базу по своему признаку. В немецком четыре одинаковые буквы подряд
+не встречаются: даже у «Schifffahrt» их три.
 
 Порог четыре, а не три, — потому что многоточие из трёх точек это законный заголовок:
 «Es kommt darauf an...», «Wenn man bedenkt, dass...». Их в словаре два десятка, и они
@@ -41,10 +47,26 @@ from backend.database import get_db_connection_context  # noqa: E402
 
 CONSTRAINT = "bt_3_lex_units_no_repeated_tail"
 
-# POSIX-регулярка Postgres. Два запрещённых вида хвоста:
+# POSIX-регулярка Postgres. Три запрещённых вида хвоста:
 #   ([.?!])\1{3,}$        — один и тот же знак четыре и более раз в конце
 #   (\S+)( \1){3,}$       — одно и то же слово четыре и более раз в конце
-BAD = r"(([.?!])\2{3,}[[:space:]]*$)|((^|[[:space:]])([^[:space:]]+)([[:space:]]+\5){3,}[[:space:]]*$)"
+#   (\w)\1{3,}$           — одна и та же БУКВА четыре и более раз в конце
+#
+# Третий вид добавлен 21.08.2026. Первая версия стража его не знала и пропустила
+# «sterile Gazennnnnn» — ту же порчу, только шаг был короче слова: «sterile Gaze» плюс
+# «n», применённое шесть раз. Запись нашёл соседний агент, сверив базу по своему
+# признаку, — моя проверка искала повтор слова и знака и мимо неё прошла.
+# В немецком четыре одинаковые буквы подряд не встречаются: даже у «Schifffahrt» их три.
+# Три ОТДЕЛЬНЫХ правила, а не одно склеенное.
+#
+# Склеенное я уже написал и получил от Postgres «invalid backreference number»: в общей
+# регулярке номера скобок сдвигаются, и обратная ссылка начинает указывать не туда.
+# Три независимых правила считают свои скобки сами, и добавить четвёртое можно, ничего
+# не пересчитывая.
+BAD_PUNCT  = r"([.?!])\1{3,}[[:space:]]*$"                                  # «......», «??????»
+BAD_WORD   = r"(^|[[:space:]])([^[:space:]]+)([[:space:]]+\2){3,}[[:space:]]*$"  # «ist ist ist ist»
+BAD_LETTER = r"([[:alnum:]])\1{3,}[[:space:]]*$"                            # «Gazennnnnn»
+BAD_ALL = (BAD_PUNCT, BAD_WORD, BAD_LETTER)
 
 
 def main() -> int:
@@ -54,10 +76,10 @@ def main() -> int:
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            where = " OR ".join("display ~ %s OR lemma ~ %s" for _ in BAD_ALL)
             cursor.execute(
-                "SELECT id, display, lemma FROM bt_3_lex_units "
-                "WHERE display ~ %s OR lemma ~ %s ORDER BY id;",
-                (BAD, BAD),
+                f"SELECT id, display, lemma FROM bt_3_lex_units WHERE {where} ORDER BY id;",
+                tuple(x for rule in BAD_ALL for x in (rule, rule)),
             )
             offenders = cursor.fetchall()
 
@@ -77,15 +99,15 @@ def main() -> int:
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            # Ограничение уже могло стоять со старым, более узким правилом —
+            # снимаем и ставим заново, иначе новый вид хвоста останется незакрытым.
             cursor.execute(
-                "SELECT 1 FROM pg_constraint WHERE conname = %s;", (CONSTRAINT,))
-            if cursor.fetchone():
-                print(f"\nСтраж {CONSTRAINT} уже стоит.\n")
-                return 0
+                f"ALTER TABLE bt_3_lex_units DROP CONSTRAINT IF EXISTS {CONSTRAINT};")
+            checks = " AND ".join(
+                "display !~ %s AND (lemma IS NULL OR lemma !~ %s)" for _ in BAD_ALL)
             cursor.execute(
-                f'ALTER TABLE bt_3_lex_units ADD CONSTRAINT {CONSTRAINT} '
-                f"CHECK (display !~ %s AND (lemma IS NULL OR lemma !~ %s));",
-                (BAD, BAD),
+                f"ALTER TABLE bt_3_lex_units ADD CONSTRAINT {CONSTRAINT} CHECK ({checks});",
+                tuple(x for rule in BAD_ALL for x in (rule, rule)),
             )
         conn.commit()
     print(f"\nСТРАЖ ПОСТАВЛЕН: {CONSTRAINT}. Запись с размноженным хвостом теперь падает.\n")

@@ -54,6 +54,12 @@ from backend.lex_units import normalize_query  # noqa: E402
 # продолжением, а не порча. Наша порча шестикратная, поэтому порог стоит между ними.
 REPEATED_PUNCT = re.compile(r"([.?!])\1{3,}\s*$")
 REPEATED_CHUNK = re.compile(r"(?:^|\s)(\S+)(?:\s+\1){3,}\s*$")
+# Та же порча, но короче шага: хвост состоял из ОДНОЙ БУКВЫ. «sterile Gaze» → «Gazen»,
+# применённое шесть раз, дало «sterile Gazennnnnn». Первая версия скрипта искала повтор
+# слова и знака и эту запись пропустила — нашёл её соседний агент, сверив базу по своему
+# признаку. В немецком четыре одинаковые буквы подряд не встречаются (даже у
+# «Schifffahrt» их три), поэтому порог тот же.
+REPEATED_LETTER = re.compile(r"(\w)\1{3,}\s*$")
 
 
 def candidates(text: str) -> list[str]:
@@ -69,6 +75,13 @@ def candidates(text: str) -> list[str]:
         mark = match.group(1)
         for keep in range(1, len(match.group(0).strip()) + 1):
             out.append(head + mark * keep)
+        return out
+    match = REPEATED_LETTER.search(text)
+    if match:
+        letter = match.group(1)
+        head = text[: match.start()]
+        for keep in range(1, len(match.group(0).strip()) + 1):
+            out.append(head + letter * keep)
         return out
     match = REPEATED_CHUNK.search(text)
     if match:
@@ -93,7 +106,8 @@ def main() -> int:
                 "SELECT id, display, lemma, lemma_key FROM bt_3_lex_units WHERE lang = 'de';")
             for unit_id, display, lemma, key in cursor.fetchall():
                 display = str(display or "")
-                if not (REPEATED_PUNCT.search(display) or REPEATED_CHUNK.search(display)):
+                if not (REPEATED_PUNCT.search(display) or REPEATED_CHUNK.search(display)
+                        or REPEATED_LETTER.search(display)):
                     continue
                 # Свидетель — ключ поиска: его та транзакция не тронула.
                 good = next((c for c in candidates(display)
@@ -112,7 +126,7 @@ def main() -> int:
         print("\nВХОЛОСТУЮ. Починить: --apply\n")
         return 0
 
-    done = {"слов": 0, "карточек людей": 0, "разборов на слове": 0}
+    done = {"слов": 0, "карточек людей": 0, "разборов на слове": 0, "записей пула": 0}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             for unit_id, display, good, _key in fixed:
@@ -149,6 +163,23 @@ def main() -> int:
                         (raw.replace(display, good), entry_id),
                     )
                     done["карточек людей"] += 1
+                # Общий пул: из него собирается карточка при поиске. Первая версия его не
+                # чистила вовсе — а «sterile Gazennnnnn» лежало и там тоже.
+                cursor.execute(
+                    "SELECT id, source_text, response_json FROM bt_3_dictionary_entries "
+                    "WHERE source_text = %s OR response_json::text LIKE %s;",
+                    (display, "%" + display + "%"),
+                )
+                for entry_id, source_text, payload in cursor.fetchall():
+                    raw = json.dumps(payload, ensure_ascii=False) if payload else ""
+                    cursor.execute(
+                        "UPDATE bt_3_dictionary_entries SET source_text = %s, "
+                        "response_json = COALESCE(%s::jsonb, response_json), "
+                        "updated_at = NOW() WHERE id = %s;",
+                        (good if source_text == display else source_text,
+                         raw.replace(display, good) if raw else None, entry_id),
+                    )
+                    done["записей пула"] += 1
         conn.commit()
 
     print("\nГОТОВО: %s" % done)
