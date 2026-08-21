@@ -11990,6 +11990,48 @@ async def admin_world_news_approve_command(update: Update, context: CallbackCont
     )
 
 
+async def admin_world_news_unapprove_command(update: Update, context: CallbackContext):
+    """/worldnews_unapprove [today|tomorrow|YYYY-MM-DD] — снять одобрение с записи.
+
+    Одобрение до 21.08.2026 работало в одну сторону: нажал «Одобрить» — и отменить это
+    можно было только переформированием, то есть заново потратив ролик и запрос к модели.
+    Владелец одобрил выпуск второпях и не смог откатить — дыру закрываем командой.
+
+    Ничего не удаляет: запись остаётся, снимается только пометка «уйдёт утром». Без неё
+    утренняя рассылка запись не берёт.
+    """
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    arg = (context.args[0].strip().lower() if context.args else "tomorrow")
+    if arg == "today":
+        target = datetime.now().strftime("%Y-%m-%d")
+    elif arg == "tomorrow":
+        target = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        target = arg
+    from backend.database import get_world_news_for_date, set_world_news_pinned
+    entry = await asyncio.to_thread(get_world_news_for_date, target)
+    if not entry:
+        await message.reply_text(f"На {target} записи нет — отменять нечего.")
+        return
+    if not entry.get("is_pinned"):
+        await message.reply_text(
+            f"Запись на {target} и так не одобрена — утром она не уйдёт."
+        )
+        return
+    await asyncio.to_thread(set_world_news_pinned, target, False)
+    await message.reply_text(
+        f"↩️ Одобрение с {target} снято — утром эта запись НЕ уйдёт.\n"
+        f"Сама запись цела: посмотреть /worldnews_show {arg}, "
+        "переформировать /worldnews_tomorrow."
+    )
+
+
 async def admin_world_news_tomorrow_command(update: Update, context: CallbackContext):
     """Force (re)prepare TOMORROW's news right now, even if it's already approved. The 20:00
     evening prep SKIPS an already-pinned tomorrow, so this is the only command-line way to
@@ -43531,6 +43573,7 @@ def main():
     application.add_handler(CommandHandler("worldnews_card", admin_world_news_card_command))
     application.add_handler(CommandHandler("admin_worldnews_image", admin_world_news_image_command))
     application.add_handler(CommandHandler("worldnews_approve", admin_world_news_approve_command))
+    application.add_handler(CommandHandler("worldnews_unapprove", admin_world_news_unapprove_command))
     application.add_handler(CommandHandler("worldnews_tomorrow", admin_world_news_tomorrow_command))
     application.add_handler(CommandHandler("worldnews_show", admin_world_news_show_command))
     application.add_handler(CommandHandler("describe_new", admin_describe_new_command))

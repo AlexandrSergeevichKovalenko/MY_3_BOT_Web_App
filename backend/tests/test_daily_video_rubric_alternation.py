@@ -606,3 +606,35 @@ def test_news_prompt_forbids_normalizing_word_groups():
     assert "einen hohen genetischen Anteil" in _LLM_SYSTEM
     assert "form_ru" in _LLM_SYSTEM
     assert "NIEMALS" in _LLM_SYSTEM
+
+
+# ── Три дефекта первого живого выпуска (21.08.2026) ───────────────────────────
+
+def test_prompt_forbids_spoiling_the_outcome():
+    """Первый живой стендап показал в резюме «Завершение сезона, победа Терезы», а
+    четвёртый вопрос теста назвал победителя. Человек читает это ДО видео — смотреть
+    после такого незачем. Запрет на панчлайн у нас был, на исход — не было."""
+    prompt = STANDUP_PROFILE.llm_system
+    assert "AUSGANG" in prompt
+    assert prompt.count("NICHTS VERRATEN") >= 1
+    assert "AUCH HIER NICHTS VERRATEN" in prompt, "запрет обязан стоять и в блоке теста"
+
+
+def test_prompt_forbids_all_caps_names():
+    """«ТЕРЕЗА» вместо «Тереза». Правило «имена собственные сохраняют прописную» модель
+    поняла как «писать целиком заглавными» — формулировка была моя, ошибка моя."""
+    for prompt in (STANDUP_PROFILE.llm_system,):
+        assert "NUR DER ERSTE BUCHSTABE" in prompt
+        assert "«ТЕРЕЗА»" in prompt, "нужен явный пример НЕПРАВИЛЬНОГО написания"
+
+
+def test_prompt_demands_reusable_units_not_show_lines():
+    """Из шести карточек первого выпуска настоящей была одна. Остальные — реплики из шоу
+    («Privatversicherte verstehen den Joke»), которые годятся ровно в той ситуации, где
+    прозвучали. Недостающий признак — воспроизводимость: единица годится в карточку,
+    только если человек сможет употребить её в ДРУГОЙ ситуации."""
+    prompt = STANDUP_PROFILE.llm_system
+    assert "WIEDERVERWENDBARKEIT" in prompt
+    assert "Privatversicherte verstehen den Joke" in prompt, "нужен пример негодной карточки"
+    assert "abhauen" in prompt, "нужен пример: из реплики берётся глагол, а не вся фраза"
+    assert "Niceinger Diceinger" in prompt, "выдумки ведущего не заучиваются как обороты"

@@ -93,12 +93,17 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
 
 1) "summary_points": 2–4 sehr kurze Zeilen auf RUSSISCH — worum es in dem Auftritt geht:
    Thema, Figur, Situation. Je 3–9 Wörter, keine Verbindungswörter, kein Wasser.
-   Die Pointe NICHT verraten — der Nutzer schaut das Video danach.
+   NICHTS VERRATEN, was die Spannung nimmt: weder die Pointe noch den AUSGANG —
+   wer gewinnt, wie es endet, wie der Wettbewerb ausgeht. Der Nutzer liest das VOR dem
+   Video. «Победа Терезы» in der Zusammenfassung macht das Anschauen sinnlos.
+   Beschreibe die SITUATION, nicht das Ergebnis.
    SCHREIBWEISE: Eigennamen behalten ihren GROSSBUCHSTABEN — Länder, Städte, Bundesländer,
    Parteien, Organisationen, Personen (Германия, Саксония-Анхальт, Мекленбург-Передняя
    Померания, АдГ, Бундестаг). Abkürzungen so, wie sie im Russischen üblich sind: AfD → АдГ,
    nicht «афд». «Knapp» heisst OHNE Wasser — NICHT ohne Grossbuchstaben. Jede These beginnt
    mit einem Grossbuchstaben.
+   ACHTUNG: NUR DER ERSTE BUCHSTABE ist gross, der Rest klein. Richtig: «Тереза», «Германия».
+   FALSCH: «ТЕРЕЗА», «ГЕРМАНИЯ» — Wörter komplett in Grossbuchstaben sind ein Fehler.
 
 2) "phrases": ALLE Einheiten dieses Auftritts, bei denen der KONTEXT die Bedeutung
    bestimmt — Slang, Umgangssprache, Redewendungen, feste Wendungen, Jugendsprache,
@@ -120,6 +125,19 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
        "null Bock". FALSCH: "haben", "bestellen", "abholen".
        Die Faustregel: Was der Lernende später SAGEN können soll, steht hier — in genau
        der Form, in der man es sagt.
+
+       ENTSCHEIDENDES KRITERIUM — WIEDERVERWENDBARKEIT: Eine Einheit gehört nur dann auf
+       eine Karte, wenn der Lernende sie in einer ANDEREN Situation benutzen kann, nicht
+       nur in dieser.
+         RICHTIG: "nichts am Hut haben (mit etwas)", "Bock haben (auf etwas)", "abhauen" —
+           das sagt man überall.
+         FALSCH: "Privatversicherte verstehen den Joke", "Das weiß keiner", "Wir rasten
+           aus!" — das sind REPLIKEN aus dieser Sendung, keine Spracheinheiten. Sie
+           auswendig zu lernen bringt nichts.
+       Ein konjugierter Satz ist KEINE Einheit: aus «Da hauen sie alle ab» gehört "abhauen"
+       auf die Karte, aus «Wir rasten aus» gehört "ausrasten" darauf.
+       Und: ERFUNDENE Wortspiele des Moderators («Niceinger Diceinger») sind KEINE festen
+       Wendungen. Nimm sie NICHT — sonst glaubt der Lernende, so spreche man Deutsch.
      - "register_ru": Stilmarkierung auf RUSSISCH, kurz: «разговорное», «сленг»,
        «грубое», «молодёжное», «ироничное», «региональное (баварское)», «нейтральное».
        Wenn es derb/vulgär ist, sag das offen — der Lernende muss wissen, wo er das NICHT
@@ -145,7 +163,12 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
 3) "quiz": GENAU 4 Multiple-Choice-Fragen auf DEUTSCH zum VERSTÄNDNIS des Auftritts:
    Wer macht was, welche Situation wird beschrieben, was meint der Comedian mit einer
    Wendung, worüber lacht das Publikum. KEINE Fragen nach Zahlen und Daten — das ist
-   kein Nachrichtenvideo. Jede Frage:
+   kein Nachrichtenvideo.
+   AUCH HIER NICHTS VERRATEN: keine Frage darf den AUSGANG nennen (wer gewinnt, wie es
+   endet). Der Nutzer sieht die Fragen erst nach dem Video, aber die Karte mit den Fragen
+   liegt auf demselben Bildschirm — und eine Frage wie «Wie wird der Gewinner bestimmt?»
+   verrät das Ergebnis schon durch ihre Antwortoptionen.
+   Jede Frage:
      - "question_de": klar, auf EIN Detail des Auftritts zugespitzt.
      - "options": GENAU 4 Antworten, etwa gleich lang und gleich plausibel, die
        Distraktoren nah an der richtigen — keine offensichtlich absurde Antwort.
