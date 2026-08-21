@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,8 @@ def shelf_target() -> int:
     return _env_int("STANDUP_SHELF_TARGET", 30)
 
 
-def refill_standup_shelf(*, target: int | None = None, max_add: int | None = None) -> dict:
+def refill_standup_shelf(*, target: int | None = None, max_add: int | None = None,
+                         budget_sec: int | None = None) -> dict:
     """Дополнить полку до нужного числа роликов.
 
     Пока непоказанных хватает — в сеть НЕ ходим вообще, это главный смысл полки.
@@ -65,6 +67,13 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
         WORLD_NEWS_MAX_TRANSCRIPT_CHARS, WORLD_NEWS_MIN_TRANSCRIPT_CHARS,
         _fetch_transcript, _gather_candidates, _transcript_to_text, _yt_api_video_details,
     )
+
+    # Бюджет по часам, а не по числу роликов. Скачивание субтитров имеет повторы, но НЕ
+    # имеет жёсткого таймаута сокета (см. инцидент 10.07.2026): один заблокированный адрес
+    # заставляет цикл ползти минутами, и вызвавший команду видит зависшее сообщение.
+    # Дошли до предела — оставляем то, что успели положить, и честно об этом говорим.
+    budget_sec = int(budget_sec) if budget_sec else _env_int("STANDUP_SHELF_BUDGET_SEC", 150)
+    started = time.monotonic()
 
     want = int(target or shelf_target())
     counts = standup_shelf_counts()
@@ -117,9 +126,18 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
     cap = int(max_add) if max_add is not None else _env_int("STANDUP_SHELF_MAX_ADD", 12)
     need = min(need, cap)
 
-    for item in ranked:
+    for idx, item in enumerate(ranked, 1):
         if report["added"] >= need:
             break
+        if time.monotonic() - started > budget_sec:
+            report["budget_spent"] = True
+            logger.warning("standup shelf: бюджет %ds исчерпан — положили %d, остальное в следующий раз",
+                           budget_sec, report["added"])
+            break
+        # Строка на каждый ролик: без неё длинный цикл молчит, и снаружи не отличить
+        # работу от зависания.
+        logger.info("standup shelf: беру субтитры %d/%d — %s (%s)",
+                    idx, len(ranked), item["video_id"], item["title"][:50])
         data = _fetch_transcript(item["video_id"])
         if not data or not (data.get("items") or []):
             report["no_transcript"] += 1
@@ -179,4 +197,7 @@ def format_shelf_refill_report(report: dict) -> str:
         skipped.append(f"не та длительность {report['dur_skipped']}")
     if skipped:
         lines += ["", "Не подошли: " + ", ".join(skipped)]
+    if report.get("budget_spent"):
+        lines += ["", "⏳ Время вышло, положили сколько успели. Повтори /standup_shelf — "
+                      "докладёт остальное."]
     return "\n".join(lines)

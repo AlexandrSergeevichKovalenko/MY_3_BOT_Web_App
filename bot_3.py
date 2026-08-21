@@ -11680,7 +11680,9 @@ async def run_world_news_evening_prep(context: CallbackContext):
             from backend.daily_video_rubrics import RUBRIC_STANDUP, get_profile, rubric_for_date
             failed_rubric = rubric_for_date(target)
             failed_title = get_profile(failed_rubric).title_ru
-            manual_cmd = "/standup" if failed_rubric == RUBRIC_STANDUP else "/worldnews"
+            # Вечерняя подготовка делает ЗАВТРАШНИЙ день, значит и чинить надо завтрашний.
+            # «/standup» переписал бы сегодняшнюю запись — это не то, что нужно.
+            manual_cmd = "/worldnews_tomorrow"
         except Exception:
             logging.exception("world_news evening: не удалось определить рубрику для %s", target)
             failed_title, manual_cmd = "Видео дня", "/worldnews"
@@ -11688,7 +11690,8 @@ async def run_world_news_evening_prep(context: CallbackContext):
             context, admin_ids,
             f"⚠️ {failed_title} на завтра ({target}) не подготовилось: {reason}\n"
             "Без одобрения утром рассылки не будет. "
-            f"Можно задать вручную: {manual_cmd} <youtube_url> → /worldnews_card.",
+            f"Можно задать вручную: {manual_cmd} <youtube_url> — это стоит одну единицу "
+            "квоты и работает всегда.",
         )
         return
     text = _world_news_preview_text(entry, header=f"🌙 <b>{_rubric_title(entry)} на завтра — проверь и одобри</b>")
