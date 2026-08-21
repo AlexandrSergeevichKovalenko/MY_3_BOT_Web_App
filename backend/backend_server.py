@@ -10991,6 +10991,18 @@ def _run_synonym_backfill(*, limit: int, learning_lang: str = "de", native_lang:
             value = data.get(key)
             if isinstance(value, list) and value:
                 patch[key] = value
+        # Тот же страж целостности, что и на записи разбора: этот путь пишет в разбор
+        # напрямую (card || patch), мимо lex_units.save_unit_card, — значит защита
+        # обязана стоять и здесь. Отметку «спрашивали» при этом сохраняем: слово
+        # спрашивали, а негодный ответ модели не повод гонять его в очереди вечно.
+        from backend.mangled_text import mangled_strings_inside
+        порча = mangled_strings_inside(patch)
+        if порча:
+            logging.warning("синонимы для %r не записаны — текст размножен сам на себя: %s",
+                            german, " | ".join(x[:70] for x in порча[:3]))
+            report["errors"] += 1
+            patch = {}
+
         # Отметка «спрашивали» ставится ВСЕГДА, даже когда модель вернула пустоту:
         # без неё слово вернулось бы в очередь завтра и послезавтра.
         patch["synonyms_asked_at"] = datetime.now(timezone.utc).isoformat()
