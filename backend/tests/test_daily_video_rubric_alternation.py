@@ -300,6 +300,61 @@ def test_empty_shelf_fails_honestly_instead_of_repeating(monkeypatch):
     assert "полка пуста" in str(err.value)
 
 
+# ── Кривой ответ модели: переспрашиваем, а не латаем и не сдаёмся ──────────────
+
+def test_bad_pack_makes_us_ask_again_not_give_up(monkeypatch):
+    """21.08.2026 выпуск сорвался целиком из-за одного вопроса теста с тремя вариантами
+    вместо четырёх — вместе с ним пропал и хороший разбор слов.
+
+    Латать ответ своими руками нельзя: обрезать лишние варианты значит рискнуть выкинуть
+    правильный, дописать недостающие — выдумать. Поэтому переспрашиваем модель."""
+    import backend.database as db
+    import backend.world_news_generator as G
+
+    shelf_row = {
+        "video_id": "vid00000002", "video_title": "Номер", "channel_title": "NightWash",
+        "duration_seconds": 500, "has_manual_captions": True,
+        # Субтитры обязаны содержать ВСЕ цитаты карточек — иначе их отбракует страж цитат,
+        # и мы будем проверять не то, что задумали.
+        "transcript": [{"text": _TRANSCRIPT}] * 12,
+        "transcript_lang": "de", "transcript_is_generated": False,
+    }
+    monkeypatch.setattr(db, "take_next_from_standup_shelf", lambda exclude=None: shelf_row)
+
+    calls = {"n": 0}
+
+    def _fake_llm(title, transcript, profile=None):
+        calls["n"] += 1
+        quiz = [{"question_de": f"Frage {i}?", "options": ["a", "b", "c", "d"],
+                 "correct_index": 0, "explanation_ru": "потому что"} for i in range(4)]
+        if calls["n"] == 1:
+            quiz[2]["options"] = ["a", "b", "c"]      # ровно тот изъян, что сорвал выпуск
+        return {"summary_points": ["Комик про понедельник"],
+                "phrases": _good_phrases(5), "quiz": quiz}
+
+    monkeypatch.setattr(G, "_call_llm", _fake_llm)
+    # Останавливаемся СРАЗУ после сборки пакета. Подменять надо `backend.database`, а не
+    # модуль генератора: prepare_world_news импортирует запись внутри функции, и подмена
+    # на генераторе не действует. Проверено на себе 21.08.2026 — тест дописал поддельный
+    # день в БОЕВУЮ базу, и его пришлось вычищать руками.
+    monkeypatch.setattr(db, "upsert_world_news_daily", lambda **kw: (_ for _ in ()).throw(
+        RuntimeError("СТОП: пакет собран")))
+
+    with pytest.raises(Exception) as err:
+        G.prepare_world_news("2026-08-22", rubric=RUBRIC_STANDUP)
+    assert calls["n"] == 2, "после кривого пакета модель обязаны переспросить"
+    assert "негодный" not in str(err.value), "со второй попытки пакет годный — сдаваться рано"
+
+
+def test_we_never_patch_a_bad_pack_ourselves():
+    """Страж остаётся строгим: вопрос без четырёх вариантов бракуется, а не «чинится»
+    обрезкой. Обрезав лишний вариант, мы рискуем выкинуть правильный ответ."""
+    pack = _pack(_good_phrases(5))
+    pack["quiz"][1]["options"] = ["a", "b", "c"]
+    with pytest.raises(ValueError):
+        _validate_and_normalize_pack(pack, STANDUP_PROFILE, _TRANSCRIPT)
+
+
 # ── Отчёт о пуле не тратит квоту ───────────────────────────────────────────────
 
 def test_pool_report_counts_the_shelf_and_never_calls_youtube(monkeypatch):

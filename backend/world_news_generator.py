@@ -1151,9 +1151,33 @@ def prepare_world_news(
     if not picked:
         raise RuntimeError(f"world_news: no suitable video with transcript found — diag={diag}")
 
-    pack = _validate_and_normalize_pack(
-        _call_llm(picked["title"], picked["text"], profile), profile, picked["text"]
-    )
+    # Модель иногда возвращает пакет с изъяном — например, в одном вопросе теста три
+    # варианта вместо четырёх (случай 21.08.2026). Раньше это убивало ВЕСЬ пакет вместе
+    # с хорошим разбором слов, и выпуск срывался целиком.
+    #
+    # Чинить кривой ответ своими руками нельзя: обрезать лишние варианты значит рискнуть
+    # выкинуть правильный, а дописать недостающие — выдумать. Поэтому мы не латаем ответ,
+    # а ПЕРЕСПРАШИВАЕМ модель. Ролик и субтитры уже получены, повтор стоит только запроса.
+    pack_attempts = max(1, _env_int("DAILY_VIDEO_PACK_RETRIES", 3))
+    pack = None
+    last_err = None
+    for attempt in range(pack_attempts):
+        try:
+            pack = _validate_and_normalize_pack(
+                _call_llm(picked["title"], picked["text"], profile), profile, picked["text"]
+            )
+            break
+        except ValueError as exc:
+            last_err = exc
+            logger.warning(
+                "daily_video[%s]: модель вернула негодный пакет (попытка %d из %d): %s",
+                profile.key, attempt + 1, pack_attempts, exc,
+            )
+    if pack is None:
+        raise RuntimeError(
+            f"daily_video[{profile.key}]: модель {pack_attempts} раза подряд вернула "
+            f"негодный разбор — последняя причина: {last_err}"
+        )
 
     upsert_world_news_daily(
         news_date=date_str,
