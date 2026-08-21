@@ -24115,10 +24115,13 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 conn.commit()
                 result["text"] = ""
                 return result
-            cursor.execute(
-                "UPDATE bt_3_lex_units SET display=%s, lemma=%s, lemma_key=%s WHERE id=%s;",
-                (new_text, new_text, key, unit_id),
-            )
+            # Переименование идёт ОДНИМ местом (lex_units.retitle_unit), потому что вместе
+            # с написанием обязан пересчитаться ВИД ЗАПИСИ. Здесь его не пересчитывали, а
+            # ночной добор берёт в работу только `kind = 'word'`: фраза, которую владелец
+            # свёл к одному слову («Die Feinde…» → «sich verzehnfachen»), оставалась
+            # «предложением» и разбор получить уже не могла. Замер 21.08.2026.
+            from backend.lex_units import retitle_unit
+            retitle_unit(cursor, unit_id, new_text)
             # Правка доезжает ДО ВСЕХ мест сразу — см. spread_correction_everywhere.
             spread_correction_everywhere(cursor, unit_id=unit_id,
                                          old_text=old_text, new_text=new_text)
