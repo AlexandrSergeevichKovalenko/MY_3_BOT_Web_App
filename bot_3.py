@@ -11602,7 +11602,10 @@ async def handle_world_news_pin_callback(update: Update, context: CallbackContex
 # (datacenter-IP block, 2026-07-10) left prepare_world_news awaiting a response that never came →
 # the coroutine never completed → no heartbeat, no ⚠️ alert → 3 silent days of no morning news
 # (2026-07-10..12). wait_for guarantees we always reach the alert + heartbeat path.
-_WORLD_NEWS_PREP_TIMEOUT_SEC = int((os.getenv("WORLD_NEWS_PREP_TIMEOUT_SEC") or "300").strip() or "300")
+# Потолок поднят с 300 до 600 (21.08.2026): разбор стендапа тяжелее новостного, модель
+# думает дольше, и в 300 секунд не помещались ни повтор к модели, ни аварийное пополнение
+# полки. Потолок нужен по-прежнему — он ловит зависание, а не медленную работу.
+_WORLD_NEWS_PREP_TIMEOUT_SEC = int((os.getenv("WORLD_NEWS_PREP_TIMEOUT_SEC") or "600").strip() or "600")
 
 
 async def _world_news_alert_admins(context: CallbackContext, admin_ids: list, text: str) -> int:

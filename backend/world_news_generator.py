@@ -844,10 +844,35 @@ def _call_llm(title: str, transcript: str, profile=None) -> dict:
         ],
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    resp = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers=headers, json=payload, timeout=120,
-    )
+    # Разбор стендапа втрое тяжелее новостного: у каждой единицы семь полей вместо трёх
+    # (помета регистра, форма, значение здесь, обычное значение, цитата, её перевод,
+    # употребление), и единиц бывает до восемнадцати. Замер 21.08.2026: на 120 секундах
+    # запрос не успевал, и вечерняя подготовка падала по таймауту — причём уже ПОСЛЕ того,
+    # как ролик выбран и субтитры получены, то есть вся дорогая работа шла впустую.
+    timeout_sec = _env_int("DAILY_VIDEO_LLM_TIMEOUT_SEC", 240)
+    attempts = max(1, _env_int("DAILY_VIDEO_LLM_RETRIES", 2))
+    resp = None
+    for attempt in range(attempts):
+        started = time.monotonic()
+        try:
+            resp = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers, json=payload, timeout=timeout_sec,
+            )
+        except requests.Timeout:
+            spent = int(time.monotonic() - started)
+            if attempt + 1 < attempts:
+                logger.warning("daily_video: модель молчала %ds — повтор (%d/%d)",
+                               spent, attempt + 2, attempts)
+                continue
+            raise RuntimeError(
+                f"модель не ответила за {timeout_sec}s ({attempts} попытки) — "
+                "ролик и субтитры уже получены, повтори подготовку"
+            )
+        # Сколько модель думала на самом деле — иначе следующий таймаут снова придётся
+        # разбирать вслепую.
+        logger.info("daily_video: модель ответила за %ds", int(time.monotonic() - started))
+        break
     if not resp.ok:
         raise RuntimeError(f"OpenAI HTTP {resp.status_code}: {resp.text[:300]}")
     resp_json = resp.json()
