@@ -10929,6 +10929,32 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_daily_video_shown_rubric
                 ON bt_3_daily_video_shown (rubric, shown_on DESC);
             """)
+            # ПОЛКА СТЕНДАПОВ (решение владельца 21.08.2026). Стендап вечнозелёный:
+            # ролику три года — он ровно так же смешон и так же полезен для языка. Значит
+            # ходить за ним в YouTube в момент выпуска не нужно, а вот платить за это
+            # приходится полной зависимостью — 21.08.2026 один придушенный ключ оставил
+            # рубрику без ролика. Теперь ролики отбираются заранее и лежат здесь ВМЕСТЕ С
+            # ТЕКСТОМ СУБТИТРОВ: подготовка выпуска не ходит ни в YouTube, ни за субтитрами
+            # (их скачивание 20.08.2026 сутки было заблокировано по адресу).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_standup_shelf (
+                    video_id TEXT PRIMARY KEY,
+                    video_title TEXT,
+                    channel_title TEXT,
+                    duration_seconds INTEGER,
+                    has_manual_captions BOOLEAN NOT NULL DEFAULT FALSE,
+                    view_count BIGINT,
+                    transcript JSONB NOT NULL,
+                    transcript_lang TEXT,
+                    transcript_is_generated BOOLEAN,
+                    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    used_on DATE
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_standup_shelf_unused
+                ON bt_3_standup_shelf (used_on, has_manual_captions DESC, view_count DESC);
+            """)
             # Снимок пула рубрики. Знание «сколько роликов подходит по длине и сколько из
             # них с ручными субтитрами» появляется БЕСПЛАТНО в момент, когда вечерняя
             # подготовка и так обходит каналы, чтобы выбрать ролик. Раньше еженедельный
@@ -27354,6 +27380,132 @@ def get_shown_daily_video_ids(rubric: str | None = None) -> set:
                 )
             else:
                 cursor.execute("SELECT video_id FROM bt_3_daily_video_shown;")
+            return {str(r[0]).strip() for r in cursor.fetchall() if r and r[0]}
+
+
+def put_on_standup_shelf(
+    *,
+    video_id: str,
+    video_title: str,
+    channel_title: str,
+    duration_seconds: int,
+    has_manual_captions: bool,
+    view_count: int | None,
+    transcript: list,
+    transcript_lang: str,
+    transcript_is_generated: bool | None,
+) -> bool:
+    """Положить проверенный ролик на полку вместе с текстом субтитров.
+
+    Кладём только то, у чего субтитры УЖЕ скачаны и прочитаны: полка существует ровно для
+    того, чтобы в момент выпуска ничего не качать. Ролик без субтитров на полке — это
+    отложенная поломка, а не запас.
+
+    Возвращает True, если ролик добавлен, и False, если он уже лежал.
+    """
+    vid = str(video_id or "").strip()
+    if not vid:
+        raise ValueError("put_on_standup_shelf: нужен video_id")
+    if not transcript:
+        raise ValueError(f"put_on_standup_shelf: {vid} без субтитров на полку не кладётся")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_standup_shelf
+                    (video_id, video_title, channel_title, duration_seconds,
+                     has_manual_captions, view_count, transcript, transcript_lang,
+                     transcript_is_generated, added_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (video_id) DO NOTHING;
+                """,
+                (vid, video_title, channel_title, int(duration_seconds or 0),
+                 bool(has_manual_captions), view_count,
+                 json.dumps(transcript, ensure_ascii=False), transcript_lang,
+                 transcript_is_generated),
+            )
+            return bool(cursor.rowcount)
+
+
+def take_next_from_standup_shelf(exclude_video_ids: set | None = None) -> dict | None:
+    """Следующий непоказанный ролик с полки. None — полка пуста (честный ответ, не сбой).
+
+    Порядок отбора — решение владельца 21.08.2026: сначала ролики с субтитрами,
+    положенными руками (машинная расшифровка идёт без знаков препинания и угадывает слова
+    на слух), потом более просмотренные. Популярность стоит ПОСЛЕ субтитров осознанно:
+    двухмиллионный просмотрами номер запросто окажется тяжёлым диалектом под ор зала —
+    смешно немцу, бесполезно учащемуся.
+    """
+    exclude = {str(v).strip() for v in (exclude_video_ids or set()) if str(v).strip()}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if exclude:
+                cursor.execute(
+                    "SELECT video_id, video_title, channel_title, duration_seconds, "
+                    "has_manual_captions, transcript, transcript_lang, transcript_is_generated "
+                    "FROM bt_3_standup_shelf WHERE used_on IS NULL AND NOT (video_id = ANY(%s)) "
+                    "ORDER BY has_manual_captions DESC, view_count DESC NULLS LAST, added_at "
+                    "LIMIT 1;",
+                    (list(exclude),),
+                )
+            else:
+                cursor.execute(
+                    "SELECT video_id, video_title, channel_title, duration_seconds, "
+                    "has_manual_captions, transcript, transcript_lang, transcript_is_generated "
+                    "FROM bt_3_standup_shelf WHERE used_on IS NULL "
+                    "ORDER BY has_manual_captions DESC, view_count DESC NULLS LAST, added_at "
+                    "LIMIT 1;"
+                )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            (vid, title, channel, dur, manual, transcript, lang, generated) = row
+            if isinstance(transcript, str):
+                transcript = json.loads(transcript)
+            return {
+                "video_id": str(vid),
+                "video_title": str(title or ""),
+                "channel_title": str(channel or ""),
+                "duration_seconds": int(dur or 0),
+                "has_manual_captions": bool(manual),
+                "transcript": transcript or [],
+                "transcript_lang": str(lang or "de"),
+                "transcript_is_generated": generated,
+            }
+
+
+def mark_standup_shelf_used(video_id: str, used_on) -> None:
+    """Пометить ролик как израсходованный. Со полки он не удаляется: так видно, что
+    рубрика уже показывала, даже когда вечный реестр почистят."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_standup_shelf SET used_on = %s WHERE video_id = %s;",
+                (used_on, str(video_id or "").strip()),
+            )
+
+
+def standup_shelf_counts() -> dict:
+    """Сколько на полке всего, сколько непоказанных и сколько из них с ручными субтитрами.
+    Это и есть материал еженедельного отчёта — считается по нашей базе, без YouTube."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*), "
+                "COUNT(*) FILTER (WHERE used_on IS NULL), "
+                "COUNT(*) FILTER (WHERE used_on IS NULL AND has_manual_captions) "
+                "FROM bt_3_standup_shelf;"
+            )
+            row = cursor.fetchone() or (0, 0, 0)
+            return {"total": int(row[0] or 0), "unused": int(row[1] or 0),
+                    "unused_manual": int(row[2] or 0)}
+
+
+def standup_shelf_video_ids() -> set:
+    """Всё, что уже лежит на полке, — чтобы пополнение не клало одно и то же дважды."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT video_id FROM bt_3_standup_shelf;")
             return {str(r[0]).strip() for r in cursor.fetchall() if r and r[0]}
 
 

@@ -194,6 +194,10 @@ class RubricProfile:
     # текст при сохранении, значит показанное уезжает человеку в словарь дословно.
     requires_quote: bool = True
     requires_register: bool = False  # помета регистра (сленг/грубое) — только у стендапа
+    # Берёт ли рубрика ролик С ПОЛКИ (заранее отобранное и уже со скачанными субтитрами)
+    # вместо похода в YouTube в момент выпуска. Решение владельца 21.08.2026 — см.
+    # backend/standup_shelf.py. У новостей полки нет и быть не может: им нужна свежесть.
+    uses_shelf: bool = False
     env_channels_var: str = ""
 
 
@@ -248,6 +252,7 @@ STANDUP_PROFILE = RubricProfile(
     # машинная расшифровка — второй эшелон. Причина: под стендап машина пишет без знаков
     # препинания и угадывает слова на слух, а человек читает субтитры и заучивает их.
     prefer_manual_captions=True,
+    uses_shelf=True,
     min_seconds=240,
     max_seconds=900,
     pref_min_seconds=300,

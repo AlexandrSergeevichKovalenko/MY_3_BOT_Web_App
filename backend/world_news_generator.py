@@ -389,7 +389,10 @@ def _yt_api_video_details(video_ids: list[str]) -> dict[str, dict]:
 
 def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dict) -> None:
     params = {
-        "part": "contentDetails,snippet",
+        # statistics добавлен 21.08.2026: по числу просмотров полка стендапов решает,
+        # какой ролик ставить раньше. Часть запроса, а не отдельный вызов — цена та же,
+        # одна единица за пачку до 50 роликов.
+        "part": "contentDetails,snippet,statistics",
         "id": ",".join(video_ids),
         "key": api_key,
     }
@@ -412,7 +415,17 @@ def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dic
             # машинная расшифровка в этот флаг не попадает. По нему рубрика ставит ролики
             # с ручными субтитрами первыми (решение владельца 20.08.2026).
             "has_manual_captions": str(content.get("caption") or "").strip().lower() == "true",
+            "view_count": _as_int_or_none((item.get("statistics") or {}).get("viewCount")),
         }
+
+
+def _as_int_or_none(value):
+    """Число просмотров или None. Отсутствие статистики — это «не знаем», а не ноль:
+    ноль означал бы «ролик никто не смотрел», и он уехал бы в конец очереди незаслуженно."""
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return None
 
 
 def _extract_video_id(url_or_id: str) -> str:
@@ -1025,7 +1038,52 @@ def prepare_world_news(
     allow_repeat_when_empty = profile.pick_strategy != "archive"
 
     picked, diag = None, {}
-    if not manual_url:
+    # ── ПОЛКА ───────────────────────────────────────────────────────────────────
+    # Стендап берёт готовое: ролик уже отобран, и субтитры к нему уже скачаны. В момент
+    # выпуска мы не ходим ни в YouTube, ни за субтитрами — обе эти дороги 20–21.08.2026
+    # оказались перекрыты ровно тогда, когда рубрика была нужна.
+    if not manual_url and profile.uses_shelf:
+        from backend.database import take_next_from_standup_shelf
+        shelf_item = take_next_from_standup_shelf(base_exclude)
+        if not shelf_item:
+            # Полка пуста. Пробуем пополнить ОДИН раз и берём снова: это тот же источник,
+            # просто добираем его сейчас, а не по расписанию. Если и после этого пусто —
+            # честно падаем, а не подсовываем повтор.
+            logger.warning("daily_video[%s]: полка пуста — пробую пополнить на месте", profile.key)
+            try:
+                from backend.standup_shelf import refill_standup_shelf
+                refill_standup_shelf()
+            except Exception:
+                logger.exception("daily_video[%s]: пополнение полки не удалось", profile.key)
+            shelf_item = take_next_from_standup_shelf(base_exclude)
+        if not shelf_item:
+            raise RuntimeError(
+                f"daily_video[{profile.key}]: полка пуста и пополнить её не удалось — "
+                "нужен ролик вручную или пополнение набора каналов"
+            )
+        text = _transcript_to_text(shelf_item["transcript"])
+        if len(text) < WORLD_NEWS_MIN_TRANSCRIPT_CHARS:
+            # На полку кладутся только ролики с проверенными субтитрами, так что сюда мы
+            # попасть не должны. Если попали — это порча данных, и её надо видеть.
+            raise RuntimeError(
+                f"daily_video[{profile.key}]: у ролика {shelf_item['video_id']} с полки "
+                f"субтитры короче порога ({len(text)} симв.) — полка испорчена"
+            )
+        picked = {
+            "video_id": shelf_item["video_id"],
+            "video_url": f"https://www.youtube.com/watch?v={shelf_item['video_id']}",
+            "title": shelf_item["video_title"],
+            "channel_title": shelf_item["channel_title"],
+            "duration_seconds": shelf_item["duration_seconds"],
+            "lang": shelf_item["transcript_lang"],
+            "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
+            "items": shelf_item["transcript"],
+            "is_generated": shelf_item["transcript_is_generated"],
+            "has_manual_captions": shelf_item["has_manual_captions"],
+        }
+        diag = {"rubric": profile.key, "source": "shelf"}
+
+    if not picked and not manual_url:
         try:
             shown = get_shown_daily_video_ids(profile.key)
         except Exception:
@@ -1095,6 +1153,11 @@ def prepare_world_news(
         channel_title=picked["channel_title"],
         had_manual_captions=picked.get("has_manual_captions"),
     )
+    # Ролик израсходован — помечаем на полке, чтобы он не вышел вторым кругом. С полки не
+    # удаляем: так видно, что рубрика уже показывала, даже когда реестр почистят.
+    if diag.get("source") == "shelf":
+        from backend.database import mark_standup_shelf_used
+        mark_standup_shelf_used(picked["video_id"], date_str)
     # Снимок пула — из того, что обход и так увидел. Отчёт владельцу собирается потом из
     # него и из реестра показанного, не тратя ни единицы квоты. При ручной выдаче по ссылке
     # обхода не было, и снимка нет — тогда прежний остаётся нетронутым, а не обнуляется.

@@ -29,45 +29,38 @@ logger = logging.getLogger(__name__)
 
 
 def standup_pool_state() -> dict:
-    """Сколько роликов в пуле, сколько израсходовано, сколько осталось и на сколько дней.
+    """Сколько роликов готово к выпуску, сколько израсходовано и на сколько дней хватит.
 
-    Читает готовое: снимок пула и реестр показанного. В сеть НЕ ходит.
+    Читает готовое: полку, снимок пула и реестр показанного. В сеть НЕ ходит.
 
     Ошибки НЕ глушатся: пустой отчёт от сбоя неотличим от честного «пул кончился», а это
     два разных мира — в одном надо чинить базу, в другом пополнять набор каналов.
     """
     from backend.daily_video_rubrics import STANDUP_PROFILE
-    from backend.database import count_shown_daily_videos, get_daily_video_pool_snapshot
+    from backend.database import (count_shown_daily_videos, get_daily_video_pool_snapshot,
+                                  standup_shelf_counts)
 
+    shelf = standup_shelf_counts()
     snapshot = get_daily_video_pool_snapshot(STANDUP_PROFILE.key)
     shown_total = count_shown_daily_videos(STANDUP_PROFILE.key)
 
-    if not snapshot:
-        # Замера не было ни разу — это НЕ «пул пуст». Отчёт обязан сказать об этом словами,
-        # а не показать ноль: ноль означал бы «добавь каналы», хотя добавлять ничего не надо.
-        return {
-            "measured": False,
-            "channels": len(STANDUP_PROFILE.channel_ids),
-            "shown_total": shown_total,
-        }
-
-    in_range = int(snapshot.get("in_range") or 0)
-    manual = int(snapshot.get("manual_captions") or 0)
-    # Показанное вычитается из пула. Снимок и реестр меряют одно и то же множество роликов,
-    # поэтому вычитание честное; отрицательным результат стать не может — но если бы стал,
-    # это означало бы рассинхрон, и показывать «-3 ролика» человеку нельзя.
-    remaining = max(0, in_range - shown_total)
-    remaining_manual = max(0, min(manual, remaining))
+    # Настоящий запас рубрики — это ПОЛКА: заранее отобранные ролики с уже скачанными
+    # субтитрами. Снимок пула говорит о другом — сколько всего годного есть у каналов,
+    # то есть чем полку ещё можно пополнить. Путать их нельзя: полка может опустеть при
+    # огромном пуле, и наоборот.
+    remaining = int(shelf.get("unused") or 0)
+    remaining_manual = int(shelf.get("unused_manual") or 0)
 
     return {
         "measured": True,
         "channels": len(STANDUP_PROFILE.channel_ids),
-        "scanned": int(snapshot.get("scanned") or 0),
-        "in_range": in_range,
-        "shown_total": shown_total,
+        "shelf_total": int(shelf.get("total") or 0),
         "remaining": remaining,
         "remaining_manual": remaining_manual,
-        "measured_on": snapshot.get("measured_on"),
+        "shown_total": shown_total,
+        # Чем полку можно пополнить: годных у каналов минус уже показанные.
+        "pool_in_range": int((snapshot or {}).get("in_range") or 0),
+        "pool_measured_on": (snapshot or {}).get("measured_on"),
         # Рубрика выходит через день, поэтому запас в днях — вдвое больше числа роликов.
         "days_left": remaining * 2,
         "days_left_manual": remaining_manual * 2,
@@ -89,23 +82,17 @@ def _plural_days_ru(n: int) -> str:
 
 def format_standup_pool_report(state: dict) -> str:
     """Человеческий текст отчёта: взглянул — понял — знаешь, надо ли что-то делать."""
-    if not state.get("measured"):
-        return (
-            "🎤 <b>Стендап дня — состояние пула</b>\n\n"
-            "⏳ Пул ещё ни разу не мерился: замер делается в момент подготовки выпуска.\n"
-            f"Показано выступлений: {state.get('shown_total', 0)} · "
-            f"каналов в наборе: {state.get('channels', 0)}\n\n"
-            "Число появится здесь после первой автоматической подготовки стендапа."
-        )
-
     remaining = int(state.get("remaining") or 0)
     manual = int(state.get("remaining_manual") or 0)
     days = int(state.get("days_left") or 0)
     days_manual = int(state.get("days_left_manual") or 0)
 
-    if remaining <= 0:
-        verdict = ("📭 <b>Ролики закончились.</b> Рубрика не сможет подобрать выступление — "
-                   "нужно добавить каналы в набор.")
+    if remaining <= 0 and not state.get("shelf_total"):
+        verdict = ("⏳ <b>Полка ещё не наполнялась.</b> Она наполнится сама при первом "
+                   "пополнении — ролики отбираются заранее, пачкой.")
+    elif remaining <= 0:
+        verdict = ("📭 <b>Полка пуста — всё показано.</b> Пополнение попробует добрать "
+                   "новые ролики; если не выйдет, нужно добавить каналы в набор.")
     elif days < 30:
         verdict = (f"⚠️ <b>Запаса меньше месяца.</b> Пора добавить каналы: "
                    f"хватит примерно на {days} {_plural_days_ru(days)}.")
@@ -117,10 +104,10 @@ def format_standup_pool_report(state: dict) -> str:
         "",
         verdict,
         "",
-        f"Непоказанных выступлений: <b>{remaining}</b> "
-        f"(из {state.get('in_range', 0)} подходящих по длине)",
+        f"Готово к выпуску на полке: <b>{remaining}</b>",
         f"Уже показано: {state.get('shown_total', 0)}",
-        f"Каналов в наборе: {state.get('channels', 0)}",
+        f"Чем пополнять: {state.get('pool_in_range', 0)} годных роликов у "
+        f"{state.get('channels', 0)} каналов",
     ]
     if manual <= 0 and remaining > 0:
         lines += [
@@ -137,6 +124,9 @@ def format_standup_pool_report(state: dict) -> str:
         ]
     # Возраст данных называется вслух: снимок недельной давности не должен выглядеть
     # как сегодняшний. Обновляется он при каждой подготовке выпуска, то есть через день.
-    if state.get("measured_on"):
-        lines += ["", f"<i>По замеру от {state['measured_on']} · квоту YouTube отчёт не тратит</i>"]
+    if state.get("pool_measured_on"):
+        lines += ["", f"<i>Каналы смотрели {state['pool_measured_on']} · "
+                      f"квоту YouTube отчёт не тратит</i>"]
+    else:
+        lines += ["", "<i>Квоту YouTube отчёт не тратит</i>"]
     return "\n".join(lines)

@@ -10513,6 +10513,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     # ⚠️ alarm here, and a stalled/never-fired cron goes ПРОТУХЛО past 30h. ---
     ("world_news_evening_result", "Новость дня — вечерняя подготовка (20:00)", 30, True, "guard"),
     ("standup_pool_report_result", "Стендап — отчёт о состоянии пула (вс 11:00)", 10, True, "guard"),
+    ("standup_shelf_refill_result", "Стендап — пополнение полки (3:40)", 30, True, "guard"),
     ("world_news_morning_result", "Новость дня — утренняя рассылка (6:30)", 30, True, "guard"),
     # --- Nightly maintenance / cleanups (heartbeat from the job body in backend_server) ---
     ("system_message_cleanup", "Чистка системных сообщений", 30, True, "guard"),
@@ -11350,6 +11351,66 @@ async def admin_world_news_command(update: Update, context: CallbackContext,
     text = _world_news_preview_text(entry, header=f"✅ <b>{_rubric_title(entry)} — готово</b>")
     kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
     await status.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def run_standup_shelf_refill(context: CallbackContext):
+    """Ночное пополнение полки стендапов.
+
+    Пока непоказанных роликов хватает, работа НЕ ходит в YouTube вообще — в этом весь
+    смысл полки. Когда запас проседает, она один раз обходит каналы, скачивает субтитры
+    к отобранным роликам и кладёт их готовыми. Владельцу пишем только когда что-то
+    вправду произошло или не смогло: молчащий механизм неотличим от сломанного, но и
+    сообщать «сегодня ничего не понадобилось» каждую ночь — шум.
+    """
+    from backend.database import get_admin_telegram_ids
+    try:
+        from backend.standup_shelf import format_shelf_refill_report, refill_standup_shelf
+        report = await asyncio.to_thread(refill_standup_shelf)
+    except Exception as exc:
+        logging.exception("standup shelf refill failed")
+        _record_sched_heartbeat("standup_shelf_refill_result", "failed", {"error": str(exc)[:200]})
+        admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"⚠️ Полка стендапов не пополнилась: {exc}\nПроверить: /standup_shelf",
+                )
+            except Exception:
+                logging.debug("standup shelf: admin DM failed id=%s", admin_id, exc_info=True)
+        return
+    _record_sched_heartbeat("standup_shelf_refill_result", "completed",
+                            {"added": report.get("added"), "now": report.get("now_unused")})
+    # Тишина, когда полка и так полна: сообщать не о чем.
+    if not report.get("added"):
+        return
+    admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    text = format_shelf_refill_report(report)
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+        except Exception:
+            logging.debug("standup shelf: admin DM failed id=%s", admin_id, exc_info=True)
+
+
+async def admin_standup_shelf_command(update: Update, context: CallbackContext):
+    """/standup_shelf — пополнить полку прямо сейчас и показать, что получилось."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    status = await message.reply_text("🎤 Пополняю полку стендапов…")
+    try:
+        from backend.standup_shelf import format_shelf_refill_report, refill_standup_shelf
+        report = await asyncio.to_thread(refill_standup_shelf)
+    except Exception as exc:
+        logging.exception("admin standup_shelf failed user_id=%s", int(sender.id))
+        await status.edit_text(f"❌ Не удалось пополнить полку: {exc}")
+        return
+    await status.edit_text(format_shelf_refill_report(report), parse_mode="HTML")
 
 
 async def run_standup_pool_report(context: CallbackContext):
@@ -43444,6 +43505,7 @@ def main():
     application.add_handler(CommandHandler("worldnews", admin_world_news_command))
     application.add_handler(CommandHandler("standup", admin_standup_command))
     application.add_handler(CommandHandler("standup_pool", admin_standup_pool_command))
+    application.add_handler(CommandHandler("standup_shelf", admin_standup_shelf_command))
     application.add_handler(CommandHandler("worldnews_card", admin_world_news_card_command))
     application.add_handler(CommandHandler("admin_worldnews_image", admin_world_news_image_command))
     application.add_handler(CommandHandler("worldnews_approve", admin_world_news_approve_command))
@@ -44042,6 +44104,8 @@ def main():
         # Состояние пула стендапа — раз в неделю, само. Владелец ничего не вызывает командой:
         # «всё, что я должен вызывать командой, я забуду».
         scheduler.add_job(lambda: submit_async(run_standup_pool_report,CallbackContext(application=application)),"cron", day_of_week="sun", hour=11, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        # Пополнение полки — ночью, когда нет трафика. Пока запас есть, в YouTube не ходит.
+        scheduler.add_job(lambda: submit_async(run_standup_shelf_refill,CallbackContext(application=application)),"cron", hour=3, minute=40, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Drain Mini-App «⚔️ Battles» create requests every few seconds (bot runs the
         # existing broadcast logic, so invites/images/nudges/digest are unchanged).

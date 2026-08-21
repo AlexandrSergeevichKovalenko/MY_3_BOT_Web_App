@@ -209,39 +209,154 @@ def test_daily_quota_is_not_retried(monkeypatch):
     assert G._QUOTA_EXCEEDED is True
 
 
+# ── Полка стендапов ────────────────────────────────────────────────────────────
+
+def test_full_shelf_means_no_youtube_at_all(monkeypatch):
+    """Главный смысл полки: пока запас есть, в сеть не ходим ВООБЩЕ. 21.08.2026 рубрика
+    осталась без ролика из-за придушенного ключа — с полкой это перестаёт быть событием."""
+    import backend.database as db
+    import backend.standup_shelf as S
+    import backend.world_news_generator as G
+
+    monkeypatch.setattr(db, "standup_shelf_counts",
+                        lambda: {"total": 30, "unused": 30, "unused_manual": 12})
+    monkeypatch.setattr(G, "_gather_candidates", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("при полной полке обход каналов запрещён")))
+
+    report = S.refill_standup_shelf(target=30)
+    assert report["added"] == 0
+    assert "полка полна" in report["reason"]
+
+
+def test_refill_never_shelves_a_video_without_subtitles(monkeypatch):
+    """Ролик без субтитров на полке — отложенная поломка, а не запас: в день выпуска
+    выяснится, что показывать нечего, и будет поздно."""
+    from backend.database import put_on_standup_shelf
+
+    with pytest.raises(ValueError):
+        put_on_standup_shelf(
+            video_id="abc12345678", video_title="t", channel_title="c",
+            duration_seconds=400, has_manual_captions=True, view_count=1,
+            transcript=[], transcript_lang="de", transcript_is_generated=False,
+        )
+
+
+def test_shelf_prefers_manual_subtitles_over_popularity():
+    """Порядок отбора владельца 21.08.2026: сперва ручные субтитры, и только потом
+    просмотры. Двухмиллионный номер с машинной расшифровкой не должен обгонять
+    скромный ролик с субтитрами, положенными руками."""
+    import backend.standup_shelf as S
+
+    rows = [
+        {"video_id": "popular", "has_manual_captions": False, "view_count": 2_000_000},
+        {"video_id": "manual", "has_manual_captions": True, "view_count": 1_000},
+        {"video_id": "manual_big", "has_manual_captions": True, "view_count": 50_000},
+    ]
+    rows.sort(key=lambda r: (0 if r["has_manual_captions"] else 1, -(r["view_count"] or 0)))
+    assert [r["video_id"] for r in rows] == ["manual_big", "manual", "popular"]
+    # Тот же ключ обязан стоять и в самом пополнении — иначе тест стережёт пустоту.
+    import inspect
+    assert 'if r["has_manual_captions"] else 1' in inspect.getsource(S.refill_standup_shelf)
+
+
+def test_standup_prep_reads_the_shelf_and_does_not_fetch_anything(monkeypatch):
+    """Подготовка выпуска берёт готовое: ни YouTube, ни скачивания субтитров. 20.08.2026
+    субтитры сутки не тянулись из-за блокировки адреса — этот путь такую беду переживает."""
+    import backend.database as db
+    import backend.world_news_generator as G
+
+    shelf_row = {
+        "video_id": "vid00000001", "video_title": "Мой номер", "channel_title": "NightWash",
+        "duration_seconds": 480, "has_manual_captions": True,
+        "transcript": [{"text": "ich hab null Bock auf Montag"} for _ in range(40)],
+        "transcript_lang": "de", "transcript_is_generated": False,
+    }
+    monkeypatch.setattr(db, "take_next_from_standup_shelf", lambda exclude=None: shelf_row)
+    monkeypatch.setattr(G, "_gather_candidates", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("выпуск не имеет права обходить каналы")))
+    monkeypatch.setattr(G, "_fetch_transcript", lambda vid: (_ for _ in ()).throw(
+        AssertionError("выпуск не имеет права качать субтитры")))
+    # Дальше подготовки ролика не идём — модель и запись в базу здесь не проверяются.
+    monkeypatch.setattr(G, "_call_llm", lambda *a, **kw: (_ for _ in ()).throw(
+        RuntimeError("СТОП: ролик выбран")))
+
+    with pytest.raises(RuntimeError) as err:
+        G.prepare_world_news("2026-08-22", rubric=RUBRIC_STANDUP)
+    assert "СТОП: ролик выбран" in str(err.value)
+
+
+def test_empty_shelf_fails_honestly_instead_of_repeating(monkeypatch):
+    """Повторить показанное хуже, чем не показать: человек решит, что рубрика сломалась.
+    Пустая полка обязана поднять ошибку — вечерняя подготовка на неё зовёт владельца."""
+    import backend.database as db
+    import backend.standup_shelf as S
+    import backend.world_news_generator as G
+
+    monkeypatch.setattr(db, "take_next_from_standup_shelf", lambda exclude=None: None)
+    monkeypatch.setattr(S, "refill_standup_shelf", lambda **kw: {"added": 0})
+
+    with pytest.raises(RuntimeError) as err:
+        G.prepare_world_news("2026-08-22", rubric=RUBRIC_STANDUP)
+    assert "полка пуста" in str(err.value)
+
+
 # ── Отчёт о пуле не тратит квоту ───────────────────────────────────────────────
 
-def test_pool_report_reads_the_snapshot_and_never_calls_youtube(monkeypatch):
+def test_pool_report_counts_the_shelf_and_never_calls_youtube(monkeypatch):
     """Первая версия отчёта обходила каналы заново — тратила ту самую квоту, которая нужна
-    продукту. Теперь отчёт читает снимок, записанный в момент подготовки выпуска."""
+    продукту. Теперь запас считается по полке, а «чем пополнять» — по снимку, снятому
+    в момент подготовки выпуска. Обращений к YouTube: ноль."""
     import backend.database as db
     import backend.standup_pool_report as R
     import backend.world_news_generator as G
 
+    monkeypatch.setattr(db, "standup_shelf_counts",
+                        lambda: {"total": 30, "unused": 28, "unused_manual": 11})
     monkeypatch.setattr(db, "get_daily_video_pool_snapshot",
                         lambda rubric: {"scanned": 3756, "in_range": 646,
                                         "manual_captions": 111, "measured_on": "2026-08-21"})
-    monkeypatch.setattr(db, "count_shown_daily_videos", lambda rubric: 10)
+    monkeypatch.setattr(db, "count_shown_daily_videos", lambda rubric: 2)
     monkeypatch.setattr(G, "_gather_candidates", lambda *a, **kw: (_ for _ in ()).throw(
         AssertionError("отчёт не имеет права обходить каналы")))
 
     state = R.standup_pool_state()
-    assert state["remaining"] == 636          # 646 подходящих минус 10 показанных
-    assert state["days_left"] == 1272         # рубрика выходит через день
-    assert state["measured_on"] == "2026-08-21"
+    assert state["remaining"] == 28           # запас — это ПОЛКА, а не весь пул каналов
+    assert state["days_left"] == 56           # рубрика выходит через день
+    assert state["pool_in_range"] == 646      # а это то, чем полку можно пополнить
     assert "квоту YouTube отчёт не тратит" in R.format_standup_pool_report(state)
 
 
-def test_pool_report_says_when_it_has_never_measured(monkeypatch):
-    """Ноль и «мы ещё не мерили» — разные вещи: ноль означал бы «добавь каналы»."""
+def test_shelf_and_pool_are_not_confused(monkeypatch):
+    """Полка и пул каналов — разные вещи, и путать их нельзя: полка может опустеть при
+    огромном пуле. Отчёт обязан сказать «всё показано, пополнение доберёт», а не
+    «добавь каналы», когда добавлять ничего не надо."""
     import backend.database as db
     import backend.standup_pool_report as R
 
+    monkeypatch.setattr(db, "standup_shelf_counts",
+                        lambda: {"total": 30, "unused": 0, "unused_manual": 0})
+    monkeypatch.setattr(db, "get_daily_video_pool_snapshot",
+                        lambda rubric: {"scanned": 3756, "in_range": 646,
+                                        "manual_captions": 111, "measured_on": "2026-08-21"})
+    monkeypatch.setattr(db, "count_shown_daily_videos", lambda rubric: 30)
+    text = R.format_standup_pool_report(R.standup_pool_state())
+    assert "всё показано" in text
+    assert "646" in text, "надо показать, чем полку можно пополнить"
+
+
+def test_report_says_when_the_shelf_was_never_filled(monkeypatch):
+    """Пустая полка на старте и «всё показано» — разные сообщения: первое не требует
+    от владельца ничего, второе может потребовать новых каналов."""
+    import backend.database as db
+    import backend.standup_pool_report as R
+
+    monkeypatch.setattr(db, "standup_shelf_counts",
+                        lambda: {"total": 0, "unused": 0, "unused_manual": 0})
     monkeypatch.setattr(db, "get_daily_video_pool_snapshot", lambda rubric: None)
     monkeypatch.setattr(db, "count_shown_daily_videos", lambda rubric: 0)
     text = R.format_standup_pool_report(R.standup_pool_state())
-    assert "ещё ни разу не мерился" in text
-    assert "закончились" not in text
+    assert "ещё не наполнялась" in text
+    assert "всё показано" not in text
 
 
 # ── Прописные буквы в тезисах ──────────────────────────────────────────────────
