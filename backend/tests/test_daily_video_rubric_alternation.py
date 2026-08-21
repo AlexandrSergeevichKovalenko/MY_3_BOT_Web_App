@@ -148,6 +148,67 @@ def test_news_rubric_is_not_gated_by_the_archive_guard(monkeypatch):
     assert not asked, "новостной обход не должен проходить через архивный сторож"
 
 
+# ── «Единицы кончились» и «мы частим» — разные беды ────────────────────────────
+
+class _FakeResp:
+    def __init__(self, status, reason=None, items=None):
+        self.status_code = status
+        self._reason = reason
+        self._items = items or []
+
+    def json(self):
+        if self._reason:
+            return {"error": {"errors": [{"reason": self._reason}]}}
+        return {"items": self._items}
+
+
+def test_rate_limit_is_retried_not_surrendered(monkeypatch):
+    """21.08.2026: сотня быстрых запросов подряд придушила ключ, и `/standup` сдался с
+    сообщением «дневная квота исчерпана» — хотя суточные единицы были целы и хватило бы
+    подождать секунды. «Мы частим» обязано лечиться паузой и повтором."""
+    import backend.world_news_generator as G
+
+    calls = []
+
+    def _fake_get(url, params=None, timeout=None):
+        calls.append(url)
+        # Первые два раза — «не части», третий проходит.
+        if len(calls) < 3:
+            return _FakeResp(403, reason="rateLimitExceeded")
+        return _FakeResp(200, items=[{"id": "abc"}])
+
+    monkeypatch.setattr(G.requests, "get", _fake_get)
+    monkeypatch.setattr(G.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(G, "_quota_spent", lambda units: None)
+    G._QUOTA_EXCEEDED = False
+
+    payload = G._yt_get("https://example/api", {}, cost=1, what="проверка")
+    assert payload == {"items": [{"id": "abc"}]}, "повтор после паузы обязан сработать"
+    assert len(calls) == 3
+    assert G._QUOTA_EXCEEDED is False, "частота — это не исчерпанная суточная квота"
+
+
+def test_daily_quota_is_not_retried(monkeypatch):
+    """А вот «единицы кончились» повторять бессмысленно: до сброса ничего не изменится.
+    Долбиться в закрытую дверь — только греть логи."""
+    import backend.world_news_generator as G
+
+    calls = []
+
+    def _fake_get(url, params=None, timeout=None):
+        calls.append(url)
+        return _FakeResp(403, reason="quotaExceeded")
+
+    monkeypatch.setattr(G.requests, "get", _fake_get)
+    monkeypatch.setattr(G.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(G, "_quota_spent", lambda units: None)
+    G._QUOTA_EXCEEDED = False
+
+    assert G._yt_get("https://example/api", {}, cost=1, what="проверка") is None
+    assert len(calls) == 1, "суточное исчерпание не повторяют"
+    assert G._QUOTA_EXCEEDED is True
+
+
 # ── Отчёт о пуле не тратит квоту ───────────────────────────────────────────────
 
 def test_pool_report_reads_the_snapshot_and_never_calls_youtube(monkeypatch):

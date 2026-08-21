@@ -197,6 +197,79 @@ def _quota_remaining_text() -> str:
         return ""
 
 
+def _yt_refusal_reason(resp) -> str:
+    """Почему YouTube отказал. В теле ответа он называет причину словом, и слова эти
+    означают РАЗНОЕ:
+
+      quotaExceeded / dailyLimitExceeded — суточные единицы кончились. До сброса (полночь
+          по тихоокеанскому времени, это ~09:00 по Вене) сделать ничего нельзя.
+      rateLimitExceeded / userRateLimitExceeded — единицы есть, но мы частим. Проходит за
+          секунды.
+
+    До 21.08.2026 код валил обе причины в одну кучу и сообщал «дневная квота исчерпана».
+    Из-за этого сотня быстрых запросов подряд выглядела как суточный простой, и рубрику
+    считали мёртвой до утра, хотя достаточно было подождать минуту.
+    """
+    try:
+        payload = resp.json() or {}
+    except Exception:
+        return ""
+    err = payload.get("error") or {}
+    errors = err.get("errors") or []
+    if errors and isinstance(errors[0], dict):
+        return str(errors[0].get("reason") or "").strip()
+    return str(err.get("status") or "").strip()
+
+
+_RATE_LIMIT_REASONS = {"ratelimitexceeded", "userratelimitexceeded", "backenderror",
+                       "servicelimitexceeded"}
+_DAILY_QUOTA_REASONS = {"quotaexceeded", "dailylimitexceeded"}
+
+
+def _yt_get(url: str, params: dict, *, cost: float, what: str) -> dict | None:
+    """Запрос к YouTube Data API с честным разбором отказа.
+
+    Возвращает разобранный ответ или None. При «мы частим» — короткая пауза и повтор:
+    это проходит за секунды, и сдаваться тут значит терять выпуск на ровном месте
+    (21.08.2026: сотня быстрых запросов подряд придушила ключ, и `/standup` сдался,
+    хотя суточные единицы были целы). При «единицы кончились» повторять бессмысленно —
+    ставим флаг и выходим сразу, до сброса всё равно ничего не изменится.
+    """
+    attempts = max(1, _env_int("YOUTUBE_RATE_LIMIT_RETRIES", 3))
+    pause = max(1, _env_int("YOUTUBE_RATE_LIMIT_PAUSE_SEC", 4))
+    global _QUOTA_EXCEEDED
+    for attempt in range(attempts):
+        try:
+            resp = requests.get(url, params=params, timeout=12)
+        except Exception:
+            logger.warning("daily_video: сетевой сбой на %s", what, exc_info=True)
+            return None
+        _quota_spent(cost)
+        if resp.status_code < 400:
+            try:
+                return resp.json()
+            except Exception:
+                logger.warning("daily_video: не разобрать ответ %s", what, exc_info=True)
+                return None
+        reason = _yt_refusal_reason(resp).lower()
+        if reason in _DAILY_QUOTA_REASONS:
+            _QUOTA_EXCEEDED = True
+            logger.warning("daily_video: суточные единицы YouTube кончились (%s, %s)", what, reason)
+            return None
+        if resp.status_code == 429 or reason in _RATE_LIMIT_REASONS:
+            if attempt + 1 < attempts:
+                logger.info("daily_video: YouTube просит не частить (%s) — пауза %ds и повтор",
+                            what, pause)
+                time.sleep(pause)
+                continue
+            # Повторы кончились. Это НЕ суточный простой: единицы целы, просто мы частим.
+            logger.warning("daily_video: YouTube придушил по частоте на %s — повторы исчерпаны", what)
+            return None
+        logger.info("daily_video: YouTube HTTP %s на %s (%s)", resp.status_code, what, reason or "—")
+        return None
+    return None
+
+
 def _youtube_api_key() -> str:
     return (
         os.getenv("YOUTUBE_API_KEY")
@@ -231,33 +304,23 @@ def _yt_api_search_recent(query: str, *, channel_id: str | None = None, max_resu
     }
     if channel_id:
         params["channelId"] = channel_id
-    try:
-        resp = requests.get("https://www.googleapis.com/youtube/v3/search", params=params, timeout=12)
-        _quota_spent(100)  # search.list — 100 единиц за вызов
-        if resp.status_code >= 400:
-            if resp.status_code in (429, 403):
-                global _QUOTA_EXCEEDED
-                _QUOTA_EXCEEDED = True
-                logger.warning("world_news: YT search quota/rate-limited (HTTP %s) query=%r", resp.status_code, query)
-            else:
-                logger.info("world_news: YT search HTTP %s for query=%r", resp.status_code, query)
-            return []
-        out = []
-        for item in (resp.json().get("items") or []):
-            vid = ((item.get("id") or {}).get("videoId") or "").strip()
-            snip = item.get("snippet") or {}
-            if not vid:
-                continue
-            out.append({
-                "video_id": vid,
-                "title": (snip.get("title") or "").strip(),
-                "channel_title": (snip.get("channelTitle") or "").strip(),
-                "published_at": (snip.get("publishedAt") or "").strip(),
-            })
-        return out
-    except Exception:
-        logger.warning("world_news: YT search failed for query=%r", query, exc_info=True)
+    payload = _yt_get("https://www.googleapis.com/youtube/v3/search", params,
+                      cost=100, what=f"search {query!r}")  # search.list — 100 единиц
+    if not payload:
         return []
+    out = []
+    for item in (payload.get("items") or []):
+        vid = ((item.get("id") or {}).get("videoId") or "").strip()
+        snip = item.get("snippet") or {}
+        if not vid:
+            continue
+        out.append({
+            "video_id": vid,
+            "title": (snip.get("title") or "").strip(),
+            "channel_title": (snip.get("channelTitle") or "").strip(),
+            "published_at": (snip.get("publishedAt") or "").strip(),
+        })
+    return out
 
 
 def _yt_api_playlist_recent(playlist_id: str, *, max_results: int = 10, pages: int = 1) -> list[dict]:
@@ -283,35 +346,24 @@ def _yt_api_playlist_recent(playlist_id: str, *, max_results: int = 10, pages: i
         }
         if page_token:
             params["pageToken"] = page_token
-        try:
-            resp = requests.get("https://www.googleapis.com/youtube/v3/playlistItems", params=params, timeout=12)
-            _quota_spent(1)  # playlistItems.list — 1 единица за страницу
-            if resp.status_code >= 400:
-                if resp.status_code in (429, 403):
-                    global _QUOTA_EXCEEDED
-                    _QUOTA_EXCEEDED = True
-                    logger.warning("world_news: YT playlistItems quota/rate-limited (HTTP %s) pl=%s", resp.status_code, playlist_id)
-                else:
-                    logger.info("world_news: YT playlistItems HTTP %s for pl=%s", resp.status_code, playlist_id)
-                break
-            payload = resp.json()
-            for item in (payload.get("items") or []):
-                snip = item.get("snippet") or {}
-                vid = ((snip.get("resourceId") or {}).get("videoId") or "").strip()
-                if not vid:
-                    continue
-                out.append({
-                    "video_id": vid,
-                    "title": (snip.get("title") or "").strip(),
-                    "channel_title": (snip.get("videoOwnerChannelTitle") or snip.get("channelTitle") or "").strip(),
-                    "published_at": (snip.get("publishedAt") or "").strip(),
-                    "trusted": True,
-                })
-            page_token = (payload.get("nextPageToken") or "").strip()
-            if not page_token:
-                break
-        except Exception:
-            logger.warning("world_news: YT playlistItems failed for pl=%s", playlist_id, exc_info=True)
+        payload = _yt_get("https://www.googleapis.com/youtube/v3/playlistItems", params,
+                          cost=1, what=f"playlistItems {playlist_id}")  # 1 единица за страницу
+        if not payload:
+            break
+        for item in (payload.get("items") or []):
+            snip = item.get("snippet") or {}
+            vid = ((snip.get("resourceId") or {}).get("videoId") or "").strip()
+            if not vid:
+                continue
+            out.append({
+                "video_id": vid,
+                "title": (snip.get("title") or "").strip(),
+                "channel_title": (snip.get("videoOwnerChannelTitle") or snip.get("channelTitle") or "").strip(),
+                "published_at": (snip.get("publishedAt") or "").strip(),
+                "trusted": True,
+            })
+        page_token = (payload.get("nextPageToken") or "").strip()
+        if not page_token:
             break
     return out
 
@@ -341,31 +393,26 @@ def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dic
         "id": ",".join(video_ids),
         "key": api_key,
     }
-    try:
-        resp = requests.get("https://www.googleapis.com/youtube/v3/videos", params=params, timeout=12)
-        _quota_spent(1)  # videos.list — 1 единица за пачку до 50 роликов
-        if resp.status_code >= 400:
-            return
-        for item in (resp.json().get("items") or []):
-            vid = (item.get("id") or "").strip()
-            if not vid:
-                continue
-            content = item.get("contentDetails") or {}
-            snip = item.get("snippet") or {}
-            details[vid] = {
-                "duration_seconds": _iso8601_duration_to_seconds(content.get("duration")),
-                "title": (snip.get("title") or "").strip(),
-                "channel_title": (snip.get("channelTitle") or "").strip(),
-                "published_at": (snip.get("publishedAt") or "").strip(),
-                # YouTube помечает здесь ТОЛЬКО субтитры, положенные автором руками
-                # ("true"); машинная расшифровка в этот флаг не попадает. Для стендапа это
-                # ровно та разница, по которой владелец 20.08.2026 велел ставить ролики с
-                # ручными субтитрами первыми: под стендап машина пишет без знаков препинания
-                # и угадывает слова на слух, а человек читает субтитры и заучивает их.
-                "has_manual_captions": str(content.get("caption") or "").strip().lower() == "true",
-            }
-    except Exception:
-        logger.warning("world_news: YT videos.list failed", exc_info=True)
+    payload = _yt_get("https://www.googleapis.com/youtube/v3/videos", params,
+                      cost=1, what="videos.list")  # 1 единица за пачку до 50 роликов
+    if not payload:
+        return
+    for item in (payload.get("items") or []):
+        vid = (item.get("id") or "").strip()
+        if not vid:
+            continue
+        content = item.get("contentDetails") or {}
+        snip = item.get("snippet") or {}
+        details[vid] = {
+            "duration_seconds": _iso8601_duration_to_seconds(content.get("duration")),
+            "title": (snip.get("title") or "").strip(),
+            "channel_title": (snip.get("channelTitle") or "").strip(),
+            "published_at": (snip.get("publishedAt") or "").strip(),
+            # YouTube помечает здесь ТОЛЬКО субтитры, положенные автором руками ("true");
+            # машинная расшифровка в этот флаг не попадает. По нему рубрика ставит ролики
+            # с ручными субтитрами первыми (решение владельца 20.08.2026).
+            "has_manual_captions": str(content.get("caption") or "").strip().lower() == "true",
+        }
 
 
 def _extract_video_id(url_or_id: str) -> str:
