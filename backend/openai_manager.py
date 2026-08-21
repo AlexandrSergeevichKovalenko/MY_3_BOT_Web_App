@@ -10143,3 +10143,69 @@ async def run_audio_sentence_grammar_explain_multilang(
             poll_interval_seconds=1.0,
         )
     ).strip()
+
+
+def run_infinitive_of_form(*, word: str, sentence: str = "") -> list[str]:
+    """Какому глаголу принадлежит эта словоформа. Только НАЗВАТЬ КЛЮЧ, не судить.
+
+    ЗАЧЕМ. Справочник спряжений (de.wiktionary) ищется по инфинитиву, а на руках у нас
+    словоформа: «losgeworden», «aufgeblieben». Вывести инфинитив своей арифметикой мы
+    права не имеем — это и есть запрещённое механическое додумывание грамматики.
+    Поэтому модель здесь работает УКАЗАТЕЛЕМ, а не источником: она называет, на какую
+    страницу справочника смотреть, и всё. Ответ признаётся только тогда, когда на этой
+    странице НАПЕЧАТАНА наша форма. Ошиблась — страница не подтвердит, и мы просто не
+    получим подтверждения. Выдумать форму этим путём невозможно.
+
+    Возвращает до трёх кандидатов-инфинитивов, самый вероятный первым.
+    """
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    w = str(word or "").strip()
+    if not api_key or not w or len(w) > 60:
+        return []
+    system = (
+        "You are a German morphology index. Given ONE German word form, name the "
+        "infinitive(s) of the verb it could belong to, so that its conjugation table can "
+        "be looked up. Example: 'losgeworden' -> 'loswerden'; 'aufgeblieben' -> "
+        "'aufbleiben'; 'gezerrt' -> 'zerren'.\n"
+        "If the form is not a verb form at all, answer with an empty list.\n"
+        "Do not explain and do not correct the word. Answer STRICT JSON only: "
+        "{\"infinitives\":[\"…\"]} - at most three, most likely first."
+    )
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=15)
+        resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(
+                    {"form": w, "sentence": str(sentence or "")[:200]}, ensure_ascii=False)},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        logging.warning("run_infinitive_of_form failed word=%s", w[:40], exc_info=True)
+        return []
+    try:
+        u = getattr(resp, "usage", None)
+        if u:
+            _LAST_LLM_USAGE.set({
+                "model": "gpt-4.1-mini",
+                "prompt_tokens": int(getattr(u, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(u, "total_tokens", 0) or 0),
+            })
+    except Exception:
+        pass
+    try:
+        data = json.loads(resp.choices[0].message.content or "{}") or {}
+    except Exception:
+        return []
+    out = []
+    for item in (data.get("infinitives") or [])[:3]:
+        candidate = str(item or "").strip()
+        # Кириллица здесь означает, что модель перевела вместо разбора.
+        if candidate and " " not in candidate and not _has_cyrillic(candidate):
+            out.append(candidate)
+    return out

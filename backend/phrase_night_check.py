@@ -62,6 +62,64 @@ def _check_own_fixes(judge: dict, text: str, translation: str) -> dict:
     return judge
 
 
+def _disputed_words(fix: str, corrected: str) -> list[str]:
+    """Слова, которые проверка хочет ЗАМЕНИТЬ в правке судьи.
+
+    Берём слова правки, которых нет в предложенном исправлении. Это не разбор языка, а
+    сравнение двух списков слов — арифметика, ей верить можно. Знаки препинания по краям
+    снимаем: спор идёт про написание слова, а не про точку.
+    """
+    def words(value: str) -> list[str]:
+        return [w.strip(".,;:!?…\"'»«()[]–—") for w in str(value or "").split()]
+
+    theirs = list(words(corrected))
+    out = []
+    for word in words(fix):
+        if word in theirs:
+            theirs.remove(word)          # одно вхождение гасит одно
+        elif word:
+            out.append(word)
+    return out
+
+
+def _reference_confirms_the_wording(fix: str, corrections: list[str]) -> str:
+    """Напечатаны ли в справочнике ВСЕ слова, к которым придралась проверка.
+
+    Придирка снимается только целиком: подтвердилось одно слово из двух — значит
+    во втором претензия могла быть по делу, и мы её не трогаем. Половинчатых снятий
+    здесь нет.
+
+    Возвращает подпись подтверждения («loswerden», «loswerden, aufbleiben») или пустую
+    строку — тогда вердикт проверки остаётся в силе.
+    """
+    from backend.german_verb_paradigms import confirm_form_growing_the_reference
+
+    disputed: list[str] = []
+    for corrected in corrections:
+        if not str(corrected or "").strip():
+            continue
+        for word in _disputed_words(fix, corrected):
+            if word not in disputed:
+                disputed.append(word)
+    # Не за что зацепиться: проверка не показала СВОЙ текст либо переписала всё целиком.
+    # Спорить со справочником тут не о чем — оставляем вердикт как есть.
+    if not disputed or len(disputed) > 3:
+        return ""
+
+    confirmed = []
+    for word in disputed:
+        try:
+            verb = confirm_form_growing_the_reference(word, sentence=fix)
+        except Exception:
+            logging.debug("справочник форм не ответил про %s", word, exc_info=True)
+            return ""
+        if not verb:
+            return ""                    # хоть одно слово не подтвердилось — не снимаем
+        if verb not in confirmed:
+            confirmed.append(verb)
+    return ", ".join(confirmed)
+
+
 def _check_fix_twice(text: str, translation: str, fix: str) -> dict:
     """Спросить проверяющего ДВАЖДЫ и забраковать правку только при единогласии.
 
@@ -93,6 +151,23 @@ def _check_fix_twice(text: str, translation: str, fix: str) -> dict:
     for key in ("grammar_ok", "meaning_kept"):
         # Брак только тогда, когда его увидели ОБА.
         out[key] = bool(first.get(key)) or bool(second.get(key))
+    # СПРАВОЧНИК СИЛЬНЕЕ ДВУХ МОДЕЛЕЙ.
+    #
+    # Оба голоса могут ошибиться одинаково — это и произошло: правку «…dass er das
+    # Schwein losgeworden war» обе проверки забраковали со словами «пишется раздельно»,
+    # хотя `losgeworden` напечатано в таблице `loswerden` именно слитно. Спорить с
+    # моделью нечем, а со справочником есть чем: если слово, к которому придрались,
+    # напечатано на странице Flexion, придирка снимается. Это не наше правило и не наша
+    # догадка — это то, что напечатано в источнике (CLAUDE.md, правило ноль).
+    if not out["grammar_ok"]:
+        confirmed_by = _reference_confirms_the_wording(
+            fix, [str(first.get("fixed") or ""), str(second.get("fixed") or "")])
+        if confirmed_by:
+            logging.info("справочник подтвердил написание %s — придирка снята", confirmed_by)
+            out["grammar_ok"] = True
+            out["reference"] = confirmed_by
+            out["why"] = (f"Написание подтверждено справочником ({confirmed_by}) — "
+                          f"придирка к орфографии снята.")
     if (bool(first.get("grammar_ok")) != bool(second.get("grammar_ok"))
             or bool(first.get("meaning_kept")) != bool(second.get("meaning_kept"))):
         out["disputed"] = True

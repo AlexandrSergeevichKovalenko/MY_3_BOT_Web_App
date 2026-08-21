@@ -441,3 +441,112 @@ def warm_verb_paradigms(*, limit: int = 200, pause_sec: float = 1.5) -> dict:
             report["no_page"] += 1
         time.sleep(pause_sec)
     return report
+
+
+def _printed_words(tables: dict) -> set[str]:
+    """Все слова, КАК ОНИ НАПЕЧАТАНЫ в таблице: и целые формы, и их части.
+
+    В ячейке стоит «bist losgeworden», а спросить нас могут про одно слово
+    «losgeworden» — поэтому разбираем ячейку на слова. Ничего не достраиваем:
+    берём ровно то, что напечатано на странице Flexion.
+    """
+    words: set[str] = set()
+
+    def walk(node) -> None:
+        if isinstance(node, str):
+            value = node.strip()
+            if value:
+                words.add(value)
+                for part in value.split():
+                    if part:
+                        words.add(part)
+        elif isinstance(node, dict):
+            for item in node.values():
+                walk(item)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    for key, value in (tables or {}).items():
+        if key in ("auxiliary", "infinitive", "full_form", "source"):
+            continue
+        walk(value)
+    return words
+
+
+def form_is_documented(form: str) -> str:
+    """Напечатана ли такая словоформа в справочнике. Возвращает глагол или пустую строку.
+
+    ЗАЧЕМ. Модель, которую мы просим проверить чужую правку, сама ошибается на трудном
+    написании: правку «Er war froh, dass er das Schwein losgeworden war» она забраковала
+    со словами «пишется раздельно» — а `losgeworden` напечатано в таблице `loswerden`
+    ровно так, слитно. Спорить с моделью нечем, а со справочником — есть чем.
+
+    Отбор в два шага: дешёвая выборка по тексту JSON сужает круг, а потом слово
+    сверяется ТОЧНО со списком напечатанных форм. Без второго шага «geworden» находило
+    бы себя внутри «losgeworden», то есть подтверждало бы то, чего в таблице нет.
+    """
+    from backend.database import get_db_connection_context
+
+    word = str(form or "").strip()
+    if not word or " " in word:
+        return ""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT verb, tables FROM bt_3_german_verb_paradigms
+                        WHERE documented AND tables::text ILIKE %s LIMIT 40;""",
+                    ("%" + word + "%",),
+                )
+                rows = cur.fetchall()
+    except Exception:
+        logging.debug("справочник форм: чтение не удалось", exc_info=True)
+        return ""
+    for verb, tables in rows:
+        if isinstance(tables, dict) and word in _printed_words(tables):
+            return str(verb or "")
+    return ""
+
+
+def confirm_form_growing_the_reference(form: str, *, sentence: str = "") -> str:
+    """Подтвердить словоформу справочником, ДОСТРАИВАЯ справочник, если он молчит.
+
+    Два шага, и второй — не догадка:
+
+      1. Форма ищется среди уже напечатанных таблиц (`form_is_documented`).
+      2. Справочник молчит — спрашиваем модель, НА КАКУЮ СТРАНИЦУ смотреть
+         (`run_infinitive_of_form`). Модель здесь указатель, а не источник: её ответ
+         признаётся только тогда, когда на скачанной странице Flexion наша форма
+         НАПЕЧАТАНА. Ошиблась моделью — страница не подтвердит, и подтверждения не
+         будет. Выдумать форму этим путём нельзя.
+
+    Скачанная таблица сохраняется, поэтому справочник растёт сам: следующий раз этот
+    глагол найдётся на первом шаге, без модели и без сети. Это и есть «не подставляем
+    догадку, а достраиваем ИСТОЧНИК» (CLAUDE.md, правило ноль).
+
+    Возвращает инфинитив-подтверждение или пустую строку.
+    """
+    word = str(form or "").strip()
+    if not word or " " in word:
+        return ""
+    known = form_is_documented(word)
+    if known:
+        return known
+
+    try:
+        from backend.openai_manager import run_infinitive_of_form
+        candidates = run_infinitive_of_form(word=word, sentence=sentence)
+    except Exception:
+        logging.debug("указатель форм не ответил", exc_info=True)
+        return ""
+
+    for infinitive in candidates:
+        tables = load_paradigm(infinitive)
+        if tables is None:                     # про этот глагол ещё не спрашивали
+            tables = fetch_documented_tables(infinitive)
+            store_paradigm(infinitive, tables)   # справочник вырос — навсегда
+        if tables and word in _printed_words(tables):
+            logging.info("справочник дополнен: %s подтверждает форму %s", infinitive, word)
+            return infinitive
+    return ""
