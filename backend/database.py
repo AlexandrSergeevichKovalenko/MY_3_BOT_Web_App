@@ -3356,6 +3356,32 @@ def pick_adjektiv_payloads_for_user(user_id: int, n: int = 15) -> list[dict]:
         return pick_adjektiv_payloads(want)
 
 
+def adjektiv_gap_rebuilds(payload: dict | None) -> bool:
+    """Склеивается ли задание на окончание обратно в свою же фразу.
+
+    Единственная проверка, которая ловит «пропуск стоит не на том слове»:
+
+        показано: ohne ein[___] gutes Argument   ответ «e»
+        выйдет:   ohne eine gutes Argument       а верно: ohne ein gutes Argument
+
+    Здесь ничего не выводится и не додумывается — сравнивается то, что задание
+    само про себя говорит. Задание без `full` проверить нечем: оно приходит из
+    детерминированного генератора, который собирает фразу из тех же кусков, и там
+    склейка верна по построению.
+    """
+    p = payload or {}
+    full = str(p.get("full") or "")
+    if not full:
+        return True
+    correct = str(p.get("correct") or p.get("a") or "")
+    before = str(p.get("before") or "")
+    after = str(p.get("after") or "")
+    der = derive_adjektiv_split(full, correct)
+    if der:
+        before, after = der
+    return (before + correct + after) == full
+
+
 def pick_adjektiv_payloads(n: int = 15) -> list[dict]:
     """`n` adjective items. Primary source: the DETERMINISTIC rule-based generator
     (unlimited, 100% correct, no LLM). Falls back to the aufgabe bank only if that
@@ -3382,6 +3408,14 @@ def pick_adjektiv_payloads(n: int = 15) -> list[dict]:
     seen: set[str] = set()
     uniq: list[dict] = []
     for p in rows:
+        # Второй рубеж, на выдаче: задание из банка обязано склеиваться обратно.
+        # Страж на входе (bot_3.py, разбор ответа модели) закрыт 21.08.2026, но в
+        # банке уже лежало написанное до него, а банк переживает любую правку кода.
+        # Проверка та же и цена ей ноль: подставили ответ — вышла та же фраза.
+        if not adjektiv_gap_rebuilds(p):
+            logging.warning("задание на окончания не выдано: пропуск не склеивается: %r",
+                            (p or {}).get("full"))
+            continue
         key = f"{(p or {}).get('before', '')}|{(p or {}).get('correct', '')}"
         if key in seen:
             continue
@@ -5837,6 +5871,29 @@ def _upsert_dictionary_canonical_entry_with_cursor(
         raise ValueError("dictionary canonical entry requires language pair")
     if not normalized_source_text or not normalized_target_text:
         raise ValueError("dictionary canonical entry requires source and target text")
+    # ── ЧТО В ОБЩИЙ СЛОВАРЬ НЕ КЛАДЁТСЯ НИКОГДА ──────────────────────────────────
+    #
+    # Пул общий: ошибка одного достаётся всем следующим, кто наберёт то же слово.
+    # Замер 21.08.2026 по 17 333 записям — два класса, которые туда попали и дошли до
+    # экрана (проверено запросом к пулу тем же кодом, что и в продукте):
+    #
+    #   1. ЗАДАНИЕ ТРЕНАЖЁРА вместо слова: «Ich ___ mein Geld lieber langfristig.» →
+    #      «anlegen». Таких 143, из них 119 побеждали в поиске. Решение владельца
+    #      21.08.2026: «им там не место».
+    #   2. ОТВЕТ НА ЧУЖОМ ЯЗЫКЕ: спросили «Укладывать» (рус→нем) — ответ «Складывать».
+    #      Таких 48. Человек получает русское слово как немецкий перевод.
+    #
+    # Проверяется ТОЛЬКО ответ. Запрос имеет право быть каким угодно — это ключ поиска,
+    # и находить по нему польза: из 334 записей, где хоть одна сторона «грязная», в 133
+    # грязь набрал сам человек («Мой телефон ist kaputt» → «Mein Handy ist hin»), и
+    # ответ там верный. Узкое правило вместо широкого — намеренно.
+    if intake.is_exercise_blank(resolved_source_text) or intake.is_exercise_blank(resolved_target_text):
+        raise ValueError("dictionary pool does not accept exercise blanks")
+    if intake.answer_language_is_wrong(resolved_target_text, normalized_target_lang):
+        raise ValueError(
+            f"dictionary pool answer is not in {normalized_target_lang}: "
+            f"{resolved_target_text[:60]!r}"
+        )
     payload = _coerce_json_object(response_json)
 
     # Сначала пробуем дописать УЖЕ СУЩЕСТВУЮЩУЮ строку этого слова — иначе на каждый
@@ -6170,18 +6227,32 @@ def _save_webapp_dictionary_query_returning_id_with_conn(
     with conn.cursor() as cursor:
         canonical_entry_id = None
         if source_text and target_text and normalized_source_lang and normalized_target_lang:
-            canonical_entry_id = _upsert_dictionary_canonical_entry_with_cursor(
-                cursor,
-                source_lang=normalized_source_lang,
-                target_lang=normalized_target_lang,
-                source_text=source_text,
-                target_text=target_text,
-                word_ru=word_ru,
-                translation_de=translation_de,
-                word_de=word_de,
-                translation_ru=translation_ru,
-                response_json=normalized_response_json,
-            )
+            # ⚠ ОТКАЗ ПУЛА НЕ РОНЯЕТ СОХРАНЕНИЕ ЧЕЛОВЕКА. Дверь пула может отказать
+            # (задание тренажёра, ответ на чужом языке) — это её работа. Но карточку
+            # человек сохранил себе, и она обязана лечь: побочная запись не имеет права
+            # утащить за собой главную. Точка отката, потому что отказ приходит из
+            # ТОЙ ЖЕ транзакции и без неё курсор остаётся в сорванном состоянии.
+            # Молчания здесь нет: причина отказа уходит в лог целиком.
+            cursor.execute("SAVEPOINT pool_entry;")
+            try:
+                canonical_entry_id = _upsert_dictionary_canonical_entry_with_cursor(
+                    cursor,
+                    source_lang=normalized_source_lang,
+                    target_lang=normalized_target_lang,
+                    source_text=source_text,
+                    target_text=target_text,
+                    word_ru=word_ru,
+                    translation_de=translation_de,
+                    word_de=word_de,
+                    translation_ru=translation_ru,
+                    response_json=normalized_response_json,
+                )
+                cursor.execute("RELEASE SAVEPOINT pool_entry;")
+            except ValueError as exc:
+                cursor.execute("ROLLBACK TO SAVEPOINT pool_entry;")
+                cursor.execute("RELEASE SAVEPOINT pool_entry;")
+                canonical_entry_id = None
+                logging.warning("в общий словарь не положили: %s", exc)
         return _create_or_attach_user_dictionary_entry_with_cursor(
             cursor,
             user_id=int(user_id),
@@ -24632,6 +24703,34 @@ def get_pool_dictionary_candidates(
                 ),
             )
             rows = cursor.fetchall() or []
+    # ── ВТОРАЯ ДВЕРЬ: НА ВЫДАЧЕ ──────────────────────────────────────────────────
+    #
+    # Дверь на входе (`_upsert_dictionary_canonical_entry_with_cursor`) не пускает новое,
+    # но в пуле уже лежит накопленное, и заводили его годами разные пути. Поэтому ответ
+    # проверяется ещё раз ЗДЕСЬ, у самой выдачи: человек не должен получить русское
+    # слово как немецкий перевод, чем бы оно туда ни попало.
+    #
+    # Обратный путь (`dictionary_pool_reverse`) такую проверку имел с самого начала и
+    # потому был чист; прямой её не имел вовсе — отсюда и весь класс. Замер 21.08.2026:
+    # 48 записей отдавали ответ целиком на чужом языке, 119 заготовок тренажёра
+    # побеждали в поиске.
+    #
+    # Отсев считается и уходит в лог: молчащий фильтр неотличим от сломанного.
+    clean: list[dict] = []
+    dropped = 0
+    for row in rows:
+        answer = row[2]
+        if (intake.answer_language_is_wrong(answer, normalized_target_lang)
+                or intake.is_exercise_blank(row[1]) or intake.is_exercise_blank(answer)):
+            dropped += 1
+            continue
+        clean.append(row)
+    if dropped:
+        logging.warning(
+            "пул: не отдали %d строк по запросу %r (%s→%s) — ответ не на том языке "
+            "или это заготовка задания",
+            dropped, str(source_text)[:60], normalized_source_lang, normalized_target_lang,
+        )
     return [
         {
             "id": row[0],
@@ -24644,7 +24743,7 @@ def get_pool_dictionary_candidates(
             "response_json": _coerce_json_object(row[7]),
             "updated_at": row[8].isoformat() if row[8] else None,
         }
-        for row in rows
+        for row in clean
     ]
 
 

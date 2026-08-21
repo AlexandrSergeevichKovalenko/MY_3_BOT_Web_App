@@ -36262,6 +36262,22 @@ def _aufgabe_payload_from_item(fmt: str, it: dict, *, admin_chosen: bool = False
                     or after.strip().lower().startswith(correct)
                     or before.strip().lower().endswith(correct)):
                 return None
+        # ГЛАВНАЯ ПРОВЕРКА: подставь ответ в пропуск — обязана получиться ровно та
+        # фраза, которую задание объявляет верной.
+        #
+        # Замер 21.08.2026 по 2370 выданным заданиям: 10 штук её не проходили, и все
+        # десять пришли этим путём — от модели. Пропуск стоял не на том слове:
+        #
+        #     показано: ohne ein[___] gutes Argument   ответ «e»
+        #     выйдет:   ohne eine gutes Argument       а верно: ohne ein gutes Argument
+        #
+        # Прежние две проверки такое пропускали: окончание рядом не «светится», а
+        # склеить обратно никто не пробовал. Человек при этом заучивает неверную
+        # форму — и ошибку ему никто не покажет, потому что ответ засчитан.
+        if full and (before + correct + after) != full:
+            logging.warning("задание на окончания отбраковано: «%s» + «%s» + «%s» ≠ «%s»",
+                            before, correct, after, full)
+            return None
         return {"before": before, "after": after, "correct": correct,
                 "full": full, "aliases": [], **common}
     if fmt == "error":

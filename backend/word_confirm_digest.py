@@ -44,6 +44,27 @@ DONE = "done"
 _BARE = "regexp_replace({col}, '^(der|die|das)[[:space:]]+', '', 'i')"
 
 
+def _cleaned(text: str) -> str:
+    """Общая чистка входа — та же, что стоит на всех дверях записи слова.
+
+    Отдельной функцией, потому что чистка обязана быть ОДНОЙ на все входы: как
+    только у ручного ввода появляется своя, послабленная, — через неё и приезжает
+    то, от чего дверь стережёт остальных.
+
+    Если чистка недоступна (её нет в окружении теста), возвращаем строку как есть,
+    а не глушим ошибку молча: место записи всё равно одно и видно.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    try:
+        from backend.dictionary_intake import clean_text
+    except Exception:
+        logging.warning("проверка слов: чистка входа недоступна", exc_info=True)
+        return raw
+    return str(clean_text(raw) or "").strip()
+
+
 def bare_word(text: str) -> str:
     """Слово без артикля — то, чем его знает дверь."""
     import re
@@ -304,10 +325,14 @@ def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, 
                 for item in decisions:
                     word = bare_word(item.get("word") or "")
                     action = str(item.get("action") or "").strip()
-                    text = bare_word(item.get("text") or "")
+                    # Вписанное человеком идёт через ТУ ЖЕ чистку, что и все остальные
+                    # пути записи (`dictionary_intake.clean_text`): невидимые символы,
+                    # хвостовая пунктуация, двойные пробелы, кавычки-ёлочки. Своё поле
+                    # ввода — такой же вход, как модель или ярлык, и поблажки ему нет.
+                    text = bare_word(_cleaned(item.get("text") or ""))
                     if not word:
                         continue
-                    translation = str(item.get("translation") or "").strip()
+                    translation = _cleaned(item.get("translation") or "")
                     if action == "manual" and translation:
                         # «Свой вариант» — человек вписал и слово, и перевод. Перевод
                         # его собственный, спорить с ним нечем: он видел исходный текст,

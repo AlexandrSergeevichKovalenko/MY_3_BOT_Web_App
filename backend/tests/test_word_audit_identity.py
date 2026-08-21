@@ -139,5 +139,34 @@ class SecondReferenceIsExactTest(unittest.TestCase):
             self.assertIsNone(D.dwds_pos("Vergleichbarkeit"))
             self.assertIsNone(D.dwds_says_about_all(["Vergleichbarkeit"]))
 
+
+class TypedByHandGoesThroughTheSameCleaningTest(unittest.TestCase):
+    """Вписанное человеком чистится тем же кодом, что и всё остальное.
+
+    Своё поле ввода — такой же вход, как модель или ярлык. Стоит завести ему
+    отдельную, послабленную чистку — и через неё приедет ровно то, от чего дверь
+    стережёт остальные пути: неразрывные пробелы, кавычки-ёлочки, невидимые
+    символы из буфера обмена, хвостовая запятая.
+    """
+
+    def test_чистка_та_же_что_у_остальных_дверей(self):
+        from backend.dictionary_intake import clean_text
+        from backend.word_confirm_digest import _cleaned
+        for raw in ("die\u00a0Abschiebung ", "  Haus  ", "\u00abHaus\u00bb",
+                    "Haus\u200b", "Haus,", "Betäubung"):
+            with self.subTest(raw=raw):
+                self.assertEqual(_cleaned(raw), str(clean_text(raw) or "").strip())
+
+    def test_мусор_из_буфера_не_доезжает_до_базы(self):
+        from backend.word_confirm_digest import _cleaned, bare_word
+        self.assertEqual(bare_word(_cleaned("  die\u00a0Abschiebung\u200b ")), "Abschiebung")
+
+    def test_пустое_остаётся_пустым(self):
+        from backend.word_confirm_digest import _cleaned
+        self.assertEqual(_cleaned(""), "")
+        self.assertEqual(_cleaned("   "), "")
+        self.assertEqual(_cleaned(None), "")
+
+
 if __name__ == "__main__":
     unittest.main()
