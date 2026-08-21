@@ -3536,6 +3536,11 @@ _DICT_TOKEN_ACCESS_PREFIXES = (
 )
 _DICT_TOKEN_ACCESS_EXACT = frozenset({
     "/api/webapp/flashcards/manual-selection/add",
+    # Проверка сохранённого слова. Плашка всплывает сразу после сохранения — в том
+    # числе в словаре с рабочего стола, у которого сессии Telegram нет вовсе.
+    "/api/webapp/word-audit/check-one",
+    "/api/webapp/word-audit/apply",
+    "/api/webapp/word-audit/list",
 })
 
 
@@ -11015,6 +11020,21 @@ def _run_units_night_enrichment(
                 report["pos_adopted"] = adopted["updated"]
         except Exception:
             logging.warning("простановка части речи по артиклю не удалась", exc_info=True)
+        # Род, взятый из разбора про ДРУГОЕ написание, врёт прямо на заголовке: у слова
+        # «Spritpreis» разбор озаглавлен «die Spritpreise», и «die» уезжает на
+        # единственное число — на экране «die Spritpreis». Сверяем колонку рода с тем же
+        # арбитром, что решает род в игре с артиклями, и чиним ТОЛЬКО этот класс.
+        # Спорное («der Dicke» толстяк / «die Dicke» толщина) не трогаем, а считаем:
+        # род по значению — решение владельца, а не правила.
+        try:
+            genders = lex_units.fix_gender_conflicts_from_authority(lang=learning_lang)
+            if genders.get("fixed"):
+                report["genders_fixed"] = genders["fixed"]
+            if genders.get("doubts"):
+                report["gender_doubts"] = genders["doubts"]
+                report["gender_doubt_samples"] = genders.get("doubt_samples") or []
+        except Exception:
+            logging.warning("сверка рода с арбитром не удалась", exc_info=True)
 
     units = lex_units.units_needing_card(cap, lang=learning_lang, native_lang=native_lang)
     report["picked"] = len(units)
@@ -51093,12 +51113,62 @@ def webapp_settings_window():
 _BATTLE_KINDS = {"artikel", "adjektiv", "wofrage"}
 
 
+@app.route("/api/webapp/word-audit/check-one", methods=["POST"])
+def webapp_word_audit_check_one():
+    """Проверить ОДНО слово сразу после сохранения — для плашки на экране.
+
+    Владелец 20.08.2026: «спрашивать сразу при сохранении, а не через неделю: контекст
+    свежий, через неделю человек не вспомнит, откуда взял слово».
+
+    Сохранение этого НЕ ждёт: карточка уже у человека, а фронт спрашивает проверку
+    следом. Ответ «плашку не показывать» — самый частый и самый дешёвый: он приходит из
+    кэша двери, без сети и без модели.
+    """
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"ok": False, "message": "Нужно открыть словарь заново."}), 401
+    try:
+        from backend.word_confirm_digest import bare_word
+        word = bare_word(payload.get("word") or "")
+    except Exception:
+        logging.warning("плашка сохранения: опознание слова недоступно", exc_info=True)
+        return jsonify({"ok": True, "ask": False}), 200
+    if not word or " " in word:
+        # Дверь про ОДНО слово. Фразы и предложения плашкой не разбираем.
+        return jsonify({"ok": True, "ask": False}), 200
+    try:
+        from backend.german_word_gate import check_word, CONFIRMED, REPAIRED, NOT_A_WORD
+        from backend.word_confirm_digest import suggestion_for
+        verdict = check_word(word, allow_network=True, allow_model=False)
+    except Exception:
+        logging.warning("плашка сохранения: дверь недоступна", exc_info=True)
+        return jsonify({"ok": True, "ask": False}), 200
+
+    status = str(verdict.get("status") or "")
+    fixed = str(verdict.get("text") or "").strip()
+    # Подтверждённое справочником и молча починенное человека не тревожит — решение
+    # владельца 20.08.2026: «зачем это показывать пользователю?»
+    if status in (CONFIRMED, REPAIRED):
+        return jsonify({"ok": True, "ask": False,
+                        "fixed": fixed if fixed != word else ""}), 200
+    suggestion = suggestion_for(word)
+    return jsonify({
+        "ok": True,
+        "ask": True,
+        "word": word,
+        "suggestion": suggestion,
+        "why": ("Похоже, потерялся кусок слова." if status == NOT_A_WORD
+                else "Мы не нашли это слово в немецких справочниках."),
+    }), 200
+
+
 @app.route("/api/webapp/word-audit/list", methods=["POST"])
 def webapp_word_audit_list():
     """Слова человека, которые дверь не подтвердила: причина + подсказка написания."""
-    user_id, _n, err = _answer_auth_user_id()
-    if user_id is None:
-        return err
+    user_id = _resolve_webapp_user_id()
+    if not user_id:
+        return jsonify({"ok": False, "message": "Нужно открыть словарь заново."}), 401
     try:
         from backend.word_confirm_digest import audit_items
         items = audit_items(int(user_id))
@@ -51111,10 +51181,10 @@ def webapp_word_audit_list():
 @app.route("/api/webapp/word-audit/apply", methods=["POST"])
 def webapp_word_audit_apply():
     """Решения человека. Удаляется ТОЛЬКО то, что он не отметил."""
-    user_id, _n, err = _answer_auth_user_id()
-    if user_id is None:
-        return err
     payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"ok": False, "message": "Нужно открыть словарь заново."}), 401
     decisions = payload.get("decisions")
     if not isinstance(decisions, list):
         return jsonify({"ok": False, "message": "Пустой список решений."}), 200

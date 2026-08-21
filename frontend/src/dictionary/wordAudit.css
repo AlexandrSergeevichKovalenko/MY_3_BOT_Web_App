@@ -91,7 +91,11 @@
     text-underline-offset:3px; padding:4px;
   }
   .wa-manual:hover{color:var(--ink-2)}
-  .wa-edit{display:flex; gap:8px; margin-top:9px;}
+  /* Два поля и кнопка — колонкой: строкой они сжимались до нечитаемых полосок
+     на телефоне, а вписать надо и слово, и перевод. */
+  .wa-edit{display:flex; flex-direction:column; gap:9px; margin-top:9px;}
+  .wa-edit label{display:flex; flex-direction:column; gap:5px; font-size:.8rem; color:var(--muted);}
+  .wa-opt{color:var(--muted); font-weight:400;}
   .wa-edit input{
     flex:1; font:inherit; font-size:.95rem; padding:10px 12px; border-radius:11px;
     background:var(--bg-2); border:1px solid var(--line-strong); color:var(--ink);

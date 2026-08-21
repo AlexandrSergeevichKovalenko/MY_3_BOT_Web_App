@@ -362,11 +362,44 @@ def build_warm_report_text(*, target_day: date | None = None) -> str:
         f"Осталось спросить: <b>{left}</b> · ждут твоего подтверждения: <b>{waiting}</b>"
         + waiting_cta,
         mism_line,
+        _word_gate_line(),
         "", verdict,
     ]
     if errors:
         lines.append(f"\n<i>Ошибка: {errors[0][:200]}</i>")
     return "\n".join(lines)
+
+
+def _word_gate_line() -> str:
+    """Одна строка про дверь слова: сколько починено молча, сколько ушло людям.
+
+    Владелец 20.08.2026 отказался от списка «было → стало»: «2000 пользователей будут
+    сохранять какой-то мусор, и мне будет это всё прилетать — зачем? Главное этот мусор
+    не тянуть в базу». Список действительно не нужен. Но ОДНО ЧИСЛО нужно: починка
+    работает под капотом и молча, а молчащий механизм неотличим от сломанного. Было 47,
+    стало 0 — значит что-то отвалилось, и это видно сразу, а не через месяц по кривой
+    карточке на экране.
+    """
+    from backend.database import get_db_connection_context
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.bt_3_word_check')")
+                if not (cur.fetchone() or [None])[0]:
+                    return ""
+                cur.execute("""SELECT
+                        COUNT(*) FILTER (WHERE status = 'исправлено'),
+                        COUNT(*) FILTER (WHERE status IN ('не подтверждено','не слово'))
+                      FROM bt_3_word_check
+                     WHERE checked_at >= NOW() - INTERVAL '7 days';""")
+                fixed, asked = cur.fetchone() or (0, 0)
+    except Exception:
+        logging.debug("отчёт: дверь слова недоступна", exc_info=True)
+        return ""
+    if not fixed and not asked:
+        return "Дверь слова: за неделю ничего не чинила и никого не спрашивала."
+    return (f"Дверь слова за неделю: починено молча <b>{int(fixed)}</b> · "
+            f"ушло людям на проверку <b>{int(asked)}</b>")
 
 
 def send_warm_report(*, target_day: date | None = None, force: bool = False) -> dict[str, Any]:

@@ -43,6 +43,7 @@ export default function WordAudit() {
   const [items, setItems] = useState(null);
   const [state, setState] = useState({});       // слово → решение
   const [typed, setTyped] = useState({});       // слово → написание, вписанное руками
+  const [typedTrans, setTypedTrans] = useState({}); // слово → перевод, вписанный руками
   const [editing, setEditing] = useState({});   // слово → открыто ли поле правки
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -83,6 +84,9 @@ export default function WordAudit() {
       word: it.word,
       action: state[it.word] || '',
       text: state[it.word] === MANUAL ? (typed[it.word] || '').trim() : it.suggestion,
+      // Свой перевод уходит только вместе со своим вариантом — в остальных
+      // решениях перевод человек не трогал, и переписывать его нечем.
+      translation: state[it.word] === MANUAL ? (typedTrans[it.word] || '').trim() : '',
     }));
     try {
       const data = await api('/api/webapp/word-audit/apply', { decisions });
@@ -163,8 +167,8 @@ export default function WordAudit() {
         <p><b>Что делать.</b> Если мы догадались, как слово пишется правильно, вверху будет
           готовая кнопка <b>«Да, это …»</b> — одно касание. <b>«Оставить как есть»</b> —
           слово верное, ничего не меняем. <b>«Перевод не тот»</b> — слово верное, а перевод
-          плохой: соберём карточку заново этой ночью. Если наша догадка мимо —
-          <b> исправь написание вручную</b>.</p>
+          плохой: соберём карточку заново этой ночью. <b>«Свой вариант»</b> — впиши слово
+          так, как надо, и, если нужно, свой перевод: мы сохраним именно их.</p>
         <p><b>Если ничего не нажать.</b> Слово удалится — из твоего словаря и из тренировок.
           Ничего не произойдёт, пока не нажмёшь «Готово» внизу.</p>
         <p><b>Сколько делать.</b> Сколько хочешь. Непроверенные придут снова через несколько дней.</p>
@@ -202,15 +206,23 @@ export default function WordAudit() {
 
             {editing[it.word] ? (
               <div className="wa-edit">
-                <input value={typed[it.word] ?? (it.suggestion || it.word)}
-                       aria-label="правильное написание"
-                       onChange={(e) => setTyped((p) => ({ ...p, [it.word]: e.target.value }))} />
+                <label>Слово по-немецки
+                  <input value={typed[it.word] ?? (it.suggestion || it.word)}
+                         aria-label="правильное написание"
+                         onChange={(e) => setTyped((p) => ({ ...p, [it.word]: e.target.value }))} />
+                </label>
+                <label>Перевод <span className="wa-opt">— если и он не тот</span>
+                  <input value={typedTrans[it.word] ?? ''}
+                         aria-label="перевод"
+                         placeholder={it.translation || 'как переводится'}
+                         onChange={(e) => setTypedTrans((p) => ({ ...p, [it.word]: e.target.value }))} />
+                </label>
                 <button type="button" onClick={() => saveManual(it.word)}>Сохранить</button>
               </div>
             ) : (
               <button type="button" className="wa-manual"
                       onClick={() => setEditing((p) => ({ ...p, [it.word]: true }))}>
-                исправить написание вручную
+                свой вариант — вписать слово и перевод
               </button>
             )}
           </div>

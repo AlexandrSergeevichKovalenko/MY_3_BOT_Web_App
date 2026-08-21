@@ -8,6 +8,7 @@ import { guessPair, buildDictionarySavePayload } from './saveUtils';
 import { languageName, resolvePair, parsePairCode, pairCode, flipPair, DEFAULT_PAIR } from './langPair.js';
 import { humanizeDictError } from './errors.js';
 import ProFeatureModal from '../components/ProFeatureModal';
+import SaveWordHint from './SaveWordHint';
 
 /**
  * Lightweight "quick dictionary" overlay — a compact bottom-sheet translator
@@ -219,6 +220,8 @@ export default function DictionaryOverlay({ onClose } = {}) {
   // Дневная норма сохранений кончилась. Держим ответ сервера целиком: числа в окне —
   // его, а не наши. {used, limit, resetAt}
   const [saveLimit, setSaveLimit] = useState(null);
+  // Плашка «такого слова в немецком нет» — только когда дверь НЕ смогла решить сама.
+  const [wordHint, setWordHint] = useState(null); // {word, suggestion, why}
   const [savedChips, setSavedChips] = useState(() => new Set()); // synonyms/collocations tapped to save
   const [error, setError] = useState('');
   const [forcedDir, setForcedDir] = useState(null); // null=auto, else 'ru-de'|'de-ru'
@@ -310,6 +313,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
   const inputRef = useRef(null);
   const streamAbortRef = useRef(null); // aborts an in-flight breakdown SSE stream
   const lookupPromiseRef = useRef(null); // in-flight breakdown promise (shared by tap + save)
+  const savedGermanRef = useRef(''); // немецкое слово последнего сохранения — его и проверяем
   const correctionCacheRef = useRef(new Map()); // typed phrase → proofread form (dedupes «В словаре»/«Учить»)
   const tts = useTts();
 
@@ -870,6 +874,13 @@ export default function DictionaryOverlay({ onClose } = {}) {
         sourceText = `${art} ${sourceText}`;
       }
     }
+    // Что именно уехало в словарь ПО-НЕМЕЦКИ — это и пойдёт в дверь на проверку.
+    // Плашка спрашивает про немецкое слово, а человек мог набрать русское: тогда
+    // немецкое лежит в переводе, а не в исходной строке.
+    const savedGerman = (quickForSave && quickForSave.targetLang === 'de')
+      ? String(quickForSave.translation || '')
+      : sourceText;
+    savedGermanRef.current = savedGerman.replace(/^(der|die|das)\s+/i, '').trim();
     return api('/api/webapp/dictionary/save', buildDictionarySavePayload({
       rich, sourceText, quick: quickForSave, origin: 'webapp_quick_dictionary',
     }));
@@ -906,15 +917,64 @@ export default function DictionaryOverlay({ onClose } = {}) {
     setError(friendlyError(e));
   }, []);
 
+  // Проверка сохранённого слова — уже ПОСЛЕ сохранения, отдельным запросом.
+  //
+  // Сохранение её не ждёт и на ней не спотыкается: карточка у человека в ту же
+  // секунду, а плашка приходит следом. Дверь молчит про всё, что подтвердила или
+  // молча починила («Argernisse» → «Ärgernisse») — решение владельца 20.08.2026:
+  // факт правится без вопросов, спрашиваем только там, где решает человек.
+  const askAboutSavedWord = useCallback(() => {
+    const word = savedGermanRef.current;
+    if (!word || /\s/.test(word)) return; // дверь про ОДНО слово, фразы не разбираем
+    (async () => {
+      try {
+        const res = await api('/api/webapp/word-audit/check-one', { word });
+        if (res && res.ask) {
+          setWordHint({
+            word: String(res.word || word),
+            suggestion: String(res.suggestion || ''),
+            why: String(res.why || ''),
+          });
+        }
+      } catch (e) {
+        // Проверка — не часть сохранения. Слово уже в словаре и всё равно попадёт
+        // в экран проверки, который напоминает о себе два раза в неделю.
+        console.error('плашка проверки слова не ответила', e);
+      }
+    })();
+  }, []);
+
+  // Решение из плашки. Ровно те же действия, что и в экране проверки, — один
+  // механизм на оба места, чтобы «оставить» значило одно и то же везде.
+  const applyWordHint = useCallback(async ({ action, text, translation }) => {
+    const asked = wordHint?.word || '';
+    try {
+      await api('/api/webapp/word-audit/apply', {
+        decisions: [{ word: asked, action, text, translation }],
+      });
+      if (text && text !== asked) {
+        // Человек исправил слово — экран показывает исправленное, а не старое.
+        setQuery(text);
+        lastAutoRef.current = text;
+        setQuick((prev) => (prev ? { ...prev, source: text } : prev));
+      }
+      haptic('ok');
+    } catch (e) {
+      console.error('решение по слову не сохранилось', e);
+      setError('Не удалось сохранить выбор. Слово останется в проверке.');
+    }
+    setWordHint(null);
+  }, [wordHint]);
+
   const onSave = useCallback(() => {
     if (save !== 'idle') return;
     setSave('done'); setError('');
     haptic('ok');
     (async () => {
-      try { await persistEntry(); }
+      try { await persistEntry(); askAboutSavedWord(); }
       catch (e) { setSave('idle'); reportSaveFailure(e); }
     })();
-  }, [save, persistEntry, reportSaveFailure]);
+  }, [save, persistEntry, reportSaveFailure, askAboutSavedWord]);
 
   // «Учить»: save the word AND queue it into the manual SRS training selection.
   const onAddToCards = useCallback(() => {
@@ -928,12 +988,13 @@ export default function DictionaryOverlay({ onClose } = {}) {
         if (entryId > 0) {
           await api('/api/webapp/flashcards/manual-selection/add', { card_ids: [entryId] });
         }
+        askAboutSavedWord();
       } catch (e) {
         setCardSave('idle');
         reportSaveFailure(e);
       }
     })();
-  }, [cardSave, persistEntry, reportSaveFailure]);
+  }, [cardSave, persistEntry, reportSaveFailure, askAboutSavedWord]);
 
   // Tap a synonym / collocation / antonym / related word → save it to the dictionary.
   const saveChip = useCallback((text) => {
@@ -1474,6 +1535,15 @@ export default function DictionaryOverlay({ onClose } = {}) {
                   удачного перевода phase === 'done' — из-за этого любой отказ (сеть,
                   сервер, лимит) уходил в невидимое состояние. */}
               {error && phase !== 'error' && <div className="dd-err" role="status">{error}</div>}
+              {wordHint && (
+                <SaveWordHint
+                  word={wordHint.word}
+                  suggestion={wordHint.suggestion}
+                  why={wordHint.why}
+                  onApply={applyWordHint}
+                  onDismiss={() => setWordHint(null)}
+                />
+              )}
             </div>
           </div>
         )}

@@ -1398,6 +1398,105 @@ def adopt_pos_gender_from_card(unit_id: int, card: dict | None, *, lemma: str = 
         return False
 
 
+def _card_headword(card: dict | None) -> str:
+    """Немецкий заголовок САМОГО разбора: про какое написание он собран."""
+    if not isinstance(card, dict):
+        return ""
+    for name in ("word_de", "word_source", "source_text"):
+        value = card.get(name)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def fix_gender_conflicts_from_authority(*, limit: int = 400, lang: str = "de",
+                                        dry_run: bool = False) -> dict:
+    """Род лежит колонкой и врёт на экране — найти и починить, пока ночь.
+
+    ОТКУДА ЛОЖЬ. Артикль в написании есть не у всех слов: у части он лежит колонкой
+    `gender`, и выдача приклеивает его к заголовку сама (`_build_item`). Колонку
+    заполняют из разбора, а разбор нередко собран про МНОЖЕСТВЕННОЕ число: у слова
+    «Spritpreis» разбор озаглавлен «die Spritpreise», и его «die» уезжает на
+    единственное. У множественного артикль всегда die, родом слова он не является.
+    На экране получалось «die Spritpreis», «die Narr», «die Elektrogerät».
+
+    ЧТО ЧИНИМ САМИ, А ЧТО НЕТ. Молча правится ТОЛЬКО класс с известной причиной:
+    род взят из разбора, который собран про ДРУГОЕ написание, и арбитр рода называет
+    другой род. Совпало написание — значит разбор про это самое слово, и его артикль
+    мы не перебиваем: там род зависит от значения («der Dicke» толстяк / «die Dicke»
+    толщина), а такое решает владелец, а не правило. Такие расхождения считаются и
+    уходят в ночной отчёт числом, а не чинятся догадкой.
+
+    Кто решает род — `article_authority.authoritative_article`: Wiktionary, банк
+    артиклей, правило композита по 19 тысячам родов и честное «не знаю». Молчание
+    арбитра уликой не считается. Мы не выводим род сами ни в одной ветке.
+
+    Замер 21.08.2026: 691 слово с родом-колонкой, арбитр подтвердил 534, промолчал про
+    145, возразил по 12; из этих 12 фингерпринт «разбор про другое написание» стоял у 5,
+    остальные разобраны руками (scripts/dict_fix_gender_column_conflicts.py).
+    """
+    from backend.article_authority import authoritative_article
+
+    report = {"checked": 0, "fixed": 0, "doubts": 0, "samples": [], "doubt_samples": []}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, display, lemma_key, gender, card
+                      FROM bt_3_lex_units
+                     WHERE lang = %s AND pos = 'noun'
+                       AND gender IN ('der', 'die', 'das')
+                       AND display !~* '^(der|die|das)\\s'
+                       AND card IS NOT NULL
+                     ORDER BY id
+                     LIMIT %s;
+                    """,
+                    (str(lang or "de").strip().lower() or "de", int(limit)),
+                )
+                rows = cur.fetchall()
+
+                for unit_id, display, lemma_key, gender, card in rows:
+                    report["checked"] += 1
+                    bare = normalize_query(str(display or ""))
+                    verdict, source = authoritative_article(bare)
+                    if not verdict or verdict == gender:
+                        continue
+                    # Разбор про ЭТО ЖЕ написание — его артикль не перебиваем.
+                    card_word = normalize_query(_card_headword(card))
+                    if card_word == str(lemma_key or ""):
+                        report["doubts"] += 1
+                        if len(report["doubt_samples"]) < 15:
+                            report["doubt_samples"].append(
+                                {"unit_id": unit_id, "word": display,
+                                 "stored": gender, "authority": verdict, "source": source})
+                        continue
+                    if len(report["samples"]) < 15:
+                        report["samples"].append(
+                            {"unit_id": unit_id, "word": display, "was": gender,
+                             "became": verdict, "source": source,
+                             "card_about": _card_headword(card)})
+                    if dry_run:
+                        continue
+                    cur.execute(
+                        "UPDATE bt_3_lex_units SET gender = %s, gender_source = %s, "
+                        "updated_at = NOW() WHERE id = %s;",
+                        (verdict, "арбитр рода", int(unit_id)),
+                    )
+                    report["fixed"] += 1
+            if not dry_run:
+                conn.commit()
+    except Exception as exc:
+        logging.warning("сверка рода с арбитром не удалась: %s", exc, exc_info=True)
+        return report
+    if report["fixed"]:
+        logging.info("род поправлен по арбитру у %d слов", report["fixed"])
+    if report["doubts"]:
+        logging.info("род расходится с арбитром, но разбор про то же слово: %d — владельцу",
+                     report["doubts"])
+    return report
+
+
 def backfill_pos_gender_from_cards(*, limit: int = 500, lang: str = "de", dry_run: bool = False) -> dict:
     """Пройтись по словам, у которых часть речи не задана, а в разборе есть артикль.
 

@@ -1,0 +1,72 @@
+/* Плашка после сохранения слова.
+   Все переменные и правила ЗАМКНУТЫ на .swh: перенося стили из макета, я едва не
+   притащил сюда глобальные body и :root — они переписали бы оформление всего
+   приложения. Компонентный файл не имеет права трогать ничего снаружи себя. */
+.swh {
+  --swh-line: rgba(148, 163, 184, 0.3);
+  --swh-ink: #f2f6fc;
+  --swh-ink-2: #c9d6e8;
+  --swh-muted: #8497b2;
+  --swh-primary: #58c8ec;
+  --swh-warn: #fbbf24;
+
+  margin-top: 10px;
+  padding: 14px 15px;
+  border-radius: 14px;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.34);
+  color: var(--swh-ink);
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+.swh-top { display: flex; gap: 9px; align-items: flex-start; margin-bottom: 4px; }
+.swh-title { font-weight: 700; font-size: 0.98rem; color: var(--swh-warn); }
+.swh-body { color: var(--swh-ink-2); font-size: 0.93rem; margin: 0 0 12px; }
+.swh-body b { color: var(--swh-ink); }
+
+.swh-actions { display: flex; flex-direction: column; gap: 8px; }
+.swh-btn {
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 650;
+  cursor: pointer;
+  padding: 12px;
+  border-radius: 12px;
+  text-align: center;
+  border: 1px solid var(--swh-line);
+  background: transparent;
+  color: var(--swh-ink-2);
+}
+.swh-btn-main { background: var(--swh-primary); border-color: var(--swh-primary); color: #052330; }
+.swh-btn:focus-visible { outline: 2px solid var(--swh-primary); outline-offset: 2px; }
+.swh-btn[disabled] { opacity: 0.55; cursor: default; }
+
+.swh-own { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+.swh-own label {
+  display: flex; flex-direction: column; gap: 5px;
+  font-size: 0.82rem; color: var(--swh-muted);
+}
+.swh-own input {
+  font: inherit;
+  font-size: 1rem;
+  color: var(--swh-ink);
+  padding: 11px 12px;
+  border-radius: 11px;
+  background: rgba(11, 18, 32, 0.7);
+  border: 1px solid var(--swh-line);
+}
+.swh-own input:focus { outline: 2px solid var(--swh-primary); outline-offset: 1px; }
+
+.swh-later { margin: 11px 0 0; font-size: 0.83rem; color: var(--swh-muted); text-align: center; }
+.swh-link {
+  font: inherit;
+  font-size: 0.83rem;
+  color: var(--swh-primary);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

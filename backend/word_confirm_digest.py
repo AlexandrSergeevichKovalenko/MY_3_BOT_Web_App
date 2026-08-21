@@ -32,6 +32,23 @@ KEEP = "keep"
 BAD_TRANSLATION = "badtr"
 DONE = "done"
 
+# ── Одно опознание слова на все три места ────────────────────────────────────
+# Личный словарь хранит существительное ВМЕСТЕ с артиклем: «die Abschiebung»
+# (7829 строк из 25240, замер 21.08.2026). Дверь же спрашивает голое слово —
+# артикль есть лишь у 1 записи из 149. Пока сравнение шло по сырому word_de,
+# соединение рвалось на каждом существительном: экран проверки показывал 24
+# слова вместо 100, и очевидный обрубок «das Scheinwerfergla» человек не видел.
+#
+# Поэтому слово опознаётся ТОЛЬКО по голой форме — и в списке, и в решениях, и в
+# плашке при сохранении. Артикль здесь не часть имени слова, а часть карточки.
+_BARE = "regexp_replace({col}, '^(der|die|das)[[:space:]]+', '', 'i')"
+
+
+def bare_word(text: str) -> str:
+    """Слово без артикля — то, чем его знает дверь."""
+    import re
+    return re.sub(r"^(der|die|das)\s+", "", str(text or "").strip(), flags=re.I).strip()
+
 
 def ensure_word_confirm_schema() -> None:
     """Состояние пачки: что человек уже отметил. Хранится до нажатия «Готово»."""
@@ -64,17 +81,17 @@ def words_for_user(user_id: int, limit: int = BATCH) -> list[tuple[str, str]]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT DISTINCT q.word_de, COALESCE(q.translation_ru, '')
+                    SELECT DISTINCT {bare}, COALESCE(q.translation_ru, '')
                       FROM bt_3_webapp_dictionary_queries q
-                      JOIN bt_3_word_check w ON w.asked = q.word_de
+                      JOIN bt_3_word_check w ON w.asked = {bare}
                      WHERE q.user_id = %s
                        AND w.status IN ('не подтверждено', 'не слово')
                        AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
-                                        WHERE d.user_id = q.user_id AND d.word = q.word_de
+                                        WHERE d.user_id = q.user_id AND d.word = {bare}
                                           AND d.closed_at IS NOT NULL)
-                     ORDER BY q.word_de
+                     ORDER BY 1
                      LIMIT %s;
-                    """,
+                    """.format(bare=_BARE.format(col="q.word_de")),
                     (int(user_id), int(limit)),
                 )
                 return [(str(a), str(b)) for a, b in (cur.fetchall() or [])]
@@ -151,20 +168,20 @@ def audit_items(user_id: int, limit: int = 200) -> list[dict[str, Any]]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT DISTINCT ON (q.word_de)
-                           q.word_de, COALESCE(q.translation_ru, ''),
+                    SELECT DISTINCT ON ({bare})
+                           {bare}, COALESCE(q.translation_ru, ''),
                            w.status, w.source, COALESCE(s.suggestion, '')
                       FROM bt_3_webapp_dictionary_queries q
-                      JOIN bt_3_word_check w ON w.asked = q.word_de
-                      LEFT JOIN bt_3_word_suggestion s ON s.asked = q.word_de
+                      JOIN bt_3_word_check w ON w.asked = {bare}
+                      LEFT JOIN bt_3_word_suggestion s ON s.asked = {bare}
                      WHERE q.user_id = %s
                        AND w.status IN ('не подтверждено', 'не слово')
                        AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
-                                        WHERE d.user_id = q.user_id AND d.word = q.word_de
+                                        WHERE d.user_id = q.user_id AND d.word = {bare}
                                           AND d.closed_at IS NOT NULL)
-                     ORDER BY q.word_de
+                     ORDER BY 1
                      LIMIT %s;
-                    """,
+                    """.format(bare=_BARE.format(col="q.word_de")),
                     (int(user_id), int(limit)),
                 )
                 rows = cur.fetchall() or []
@@ -211,6 +228,26 @@ def ensure_word_suggestion_schema() -> None:
         logging.warning("подсказка написания: схема не создана", exc_info=True)
 
 
+def _with_article(word: str) -> str:
+    """Исправленное слово в том виде, в каком оно ляжет в карточку.
+
+    Артикль берётся ТОЛЬКО у справочника рода. Старый артикль строки сюда не
+    переносится: «der Schwarzflieger» после починки может оказаться словом
+    другого рода, и перенос превратил бы опечатку в грамматическую ошибку.
+    Если род неизвестен — пишем голое слово: артикль допишет ночная программа
+    рода, когда узнает его. Пустое место честнее выдуманного «der».
+    """
+    text = bare_word(word)
+    if not text or not text[:1].isupper():
+        return text  # артикль бывает у существительного, а не у глагола
+    try:
+        from backend.article_authority import authoritative_article
+        art, _src = authoritative_article(text, allow_network=False)
+    except Exception:
+        art = None
+    return f"{art} {text}" if art else text
+
+
 def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, Any]:
     """Применить решения человека. Удаляем ТОЛЬКО то, что он не отметил.
 
@@ -227,16 +264,29 @@ def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, 
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
+                # Строки этого человека ищем по ГОЛОМУ слову: в словаре лежит
+                # «die Abschiebu», а решение пришло про «Abschiebu».
+                where_bare = ("user_id=%s AND "
+                              + _BARE.format(col="word_de") + "=%s")
                 for item in decisions:
-                    word = str(item.get("word") or "").strip()
+                    word = bare_word(item.get("word") or "")
                     action = str(item.get("action") or "").strip()
-                    text = str(item.get("text") or "").strip()
+                    text = bare_word(item.get("text") or "")
                     if not word:
                         continue
+                    translation = str(item.get("translation") or "").strip()
+                    if action == "manual" and translation:
+                        # «Свой вариант» — человек вписал и слово, и перевод. Перевод
+                        # его собственный, спорить с ним нечем: он видел исходный текст,
+                        # а мы нет.
+                        cur.execute(
+                            "UPDATE bt_3_webapp_dictionary_queries SET translation_ru=%s, "
+                            "updated_at=NOW() WHERE " + where_bare,
+                            (translation, int(user_id), word))
                     if action in ("fixed", "manual") and text and text != word:
                         cur.execute(
                             "UPDATE bt_3_webapp_dictionary_queries SET word_de=%s, updated_at=NOW() "
-                            "WHERE user_id=%s AND word_de=%s", (text, int(user_id), word))
+                            "WHERE " + where_bare, (_with_article(text), int(user_id), word))
                         # Исправленное написание — снова через дверь, уже без спешки.
                         cur.execute("DELETE FROM bt_3_word_check WHERE asked=%s", (text,))
                         counts["исправлено"] += 1
@@ -253,7 +303,7 @@ def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, 
                         counts["на пересборку"] += 1
                     else:
                         cur.execute("DELETE FROM bt_3_webapp_dictionary_queries "
-                                    "WHERE user_id=%s AND word_de=%s", (int(user_id), word))
+                                    "WHERE " + where_bare, (int(user_id), word))
                         counts["удалено"] += 1
                     if action in ("keep", "fixed", "manual"):
                         cur.execute(
@@ -365,3 +415,22 @@ def send_word_audit_reminders(*, force: bool = False) -> dict[str, Any]:
             status="completed" if (delivered or not targets) else "failed",
             metadata={"получателей": len(targets), "доставлено": delivered})
     return {"ok": True, "получателей": len(targets), "доставлено": delivered}
+
+
+def suggestion_for(word: str) -> str:
+    """Готовая подсказка написания, если она уже посчитана ночью. Иначе пусто.
+
+    В сеть и к модели отсюда не ходим: плашка показывается человеку, который ЖДЁТ,
+    и заставлять его ждать модель нельзя. Нет подсказки — плашка просто предложит
+    вписать свой вариант.
+    """
+    from backend.database import get_db_connection_context
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT suggestion FROM bt_3_word_suggestion WHERE asked=%s;",
+                            (bare_word(word),))
+                row = cur.fetchone()
+                return str(row[0]) if row and row[0] else ""
+    except Exception:
+        return ""
