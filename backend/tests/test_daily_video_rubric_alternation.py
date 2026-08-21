@@ -542,6 +542,29 @@ def test_there_is_no_target_number_of_cards():
 
 # ── Новости: карточка обязана объяснять то, что показывает ─────────────────────
 
+def _news_phrases(n=6, **over):
+    """Новостные карточки, у которых слово ВПРАВДУ встречается в своей цитате.
+
+    Иначе их отбросит страж «цитата обязана показывать слово», и тест будет проверять
+    не то, что задумано, — на этом я и попался 21.08.2026 с заготовками «das Wort 0».
+    """
+    rows = [
+        ("der Bock", "ich hab null Bock auf Montag"),
+        ("der Montag", "ich hab null Bock auf Montag"),
+        ("die Oma", "Meine Oma sagt immer"),
+        ("der Hammer", "das ist doch der Hammer"),
+        ("der Junge", "das ist doch der Hammer, Junge"),
+        ("abholen", "wie bestellt und nicht abgeholt"),
+    ]
+    out = []
+    for de, quote in rows[:n]:
+        item = {"de": de, "form_ru": "словарная форма", "translation_ru": "перевод",
+                "usage_ru": "с артиклем", "quote_de": quote, "quote_ru": "перевод строки"}
+        item.update(over)
+        out.append(item)
+    return out
+
+
 def test_news_card_also_needs_quote_and_form():
     """Случай владельца 21.08.2026: карточка новостей показывала «einen hohen genetischen
     Anteil», а переводила «высокая генетическая составляющая» — немецкое в винительном,
@@ -549,32 +572,16 @@ def test_news_card_also_needs_quote_and_form():
     переписала бы живую речь в грамматически неверную), значит форма обязана быть НАЗВАНА,
     а оборот — показан в предложении. С 21.08.2026 это критично вдвойне: корректор больше
     не правит текст при сохранении, и показанное уезжает человеку в словарь дословно."""
-    phrases = [
-        {"de": f"das Wort {i}", "form_ru": "именительный падеж", "translation_ru": "слово",
-         "usage_ru": "с артиклем", "quote_de": q, "quote_ru": "перевод строки"}
-        for i, q in enumerate([
-            "ich hab null Bock auf Montag", "das ist doch der Hammer",
-            "wie bestellt und nicht abgeholt", "Also ich sag mal so",
-            "Meine Oma sagt immer", "steh ich da wie bestellt",
-        ])
-    ]
+    phrases = _news_phrases()
     out = _validate_and_normalize_pack(_pack(phrases), NEWS_PROFILE, _TRANSCRIPT)
     assert len(out["phrases"]) == 6
-    assert out["phrases"][0]["form_ru"] == "именительный падеж"
+    assert out["phrases"][0]["form_ru"] == "словарная форма"
     assert out["phrases"][0]["quote_de"]
 
 
 def test_news_card_without_form_is_thrown_away():
-    phrases = [
-        {"de": f"das Wort {i}", "form_ru": "" if i == 0 else "именительный падеж",
-         "translation_ru": "слово", "usage_ru": "с артиклем",
-         "quote_de": q, "quote_ru": "перевод строки"}
-        for i, q in enumerate([
-            "ich hab null Bock auf Montag", "das ist doch der Hammer",
-            "wie bestellt und nicht abgeholt", "Also ich sag mal so",
-            "Meine Oma sagt immer", "steh ich da wie bestellt",
-        ])
-    ]
+    phrases = _news_phrases()
+    phrases[0]["form_ru"] = ""   # одна карточка без пометы формы
     with pytest.raises(ValueError):
         _validate_and_normalize_pack(_pack(phrases), NEWS_PROFILE, _TRANSCRIPT)
 
@@ -584,15 +591,7 @@ def test_news_does_not_demand_a_register_marking():
     требовать там «сленг/грубое» значило бы принуждать модель выдумывать."""
     assert NEWS_PROFILE.requires_register is False
     assert STANDUP_PROFILE.requires_register is True
-    phrases = [
-        {"de": f"das Wort {i}", "form_ru": "именительный падеж", "translation_ru": "слово",
-         "usage_ru": "с артиклем", "quote_de": q, "quote_ru": "перевод строки"}
-        for i, q in enumerate([
-            "ich hab null Bock auf Montag", "das ist doch der Hammer",
-            "wie bestellt und nicht abgeholt", "Also ich sag mal so",
-            "Meine Oma sagt immer", "steh ich da wie bestellt",
-        ])
-    ]
+    phrases = _news_phrases()
     out = _validate_and_normalize_pack(_pack(phrases), NEWS_PROFILE, _TRANSCRIPT)
     assert len(out["phrases"]) == 6
     assert "register_ru" not in out["phrases"][0]
@@ -638,3 +637,71 @@ def test_prompt_demands_reusable_units_not_show_lines():
     assert "Privatversicherte verstehen den Joke" in prompt, "нужен пример негодной карточки"
     assert "abhauen" in prompt, "нужен пример: из реплики берётся глагол, а не вся фраза"
     assert "Niceinger Diceinger" in prompt, "выдумки ведущего не заучиваются как обороты"
+
+
+# ── Дефекты второго живого выпуска (21.08.2026, вечер) ────────────────────────
+
+def test_quote_must_show_the_unit_not_just_exist(monkeypatch):
+    """Карточка «ausrasten» получила цитату про то, как все будут громко смеяться, — слова
+    там не было вовсе. Первый страж проверял, что цитата ЕСТЬ в субтитрах, но не что она
+    ПОКАЗЫВАЕТ слово. А ради этого цитата и нужна: человек должен увидеть, как это говорят."""
+    from backend.world_news_generator import _quote_shows_the_unit
+
+    assert not _quote_shows_the_unit("ausrasten", "wo wir den Witz hören und alle lachen")
+    assert _quote_shows_the_unit("verkacken", "Die leichteste Aufgabe der Welt verkackt.")
+
+
+def test_separable_verb_is_recognised_when_torn_apart():
+    """В живой речи глагол разрывается: «ausrasten» звучит как «da rasten alle aus».
+    Тупая проверка вхождения выбросила бы ПРАВИЛЬНУЮ карточку — эта грабля в репозитории
+    уже известна по заданиям с отделяемыми глаголами."""
+    from backend.world_news_generator import _quote_shows_the_unit, _unit_roots
+
+    assert _quote_shows_the_unit("ausrasten", "und da rasten dann alle komplett aus")
+    assert "rast" in _unit_roots("ausrasten"), "нужен корень без отделяемой приставки"
+
+
+def test_function_words_do_not_count_as_a_match():
+    """Искать «am» или «die» в немецкой строке бессмысленно — они есть везде, и любая
+    цитата прошла бы проверку формально."""
+    from backend.world_news_generator import _unit_roots
+
+    roots = _unit_roots("nichts am Hut haben (mit etwas)")
+    assert "am" not in roots and "die" not in roots
+    assert "hut" in roots
+
+
+def test_neutral_word_is_dropped_from_a_standup_pack():
+    """«die Kommentarspalte» с пометой «нейтральное» — добор до количества, ровно тот мусор,
+    которого владелец просил избегать: это слово человек и так знает, а место карточки занял."""
+    phrases = _good_phrases(5) + [
+        _phrase("нейтральное слово", "Also ich sag mal so", register_ru="нейтральное"),
+    ]
+    out = _validate_and_normalize_pack(_pack(phrases), STANDUP_PROFILE, _TRANSCRIPT)
+    assert all(p["de"] != "нейтральное слово" for p in out["phrases"])
+    assert len(out["phrases"]) == 5
+
+
+def test_news_pack_keeps_neutral_words():
+    """Отбраковка нейтральных — правило СТЕНДАПА. В новостях речь нейтральная вся, и тот же
+    фильтр вычистил бы рубрику до пустоты."""
+    phrases = _news_phrases(register_ru="нейтральное")
+    out = _validate_and_normalize_pack(_pack(phrases), NEWS_PROFILE, _TRANSCRIPT)
+    assert len(out["phrases"]) == 6
+
+
+def test_prompt_stops_inventing_a_case_for_lookup_forms():
+    """«die Kommentarspalte» помечена «винительный падеж», хотя в цитате стоит дательный, а
+    у «scheiß drauf» падежа нет вовсе. Причина: поле формы просило описать, как слово звучало
+    в ролике, а на карточке стоит словарный вид. Модель, обязанная что-то написать, выдумывала
+    грамматику — ровно то, что правило ноль запрещает абсолютно."""
+    prompt = STANDUP_PROFILE.llm_system
+    assert "HAT KEINEN KASUS" in prompt
+    assert "ERFINDEN" in prompt
+    assert "scheiß drauf" in prompt, "нужен пример оборота, у которого падежа нет"
+
+
+def test_prompt_forbids_quizzing_what_the_cards_explain():
+    """Четвёртый вопрос спрашивал значение «Full Circle Moment», уже разобранного карточкой
+    выше. Человек видит ответ до вопроса — тест перестаёт что-либо проверять."""
+    assert "FRAGE NICHT NACH DEM, WAS DIE KARTEN SCHON ERKLÄREN" in STANDUP_PROFILE.llm_system

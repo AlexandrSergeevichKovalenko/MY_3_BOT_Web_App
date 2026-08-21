@@ -142,10 +142,15 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
        «грубое», «молодёжное», «ироничное», «региональное (баварское)», «нейтральное».
        Wenn es derb/vulgär ist, sag das offen — der Lernende muss wissen, wo er das NICHT
        sagen darf.
-     - "form_ru": in welcher grammatischen Form "de" dasteht — kurz, auf RUSSISCH, in
-       MENSCHLICHER Sprache: «словарная форма», «винительный падеж», «дательный падеж»,
-       «инфинитив», «множественное число». Du liest die Form im Transkript ab (Rektion,
-       Artikelform) — rate NICHT.
+     - "form_ru": in welcher Form das steht, was DU IN "de" GESCHRIEBEN HAST — nicht,
+       wie es im Video klang. Kurz, auf RUSSISCH, menschlich.
+       Hast du eine Nachschlageform geschrieben (Infinitiv, Nomen mit Artikel), dann ist
+       die Antwort «словарная форма» — Punkt. Ein Nomen in der Nennform HAT KEINEN KASUS,
+       und einen Kasus dazuzuschreiben heisst, dem Lernenden Grammatik zu ERFINDEN.
+       Einen Kasus nennst du NUR, wenn du die Wortgruppe absichtlich in ihrer gebeugten
+       Form gelassen hast (z. B. "einen hohen genetischen Anteil" → «винительный падеж»).
+       Bei Wendungen ohne Nomen (z. B. "scheiß drauf") ist es «устойчивое выражение», NICHT
+       ein Kasus. Im Zweifel: «словарная форма». Rate NIEMALS.
      - "translation_ru": die Bedeutung GENAU HIER, in diesem Auftritt — und in DERSELBEN
        grammatischen Form wie "de". Steht das Deutsche im Akkusativ, steht auch das
        Russische im Akkusativ. Eine Karte, die Akkusativ zeigt und Nominativ übersetzt,
@@ -155,6 +160,10 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
        Wenn es keinen Unterschied gibt: LEERER STRING "". ERFINDE KEINE zweite Bedeutung.
      - "quote_de": die Zeile aus dem TRANSKRIPT, in der die Einheit vorkommt — WÖRTLICH
        aus dem Transkript kopiert, 4–20 Wörter. NICHT umformulieren, NICHT ausdenken.
+       DIE ZEILE MUSS DIE EINHEIT WIRKLICH ENTHALTEN — auch in gebeugter oder getrennter
+       Form ("ausrasten" → «da rasten alle aus»). Eine Zeile, die das Wort NICHT zeigt,
+       ist wertlos: der Nutzer soll sehen, wie man es SAGT. Findest du keine solche Zeile,
+       nimm die Einheit GAR NICHT — lieber eine Karte weniger als eine ohne Beleg.
      - "quote_ru": Übersetzung genau dieser Zeile ins Russische, umgangssprachlich, so wie
        ein Mensch das sagen würde.
      - "usage_ru": auf RUSSISCH: Rektion (Kasus/Präposition) und mit WEM man so sprechen
@@ -168,6 +177,10 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
    endet). Der Nutzer sieht die Fragen erst nach dem Video, aber die Karte mit den Fragen
    liegt auf demselben Bildschirm — und eine Frage wie «Wie wird der Gewinner bestimmt?»
    verrät das Ergebnis schon durch ihre Antwortoptionen.
+   FRAGE NICHT NACH DEM, WAS DIE KARTEN SCHON ERKLÄREN. Steht "Full Circle Moment" als
+   Einheit auf einer Karte, darf der Test nicht fragen, was das bedeutet — der Nutzer hat
+   die Antwort eine Bildschirmhöhe weiter oben gelesen. Der Test prüft das VERSTÄNDNIS DES
+   AUFTRITTS, nicht das Gedächtnis für unsere eigenen Karten.
    Jede Frage:
      - "question_de": klar, auf EIN Detail des Auftritts zugespitzt.
      - "options": GENAU 4 Antworten, etwa gleich lang und gleich plausibel, die

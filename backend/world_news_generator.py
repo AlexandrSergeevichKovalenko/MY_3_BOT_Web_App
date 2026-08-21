@@ -896,6 +896,66 @@ def _quote_fingerprint(text: str) -> str:
     return re.sub(r"[^0-9a-zäöüß]+", "", str(text or "").lower())
 
 
+# Отделяемые приставки: в живой речи глагол разрывается («ausrasten» → «da rasten alle
+# aus»), поэтому искать единицу в цитате целиком нельзя — так выбрасываются ПРАВИЛЬНЫЕ
+# карточки. Эта грабля в репозитории уже известна по заданиям с отделяемыми глаголами.
+_SEPARABLE_PREFIXES = (
+    "zusammen", "zurück", "vorbei", "durch", "nieder", "gegen", "unter", "über",
+    "hinter", "voran", "vorau", "fort", "fest", "statt", "weiter",
+    "aus", "auf", "ein", "mit", "nach", "vor", "weg", "her", "hin", "los", "ab",
+    "an", "bei", "um", "zu",
+)
+
+# Служебные слова: по ним искать бессмысленно, они есть в любой строке.
+_FUNCTION_WORDS = {
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer",
+    "sich", "und", "oder", "nicht", "am", "im", "in", "an", "auf", "mit", "es", "zu",
+    "etwas", "jemand", "jemandem", "jemanden", "man", "ist", "sein", "haben", "werden",
+}
+
+
+def _unit_roots(de: str) -> list[str]:
+    """Корни, по которым единицу можно узнать в цитате, даже если она там изменена.
+
+    Из «ausrasten» получаются «ausrast» и «rast»: второй найдётся в «da rasten alle aus».
+    Из «nichts am Hut haben» — «nichts», «hut», «hab». Служебные слова отбрасываются:
+    искать «am» в немецкой строке бессмысленно, оно есть везде.
+    """
+    text = re.sub(r"\(.*?\)", " ", str(de or ""))          # пояснения в скобках не ищем
+    words = re.findall(r"[A-Za-zÄÖÜäöüß]+", text)
+    content = [w for w in words if w.lower() not in _FUNCTION_WORDS and len(w) >= 3]
+    if not content:
+        content = words
+    roots: list[str] = []
+    for word in content:
+        low = word.lower()
+        variants = [low]
+        for prefix in _SEPARABLE_PREFIXES:
+            if low.startswith(prefix) and len(low) > len(prefix) + 2:
+                variants.append(low[len(prefix):])
+                break
+        for variant in variants:
+            root = re.sub(r"(en|n|e)$", "", variant)        # инфинитивное окончание
+            if len(root) >= 3:
+                roots.append(root)
+    return roots
+
+
+def _quote_shows_the_unit(de: str, quote: str) -> bool:
+    """Показывает ли цитата разбираемое слово.
+
+    Повод (первый живой стендап, 21.08.2026): карточка «ausrasten» получила цитату про то,
+    как все будут громко смеяться, — слова там не было вовсе. Страж проверял, что цитата
+    есть в СУБТИТРАХ, но не проверял, что она показывает саму единицу. А ведь ради этого
+    цитата и нужна: человек должен увидеть, как это ГОВОРЯТ.
+    """
+    roots = _unit_roots(de)
+    if not roots:
+        return True          # опознавать нечего — не выбрасываем по формальному признаку
+    fp = _quote_fingerprint(quote)
+    return any(root in fp for root in roots)
+
+
 def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str = "") -> dict:
     # Summary as 2–4 terse thesis lines (stored newline-joined). Fall back to splitting a
     # legacy paragraph summary_ru into sentences if the model still returns one.
@@ -918,6 +978,8 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
     transcript_fp = _quote_fingerprint(transcript_text) if needs_quote else ""
     dropped_no_quote = 0
     dropped_thin = 0
+    dropped_quote_off_topic = 0
+    dropped_neutral = 0
 
     phrases = []
     for p in raw_phrases:
@@ -960,6 +1022,18 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
             if _quote_fingerprint(quote_de) not in transcript_fp:
                 dropped_no_quote += 1
                 continue
+            # ВТОРОЙ СТРАЖ ЦИТАТЫ: строка обязана ПОКАЗЫВАТЬ разбираемое слово, а не просто
+            # существовать в субтитрах. Карточка «ausrasten» с цитатой про смех (21.08.2026)
+            # обманывает: человек читает «вот как это звучит», а слова там нет.
+            if not _quote_shows_the_unit(de, quote_de):
+                dropped_quote_off_topic += 1
+                continue
+            # Нейтральное бытовое слово в рубрике сленга — это добор до количества, ровно
+            # тот мусор, которого владелец просил избегать. `die Kommentarspalte` с пометой
+            # «нейтральное» (21.08.2026) человек и так знает, а место карточки занял.
+            if needs_register and register.strip().lower().startswith("нейтральн"):
+                dropped_neutral += 1
+                continue
             item["form_ru"] = form
             item["quote_de"] = quote_de
             item["quote_ru"] = quote_ru
@@ -970,16 +1044,20 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
             item["literal_ru"] = str(p.get("literal_ru") or "").strip()
         phrases.append(item)
 
-    if needs_quote and (dropped_no_quote or dropped_thin):
+    if needs_quote and (dropped_no_quote or dropped_thin or dropped_quote_off_topic
+                        or dropped_neutral):
         logger.info(
-            "daily_video[%s]: карточек отброшено — цитаты нет в субтитрах: %d, неполных: %d "
-            "(осталось %d)",
-            getattr(profile, "key", "?"), dropped_no_quote, dropped_thin, len(phrases),
+            "daily_video[%s]: карточек отброшено — цитаты нет в субтитрах: %d, цитата не "
+            "показывает слово: %d, нейтральных: %d, неполных: %d (осталось %d)",
+            getattr(profile, "key", "?"), dropped_no_quote, dropped_quote_off_topic,
+            dropped_neutral, dropped_thin, len(phrases),
         )
     if len(phrases) < min_phrases:
         raise ValueError(
             f"need >={min_phrases} valid phrases, got {len(phrases)} "
-            f"(quote_not_in_transcript={dropped_no_quote}, incomplete={dropped_thin})"
+            f"(quote_not_in_transcript={dropped_no_quote}, "
+            f"quote_off_topic={dropped_quote_off_topic}, neutral={dropped_neutral}, "
+            f"incomplete={dropped_thin})"
         )
     phrases = phrases[:max_phrases]
 
