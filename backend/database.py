@@ -23478,6 +23478,22 @@ def _ensure_phrase_check_tables(cursor) -> None:
     cursor.execute(
         "ALTER TABLE bt_3_phrase_review ADD COLUMN IF NOT EXISTS arbiter JSONB;"
     )
+    # КОГДА решение принято и КАКОЕ именно.
+    #
+    # Раньше в строке стояла только дата ПОЯВЛЕНИЯ вопроса. Из-за этого 20.08.2026
+    # разбор пятнадцати испорченных заголовков упёрся в стену: нельзя было отличить
+    # «сломалось в момент решения» от «сломалось позже чужим скриптом», и время
+    # приходилось восстанавливать по `updated_at` слова — а его переписывает любой
+    # фоновый прогон. Один столбец закрывает это навсегда.
+    cursor.execute(
+        "ALTER TABLE bt_3_phrase_review ADD COLUMN IF NOT EXISTS decided_at TIMESTAMPTZ;"
+    )
+    # Текст, который в итоге лёг в справочник по этому решению. Хранится ровно потому,
+    # что восстановить его задним числом нельзя: правила отбора вариантов меняются, и
+    # сегодняшний `phrase_review_variants` уже не покажет кнопку, которая была вчера.
+    cursor.execute(
+        "ALTER TABLE bt_3_phrase_review ADD COLUMN IF NOT EXISTS decided_text TEXT;"
+    )
 
 
 def phrase_check_text_hash(text: str) -> str:
@@ -23640,7 +23656,8 @@ def drop_noise_phrase_reviews() -> int:
                 if not phrase_review_is_noise(judges if isinstance(judges, list) else [], text):
                     continue
                 cursor.execute(
-                    "UPDATE bt_3_phrase_review SET status = 'kept' WHERE id = %s;", (int(rid),)
+                    "UPDATE bt_3_phrase_review SET status = 'kept', decided_at = NOW() "
+                    "WHERE id = %s;", (int(rid),)
                 )
                 cursor.execute(
                     """INSERT INTO bt_3_phrase_check (unit_id, text_hash, verdict, checked_at)
@@ -23749,7 +23766,8 @@ def close_phrase_review(review_id: int, status: str) -> None:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
             cursor.execute(
-                "UPDATE bt_3_phrase_review SET status = %s WHERE id = %s;",
+                "UPDATE bt_3_phrase_review SET status = %s, decided_at = NOW() "
+                "WHERE id = %s;",
                 (str(status or "closed")[:16], int(review_id)),
             )
         conn.commit()
@@ -24016,8 +24034,9 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
 
             if decision == "keep":
                 cursor.execute(
-                    "UPDATE bt_3_phrase_review SET status = 'kept' WHERE id = %s;",
-                    (int(review_id),),
+                    "UPDATE bt_3_phrase_review SET status = 'kept', decided_at = NOW(), "
+                    "decided_text = %s WHERE id = %s;",
+                    (old_text, int(review_id)),
                 )
                 cursor.execute(
                     """INSERT INTO bt_3_phrase_check (unit_id, text_hash, verdict, checked_at)
@@ -24043,7 +24062,8 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 result["cards_removed"] = cursor.rowcount or 0
                 cursor.execute("DELETE FROM bt_3_lex_units WHERE id = %s;", (unit_id,))
                 cursor.execute(
-                    "UPDATE bt_3_phrase_review SET status = 'deleted' WHERE id = %s;", (int(review_id),)
+                    "UPDATE bt_3_phrase_review SET status = 'deleted', decided_at = NOW() "
+                    "WHERE id = %s;", (int(review_id),)
                 )
                 conn.commit()
                 return result
@@ -24074,7 +24094,8 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 chosen_ru = str(own_ru or "").strip()
             if not new_text or new_text == old_text:
                 cursor.execute(
-                    "UPDATE bt_3_phrase_review SET status = 'closed' WHERE id = %s;", (int(review_id),)
+                    "UPDATE bt_3_phrase_review SET status = 'closed', decided_at = NOW() "
+                    "WHERE id = %s;", (int(review_id),)
                 )
                 conn.commit()
                 return result
@@ -24088,7 +24109,8 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
             )
             if cursor.fetchone():
                 cursor.execute(
-                    "UPDATE bt_3_phrase_review SET status = 'closed' WHERE id = %s;", (int(review_id),)
+                    "UPDATE bt_3_phrase_review SET status = 'closed', decided_at = NOW() "
+                    "WHERE id = %s;", (int(review_id),)
                 )
                 conn.commit()
                 result["text"] = ""
@@ -24109,8 +24131,10 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
             # чтобы ночь посмотрела фразу заново уже в новом виде.
             cursor.execute("DELETE FROM bt_3_phrase_check WHERE unit_id = %s;", (unit_id,))
             cursor.execute(
-                "UPDATE bt_3_phrase_review SET status = %s WHERE id = %s;",
-                ("accepted" if decision == "accept" else "replaced", int(review_id)),
+                "UPDATE bt_3_phrase_review SET status = %s, decided_at = NOW(), "
+                "decided_text = %s WHERE id = %s;",
+                ("accepted" if decision == "accept" else "replaced",
+                 new_text, int(review_id)),
             )
         conn.commit()
     result["text"] = new_text

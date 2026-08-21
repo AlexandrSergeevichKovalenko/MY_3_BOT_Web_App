@@ -115,7 +115,10 @@ from backend.provider_cost_truth import (
     build_provider_cost_truth_text,
     send_provider_cost_truth_report,
 )
-from backend.telegram_delivery import send_telegram_message_to_all
+from backend.telegram_delivery import (
+    send_telegram_message,
+    send_telegram_message_to_all,
+)
 from backend.admin_economics import (
     _split_telegram_text,
     apply_admin_limit_change,
@@ -3877,19 +3880,17 @@ def _send_shortcut_runs_report(days: int = 7) -> dict:
         return {"ok": False, "sent": 0, "reason": "no_token_or_admins"}
     text = _build_shortcut_runs_report_text(days)
     sent = 0
+    failures = []
     for uid in admin_ids:
         for part in _split_telegram_text(text):
-            try:
-                _requests.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": uid, "text": part, "parse_mode": "HTML",
-                          "disable_web_page_preview": True},
-                    timeout=20,
-                )
-            except Exception:
-                logging.warning("shortcut runs report DM failed uid=%s", uid, exc_info=True)
+            ok, reason = send_telegram_message(
+                chat_id=uid, text=part, token=token, what="отчёт по прогонам ярлыка")
+            if not ok:
+                failures.append((uid, reason))
         sent += 1
-    return {"ok": True, "sent": sent, "days": days}
+    if failures:
+        logging.error("отчёт по прогонам ярлыка не дошёл: %s", failures)
+    return {"ok": True, "sent": sent, "days": days, "failures": failures}
 
 
 def _run_shortcut_runs_weekly_report_safe() -> None:
@@ -10659,19 +10660,17 @@ def _send_scheduler_health_report(view: str = "full") -> dict:
         return {"ok": False, "sent": 0, "reason": "no_token_or_admins"}
     text = _build_scheduler_health_report(view=view)
     sent = 0
+    failures = []
     for uid in admin_ids:
         for part in _split_telegram_text(text):
-            try:
-                _requests.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": uid, "text": part, "parse_mode": "HTML",
-                          "disable_web_page_preview": True},
-                    timeout=20,
-                )
-            except Exception:
-                logging.warning("scheduler health DM failed uid=%s", uid, exc_info=True)
+            ok, reason = send_telegram_message(
+                chat_id=uid, text=part, token=token, what="здоровье планировщика")
+            if not ok:
+                failures.append((uid, reason))
         sent += 1
-    return {"ok": True, "sent": sent, "view": view}
+    if failures:
+        logging.error("отчёт о планировщике не дошёл: %s", failures)
+    return {"ok": True, "sent": sent, "view": view, "failures": failures}
 
 
 def _run_scheduler_health_report_morning_safe() -> None:
@@ -10792,19 +10791,17 @@ def _send_stars_report() -> dict:
         return {"ok": False, "sent": 0, "reason": "no_token_or_admins"}
     text = _build_stars_report()
     sent = 0
+    failures = []
     for uid in admin_ids:
         for part in _split_telegram_text(text):
-            try:
-                _requests.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": uid, "text": part, "parse_mode": "HTML",
-                          "disable_web_page_preview": True},
-                    timeout=20,
-                )
-            except Exception:
-                logging.warning("stars report DM failed uid=%s", uid, exc_info=True)
+            ok, reason = send_telegram_message(
+                chat_id=uid, text=part, token=token, what="отчёт по звёздам")
+            if not ok:
+                failures.append((uid, reason))
         sent += 1
-    return {"ok": True, "sent": sent}
+    if failures:
+        logging.error("отчёт по звёздам не дошёл: %s", failures)
+    return {"ok": True, "sent": sent, "failures": failures}
 
 
 def _run_stars_report_safe() -> None:
@@ -12696,13 +12693,12 @@ def _send_quarantine_review_weekly() -> None:
                                            "rel": int(r.get("releases") or 0)} for r in rows],
                            "kept_ids": []}
                 text, markup = _build_quarantine_review(session, sid, 0)
-                requests.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": uid, "text": text, "parse_mode": "HTML",
-                          "disable_web_page_preview": True,
-                          "reply_markup": {"inline_keyboard": _inbox_kb_json(markup) or []}},
-                    timeout=20,
-                )
+                ok, reason = send_telegram_message(
+                    chat_id=uid, text=text, token=token,
+                    reply_markup={"inline_keyboard": _inbox_kb_json(markup) or []},
+                    what="недельный разбор карантина")
+                if not ok:
+                    logging.error("разбор карантина не дошёл до %s: %s", uid, reason)
             except Exception:
                 logging.warning("weekly quarantine review send failed admin_id=%s", uid, exc_info=True)
     except Exception:
@@ -13024,15 +13020,10 @@ def _admin_run_send(chat_id: int, text: str) -> None:
     if not token or not chat_id:
         return
     for part in _split_telegram_text(text):
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": int(chat_id), "text": part, "parse_mode": "HTML",
-                      "disable_web_page_preview": True},
-                timeout=20,
-            )
-        except Exception:
-            logging.warning("admin run raw send failed", exc_info=True)
+        ok, reason = send_telegram_message(
+            chat_id=int(chat_id), text=part, token=token, what="вывод админского прогона")
+        if not ok:
+            logging.error("вывод админского прогона не дошёл: %s", reason)
 
 
 def _admin_run_save(job_key: str, status: str, state: dict) -> None:
