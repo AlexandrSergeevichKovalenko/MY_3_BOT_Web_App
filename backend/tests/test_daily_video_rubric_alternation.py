@@ -33,11 +33,18 @@ from backend.world_news_generator import _length_priority, _validate_and_normali
 # ── Чередование ────────────────────────────────────────────────────────────────
 
 def test_alternates_strictly_day_by_day():
-    """20.08.2026 — новости (в это утро они и ушли), дальше строго через день."""
-    assert rubric_for_date("2026-08-20") == RUBRIC_NEWS
-    assert rubric_for_date("2026-08-21") == RUBRIC_STANDUP
-    assert rubric_for_date("2026-08-22") == RUBRIC_NEWS
-    assert rubric_for_date("2026-08-23") == RUBRIC_STANDUP
+    """21.08.2026 — новости: запись на этот день собралась ночью 20-го и лежит в базе
+    новостью, якорь на неё и указывает. Дальше строго через день: 22-е — стендап."""
+    assert rubric_for_date("2026-08-21") == RUBRIC_NEWS
+    assert rubric_for_date("2026-08-22") == RUBRIC_STANDUP
+    assert rubric_for_date("2026-08-23") == RUBRIC_NEWS
+    assert rubric_for_date("2026-08-24") == RUBRIC_STANDUP
+
+
+def test_first_standup_lands_on_the_next_day_not_in_two_days():
+    """Смысл сдвига якоря 21.08.2026: вечерняя подготовка 21-го делает 22-е, и оно обязано
+    быть стендапом. При прежнем якоре рубрика впервые вышла бы только 23-го."""
+    assert rubric_for_date("2026-08-22") == RUBRIC_STANDUP
 
 
 def test_month_and_year_boundaries_do_not_break_the_rhythm():
@@ -57,7 +64,7 @@ def test_a_missed_day_does_not_shift_the_schedule():
 def test_alternation_can_be_switched_off(monkeypatch):
     """Выключатель возвращает поведение «каждый день новости» без выката кода."""
     monkeypatch.setenv("DAILY_VIDEO_ALTERNATION_ENABLED", "0")
-    assert rubric_for_date("2026-08-21") == RUBRIC_NEWS
+    assert rubric_for_date("2026-08-22") == RUBRIC_NEWS
 
 
 def test_unknown_rubric_is_an_error_not_a_default():
@@ -90,6 +97,105 @@ def test_standup_prompt_demands_the_register_marking():
     нельзя, и по ней же словарный слой может узнать живую речь среди словарных единиц."""
     assert "register_ru" in STANDUP_PROFILE.llm_system
     assert "derb/vulgär" in STANDUP_PROFILE.llm_system
+
+
+# ── Квота YouTube: спрашиваем разрешение ДО траты ──────────────────────────────
+
+def test_low_quota_means_not_a_single_request(monkeypatch):
+    """21.08.2026 суточная квота кончилась, и рубрика не смогла подобрать ролик. Причина:
+    она ходила в YouTube мимо счётчика — не спрашивала разрешения и не сообщала о тратах.
+    При нехватке остатка обход обязан не сделать НИ ОДНОГО запроса, а не долбиться и
+    получать отказы."""
+    import backend.world_news_generator as G
+
+    G._CAND_CACHE.clear()
+    monkeypatch.setattr(G, "_quota_allows", lambda units: False)
+
+    def _no_network(*a, **kw):
+        raise AssertionError("при нехватке квоты рубрика не имеет права ходить в сеть")
+
+    monkeypatch.setattr(G.requests, "get", _no_network)
+    assert G._gather_candidates(STANDUP_PROFILE) == []
+    assert G._QUOTA_LOW is True
+
+
+def test_quota_estimate_is_asked_before_the_sweep(monkeypatch):
+    """Сторожу называется РЕАЛЬНАЯ цена обхода, а не символическая единица: иначе он
+    пропустит трату, на которую остатка не хватает."""
+    import backend.world_news_generator as G
+
+    G._CAND_CACHE.clear()
+    asked = []
+    monkeypatch.setattr(G, "_quota_allows", lambda units: (asked.append(units), False)[1])
+    monkeypatch.setattr(G.requests, "get", lambda *a, **kw: None)
+    G._gather_candidates(STANDUP_PROFILE)
+    assert asked, "сторожа вообще не спросили"
+    # 12 каналов × 8 страниц = 96 единиц на списки, плюс справка о роликах пачками по 50.
+    assert asked[0] >= 96, f"цена обхода занижена: {asked[0]}"
+
+
+def test_news_rubric_is_not_gated_by_the_archive_guard(monkeypatch):
+    """Сторож стоит на архивном обходе стендапа. У новостей обход дешёвый (одна страница
+    на канал), и вешать на них тот же порог значило бы ронять утреннюю рубрику зря."""
+    import backend.world_news_generator as G
+
+    G._CAND_CACHE.clear()
+    asked = []
+    monkeypatch.setattr(G, "_quota_allows", lambda units: (asked.append(units), False)[1])
+    monkeypatch.setattr(G, "_yt_api_playlist_recent", lambda *a, **kw: [])
+    monkeypatch.setattr(G, "_yt_api_search_recent", lambda *a, **kw: [])
+    G._gather_candidates(NEWS_PROFILE)
+    assert not asked, "новостной обход не должен проходить через архивный сторож"
+
+
+# ── Отчёт о пуле не тратит квоту ───────────────────────────────────────────────
+
+def test_pool_report_reads_the_snapshot_and_never_calls_youtube(monkeypatch):
+    """Первая версия отчёта обходила каналы заново — тратила ту самую квоту, которая нужна
+    продукту. Теперь отчёт читает снимок, записанный в момент подготовки выпуска."""
+    import backend.database as db
+    import backend.standup_pool_report as R
+    import backend.world_news_generator as G
+
+    monkeypatch.setattr(db, "get_daily_video_pool_snapshot",
+                        lambda rubric: {"scanned": 3756, "in_range": 646,
+                                        "manual_captions": 111, "measured_on": "2026-08-21"})
+    monkeypatch.setattr(db, "count_shown_daily_videos", lambda rubric: 10)
+    monkeypatch.setattr(G, "_gather_candidates", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("отчёт не имеет права обходить каналы")))
+
+    state = R.standup_pool_state()
+    assert state["remaining"] == 636          # 646 подходящих минус 10 показанных
+    assert state["days_left"] == 1272         # рубрика выходит через день
+    assert state["measured_on"] == "2026-08-21"
+    assert "квоту YouTube отчёт не тратит" in R.format_standup_pool_report(state)
+
+
+def test_pool_report_says_when_it_has_never_measured(monkeypatch):
+    """Ноль и «мы ещё не мерили» — разные вещи: ноль означал бы «добавь каналы»."""
+    import backend.database as db
+    import backend.standup_pool_report as R
+
+    monkeypatch.setattr(db, "get_daily_video_pool_snapshot", lambda rubric: None)
+    monkeypatch.setattr(db, "count_shown_daily_videos", lambda rubric: 0)
+    text = R.format_standup_pool_report(R.standup_pool_state())
+    assert "ещё ни разу не мерился" in text
+    assert "закончились" not in text
+
+
+# ── Прописные буквы в тезисах ──────────────────────────────────────────────────
+
+def test_prompts_demand_capital_letters_in_theses(monkeypatch):
+    """На карточке владельца 21.08.2026: «афд лидирует в опросах в двух землях восточной
+    германии». Партия, страна и земли — имена собственные. Причина была не только в
+    отсутствии правила: САМ ПРИМЕР в задании был написан строчными, и модель его копировала."""
+    from backend.world_news_generator import _LLM_SYSTEM
+    for prompt in (_LLM_SYSTEM, STANDUP_PROFILE.llm_system):
+        assert "SCHREIBWEISE" in prompt
+        assert "АдГ" in prompt
+    # Пример тезисов обязан быть написан правильно — модель повторяет образец.
+    assert '"Правительство Германии' in _LLM_SYSTEM
+    assert '"правительство Германии' not in _LLM_SYSTEM
 
 
 # ── Длительность берётся из профиля ────────────────────────────────────────────

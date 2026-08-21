@@ -11320,7 +11320,17 @@ async def admin_world_news_command(update: Update, context: CallbackContext,
         )
     except Exception as exc:
         logging.exception("admin worldnews prep failed user_id=%s rubric=%s", int(sender.id), effective)
-        if "quota" in str(exc).lower():
+        if "youtube_quota_low" in str(exc):
+            # Мы САМИ не пошли в сеть, чтобы не добить остаток, — это не отказ YouTube.
+            # Владельцу важно видеть число: по нему понятно, ждать ли автоподбора сегодня.
+            m = re.search(r"'quota_left':\s*'(\d+)'", str(exc))
+            left = f" Осталось примерно {m.group(1)} единиц." if m else ""
+            await status.edit_text(
+                f"⏳ Квота YouTube на исходе — автоподбор пропущен, чтобы не добить остаток."
+                f"{left} Квота сбрасывается раз в сутки (≈утром по Киеву).\n"
+                f"Ролик по ссылке работает и сейчас: {cmd} <youtube_url> — это стоит одну единицу."
+            )
+        elif "quota" in str(exc).lower():
             await status.edit_text(
                 "⏳ Дневная квота YouTube API исчерпана — ролик сейчас не подобрать. "
                 "Квота сбрасывается раз в сутки (≈утром по Киеву).\n"

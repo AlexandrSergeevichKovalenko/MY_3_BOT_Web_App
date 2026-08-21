@@ -30,9 +30,15 @@ from datetime import date, datetime
 RUBRIC_NEWS = "news"
 RUBRIC_STANDUP = "standup"
 
-# Якорь чередования: 20.08.2026 новости ушли утром (решение владельца 20.08.2026), значит
-# у этой даты — рубрика новостей, у следующей — стендап, и так через день.
-_ALTERNATION_ANCHOR = date(2026, 8, 20)
+# Якорь чередования: 21.08.2026 — день новостей, и это не выбор, а факт. Запись на 21-е
+# собралась ночью 20-го, ещё до выката чередования, и лежит в базе новостью. Якорь на неё
+# и указывает, чтобы расписание совпадало с тем, что вправду в базе, а не спорило с ним.
+# Отсюда: 22.08 — стендап, 23.08 — новости, и так через день.
+#
+# Сдвинут на сутки 21.08.2026 по решению владельца. При прежнем якоре (20.08) первый
+# стендап выпадал на 23-е: 21-е уже было занято новостью, а вечерняя подготовка 21-го
+# делает 22-е, которое по тому якорю тоже было новостным. Владелец ждал бы рубрику два дня.
+_ALTERNATION_ANCHOR = date(2026, 8, 21)
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -88,6 +94,11 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
 1) "summary_points": 2–4 sehr kurze Zeilen auf RUSSISCH — worum es in dem Auftritt geht:
    Thema, Figur, Situation. Je 3–9 Wörter, keine Verbindungswörter, kein Wasser.
    Die Pointe NICHT verraten — der Nutzer schaut das Video danach.
+   SCHREIBWEISE: Eigennamen behalten ihren GROSSBUCHSTABEN — Länder, Städte, Bundesländer,
+   Parteien, Organisationen, Personen (Германия, Саксония-Анхальт, Мекленбург-Передняя
+   Померания, АдГ, Бундестаг). Abkürzungen so, wie sie im Russischen üblich sind: AfD → АдГ,
+   nicht «афд». «Knapp» heisst OHNE Wasser — NICHT ohne Grossbuchstaben. Jede These beginnt
+   mit einem Grossbuchstaben.
 
 2) "phrases": ALLE Einheiten dieses Auftritts, bei denen der KONTEXT die Bedeutung
    bestimmt — Slang, Umgangssprache, Redewendungen, feste Wendungen, Jugendsprache,

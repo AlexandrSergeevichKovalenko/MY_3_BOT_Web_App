@@ -10929,6 +10929,22 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_daily_video_shown_rubric
                 ON bt_3_daily_video_shown (rubric, shown_on DESC);
             """)
+            # Снимок пула рубрики. Знание «сколько роликов подходит по длине и сколько из
+            # них с ручными субтитрами» появляется БЕСПЛАТНО в момент, когда вечерняя
+            # подготовка и так обходит каналы, чтобы выбрать ролик. Раньше еженедельный
+            # отчёт обходил их ЗАНОВО — то есть тратил ту самую квоту, которая нужна
+            # самому продукту (разобрано 21.08.2026, когда квота кончилась). Теперь
+            # увиденное записывается сюда, а отчёт читает готовое и в YouTube не ходит.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_daily_video_pool_snapshot (
+                    rubric TEXT PRIMARY KEY,
+                    scanned INTEGER NOT NULL DEFAULT 0,
+                    in_range INTEGER NOT NULL DEFAULT 0,
+                    manual_captions INTEGER NOT NULL DEFAULT 0,
+                    measured_on DATE NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS bt_3_youtube_watch_state (
@@ -27339,6 +27355,64 @@ def get_shown_daily_video_ids(rubric: str | None = None) -> set:
             else:
                 cursor.execute("SELECT video_id FROM bt_3_daily_video_shown;")
             return {str(r[0]).strip() for r in cursor.fetchall() if r and r[0]}
+
+
+def upsert_daily_video_pool_snapshot(
+    *,
+    rubric: str,
+    scanned: int,
+    in_range: int,
+    manual_captions: int,
+    measured_on,
+) -> None:
+    """Записать, что рубрика увидела при обходе каналов: сколько роликов просмотрено,
+    сколько подошло по длине и сколько из них с субтитрами, положенными руками.
+
+    Пишется в момент подготовки выпуска — тогда обход уже сделан и оплачен. Отдельный
+    поход в YouTube ради отчёта не нужен и запрещён: он тратит ту же квоту, что и продукт.
+    """
+    key = str(rubric or "").strip()
+    if not key or not measured_on:
+        raise ValueError("upsert_daily_video_pool_snapshot: нужна рубрика и дата замера")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_daily_video_pool_snapshot
+                    (rubric, scanned, in_range, manual_captions, measured_on, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (rubric) DO UPDATE
+                SET scanned = EXCLUDED.scanned,
+                    in_range = EXCLUDED.in_range,
+                    manual_captions = EXCLUDED.manual_captions,
+                    measured_on = EXCLUDED.measured_on,
+                    updated_at = NOW();
+                """,
+                (key, int(scanned or 0), int(in_range or 0), int(manual_captions or 0),
+                 measured_on),
+            )
+
+
+def get_daily_video_pool_snapshot(rubric: str) -> dict | None:
+    """Последний снимок пула рубрики. None — замера ещё не было НИ РАЗУ (а не «пул пуст»):
+    отчёт обязан сказать об этом словами, а не показать ноль."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT scanned, in_range, manual_captions, measured_on "
+                "FROM bt_3_daily_video_pool_snapshot WHERE rubric = %s;",
+                (str(rubric or "").strip(),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            scanned, in_range, manual_captions, measured_on = row
+            return {
+                "scanned": int(scanned or 0),
+                "in_range": int(in_range or 0),
+                "manual_captions": int(manual_captions or 0),
+                "measured_on": measured_on.isoformat() if measured_on else None,
+            }
 
 
 def count_shown_daily_videos(rubric: str) -> int:

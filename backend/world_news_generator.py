@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 # burning it: a short-lived candidate cache so repeated «переформировать» clicks reuse one
 # search sweep, and a quota flag so a 429/403 surfaces as a clear reason instead of "no videos".
 _QUOTA_EXCEEDED = False
+# Остатка квоты не хватило на холодный обход — мы решили НЕ ходить в сеть. Это не то же
+# самое, что _QUOTA_EXCEEDED (там YouTube ответил отказом): здесь мы не потратили ничего.
+_QUOTA_LOW = False
 # Свип кандидатов кэшируется ОТДЕЛЬНО по рубрикам ('news' / 'standup'): иначе вечерняя
 # подготовка стендапа получила бы новостной список каналов из тёплого кэша.
 _CAND_CACHE: dict = {}
@@ -149,6 +152,51 @@ def _model(profile=None) -> str:
     ).strip()
 
 
+def _quota_spent(units: float) -> None:
+    """Сообщить о потраченных единицах квоты YouTube в общий суточный счётчик.
+
+    До 21.08.2026 рубрика ходила в YouTube МИМО счётчика: не сообщала о тратах и не
+    спрашивала разрешения. Из-за этого счётчик показывал меньше, чем потрачено на самом
+    деле, и остальные части приложения принимали решения по заниженному числу. Повод —
+    21.08.2026: суточная квота кончилась, и `/standup` не смог подобрать ролик.
+
+    Сбой самого счётчика не должен ронять подготовку выпуска — но и молчать о нём нельзя,
+    иначе мы снова считаем вслепую.
+    """
+    try:
+        from backend.backend_server import _youtube_quota_local_add
+        _youtube_quota_local_add(float(units))
+    except Exception:
+        logger.warning("daily_video: не удалось учесть %s единиц квоты YouTube", units,
+                       exc_info=True)
+
+
+def _quota_allows(estimated_units: float) -> bool:
+    """Хватит ли остатка квоты на запланированную трату (с неприкосновенным запасом).
+
+    Спрашиваем ДО обхода: при пустом кошельке прежний код всё равно делал ~170 запросов,
+    получал ~170 отказов и только потом говорил «ничего не нашлось» — медленно и невнятно.
+    Если счётчик недоступен, идём в сеть: отказать в подготовке выпуска из-за сбоя
+    счётчика — хуже, чем потратить единицы (YouTube сам вернёт 403, и мы это увидим).
+    """
+    try:
+        from backend.backend_server import youtube_live_search_allowed
+        return bool(youtube_live_search_allowed(float(estimated_units)))
+    except Exception:
+        logger.warning("daily_video: счётчик квоты недоступен — идём в сеть", exc_info=True)
+        return True
+
+
+def _quota_remaining_text() -> str:
+    """Остаток квоты для человеческого сообщения владельцу. Пустая строка — если неизвестен."""
+    try:
+        from backend.backend_server import youtube_daily_quota_remaining
+        left = youtube_daily_quota_remaining()
+        return "" if left is None else str(int(left))
+    except Exception:
+        return ""
+
+
 def _youtube_api_key() -> str:
     return (
         os.getenv("YOUTUBE_API_KEY")
@@ -185,6 +233,7 @@ def _yt_api_search_recent(query: str, *, channel_id: str | None = None, max_resu
         params["channelId"] = channel_id
     try:
         resp = requests.get("https://www.googleapis.com/youtube/v3/search", params=params, timeout=12)
+        _quota_spent(100)  # search.list — 100 единиц за вызов
         if resp.status_code >= 400:
             if resp.status_code in (429, 403):
                 global _QUOTA_EXCEEDED
@@ -236,6 +285,7 @@ def _yt_api_playlist_recent(playlist_id: str, *, max_results: int = 10, pages: i
             params["pageToken"] = page_token
         try:
             resp = requests.get("https://www.googleapis.com/youtube/v3/playlistItems", params=params, timeout=12)
+            _quota_spent(1)  # playlistItems.list — 1 единица за страницу
             if resp.status_code >= 400:
                 if resp.status_code in (429, 403):
                     global _QUOTA_EXCEEDED
@@ -293,6 +343,7 @@ def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dic
     }
     try:
         resp = requests.get("https://www.googleapis.com/youtube/v3/videos", params=params, timeout=12)
+        _quota_spent(1)  # videos.list — 1 единица за пачку до 50 роликов
         if resp.status_code >= 400:
             return
         for item in (resp.json().get("items") or []):
@@ -386,12 +437,40 @@ def _gather_candidates(profile=None) -> list[dict]:
     if slot["items"] and (now - slot["ts"]) < ttl:
         return list(slot["items"])
 
+    global _QUOTA_LOW
     _QUOTA_EXCEEDED = False
+    _QUOTA_LOW = False
     seen: set[str] = set()
     candidates: list[dict] = []
     archive = profile.pick_strategy == "archive"
     per_channel = 50 if archive else _env_int("WORLD_NEWS_PER_CHANNEL", 8)
     pages = profile.archive_pages if archive else 1
+
+    # СПРАШИВАЕМ РАЗРЕШЕНИЕ ДО ТРАТЫ (21.08.2026). Холодный обход архива стоит примерно
+    # столько: по одной единице за страницу списка роликов (каналы × страницы) плюс по
+    # одной за пачку из 50 роликов в справке. При пустом кошельке прежний код всё равно
+    # делал все эти запросы, получал столько же отказов и лишь потом говорил «ничего не
+    # нашлось». Теперь при нехватке остатка в сеть не идём НИ РАЗУ, а причина уходит
+    # наверх, чтобы владелец увидел число и понял, когда автоподбор вернётся.
+    # Ручная выдача по ссылке сюда не заходит: она стоит одну единицу и обязана работать
+    # всегда, даже когда квота исчерпана, — рубрика не должна умирать полностью.
+    if archive:
+        channels_count = len(profile_channel_ids(profile))
+        # Страницы списка роликов: по одной единице за каждую. Справка о роликах: одна
+        # единица за пачку до 50 — считаем по тому же потолку, что применяется ниже.
+        pages_cost = channels_count * max(1, pages)
+        details_cost = -(-min(_env_int("STANDUP_CANDIDATES", 4000),
+                              channels_count * max(1, pages) * 50) // 50)
+        est_units = pages_cost + details_cost
+        if not _quota_allows(est_units):
+            left = _quota_remaining_text()
+            logger.warning(
+                "daily_video[%s]: обход архива пропущен — остатка квоты не хватает "
+                "(нужно ~%s единиц, осталось %s)", profile.key, est_units, left or "неизвестно",
+            )
+            _QUOTA_LOW = True
+            _CAND_CACHE.setdefault(profile.key, {"ts": 0.0, "items": []})
+            return []
     for cid in profile_channel_ids(profile):
         pl = _uploads_playlist_id(cid)
         if not pl:
@@ -499,7 +578,10 @@ def _pick_video_with_transcript(*, profile=None, manual_url: str | None = None,
     diag["candidates"] = len(candidates)
     diag["quota_exceeded"] = _QUOTA_EXCEEDED
     if not candidates:
-        if _QUOTA_EXCEEDED:
+        if _QUOTA_LOW:
+            diag["reason"] = "youtube_quota_low"
+            diag["quota_left"] = _quota_remaining_text()
+        elif _QUOTA_EXCEEDED:
             diag["reason"] = "youtube_quota_exceeded"
         else:
             diag["reason"] = "no_candidates" if diag["has_yt_key"] else "no_youtube_api_key"
@@ -510,6 +592,22 @@ def _pick_video_with_transcript(*, profile=None, manual_url: str | None = None,
     # a stable sort keeps recency as the tiebreak. Duration comes from videos.list metadata we
     # already fetched, so this costs no extra transcript fetches (those still stop at the first
     # valid candidate below). See _length_priority for the tiering.
+    # Считаем пул ПРЯМО ЗДЕСЬ: справка о роликах уже получена и оплачена, значит «сколько
+    # подходит по длине и сколько с ручными субтитрами» достаётся даром. Эти числа уходят
+    # в снимок пула, из которого потом собирается еженедельный отчёт — без второго обхода.
+    _in_range = 0
+    _manual = 0
+    for _c in candidates:
+        _d = details_map.get(_c["video_id"]) or {}
+        _dur = int(_d.get("duration_seconds") or 0)
+        if _dur and profile.min_seconds <= _dur <= profile.max_seconds:
+            _in_range += 1
+            if _d.get("has_manual_captions"):
+                _manual += 1
+    diag["pool_scanned"] = len(candidates)
+    diag["pool_in_range"] = _in_range
+    diag["pool_manual_captions"] = _manual
+
     if profile.pick_strategy == "archive":
         # У вечнозелёного архива нет «свежести», по которой можно было бы разбивать ничьи,
         # и без перемешивания рубрика месяцами шла бы по одному каналу — тому, чьи ролики
@@ -590,8 +688,13 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
 1) "summary_points": 2–4 sehr kurze THESEN auf RUSSISCH — je EIN Fakt pro Zeile, wie
    Schlagzeilen. KEINE Verbindungswörter ("кроме того", "но", "также"), KEINE Wertung,
    kein Wasser. Nur die nackten Fakten, jede These 3–9 Wörter. Beispiel:
-   ["правительство Германии планирует изменить закон о налогах и больничных",
-    "новые атаки России на Украину", "крупный штраф Google в Европе"].
+   ["Правительство Германии меняет закон о налогах и больничных",
+    "Новые атаки России на Украину", "Крупный штраф Google в Европе"].
+   SCHREIBWEISE: Eigennamen behalten ihren GROSSBUCHSTABEN — Länder, Städte, Bundesländer,
+   Parteien, Organisationen, Personen (Германия, Саксония-Анхальт, Мекленбург-Передняя
+   Померания, АдГ, Бундестаг). Abkürzungen so, wie sie im Russischen üblich sind: AfD → АдГ,
+   nicht «афд». «Knapp» heisst OHNE Wasser — NICHT ohne Grossbuchstaben. Jede These beginnt
+   mit einem Grossbuchstaben.
 
 2) "phrases": 12–18 wirklich nützliche, im Transkript tatsächlich vorkommende Wörter und
    Wendungen (bevorzugt Wortgruppen/Kollokationen, nicht triviale Wörter wie "und", "sein").
@@ -860,6 +963,7 @@ def prepare_world_news(
     from backend.database import (
         upsert_world_news_daily, get_world_news_for_date, get_recent_world_news_video_ids,
         upsert_youtube_transcript_cache, get_shown_daily_video_ids, record_daily_video_shown,
+        upsert_daily_video_pool_snapshot,
     )
     from backend.daily_video_rubrics import get_profile, rubric_for_date
 
@@ -944,6 +1048,22 @@ def prepare_world_news(
         channel_title=picked["channel_title"],
         had_manual_captions=picked.get("has_manual_captions"),
     )
+    # Снимок пула — из того, что обход и так увидел. Отчёт владельцу собирается потом из
+    # него и из реестра показанного, не тратя ни единицы квоты. При ручной выдаче по ссылке
+    # обхода не было, и снимка нет — тогда прежний остаётся нетронутым, а не обнуляется.
+    if diag.get("pool_in_range") is not None:
+        try:
+            upsert_daily_video_pool_snapshot(
+                rubric=profile.key,
+                scanned=int(diag.get("pool_scanned") or 0),
+                in_range=int(diag.get("pool_in_range") or 0),
+                manual_captions=int(diag.get("pool_manual_captions") or 0),
+                measured_on=date_str,
+            )
+        except Exception:
+            # Снимок — материал для отчёта, а не для выпуска: его потеря не повод рушить
+            # уже собранный разбор. Но и молчать нельзя, иначе отчёт тихо застареет.
+            logger.warning("daily_video[%s]: снимок пула не записан", profile.key, exc_info=True)
     # Warm the shared transcript library so EVERY user — not just the library admin — gets the
     # German subtitles for this curated video. Without this, non-admin users (free AND non-admin
     # Pro) hit the library gate in the /youtube_transcript endpoint and see «Субтитры недоступны»,

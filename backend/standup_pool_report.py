@@ -10,8 +10,16 @@
 к концу, владелец должен узнать об этом заранее — а не по тому, что субтитры вдруг стали
 хуже.
 
-Замер идёт по тому же свипу каналов, что и выбор ролика (кэш на 6 часов), поэтому
-еженедельный отчёт почти ничего не стоит по квоте YouTube.
+── Почему отчёт НЕ ходит в YouTube (переделано 21.08.2026) ────────────────────
+Первая версия обходила все каналы заново — около 170 единиц квоты за отчёт, плюс столько
+же за каждый вызов вручную. То есть ОТЧЁТ тратил ровно тот ресурс, который нужен самому
+продукту; 21.08.2026 суточная квота кончилась, и рубрика не смогла подобрать ролик.
+
+Теперь отчёт складывается из двух вещей, за которые уже заплачено:
+  • снимок пула — записывается в момент, когда подготовка выпуска и так обходит каналы;
+  • вечный реестр показанного — наша собственная таблица.
+Обращений к YouTube: ноль. Возраст снимка называется вслух — снимок недельной давности
+не должен быть неотличим от сегодняшнего.
 """
 from __future__ import annotations
 
@@ -23,43 +31,46 @@ logger = logging.getLogger(__name__)
 def standup_pool_state() -> dict:
     """Сколько роликов в пуле, сколько израсходовано, сколько осталось и на сколько дней.
 
+    Читает готовое: снимок пула и реестр показанного. В сеть НЕ ходит.
+
     Ошибки НЕ глушатся: пустой отчёт от сбоя неотличим от честного «пул кончился», а это
-    два разных мира — в одном надо чинить сеть, в другом пополнять набор каналов.
+    два разных мира — в одном надо чинить базу, в другом пополнять набор каналов.
     """
     from backend.daily_video_rubrics import STANDUP_PROFILE
-    from backend.database import get_shown_daily_video_ids
-    from backend.world_news_generator import _gather_candidates, _yt_api_video_details
+    from backend.database import count_shown_daily_videos, get_daily_video_pool_snapshot
 
-    candidates = _gather_candidates(STANDUP_PROFILE)
-    details = _yt_api_video_details([c["video_id"] for c in candidates])
+    snapshot = get_daily_video_pool_snapshot(STANDUP_PROFILE.key)
+    shown_total = count_shown_daily_videos(STANDUP_PROFILE.key)
 
-    in_range: list[str] = []
-    manual: set[str] = set()
-    for cand in candidates:
-        vid = cand["video_id"]
-        det = details.get(vid) or {}
-        dur = int(det.get("duration_seconds") or 0)
-        if not dur or not (STANDUP_PROFILE.min_seconds <= dur <= STANDUP_PROFILE.max_seconds):
-            continue
-        in_range.append(vid)
-        if det.get("has_manual_captions"):
-            manual.add(vid)
+    if not snapshot:
+        # Замера не было ни разу — это НЕ «пул пуст». Отчёт обязан сказать об этом словами,
+        # а не показать ноль: ноль означал бы «добавь каналы», хотя добавлять ничего не надо.
+        return {
+            "measured": False,
+            "channels": len(STANDUP_PROFILE.channel_ids),
+            "shown_total": shown_total,
+        }
 
-    shown = get_shown_daily_video_ids(STANDUP_PROFILE.key)
-    remaining = [v for v in in_range if v not in shown]
-    remaining_manual = [v for v in remaining if v in manual]
+    in_range = int(snapshot.get("in_range") or 0)
+    manual = int(snapshot.get("manual_captions") or 0)
+    # Показанное вычитается из пула. Снимок и реестр меряют одно и то же множество роликов,
+    # поэтому вычитание честное; отрицательным результат стать не может — но если бы стал,
+    # это означало бы рассинхрон, и показывать «-3 ролика» человеку нельзя.
+    remaining = max(0, in_range - shown_total)
+    remaining_manual = max(0, min(manual, remaining))
 
     return {
+        "measured": True,
         "channels": len(STANDUP_PROFILE.channel_ids),
-        "scanned": len(candidates),
-        "in_range": len(in_range),
-        "shown": len([v for v in in_range if v in shown]),
-        "shown_total": len(shown),
-        "remaining": len(remaining),
-        "remaining_manual": len(remaining_manual),
+        "scanned": int(snapshot.get("scanned") or 0),
+        "in_range": in_range,
+        "shown_total": shown_total,
+        "remaining": remaining,
+        "remaining_manual": remaining_manual,
+        "measured_on": snapshot.get("measured_on"),
         # Рубрика выходит через день, поэтому запас в днях — вдвое больше числа роликов.
-        "days_left": len(remaining) * 2,
-        "days_left_manual": len(remaining_manual) * 2,
+        "days_left": remaining * 2,
+        "days_left_manual": remaining_manual * 2,
     }
 
 
@@ -78,6 +89,15 @@ def _plural_days_ru(n: int) -> str:
 
 def format_standup_pool_report(state: dict) -> str:
     """Человеческий текст отчёта: взглянул — понял — знаешь, надо ли что-то делать."""
+    if not state.get("measured"):
+        return (
+            "🎤 <b>Стендап дня — состояние пула</b>\n\n"
+            "⏳ Пул ещё ни разу не мерился: замер делается в момент подготовки выпуска.\n"
+            f"Показано выступлений: {state.get('shown_total', 0)} · "
+            f"каналов в наборе: {state.get('channels', 0)}\n\n"
+            "Число появится здесь после первой автоматической подготовки стендапа."
+        )
+
     remaining = int(state.get("remaining") or 0)
     manual = int(state.get("remaining_manual") or 0)
     days = int(state.get("days_left") or 0)
@@ -113,7 +133,10 @@ def format_standup_pool_report(state: dict) -> str:
         lines += [
             "",
             f"📝 С ручными субтитрами осталось: <b>{manual}</b> "
-            f"(≈{days_manual} {_plural_days_ru(days_manual)}). "
-            "Дальше — машинная расшифровка.",
+            f"(≈{days_manual} {_plural_days_ru(days_manual)}). Дальше — машинная расшифровка.",
         ]
+    # Возраст данных называется вслух: снимок недельной давности не должен выглядеть
+    # как сегодняшний. Обновляется он при каждой подготовке выпуска, то есть через день.
+    if state.get("measured_on"):
+        lines += ["", f"<i>По замеру от {state['measured_on']} · квоту YouTube отчёт не тратит</i>"]
     return "\n".join(lines)
