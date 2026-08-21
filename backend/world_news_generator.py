@@ -595,10 +595,31 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
 
 2) "phrases": 12–18 wirklich nützliche, im Transkript tatsächlich vorkommende Wörter und
    Wendungen (bevorzugt Wortgruppen/Kollokationen, nicht triviale Wörter wie "und", "sein").
+
+   GRUNDREGEL ZUR FORM (Entscheidung des Eigentümers, 21.08.2026):
+   Eine WORTGRUPPE wird NIEMALS in eine Wörterbuchform umgeschrieben — sie bleibt genau so,
+   wie sie im Transkript steht, mitsamt Kasus. Beim Umschreiben entstehen grammatisch
+   falsche Formen, und die lernt der Nutzer dann auswendig.
+   Nur ein EINZELNES Nomen bekommt Artikel und ggf. Plural ("die Regierung, -en"), nur ein
+   EINZELNES Verb den Infinitiv.
+   Weil die Wortgruppe also in ihrer Kasusform stehen bleibt, MUSS die Karte diese Form
+   erklären, statt sie zu verschweigen: die Übersetzung steht in DERSELBEN Form, und
+   "form_ru" benennt die Form auf Russisch.
+   Beispiel, wie es RICHTIG aussieht:
+     de: "einen hohen genetischen Anteil" · form_ru: "винительный падеж"
+     translation_ru: "высокУЮ генетическУЮ составляющУЮ"   ← nicht "высокая составляющая"
    Jedes Element:
-     - "de": das Wort/die Wendung, korrekt geschrieben; bei Nomen MIT Artikel und, wenn sinnvoll,
-       Pluralform (z. B. "die Regierung, -en"); bei Verben der Infinitiv.
-     - "translation_ru": knappe russische Übersetzung.
+     - "de": das Wort/die Wendung, korrekt geschrieben, nach der Grundregel oben.
+     - "form_ru": in welcher grammatischen Form "de" dasteht — kurz und auf RUSSISCH, in
+       MENSCHLICHER Sprache: «винительный падеж», «дательный падеж», «инфинитив»,
+       «множественное число», «словарная форма». Du liest die Form im Transkript ab
+       (Rektion des Verbs, Artikelform) — rate NICHT.
+     - "translation_ru": knappe russische Übersetzung in DERSELBEN grammatischen Form wie
+       "de". Steht das Deutsche im Akkusativ, steht auch das Russische im Akkusativ.
+     - "quote_de": der Satz aus dem TRANSKRIPT, in dem die Einheit vorkommt — WÖRTLICH
+       kopiert, 4–20 Wörter. NICHT umformulieren, NICHT ausdenken. Ohne Satz ist eine
+       Wortgruppe für den Nutzer nicht zu verstehen, egal in welchem Kasus.
+     - "quote_ru": Übersetzung genau dieses Satzes ins Russische.
      - "usage_ru": ein sehr kurzer russischer Hinweis, WIE/WANN man es benutzt (1 Satz),
        ggf. mit Rektion/Kasus.
 
@@ -633,7 +654,8 @@ Erzeuge das JSON exakt in diesem Format:
 {{
   "summary_points": ["…", "…", "…"],
   "phrases": [
-    {{"de": "…", "translation_ru": "…", "usage_ru": "…"}}
+    {{"de": "…", "form_ru": "…", "translation_ru": "…", "quote_de": "…", "quote_ru": "…",
+      "usage_ru": "…"}}
   ],
   "quiz": [
     {{"question_de": "…", "options": ["…","…","…","…"], "correct_index": 0, "explanation_ru": "…"}}
@@ -723,14 +745,24 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
             "usage_ru": str(p.get("usage_ru") or "").strip(),
         }
         if needs_quote:
-            # Карточка стендапа обязана показать слово В КОНТЕКСТЕ — без цитаты она
-            # вырождается в сухой перевод, из-за которого человек и заучивает неверное
-            # значение сленга. Поэтому неполная карточка не «показывается частично»,
-            # а выбрасывается и считается.
+            # Карточка обязана быть СОГЛАСОВАНА САМА С СОБОЙ и объяснять то, что показывает.
+            # Повод (случай владельца, 21.08.2026): карточка новостей показывала
+            # «einen hohen genetischen Anteil» и переводила «высокая генетическая
+            # составляющая» — немецкое в винительном, русское в именительном. Обороты к
+            # словарной форме приводить запрещено (модель переписала бы живую речь в
+            # грамматически неверную), поэтому форма не скрывается, а НАЗЫВАЕТСЯ.
+            # С 21.08.2026 это критично вдвойне: корректор больше не правит текст при
+            # сохранении, и показанное уезжает человеку в словарь дословно.
+            # Неполная карточка не «показывается частично», а выбрасывается и считается.
             quote_de = str(p.get("quote_de") or "").strip()
             quote_ru = str(p.get("quote_ru") or "").strip()
+            form = str(p.get("form_ru") or "").strip()
+            # Помету регистра («сленг», «грубое») спрашиваем только у стендапа: в новостях
+            # речь нейтральная, и требовать её там значило бы принуждать модель выдумывать.
             register = str(p.get("register_ru") or "").strip()
-            if not quote_de or not quote_ru or not register or not item["usage_ru"]:
+            needs_register = bool(profile and profile.requires_register)
+            if (not quote_de or not quote_ru or not form or not item["usage_ru"]
+                    or (needs_register and not register)):
                 dropped_thin += 1
                 continue
             # СТРАЖ ПРОТИВ ВЫДУМКИ: цитата обязана дословно найтись в субтитрах ролика.
@@ -740,10 +772,12 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
             if _quote_fingerprint(quote_de) not in transcript_fp:
                 dropped_no_quote += 1
                 continue
-            item["register_ru"] = register
+            item["form_ru"] = form
             item["quote_de"] = quote_de
             item["quote_ru"] = quote_ru
-            # Обычное значение заполняется, только когда оно вправду другое: моделе прямо
+            if register:
+                item["register_ru"] = register
+            # Обычное значение заполняется, только когда оно вправду другое: модели прямо
             # запрещено выдумывать второе значение там, где его нет.
             item["literal_ru"] = str(p.get("literal_ru") or "").strip()
         phrases.append(item)

@@ -113,7 +113,14 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
        «грубое», «молодёжное», «ироничное», «региональное (баварское)», «нейтральное».
        Wenn es derb/vulgär ist, sag das offen — der Lernende muss wissen, wo er das NICHT
        sagen darf.
-     - "translation_ru": die Bedeutung GENAU HIER, in diesem Auftritt.
+     - "form_ru": in welcher grammatischen Form "de" dasteht — kurz, auf RUSSISCH, in
+       MENSCHLICHER Sprache: «словарная форма», «винительный падеж», «дательный падеж»,
+       «инфинитив», «множественное число». Du liest die Form im Transkript ab (Rektion,
+       Artikelform) — rate NICHT.
+     - "translation_ru": die Bedeutung GENAU HIER, in diesem Auftritt — und in DERSELBEN
+       grammatischen Form wie "de". Steht das Deutsche im Akkusativ, steht auch das
+       Russische im Akkusativ. Eine Karte, die Akkusativ zeigt und Nominativ übersetzt,
+       verwirrt den Lernenden mehr, als sie ihm hilft.
      - "literal_ru": die gewöhnliche/wörtliche Bedeutung — NUR wenn sie sich wirklich von
        der Bedeutung hier unterscheidet, plus ein Satz, wie das eine zum anderen wurde.
        Wenn es keinen Unterschied gibt: LEERER STRING "". ERFINDE KEINE zweite Bedeutung.
@@ -146,8 +153,8 @@ Erzeuge das JSON exakt in diesem Format:
 {{
   "summary_points": ["…", "…"],
   "phrases": [
-    {{"de": "…", "register_ru": "…", "translation_ru": "…", "literal_ru": "…",
-      "quote_de": "…", "quote_ru": "…", "usage_ru": "…"}}
+    {{"de": "…", "register_ru": "…", "form_ru": "…", "translation_ru": "…",
+      "literal_ru": "…", "quote_de": "…", "quote_ru": "…", "usage_ru": "…"}}
   ],
   "quiz": [
     {{"question_de": "…", "options": ["…","…","…","…"], "correct_index": 0, "explanation_ru": "…"}}
@@ -171,7 +178,11 @@ class RubricProfile:
     archive_pages: int            # сколько страниц по 50 роликов обходить (только archive)
     llm_system: str = ""
     llm_user_tmpl: str = ""
-    requires_quote: bool = False  # цитата обязана дословно найтись в субтитрах
+    # Цитата обязана дословно найтись в субтитрах, а карточка — назвать форму, в которой
+    # стоит единица. Обязательно у ОБЕИХ рубрик с 21.08.2026: корректор больше не правит
+    # текст при сохранении, значит показанное уезжает человеку в словарь дословно.
+    requires_quote: bool = True
+    requires_register: bool = False  # помета регистра (сленг/грубое) — только у стендапа
     env_channels_var: str = ""
 
 
@@ -243,6 +254,7 @@ STANDUP_PROFILE = RubricProfile(
     llm_system=_STANDUP_LLM_SYSTEM,
     llm_user_tmpl=_STANDUP_LLM_USER_TMPL,
     requires_quote=True,
+    requires_register=True,
     env_channels_var="STANDUP_CHANNEL_IDS",
 )
 

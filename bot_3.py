@@ -11234,16 +11234,15 @@ def _world_news_preview_text(entry: dict, *, header: str) -> str:
     lines.append(f"\n🔤 <b>Разбор ({len(phrases)}):</b>")
     # У стендапа карточка развёрнутая: помета регистра и цитата из ролика. Владелец должен
     # видеть в превью ровно то, что увидит человек, — иначе одобрять нечего.
-    shown = 6 if is_standup else 12
+    shown = 6 if is_standup else 8
     for p in phrases[:shown]:
-        if is_standup:
-            register = f" <i>({p['register_ru']})</i>" if p.get("register_ru") else ""
-            lines.append(f"• <b>{p.get('de')}</b>{register} — {p.get('translation_ru')}")
-            if p.get("quote_de"):
-                lines.append(f"   🎬 «{p['quote_de']}»")
-        else:
-            usage = f" — <i>{p['usage_ru']}</i>" if p.get("usage_ru") else ""
-            lines.append(f"• <b>{p.get('de')}</b> — {p.get('translation_ru')}{usage}")
+        # Пометы показываем и в превью: разнобой «немецкое в винительном, русское в
+        # именительном» видно только рядом с названной формой, а одобряешь его ты.
+        marks = [str(p.get(k) or "").strip() for k in ("register_ru", "form_ru")]
+        marks_txt = f" <i>({' · '.join(m for m in marks if m)})</i>" if any(marks) else ""
+        lines.append(f"• <b>{p.get('de')}</b>{marks_txt} — {p.get('translation_ru')}")
+        if p.get("quote_de"):
+            lines.append(f"   🎬 «{p['quote_de']}»")
     if len(phrases) > shown:
         lines.append(f"…ещё {len(phrases) - shown}")
     lines.append(f"\n🧩 <b>Тест ({len(quiz)} вопр.):</b>")

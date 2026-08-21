@@ -9,7 +9,13 @@
    заучивает. Цитата обязана дословно найтись в субтитрах, иначе карточка выбрасывается.
 3. Разбор показывается урезанным. Если годных карточек меньше порога, пакет бракуется
    целиком и генератор берёт следующий ролик — пустого разбора человек не увидит.
-4. Новостная рубрика меняет поведение из-за переезда на профили.
+4. Карточка перестаёт быть согласованной сама с собой. Немецкое в винительном падеже с
+   русским в именительном («einen hohen genetischen Anteil» — «высокая генетическая
+   составляющая») — живой случай владельца от 21.08.2026. Обороты к словарной форме
+   приводить запрещено, значит форма обязана быть НАЗВАНА, а оборот показан в предложении.
+   Это требование к ОБЕИМ рубрикам, не только к стендапу.
+5. Рубрики сводят к одному заданию модели. Новостное задание — словарная логика, для
+   сленга она вредна.
 """
 import pytest
 
@@ -110,6 +116,7 @@ def _phrase(de, quote, **over):
     item = {
         "de": de,
         "register_ru": "разговорное",
+        "form_ru": "словарная форма",
         "translation_ru": "перевод здесь",
         "literal_ru": "",
         "quote_de": quote,
@@ -149,6 +156,7 @@ def test_standup_card_keeps_the_linguistic_fields():
     out = _validate_and_normalize_pack(_pack(_good_phrases()), STANDUP_PROFILE, _TRANSCRIPT)
     card = out["phrases"][0]
     assert card["register_ru"] == "разговорное"
+    assert card["form_ru"] == "словарная форма"
     assert card["quote_de"] == "ich hab null Bock auf Montag"
     assert card["quote_ru"] == "перевод цитаты"
     assert "literal_ru" in card
@@ -173,8 +181,9 @@ def test_quote_matching_ignores_punctuation_not_words():
 def test_incomplete_card_is_thrown_away():
     """Карточка без пометы регистра или без перевода цитаты не показывается частично."""
     phrases = _good_phrases() + [
-        _phrase("без пометы", "Also ich sag mal so", register_ru=""),
+        _phrase("без пометы регистра", "Also ich sag mal so", register_ru=""),
         _phrase("без перевода цитаты", "Meine Oma sagt immer", quote_ru=""),
+        _phrase("без пометы формы", "das ist doch der Hammer", form_ru=""),
     ]
     out = _validate_and_normalize_pack(_pack(phrases), STANDUP_PROFILE, _TRANSCRIPT)
     assert len(out["phrases"]) == 5
@@ -194,20 +203,69 @@ def test_there_is_no_target_number_of_cards():
     assert len(out["phrases"]) == 5
 
 
-# ── Новости не изменились ──────────────────────────────────────────────────────
+# ── Новости: карточка обязана объяснять то, что показывает ─────────────────────
 
-def test_news_pack_still_needs_no_quote():
-    """Новостная карточка как была: слово, перевод, как употреблять — цитата не нужна,
-    порог прежний (6 фраз). Переезд на профили не должен менять новости."""
-    phrases = [{"de": f"das Wort {i}", "translation_ru": "слово", "usage_ru": "с артиклем"}
-               for i in range(6)]
-    out = _validate_and_normalize_pack(_pack(phrases), NEWS_PROFILE, "")
+def test_news_card_also_needs_quote_and_form():
+    """Случай владельца 21.08.2026: карточка новостей показывала «einen hohen genetischen
+    Anteil», а переводила «высокая генетическая составляющая» — немецкое в винительном,
+    русское в именительном. Обороты к словарной форме приводить запрещено (модель
+    переписала бы живую речь в грамматически неверную), значит форма обязана быть НАЗВАНА,
+    а оборот — показан в предложении. С 21.08.2026 это критично вдвойне: корректор больше
+    не правит текст при сохранении, и показанное уезжает человеку в словарь дословно."""
+    phrases = [
+        {"de": f"das Wort {i}", "form_ru": "именительный падеж", "translation_ru": "слово",
+         "usage_ru": "с артиклем", "quote_de": q, "quote_ru": "перевод строки"}
+        for i, q in enumerate([
+            "ich hab null Bock auf Montag", "das ist doch der Hammer",
+            "wie bestellt und nicht abgeholt", "Also ich sag mal so",
+            "Meine Oma sagt immer", "steh ich da wie bestellt",
+        ])
+    ]
+    out = _validate_and_normalize_pack(_pack(phrases), NEWS_PROFILE, _TRANSCRIPT)
     assert len(out["phrases"]) == 6
-    assert "quote_de" not in out["phrases"][0]
+    assert out["phrases"][0]["form_ru"] == "именительный падеж"
+    assert out["phrases"][0]["quote_de"]
 
 
-def test_news_pack_below_six_phrases_is_rejected():
-    phrases = [{"de": f"das Wort {i}", "translation_ru": "слово", "usage_ru": "с артиклем"}
-               for i in range(5)]
+def test_news_card_without_form_is_thrown_away():
+    phrases = [
+        {"de": f"das Wort {i}", "form_ru": "" if i == 0 else "именительный падеж",
+         "translation_ru": "слово", "usage_ru": "с артиклем",
+         "quote_de": q, "quote_ru": "перевод строки"}
+        for i, q in enumerate([
+            "ich hab null Bock auf Montag", "das ist doch der Hammer",
+            "wie bestellt und nicht abgeholt", "Also ich sag mal so",
+            "Meine Oma sagt immer", "steh ich da wie bestellt",
+        ])
+    ]
     with pytest.raises(ValueError):
-        _validate_and_normalize_pack(_pack(phrases), NEWS_PROFILE, "")
+        _validate_and_normalize_pack(_pack(phrases), NEWS_PROFILE, _TRANSCRIPT)
+
+
+def test_news_does_not_demand_a_register_marking():
+    """Помету регистра спрашиваем только у стендапа. В новостях речь нейтральная, и
+    требовать там «сленг/грубое» значило бы принуждать модель выдумывать."""
+    assert NEWS_PROFILE.requires_register is False
+    assert STANDUP_PROFILE.requires_register is True
+    phrases = [
+        {"de": f"das Wort {i}", "form_ru": "именительный падеж", "translation_ru": "слово",
+         "usage_ru": "с артиклем", "quote_de": q, "quote_ru": "перевод строки"}
+        for i, q in enumerate([
+            "ich hab null Bock auf Montag", "das ist doch der Hammer",
+            "wie bestellt und nicht abgeholt", "Also ich sag mal so",
+            "Meine Oma sagt immer", "steh ich da wie bestellt",
+        ])
+    ]
+    out = _validate_and_normalize_pack(_pack(phrases), NEWS_PROFILE, _TRANSCRIPT)
+    assert len(out["phrases"]) == 6
+    assert "register_ru" not in out["phrases"][0]
+
+
+def test_news_prompt_forbids_normalizing_word_groups():
+    """Причина того самого винительного падежа: промпт просил предпочитать словосочетания,
+    но форму оговаривал только для существительных и глаголов. Теперь запрет приводить
+    оборот к словарной форме записан прямо, с живым примером владельца."""
+    from backend.world_news_generator import _LLM_SYSTEM
+    assert "einen hohen genetischen Anteil" in _LLM_SYSTEM
+    assert "form_ru" in _LLM_SYSTEM
+    assert "NIEMALS" in _LLM_SYSTEM

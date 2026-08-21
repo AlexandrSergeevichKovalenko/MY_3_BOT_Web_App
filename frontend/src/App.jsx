@@ -37872,8 +37872,19 @@ function AppInner() {
                             {/* Помета регистра — только у стендапа. Человек должен знать,
                                 можно ли так говорить и при ком: сленг легко унести в разговор
                                 с начальником, если мы промолчали. */}
-                            {phrase.register_ru && (
-                              <div className="worldnews-card-register">{phrase.register_ru}</div>
+                            {/* Пометы: регистр (сленг/грубое — только у стендапа) и форма,
+                                в которой стоит единица. Обороты к словарной форме мы не
+                                приводим — модель переписала бы живую речь в неверную, —
+                                поэтому форму не прячем, а называем. */}
+                            {(phrase.register_ru || phrase.form_ru) && (
+                              <div className="worldnews-card-marks">
+                                {phrase.register_ru && (
+                                  <span className="worldnews-card-register">{phrase.register_ru}</span>
+                                )}
+                                {phrase.form_ru && (
+                                  <span className="worldnews-card-form">{phrase.form_ru}</span>
+                                )}
+                              </div>
                             )}
                             {phrase.translation_ru && (
                               <div className="worldnews-card-ru">

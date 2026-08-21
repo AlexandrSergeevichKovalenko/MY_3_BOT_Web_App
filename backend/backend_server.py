@@ -56044,6 +56044,9 @@ def get_worldnews_today():
             "translation_ru": str(p.get("translation_ru") or "").strip(),
             "usage_ru": str(p.get("usage_ru") or "").strip(),
             "register_ru": str(p.get("register_ru") or "").strip(),
+            # Форма, в которой стоит единица («винительный падеж», «инфинитив»). Обороты
+            # к словарной форме не приводятся — вместо этого карточка форму называет.
+            "form_ru": str(p.get("form_ru") or "").strip(),
             "literal_ru": str(p.get("literal_ru") or "").strip(),
             "quote_de": str(p.get("quote_de") or "").strip(),
             "quote_ru": str(p.get("quote_ru") or "").strip(),

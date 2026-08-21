@@ -17905,17 +17905,28 @@ body.worldnews-active .webapp-topbar {
   font-weight: 800;
   color: #8fa0b8;
 }
-/* Помета регистра — только у стендапа. Стоит сразу под заголовком, потому что отвечает
-   на первый вопрос ученика: можно ли так говорить и при ком. */
-.worldnews-card-register {
-  align-self: start;
+/* Пометы стоят сразу под заголовком, потому что отвечают на первые два вопроса ученика:
+   можно ли так вообще говорить (регистр) и в какой форме перед ним стоит единица. */
+.worldnews-card-marks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.worldnews-card-register,
+.worldnews-card-form {
   padding: 3px 10px;
   border-radius: 999px;
-  background: #eef2f8;
-  border: 1px solid #dfe4ec;
   font-size: 12px;
   font-weight: 700;
+  border: 1px solid #dfe4ec;
+  background: #eef2f8;
   color: #5b6b85;
+}
+/* Форма набрана иначе, чем регистр: это разные сведения, и слипаться им нельзя. */
+.worldnews-card-form {
+  background: #fdf4e7;
+  border-color: #f0e0c8;
+  color: #8a6a3a;
 }
 /* Слово в контексте: дословная строка из субтитров ролика и её перевод. Немецкая строка
    набрана тем же засечным шрифтом, что и заголовок карточки, — это цитата, а не подпись. */
