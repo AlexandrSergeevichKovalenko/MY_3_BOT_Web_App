@@ -7160,41 +7160,42 @@ def _release_quick_translate_inflight_slot(cache_key: str) -> None:
         event.set()
 
 
-def _build_quick_correct_cache_key(*, text: str, source_lang: str) -> str:
-    safe_text = str(text or "").strip()
-    safe_lang = _normalize_short_lang_code(source_lang, fallback="") or ""
-    text_hash = hashlib.sha1(safe_text.encode("utf-8", "ignore")).hexdigest()
-    return f"{safe_lang}:{text_hash}"
+# Кеш вычитки жил ЗДЕСЬ и был вторым — своим у мини-аппа, отдельно от бота. Обе
+# поверхности спрашивали один и тот же корректор об одном и том же слове и платили
+# дважды. С 21.08.2026 кеш и правило одни на всех и живут в `backend/dictionary_door.py`.
 
 
-def _get_cached_quick_correct(cache_key: str) -> str | None:
-    """Returns the cached corrected form, "" for a cached "already correct", or None on a
-    miss (so the caller can tell "no correction needed" from "not looked up yet")."""
-    key = str(cache_key or "").strip()
-    if not key:
-        return None
-    now_ts = time.time()
-    with _QUICK_CORRECT_CACHE_LOCK:
-        row = _QUICK_CORRECT_CACHE.get(key)
-        if not row:
-            return None
-        if float(row[0]) <= now_ts:
-            _QUICK_CORRECT_CACHE.pop(key, None)
-            return None
-        return row[1]
+def _run_dictionary_door_proofread(text: str, *, lang: str, user_id, origin: str) -> str:
+    """Вычитка через ОБЩИЙ модуль `backend/dictionary_door.py` — одно правило на всех.
 
+    До 21.08.2026 копий было две: своя у бота и своя у мини-аппа. Разные функции, разные
+    кеши, один и тот же корректор внутри — ровно то расхождение, против которого общий
+    модуль и написан: обе поверхности спрашивали модель об одном и том же слове и
+    платили дважды. Веб-копия вдобавок пускала к модели то, за что платить незачем: у
+    общей двери отсечки строже (длина, есть ли буквы вообще, ссылка/почта/число — не
+    язык), так что переход на неё ещё и дешевле.
 
-def _set_cached_quick_correct(cache_key: str, corrected: str) -> None:
-    key = str(cache_key or "").strip()
-    if not key:
-        return
-    now_ts = time.time()
-    with _QUICK_CORRECT_CACHE_LOCK:
-        _QUICK_CORRECT_CACHE[key] = (now_ts + float(QUICK_TRANSLATE_CACHE_TTL_SEC), str(corrected or ""))
-        if len(_QUICK_CORRECT_CACHE) > _QUICK_CORRECT_CACHE_MAX_ITEMS:
-            overflow = len(_QUICK_CORRECT_CACHE) - _QUICK_CORRECT_CACHE_MAX_ITEMS
-            for stale_key in sorted(_QUICK_CORRECT_CACHE, key=lambda k: _QUICK_CORRECT_CACHE[k][0])[:overflow]:
-                _QUICK_CORRECT_CACHE.pop(stale_key, None)
+    Ведомость пишется ровно тогда, когда обращение К МОДЕЛИ СОСТОЯЛОСЬ: ответ из кеша
+    денег не стоил, и записи быть не должно. Общая дверь сообщает об этом сама.
+    """
+    def _bill() -> None:
+        if user_id is None:
+            return
+        try:
+            _billing_log_openai_usage(
+                user_id=int(user_id),
+                action_type="quick_correct",
+                source_lang=lang or None,
+                target_lang=None,
+                usage=get_last_llm_usage(reset=True),
+                seed=f"quick_correct_{origin}:{user_id}:{time.time_ns()}",
+                metadata={"origin": origin, "text": text[:64]},
+            )
+        except Exception:
+            logging.debug("quick_correct billing log failed", exc_info=True)
+
+    from backend import dictionary_door
+    return dictionary_door.proofread(text, lang=lang, on_usage=_bill)
 
 
 def _proofread_dictionary_phrase(text: str, *, source_lang: str, user_id: int | None) -> str:
@@ -7211,38 +7212,8 @@ def _proofread_dictionary_phrase(text: str, *, source_lang: str, user_id: int | 
     billing. A save NEVER waits on or fails because of this call."""
     clean = str(text or "").strip()
     lang = _normalize_short_lang_code(source_lang, fallback="") or ""
-    # Only the two languages run_quick_correct guards with a script check (de/ru). Skipping the
-    # rest avoids a weakly-guarded "correction" silently translating a non-de/ru phrase.
-    if not clean or lang not in ("ru", "de"):
-        return ""
-    cache_key = _build_quick_correct_cache_key(text=clean, source_lang=lang)
-    cached = _get_cached_quick_correct(cache_key)
-    if cached is not None:
-        return cached
-    try:
-        corrected = run_quick_correct(text=clean, source_lang=lang)
-    except Exception:
-        logging.debug("save-time quick correct failed", exc_info=True)
-        corrected = ""
-    _set_cached_quick_correct(cache_key, corrected)
-    # Пишем в ведомость ВСЕГДА, когда обращение состоялось, а не только когда корректор
-    # нашёл ошибку. Молчание — самый частый его ответ, и раньше эти вызовы были оплачены,
-    # но в учёте отсутствовали. Из кеша сюда не попадают (вышли выше), а при отказе сети
-    # расхода нет: `get_last_llm_usage` вернёт пусто, и запись не создастся.
-    if user_id is not None:
-        try:
-            _billing_log_openai_usage(
-                user_id=int(user_id),
-                action_type="quick_correct",
-                source_lang=lang or None,
-                target_lang=None,
-                usage=get_last_llm_usage(reset=True),
-                seed=f"quick_correct_save:{user_id}:{time.time_ns()}",
-                metadata={"origin": "dictionary_save", "text": clean[:64]},
-            )
-        except Exception:
-            logging.debug("save-time quick_correct billing log failed", exc_info=True)
-    return corrected
+    return _run_dictionary_door_proofread(
+        clean, lang=lang, user_id=user_id, origin="dictionary_save")
 
 
 # ── Кто написал текст, который человек сохраняет ─────────────────────────────────
@@ -39213,6 +39184,46 @@ def _patch_quick_translate_article(cache_key, result, article, source, *, number
     _set_cached_quick_translate(cache_key, base)
 
 
+def _schedule_quick_translate_pool_store(*, text, result, source_lang, target_lang,
+                                         user_id_for_billing=None):
+    """Положить пару «набранное человеком ↔ перевод» в ОБЩИЙ пул — в фоне и с вычиткой.
+
+    Пул общий: опечатка одного человека досталась бы всем следующим, кто наберёт то же
+    слово. Значит вычитка тут нужна — здесь текст НАБРАЛ человек, а не показали мы.
+
+    Но человек ждать её не должен (решение владельца 20.08.2026: «я нажимаю и мгновенно
+    листаю дальше»), поэтому работа уходит в тот же фоновый исполнитель, что и добор
+    артикля.
+
+    Если вычитка нашла ошибку — в пул НЕ КЛАДЁМ ВОВСЕ. Положить исправленное слово рядом
+    с переводом ОПЕЧАТКИ значило бы завести в общий словарь пару, где стороны не сходятся,
+    а это хуже самой опечатки. Свой перевод человек всё равно уже получил; пул подхватит
+    слово в следующий раз, когда его наберут правильно. Пропуски считаются в логе.
+    """
+    def _job():
+        try:
+            clean = str(text or "").strip()
+            corrected = _proofread_dictionary_phrase(
+                clean, source_lang=source_lang,
+                user_id=int(user_id_for_billing) if user_id_for_billing else None,
+            )
+            if corrected and corrected != clean:
+                logging.info("быстрый перевод: в общий пул не кладём — набрано %r, "
+                             "правильно %r; пара сторонами не сходится",
+                             clean[:60], corrected[:60])
+                return
+            _store_quick_translate_in_pool(
+                text=clean, result=result, source_lang=source_lang, target_lang=target_lang,
+            )
+        except Exception:
+            logging.warning("быстрый перевод: укладка в общий пул не удалась", exc_info=True)
+
+    try:
+        _QUICK_ARTICLE_EXECUTOR.submit(_job)
+    except Exception:
+        logging.warning("быстрый перевод: фоновый исполнитель занят", exc_info=True)
+
+
 def _schedule_quick_translate_article_fill(cache_key, result, text, source_lang, target_lang, *, user_id_for_billing=None):
     """Off the hot path: if a lone German noun still lacks its article after the
     instant lookup, resolve it in the background and patch the cached quick-translate
@@ -39571,8 +39582,14 @@ def translate_quick():
             # «слово ↔ перевод» без разбора всё равно ценна: следующий пользователь
             # получит её от нас, а разбор дозакажется отдельно. Своим кешем этот путь
             # раньше ни с кем не делился.
-            _store_quick_translate_in_pool(
+            #
+            # Уходит В ФОН и с вычиткой. Здесь текст НАБРАЛ человек — значит опечатка
+            # возможна, а пул общий: ошибка одного досталась бы всем следующим. Но
+            # заставлять человека ждать вычитку нельзя (решение владельца 20.08.2026),
+            # поэтому она едет тем же путём, что и добор артикля рядом, — фоном.
+            _schedule_quick_translate_pool_store(
                 text=text, result=result, source_lang=source_lang, target_lang=target_lang,
+                user_id_for_billing=user_id_for_billing,
             )
             # Background: fill a missing noun article (der/die/das) via one LLM call and
             # patch the cache, so the next identical lookup is complete — off hot path.
@@ -39691,34 +39708,10 @@ def translate_quick_correct():
     if user_id_for_billing is None and acting_user_id:
         user_id_for_billing = int(acting_user_id)
 
-    cache_key = _build_quick_correct_cache_key(text=text, source_lang=source_lang)
-    cached = _get_cached_quick_correct(cache_key)
-    if cached is not None:
-        return jsonify({"corrected": cached})
-
-    try:
-        corrected = run_quick_correct(text=text, source_lang=source_lang)
-    except Exception:
-        logging.debug("quick correct failed", exc_info=True)
-        corrected = ""
-    _set_cached_quick_correct(cache_key, corrected)
-
-    # Тот же учёт, что и на серверной вычитке: обращение состоялось — значит оно в
-    # ведомости, независимо от того, нашёл корректор ошибку или промолчал.
-    if user_id_for_billing is not None:
-        try:
-            _billing_log_openai_usage(
-                user_id=int(user_id_for_billing),
-                action_type="quick_correct",
-                source_lang=source_lang or None,
-                target_lang=None,
-                usage=get_last_llm_usage(reset=True),
-                seed=f"quick_correct:{user_id_for_billing}:{time.time_ns()}",
-                metadata={"origin": "quick_dictionary_save", "text": text[:64]},
-            )
-        except Exception:
-            logging.debug("quick_correct billing log failed", exc_info=True)
-
+    # Та же дверь, что и на сохранении: один кеш и одно правило на все поверхности,
+    # иначе окно словаря и сервер спрашивают модель об одном и том же дважды.
+    corrected = _run_dictionary_door_proofread(
+        text, lang=source_lang, user_id=user_id_for_billing, origin="quick_correct_route")
     return jsonify({"corrected": corrected})
 
 
