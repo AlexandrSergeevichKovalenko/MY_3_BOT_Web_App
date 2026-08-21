@@ -17991,6 +17991,99 @@ body.worldnews-active .webapp-topbar {
   color: #15803d;
   cursor: default;
 }
+/* ── Свой вариант ────────────────────────────────────────────────────────────────
+   Второстепенное действие: основная кнопка остаётся одна и заметная, а «по-своему»
+   стоит рядом тихой строкой. Спрашивать выбор у каждого при каждом сохранении нельзя —
+   поправить надо считаные случаи, а листают карточки все. */
+.worldnews-card-own-open {
+  margin-top: 8px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.worldnews-card-own-open:hover { color: #2563eb; }
+.worldnews-card-own {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.worldnews-card-own-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.worldnews-card-own-input {
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1.5px solid #cbd5e1;
+  background: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  color: #0f172a;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.worldnews-card-own-input:focus { outline: none; border-color: #2563eb; }
+.worldnews-card-own-row,
+.worldnews-card-own-hint-row {
+  display: flex;
+  gap: 8px;
+}
+.worldnews-card-own-save,
+.worldnews-card-own-take {
+  flex: 1;
+  min-height: 42px;
+  border-radius: 999px;
+  border: none;
+  background: #2563eb;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.worldnews-card-own-save:disabled { background: #cbd5e1; cursor: default; }
+.worldnews-card-own-cancel,
+.worldnews-card-own-keep {
+  flex: 1;
+  min-height: 42px;
+  border-radius: 999px;
+  border: 1.5px solid #cbd5e1;
+  background: transparent;
+  color: #475569;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+/* Мнение судьи — подсказка, а не приговор: песочный фон, обе кнопки равны по весу. */
+.worldnews-card-own-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(245, 158, 11, 0.10);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+.worldnews-card-own-hint-text {
+  font-size: 13.5px;
+  line-height: 1.4;
+  color: #78350f;
+}
+
 .worldnews-deck-nav {
   display: flex;
   align-items: center;

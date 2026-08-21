@@ -7248,6 +7248,10 @@ _TYPED_BY_USER_ORIGINS = {
 
 _SHOWN_BY_US_ORIGINS = {
     "worldnews_phrase_save",             # карточка «Новость дня»
+    # Свой вариант человек уже вписал ОСОЗНАННО и уже увидел, что о нём думает судья
+    # (`/api/webapp/dictionary/check-variant`). Прогонять его ещё раз при сохранении
+    # значило бы перерешать за человека то, что он только что решил сам.
+    "worldnews_phrase_save_own",
     "reader",                            # тап по слову в книге/статье
     "youtube",                           # слово из субтитров
     "youtube_dict_widget",
@@ -47938,6 +47942,81 @@ def _dictionary_save_costs_us_nothing(*, word: str, source_lang: str, target_lan
     # Не ответил никто — считаем слово незнакомым и пускаем обычным платным путём.
     # Раздавать бесплатные сохранения из-за молчания базы нельзя.
     return False
+
+
+@app.route("/api/webapp/dictionary/check-variant", methods=["POST"])
+def check_own_dictionary_variant():
+    """Проверить СВОЙ вариант фразы перед сохранением — и НЕ подменять его молча.
+
+    Зачем это есть. Карточка показывает оборот так, как он прозвучал в ролике:
+    «einen hohen genetischen Anteil» — винительный падеж, потому что в предложении он
+    стоял в винительном. Кому-то нужно положить себе именительный, кому-то — свою
+    формулировку. Раньше выбора не было вовсе: кнопка одна, и она клала показанное.
+
+    Решение владельца 20.08.2026: человек может вписать своё, мы прогоняем это через
+    проверку — вместе с ЕГО переводом, потому что предлог и падеж выбираются по смыслу, —
+    и ПОКАЗЫВАЕМ, что думает судья. Решает человек, не мы: «оставить моё» или «взять
+    предложенное». Молча переписать набранное человеком нельзя.
+
+    Судья — `run_phrase_grammar_verdict`, а не «быстрый корректор». Корректор спрашивает
+    «исправь слово» и на обороте начинает править стиль; этот же судит фразу КАК ФРАЗУ,
+    видит перевод как контекст и прямо обязан не трогать разговорное: «Colloquial but
+    attested German is CORRECT. Do not standardise it». Для оборотов из стендапа это и
+    есть главное.
+    """
+    payload = request.get_json(silent=True) or {}
+    german = str(payload.get("de") or "").strip()
+    russian = str(payload.get("ru") or "").strip()
+    if not german:
+        return jsonify({"error": "нечего проверять"}), 400
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    if _dict_user_has_left_bot(user_id):
+        return _dict_gate_response()
+
+    # Целое предложение и оборот судятся по-разному: к обороту, вырванному из речи,
+    # порядок слов неприменим. Вид берём из слоя слов, а не считаем здесь заново.
+    try:
+        from backend.lex_units import _kind_for_text
+        kind = "sentence" if _kind_for_text(german) == "sentence" else "collocation"
+    except Exception:
+        kind = "collocation"
+
+    try:
+        from backend.openai_manager import run_phrase_grammar_verdict
+        verdict = run_phrase_grammar_verdict(text=german, kind=kind, translation=russian)
+    except Exception:
+        logging.warning("свой вариант: судья не ответил", exc_info=True)
+        # Судья молчит — это НЕ повод не дать человеку сохранить своё. Отдаём «вопросов
+        # нет»: он написал это осознанно, а мы просто не смогли проверить.
+        return jsonify({"verdict": "ok", "suggestion_de": "", "suggestion_ru": "", "why": ""})
+
+    try:
+        _billing_log_openai_usage(
+            user_id=int(user_id),
+            action_type="phrase_grammar_verdict",
+            source_lang="de", target_lang=None,
+            usage=get_last_llm_usage(reset=True),
+            seed=f"own_variant:{user_id}:{time.time_ns()}",
+            metadata={"origin": "dictionary_own_variant", "text": german[:64]},
+        )
+    except Exception:
+        logging.debug("свой вариант: запись расхода не удалась", exc_info=True)
+
+    # «context» и «style» — это отказ судьи трогать текст, а не претензия. Наружу они
+    # уходят как «вопросов нет»: показывать человеку «возможно, дело вкуса» на его
+    # собственной формулировке значит сеять сомнение на пустом месте.
+    status = str(verdict.get("verdict") or "ok").strip().lower()
+    suggestion = str(verdict.get("corrected") or "").strip()
+    if status != "error" or not suggestion or suggestion == german:
+        return jsonify({"verdict": "ok", "suggestion_de": "", "suggestion_ru": "", "why": ""})
+    return jsonify({
+        "verdict": "error",
+        "suggestion_de": suggestion,
+        "suggestion_ru": str(verdict.get("corrected_ru") or "").strip(),
+        "why": str(verdict.get("why") or "").strip(),
+    })
 
 
 @app.route("/api/webapp/dictionary/save", methods=["POST"])

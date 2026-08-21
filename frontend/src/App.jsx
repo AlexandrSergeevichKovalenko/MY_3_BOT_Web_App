@@ -32747,18 +32747,16 @@ function AppInner() {
 
   // Swipe-deck: save ONE phrase (the current card) optimistically into the dictionary. Same
   // canonical pipeline as the tap-a-word widget. `worldNewsSelected` holds the saved indices.
-  const saveWorldNewsCard = useCallback((index) => {
-    const phrases = Array.isArray(worldNewsData?.phrases) ? worldNewsData.phrases : [];
-    const phrase = phrases[index];
-    const de = String(phrase?.de || '').trim();
-    const ru = String(phrase?.translation_ru || '').trim();
+  // Кладём в словарь ровно то, что передали. Путь один и для показанного оборота, и
+  // для своего варианта — иначе два места разойдутся в мелочах.
+  const putWorldNewsCardIntoDictionary = useCallback((index, de, ru, origin, meta) => {
     if (!de || !ru) return;
-    if (worldNewsSelected.has(index)) return; // already saved
+    if (worldNewsSelected.has(index)) return; // уже сохранено
     if (!initData) {
       showInlineToast(initDataMissingMsg, 4000);
       return;
     }
-    setWorldNewsSelected((prev) => new Set(prev).add(index)); // optimistic ✓ Сохранено
+    setWorldNewsSelected((prev) => new Set(prev).add(index)); // сразу ✓, не ждём сервер
     (async () => {
       try {
         const r = await fetch('/api/webapp/dictionary/save', {
@@ -32771,8 +32769,8 @@ function AppInner() {
             source_lang: 'de',
             target_lang: 'ru',
             direction: 'de-ru',
-            origin_process: 'worldnews_phrase_save',
-            origin_meta: { flow: 'worldnews_word_deck', from: 'worldnews_word_deck' },
+            origin_process: origin,
+            origin_meta: { flow: 'worldnews_word_deck', from: 'worldnews_word_deck', ...(meta || {}) },
           }),
         });
         if (!r.ok) {
@@ -32786,7 +32784,82 @@ function AppInner() {
         showInlineToast(tr('Не удалось сохранить слово.', 'Wort konnte nicht gespeichert werden.'), 4000);
       }
     })();
-  }, [worldNewsData, worldNewsSelected, initData, initDataMissingMsg, showInlineToast, tr]);
+  }, [worldNewsSelected, initData, initDataMissingMsg, showInlineToast, tr]);
+
+  // ── Свой вариант ────────────────────────────────────────────────────────────────
+  // Карточка показывает оборот так, как он прозвучал: «einen hohen genetischen Anteil»
+  // стоит в винительном, потому что в предложении он был в винительном. Кому-то нужно
+  // положить себе именительный, кому-то — свою формулировку. Решение владельца
+  // 20.08.2026: дать вписать своё, проверить это судьёй ВМЕСТЕ с переводом (падеж и
+  // предлог выбираются по смыслу) и ПОКАЗАТЬ его мнение, а не подменить молча.
+  const [worldNewsOwnIndex, setWorldNewsOwnIndex] = useState(null);
+  const [worldNewsOwnDe, setWorldNewsOwnDe] = useState('');
+  const [worldNewsOwnRu, setWorldNewsOwnRu] = useState('');
+  const [worldNewsOwnBusy, setWorldNewsOwnBusy] = useState(false);
+  const [worldNewsOwnHint, setWorldNewsOwnHint] = useState(null);
+
+  const openWorldNewsOwn = useCallback((index, phrase) => {
+    setWorldNewsOwnIndex(index);
+    setWorldNewsOwnDe(String(phrase?.de || '').trim());
+    setWorldNewsOwnRu(String(phrase?.translation_ru || '').trim());
+    setWorldNewsOwnHint(null);
+  }, []);
+
+  const closeWorldNewsOwn = useCallback(() => {
+    setWorldNewsOwnIndex(null);
+    setWorldNewsOwnHint(null);
+    setWorldNewsOwnBusy(false);
+  }, []);
+
+  const saveWorldNewsOwn = useCallback((index, de, ru, checked) => {
+    putWorldNewsCardIntoDictionary(index, de, ru, 'worldnews_phrase_save_own', {
+      own_variant: true,
+      // Пишем, ЧТО человек решил: принял предложенное или оставил своё. Решение
+      // человека о своей карточке — такой же источник, как решение владельца о слове.
+      judge: checked || 'not_checked',
+    });
+    closeWorldNewsOwn();
+  }, [putWorldNewsCardIntoDictionary, closeWorldNewsOwn]);
+
+  const checkWorldNewsOwn = useCallback(() => {
+    const index = worldNewsOwnIndex;
+    const de = String(worldNewsOwnDe || '').trim();
+    const ru = String(worldNewsOwnRu || '').trim();
+    if (index === null || !de || !ru) return;
+    setWorldNewsOwnBusy(true);
+    (async () => {
+      try {
+        const r = await fetch('/api/webapp/dictionary/check-variant', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, de, ru }),
+        });
+        const data = r.ok ? await r.json() : null;
+        if (data && data.verdict === 'error' && data.suggestion_de) {
+          // Не подменяем — показываем и спрашиваем. Решает человек.
+          setWorldNewsOwnBusy(false);
+          setWorldNewsOwnHint(data);
+          return;
+        }
+      } catch (_error) {
+        // Судья недоступен — это не повод не дать сохранить своё.
+      }
+      saveWorldNewsOwn(index, de, ru, 'no_objection');
+      setWorldNewsOwnBusy(false);
+    })();
+  }, [worldNewsOwnIndex, worldNewsOwnDe, worldNewsOwnRu, initData, saveWorldNewsOwn]);
+
+  const saveWorldNewsCard = useCallback((index) => {
+    const phrases = Array.isArray(worldNewsData?.phrases) ? worldNewsData.phrases : [];
+    const phrase = phrases[index];
+    putWorldNewsCardIntoDictionary(
+      index,
+      String(phrase?.de || '').trim(),
+      String(phrase?.translation_ru || '').trim(),
+      'worldnews_phrase_save',
+      null,
+    );
+  }, [worldNewsData, putWorldNewsCardIntoDictionary]);
 
   // Экран один на обе рубрики, они чередуются через день. Подписать выступление комика
   // «Новостью дня» нельзя, поэтому заголовок берётся из самой записи, а не угадывается.
@@ -37925,6 +37998,94 @@ function AppInner() {
                             >
                               {saved ? tr('✓ Сохранено', '✓ Gespeichert') : tr('🔖 Сохранить в словарь', '🔖 Ins Wörterbuch')}
                             </button>
+                            {/* Второй кнопкой, а не вопросом каждому: девяносто девять раз
+                                из ста человек жмёт «Сохранить» и листает дальше. */}
+                            {!saved && worldNewsOwnIndex !== idx && (
+                              <button
+                                type="button"
+                                className="worldnews-card-own-open"
+                                onClick={() => openWorldNewsOwn(idx, phrase)}
+                              >
+                                {tr('Сохранить по-своему', 'Eigene Fassung speichern')}
+                              </button>
+                            )}
+                            {!saved && worldNewsOwnIndex === idx && (
+                              <div className="worldnews-card-own">
+                                <label className="worldnews-card-own-label">
+                                  {tr('Как записать в словарь', 'Wie ins Wörterbuch')}
+                                  <input
+                                    type="text"
+                                    className="worldnews-card-own-input"
+                                    value={worldNewsOwnDe}
+                                    onChange={(e) => setWorldNewsOwnDe(e.target.value)}
+                                    dir="ltr"
+                                  />
+                                </label>
+                                <label className="worldnews-card-own-label">
+                                  {tr('Перевод', 'Übersetzung')}
+                                  <input
+                                    type="text"
+                                    className="worldnews-card-own-input"
+                                    value={worldNewsOwnRu}
+                                    onChange={(e) => setWorldNewsOwnRu(e.target.value)}
+                                  />
+                                </label>
+                                {/* Мнение судьи ПОКАЗЫВАЕМ, а не подставляем: решает человек. */}
+                                {worldNewsOwnHint && (
+                                  <div className="worldnews-card-own-hint">
+                                    <div className="worldnews-card-own-hint-text">
+                                      {tr('Мы бы записали так:', 'Wir würden so schreiben:')}{' '}
+                                      <b>{worldNewsOwnHint.suggestion_de}</b>
+                                      {worldNewsOwnHint.why ? ` — ${worldNewsOwnHint.why}` : ''}
+                                    </div>
+                                    <div className="worldnews-card-own-hint-row">
+                                      <button
+                                        type="button"
+                                        className="worldnews-card-own-take"
+                                        onClick={() => saveWorldNewsOwn(
+                                          idx,
+                                          worldNewsOwnHint.suggestion_de,
+                                          worldNewsOwnHint.suggestion_ru || worldNewsOwnRu,
+                                          'took_suggestion',
+                                        )}
+                                      >
+                                        {tr('Взять наш вариант', 'Unsere Fassung nehmen')}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="worldnews-card-own-keep"
+                                        onClick={() => saveWorldNewsOwn(
+                                          idx, worldNewsOwnDe, worldNewsOwnRu, 'kept_own',
+                                        )}
+                                      >
+                                        {tr('Оставить моё', 'Meine behalten')}
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                                {!worldNewsOwnHint && (
+                                  <div className="worldnews-card-own-row">
+                                    <button
+                                      type="button"
+                                      className="worldnews-card-own-save"
+                                      onClick={checkWorldNewsOwn}
+                                      disabled={worldNewsOwnBusy || !worldNewsOwnDe.trim() || !worldNewsOwnRu.trim()}
+                                    >
+                                      {worldNewsOwnBusy
+                                        ? tr('Проверяем…', 'Wird geprüft…')
+                                        : tr('Сохранить', 'Speichern')}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="worldnews-card-own-cancel"
+                                      onClick={closeWorldNewsOwn}
+                                    >
+                                      {tr('Отмена', 'Abbrechen')}
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                           <div className="worldnews-deck-nav">
                             <button type="button" className="worldnews-deck-arrow" onClick={worldNewsDeckPrev} disabled={idx === 0} aria-label={tr('Назад', 'Zurück')}>‹</button>
