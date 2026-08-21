@@ -776,10 +776,25 @@ def retitle_unit(cur, unit_id: int, text: str) -> str:
     """
     text = str(text or "").strip()
     kind = _kind_for_text(text)
+    key = normalize_query(text)
     cur.execute(
         "UPDATE bt_3_lex_units SET display=%s, lemma=%s, lemma_key=%s, kind=%s, "
         "updated_at=NOW() WHERE id=%s;",
-        (text, text, normalize_query(text), kind, int(unit_id)),
+        (text, text, key, kind, int(unit_id)),
+    )
+    # ⚠ НОВОЕ НАПИСАНИЕ ОБЯЗАНО СТАТЬ ДВЕРЬЮ ПОИСКА. Слово ищется не по заголовку, а по
+    # указателю написаний: без этой строки переименованное слово перестаёт находиться ПО
+    # СВОЕМУ ЖЕ ИМЕНИ. Поймано 21.08.2026 на «die Wettbewerbsregeln» — заголовок
+    # почистили, а в указателе остался только старый мусорный ключ, и словарь отвечал
+    # «не знаю» на собственное слово.
+    #
+    # Старые написания НЕ удаляются: указатель для того и заведён, чтобы человек,
+    # запомнивший кривой вариант, продолжал находить слово и видел исправленный заголовок.
+    cur.execute(
+        """INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
+           SELECT lang, %s, id, 'exact' FROM bt_3_lex_units WHERE id = %s
+           ON CONFLICT DO NOTHING;""",
+        (key, int(unit_id)),
     )
     return kind
 
@@ -1359,6 +1374,19 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
         # Разворот не удался — кладём как есть: разбор важнее, а перевёрнутые ловит
         # ночная сверка. Молча ошибку не глотаем.
         logging.warning("разворот разбора для слова %s не удался: %s", unit_id, exc)
+    # СТРАЖ ЦЕЛОСТНОСТИ РАЗБОРА. С 20.08.2026 заголовок слова защищён правилом в самой
+    # базе, а разбор — примеры, сочетания, объяснения — не защищён ничем. Порча 16.08
+    # дошла именно сюда: 15 слов и 143 карточки людей. Через эту функцию идут оба
+    # ночных пути (обогащение и живое сохранение), поэтому страж стоит здесь.
+    #
+    # Отвергаем ЗАПИСЬ, а не чиним текст: размноженный сам на себя разбор — след
+    # поломки у того, кто его прислал, и подчистить его тихо значило бы спрятать её.
+    from backend.mangled_text import mangled_strings_inside
+    порча = mangled_strings_inside(card)
+    if порча:
+        logging.warning("разбор слова %s не записан — текст размножен сам на себя: %s",
+                        unit_id, " | ".join(x[:70] for x in порча[:3]))
+        return False
     sql = ("UPDATE bt_3_lex_units SET card = %s::jsonb, card_source = %s, updated_at = NOW() "
            "WHERE id = %s;")
     params = (json.dumps(card, ensure_ascii=False), source, int(unit_id))
@@ -1424,10 +1452,38 @@ _ARTICLE_TO_GENDER = {"der": "der", "die": "die", "das": "das"}
 _CAPITALIZED_RE = re.compile(r"^[A-ZÄÖÜ]")
 
 
-def _gender_from_card(card: dict | None) -> str:
+def _gender_from_card(card: dict | None, *, word: str = "") -> str:
+    """Род из разбора — но НЕ вперёд справочника, если справочник уже под рукой.
+
+    ⚠ ДВЕРЬ ДЛЯ РОДА. Разбор бывает собран про МНОЖЕСТВЕННОЕ число («die Spritpreise»),
+    и его «die» уезжало на единственное — на экране выходило «die Spritpreis», «die Narr»,
+    «die Elektrogerät». Замер 21.08.2026: 12 таких слов из 691.
+
+    Ночная сверка (`fix_gender_conflicts_from_authority`) это чинит, но только к утру, а
+    до утра человек читает неверный род. Поэтому здесь стоит бесплатная половина той же
+    проверки: спрашиваем арбитра ТОЛЬКО из прогретой памяти (`article_if_already_loaded`)
+    — ни в базу, ни в сеть, потому что это живой путь сохранения и чужая транзакция.
+
+    Знает арбитр и не согласен — род из разбора НЕ берём: пусть слово побудет без
+    артикля до ночи. Пустая ячейка — незакрытая задача, а неверный род — ложь, которую
+    человек заучит. Не знает или согласен — ведём себя как раньше.
+    """
     if not isinstance(card, dict):
         return ""
-    return _ARTICLE_TO_GENDER.get(str(card.get("article") or "").strip().lower(), "")
+    gender = _ARTICLE_TO_GENDER.get(str(card.get("article") or "").strip().lower(), "")
+    if not gender or not str(word or "").strip():
+        return gender
+    try:
+        from backend.article_authority import article_if_already_loaded
+        verdict = article_if_already_loaded(normalize_query(word))
+    except Exception:
+        logging.debug("справочник родов не отозвался — берём род из разбора", exc_info=True)
+        return gender
+    if verdict and verdict != gender:
+        logging.info("род из разбора (%s) разошёлся со справочником (%s) у %r — не берём",
+                     gender, verdict, str(word)[:60])
+        return ""
+    return gender
 
 
 # Одна и та же правка нужна и на живой двери (разбор кладут НА слово), и в ночном
@@ -1510,7 +1566,9 @@ def _adopt_pos_gender_inline(cur, unit_id: int, card: dict | None) -> None:
     «phrase», «sentence», «other» и составные ответы вроде «adjective|adverb» не берутся:
     это не часть речи или не ответ, а pos входит в ключ опознания слова."""
     pos = _pos_from_card(card)
-    gender = _gender_from_card(card)
+    # Написание слова берём у САМОГО разбора: единицу здесь ещё не читали, а лишний
+    # запрос на живом пути не нужен. Разбор описывает то самое слово, на которое ложится.
+    gender = _gender_from_card(card, word=_card_headword(card))
     if not pos and gender:
         pos = "noun"                      # артикль в разборе — само по себе показание
     if not pos or not unit_id:
@@ -1542,7 +1600,7 @@ def adopt_pos_gender_from_card(unit_id: int, card: dict | None, *, lemma: str = 
 
     Ничего не перезаписываем: трогаем только слова, у которых части речи нет вовсе."""
     pos = _pos_from_card(card)
-    gender = _gender_from_card(card)
+    gender = _gender_from_card(card, word=(lemma or _card_headword(card)))
     if not pos and gender:
         pos = "noun"
     if not pos or not unit_id:

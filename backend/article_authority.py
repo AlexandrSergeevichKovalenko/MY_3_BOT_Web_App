@@ -230,6 +230,26 @@ def compound_article(word: str) -> str | None:
     return next(iter(verdicts)) if len(verdicts) == 1 else None
 
 
+def article_if_already_loaded(word: str) -> str | None:
+    """Род ТОЛЬКО из уже прогретой памяти. В базу и в сеть отсюда не ходим ни при каких
+    условиях — эта дверь стоит на живом пути сохранения слова.
+
+    ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. `authoritative_article` при холодном кэше идёт в базу за
+    справочником родов (19 тысяч строк). На пути сохранения это недопустимо дважды:
+    человек ждёт, а запрос уходит из ЧУЖОЙ транзакции — второе соединение из пула, пока
+    первое не отпущено, это известная ловушка проекта. Поэтому здесь: знаем — отвечаем,
+    не знаем — молчим, и ночная сверка (`fix_gender_conflicts_from_authority`) доберёт.
+    Дверь ловит бесплатно то, что может; остальное ловит ночь.
+    """
+    with _lock:
+        if not _genus:
+            return None
+        low = str(word or "").strip().lower()
+        if not low or low in _ambiguous or low in _bad_forms or low in _plural_spellings:
+            return None
+        return _genus.get(low)
+
+
 def authoritative_article(word: str, *, allow_network: bool = False) -> tuple[str | None, str]:
     """(артикль, откуда). None означает «не знаем» — слово нельзя пускать в игру молча."""
     w = str(word or "").strip()

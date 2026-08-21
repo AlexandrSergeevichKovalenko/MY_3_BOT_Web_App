@@ -64,19 +64,28 @@ def sq(value: str) -> str:
 
 
 def collect() -> list[tuple]:
-    """Решения, где на кнопке не было русского → перевод собрала модель."""
+    """Решения, где перевод собрала модель, а ваш смысл остался лежать в стороне.
+
+    ⚠ БЕРЁМ И «СВОЙ ТЕКСТ» ТОЖЕ (status = 'replaced'), не только принятые кнопки.
+    Изначально здесь стояло только 'accepted', и это оставляло целую ветку без починки:
+    когда владелец вписывал свой немецкий, кнопки не было вовсе, спрашивать русский было
+    негде — и перевод к его же тексту сочиняла модель. Поле для русского появилось на
+    экране только 21.08.2026; всё, что решено раньше, лечится отсюда. Замер 21.08.2026:
+    таких решений 13 («sich verzehnfachen», «Die Zuschlagsstoffe» и другие).
+    """
     out = []
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                """SELECT r.id, r.unit_id, r.text, r.translation, r.judges, r.arbiter, u.display
+                """SELECT r.id, r.unit_id, r.text, r.translation, r.judges, r.arbiter,
+                          u.display, r.status
                      FROM bt_3_phrase_review r
                      JOIN bt_3_lex_units u ON u.id = r.unit_id
-                    WHERE r.status = 'accepted'
+                    WHERE r.status IN ('accepted', 'replaced')
                     ORDER BY r.id;"""
             )
             rows = cursor.fetchall()
-            for review_id, unit_id, old, saved_ru, judges, arbiter, display in rows:
+            for review_id, unit_id, old, saved_ru, judges, arbiter, display, status in rows:
                 old, display, saved_ru = sq(old), sq(display), sq(saved_ru)
                 if not display or not saved_ru:
                     continue
@@ -107,16 +116,34 @@ def collect() -> list[tuple]:
                     out.append((review_id, unit_id, old, display, saved_ru, top_ru,
                                 source, True))
                     continue
-                variants = phrase_review_variants(
-                    judges if isinstance(judges, list) else [], old,
-                    arbiter if isinstance(arbiter, dict) else None)
-                chosen = next((v for v in variants
-                               if sq(clean_text(v["text"]) or "") == display), None)
-                if sq((chosen or {}).get("ru") or ""):
-                    continue          # русский на кнопке был — решение владельца уже стоит
+                if status == "accepted":
+                    variants = phrase_review_variants(
+                        judges if isinstance(judges, list) else [], old,
+                        arbiter if isinstance(arbiter, dict) else None)
+                    chosen = next((v for v in variants
+                                   if sq(clean_text(v["text"]) or "") == display), None)
+                    if sq((chosen or {}).get("ru") or ""):
+                        continue      # русский на кнопке был — решение владельца уже стоит
+                # У «своего текста» кнопки не было вовсе: спрашивать было негде, значит
+                # сохранённый смысл — единственное, что владелец про эту фразу сказал.
                 out.append((review_id, unit_id, old, display, saved_ru, top_ru, source,
                             False))
     return out
+
+
+def is_shortened(old: str, display: str) -> bool:
+    """Владелец не поправил фразу, а СВЁЛ ЕЁ К ЧАСТИ — старый смысл сюда не переносится.
+
+    ⚠ ЭТО ПРОВЕРКА ДО МОДЕЛИ, И ОНА ОБЯЗАТЕЛЬНА. Сухой прогон 21.08.2026: у решения #204
+    старое «Die Feinde die wir jetzt haben werden sich verzehnfachen» владелец заменил на
+    «sich verzehnfachen», а сохранённый смысл был «Врагов, которые у нас сейчас есть,
+    станет в десять раз больше» — перевод ЦЕЛОГО ПРЕДЛОЖЕНИЯ. Модель на вопрос «сохранён
+    ли смысл» ответила «да» и была неправа: смысл части и смысл целого — разные вещи.
+    Считаем словами, а не спрашиваем: это арифметика, а не язык.
+    """
+    old_words = len(str(old or "").split())
+    new_words = len(str(display or "").split())
+    return bool(old_words) and new_words * 2 <= old_words
 
 
 def check(item: tuple) -> tuple:
@@ -124,6 +151,10 @@ def check(item: tuple) -> tuple:
     _rid, _uid, old, display, saved_ru, _top, _src, german_unchanged = item
     if german_unchanged:
         return item, True, "немецкий не менялся — сохранённый смысл подходит", True
+    if is_shortened(old, display):
+        return (item, False,
+                "фраза сведена к части: сохранённый смысл описывает целое, а не часть",
+                True)
     verdict = _check_fix_twice(old, saved_ru, display)
     fits = bool(verdict.get("checked")) and bool(verdict.get("meaning_kept"))
     return item, fits, str(verdict.get("why") or ""), bool(verdict.get("checked"))

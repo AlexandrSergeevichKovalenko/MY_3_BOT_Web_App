@@ -103,3 +103,44 @@ def test_card_headword_is_read_from_any_of_the_known_fields():
     assert lex_units._card_headword({"source_text": "Narren"}) == "Narren"
     assert lex_units._card_headword({}) == ""
     assert lex_units._card_headword(None) == ""
+
+
+class TestTheDoorAtSaveTime:
+    """Дверь ловит бесплатно то, что может; остальное ловит ночь.
+
+    Ночная сверка чинит род к утру — а до утра человек читает «die Narr». Поэтому та же
+    проверка стоит и на сохранении, но ТОЛЬКО по прогретой памяти справочника: в базу и в
+    сеть с живого пути ходить нельзя (человек ждёт, и запрос уходит из чужой транзакции).
+    """
+
+    def test_gender_is_refused_when_the_reference_disagrees(self, monkeypatch):
+        import backend.article_authority as authority
+        monkeypatch.setattr(authority, "article_if_already_loaded", lambda word: "der")
+        card = {"article": "die", "word_de": "die Spritpreise"}
+        assert lex_units._gender_from_card(card, word="Spritpreis") == ""
+
+    def test_gender_is_taken_when_the_reference_agrees(self, monkeypatch):
+        import backend.article_authority as authority
+        monkeypatch.setattr(authority, "article_if_already_loaded", lambda word: "die")
+        assert lex_units._gender_from_card({"article": "die"}, word="Brücke") == "die"
+
+    def test_a_cold_reference_does_not_block_anything(self, monkeypatch):
+        # Память не прогрета — ведём себя как раньше, а не оставляем слово без рода.
+        import backend.article_authority as authority
+        monkeypatch.setattr(authority, "article_if_already_loaded", lambda word: None)
+        assert lex_units._gender_from_card({"article": "das"}, word="Haus") == "das"
+
+    def test_without_a_word_the_rule_does_not_fire(self):
+        assert lex_units._gender_from_card({"article": "der"}) == "der"
+
+
+def test_the_reference_lookup_never_touches_the_database():
+    """Прямая проверка обещания: холодная память отвечает None, никуда не сходив."""
+    import backend.article_authority as authority
+
+    original = authority._genus
+    authority._genus = {}
+    try:
+        assert authority.article_if_already_loaded("Haus") is None
+    finally:
+        authority._genus = original

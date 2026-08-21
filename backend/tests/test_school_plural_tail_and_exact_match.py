@@ -73,3 +73,44 @@ class TestExactBeatsInflected:
         form = self._unit(10956, "ausrutschen", "inflected")
         other = self._unit(10957, "rutschen", "inflected", card={"forms": {}})
         assert _pick_unit([form, other], requested_article="") is not None
+
+
+class TestRetitleKeepsTheWordFindable:
+    """Переименовал слово — оно обязано находиться ПО НОВОМУ ИМЕНИ.
+
+    Поймано 21.08.2026 на «die Wettbewerbsregeln»: заголовок почистили от русской
+    подсказки, а в указателе остался только старый мусорный ключ — и словарь отвечал
+    «не знаю» на собственное слово. По всей базе таких оказалось 27.
+    """
+
+    def test_the_new_spelling_becomes_a_search_door(self):
+        from backend import lex_units
+
+        statements = []
+
+        class _Cursor:
+            def execute(self, sql, params=None):
+                statements.append((" ".join(sql.split()), params))
+
+        # Вид записи считается по написанию БЕЗ артикля: «die Wettbewerbsregeln» — это
+        # одно слово, а не оборот. От этого зависит, возьмёт ли слово ночной добор.
+        kind = lex_units.retitle_unit(_Cursor(), 7, "die Wettbewerbsregeln")
+        assert kind == "word"
+        assert any("UPDATE bt_3_lex_units" in sql for sql, _ in statements)
+        surface = [(sql, params) for sql, params in statements
+                   if "INSERT INTO bt_3_lex_surfaces" in sql]
+        assert surface, "новое написание не завели дверью поиска"
+        assert surface[0][1][0] == lex_units.normalize_query("die Wettbewerbsregeln")
+
+    def test_the_old_spelling_is_not_deleted(self):
+        """Старую дверь не сносим: человек, запомнивший кривой вариант, должен найти слово."""
+        from backend import lex_units
+
+        statements = []
+
+        class _Cursor:
+            def execute(self, sql, params=None):
+                statements.append(" ".join(sql.split()))
+
+        lex_units.retitle_unit(_Cursor(), 7, "die Brücke")
+        assert not any("DELETE FROM bt_3_lex_surfaces" in sql for sql in statements)
