@@ -54,6 +54,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--list", type=int, default=12, help="сколько примеров показать")
+    parser.add_argument("--lang", default="de",
+                        help="язык слов: de (по умолчанию), ru, all")
     args = parser.parse_args()
 
     turned = 0
@@ -64,14 +66,20 @@ def main() -> int:
             rows: list = []
             last_id = 0
             while True:
-                # ТОЛЬКО НЕМЕЦКИЕ СЛОВА — ровно тот класс, что померен (410 из 10 335).
-                # У русских единиц разбор тоже лежит «немецкий → русский», но это не тот
-                # же дефект: карточку по русскому запросу выдача берёт с НЕМЕЦКОЙ стороны
-                # связи (`_build_item`), и разбор на русской единице на экран не идёт.
-                # Расширять правку на них без отдельного замера — менять то, чего не мерил.
-                cursor.execute("""SELECT id, lang, display, card FROM bt_3_lex_units
-                                   WHERE card IS NOT NULL AND lang = 'de' AND id > %s
-                                   ORDER BY id LIMIT 400;""", (last_id,))
+                # РУССКИЕ СЛОВА ТОЖЕ РАЗВОРАЧИВАЮТСЯ. Сначала я их исключил, решив, что
+                # разбор с русского слова на экран не идёт: по русскому запросу заголовок
+                # действительно берётся с немецкой стороны связи. Проверка 21.08.2026
+                # показала, что это неверно — за основу карточки берётся разбор САМОЙ
+                # единицы (`_build_item`: `unit.get("card")` стоит первым), и примеры с
+                # формами приезжают с неё. Русских слов с разбором 116, перевёрнутых 76.
+                if args.lang == "all":
+                    cursor.execute("""SELECT id, lang, display, card FROM bt_3_lex_units
+                                       WHERE card IS NOT NULL AND id > %s
+                                       ORDER BY id LIMIT 400;""", (last_id,))
+                else:
+                    cursor.execute("""SELECT id, lang, display, card FROM bt_3_lex_units
+                                       WHERE card IS NOT NULL AND lang = %s AND id > %s
+                                       ORDER BY id LIMIT 400;""", (args.lang, last_id))
                 batch = cursor.fetchall()
                 if not batch:
                     break
