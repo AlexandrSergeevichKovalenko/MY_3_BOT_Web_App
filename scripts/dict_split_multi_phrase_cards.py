@@ -88,6 +88,15 @@ def main() -> None:
             rules = APPROVED[entry_id]
             german_raw = str(target_text or "")
             for wrong, right in (rules.get("fix") or {}).items():
+                # ПОВТОРНЫЙ ПРОГОН НЕ ДОЛЖЕН ДОПИСЫВАТЬ ЕЩЁ РАЗ.
+                #
+                # Здесь была ровно та форма, которой 16.08.2026 испортили 16 записей
+                # словаря: замена применяется к уже заменённому тексту. В таблице правок
+                # новое СОДЕРЖИТ старое — «as schlägst du vor?» → «Was schlägst du vor?»,
+                # — поэтому второй прогон дал бы «WWas», третий «WWWas» и так далее.
+                # Проверка «правка уже применена» делает прогон безобидным при повторе.
+                if right in german_raw:
+                    continue
                 german_raw = german_raw.replace(wrong, right)
 
             german = split_parts(german_raw)

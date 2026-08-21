@@ -1,37 +1,52 @@
 # -*- coding: utf-8 -*-
-"""Страж в САМОЙ БАЗЕ: заголовок с размноженным хвостом записать нельзя.
+"""Замок В САМОЙ БАЗЕ: немецкий текст с размноженным хвостом записать нельзя.
 
-ЗАЧЕМ ИМЕННО В БАЗЕ, А НЕ В КОДЕ
-────────────────────────────────
-16.08.2026 одна транзакция размножила хвост у заголовков 15 фраз («Er erlag der
-Versuchung......», «vorbei. vorbei. vorbei. …»). Механизм доказан: подстановка
-`s.replace(старое, новое)`, применённая шесть раз к накапливающемуся результату.
-Виновника в репозитории нет — его прогнали разовым скриптом и не закоммитили.
+╔══════════════════════════════════════════════════════════════════════════════════╗
+║  ЗАКРЫТО 21.08.2026. Правило и виды порчи берутся из backend/mangled_text.py.     ║
+║  Свой признак здесь заводить НЕЛЬЗЯ — именно так тема открывалась четыре раза.    ║
+╚══════════════════════════════════════════════════════════════════════════════════╝
 
-И в этом всё дело. Дефект пришёл НЕ из продукта: продуктовый путь такого не умеет.
-Он пришёл из скрипта уборки, который ходит в базу напрямую и обходит любую питоновскую
-проверку. Значит и страж должен стоять там, где мимо него не пройти, — на самой колонке.
-Плохая запись теперь не «тихо ложится и ждёт, пока кто-то заметит», а падает с ошибкой.
+ПОЧЕМУ ЗАМОК В БАЗЕ, А НЕ ПРОВЕРКА В КОДЕ
+─────────────────────────────────────────
+Порча 16.08.2026 пришла НЕ из продукта: продуктовый путь так не умеет. Она пришла из
+разового скрипта уборки, который ходит в базу напрямую и обходит любую питоновскую
+проверку. Значит и замок должен стоять там, где мимо него не пройти, — на самой колонке.
+Плохая запись теперь не ложится тихо, а падает с ошибкой.
 
-ЧТО ИМЕННО ЗАПРЕЩЕНО
-────────────────────
-Хвост, повторённый ЧЕТЫРЕ и более раз подряд, в трёх видах: один и тот же знак препинания
-в конце («......», «??????»), одно и то же слово через пробел («ist ist ist ist») и одна
-и та же БУКВА («sterile Gazennnnnn»).
+ЧТО ЗАПЕРТО И ПОЧЕМУ ИМЕННО ЭТО
+───────────────────────────────
+Заперты только колонки, где текст ТОЧНО немецкий:
 
-Третий вид добавлен 21.08.2026: первая версия стража его не знала и запись пропустила —
-там шаг порчи был короче слова, «sterile Gaze» плюс «n», применённое шесть раз. Нашёл её
-соседний агент, сверив базу по своему признаку. В немецком четыре одинаковые буквы подряд
-не встречаются: даже у «Schifffahrt» их три.
+    bt_3_lex_units                  display, lemma
+    bt_3_webapp_dictionary_queries  word_de, translation_de
+    bt_3_dictionary_entries         word_de, translation_de
+                                    source_text — только когда source_lang = 'de'
+                                    target_text — только когда target_lang = 'de'
 
-Порог четыре, а не три, — потому что многоточие из трёх точек это законный заголовок:
-«Es kommt darauf an...», «Wenn man bedenkt, dass...». Их в словаре два десятка, и они
-не порча, а шаблон фразы с продолжением. Порог стоит между ними и нашей шестикратной
-порчей. Перед установкой скрипт ПРОВЕРЯЕТ всю таблицу: есть хоть одна живая строка,
-которая не прошла бы, — ограничение не ставится, а строки показываются владельцу.
+РУССКИЕ КОЛОНКИ НЕ ЗАПЕРТЫ, И ЭТО РЕШЕНИЕ, А НЕ НЕДОСМОТР. Человек имеет право написать
+в своём переводе «нееееет» или «да да да да» — это не порча, это его текст. Замок на
+русской колонке уронил бы ему сохранение, а мы не ломаем человеку работу ради своей
+чистоты. В немецком же четыре одинаковые буквы подряд не встречаются вовсе (даже у
+«Schifffahrt» их три), поэтому там замок безопасен.
+
+Колонки пула `source_text`/`target_text` держат то одну сторону, то другую, поэтому
+условие смотрит на пометку языка. Пометка есть у ВСЕХ 17 186 записей (проверено
+21.08.2026), так что дыры «языка нет — значит можно» не возникает. Испорченная запись
+`sterile Gazennnnnn` лежала именно в `source_text` при `source_lang = 'de'` — условный
+замок её бы поймал.
+
+ПЕРЕД УСТАНОВКОЙ СКРИПТ ПРОВЕРЯЕТ ЖИВЫЕ ДАННЫЕ. Есть хоть одна строка, которая не
+прошла бы, — замок не ставится, строки показываются владельцу. Замер 21.08.2026:
+0 нарушений на 15 351 + 25 522 + 17 186 строках.
+
+ЧЕГО ЭТОТ ЗАМОК НЕ ЗАКРЫВАЕТ, И ЭТО НАДО ЗНАТЬ. Разбор карточки (`card`,
+`response_json`) — это дерево значений, на него CHECK не ставится. Туда порча 16.08
+тоже дошла: 15 разборов на словах и 143 карточки людей. Прикрыть тот путь может только
+проверка на дне записи разбора (`lex_units.save_unit_card`) — это отдельная работа, и
+она НЕ сделана. Не считать эту тему закрытой целиком.
 
     python3 scripts/dict_guard_repeated_tail.py            # проверить, ничего не менять
-    python3 scripts/dict_guard_repeated_tail.py --apply    # поставить ограничение
+    python3 scripts/dict_guard_repeated_tail.py --apply    # поставить замки
 """
 from __future__ import annotations
 
@@ -44,29 +59,25 @@ os.environ.setdefault("SKIP_STARTUP_SCHEMA_BOOTSTRAP", "1")
 os.environ.setdefault("SKIP_BILLING_LEDGER_WRITES", "1")
 
 from backend.database import get_db_connection_context  # noqa: E402
+from backend.mangled_text import SQL_MANGLED  # noqa: E402
 
-CONSTRAINT = "bt_3_lex_units_no_repeated_tail"
+# (таблица, имя замка, [(колонка, когда проверять или None), …])
+LOCKS = (
+    ("bt_3_lex_units", "bt_3_lex_units_no_repeated_tail",
+     (("display", None), ("lemma", None))),
+    ("bt_3_webapp_dictionary_queries", "bt_3_dict_queries_no_repeated_tail",
+     (("word_de", None), ("translation_de", None))),
+    ("bt_3_dictionary_entries", "bt_3_dict_entries_no_repeated_tail",
+     (("word_de", None), ("translation_de", None),
+      ("source_text", "source_lang = 'de'"), ("target_text", "target_lang = 'de'"))),
+)
 
-# POSIX-регулярка Postgres. Три запрещённых вида хвоста:
-#   ([.?!])\1{3,}$        — один и тот же знак четыре и более раз в конце
-#   (\S+)( \1){3,}$       — одно и то же слово четыре и более раз в конце
-#   (\w)\1{3,}$           — одна и та же БУКВА четыре и более раз в конце
-#
-# Третий вид добавлен 21.08.2026. Первая версия стража его не знала и пропустила
-# «sterile Gazennnnnn» — ту же порчу, только шаг был короче слова: «sterile Gaze» плюс
-# «n», применённое шесть раз. Запись нашёл соседний агент, сверив базу по своему
-# признаку, — моя проверка искала повтор слова и знака и мимо неё прошла.
-# В немецком четыре одинаковые буквы подряд не встречаются: даже у «Schifffahrt» их три.
-# Три ОТДЕЛЬНЫХ правила, а не одно склеенное.
-#
-# Склеенное я уже написал и получил от Postgres «invalid backreference number»: в общей
-# регулярке номера скобок сдвигаются, и обратная ссылка начинает указывать не туда.
-# Три независимых правила считают свои скобки сами, и добавить четвёртое можно, ничего
-# не пересчитывая.
-BAD_PUNCT  = r"([.?!])\1{3,}[[:space:]]*$"                                  # «......», «??????»
-BAD_WORD   = r"(^|[[:space:]])([^[:space:]]+)([[:space:]]+\2){3,}[[:space:]]*$"  # «ist ist ist ist»
-BAD_LETTER = r"([[:alnum:]])\1{3,}[[:space:]]*$"                            # «Gazennnnnn»
-BAD_ALL = (BAD_PUNCT, BAD_WORD, BAD_LETTER)
+
+def _column_check(column: str, when: str | None) -> str:
+    """Условие «эта колонка не испорчена» — по всем видам хвоста сразу."""
+    clean = " AND ".join([f"{column} !~ %s"] * len(SQL_MANGLED))
+    body = f"({column} IS NULL OR ({clean}))"
+    return body if not when else f"(NOT ({when}) OR {body})"
 
 
 def main() -> int:
@@ -74,43 +85,50 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
 
+    dirty = 0
     with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            where = " OR ".join("display ~ %s OR lemma ~ %s" for _ in BAD_ALL)
-            cursor.execute(
-                f"SELECT id, display, lemma FROM bt_3_lex_units WHERE {where} ORDER BY id;",
-                tuple(x for rule in BAD_ALL for x in (rule, rule)),
-            )
-            offenders = cursor.fetchall()
+        for table, _name, columns in LOCKS:
+            for column, when in columns:
+                with conn.cursor() as cursor:
+                    where = " OR ".join([f"{column} ~ %s"] * len(SQL_MANGLED))
+                    if when:
+                        where = f"({when}) AND ({where})"
+                    cursor.execute(
+                        f"SELECT id, {column} FROM {table} WHERE {where} ORDER BY id LIMIT 20;",
+                        tuple(SQL_MANGLED),
+                    )
+                    rows = cursor.fetchall()
+                print(f"{'✅' if not rows else '❌'} {table}.{column}: {len(rows)}")
+                for row_id, value in rows:
+                    print(f"      {row_id} {value!r}")
+                dirty += len(rows)
 
-    print(f"\nЖИВЫХ СТРОК, КОТОРЫЕ НЕ ПРОШЛИ БЫ СТРАЖА: {len(offenders)}")
-    for unit_id, display, lemma in offenders[:30]:
-        print(f"   {unit_id:>6} display={display!r}")
-        if lemma != display:
-            print(f"          lemma  ={lemma!r}")
-    if offenders:
+    if dirty:
         print("\nСначала уборка: python3 scripts/dict_undo_repeated_tail_damage.py --apply")
-        print("Страж не ставится, пока в таблице есть строки, которые он завалит.\n")
+        print("Замок не ставится, пока есть строки, которые он завалит.\n")
         return 1
-
     if not args.apply:
-        print("\nТаблица чистая — страж встанет. Поставить: --apply\n")
+        print("\nЖивые данные чистые — замки встанут. Поставить: --apply\n")
         return 0
 
     with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            # Ограничение уже могло стоять со старым, более узким правилом —
-            # снимаем и ставим заново, иначе новый вид хвоста останется незакрытым.
-            cursor.execute(
-                f"ALTER TABLE bt_3_lex_units DROP CONSTRAINT IF EXISTS {CONSTRAINT};")
-            checks = " AND ".join(
-                "display !~ %s AND (lemma IS NULL OR lemma !~ %s)" for _ in BAD_ALL)
-            cursor.execute(
-                f"ALTER TABLE bt_3_lex_units ADD CONSTRAINT {CONSTRAINT} CHECK ({checks});",
-                tuple(x for rule in BAD_ALL for x in (rule, rule)),
-            )
-        conn.commit()
-    print(f"\nСТРАЖ ПОСТАВЛЕН: {CONSTRAINT}. Запись с размноженным хвостом теперь падает.\n")
+        for table, name, columns in LOCKS:
+            checks, params = [], []
+            for column, when in columns:
+                checks.append(_column_check(column, when))
+                params.extend(SQL_MANGLED)
+            with conn.cursor() as cursor:
+                # Замок мог стоять со старым, более узким правилом — снимаем и ставим
+                # заново, иначе новый вид хвоста останется незакрытым.
+                cursor.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {name};")
+                cursor.execute(
+                    f"ALTER TABLE {table} ADD CONSTRAINT {name} "
+                    f"CHECK ({' AND '.join(checks)});",
+                    tuple(params),
+                )
+            conn.commit()
+            print(f"🔒 {table}: {name}")
+    print("\nЗамки поставлены. Немецкий текст с размноженным хвостом больше не запишется.\n")
     return 0
 
 

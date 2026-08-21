@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -46,52 +45,17 @@ os.environ.setdefault("SKIP_BILLING_LEDGER_WRITES", "1")
 from backend.database import get_db_connection_context  # noqa: E402
 from backend.lex_units import normalize_query  # noqa: E402
 
-# Хвост, повторённый ЧЕТЫРЕ и более раз подряд: либо один и тот же знак препинания
-# («......», «??????»), либо один и тот же кусок через пробел («vorbei. vorbei. …»).
+# ПРИЗНАК ПОРЧИ И ВОССТАНОВЛЕНИЕ БЕРУТСЯ ИЗ ОБЩЕГО МОДУЛЯ, а не заводятся здесь.
 #
-# Почему четыре, а не три. Многоточие из трёх точек — законный заголовок, их в словаре
-# два десятка: «Es kommt darauf an...», «Wenn man bedenkt, dass...». Это шаблон фразы с
-# продолжением, а не порча. Наша порча шестикратная, поэтому порог стоит между ними.
-REPEATED_PUNCT = re.compile(r"([.?!])\1{3,}\s*$")
-REPEATED_CHUNK = re.compile(r"(?:^|\s)(\S+)(?:\s+\1){3,}\s*$")
-# Та же порча, но короче шага: хвост состоял из ОДНОЙ БУКВЫ. «sterile Gaze» → «Gazen»,
-# применённое шесть раз, дало «sterile Gazennnnnn». Первая версия скрипта искала повтор
-# слова и знака и эту запись пропустила — нашёл её соседний агент, сверив базу по своему
-# признаку. В немецком четыре одинаковые буквы подряд не встречаются (даже у
-# «Schifffahrt» их три), поэтому порог тот же.
-REPEATED_LETTER = re.compile(r"(\w)\1{3,}\s*$")
-
-
-def candidates(text: str) -> list[str]:
-    """Все варианты «оставить хвост k раз» — от одного повтора и далее.
-
-    Мы НЕ решаем сами, сколько повторов было в исходнике: один («vorbei.») или,
-    теоретически, два. Мы перечисляем варианты, а выбирает из них ключ поиска.
-    """
-    out = []
-    match = REPEATED_PUNCT.search(text)
-    if match:
-        head = text[: match.start()]
-        mark = match.group(1)
-        for keep in range(1, len(match.group(0).strip()) + 1):
-            out.append(head + mark * keep)
-        return out
-    match = REPEATED_LETTER.search(text)
-    if match:
-        letter = match.group(1)
-        head = text[: match.start()]
-        for keep in range(1, len(match.group(0).strip()) + 1):
-            out.append(head + letter * keep)
-        return out
-    match = REPEATED_CHUNK.search(text)
-    if match:
-        chunk = match.group(1)
-        head = text[: match.start()].rstrip()
-        total = len(re.findall(r"\S+", match.group(0)))
-        for keep in range(0, total):
-            tail = (" " + " ".join([chunk] * keep)) if keep else ""
-            out.append((head + tail).strip())
-    return out
+# Свой признак у себя в файле — это и есть то, из-за чего тема открывалась ЧЕТЫРЕ раза:
+# первый заход искал повтор слова и знака, второй заглянул в разбор, третий в карточки,
+# четвёртый нашёл повтор БУКВЫ, который первые три пропускали. Каждый раз казалось, что
+# порча выросла, а росло только правило. Нужен новый вид — добавляй в
+# backend/mangled_text.py, и его сразу увидят и уборка, и замок в базе, и тест.
+from backend.mangled_text import (                                # noqa: E402
+    is_mangled,
+    undo_candidates as candidates,
+)
 
 
 def main() -> int:
@@ -106,8 +70,7 @@ def main() -> int:
                 "SELECT id, display, lemma, lemma_key FROM bt_3_lex_units WHERE lang = 'de';")
             for unit_id, display, lemma, key in cursor.fetchall():
                 display = str(display or "")
-                if not (REPEATED_PUNCT.search(display) or REPEATED_CHUNK.search(display)
-                        or REPEATED_LETTER.search(display)):
+                if not is_mangled(display):
                     continue
                 # Свидетель — ключ поиска: его та транзакция не тронула.
                 good = next((c for c in candidates(display)
