@@ -1159,3 +1159,34 @@ def test_frontend_reads_the_date_from_the_deep_link():
     assert "worldNewsDate" in src
     assert "worldnews[_-]" in src, "разбор даты из start_param"
     assert "date: worldNewsDate" in src, "дата обязана уйти в запрос записи"
+
+
+# ── Карточка без слова и помета-жаргон (22.08.2026, первый взгляд на экран) ───
+
+def test_headword_and_save_button_are_never_scrolled_away():
+    """Владелец впервые открыл настоящую карточку и спросил: «а где здесь вообще слово?
+    и что система предлагает сохранять?» Я накануне сделал прокручиваемой ВСЮ карточку,
+    и на длинных карточках заголовок уезжал за верхний край — человек видел перевод без
+    слова. Слово и кнопка сохранения обязаны быть прибиты, прокручивается середина."""
+    css = open("frontend/src/App.css", encoding="utf-8").read()
+    jsx = open("frontend/src/App.jsx", encoding="utf-8").read()
+
+    assert ".worldnews-card-body {" in css, "нужна отдельная прокручиваемая середина"
+    assert "worldnews-card-body" in jsx, "середина обязана быть обёрнута в разметке"
+    card_block = css[css.index(".worldnews-card {"):css.index(".worldnews-card-de")]
+    assert "overflow-y: hidden" in card_block, (
+        "сама карточка прокручиваться не должна — иначе заголовок уезжает"
+    )
+
+
+def test_form_label_comes_from_a_closed_list_without_german_words():
+    """Помета формы пришла как «инфинитив с sich» — гибрид с немецким словом внутри.
+    Человек, который не знает, что такое sich, читает подпись и не понимает ничего.
+    Помета обязана быть простыми русскими словами из закрытого списка."""
+    from backend.daily_video_judge import _JUDGE_SYSTEM
+    from backend.world_news_generator import _LLM_SYSTEM
+
+    for prompt in (_LLM_SYSTEM, STANDUP_PROFILE.llm_system, _JUDGE_SYSTEM):
+        assert "ЗАКРЫТЫЙ СПИСОК" in prompt
+        assert "«инфинитив с" in prompt, "нужен пример запрещённой пометы"
+        assert "«словарная форма»" in prompt

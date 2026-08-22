@@ -811,6 +811,13 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
        MENSCHLICHER Sprache: «винительный падеж», «дательный падеж», «инфинитив»,
        «множественное число», «словарная форма». Du liest die Form im Transkript ab
        (Rektion des Verbs, Artikelform) — rate NICHT.
+       ЗАКРЫТЫЙ СПИСОК — пиши ТОЛЬКО одно из этих значений, дословно:
+         «словарная форма» · «устойчивое выражение» · «инфинитив» ·
+         «именительный падеж» · «винительный падеж» · «дательный падеж» ·
+         «родительный падеж» · «множественное число» · «повелительная форма».
+       НИЧЕГО СВОЕГО не сочиняй и НЕ ДОБАВЛЯЙ немецких слов в помету: «инфинитив с
+       sich» — так нельзя, человек не знает, что такое sich, и подпись ему ничего не
+       объясняет. Возвратный глагол в словарном виде — это просто «словарная форма».
      - "translation_ru": knappe russische Übersetzung in DERSELBEN grammatischen Form wie
        "de". Steht das Deutsche im Akkusativ, steht auch das Russische im Akkusativ.
      - "de_in_text": die Einheit GENAU SO, wie sie im Zitat steht — nur die Einheit

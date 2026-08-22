@@ -166,6 +166,13 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
        Form gelassen hast (z. B. "einen hohen genetischen Anteil" → «винительный падеж»).
        Bei Wendungen ohne Nomen (z. B. "scheiß drauf") ist es «устойчивое выражение», NICHT
        ein Kasus. Im Zweifel: «словарная форма». Rate NIEMALS.
+       ЗАКРЫТЫЙ СПИСОК — пиши ТОЛЬКО одно из этих значений, дословно:
+         «словарная форма» · «устойчивое выражение» · «инфинитив» ·
+         «именительный падеж» · «винительный падеж» · «дательный падеж» ·
+         «родительный падеж» · «множественное число» · «повелительная форма».
+       НИЧЕГО СВОЕГО не сочиняй и НЕ ДОБАВЛЯЙ немецких слов в помету: «инфинитив с
+       sich» — так нельзя, человек не знает, что такое sich, и подпись ему ничего не
+       объясняет. Возвратный глагол в словарном виде — это просто «словарная форма».
      - "translation_ru": die Bedeutung GENAU HIER, in diesem Auftritt — und in DERSELBEN
        grammatischen Form wie "de". Steht das Deutsche im Akkusativ, steht auch das
        Russische im Akkusativ. Eine Karte, die Akkusativ zeigt und Nominativ übersetzt,

@@ -76,6 +76,14 @@ Prüfe bei jeder Karte:
    dem Lernenden Grammatik zu erfinden. Einen Kasus nur, wenn die Wortgruppe absichtlich
    gebeugt stehen blieb. Bei Wendungen ohne Nomen: «устойчивое выражение».
 
+       ЗАКРЫТЫЙ СПИСОК — пиши ТОЛЬКО одно из этих значений, дословно:
+         «словарная форма» · «устойчивое выражение» · «инфинитив» ·
+         «именительный падеж» · «винительный падеж» · «дательный падеж» ·
+         «родительный падеж» · «множественное число» · «повелительная форма».
+       НИЧЕГО СВОЕГО не сочиняй и НЕ ДОБАВЛЯЙ немецких слов в помету: «инфинитив с
+       sich» — так нельзя, человек не знает, что такое sich, и подпись ему ничего не
+       объясняет. Возвратный глагол в словарном виде — это просто «словарная форма».
+
 4) "translation_ru" stimmt mit "de" überein — inhaltlich UND in der Form. Zeigt das
    Deutsche einen Akkusativ, steht auch das Russische im Akkusativ.
 

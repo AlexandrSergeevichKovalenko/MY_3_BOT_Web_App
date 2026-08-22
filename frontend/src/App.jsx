@@ -37967,6 +37967,12 @@ function AppInner() {
                                 )}
                               </div>
                             )}
+                            {/* Прокручивается ТОЛЬКО пояснительная середина. Заголовок и
+                                кнопка сохранения прибиты: 22.08.2026 я сделал прокручиваемой
+                                всю карточку, и на длинных карточках слово уезжало за верхний
+                                край — владелец открыл экран и спросил, где вообще слово и что
+                                ему предлагают сохранить. Слово — смысл карточки. */}
+                            <div className="worldnews-card-body">
                             {phrase.translation_ru && (
                               <div className="worldnews-card-ru">
                                 {phrase.quote_de && (
@@ -38011,6 +38017,7 @@ function AppInner() {
                                 <span className="worldnews-card-note-text">{phrase.usage_ru}</span>
                               </div>
                             )}
+                            </div>
                             <button
                               type="button"
                               className={`worldnews-card-save ${saved ? 'is-saved' : ''}`}

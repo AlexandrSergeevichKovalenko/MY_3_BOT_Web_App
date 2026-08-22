@@ -17881,13 +17881,12 @@ body.worldnews-active .webapp-topbar {
 .worldnews-card {
   min-width: 0;
   overflow-x: clip;
-  /* Прокручивается ИМЕННО карточка — то, что может быть сколь угодно длинным.
-     min-height: 0 обязателен: без него flex-элемент отказывается сжиматься ниже
-     содержимого, и никакая прокрутка не включится. */
+  /* Карточка САМА не прокручивается: иначе заголовок уезжает за верхний край, и
+     человек видит перевод без слова (случай владельца 22.08.2026). Прокручивается
+     только середина — см. .worldnews-card-body ниже. */
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow-y: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -17923,6 +17922,22 @@ body.worldnews-active .webapp-topbar {
   font-weight: 600;
   color: var(--wn-text-2);
 }
+/* Пояснительная середина: перевод, форма из текста, цитата, употребление. Только она
+   и прокручивается — заголовок сверху и кнопка сохранения снизу видны всегда.
+   min-height: 0 обязателен: без него блок отказывается сжиматься ниже содержимого,
+   и прокрутка не включается вовсе. */
+.worldnews-card-body {
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
 .worldnews-card-ru-label {
   font-weight: 800;
   color: #8fa0b8;
