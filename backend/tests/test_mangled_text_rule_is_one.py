@@ -96,6 +96,17 @@ class TheRuleItselfTests(unittest.TestCase):
         self.assertFalse(is_mangled("nein nein nein, das geht nicht"))
         self.assertFalse(is_mangled("ganz ganz ganz vorsichtig"))
 
+    def test_damage_glued_to_the_front_is_found_too(self):
+        """Хвост прилипает с той стороны, с какой новое отличается от старого.
+
+        Пять правил ловят прилипание справа, потому что 16 записей 16.08 легли так.
+        Шестое — слева: «Was» → «WWWWas». Цифры и даты им не задеваются, класс сужен
+        до букв (первая версия ловила «11118» и метки времени)."""
+        self.assertTrue(is_mangled("WWWWas schlägst du vor?"))
+        self.assertFalse(is_mangled("WWWas schlägst du vor?"))   # три — ниже порога
+        self.assertFalse(is_mangled("11118 карточек"))
+        self.assertFalse(is_mangled("2026-08-16T01:20:32.777708"))
+
     def test_damage_inside_a_breakdown_is_found_at_any_depth(self):
         card = {"word_de": "sterile Gazen",
                 "examples": [{"source": "Er erlag der Versuchung......"}],
@@ -155,7 +166,7 @@ class TheRuleLivesInOnePlaceTests(unittest.TestCase):
         # Два питоновских правила в SQL сознательно не идут: «порча в СЕРЕДИНЕ строки»
         # для буквы и для слова. В колонке лежит заголовок, а не предложение, и цена
         # ошибки там выше — CHECK роняет запись целиком.
-        self.assertEqual(len(SQL_MANGLED), len(MANGLED_ALL) - 2)
+        self.assertEqual(len(SQL_MANGLED), len(MANGLED_ALL) - 3)
 
 
 if __name__ == "__main__":
