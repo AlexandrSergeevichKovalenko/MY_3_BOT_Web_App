@@ -19717,6 +19717,40 @@ def _extract_structured_from_html(raw_html: str) -> tuple[str, list[dict]]:
     return "\n\n".join(parts), ranges
 
 
+def _split_long_paragraph_with_offsets(paragraph: str, target_chars: int) -> list[tuple[int, str]]:
+    """Разрезать длинный абзац по границам предложений, СОХРАНЯЯ смещение каждого куска.
+
+    Смещение нужно потому, что у страницы EPUB есть побочный список диапазонов
+    (где заголовок, где пункт списка) с координатами в тексте главы. Разрежешь абзац,
+    не сохранив смещения, — оформление съедет на соседние слова.
+    """
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for match in re.finditer(r"(?<=[.!?…])\s+", paragraph):
+        spans.append((start, match.start()))
+        start = match.end()
+    spans.append((start, len(paragraph)))
+
+    chunks: list[tuple[int, str]] = []
+    chunk_start: int | None = None
+    chunk_end = 0
+    for sentence_start, sentence_end in spans:
+        if sentence_end <= sentence_start:
+            continue
+        if chunk_start is None:
+            chunk_start, chunk_end = sentence_start, sentence_end
+            continue
+        if (sentence_end - chunk_start) > target_chars:
+            chunks.append((chunk_start, paragraph[chunk_start:chunk_end]))
+            chunk_start, chunk_end = sentence_start, sentence_end
+        else:
+            chunk_end = sentence_end
+    if chunk_start is not None:
+        chunks.append((chunk_start, paragraph[chunk_start:chunk_end]))
+    # Абзац без единой точки (сплошная стена текста) не режем по буквам — отдаём как есть.
+    return chunks or [(0, paragraph)]
+
+
 def _split_chapter_into_pages_structured(
     text: str, blocks: list[dict], chapter_title: str, page_offset: int
 ) -> list[dict]:
@@ -19757,6 +19791,37 @@ def _split_chapter_into_pages_structured(
     for idx, para in enumerate(paragraphs):
         sep = 2 if idx < len(paragraphs) - 1 else 0
         stripped = para.strip()
+        # Абзац намного длиннее страницы режем по предложениям — ровно так же, как это
+        # давно делает путь PDF/текста (_repaginate_reader_text_fixed). Без этого один
+        # абзац становился страницей любой длины: у Фрейда «Das Unbehagen in der Kultur»
+        # (22.08.2026) вышло 117 страниц вместо ~160, средняя страница 1506 знаков при
+        # заявленных 1100, самая длинная — 3733. Одна и та же книга в PDF и в EPUB
+        # давала разное число страниц, хотя единица страницы у нас общая.
+        if len(para) > _EPUB_PAGE_SPLIT_CHARS * 1.6:
+            if current_parts:
+                page_text = "\n\n".join(current_parts)
+                pages.append({
+                    "page_number": page_offset + len(pages) + 1,
+                    "text": page_text,
+                    "chapter_title": chapter_title,
+                    "blocks": slice_blocks(page_text, page_base),
+                })
+                current_parts = []
+                current_len = 0
+            for chunk_offset, chunk_text in _split_long_paragraph_with_offsets(
+                para, _EPUB_PAGE_SPLIT_CHARS
+            ):
+                if not chunk_text.strip():
+                    continue
+                pages.append({
+                    "page_number": page_offset + len(pages) + 1,
+                    "text": chunk_text.strip(),
+                    "chapter_title": chapter_title,
+                    "blocks": slice_blocks(chunk_text, cursor + chunk_offset),
+                })
+            cursor += len(para) + sep
+            page_base = cursor
+            continue
         if current_len > 0 and current_len + len(para) + 2 > _EPUB_PAGE_SPLIT_CHARS:
             page_text = "\n\n".join(current_parts)
             pages.append({
