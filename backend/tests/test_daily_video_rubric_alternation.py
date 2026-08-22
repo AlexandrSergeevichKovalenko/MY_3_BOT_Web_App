@@ -997,3 +997,30 @@ def test_judge_is_told_to_drop_one_off_jokes_and_english():
     assert "keine reparierte Karte" in _JUDGE_SYSTEM, (
         "нейтральное слово выбрасывается, а не раздевается ради пропуска"
     )
+
+
+def test_judge_stops_when_it_swings_back_and_forth(monkeypatch):
+    """22.08.2026 судья три прохода правил перевод «Only-Page-Account»: сначала на одно,
+    потом на другое, потом обратно на первое. Проверка не сходилась, хотя карточка не была
+    ни плохой, ни исправленной — спор шёл о вкусе. Заслон против ОДИНАКОВЫХ соседних
+    состояний этого не ловил, потому что состояния чередовались."""
+    import backend.daily_video_judge as J
+
+    # Единица обязана встречаться в цитате, иначе карточку выбросит заслон источника и
+    # проверять будет нечего.
+    cards = [_judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
+    step = {"n": 0}
+
+    def _fake(cards_in, *, profile, transcript):
+        step["n"] += 1
+        # Качели: перевод меняется на «Б», потом обратно на исходный «А».
+        new_translation = "вариант Б" if step["n"] == 1 else "перевод"
+        return [{"i": 0, "verdict": "fix", "reason": "перевод неточен",
+                 "card": dict(cards_in[0], translation_ru=new_translation)}]
+
+    monkeypatch.setattr(J, "_ask_judge", _fake)
+    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
+                                           transcript=_JUDGE_TRANSCRIPT)
+    assert report["passes"] <= 2, "качели обязаны обрываться, а не крутиться до предела"
+    assert report["frozen"] >= 1
+    assert len(out) == 1, "карточка остаётся, её просто перестают трогать"

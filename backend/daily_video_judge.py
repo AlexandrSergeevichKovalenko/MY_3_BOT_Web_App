@@ -184,8 +184,25 @@ def judge_and_repair_cards(cards: list, *, profile, transcript: str) -> tuple[li
     from backend.world_news_generator import _card_passes_source_guards
 
     passes = max(1, _env_int("DAILY_VIDEO_JUDGE_PASSES", 3))
-    report = {"passes": 0, "fixed": 0, "dropped": 0, "reasons": [], "clean": False}
+    report = {"passes": 0, "fixed": 0, "dropped": 0, "reasons": [], "clean": False,
+              "frozen": 0}
     current = list(cards)
+    # Все состояния, в которых карточка уже побывала. Нужно против КАЧЕЛЕЙ: 22.08.2026
+    # судья три прохода подряд правил перевод «Only-Page-Account» — сначала на одно,
+    # потом на другое, потом обратно на первое. Проверка не сходилась, хотя ни одна
+    # карточка не была ни плохой, ни исправленной. Заслон против одинаковых соседних
+    # состояний этого не ловил: состояния чередовались.
+    # Ключ — цитата плюс исходная единица: она переживает и правку, и выбывание соседей.
+    def _identity(card):
+        return (str(card.get("quote_de") or ""), str(card.get("de") or ""))
+
+    def _state(card):
+        return json.dumps(card, ensure_ascii=False, sort_keys=True)
+
+    seen_states: dict = {}
+    frozen: set = set()
+    for card in current:
+        seen_states.setdefault(_identity(card), {_state(card)})
 
     for attempt in range(passes):
         report["passes"] = attempt + 1
@@ -228,6 +245,16 @@ def judge_and_repair_cards(cards: list, *, profile, transcript: str) -> tuple[li
                     logger.info("судья: пустая правка на %r — считаем годной", card.get("de"))
                     next_cards.append(card)
                     continue
+                # КАЧЕЛИ: судья возвращает карточку в состояние, в котором она уже была.
+                # Значит спор идёт о вкусе, а не об ошибке, и продолжать бессмысленно —
+                # замораживаем карточку в текущем виде и больше её не трогаем.
+                ident = _identity(card)
+                if _state(merged) in seen_states.get(ident, set()) or ident in frozen:
+                    frozen.add(ident)
+                    report["frozen"] += 1
+                    logger.info("судья: качели на %r — замораживаю карточку", card.get("de"))
+                    next_cards.append(card)
+                    continue
                 # ГЛАВНЫЙ ЗАСЛОН: исправленная карточка проходит те же стражи, что и свежая.
                 # Если судья под видом правки что-то присочинил — цитату, которой нет в
                 # субтитрах, или форму, которой нет в цитате, — карточка выбрасывается.
@@ -242,6 +269,7 @@ def judge_and_repair_cards(cards: list, *, profile, transcript: str) -> tuple[li
                 touched += 1
                 report["fixed"] += 1
                 report["reasons"].append(f"поправлена «{card.get('de')}» → «{merged.get('de')}»: {reason or '—'}")
+                seen_states.setdefault(_identity(card), set()).add(_state(merged))
                 next_cards.append(merged)
                 continue
 
