@@ -778,6 +778,16 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
    Beispiel, wie es RICHTIG aussieht:
      de: "einen hohen genetischen Anteil" · form_ru: "винительный падеж"
      translation_ru: "высокУЮ генетическУЮ составляющУЮ"   ← nicht "высокая составляющая"
+
+   ENTSCHEIDENDES KRITERIUM — WIEDERVERWENDBARKEIT: Eine Einheit gehört nur dann auf eine
+   Karte, wenn der Lernende sie in einer ANDEREN Nachricht, in einem ANDEREN Gespräch
+   benutzen kann.
+     RICHTIG: "unter Druck stehen", "einen langen Atem brauchen", "in Klausur gehen",
+       "die Höchstarbeitszeit" — das begegnet ihm wieder.
+     FALSCH: "das Bundeskabinett geht in Klausur" (ein ganzer Satz),
+       "Investitionen auch hier stattfinden" (ein Satzfetzen),
+       "die Höchstarbeitszeit von 10 Stunden pro Tag" (ein Stück DIESER Meldung) —
+       das sagt er nie wieder. Aus einem Satz nimmst du die WENDUNG heraus, nicht den Satz.
    Jedes Element:
      - "de": das Wort/die Wendung, korrekt geschrieben, nach der Grundregel oben.
      - "form_ru": in welcher grammatischen Form "de" dasteht — kurz und auf RUSSISCH, in
@@ -1368,6 +1378,7 @@ def prepare_world_news(
         quiz=pack["quiz"],
         status=status,
         rubric=profile.key,
+        judge_report=judge_report,
     )
     # Вечный реестр показанного — единственная память рубрики о том, что уже было: ночная
     # чистка стирает саму строку дня. Пишется СРАЗУ после сохранения пакета, а не в момент

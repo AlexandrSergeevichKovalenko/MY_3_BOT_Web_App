@@ -901,3 +901,26 @@ def test_judge_verdict_fix_without_a_card_does_not_silently_pass(monkeypatch):
                                            transcript=_JUDGE_TRANSCRIPT)
     assert len(out) == 1, "карточка остаётся как была"
     assert report["fixed"] == 0
+
+
+# ── Работа судьи должна быть ВИДНА ────────────────────────────────────────────
+
+def test_news_prompt_also_demands_reusable_units():
+    """22.08.2026 в новостях вернулся дефект, который я чинил у стендапа: «das
+    Bundeskabinett geht in Klausur» — целое предложение вместо оборота. Причина: признак
+    воспроизводимости я положил ТОЛЬКО в задание стендапа и не проверил вторую рубрику,
+    при том что сам же требую чинить класс, а не случай."""
+    from backend.world_news_generator import _LLM_SYSTEM
+
+    assert "WIEDERVERWENDBARKEIT" in _LLM_SYSTEM
+    assert "das Bundeskabinett geht in Klausur" in _LLM_SYSTEM, "нужен пример негодной карточки"
+    assert "unter Druck stehen" in _LLM_SYSTEM, "нужен пример годного оборота"
+
+
+def test_judge_is_told_to_fix_errors_not_polish_style():
+    """Судья три прохода подряд не сходился и при этом не выбросил ни одной карточки —
+    он бесконечно «улучшал» вместо того, чтобы исправлять ошибки."""
+    from backend.daily_video_judge import _JUDGE_SYSTEM
+
+    assert "du verbesserst nicht den STIL" in _JUDGE_SYSTEM
+    assert "kommt nie zum Ende" in _JUDGE_SYSTEM

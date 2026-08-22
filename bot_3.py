@@ -11245,6 +11245,21 @@ def _world_news_preview_text(entry: dict, *, header: str) -> str:
             lines.append(f"   🎬 «{p['quote_de']}»")
     if len(phrases) > shown:
         lines.append(f"…ещё {len(phrases) - shown}")
+    # Работа судьи приёмки — прямо в превью. Механизм, чью работу нельзя посмотреть,
+    # нельзя и наладить: 22.08.2026 судья три прохода не сходился, а понять почему было
+    # не по чему — числа остались только в логах, куда они не доехали.
+    jr = entry.get("judge_report") or {}
+    if jr.get("failed"):
+        lines.append("\n⚠️ <b>Судья приёмки не отработал</b> — разбор НЕ проверен.")
+    elif jr:
+        mark = "✅" if jr.get("clean") else "⚠️"
+        lines.append(
+            f"\n{mark} <b>Судья:</b> проходов {jr.get('passes', 0)}, "
+            f"поправлено {jr.get('fixed', 0)}, выброшено {jr.get('dropped', 0)}"
+            + ("" if jr.get("clean") else " · чистого прогона не вышло")
+        )
+        for reason in (jr.get("reasons") or [])[:4]:
+            lines.append(f"   · {reason}")
     lines.append(f"\n🧩 <b>Тест ({len(quiz)} вопр.):</b>")
     for i, q in enumerate(quiz, 1):
         opts = q.get("options") or []

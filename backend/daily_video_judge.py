@@ -88,6 +88,15 @@ Antworte NUR mit validem JSON:
              "reason": "<kurz, auf Russisch, WAS falsch war>",
              "card": {{ …vollständige korrigierte Karte, nur bei verdict "fix"… }}}}]}}
 
+WICHTIGSTE REGEL FÜR DICH: Du korrigierst FEHLER, du verbesserst nicht den STIL.
+Ist eine Karte richtig, aber du hättest es anders formuliert — dann ist sie "ok". Nur
+das, was FALSCH ist, wird angefasst: falsche Schreibweise, falsche Grammatik, erfundener
+Kasus, Übersetzung passt nicht zur Form, Zitat belegt die Einheit nicht, Einheit ist keine
+Spracheinheit. Alles andere lässt du in Ruhe.
+Ohne diese Regel findest du bei jedem Durchgang wieder etwas «Besseres», und die Prüfung
+kommt nie zum Ende — genau das ist am 22.08.2026 passiert: drei Durchgänge, kein einziger
+sauber, keine einzige Karte wirklich schlecht.
+
 Bei "ok" lässt du "card" weg. Bei "fix" gibst du die GANZE Karte mit allen Feldern zurück,
 auch den unveränderten. Ändere NUR das, was falsch ist — erfinde keine neuen Beispiele,
 keine neuen Zitate, keine neuen Bedeutungen."""

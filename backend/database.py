@@ -10980,6 +10980,15 @@ def ensure_webapp_tables() -> None:
                 "ALTER TABLE bt_3_world_news_daily "
                 "ADD COLUMN IF NOT EXISTS rubric TEXT NOT NULL DEFAULT 'news';"
             )
+            # Отчёт судьи приёмки: сколько проходов, что поправлено, что выброшено и
+            # почему. Хранится вместе с выпуском, чтобы владелец видел работу проверки
+            # прямо в превью. Механизм, чью работу нельзя посмотреть, нельзя и наладить —
+            # это выяснилось 22.08.2026, когда судья три прохода не сходился, а понять
+            # почему было не по чему.
+            cursor.execute(
+                "ALTER TABLE bt_3_world_news_daily "
+                "ADD COLUMN IF NOT EXISTS judge_report JSONB NOT NULL DEFAULT '{}'::jsonb;"
+            )
             # Вечный реестр показанного. Ночная чистка (purge_world_news_before) стирает
             # вчерашние строки вместе с субтитрами, поэтому по самой bt_3_world_news_daily
             # «что уже показывали» узнать нельзя дальше сегодня-завтра. Новостям это сходило
@@ -27371,7 +27380,7 @@ def _world_news_row_to_dict(row) -> dict | None:
         return None
     (news_date, video_id, video_url, video_title, channel_title, duration_seconds,
      transcript_lang, summary_ru, phrases, quiz, hero_object_key, status,
-     is_pinned, created_at, updated_at, rubric) = row
+     is_pinned, created_at, updated_at, rubric, judge_report) = row
     if isinstance(phrases, str):
         try:
             phrases = json.loads(phrases)
@@ -27402,13 +27411,15 @@ def _world_news_row_to_dict(row) -> dict | None:
         # вычисляется заново по дате: если владелец переформировал день вручную, важно
         # показать то, что вправду лежит в базе.
         "rubric": str(rubric or "news").strip(),
+        "judge_report": (json.loads(judge_report) if isinstance(judge_report, str)
+                         else (judge_report or {})),
     }
 
 
 _WORLD_NEWS_COLS = (
     "news_date, video_id, video_url, video_title, channel_title, duration_seconds, "
     "transcript_lang, summary_ru, phrases, quiz, hero_object_key, status, "
-    "is_pinned, created_at, updated_at, rubric"
+    "is_pinned, created_at, updated_at, rubric, judge_report"
 )
 
 
@@ -27739,6 +27750,7 @@ def upsert_world_news_daily(
     status: str = "draft",
     is_pinned: bool = False,
     rubric: str = "news",
+    judge_report: dict | None = None,
 ) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -27747,11 +27759,13 @@ def upsert_world_news_daily(
                 INSERT INTO bt_3_world_news_daily
                     (news_date, video_id, video_url, video_title, channel_title,
                      duration_seconds, transcript_lang, summary_ru, phrases, quiz,
-                     hero_object_key, status, is_pinned, rubric, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                     hero_object_key, status, is_pinned, rubric, judge_report,
+                     created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                 ON CONFLICT (news_date) DO UPDATE
                 SET video_id = EXCLUDED.video_id,
                     rubric = EXCLUDED.rubric,
+                    judge_report = EXCLUDED.judge_report,
                     video_url = EXCLUDED.video_url,
                     video_title = EXCLUDED.video_title,
                     channel_title = EXCLUDED.channel_title,
@@ -27771,6 +27785,7 @@ def upsert_world_news_daily(
                     json.dumps(phrases or [], ensure_ascii=False),
                     json.dumps(quiz or [], ensure_ascii=False),
                     hero_object_key, status, is_pinned, rubric,
+                    json.dumps(judge_report or {}, ensure_ascii=False),
                 ),
             )
 
