@@ -123,3 +123,50 @@ class TestTheLiveAnswerToo:
         })
         assert item.get("article") == "die"
         assert item.get("part_of_speech") == "noun"
+
+
+class TestTheServePointIsTheLastWord:
+    """Правило стоит там, где карточка УХОДИТ человеку, — это третий заход.
+
+    Сначала я закрыл его на пути сохранения, потом в общем сборщике ответа. Оба раза
+    владелец видел «die Aus Gag» на экране: эндпоинт быстрого словаря до сборщика не
+    доходит — он отдаёт карточку из кеша, из пула или с обратной стороны, а сборщик
+    зовётся только на четвёртом пути, при свежем походе к модели.
+
+    `_serve_dictionary_item` — единственная общая точка на все семь путей. И правило
+    обязано стоять ДО построения таблиц: иначе склонение успевает родиться на
+    несуществующем слове.
+    """
+
+    def _serve(self, item):
+        import backend.backend_server as server
+        return server._serve_dictionary_item(dict(item))
+
+    def test_a_phrase_from_the_pool_loses_the_article(self):
+        out = self._serve({
+            "word_de": "Aus Gag", "source_text": "Aus Gag", "article": "die",
+            "part_of_speech": "noun", "entry_kind": "word",
+            "language_pair": {"source_lang": "de", "target_lang": "ru"},
+            "translations": [{"value": "шутка", "is_primary": True}],
+        })
+        assert out.get("article") == ""
+        assert out.get("part_of_speech") == "phrase"
+
+    def test_no_declension_table_is_built_for_a_phrase(self):
+        out = self._serve({
+            "word_de": "Aus Gag", "source_text": "Aus Gag", "article": "die",
+            "part_of_speech": "noun", "entry_kind": "word",
+            "forms": {"plural": "Aus Gags"},
+            "language_pair": {"source_lang": "de", "target_lang": "ru"},
+        })
+        assert not (out.get("grammar_tables") or {}).get("declension"), \
+            "таблица склонения построена на несуществующем слове"
+
+    def test_a_real_noun_keeps_its_article_on_the_way_out(self):
+        out = self._serve({
+            "word_de": "Brücke", "source_text": "Brücke", "article": "die",
+            "part_of_speech": "noun", "entry_kind": "word",
+            "language_pair": {"source_lang": "de", "target_lang": "ru"},
+        })
+        assert out.get("article") == "die"
+        assert out.get("part_of_speech") == "noun"
