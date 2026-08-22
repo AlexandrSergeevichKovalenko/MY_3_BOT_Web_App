@@ -705,3 +705,38 @@ def test_prompt_forbids_quizzing_what_the_cards_explain():
     """Четвёртый вопрос спрашивал значение «Full Circle Moment», уже разобранного карточкой
     выше. Человек видит ответ до вопроса — тест перестаёт что-либо проверять."""
     assert "FRAGE NICHT NACH DEM, WAS DIE KARTEN SCHON ERKLÄREN" in STANDUP_PROFILE.llm_system
+
+
+# ── Дефекты третьего живого выпуска (22.08.2026) ──────────────────────────────
+
+def test_quiz_may_not_repeat_a_card_unit():
+    """Карточка объясняла «Digger», а второй вопрос теста спрашивал, что это слово значит.
+    Человек прочитал ответ строкой выше — вопрос перестал что-либо проверять. Запрет стоял
+    в задании модели и НЕ сработал, поэтому ловим механически."""
+    # Цитата обязана содержать саму единицу — иначе её выбросит страж цитаты, и до
+    # проверки теста дело не дойдёт. На этом я и попался, когда писал этот тест.
+    transcript = _TRANSCRIPT + " Okay Digger, was denn jetzt?"
+    phrases = _good_phrases(4) + [_phrase("Digger", "Okay Digger, was denn jetzt?")]
+    pack = _pack(phrases)
+    pack["quiz"][1]["question_de"] = "Welche Rolle spielt das Wort 'Digger' im Auftritt?"
+    with pytest.raises(ValueError) as err:
+        _validate_and_normalize_pack(pack, STANDUP_PROFILE, transcript)
+    assert "repeats a card unit" in str(err.value)
+
+
+def test_quiz_about_the_show_itself_is_fine():
+    """Ловушка не должна быть жадной: вопрос о содержании выступления обязан проходить,
+    иначе модель будет переспрашиваться вхолостую до отказа."""
+    out = _validate_and_normalize_pack(_pack(_good_phrases(5)), STANDUP_PROFILE, _TRANSCRIPT)
+    assert len(out["quiz"]) == 4
+
+
+def test_prompt_demands_proper_german_headword_spelling():
+    """«herzinfarkt bekommen» со строчной буквы: в немецком существительные пишутся с
+    прописной, и человек перепишет ошибку с карточки. Плюс терялось «sich» у возвратных
+    оборотов, а «Steckst nicht drin» стояло во втором лице вместо безличной формы."""
+    prompt = STANDUP_PROFILE.llm_system
+    assert "RECHTSCHREIBUNG DER KARTE" in prompt
+    assert "herzinfarkt bekommen" in prompt, "нужен пример НЕПРАВИЛЬНОГО написания"
+    assert "sich ins eigene Bein" in prompt
+    assert "UNPERSÖNLICH" in prompt

@@ -126,6 +126,14 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
        Die Faustregel: Was der Lernende später SAGEN können soll, steht hier — in genau
        der Form, in der man es sagt.
 
+       RECHTSCHREIBUNG DER KARTE: deutsche SUBSTANTIVE werden GROSS geschrieben, auch
+       mitten in einer Wendung. Richtig: "einen Herzinfarkt bekommen". FALSCH:
+       "herzinfarkt bekommen" — der Lernende schreibt von der Karte ab.
+       Gehört ein Reflexivpronomen zur Wendung, steht es MIT drauf: "sich ins eigene Bein
+       schießen", nicht "ins eigene Bein schießen".
+       Und die Einheit steht UNPERSÖNLICH, nicht in der 2. Person aus dem Video: aus
+       «Steckst nicht drin» wird "da steckt man nicht drin".
+
        ENTSCHEIDENDES KRITERIUM — WIEDERVERWENDBARKEIT: Eine Einheit gehört nur dann auf
        eine Karte, wenn der Lernende sie in einer ANDEREN Situation benutzen kann, nicht
        nur in dieser.

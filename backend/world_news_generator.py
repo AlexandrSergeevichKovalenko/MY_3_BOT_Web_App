@@ -1098,6 +1098,23 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
     if len(quiz) != 4:
         raise ValueError("quiz must have exactly 4 questions")
 
+    # Тест не спрашивает то, что уже разобрано карточкой. Повод (22.08.2026): карточка
+    # объясняла «Digger», а второй вопрос теста спрашивал, что это слово значит — ответ
+    # человек прочитал строкой выше, и вопрос перестал что-либо проверять.
+    # Запрет стоял в задании модели и НЕ сработал, поэтому ловим механически: если
+    # формулировка вопроса содержит саму единицу с карточки, пакет бракуется и модель
+    # переспрашивается. Латать вопрос своими руками нельзя — придумывать за неё нечего.
+    if needs_quote:
+        card_keys = {(_quote_fingerprint(p["de"]), p["de"]) for p in phrases
+                     if len(_quote_fingerprint(p["de"])) >= 4}
+        for q in quiz:
+            q_fp = _quote_fingerprint(q["question_de"])
+            for key, original in card_keys:
+                if key in q_fp:
+                    raise ValueError(
+                        f"quiz question repeats a card unit: {original!r}"
+                    )
+
     return {"summary_ru": summary_ru, "phrases": phrases, "quiz": quiz}
 
 

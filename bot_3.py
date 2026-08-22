@@ -12049,9 +12049,18 @@ async def admin_world_news_tomorrow_command(update: Update, context: CallbackCon
         return
     manual_url = (context.args[0].strip() if context.args else None)
     target = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    # Команда называет рубрику ДО работы. Она делает ЗАВТРАШНИЙ день, а какая это рубрика —
+    # зависит от того, в какой день её нажали: вечером 21-го «завтра» это стендап, утром
+    # 22-го то же слово означает уже новости. Владелец 22.08.2026 нажал её утром, ожидая
+    # стендап, и получил новости — команда отработала верно, но об этом было не догадаться.
+    from backend.daily_video_rubrics import RUBRIC_STANDUP, get_profile, rubric_for_date
+    target_rubric = rubric_for_date(target)
+    target_title = get_profile(target_rubric).title_ru
     status = await message.reply_text(
-        f"📰 Переформировываю новость на завтра ({target})… "
-        "(ищу свежий ролик с субтитрами и делаю разбор)"
+        f"{'🎤' if target_rubric == RUBRIC_STANDUP else '📰'} Делаю <b>{target}</b> — "
+        f"по расписанию это <b>{target_title}</b>.\n"
+        "Ищу ролик с субтитрами и делаю разбор…",
+        parse_mode="HTML",
     )
     # Exclude the currently-selected tomorrow video so an auto-pick genuinely re-rolls.
     exclude: set[str] = set()
