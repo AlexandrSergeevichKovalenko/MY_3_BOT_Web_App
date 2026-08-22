@@ -104,6 +104,9 @@ Prüfe bei jeder Karte:
        die Karte; wenn nicht, wirf sie raus;
      • Karten, deren Name durch die Spracherkennung verstümmelt ist («Bafer» statt BAFA):
        schreib den Namen richtig, wenn du sicher bist, sonst raus;
+     • Einheiten, die auf einem Artikel oder einer Konjunktion ENDEN («die Koalition
+       auffordern, die») — mitten im Satz abgeschnitten; korrigiere auf den ganzen
+       Ausdruck oder wirf raus;
      • NEUTRALE Alltagswörter, die jeder kennt ("Applaus"). Solche Karten wirfst du RAUS —
        du entfernst NICHT ihre Stilmarkierung, um sie durchzulassen. Eine Karte ohne
        Markierung ist keine reparierte Karte, sondern eine kaputte.

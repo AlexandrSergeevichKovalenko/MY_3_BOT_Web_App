@@ -17906,7 +17906,13 @@ body.worldnews-active .webapp-topbar {
 .worldnews-card-de {
   width: 100%;
   min-width: 0;
-  overflow: hidden;
+  /* НЕ СЖИМАЕТСЯ. В колонке flex-элемент по умолчанию ужимается ниже своего
+     содержимого, а вместе с обрезкой по краю это срезало вторую строку заголовка:
+     «sich ein Bild von der / Lage machen» теряло вторую половину (22.08.2026).
+     Заголовок — смысл карточки, он занимает столько, сколько ему нужно, и режем мы
+     теперь только по горизонтали, где длинное слово и так подгоняется по кеглю. */
+  flex: 0 0 auto;
+  overflow-x: hidden;
   font-family: Georgia, "Times New Roman", "Noto Serif", serif;
   font-size: 30px;
   font-weight: 700;

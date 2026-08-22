@@ -37965,14 +37965,16 @@ function AppInner() {
                                 в которой стоит единица. Обороты к словарной форме мы не
                                 приводим — модель переписала бы живую речь в неверную, —
                                 поэтому форму не прячем, а называем. */}
-                            {(phrase.register_ru || phrase.form_ru) && (
+                            {/* Только помета РЕГИСТРА: она отвечает на вопрос «можно ли так
+                                говорить и при ком» — ради этого её и завели.
+                                Помета ФОРМЫ («винительный падеж», «инфинитив») с экрана
+                                убрана по решению владельца 22.08.2026: человеку она не
+                                нужна, он видит само слово и его вид. В превью владельцу
+                                она осталась — там по ней видно, не разошёлся ли перевод
+                                с показанной формой. */}
+                            {phrase.register_ru && (
                               <div className="worldnews-card-marks">
-                                {phrase.register_ru && (
-                                  <span className="worldnews-card-register">{phrase.register_ru}</span>
-                                )}
-                                {phrase.form_ru && (
-                                  <span className="worldnews-card-form">{phrase.form_ru}</span>
-                                )}
+                                <span className="worldnews-card-register">{phrase.register_ru}</span>
                               </div>
                             )}
                             {/* Прокручивается ТОЛЬКО пояснительная середина. Заголовок и

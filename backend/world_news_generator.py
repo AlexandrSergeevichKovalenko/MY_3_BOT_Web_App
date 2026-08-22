@@ -807,6 +807,10 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
        das sagt er nie wieder. Aus einem Satz nimmst du die WENDUNG heraus, nicht den Satz.
    Jedes Element:
      - "de": das Wort/die Wendung, korrekt geschrieben, nach der Grundregel oben.
+       NIEMALS mitten im Satz abschneiden: eine Einheit darf nicht auf einem Artikel oder
+       einer Konjunktion enden. «die Koalition auffordern, die» ist kein Ausdruck, sondern
+       ein abgerissenes Stück Satz — richtig wäre "die Koalition auffordern". Endet deine
+       Einheit auf der/die/das/und/oder/dass, hast du zu weit geschnitten.
      - "form_ru": in welcher grammatischen Form "de" dasteht — kurz und auf RUSSISCH, in
        MENSCHLICHER Sprache: «винительный падеж», «дательный падеж», «инфинитив»,
        «множественное число», «словарная форма». Du liest die Form im Transkript ab
@@ -1004,6 +1008,28 @@ def _quote_shows_the_unit(de: str, quote: str) -> bool:
     return any(root in fp for root in roots)
 
 
+# Слова, на которые единица кончаться НЕ МОЖЕТ: артикли и союзы. Кончается — значит
+# фразу отрезали посреди предложения и оставили висящий хвост: «die Koalition auffordern,
+# die» (случай владельца 22.08.2026 — на экране это выглядит как поломка, и это она и есть).
+#
+# Список ЗАКРЫТЫЙ и состоит из служебных слов — никакого разбора грамматики здесь нет, а
+# значит нет и догадок. Глаголы в конце не запрещены: «nichts am Hut haben» законно.
+_DANGLING_TAIL_WORDS = {
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer",
+    "und", "oder", "aber", "dass", "weil", "wenn", "als", "sondern", "damit",
+}
+
+
+def _headword_ends_dangling(de: str) -> bool:
+    text = str(de or "").strip()
+    if not text:
+        return False
+    if text.endswith(","):
+        return True
+    words = re.findall(r"[A-Za-zÄÖÜäöüß]+", text)
+    return bool(words) and words[-1].lower() in _DANGLING_TAIL_WORDS
+
+
 def _card_passes_source_guards(card: dict, transcript_text: str, profile=None) -> tuple[bool, str]:
     """Три сверки карточки с источником. Возвращает (прошла, почему нет).
 
@@ -1017,6 +1043,10 @@ def _card_passes_source_guards(card: dict, transcript_text: str, profile=None) -
     de_in_text = str(card.get("de_in_text") or "").strip()
     if not de or not quote_de:
         return False, "нет единицы или цитаты"
+    if _headword_ends_dangling(de):
+        # Обрезать хвост своими руками нельзя: мы не знаем, где вправду кончается оборот.
+        # Карточка выбрасывается, и модель на повторе соберёт её целиком.
+        return False, "единица кончается висящим артиклем или союзом"
     if _quote_fingerprint(quote_de) not in _quote_fingerprint(transcript_text):
         return False, "цитаты нет в субтитрах"
     if not _quote_shows_the_unit(de, quote_de):

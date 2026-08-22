@@ -153,6 +153,10 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
        auf die Karte, aus «Wir rasten aus» gehört "ausrasten" darauf.
        Und: ERFUNDENE Wortspiele des Moderators («Niceinger Diceinger») sind KEINE festen
        Wendungen. Nimm sie NICHT — sonst glaubt der Lernende, so spreche man Deutsch.
+       NIEMALS mitten im Satz abschneiden: eine Einheit darf nicht auf einem Artikel oder
+       einer Konjunktion enden. «die Koalition auffordern, die» ist kein Ausdruck, sondern
+       ein abgerissenes Stück Satz — richtig wäre "die Koalition auffordern". Endet deine
+       Einheit auf der/die/das/und/oder/dass, hast du zu weit geschnitten.
      - "register_ru": Stilmarkierung auf RUSSISCH, kurz: «разговорное», «сленг»,
        «грубое», «молодёжное», «ироничное», «региональное (баварское)», «нейтральное».
        Wenn es derb/vulgär ist, sag das offen — der Lernende muss wissen, wo er das NICHT

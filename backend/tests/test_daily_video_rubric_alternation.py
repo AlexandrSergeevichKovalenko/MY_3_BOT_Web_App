@@ -1190,3 +1190,53 @@ def test_form_label_comes_from_a_closed_list_without_german_words():
         assert "ЗАКРЫТЫЙ СПИСОК" in prompt
         assert "«инфинитив с" in prompt, "нужен пример запрещённой пометы"
         assert "«словарная форма»" in prompt
+
+
+# ── Обрезка заголовка и огрызок фразы (22.08.2026, экран владельца) ───────────
+
+def test_headword_ending_on_an_article_is_a_torn_off_fragment():
+    """На экране стояло «die Koalition auffordern, die» — фразу отрезали посреди
+    предложения и оставили висящий артикль. Это не выражение, а огрызок.
+
+    Ловится механически: список служебных слов ЗАКРЫТЫЙ, никакого разбора грамматики —
+    а значит и никаких догадок. Глаголы в конце законны: «nichts am Hut haben»."""
+    from backend.world_news_generator import _headword_ends_dangling
+
+    assert _headword_ends_dangling("die Koalition auffordern, die")
+    assert _headword_ends_dangling("die Koalition auffordern und")
+    assert _headword_ends_dangling("das Muster solcher Depots,")
+    assert not _headword_ends_dangling("nichts am Hut haben")
+    assert not _headword_ends_dangling("sich ein Bild von der Lage machen")
+    assert not _headword_ends_dangling("Bock haben (auf etwas)")
+
+
+def test_a_torn_off_headword_never_reaches_the_screen():
+    """Обрезать хвост своими руками нельзя — мы не знаем, где вправду кончается оборот.
+    Карточка выбрасывается, и на повторе модель соберёт её целиком."""
+    from backend.world_news_generator import _card_passes_source_guards
+
+    ok, why = _card_passes_source_guards(
+        {"de": "die Koalition auffordern, die", "quote_de": "ich hab null Bock auf Montag",
+         "de_in_text": "null Bock"}, _TRANSCRIPT)
+    assert ok is False
+    assert "висящим артиклем" in why
+
+
+def test_form_label_is_gone_from_the_user_card_but_stays_in_the_preview():
+    """Владелец: «зачем эта надпись про падеж? пользователю это не нужно». С экрана убрана,
+    в превью осталась — там по ней видно, не разошёлся ли перевод с показанной формой."""
+    jsx = open("frontend/src/App.jsx", encoding="utf-8").read()
+    bot = open("bot_3.py", encoding="utf-8").read()
+
+    assert "worldnews-card-form" not in jsx, "помета формы не должна рисоваться человеку"
+    assert 'phrase.register_ru' in jsx, "помета регистра остаётся: она про уместность речи"
+    assert '"register_ru", "form_ru"' in bot, "в превью владельцу обе пометы остаются"
+
+
+def test_headword_does_not_shrink_and_get_clipped():
+    """Вторая строка заголовка срезалась: в колонке flex-элемент по умолчанию ужимается
+    ниже содержимого, а вместе с обрезкой по краю это отрезало половину слова."""
+    css = open("frontend/src/App.css", encoding="utf-8").read()
+    block = css[css.index(".worldnews-card-de {"):css.index(".worldnews-art ")]
+    assert "flex: 0 0 auto" in block, "заголовок не имеет права сжиматься"
+    assert "overflow: hidden" not in block, "обрезка по вертикали срезает вторую строку"
