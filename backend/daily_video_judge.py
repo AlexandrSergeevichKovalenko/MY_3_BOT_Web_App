@@ -66,7 +66,12 @@ Prüfe bei jeder Karte:
    stehende Replik ("Steckst nicht drin") gehört unpersönlich formuliert
    ("da steckt man nicht drin").
 
-3) "form_ru" EHRLICH. Steht in "de" eine Nachschlageform, ist die Antwort «словарная
+3) "form_ru" EHRLICH — und AUF RUSSISCH. Deine Anweisungen sind deutsch, aber dieses
+   Feld liest ein russischsprachiger Lernender: «винительный падеж», «дательный падеж»,
+   «словарная форма», «устойчивое выражение», «инфинитив», «множественное число».
+   NIEMALS «Akkusativ», «Dativ Plural» oder andere deutsche Grammatikbegriffe — der
+   Nutzer versteht sie nicht. Dasselbe gilt für "register_ru", "translation_ru",
+   "literal_ru", "usage_ru", "quote_ru": alles auf Russisch. Steht in "de" eine Nachschlageform, ist die Antwort «словарная
    форма» — ein Nomen in der Nennform HAT KEINEN KASUS, und einen dazuzuschreiben heisst,
    dem Lernenden Grammatik zu erfinden. Einen Kasus nur, wenn die Wortgruppe absichtlich
    gebeugt stehen blieb. Bei Wendungen ohne Nomen: «устойчивое выражение».

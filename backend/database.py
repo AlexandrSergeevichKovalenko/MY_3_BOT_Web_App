@@ -27671,6 +27671,30 @@ def mark_standup_shelf_used(video_id: str, used_on) -> None:
             )
 
 
+def release_standup_shelf_video(video_id: str) -> bool:
+    """Вернуть ролик на полку: он был выбран, но людям НЕ ушёл.
+
+    Повод 22.08.2026: полка опустела за день. Каждое переформирование дня помечало
+    выбранный ролик израсходованным навсегда — даже когда владелец тут же пересобирал
+    выпуск и ролик никто не видел. Пять выступлений сгорели впустую за один вечер.
+
+    Тратится ролик тогда, когда он ДОШЁЛ ДО ЧЕЛОВЕКА, а не когда его подставили в
+    черновик. Возвращает True, если ролик вправду вернулся на полку.
+    """
+    vid = str(video_id or "").strip()
+    if not vid:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_standup_shelf SET used_on = NULL WHERE video_id = %s;", (vid,)
+            )
+            back = bool(cursor.rowcount)
+            # Из вечного реестра показанного он тоже уходит: показан он не был.
+            cursor.execute("DELETE FROM bt_3_daily_video_shown WHERE video_id = %s;", (vid,))
+            return back
+
+
 def standup_shelf_counts() -> dict:
     """Сколько на полке всего, сколько непоказанных и сколько из них с ручными субтитрами.
     Это и есть материал еженедельного отчёта — считается по нашей базе, без YouTube."""

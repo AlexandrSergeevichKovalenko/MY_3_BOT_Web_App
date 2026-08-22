@@ -1240,6 +1240,15 @@ def prepare_world_news(
     from backend.daily_video_rubrics import get_profile, rubric_for_date
 
     date_str = (news_date or _today_str()).strip()
+    # Что уже стояло на этот день. Если сейчас подставим ДРУГОЙ ролик, а прежний людям не
+    # уходил, — он возвращается на полку: тратится ролик тогда, когда он дошёл до человека,
+    # а не когда его подставили в черновик (повод — полка, опустевшая за вечер 22.08.2026).
+    try:
+        _previous = get_world_news_for_date(date_str)
+    except Exception:
+        logger.warning("daily_video: не удалось прочитать прежнюю запись на %s", date_str,
+                       exc_info=True)
+        _previous = None
     rubric_key = (rubric or "").strip().lower() or rubric_for_date(date_str)
     profile = get_profile(rubric_key)
     base_exclude = {str(v).strip() for v in (exclude_video_ids or set()) if str(v).strip()}
@@ -1424,6 +1433,18 @@ def prepare_world_news(
     if diag.get("source") == "shelf":
         from backend.database import mark_standup_shelf_used
         mark_standup_shelf_used(picked["video_id"], date_str)
+    # Прежний ролик этого дня возвращается на полку, если он был другим и НЕ уходил людям.
+    if (_previous and _previous.get("video_id")
+            and _previous["video_id"] != picked["video_id"]
+            and str(_previous.get("status") or "") != "sent"):
+        try:
+            from backend.database import release_standup_shelf_video
+            if release_standup_shelf_video(_previous["video_id"]):
+                logger.info("daily_video[%s]: ролик %s возвращён на полку — людям он не уходил",
+                            profile.key, _previous["video_id"])
+        except Exception:
+            logger.warning("daily_video: не удалось вернуть ролик %s на полку",
+                           _previous.get("video_id"), exc_info=True)
     # Снимок пула — из того, что обход и так увидел. Отчёт владельцу собирается потом из
     # него и из реестра показанного, не тратя ни единицы квоты. При ручной выдаче по ссылке
     # обхода не было, и снимка нет — тогда прежний остаётся нетронутым, а не обнуляется.

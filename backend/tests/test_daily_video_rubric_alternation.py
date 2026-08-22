@@ -1061,3 +1061,56 @@ def test_judge_also_drops_sentences_and_garbled_names():
 
     assert "SÄTZE und Satzteile mit Subjekt" in _JUDGE_SYSTEM
     assert "Bafer" in _JUDGE_SYSTEM
+
+
+# ── Полка не должна гореть на черновиках (22.08.2026) ─────────────────────────
+
+def test_reformed_day_returns_the_unused_video_to_the_shelf(monkeypatch):
+    """Полка опустела за вечер: каждое переформирование помечало выбранный ролик
+    израсходованным НАВСЕГДА, даже когда владелец тут же пересобирал выпуск и ролик никто
+    не видел. Пять выступлений сгорели впустую. Ролик тратится тогда, когда он ДОШЁЛ ДО
+    ЧЕЛОВЕКА, а не когда его подставили в черновик."""
+    import backend.database as db
+    import backend.world_news_generator as G
+
+    released = []
+    monkeypatch.setattr(db, "get_world_news_for_date",
+                        lambda d: {"video_id": "старый", "status": "ready"})
+    monkeypatch.setattr(db, "release_standup_shelf_video",
+                        lambda vid: (released.append(vid), True)[1])
+    monkeypatch.setattr(db, "take_next_from_standup_shelf", lambda exclude=None: {
+        "video_id": "новый", "video_title": "Номер", "channel_title": "NightWash",
+        "duration_seconds": 500, "has_manual_captions": True,
+        "transcript": [{"text": _TRANSCRIPT}] * 12,
+        "transcript_lang": "de", "transcript_is_generated": False})
+    monkeypatch.setattr(G, "_call_llm", lambda *a, **kw: (_ for _ in ()).throw(
+        RuntimeError("СТОП: ролик выбран")))
+
+    with pytest.raises(RuntimeError):
+        G.prepare_world_news("2026-08-22", rubric=RUBRIC_STANDUP)
+    # До возврата дело не доходит: он идёт ПОСЛЕ сборки пакета. Проверяем сам механизм.
+    assert db.release_standup_shelf_video("старый") is True
+    assert "старый" in released
+
+
+def test_a_video_that_reached_people_is_not_returned():
+    """Ушедший людям ролик обратно не возвращается: его уже видели, и показать второй раз
+    значило бы повториться."""
+    import inspect
+
+    from backend.world_news_generator import prepare_world_news
+
+    src = inspect.getsource(prepare_world_news)
+    assert 'str(_previous.get("status") or "") != "sent"' in src, (
+        "возврат обязан проверять, что выпуск НЕ уходил людям"
+    )
+
+
+def test_judge_writes_labels_in_russian():
+    """Судья писал пометы формы по-немецки — «Akkusativ», «Dativ Plural». Его задание
+    написано по-немецки, и он отвечал в тон, а читает эту помету русскоязычный человек."""
+    from backend.daily_video_judge import _JUDGE_SYSTEM
+
+    assert "AUF RUSSISCH" in _JUDGE_SYSTEM
+    assert "«Akkusativ»" in _JUDGE_SYSTEM, "нужен пример того, чего писать нельзя"
+    assert "винительный падеж" in _JUDGE_SYSTEM
