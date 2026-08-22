@@ -42,6 +42,13 @@ _CAND_CACHE: dict = {}
 
 # ── Config (env-overridable) ────────────────────────────────────────────────────
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(str(os.getenv(name) or "").strip() or default)
@@ -963,6 +970,30 @@ def _quote_shows_the_unit(de: str, quote: str) -> bool:
     return any(root in fp for root in roots)
 
 
+def _card_passes_source_guards(card: dict, transcript_text: str) -> tuple[bool, str]:
+    """Три сверки карточки с источником. Возвращает (прошла, почему нет).
+
+    Вынесено отдельно, потому что через это обязана пройти не только СВЕЖАЯ карточка от
+    модели, но и ИСПРАВЛЕННАЯ судьёй. Иначе судья под видом правки мог бы подставить
+    цитату, которой в ролике не звучало, — и его правка стала бы дырой в той самой защите,
+    ради которой он поставлен.
+    """
+    de = str(card.get("de") or "").strip()
+    quote_de = str(card.get("quote_de") or "").strip()
+    de_in_text = str(card.get("de_in_text") or "").strip()
+    if not de or not quote_de:
+        return False, "нет единицы или цитаты"
+    if _quote_fingerprint(quote_de) not in _quote_fingerprint(transcript_text):
+        return False, "цитаты нет в субтитрах"
+    if not _quote_shows_the_unit(de, quote_de):
+        return False, "цитата не показывает слово"
+    if not de_in_text:
+        return False, "нет формы из текста"
+    if _quote_fingerprint(de_in_text) not in _quote_fingerprint(quote_de):
+        return False, "формы из текста нет в цитате"
+    return True, ""
+
+
 def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str = "") -> dict:
     # Summary as 2–4 terse thesis lines (stored newline-joined). Fall back to splitting a
     # legacy paragraph summary_ru into sentences if the model still returns one.
@@ -1296,6 +1327,32 @@ def prepare_world_news(
         raise RuntimeError(
             f"daily_video[{profile.key}]: модель {pack_attempts} раза подряд вернула "
             f"негодный разбор — последняя причина: {last_err}"
+        )
+
+    # ── СУДЬЯ ПРИЁМКИ ──────────────────────────────────────────────────────────
+    # Идёт ПО КАРТОЧКАМ и правит их поштучно. Ролик, субтитры и тест не трогает вовсе:
+    # выбрасывать готовый выпуск из-за одного слова со строчной буквы — это выбрасывать
+    # выбранный ролик, скачанные субтитры и десяток хороших карточек, чтобы получить новую
+    # лотерею (решение владельца 22.08.2026).
+    judge_report = {}
+    if _env_flag("DAILY_VIDEO_JUDGE_ENABLED", True):
+        try:
+            from backend.daily_video_judge import judge_and_repair_cards
+            pack["phrases"], judge_report = judge_and_repair_cards(
+                pack["phrases"], profile=profile, transcript=picked["text"]
+            )
+        except Exception:
+            # Судья — заслон, а не поставщик содержания. Его падение не должно ронять
+            # выпуск, но и молчать нельзя: непроверенный пакет обязан быть виден как
+            # непроверенный, иначе мы решим, что проверка была.
+            logger.exception("daily_video[%s]: судья приёмки не отработал", profile.key)
+            judge_report = {"failed": True}
+    if len(pack["phrases"]) < profile.min_phrases:
+        # После правки карточек осталось меньше порога — значит ролик и вправду беден на
+        # годный материал. Вот ЭТО повод взять другой, а не одна помарка.
+        raise RuntimeError(
+            f"daily_video[{profile.key}]: после приёмки осталось {len(pack['phrases'])} "
+            f"карточек при пороге {profile.min_phrases} — ролик беден на годный материал"
         )
 
     upsert_world_news_daily(

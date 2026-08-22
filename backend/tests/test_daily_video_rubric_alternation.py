@@ -776,3 +776,128 @@ def test_card_without_the_text_form_is_not_shown_half_done():
     phrases[0]["de_in_text"] = ""
     out = _validate_and_normalize_pack(_pack(phrases), STANDUP_PROFILE, _TRANSCRIPT)
     assert len(out["phrases"]) == 4
+
+
+# ── Судья приёмки: правит ПОКАРТОЧНО, выпуск не переделывает ──────────────────
+
+_JUDGE_TRANSCRIPT = (
+    "Also ich sag mal so, ich hab null Bock auf Montag. "
+    "Ein Uropa bekaeme einen Herzinfarkt, liefe das hier im Fernsehen. "
+    "Privatversicherte verstehen den Joke, okay."
+)
+
+
+def _judge_card(de, quote, in_text, **over):
+    card = {"de": de, "register_ru": "разговорное", "form_ru": "словарная форма",
+            "translation_ru": "перевод", "literal_ru": "", "de_in_text": in_text,
+            "quote_de": quote, "quote_ru": "перевод строки", "usage_ru": "с друзьями"}
+    card.update(over)
+    return card
+
+
+def test_judge_fixes_one_card_and_leaves_the_rest_alone(monkeypatch):
+    """Владелец 22.08.2026: «я для этого буду переформировать новость?» Нет. Судья правит
+    ОДНУ карточку, остальные и весь выпуск остаются нетронутыми."""
+    import backend.daily_video_judge as J
+
+    cards = [
+        _judge_card("herzinfarkt bekommen", "Ein Uropa bekaeme einen Herzinfarkt", "bekaeme einen Herzinfarkt"),
+        _judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock"),
+    ]
+    fixed = dict(cards[0], de="einen Herzinfarkt bekommen")
+    calls = {"n": 0}
+
+    def _fake(cards_in, *, profile, transcript):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [{"i": 0, "verdict": "fix", "reason": "существительное со строчной",
+                     "card": fixed}, {"i": 1, "verdict": "ok"}]
+        return [{"i": i, "verdict": "ok"} for i in range(len(cards_in))]
+
+    monkeypatch.setattr(J, "_ask_judge", _fake)
+    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
+                                           transcript=_JUDGE_TRANSCRIPT)
+    assert len(out) == 2, "ни одна карточка не должна пропасть"
+    assert out[0]["de"] == "einen Herzinfarkt bekommen"
+    assert out[1] == cards[1], "вторую карточку судья не трогал"
+    assert report["fixed"] == 1 and report["dropped"] == 0
+
+
+def test_judge_cannot_invent_under_the_guise_of_a_fix(monkeypatch):
+    """Если судья под видом правки подставит цитату, которой в ролике не звучало, его
+    правка обязана быть отбита теми же стражами, что стерегут свежие карточки. Иначе
+    судья становится дырой в защите, ради которой он и поставлен."""
+    import backend.daily_video_judge as J
+
+    cards = [_judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
+    invented = dict(cards[0], quote_de="diesen Satz hat niemand je gesagt",
+                    de_in_text="diesen Satz")
+    monkeypatch.setattr(J, "_ask_judge",
+                        lambda c, *, profile, transcript: [{"i": 0, "verdict": "fix",
+                                                            "reason": "—", "card": invented}])
+    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
+                                           transcript=_JUDGE_TRANSCRIPT)
+    assert out == [], "выдуманная правка не должна попасть на экран"
+    assert report["dropped"] == 1
+    assert any("не прошла сверку" in r for r in report["reasons"])
+
+
+def test_judge_drops_a_show_line(monkeypatch):
+    """Реплика из шоу — не языковая единица. Её судья выбрасывает, но ВЫПУСК не бракует."""
+    import backend.daily_video_judge as J
+
+    cards = [
+        _judge_card("Privatversicherte verstehen den Joke",
+                    "Privatversicherte verstehen den Joke, okay", "Privatversicherte verstehen"),
+        _judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock"),
+    ]
+    monkeypatch.setattr(J, "_ask_judge",
+                        lambda c, *, profile, transcript: [
+                            {"i": 0, "verdict": "drop", "reason": "реплика из шоу"},
+                            {"i": 1, "verdict": "ok"}] if len(c) == 2
+                        else [{"i": 0, "verdict": "ok"}])
+    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
+                                           transcript=_JUDGE_TRANSCRIPT)
+    assert [c["de"] for c in out] == ["Bock haben"]
+    assert report["dropped"] == 1
+
+
+def test_judge_walks_again_until_a_pass_is_clean(monkeypatch):
+    """Одна правка иногда обнажает следующую, и один проход этого не ловит. Судья идёт
+    заново, пока проход не окажется чистым."""
+    import backend.daily_video_judge as J
+
+    cards = [_judge_card("bock haben", "ich hab null Bock auf Montag", "null Bock")]
+    step = {"n": 0}
+
+    def _fake(cards_in, *, profile, transcript):
+        step["n"] += 1
+        if step["n"] == 1:
+            return [{"i": 0, "verdict": "fix", "reason": "строчная",
+                     "card": dict(cards_in[0], de="Bock haben")}]
+        if step["n"] == 2:
+            return [{"i": 0, "verdict": "fix", "reason": "перевод не согласован",
+                     "card": dict(cards_in[0], translation_ru="иметь желание")}]
+        return [{"i": 0, "verdict": "ok"}]
+
+    monkeypatch.setattr(J, "_ask_judge", _fake)
+    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
+                                           transcript=_JUDGE_TRANSCRIPT)
+    assert report["passes"] == 3 and report["clean"] is True
+    assert out[0]["de"] == "Bock haben"
+    assert out[0]["translation_ru"] == "иметь желание"
+
+
+def test_judge_verdict_fix_without_a_card_does_not_silently_pass(monkeypatch):
+    """Вердикт «поправить» без самой починки — не повод молча пропустить карточку как
+    годную: тогда мы соврём, что проверка прошла."""
+    import backend.daily_video_judge as J
+
+    cards = [_judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
+    monkeypatch.setattr(J, "_ask_judge",
+                        lambda c, *, profile, transcript: [{"i": 0, "verdict": "fix",
+                                                            "reason": "что-то не так"}])
+    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
+                                           transcript=_JUDGE_TRANSCRIPT)
+    assert len(out) == 1, "карточка остаётся как была"
+    assert report["fixed"] == 0
