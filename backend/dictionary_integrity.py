@@ -183,6 +183,24 @@ def _rule_owner_choice_not_first(cur) -> tuple[int, list]:
     return len(hits), hits[:5]
 
 
+def _rule_write_without_a_door(cur) -> tuple[int, list]:
+    """Появился путь, который пишет немецкий текст в базу МИМО двери.
+
+    Единственное правило здесь, которое смотрит не в данные, а В КОД, — и это ровно то,
+    ради чего заведена вся проверка: она сторожит СТРАЖЕЙ. Данные сегодня чистые именно
+    потому, что на каждом пути записи стоит дверь; уберут дверь или заведут новый путь
+    в обход — грязь начнёт копиться заново, и увидим мы её не раньше, чем на экране у
+    человека. Это правило показывает такое в то же утро.
+
+    Список путей и признак двери — в backend/write_doors.py, там же написано, почему
+    дверей два вида. Курсор не нужен: в базу правило не ходит.
+    """
+    from backend.write_doors import places_without_a_door
+    open_places = places_without_a_door()
+    sample = [(item["number"], item["human"], item["state"]) for item in open_places[:5]]
+    return len(open_places), sample
+
+
 RULES: tuple[tuple[str, Callable], ...] = (
     ("фраза помечена существительным", _rule_phrase_is_not_a_noun),
     ("род повешен на многословное", _rule_gender_on_multiword),
@@ -195,6 +213,7 @@ RULES: tuple[tuple[str, Callable], ...] = (
     ("карточка указывает в никуда", _rule_dangling_card_pointer),
     ("русский текст в немецком поле", _rule_russian_in_german_field),
     ("выбор владельца не первый", _rule_owner_choice_not_first),
+    ("немецкий текст пишется мимо двери", _rule_write_without_a_door),
 )
 
 
