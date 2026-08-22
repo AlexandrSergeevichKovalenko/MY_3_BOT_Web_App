@@ -22,12 +22,28 @@ async function api(path, body = {}) {
   return data;
 }
 
-const PRESETS = [
-  ['intensive', '🔥 Интенсивно', '~20 в день'],
-  ['normal', '🙂 Обычно', '~12 в день'],
-  ['rare', '🌙 Редко', '~8 в день'],
-  ['silent', '🔕 Тишина', 'не слать'],
+// Подпись «~N в день» берётся ОТ СЕРВЕРА, а не хранится здесь.
+//
+// Нормы живут в переменных окружения и меняются без правки кода. Пока числа 20/12/8
+// стояли в этом списке, они совпадали с правдой ровно до первого изменения нормы — и
+// разошлись бы молча: человек читал бы «~12 в день», а получал другое.
+//
+// Сервер не назвал норму — подписи не будет вовсе. Пустая подпись честнее неверной:
+// пресет «Обычно» без числа человек поймёт, а «~12» вместо восьми — нет.
+const PRESETS_БЕЗ_ЧИСЕЛ = [
+  ['intensive', '🔥 Интенсивно'],
+  ['normal', '🙂 Обычно'],
+  ['rare', '🌙 Редко'],
+  ['silent', '🔕 Тишина'],
 ];
+
+function пресеты(бюджеты) {
+  return PRESETS_БЕЗ_ЧИСЕЛ.map(([ключ, подпись]) => {
+    if (ключ === 'silent') return [ключ, подпись, 'не слать'];
+    const n = Number((бюджеты || {})[ключ]);
+    return [ключ, подпись, Number.isFinite(n) && n > 0 ? `~${n} в день` : ''];
+  });
+}
 const WINDOWS = [
   ['allday', 'Весь день', 'любое время'],
   ['morning', 'Утро', '06–12'],
@@ -191,7 +207,7 @@ export default function SettingsScreen() {
             <div className="st-row-desc">Сколько заданий в день и в какие часы их присылать.</div>
           </div>
           <div className="st-sub-label">Темп</div>
-          <Segmented options={PRESETS} value={state.preset} disabled={!isPro}
+          <Segmented options={пресеты(state.preset_budgets)} value={state.preset} disabled={!isPro}
             onPick={(k) => persist('preset', '/api/webapp/settings/preset', k, 'preset')} />
           <div className="st-sub-label">Часы</div>
           <Segmented options={WINDOWS} value={state.window} disabled={!isPro}

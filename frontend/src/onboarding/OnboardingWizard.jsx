@@ -1101,7 +1101,13 @@ function StepBody(props) {
           </div>
 
           <div className="ob-plan ob-plan-pro">
-            <p className="ob-plan-title">💎 <b>{t('Полный доступ', 'Voller Zugang')}</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : <> — <span className="ob-price">400 ⭐ / {t('мес', 'Mon.')}</span></>}</p>
+            {/* Цена — ТОЛЬКО от сервера. Здесь стояло запасное «400 ⭐», и сегодня оно
+                случайно совпадает: 6,15 € × 1.3 × 50 = ровно 400. Но цена живёт в
+                переменной окружения, владелец меняет её без правки кода — и запасное
+                число разошлось бы молча, показывая новичку неверную цену на первом же
+                экране. Сервер не ответил — цену не называем вовсе: ниже стоит строка
+                «Кнопка откроет экран „Подписка“ — там актуальная цена», и она честна. */}
+            <p className="ob-plan-title">💎 <b>{t('Полный доступ', 'Voller Zugang')}</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : null}</p>
             {IS_GUEST_TOUR ? GUEST_NOTE : (
               <button type="button" className="ob-confirm" onClick={onOpenSubscription}>
                 {t('✨ Оформить полный доступ', '✨ Vollen Zugang holen')}

@@ -25,6 +25,7 @@ _BACKEND_PROCESS_IMPORT_STARTED_AT = _startup_clock.perf_counter()
 #     raise RuntimeError("LIVEKIT_API_KEY и LIVEKIT_API_SECRET должны быть установлены в .env файле")
 
 # # --- Главная и единственная точка доступа (API Endpoint) ---
+
 # @app.route("/token", methods=['GET'])
 # def get_token():
 #     user_id = request.args.get('user_id')
@@ -3549,6 +3550,24 @@ _DICT_TOKEN_ACCESS_EXACT = frozenset({
     "/api/webapp/word-audit/apply",
     "/api/webapp/word-audit/list",
 })
+
+
+def _сбой_запроса(exc: Exception, *, что: str, код: int = 500):
+    """Человеку — понятный текст, в лог — техническую правду.
+
+    Сырое сообщение исключения на экране запрещено правилом ноль: человек читает
+    «KeyError: \'lemma_key\'» или «connection already closed» и не понимает ни что
+    случилось, ни что делать. Замер 22.08.2026: таких мест в ответах клиенту было 26,
+    и фронт показывает это поле как текст сообщения (`data.error` → `message`).
+
+    Технический текст не пропадает — он уходит в лог со стеком и с именем места, то
+    есть остаётся ровно там, где полезен: у нас, а не у человека.
+
+    Намеренные сообщения (`except ValueError`) сюда НЕ переводятся: их писали для
+    человека, и подменять их общей фразой значило бы потерять смысл.
+    """
+    logging.warning("%s не удалось: %s", что, exc, exc_info=True)
+    return jsonify({"error": "Не получилось. Попробуйте ещё раз через минуту."}), код
 
 
 def _dict_token_access_allowed(path: str) -> bool:
@@ -37336,7 +37355,7 @@ def get_webapp_analytics_summary():
             bounds_resolve_duration_ms = int((time.perf_counter() - bounds_started_at) * 1000)
         except ValueError as exc:
             _log_flow_observation("analytics_summary", "summary_completed", request_id=request_id, correlation_id=correlation_id, user_id=user_id_int, source_lang=source_lang, target_lang=target_lang, final_status="error", error_code="invalid_period", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
-            return jsonify({"error": str(exc)}), 400
+            return _сбой_запроса(exc, что="get_webapp_analytics_summary", код=400)
 
         effective_scope = scope.get("effective_scope") if isinstance(scope.get("effective_scope"), dict) else {}
         scope_key_str = str(effective_scope.get("scope_key") or "personal")
@@ -37580,7 +37599,7 @@ def get_webapp_analytics_timeseries():
             bounds_resolve_duration_ms = int((time.perf_counter() - bounds_started_at) * 1000)
         except ValueError as exc:
             _log_flow_observation("analytics_timeseries", "timeseries_completed", request_id=request_id, correlation_id=correlation_id, user_id=user_id_int, source_lang=source_lang, target_lang=target_lang, final_status="error", error_code="invalid_period", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
-            return jsonify({"error": str(exc)}), 400
+            return _сбой_запроса(exc, что="get_webapp_analytics_timeseries", код=400)
 
         effective_scope = scope.get("effective_scope") if isinstance(scope.get("effective_scope"), dict) else {}
         timeseries_cache_key = _build_analytics_timeseries_cache_key(
@@ -37756,7 +37775,7 @@ def get_webapp_analytics_compare():
             bounds_resolve_duration_ms = int((time.perf_counter() - bounds_started_at) * 1000)
         except ValueError as exc:
             _log_flow_observation("analytics_compare", "compare_completed", request_id=request_id, correlation_id=correlation_id, user_id=user_id_int, source_lang=source_lang, target_lang=target_lang, final_status="error", error_code="invalid_period", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
-            return jsonify({"error": str(exc)}), 400
+            return _сбой_запроса(exc, что="get_webapp_analytics_compare", код=400)
 
         effective_scope = scope.get("effective_scope") if isinstance(scope.get("effective_scope"), dict) else {}
         compare_cache_key = _build_analytics_compare_cache_key(
@@ -38617,7 +38636,7 @@ def create_billing_checkout_session():
             return jsonify(response_payload), 200
         except ValueError as exc:
             _log_flow_observation("billing_checkout", "checkout_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), requested_plan=requested_plan, final_status="error", error_code="invalid_plan", resolve_plan_duration_ms=resolve_plan_duration_ms, duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
-            return jsonify({"error": str(exc)}), 400
+            return _сбой_запроса(exc, что="запрос", код=400)
         except Exception as exc:
             logging.exception("create checkout session failed user_id=%s: %s", user_id, exc)
             _log_flow_observation("billing_checkout", "checkout_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), requested_plan=requested_plan, final_status="error", error_code=exc.__class__.__name__, resolve_plan_duration_ms=resolve_plan_duration_ms, stripe_customer_duration_ms=stripe_customer_duration_ms, switch_duration_ms=switch_duration_ms, stripe_session_duration_ms=stripe_session_duration_ms, duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
@@ -51501,6 +51520,24 @@ def _settings_current_window_key(prefs) -> str:
     return "allday"
 
 
+def _preset_daily_budgets() -> dict:
+    """Дневная норма заданий по каждому пресету — из ЕДИНСТВЕННОГО источника.
+
+    Источник — `bot_3._preset_budget`, та самая функция, по которой планировщик и
+    решает, сколько слать. Не копия чисел, а вызов: разойтись с правдой она не может
+    по построению.
+    """
+    try:
+        from bot_3 import _preset_budget
+        return {ключ: int(_preset_budget(ключ))
+                for ключ in ("intensive", "normal", "rare", "silent")}
+    except Exception:
+        # Норму не узнали — молчим числом, а не выдумываем его. Экран в этом случае
+        # покажет пресеты без подписи «~N в день»: пустая подпись честнее неверной.
+        logging.warning("настройки: не прочитал дневные нормы", exc_info=True)
+        return {}
+
+
 @app.route("/api/webapp/settings", methods=["POST"])
 def webapp_settings_state():
     """Current values for the Mini-App settings page (autosave, battle-readiness,
@@ -51572,6 +51609,12 @@ def webapp_settings_state():
         "autosave": bool(get_shortcut_autosave_enabled(int(user_id))),
         "battle_ready": bool(is_article_battle_available(int(user_id))),
         "preset": str(prefs.get("preset") or "normal"),
+        # СКОЛЬКО ЗАДАНИЙ СТОИТ ЗА КАЖДЫМ ПРЕСЕТОМ — числом ОТСЮДА, а не копией на
+        # экране. Нормы живут в переменных окружения (GLOBAL_DAILY_SEND_BUDGET и
+        # соседние), владелец меняет их без правки кода; экран настроек держал те же
+        # 20/12/8 своим списком и разошёлся бы с правдой в ту же минуту, ничем себя
+        # не выдав — человек читал бы «~12 в день», получая другое число.
+        "preset_budgets": _preset_daily_budgets(),
         "window": _settings_current_window_key(prefs),
         "dict_tier": dict_tier,
         "dict_base_total": int(dict_base_total),
@@ -52839,7 +52882,7 @@ def webapp_vocabulary_list():
         )
         folders_data = get_vocabulary_folders_with_counts(user_id=user_id)
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return _сбой_запроса(exc, что="webapp_vocabulary_list", код=500)
 
     # Признак админа нужен списку, чтобы показать кнопку пересборки разбора. Отдаём
     # здесь, а не отдельным запросом: список и так грузится при каждом открытии словаря.
@@ -53035,7 +53078,7 @@ def webapp_vocabulary_delete():
     try:
         found = delete_vocabulary_entry(user_id=user_id, entry_id=int(entry_id))
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return _сбой_запроса(exc, что="webapp_vocabulary_delete", код=500)
     if not found:
         return jsonify({"error": "Запись не найдена"}), 404
     return jsonify({"ok": True})
@@ -53132,7 +53175,7 @@ def webapp_vocabulary_edit():
             clear_folder=clear_folder,
         )
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return _сбой_запроса(exc, что="webapp_vocabulary_edit", код=500)
 
     if updated is None:
         return jsonify({"error": "Запись не найдена"}), 404
@@ -53226,7 +53269,7 @@ def webapp_vocabulary_bulk_assign_folder():
             folder_id=target_folder_id,
         )
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return _сбой_запроса(exc, что="webapp_vocabulary_bulk_assign_folder", код=500)
     return jsonify({"ok": True, "updated": updated_count})
 
 
@@ -53255,7 +53298,7 @@ def webapp_vocabulary_bulk_delete():
             entry_ids=safe_ids,
         )
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return _сбой_запроса(exc, что="webapp_vocabulary_bulk_delete", код=500)
     return jsonify({"ok": True, "deleted": deleted_count})
 
 
@@ -53283,7 +53326,7 @@ def webapp_vocabulary_folder_rename():
             color=color if isinstance(color, str) else None,
         )
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return _сбой_запроса(exc, что="webapp_vocabulary_folder_rename", код=500)
     if result is None:
         return jsonify({"error": "Папка не найдена"}), 404
     return jsonify({"ok": True, "item": result})
@@ -53305,7 +53348,7 @@ def webapp_vocabulary_folder_delete():
     try:
         result = delete_dictionary_folder(user_id=user_id, folder_id=int(folder_id), delete_words=delete_words)
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return _сбой_запроса(exc, что="webapp_vocabulary_folder_delete", код=500)
     if not result.get("found"):
         return jsonify({"error": "Папка не найдена"}), 404
     return jsonify({"ok": True})
@@ -53331,7 +53374,7 @@ def get_flashcards_manual_selection():
             target_lang=target_lang,
         )
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return _сбой_запроса(exc, что="get_flashcards_manual_selection", код=500)
     return jsonify(
         {
             "ok": True,
@@ -53369,7 +53412,7 @@ def save_flashcards_manual_selection():
             card_ids=requested_card_ids,
         )
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return _сбой_запроса(exc, что="save_flashcards_manual_selection", код=500)
     return jsonify(
         {
             "ok": True,
@@ -53401,7 +53444,7 @@ def add_flashcards_manual_selection():
             card_ids=requested_card_ids,
         )
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return _сбой_запроса(exc, что="add_flashcards_manual_selection", код=500)
     return jsonify(
         {
             "ok": True,
@@ -53432,7 +53475,7 @@ def clear_flashcards_manual_selection():
             target_lang=target_lang,
         )
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return _сбой_запроса(exc, что="clear_flashcards_manual_selection", код=500)
     return jsonify(
         {
             "ok": True,
@@ -54177,7 +54220,7 @@ def review_srs_card():
                 mark("build_next")
     except ValueError as exc:
         log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, queue_source, error_text=str(exc))
-        return jsonify({"error": str(exc)}), 400
+        return _сбой_запроса(exc, что="запрос", код=400)
     except Exception as exc:
         log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, queue_source, error_text=str(exc))
         return jsonify({"error": f"Ошибка review: {exc}"}), 500
@@ -54237,7 +54280,7 @@ def reschedule_srs_backlog():
         return jsonify({"ok": True, "rescheduled": int(affected), "queue_info": queue_info})
     except Exception as exc:
         logging.warning("reschedule_srs_backlog failed: user=%s error=%s", user_id, exc, exc_info=True)
-        return jsonify({"error": str(exc)}), 500
+        return _сбой_запроса(exc, что="reschedule_srs_backlog", код=500)
 
 
 @app.route("/api/webapp/flashcards/feel", methods=["POST"])
