@@ -236,12 +236,31 @@ def main() -> None:
         return
 
     written = 0
+    skipped = 0
     with conn.cursor() as cur:
         for _id, _src, word_de_col, rj, bare, _before, auth, _k in safe:
-            new_word_de = f"{auth} {bare}"
+            # ДВЕРЬ ПЕРЕД ЗАПИСЬЮ. Прогон разовый и запускается руками, но пишет он в
+            # ОБЩИЙ пул — то есть в карточку, которую увидят все, кто искал это слово.
+            # Заголовок здесь склеивается из артикля и основы, и обе части приходят
+            # снаружи: артикль от справочника, основа из старой записи. Значит вход
+            # чистится тем же кодом, что и на остальных дверях словаря, а разбор
+            # проверяется тем же стражем целостности — иначе прогон, запущенный дважды,
+            # положит в пул то, от чего мы стережём все прочие входы.
+            from backend.dictionary_intake import clean_text
+            from backend.mangled_text import mangled_strings_inside
+            bare = clean_text(bare)
+            if not bare:
+                skipped += 1
+                continue
+            new_word_de = clean_text(f"{auth} {bare}")
             new_rj = dict(rj)
             new_rj["article"] = auth
             new_rj["word_de"] = new_word_de
+            порча = mangled_strings_inside(new_rj)
+            if порча:
+                print(f"  ПРОПУЩЕНО {_id}: текст размножен сам на себя — {порча[0][:60]!r}")
+                skipped += 1
+                continue
             col_bare = _bare_lemma(word_de_col or "")
             if col_bare and col_bare == bare:
                 cur.execute(
@@ -260,6 +279,8 @@ def main() -> None:
     conn.commit()
     conn.close()
     print(f"\nAPPLIED {written:,} safe article corrections. {len(review):,} left for review.")
+    if skipped:
+        print(f"ПРОПУЩЕНО дверью: {skipped:,} — вход не прошёл чистку или разбор испорчен.")
 
 
 if __name__ == "__main__":
