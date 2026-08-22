@@ -5263,7 +5263,48 @@ def _block_is_more_structured(candidate, other) -> bool:
             and not any(isinstance(x, dict) for x in other))
 
 
-def _prefer_shared_without_losing(mine, theirs):
+def _example_key(item) -> str:
+    """Ключ примера — его немецкая сторона. По ней и понимаем, что пример тот же."""
+    if isinstance(item, dict):
+        for name in ("source", "example_source", "de", "text"):
+            value = item.get(name)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split()).strip().casefold()
+        return ""
+    return " ".join(str(item or "").split()).strip().casefold()
+
+
+def _merge_examples_shared_first(mine, theirs):
+    """Примеры: сначала примеры ОБЩЕГО СЛОВА, следом свои, которых там нет.
+
+    ЗАЧЕМ ОТДЕЛЬНО ОТ ОБЩЕГО ПРАВИЛА. Правило «своих больше — оставляем своё» писалось
+    для синонимов: три синонима против одного, отнимать нельзя. На примерах оно даёт
+    обратный эффект — держит УСТАРЕВШУЮ копию.
+
+    Живой случай, владелец 22.08.2026. Карточка «die Hose anhaben» сохранена со смыслом
+    «быть главным». Слово пересобрано под этот смысл, у него примеры про то, кто в доме
+    решает. У человека в карточке с 02.06 лежат два примера про брюки — их не меньше, и
+    по длине они побеждали. Значение на экране уже поменялось на «быть главным», а
+    примеры остались про одежду: подпись и содержимое снова про разное.
+
+    Замер 22.08.2026: 9 915 пар «карточка + слово» с примерами, у 551 своих больше. Если
+    просто отдать победу общему, эти 551 потеряют примеры, которых на слове нет, — а это
+    прямо запрещено правилом «человек не должен увидеть меньше, чем видел вчера».
+    Поэтому не выбор, а порядок: свежее сверху, старое ниже, ничего не пропадает.
+    """
+    if not isinstance(mine, list) or not isinstance(theirs, list):
+        return None
+    merged = list(theirs)
+    seen = {_example_key(item) for item in theirs if _example_key(item)}
+    for item in mine:
+        key = _example_key(item)
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(item)
+    return merged
+
+
+def _prefer_shared_without_losing(mine, theirs, *, key: str = ""):
     """Взять общее, но не потерять то, чего в общем нет.
 
     Три случая:
@@ -5286,6 +5327,11 @@ def _prefer_shared_without_losing(mine, theirs):
         return theirs          # общее содержательнее — примеры с переводом против голых строк
     if _block_is_more_structured(mine, theirs):
         return mine            # своё содержательнее — не отнимаем
+    if key == "usage_examples":
+        # Примеры не выбираем, а СКЛАДЫВАЕМ: свежие с общего слова сверху, свои ниже.
+        merged = _merge_examples_shared_first(mine, theirs)
+        if merged is not None:
+            return merged
     if isinstance(mine, list) and isinstance(theirs, list) and len(mine) > len(theirs):
         return mine            # одинаковой формы, но своих больше: три синонима против одного
     return theirs
@@ -5321,7 +5367,7 @@ def merge_unit_card_for_serve(card: dict | None, unit_card: dict | None,
             theirs = unit_card.get(key)
             if not _card_block_is_filled(theirs):
                 continue
-            base[key] = _prefer_shared_without_losing(base.get(key), theirs)
+            base[key] = _prefer_shared_without_losing(base.get(key), theirs, key=key)
     # Личные правки — последними, поверх всего. Их не перебивает ничто.
     if isinstance(overrides, dict):
         for key, value in overrides.items():

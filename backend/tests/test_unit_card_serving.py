@@ -34,15 +34,31 @@ def test_missing_blocks_are_taken_from_the_unit():
     assert merged["forms"] == UNIT["forms"]
 
 
-def test_richer_block_wins_poorer_one():
+def test_examples_from_the_unit_come_first():
+    """ИЗМЕНЕНО 22.08.2026: примеры больше не ВЫБИРАЮТСЯ, а складываются.
+
+    Раньше здесь стояло «побеждает список побогаче», и проверялось это длиной. На
+    пересобранном слове правило дало обратный эффект: у владельца в карточке «die Hose
+    anhaben» с 02.06 лежали два примера про брюки, на слове — два свежих про идиому, и
+    старые побеждали, потому что их было не меньше. Значение на экране уже поменялось на
+    «быть главным», а примеры остались про одежду.
+
+    Замысел теста не изменился — человек не должен увидеть меньше, чем видел вчера. Он и
+    не видит: свой пример остаётся, просто ниже свежего.
+    """
     merged = merge_unit_card_for_serve(CARD, UNIT)
-    assert len(merged["usage_examples"]) == 3
+    shown = [item.get("de") for item in merged["usage_examples"]]
+    assert shown[: len(UNIT["usage_examples"])] == [i["de"] for i in UNIT["usage_examples"]]
+    assert CARD["usage_examples"][0]["de"] in shown, "личный пример пропал"
 
 
-def test_personal_block_survives_when_it_is_richer():
+def test_personal_examples_survive_even_when_there_are_more_of_them():
     card = dict(CARD, usage_examples=[{"de": "1"}, {"de": "2"}, {"de": "3"}, {"de": "4"}])
     merged = merge_unit_card_for_serve(card, UNIT)
-    assert len(merged["usage_examples"]) == 4
+    shown = [item.get("de") for item in merged["usage_examples"]]
+    # Свежие с общего слова сверху, все четыре своих на месте — ничего не потеряно.
+    assert shown[:3] == ["a", "b", "c"]
+    assert {"1", "2", "3", "4"} <= set(shown)
 
 
 def test_direction_and_headword_stay_from_the_card():
