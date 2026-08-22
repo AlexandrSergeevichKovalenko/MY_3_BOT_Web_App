@@ -600,15 +600,6 @@ def test_news_does_not_demand_a_register_marking():
     assert "register_ru" not in out["phrases"][0]
 
 
-def test_news_prompt_forbids_normalizing_word_groups():
-    """Причина того самого винительного падежа: промпт просил предпочитать словосочетания,
-    но форму оговаривал только для существительных и глаголов. Теперь запрет приводить
-    оборот к словарной форме записан прямо, с живым примером владельца."""
-    from backend.world_news_generator import _LLM_SYSTEM
-    assert "einen hohen genetischen Anteil" in _LLM_SYSTEM
-    assert "form_ru" in _LLM_SYSTEM
-    assert "NIEMALS" in _LLM_SYSTEM
-
 
 # ── Три дефекта первого живого выпуска (21.08.2026) ───────────────────────────
 
@@ -905,17 +896,6 @@ def test_judge_verdict_fix_without_a_card_does_not_silently_pass(monkeypatch):
 
 # ── Работа судьи должна быть ВИДНА ────────────────────────────────────────────
 
-def test_news_prompt_also_demands_reusable_units():
-    """22.08.2026 в новостях вернулся дефект, который я чинил у стендапа: «das
-    Bundeskabinett geht in Klausur» — целое предложение вместо оборота. Причина: признак
-    воспроизводимости я положил ТОЛЬКО в задание стендапа и не проверил вторую рубрику,
-    при том что сам же требую чинить класс, а не случай."""
-    from backend.world_news_generator import _LLM_SYSTEM
-
-    assert "WIEDERVERWENDBARKEIT" in _LLM_SYSTEM
-    assert "das Bundeskabinett geht in Klausur" in _LLM_SYSTEM, "нужен пример негодной карточки"
-    assert "unter Druck stehen" in _LLM_SYSTEM, "нужен пример годного оборота"
-
 
 def test_judge_is_told_to_fix_errors_not_polish_style():
     """Судья три прохода подряд не сходился и при этом не выбросил ни одной карточки —
@@ -1027,19 +1007,6 @@ def test_judge_stops_when_it_swings_back_and_forth(monkeypatch):
 
 
 # ── Дефекты четвёртого живого выпуска (22.08.2026, новости) ───────────────────
-
-def test_news_prompt_says_what_is_a_unit_and_what_is_a_sentence():
-    """В новостях снова прошли куски новости целиком: «Opfer fordern ihre Rechte», «eine
-    wirksame Kontrolle muss es geben». Причина: два требования тянули в разные стороны —
-    «предпочитай словосочетания» и «оборот остаётся в падеже» толкали брать длинные куски,
-    а правило воспроизводимости было одно против двух. Теперь сказано прямо, где граница:
-    у единицы нет своего подлежащего и спрягаемого глагола."""
-    from backend.world_news_generator import _LLM_SYSTEM
-
-    assert "WAS EINE EINHEIT IST" in _LLM_SYSTEM
-    assert "KEIN eigenes Subjekt" in _LLM_SYSTEM
-    assert "Opfer fordern ihre Rechte" in _LLM_SYSTEM, "нужен пример негодной карточки"
-    assert "seine Rechte fordern" in _LLM_SYSTEM, "и что из неё надо было взять"
 
 
 def test_both_prompts_forbid_garbled_proper_names():
@@ -1179,18 +1146,6 @@ def test_headword_and_save_button_are_never_scrolled_away():
     )
 
 
-def test_form_label_comes_from_a_closed_list_without_german_words():
-    """Помета формы пришла как «инфинитив с sich» — гибрид с немецким словом внутри.
-    Человек, который не знает, что такое sich, читает подпись и не понимает ничего.
-    Помета обязана быть простыми русскими словами из закрытого списка."""
-    from backend.daily_video_judge import _JUDGE_SYSTEM
-    from backend.world_news_generator import _LLM_SYSTEM
-
-    for prompt in (_LLM_SYSTEM, STANDUP_PROFILE.llm_system, _JUDGE_SYSTEM):
-        assert "ЗАКРЫТЫЙ СПИСОК" in prompt
-        assert "«инфинитив с" in prompt, "нужен пример запрещённой пометы"
-        assert "«словарная форма»" in prompt
-
 
 # ── Обрезка заголовка и огрызок фразы (22.08.2026, экран владельца) ───────────
 
@@ -1240,3 +1195,82 @@ def test_headword_does_not_shrink_and_get_clipped():
     block = css[css.index(".worldnews-card-de {"):css.index(".worldnews-art ")]
     assert "flex: 0 0 auto" in block, "заголовок не имеет права сжиматься"
     assert "overflow: hidden" not in block, "обрезка по вертикали срезает вторую строку"
+
+
+# ── ОПИСЬ ТРЕБОВАНИЙ К ЗАДАНИЯМ МОДЕЛИ ────────────────────────────────────────
+#
+# Каждое требование здесь добыто разбором живого дефекта: владелец увидел его на экране,
+# мы нашли причину и записали правило в задание. Задания переписываются целиком — и при
+# переписывании 22.08.2026 одно требование едва не пропало молча.
+#
+# Поэтому проверка не по одной строке на правило, а ОПИСЬЮ: список с именами, который
+# падает с внятным сообщением, если что-то исчезло. Требование можно переформулировать —
+# тогда правится и опись; но исчезнуть незаметно оно не может.
+
+_NEWS_REQUIREMENTS = {
+    "единица должна годиться в другой новости": ("SPRACHEINHEIT", "wiederbegegnet"),
+    "числа из этой новости — не единица": ("ZAHLEN AUS DIESER MELDUNG",),
+    "названия должностей — не единица": ("AMTS- UND TITELBEZEICHNUNGEN",),
+    "целое предложение — не единица": ("GANZE SÄTZE",),
+    "две единицы, склеенные запятой": ("ZUSAMMENGEKLEBT",),
+    "идиому вынимают из предложения": ("HERAUSGELÖST", "Tür und Tor öffnen"),
+    "единица не кончается артиклем или союзом": ("NIE auf einem Artikel",),
+    "битую расшифровку не берут": ("SPRACHERKENNUNG", "Jugendchutz"),
+    "имена собственные — верно или никак": ("EIGENNAMEN", "Bafer"),
+    "прописные буквы в тезисах": ("SCHREIBWEISE", "ТЕРЕЗА"),
+    "помета формы из закрытого списка": ("ЗАКРЫТЫЙ СПИСОК", "словарная форма"),
+    "помета без немецких слов внутри": ("инфинитив с sich",),
+    "перевод в той же форме, что показана": ("DERSELBEN Form",),
+    "форма из текста обязана быть в цитате": ("de_in_text", "wörtlich im Zitat"),
+}
+
+_STANDUP_REQUIREMENTS = {
+    "берём только то, где контекст решает смысл": ("KONTEXT die Bedeutung",),
+    "плана по количеству нет": ("KEINE ZIELZAHL",),
+    "оборот остаётся целым": ("Bock haben (auf etwas)", "FALSCH"),
+    "воспроизводимость": ("WIEDERVERWENDBARKEIT",),
+    "английские цитаты и разовые шутки — вон": ("Yes, Queen!", "EINMALWITZE"),
+    "нейтральное выбрасывают, а не раздевают": ("NEUTRALE Alltagswörter",),
+    "помета регистра обязательна": ("register_ru", "derb/vulgär"),
+    "помета формы из закрытого списка": ("ЗАКРЫТЫЙ СПИСОК",),
+    "спойлер развязки запрещён": ("AUSGANG",),
+    "заголовок по правилам немецкой орфографии": ("RECHTSCHREIBUNG DER KARTE",),
+    "имена собственные — верно или никак": ("EIGENNAMEN",),
+}
+
+_JUDGE_REQUIREMENTS = {
+    "исправляет ошибки, а не улучшает стиль": ("du verbesserst nicht den STIL",),
+    "пишет пометы по-русски": ("AUF RUSSISCH", "«Akkusativ»"),
+    "закрытый список помет": ("ЗАКРЫТЫЙ СПИСОК",),
+    "предложения из новости — вон": ("SÄTZE und Satzteile mit Subjekt",),
+    "висящий артикль в конце — вон": ("auf einem Artikel oder einer Konjunktion ENDEN",),
+    "перевранные имена — вон": ("Bafer",),
+    "нейтральное выбрасывают, а не раздевают": ("keine reparierte Karte",),
+    "английские цитаты и разовые шутки — вон": ("EINMALWITZE",),
+}
+
+
+def _assert_requirements(prompt, requirements, whose):
+    missing = [name for name, marks in requirements.items()
+               if not all(mark in prompt for mark in marks)]
+    assert not missing, (
+        f"из задания «{whose}» пропали требования: " + "; ".join(missing)
+    )
+
+
+def test_news_prompt_keeps_every_requirement_we_paid_for():
+    """Каждое требование добыто разбором живого дефекта на экране владельца. Переписывать
+    задание можно, терять требования — нет."""
+    from backend.world_news_generator import _LLM_SYSTEM
+
+    _assert_requirements(_LLM_SYSTEM, _NEWS_REQUIREMENTS, "Новость дня")
+
+
+def test_standup_prompt_keeps_every_requirement_we_paid_for():
+    _assert_requirements(STANDUP_PROFILE.llm_system, _STANDUP_REQUIREMENTS, "Стендап дня")
+
+
+def test_judge_keeps_every_requirement_we_paid_for():
+    from backend.daily_video_judge import _JUDGE_SYSTEM
+
+    _assert_requirements(_JUDGE_SYSTEM, _JUDGE_REQUIREMENTS, "судья приёмки")

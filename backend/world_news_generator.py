@@ -762,6 +762,9 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
    Померания, АдГ, Бундестаг). Abkürzungen so, wie sie im Russischen üblich sind: AfD → АдГ,
    nicht «афд». «Knapp» heisst OHNE Wasser — NICHT ohne Grossbuchstaben. Jede These beginnt
    mit einem Grossbuchstaben.
+   ACHTUNG: NUR DER ERSTE BUCHSTABE ist gross, der Rest klein. Richtig: «Тереза»,
+   «Германия». FALSCH: «ТЕРЕЗА», «ГЕРМАНИЯ» — Wörter komplett in Grossbuchstaben sind
+   ein Fehler.
 
 
    EIGENNAMEN: die Spracherkennung verstümmelt Namen von Ämtern, Parteien und Personen
@@ -770,72 +773,57 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
    heisst — benutz den Namen GAR NICHT, weder in den Thesen noch in den Fragen. Einen
    falschen Namen liest der Nutzer als richtigen.
 
-2) "phrases": 12–18 wirklich nützliche, im Transkript tatsächlich vorkommende Wörter und
-   Wendungen (bevorzugt Wortgruppen/Kollokationen, nicht triviale Wörter wie "und", "sein").
+2) "phrases": 12–18 SPRACHEINHEITEN aus dem Transkript.
 
-   GRUNDREGEL ZUR FORM (Entscheidung des Eigentümers, 21.08.2026):
-   Eine WORTGRUPPE wird NIEMALS in eine Wörterbuchform umgeschrieben — sie bleibt genau so,
-   wie sie im Transkript steht, mitsamt Kasus. Beim Umschreiben entstehen grammatisch
-   falsche Formen, und die lernt der Nutzer dann auswendig.
-   Nur ein EINZELNES Nomen bekommt Artikel und ggf. Plural ("die Regierung, -en"), nur ein
-   EINZELNES Verb den Infinitiv.
-   Weil die Wortgruppe also in ihrer Kasusform stehen bleibt, MUSS die Karte diese Form
-   erklären, statt sie zu verschweigen: die Übersetzung steht in DERSELBEN Form, und
-   "form_ru" benennt die Form auf Russisch.
-   Beispiel, wie es RICHTIG aussieht:
-     de: "einen hohen genetischen Anteil" · form_ru: "винительный падеж"
-     translation_ru: "высокУЮ генетическУЮ составляющУЮ"   ← nicht "высокая составляющая"
+   WAS EINE SPRACHEINHEIT IST: ein Wort oder eine feste Wendung, die dem Lernenden in
+   einer ANDEREN Nachricht und in einem ANDEREN Gespräch wiederbegegnet.
+     RICHTIG: "der Schwarzmarkt", "unter strengen Auflagen", "unter Druck stehen",
+       "Tür und Tor öffnen (für etwas)", "einen langen Atem brauchen", "in Kraft treten".
+     FALSCH — und das ist der häufigste Fehler:
+       • ZAHLEN AUS DIESER MELDUNG: "rund 300 Aussteller", "bis zu 30.000 Besuchern",
+         "21,5 Milliarden Euro". Morgen stehen dort andere Zahlen; gelernt wird nichts.
+         Brauchst du das Wort, nimm es NACKT: "der Aussteller", "der Besucher".
+       • AMTS- UND TITELBEZEICHNUNGEN: "der Drogenbeauftragte der Bundesregierung",
+         "das Bundesamt für Wirtschaft" — Namen von Stellen, keine Sprache.
+       • GANZE SÄTZE UND SATZTEILE mit Subjekt und konjugiertem Verb: "Opfer fordern ihre
+         Rechte", "eine wirksame Kontrolle muss es geben".
+       • ZWEI EINHEITEN MIT KOMMA ZUSAMMENGEKLEBT: "ein neuer Markt, der Graumarkt" —
+         nimm EINE davon: "der Graumarkt".
+       • DIE WENDUNG MITSAMT IHREM OBJEKT: aus «hat Tür und Tor für weniger Jugendschutz
+         geöffnet» gehört "Tür und Tor öffnen (für etwas)" auf die Karte — NICHT der ganze
+         Satzteil mit Objekt und Partizip. Die Wendung wird HERAUSGELÖST, nicht mitkopiert.
 
-   ENTSCHEIDENDES KRITERIUM — WIEDERVERWENDBARKEIT: Eine Einheit gehört nur dann auf eine
-   Karte, wenn der Lernende sie in einer ANDEREN Nachricht, in einem ANDEREN Gespräch
-   benutzen kann.
-     WAS EINE EINHEIT IST: ein Wort oder eine feste Wortgruppe — Nomen mit Adjektiv,
-       Verb mit Präposition, Funktionsverbgefüge. Sie hat KEIN eigenes Subjekt und KEIN
-       konjugiertes Verb dazu.
-     WAS KEINE EINHEIT IST: alles, was schon ein Satz oder ein Satzteil MIT Subjekt und
-       konjugiertem Verb ist. «Opfer fordern ihre Rechte», «eine wirksame Kontrolle muss
-       es geben», «Menschenrechte und Umweltstandards eingehalten werden» — das sind
-       SÄTZE aus dieser Meldung. Aus dem Satz nimmst du die WENDUNG heraus:
-       aus «Opfer fordern ihre Rechte» → "seine Rechte fordern";
-       aus «eine wirksame Kontrolle muss es geben» → "eine wirksame Kontrolle";
-       aus «…Umweltstandards eingehalten werden» → "Standards einhalten".
-     RICHTIG: "unter Druck stehen", "einen langen Atem brauchen", "in Klausur gehen",
-       "die Höchstarbeitszeit" — das begegnet ihm wieder.
-     FALSCH: "das Bundeskabinett geht in Klausur" (ein ganzer Satz),
-       "Investitionen auch hier stattfinden" (ein Satzfetzen),
-       "die Höchstarbeitszeit von 10 Stunden pro Tag" (ein Stück DIESER Meldung) —
-       das sagt er nie wieder. Aus einem Satz nimmst du die WENDUNG heraus, nicht den Satz.
+   FORM DER EINHEIT:
+     • einzelnes Nomen → mit Artikel, richtig gross geschrieben: "der Schwarzmarkt";
+     • einzelnes Verb → Infinitiv: "zurückdrängen"; reflexiv MIT "sich";
+     • feste Wendung → so, wie man sie nachschlägt, mit Platzhalter statt konkretem
+       Objekt: "Tür und Tor öffnen (für etwas)", "unter strengen Auflagen".
+     Eine Einheit endet NIE auf einem Artikel oder einer Konjunktion — endet sie so, hast
+     du mitten im Satz abgeschnitten.
+
+   ZUR SPRACHERKENNUNG: das Transkript ist maschinell und enthält Tippfehler
+   («Jugendchutz» statt «Jugendschutz», «streg» statt «streng») und zerbrochene Sätze.
+   Wähle eine Einheit NUR aus einer Zeile, die sauber ist. Ist die einzige Stelle
+   verstümmelt, nimm die Einheit NICHT — der Lernende darf falsch geschriebenes Deutsch
+   nicht zu sehen bekommen.
+
    Jedes Element:
-     - "de": das Wort/die Wendung, korrekt geschrieben, nach der Grundregel oben.
-       NIEMALS mitten im Satz abschneiden: eine Einheit darf nicht auf einem Artikel oder
-       einer Konjunktion enden. «die Koalition auffordern, die» ist kein Ausdruck, sondern
-       ein abgerissenes Stück Satz — richtig wäre "die Koalition auffordern". Endet deine
-       Einheit auf der/die/das/und/oder/dass, hast du zu weit geschnitten.
-     - "form_ru": in welcher grammatischen Form "de" dasteht — kurz und auf RUSSISCH, in
-       MENSCHLICHER Sprache: «винительный падеж», «дательный падеж», «инфинитив»,
-       «множественное число», «словарная форма». Du liest die Form im Transkript ab
-       (Rektion des Verbs, Artikelform) — rate NICHT.
-       ЗАКРЫТЫЙ СПИСОК — пиши ТОЛЬКО одно из этих значений, дословно:
-         «словарная форма» · «устойчивое выражение» · «инфинитив» ·
-         «именительный падеж» · «винительный падеж» · «дательный падеж» ·
-         «родительный падеж» · «множественное число» · «повелительная форма».
-       НИЧЕГО СВОЕГО не сочиняй и НЕ ДОБАВЛЯЙ немецких слов в помету: «инфинитив с
-       sich» — так нельзя, человек не знает, что такое sich, и подпись ему ничего не
-       объясняет. Возвратный глагол в словарном виде — это просто «словарная форма».
-     - "translation_ru": knappe russische Übersetzung in DERSELBEN grammatischen Form wie
-       "de". Steht das Deutsche im Akkusativ, steht auch das Russische im Akkusativ.
-     - "de_in_text": die Einheit GENAU SO, wie sie im Zitat steht — nur die Einheit
-       selbst, nicht der ganze Satz (aus «Ein Uropa bekäme einen Herzinfarkt» → "bekäme
-       einen Herzinfarkt"). MUSS wörtlich im Zitat vorkommen, sonst ist die Karte falsch.
-       Wozu: der Lernende sieht dann BEIDES — die Form zum Merken ("einen Herzinfarkt
-       bekommen") und die Form, in der man sie im echten Gespräch hört. Ohne die zweite
-       erkennt er das Gelernte in der Rede nicht wieder.
-       Steht die Einheit im Zitat schon in der Nachschlageform, wiederhol sie hier einfach.
-     - "quote_de": der Satz aus dem TRANSKRIPT, in dem die Einheit vorkommt — WÖRTLICH
-       kopiert, 4–20 Wörter. NICHT umformulieren, NICHT ausdenken. Ohne Satz ist eine
-       Wortgruppe für den Nutzer nicht zu verstehen, egal in welchem Kasus.
-     - "quote_ru": Übersetzung genau dieses Satzes ins Russische.
-     - "usage_ru": ein sehr kurzer russischer Hinweis, WIE/WANN man es benutzt (1 Satz),
+     - "de": die Einheit nach den Regeln oben, korrekt geschrieben.
+     - "form_ru": in welcher Form "de" dasteht — ЗАКРЫТЫЙ СПИСОК, пиши ТОЛЬКО одно из
+       этих значений, дословно: «словарная форма» · «устойчивое выражение» · «инфинитив» ·
+       «именительный падеж» · «винительный падеж» · «дательный падеж» ·
+       «родительный падеж» · «множественное число» · «повелительная форма».
+       Ничего своего не сочиняй и НЕ добавляй немецких слов в помету: «инфинитив с sich» —
+       так нельзя, человек не знает, что такое sich, и подпись ему ничего не объясняет.
+       Существительное в словарном виде падежа НЕ имеет — это «словарная форма»,
+       а возвратный глагол в словарном виде — тоже просто «словарная форма».
+     - "translation_ru": knappe russische Übersetzung in DERSELBEN Form wie "de".
+     - "de_in_text": die Einheit GENAU SO, wie sie in "quote_de" steht — nur die Einheit,
+       nicht der ganze Satz. MUSS wörtlich im Zitat vorkommen.
+     - "quote_de": der Satz aus dem TRANSKRIPT, in dem die Einheit vorkommt — wörtlich
+       kopiert, 4–20 Wörter, sauber (siehe oben), und er MUSS die Einheit zeigen.
+     - "quote_ru": Übersetzung genau dieses Satzes.
+     - "usage_ru": ein kurzer russischer Hinweis, WIE/WANN man es benutzt (1 Satz),
        ggf. mit Rektion/Kasus.
 
 3) "quiz": GENAU 4 KNIFFLIGE Multiple-Choice-Fragen auf DEUTSCH, die PRÄZISES Hörverständnis

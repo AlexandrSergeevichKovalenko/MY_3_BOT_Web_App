@@ -141,6 +141,14 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
        Und die Einheit steht UNPERSÖNLICH, nicht in der 2. Person aus dem Video: aus
        «Steckst nicht drin» wird "da steckt man nicht drin".
 
+       NIMM NICHT, auch wenn es im Auftritt lustig klingt:
+         • ENGLISCHE Wendungen, die nur zitiert werden ("Yes, Queen!") — hier wird DEUTSCH
+           gelernt; nur fest eingedeutschte Anglizismen bleiben (der Shitstorm);
+         • EINMALWITZE über Eigennamen ("Halle an der fucking Saale") — ein Gag über EINEN
+           Ortsnamen, den sagt der Lernende nie wieder;
+         • NEUTRALE Alltagswörter, die jeder kennt ("Applaus", "die Kommentarspalte") —
+           die lernt er in der Nachrichten-Rubrik.
+
        ENTSCHEIDENDES KRITERIUM — WIEDERVERWENDBARKEIT: Eine Einheit gehört nur dann auf
        eine Karte, wenn der Lernende sie in einer ANDEREN Situation benutzen kann, nicht
        nur in dieser.
