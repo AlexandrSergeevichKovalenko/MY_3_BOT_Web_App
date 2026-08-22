@@ -58127,10 +58127,10 @@ def reader_library_open():
                 document_id=int(document_id),
                 source_lang=source_lang,
                 target_lang=target_lang,
-                # Книгу целиком сюда НЕ тянем: язык и страницы берутся отдельными
-                # дешёвыми запросами (образец + окно), иначе открытие толстой книги
-                # стоит тем дороже, чем книга толще.
-                include_content=False,
+                # Книга читается целиком: фронт для epub/html/text получает весь текст
+                # (см. ключ "text" в ответе). Попытка сэкономить здесь 22.08.2026
+                # уронила открытие книг — «Книги не открываются».
+                include_content=True,
             )
         except Exception as exc:
             _log_flow_observation(
@@ -58192,9 +58192,7 @@ def reader_library_open():
                 and re.fullmatch(r"[a-zа-яё]{0,4}\s*\d{4,}", str(doc.get("title") or "").strip().lower())
             ):
                 better_title = _infer_reader_title(
-                    input_text=get_reader_document_language_sample(
-                        document_id=int(document_id), sample_chars=20_000
-                    ),
+                    input_text=str(doc.get("content_text") or ""),
                     input_url=str(doc.get("source_url") or ""),
                     source_type="html",
                 )
@@ -58288,20 +58286,21 @@ def reader_library_open():
                     }
                 ), 403
         detect_started_perf = time.perf_counter()
-        # Ни текст книги, ни все её страницы сюда больше не тянутся: язык определяем по
-        # большому образцу, страницы берём окном прямо из базы. Иначе цена ОТКРЫТИЯ
-        # книги росла вместе с её толщиной — и ради этого стоял потолок на размер книги.
-        source_type = str(doc.get("source_type") or "text").strip().lower()
-        language_sample = get_reader_document_language_sample(document_id=int(document_id))
-        detected_lang = _detect_reader_language(language_sample, fallback=target_lang)
+        # ВНИМАНИЕ: фронт для epub/html/text получает ВЕСЬ текст книги (ключ "text" ниже) —
+        # у этих форматов своя раскладка, и без полного текста ломаются нумерация и
+        # закладки. Поэтому здесь книга читается целиком, и «удешевить» открытие,
+        # выбросив content_text, нельзя: 22.08.2026 такая попытка уронила открытие книг
+        # с NameError. Окно страниц из базы применяется к перелистыванию
+        # (/reader/library/pages), где полный текст не нужен.
+        content_text = str(doc.get("content_text") or "")
+        all_content_pages = _normalize_reader_pages_for_response(
+            str(doc.get("source_type") or "text"),
+            doc.get("content_pages") if isinstance(doc.get("content_pages"), list) else [],
+        )
+        detected_lang = _detect_reader_language(content_text, fallback=target_lang)
         detect_duration_ms = _elapsed_ms_since(detect_started_perf)
-
-        total_pages = int(doc.get("total_pages") or 0)
-        if total_pages <= 0:
-            probe = get_reader_document_pages_window(
-                document_id=int(document_id), start_page=1, end_page=1
-            )
-            total_pages = int(probe.get("total_pages") or 0)
+        total_pages = len(all_content_pages)
+        source_type = str(doc.get("source_type") or "text").strip().lower()
         # Окно в 50 страниц вокруг закладки.
         if total_pages > 0:
             bookmark_pct = float(doc.get("bookmark_percent") or doc.get("progress_percent") or 0)
@@ -58313,21 +58312,13 @@ def reader_library_open():
             pages_start_idx = max(0, raw_target - 5)
             pages_end_idx = min(total_pages, pages_start_idx + window_size)
             pages_start_idx = max(0, pages_end_idx - window_size)
-            window = get_reader_document_pages_window(
-                document_id=int(document_id),
-                start_page=pages_start_idx + 1,
-                end_page=pages_end_idx,
-            )
-            content_pages = _normalize_reader_pages_for_response(
-                source_type,
-                window.get("pages") if isinstance(window.get("pages"), list) else [],
-            )
-            pages_start = window["start_page"]
-            pages_end = window["end_page"]
+            content_pages = all_content_pages[pages_start_idx:pages_end_idx]
+            pages_start = pages_start_idx + 1
+            pages_end = pages_end_idx
         else:
-            content_pages = []
+            content_pages = all_content_pages
             pages_start = 1
-            pages_end = 0
+            pages_end = total_pages
         document_payload = dict(doc)
         document_payload.pop("content_text", None)
         document_payload.pop("content_pages", None)
