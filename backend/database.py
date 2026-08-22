@@ -36861,19 +36861,54 @@ def upsert_public_library_document(
             )
             existing = cursor.fetchone()
             if existing and str(existing[1] or "") == text_hash:
+                # Текст тот же — но НАРЕЗКА на страницы могла измениться: она считается
+                # нашим кодом, а не приходит из книги. 22.08.2026 перезаливка классики
+                # прошла впустую именно здесь: разбиение абзацев починили, а страницы у
+                # 14 книг остались прежними, потому что эта ветка обновляла только
+                # название с обложкой. Поэтому сверяем страницы и переписываем, если они
+                # вправду другие; совпали — не трогаем, чтобы не сжечь прогретую озвучку.
+                cursor.execute(
+                    "SELECT content_pages FROM bt_3_reader_library WHERE id = %s;",
+                    (int(existing[0]),),
+                )
+                stored_pages_row = cursor.fetchone()
+                stored_pages = stored_pages_row[0] if stored_pages_row and isinstance(stored_pages_row[0], list) else []
+                pagination_changed = [
+                    str(p.get("text") or "") for p in stored_pages if isinstance(p, dict)
+                ] != [
+                    str(p.get("text") or "") for p in resolved_pages if isinstance(p, dict)
+                ]
                 cursor.execute(
                     f"""
                     UPDATE bt_3_reader_library
                     SET title = %s, public_author = %s, public_sort = %s,
                         cover_image_url = COALESCE(%s, cover_image_url),
+                        content_pages = CASE WHEN %s THEN %s::jsonb ELSE content_pages END,
                         is_public = TRUE, is_archived = FALSE, archived_at = NULL,
                         processing_status = 'ready', updated_at = NOW()
                     WHERE id = %s
                     RETURNING {_PUBLIC_LIBRARY_SELECT_COLS};
                     """,
-                    (resolved_title, resolved_author, int(sort or 0), resolved_cover, int(existing[0])),
+                    (
+                        resolved_title, resolved_author, int(sort or 0), resolved_cover,
+                        pagination_changed,
+                        json.dumps(resolved_pages, ensure_ascii=False),
+                        int(existing[0]),
+                    ),
                 )
-                return _public_library_row_to_dict(cursor.fetchone())
+                refreshed_row = cursor.fetchone()
+                if pagination_changed:
+                    # Границы страниц другие — старая озвучка к ним не подходит.
+                    cursor.execute(
+                        "DELETE FROM bt_3_reader_audio_pages WHERE document_id = %s;",
+                        (int(existing[0]),),
+                    )
+                    logging.info(
+                        "public library: %s — текст прежний, страницы пересобраны (%s → %s), "
+                        "снято озвученных страниц: %s",
+                        resolved_slug, len(stored_pages), len(resolved_pages), cursor.rowcount,
+                    )
+                return _public_library_row_to_dict(refreshed_row)
             if existing:
                 # Текст книги поменялся — обновляем ТУ ЖЕ строку, НЕ создавая новую.
                 # Раньше здесь было DELETE + INSERT: книга получала новый номер, а
