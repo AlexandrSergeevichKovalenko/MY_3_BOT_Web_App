@@ -98,7 +98,7 @@ import importlib.metadata as importlib_metadata
 from datetime import datetime, timezone
 from io import BytesIO
 from uuid import uuid4
-from urllib.parse import parse_qsl, urlparse, urlencode, quote
+from urllib.parse import parse_qsl, urlparse, urlencode, quote, unquote
 from flask import Flask, request, jsonify, send_from_directory, send_file, g, redirect, has_request_context, Response, stream_with_context
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -18985,16 +18985,29 @@ def _extract_pdf_source_page_texts(data: bytes) -> list[str]:
     _pymupdf = _get_pymupdf()
     if _pymupdf is not None:
         try:
+            failed_pages = 0
+            skipped_tail = 0
             with _pymupdf.open(stream=data, filetype="pdf") as doc:
+                total_source_pages = doc.page_count
+                skipped_tail = max(0, int(total_source_pages) - _READER_PDF_MAX_SOURCE_PAGES)
                 for idx, page in enumerate(doc):
                     if idx >= _READER_PDF_MAX_SOURCE_PAGES:
                         break
                     try:
                         page_text = page.get_text("text") or ""
                     except Exception:
+                        # Страница не прочиталась. Пустая строка тут неотличима от честно
+                        # пустой страницы, поэтому потерю СЧИТАЕМ и называем вслух.
+                        failed_pages += 1
+                        logging.warning("reader PDF: страница %s не прочитана", idx + 1, exc_info=True)
                         page_text = ""
                     normalized = _normalize_pdf_extracted_page_text(page_text, max_chars=50000)
                     source_texts.append(normalized)
+            if failed_pages or skipped_tail:
+                logging.warning(
+                    "reader PDF: не прочитано страниц %d, отброшен хвост после %d-й: %d страниц",
+                    failed_pages, _READER_PDF_MAX_SOURCE_PAGES, skipped_tail,
+                )
             return source_texts
         except Exception:
             logging.exception("reader PDF extraction via PyMuPDF failed; falling back to pypdf")
@@ -19313,29 +19326,105 @@ def _extract_html_heading_title(raw_html: str, fallback_num: int) -> str:
     return f"Kapitel {fallback_num}"
 
 
-def _is_epub_navigation_document(item: Any, raw_html: str) -> bool:
+def _epub_declared_navigation_hrefs(book: Any) -> set[str]:
+    """ИСТОЧНИК ИСТИНЫ: какие файлы книга САМА объявила навигацией.
+
+    Два места, и оба записаны в самой книге, а не угаданы нами:
+      • EPUB3 — в манифесте у файла стоит properties="nav" (спека EPUB 3, §5.4.1);
+        ebooklib поднимает такой файл классом EpubNav.
+      • EPUB2 — в <guide> стоит <reference type="toc" href="…"> (спека OPF 2.0.1, §2.6).
+    NCX (toc.ncx) сюда не нужен: это не документ, он в текст чтения и не попадает.
+
+    Вернуть href'ы в нижнем регистре и без якоря — так их сравнивают с file_name.
+    """
+    hrefs: set[str] = set()
+
+    def _norm(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        raw = raw.split("#", 1)[0]
+        try:
+            raw = unquote(raw)
+        except Exception:
+            pass
+        return raw.strip().lstrip("./").lower()
+
+    for entry in list(getattr(book, "guide", []) or []):
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("type") or "").strip().lower() not in ("toc", "contents"):
+            continue
+        href = _norm(entry.get("href"))
+        if href:
+            hrefs.add(href)
+
+    for item in list(getattr(book, "items", []) or []):
+        properties = [str(p).strip().lower() for p in (getattr(item, "properties", None) or [])]
+        is_nav_item = "nav" in properties or type(item).__name__ == "EpubNav"
+        if not is_nav_item:
+            continue
+        href = _norm(getattr(item, "file_name", "") or getattr(item, "get_name", lambda: "")())
+        if href:
+            hrefs.add(href)
+
+    return hrefs
+
+
+# Доля текста, спрятанного в ссылках, выше которой документ — оглавление, а не глава.
+# Это ИЗМЕРЕНИЕ самого документа, а не догадка по имени файла или по словам в тексте.
+# Замер 22.08.2026 на живой книге (Kissinger «Weltordnung», 44 документа): у двух
+# оглавлений доля 0.77 и 0.94, у самой «ссылочной» главы (138 сносок) — 0.048,
+# у страницы издательской рекламы — 0.048. Порог 0.6 лежит в пустом разрыве между ними.
+_EPUB_NAV_LINK_TEXT_SHARE = 0.6
+_EPUB_NAV_MIN_LINKS = 5
+
+
+def _epub_link_text_share(raw_html: str) -> tuple[float, int]:
+    """Сколько текста документа лежит внутри <a …>…</a>. Возвращает (доля, число ссылок)."""
+    html_probe = str(raw_html or "")
+
+    def _plain(chunk: str) -> str:
+        text = re.sub(r"(?s)<[^>]+>", " ", chunk)
+        return re.sub(r"\s+", " ", text).strip()
+
+    total = len(_plain(html_probe))
+    if total <= 0:
+        return 0.0, 0
+    link_chunks = re.findall(r"(?is)<a\b[^>]*>(.*?)</a>", html_probe)
+    linked = sum(len(_plain(chunk)) for chunk in link_chunks)
+    return (linked / total), len(link_chunks)
+
+
+def _is_epub_navigation_document(
+    item: Any,
+    raw_html: str,
+    *,
+    declared_nav_hrefs: set[str] | None = None,
+) -> tuple[bool, str]:
+    """Оглавление это или глава. Возвращает (да/нет, по какому основанию).
+
+    Раньше здесь были приметы «в имени файла есть index/toc», «в тексте встретилось
+    слово Inhaltsverzeichnis», «есть тег <nav>». Каждая из трёх выбрасывала ЦЕЛУЮ
+    главу: книга, лежащая одним файлом index.html, доезжала до читалки титульным
+    листом (Фрейд, «Das Unbehagen in der Kultur», 22.08.2026 — 110 знаков вместо
+    ~150 000). Приметы убраны: решает объявление самой книги, а при его отсутствии —
+    измеренная доля текста в ссылках.
+    """
     file_name = str(
         getattr(item, "file_name", "")
         or getattr(item, "get_name", lambda: "")()
         or ""
-    ).strip().lower()
-    html_probe = str(raw_html or "")
-    text_probe = re.sub(r"(?s)<[^>]+>", " ", html_probe)
-    text_probe = re.sub(r"\s+", " ", text_probe).strip().lower()
+    ).strip().lstrip("./").lower()
 
-    nav_markup = (
-        re.search(r'(?i)<nav\b', html_probe)
-        or re.search(r'(?i)\bepub:type\s*=\s*["\'](?:toc|landmarks|page-list)["\']', html_probe)
-        or re.search(r'(?i)\brole\s*=\s*["\']doc-toc["\']', html_probe)
-    )
-    nav_name = bool(re.search(r'(^|/)(nav|toc|contents?|index)\b', file_name))
-    nav_text = (
-        ("table of contents" in text_probe)
-        or ("inhaltsverzeichnis" in text_probe)
-        or ("inhalt" in text_probe and len(text_probe) < 400)
-        or ("contents" in text_probe and len(text_probe) < 400)
-    )
-    return bool(nav_markup or nav_name or nav_text)
+    if declared_nav_hrefs and file_name and file_name in declared_nav_hrefs:
+        return True, "объявлено самой книгой (manifest properties=nav / guide type=toc)"
+
+    share, links = _epub_link_text_share(raw_html)
+    if links >= _EPUB_NAV_MIN_LINKS and share >= _EPUB_NAV_LINK_TEXT_SHARE:
+        return True, f"текст документа на {share:.0%} состоит из ссылок ({links} шт.)"
+
+    return False, ""
 
 
 def _looks_like_chapter_heading(line: str) -> bool:
@@ -19747,36 +19836,70 @@ def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
         seen_keys.add(key)
         ordered_items.append(item)
 
+    declared_nav_hrefs = _epub_declared_navigation_hrefs(book)
+    dropped_navigation = 0
+    dropped_unreadable = 0
+    dropped_empty = 0
+    hit_total_ceiling = False
+
     for item in ordered_items:
         chapter_num += 1
         if total_chars >= _EPUB_MAX_TOTAL_TEXT_CHARS:
+            hit_total_ceiling = True
             break
         try:
             html_bytes = item.get_body_content()
             raw_html = html_bytes.decode("utf-8", errors="ignore") if isinstance(html_bytes, bytes) else str(html_bytes or "")
         except Exception:
+            # Документ не читается — это НЕ «пусто», это потеря. Считаем и говорим вслух.
+            dropped_unreadable += 1
+            logging.warning(
+                "EPUB: документ не прочитан, глава потеряна: %s",
+                getattr(item, "file_name", "?"),
+                exc_info=True,
+            )
             continue
-        if _is_epub_navigation_document(item, raw_html):
+        is_navigation, nav_reason = _is_epub_navigation_document(
+            item, raw_html, declared_nav_hrefs=declared_nav_hrefs
+        )
+        if is_navigation:
+            dropped_navigation += 1
+            logging.info(
+                "EPUB: пропущено оглавление %s — %s",
+                getattr(item, "file_name", "?"), nav_reason,
+            )
             continue
         # Structure-aware extraction: keep the document's own headings / lists /
         # paragraphs. Do NOT re-normalize the text afterwards — that would shift the
         # char offsets the block ranges point at (the parser already collapsed
-        # whitespace per block). Cap length by simple truncation instead.
+        # whitespace per block).
         normalized, chapter_blocks = _extract_structured_from_html(raw_html)
         if not normalized:
+            dropped_empty += 1
             continue
+        # Обрезки главы больше нет. Была `min(50000, …)`: книга, лежащая одним файлом,
+        # молча кончалась на 56-й странице (замер 22.08.2026 — 150 000 знаков доезжали
+        # как 50 000). Единственный потолок — общий на книгу, и о нём мы сообщаем.
         remaining_chars = max(0, _EPUB_MAX_TOTAL_TEXT_CHARS - total_chars)
         if remaining_chars <= 0:
+            hit_total_ceiling = True
             break
-        cap = min(50000, remaining_chars)
-        if len(normalized) > cap:
-            normalized = normalized[:cap].rstrip()
+        if len(normalized) > remaining_chars:
+            normalized = normalized[:remaining_chars].rstrip()
             chapter_blocks = [b for b in chapter_blocks if int(b["start"]) < len(normalized)]
+            hit_total_ceiling = True
         chapter_title = _extract_html_heading_title(raw_html, chapter_num)
         chunks.append(normalized)
         total_chars += len(normalized) + 2
         sub_pages = _split_chapter_into_pages_structured(normalized, chapter_blocks, chapter_title, len(pages))
         pages.extend(sub_pages)
+
+    logging.info(
+        "EPUB разобран: документов %d, страниц %d, знаков %d; "
+        "пропущено оглавлений %d, нечитаемых %d, пустых %d; потолок книги достигнут: %s",
+        len(ordered_items), len(pages), total_chars,
+        dropped_navigation, dropped_unreadable, dropped_empty, hit_total_ceiling,
+    )
     # Re-number pages sequentially after all chapters are processed
     for i, p in enumerate(pages):
         p["page_number"] = i + 1
@@ -20174,8 +20297,21 @@ _reader_pdf_pagecount_cache: dict[int, int] = {}
 _reader_pdf_cumlens_cache: dict[int, list[int]] = {}
 
 
-def _reader_source_object_key(user_id: int, document_id: int) -> str:
-    return f"reader_source/{int(user_id)}/{int(document_id)}/source.pdf"
+_READER_SOURCE_EXTENSIONS = {"pdf": "pdf", "epub": "epub", "file": "txt", "text": "txt"}
+_READER_SOURCE_CONTENT_TYPES = {
+    "pdf": "application/pdf",
+    "epub": "application/epub+zip",
+    "file": "text/plain; charset=utf-8",
+    "text": "text/plain; charset=utf-8",
+}
+
+
+def _reader_source_object_key(user_id: int, document_id: int, source_type: str = "pdf") -> str:
+    """Где лежит ИСХОДНЫЙ файл книги. Хранится постоянно (решение владельца 22.08.2026):
+    без него любая починка разборщика требует, чтобы человек заливал книгу заново —
+    так после починки 22.08 остались недочитанными и Фрейд, и «Weltordnung»."""
+    extension = _READER_SOURCE_EXTENSIONS.get(str(source_type or "").strip().lower(), "bin")
+    return f"reader_source/{int(user_id)}/{int(document_id)}/source.{extension}"
 
 
 def _reader_pdf_cumlens(user_id: int, document_id: int) -> list[int] | None:
@@ -20394,6 +20530,99 @@ def _extract_epub_title_and_cover(data: bytes, *, user_id: int, document_id: int
     return title, cover_url
 
 
+# Что читалка вправду умеет читать. Всё остальное человек получает отказом, а не
+# книгой из мусора: 22.08.2026 загруженный .docx лёг в библиотеку как «книга» на
+# 45 083 знака вида «PK\x03\x04…[Content_Types].xml» — файл декодировали как UTF-8
+# с errors="ignore" и записали что получилось.
+_READER_SUPPORTED_FORMATS_HUMAN = "EPUB, PDF или текстовый файл (.txt, .md)"
+
+# Опознание формата по СОДЕРЖИМОМУ файла (сигнатуры из спецификаций форматов), а не
+# по расширению: расширение человек может и переименовать, и потерять при пересылке.
+_READER_FORMAT_SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
+    (b"%PDF-", "pdf", "PDF"),
+    (b"{\\rtf", "rtf", "RTF"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "ole", "DOC (старый Word)"),
+    (b"\x1f\x8b", "gzip", "GZIP-архив"),
+    (b"Rar!\x1a\x07", "rar", "RAR-архив"),
+    (b"\x89PNG\r\n\x1a\n", "png", "PNG-картинка"),
+    (b"\xff\xd8\xff", "jpeg", "JPEG-картинка"),
+)
+
+
+def _classify_reader_upload(raw_bytes: bytes, *, file_name: str = "", file_mime: str = "") -> tuple[str, str]:
+    """Что нам прислали на самом деле. Возвращает (что-делать, человеческое имя формата).
+
+    «Что-делать» — одно из: "pdf", "epub", "text", "unsupported".
+    Источник — сигнатура файла (спецификации PDF, ZIP/EPUB OCF, MOBI, FB2, RTF, OLE2);
+    имя файла и MIME используются только там, где сигнатуры у формата нет (обычный текст).
+    """
+    head = bytes(raw_bytes or b"")[:4096]
+    lower_name = str(file_name or "").strip().lower()
+    mime = str(file_mime or "").strip().lower()
+
+    if head.startswith(b"PK\x03\x04"):
+        # ZIP-контейнер: EPUB объявляет себя первым файлом mimetype (спека EPUB OCF, §4.2).
+        if b"application/epub+zip" in bytes(raw_bytes or b"")[:2048]:
+            return "epub", "EPUB"
+        if lower_name.endswith(".epub") or mime in ("application/epub+zip", "application/epub"):
+            return "epub", "EPUB"
+        if lower_name.endswith(".docx") or "wordprocessingml" in mime:
+            return "unsupported", "DOCX (Word)"
+        if lower_name.endswith(".odt"):
+            return "unsupported", "ODT (OpenDocument)"
+        return "unsupported", "ZIP-архив"
+
+    for signature, kind, human in _READER_FORMAT_SIGNATURES:
+        if head.startswith(signature):
+            return ("pdf", "PDF") if kind == "pdf" else ("unsupported", human)
+
+    # MOBI/AZW: строка BOOKMOBI лежит по смещению 60 (формат PalmDOC/MOBI).
+    if bytes(raw_bytes or b"")[60:68] in (b"BOOKMOBI", b"TEXtREAd"):
+        return "unsupported", "MOBI / AZW"
+
+    probe = head.lstrip()[:400].lower()
+    if b"<fictionbook" in probe:
+        return "unsupported", "FB2"
+
+    if b"\x00" in head:
+        return "unsupported", "двоичный файл неизвестного формата"
+
+    return "text", "текстовый файл"
+
+
+def _decode_reader_text_upload(raw_bytes: bytes) -> str:
+    """Текстовый файл → строка. Кодировку ОПОЗНАЁМ, а не подставляем наугад.
+
+    Порядок: объявленный BOM → UTF-8 (строго) → определитель charset_normalizer,
+    тот же, которым пользуется requests. Если ни один не дал разбора — честная
+    ошибка человеку, а не текст с «кракозябрами» вместо немецких умляутов
+    (errors="ignore" молча съедал бы каждый ä/ö/ü в файле в чужой кодировке).
+    """
+    data = bytes(raw_bytes or b"")
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data[3:].decode("utf-8", errors="strict")
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="strict")
+    try:
+        return data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        pass
+    try:
+        from charset_normalizer import from_bytes as _charset_from_bytes
+    except Exception as exc:
+        raise ValueError(
+            "Файл не в кодировке UTF-8 — я не смог его прочитать. "
+            "Сохраните его в UTF-8 и пришлите снова."
+        ) from exc
+    best = _charset_from_bytes(data).best()
+    if best is None:
+        raise ValueError(
+            "Не удалось определить кодировку файла. Сохраните его в UTF-8 и пришлите снова."
+        )
+    logging.info("reader: текстовый файл прочитан как %s", best.encoding)
+    return str(best)
+
+
 def _resolve_reader_ingest_content(
     *,
     input_text: str,
@@ -20429,9 +20658,22 @@ def _resolve_reader_ingest_content(
                 raw_bytes = base64.b64decode(file_content_b64, validate=True)
             except Exception as exc:
                 raise ValueError(f"Некорректный файл: {exc}") from exc
-        lower_name = file_name.lower()
-        is_pdf = file_mime == "application/pdf" or lower_name.endswith(".pdf")
-        is_epub = file_mime in ("application/epub+zip", "application/epub") or lower_name.endswith(".epub")
+        # Формат берём из СОДЕРЖИМОГО файла. Расширение и MIME — только подсказка:
+        # книга, пересланная через мессенджер, часто приходит как application/octet-stream.
+        upload_kind, upload_human = _classify_reader_upload(
+            raw_bytes, file_name=file_name, file_mime=file_mime
+        )
+        if upload_kind == "unsupported":
+            logging.info(
+                "reader: отказ по формату — %s (имя %r, mime %r, %d байт)",
+                upload_human, file_name, file_mime, len(raw_bytes),
+            )
+            raise ValueError(
+                f"Этот файл в формате {upload_human} — его я пока читать не умею. "
+                f"Пришлите книгу как {_READER_SUPPORTED_FORMATS_HUMAN}."
+            )
+        is_pdf = upload_kind == "pdf"
+        is_epub = upload_kind == "epub"
         if is_pdf:
             normalized_text, content_pages = _extract_pdf_content_from_bytes(raw_bytes)
             source_type = "pdf"
@@ -20449,8 +20691,7 @@ def _resolve_reader_ingest_content(
             if _bc:
                 meta["cover_image_url"] = _bc
         else:
-            decoded_text = raw_bytes.decode("utf-8", errors="ignore")
-            normalized_text = _normalize_reader_text(decoded_text)
+            normalized_text = _normalize_reader_text(_decode_reader_text_upload(raw_bytes))
             source_type = "file"
     elif input_text:
         normalized_text = _normalize_reader_text(input_text)
@@ -21146,6 +21387,9 @@ def _iter_reader_upload_object_key_candidates(
     if direct_key:
         add_candidate(direct_key)
 
+    # Постоянный ключ исходника — там книга лежит после разбора (см. _reader_source_object_key).
+    add_candidate(_reader_source_object_key(int(user_id), int(document_id), normalized_source_type))
+
     suffix = ""
     if normalized_source_type == "epub":
         suffix = ".epub"
@@ -21290,21 +21534,32 @@ def _process_reader_library_ingest_job(
                 logging.warning("prune_old_reader_articles failed user_id=%s", user_id, exc_info=True)
         if upload_r2_object_key:
             try:
-                # For PDFs, RETAIN the source under a deterministic key so the reader's
-                # «Original» mode can render pages on demand later; then remove the
-                # month-scoped upload. Non-PDFs are still just cleaned up.
-                if source_type == "pdf":
-                    try:
-                        src_bytes = r2_get_bytes(upload_r2_object_key)
-                        if src_bytes:
-                            r2_put_bytes(
-                                _reader_source_object_key(int(user_id), int(document_id)),
-                                src_bytes,
-                                content_type="application/pdf",
-                                cache_control="private, max-age=31536000",
-                            )
-                    except Exception:
-                        logging.warning("reader source retain failed document_id=%s", document_id, exc_info=True)
+                # ИСХОДНИК КНИГИ ХРАНИМ ВСЕГДА, под постоянным ключом (решение владельца
+                # 22.08.2026). PDF он нужен ещё и для режима «Оригинал», а всем форматам —
+                # чтобы после починки разборщика система перечитала книгу САМА, не прося
+                # человека залить её заново. Месячную папку загрузки после этого убираем.
+                retained = False
+                try:
+                    src_bytes = r2_get_bytes(upload_r2_object_key)
+                    if src_bytes:
+                        r2_put_bytes(
+                            _reader_source_object_key(int(user_id), int(document_id), source_type),
+                            src_bytes,
+                            content_type=_READER_SOURCE_CONTENT_TYPES.get(
+                                str(source_type or "").strip().lower(), "application/octet-stream"
+                            ),
+                            cache_control="private, max-age=31536000",
+                        )
+                        retained = True
+                except Exception:
+                    logging.warning("reader source retain failed document_id=%s", document_id, exc_info=True)
+                if not retained:
+                    # Исходник не сохранился — говорим об этом вслух, а не молчим:
+                    # молча удалить единственный экземпляр книги нельзя.
+                    logging.warning(
+                        "reader: исходник книги НЕ сохранён, удаляю загрузку document_id=%s user_id=%s",
+                        document_id, user_id,
+                    )
                 r2_delete_object(upload_r2_object_key)
             except Exception:
                 logging.warning(

@@ -32,6 +32,8 @@ fsrs>=6.1.1
 stripe>=11.0.0
 boto3>=1.34.0
 requests>=2.32.3,<3
+# Определение кодировки текстовых книг при загрузке (приходит с requests, фиксируем явно).
+charset-normalizer>=3.3,<4
 urllib3>=2,<3
 chardet<6
 redis>=5.2.1
