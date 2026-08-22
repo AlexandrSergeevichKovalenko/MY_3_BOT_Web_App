@@ -10025,20 +10025,43 @@ def _apply_german_headword_normalization(
     # pairing is self-contradictory and only happens on this misclassification — a real noun
     # phrase ("der Bösewicht im Film") is entry_kind=word, so it is left untouched. Strip the
     # bogus leading article and drop the noun label.
-    if (str(normalized.get("entry_kind") or "").strip().lower() == "sentence"
-            and str(normalized.get("part_of_speech") or "").strip().lower() == "noun"):
-        _gk = "source_text" if _normalize_short_lang_code(source_lang, fallback="") == "de" else (
-            "target_text" if _normalize_short_lang_code(target_lang, fallback="") == "de" else "")
-        _gtext = str((normalized.get(_gk) if _gk else "") or normalized.get("word_de") or "").strip()
-        _fixed = _strip_spurious_leading_article(_gtext)
-        if _fixed:
+    # ── АРТИКЛЬ ПРИНАДЛЕЖИТ СЛОВУ, А НЕ ФРАЗЕ ────────────────────────────────────
+    #
+    # Владелец 22.08.2026 прислал «Ноющая, тянущая боль в боку» → над заголовком
+    # «ziehender, dumpfer Schmerz in der Seite» отдельной строкой стоял артикль «der»,
+    # а сама фраза помечена «существительное». Это несогласованно в обе стороны: при
+    # артикле окончания прилагательных должны быть слабыми («der ziehende, dumpfe
+    # Schmerz»), а без артикля — сильными, как и написано. Человек заучивает смесь.
+    #
+    # ОТКУДА БЕРЁТСЯ. Машинка авторитетного артикля ниже уже защищена — она работает
+    # только на одном слове (`_is_single_word_dictionary_entry`). Но артикль приходит
+    # ещё и ПОЛЕМ МОДЕЛИ: она разбирает существительное ВНУТРИ фразы («der Schmerz»)
+    # и подписывает им всю фразу. На многословном этот артикль не снимал никто, потому
+    # что функция выходит раньше — на проверке `entry_kind != 'word'`.
+    #
+    # Замер 22.08.2026: 518 разборов из 10 337 помечены существительным при многословном
+    # заголовке; у 208 из них заголовок начинается со строчной, то есть артикль встаёт
+    # перед прилагательным или предлогом и виден как ошибка сразу.
+    #
+    # Прежняя защита ловила только `entry_kind = sentence`; правило то же, но полное:
+    # многословное — не существительное, у него нет ни рода, ни артикля.
+    _gk = "source_text" if _normalize_short_lang_code(source_lang, fallback="") == "de" else (
+        "target_text" if _normalize_short_lang_code(target_lang, fallback="") == "de" else "")
+    _gtext = str((normalized.get(_gk) if _gk else "") or normalized.get("word_de") or "").strip()
+    if _gtext and not _is_single_word_dictionary_entry(_gtext, "de"):
+        _fixed = _strip_spurious_leading_article(_gtext) or _gtext
+        if _fixed != _gtext:
             if _gk:
                 normalized[_gk] = _fixed
             if normalized.get("word_de"):
                 normalized["word_de"] = _fixed
+        if str(normalized.get("article") or "").strip():
             normalized["article"] = ""
-            normalized["part_of_speech"] = ""
-            return normalized
+        if str(normalized.get("part_of_speech") or "").strip().lower() == "noun":
+            # «Существительное» у фразы — это и есть причина приклеенного артикля.
+            # Чиним пометку, а не только её последствие.
+            normalized["part_of_speech"] = "phrase"
+        return normalized
     if str(normalized.get("entry_kind") or "").strip().lower() != "word":
         return normalized
     part_of_speech = str(normalized.get("part_of_speech") or "").strip().lower()
@@ -10328,6 +10351,28 @@ def _rich_enrich_card_fields(
     native_lang = (native_lang or "ru").strip().lower() or "ru"
     if not german_word:
         return {}
+    # ── СМЫСЛ, КОТОРЫЙ СОХРАНИЛ ЧЕЛОВЕК, ЕДЕТ К МОДЕЛИ ───────────────────────────
+    #
+    # Владелец 22.08.2026: карточка «die Hose anhaben» была сохранена со смыслом «Быть
+    # главным» (идиома), а ночь обогатила её про БУКВАЛЬНОЕ ношение брюк — управление
+    # «etwas anhaben — Er hat einen Anzug an», примеры «Welche Hose hast du heute an?»,
+    # мнемоника про одежду. Идиомы в карточке не было ни строкой, при этом сверху
+    # по-прежнему стояло «Быть главным»: подпись и содержимое про разное.
+    #
+    # ПРИЧИНА БЫЛА ЗДЕСЬ, В ДВУХ СТРОКАХ ВЫШЕ. Перевод человека честно доезжал сюда
+    # аргументом `target_text`, но использовался ТОЛЬКО чтобы понять, какая сторона
+    # немецкая. Если немецкий слева — русский не уходил к модели вообще, и она разбирала
+    # основное значение, потому что другого не видела.
+    #
+    # Теперь он идёт отдельным полем. Промпт решает, что с ним делать: сохранённый смысл
+    # становится главным значением карточки, а основное уходит вторым — решение владельца
+    # 22.08.2026 («ставь первым его оттенок, основное строкой ниже»). Слепо промпт ему не
+    # верит: если смысл к выражению не подходит вовсе, он строит обычную карточку и
+    # говорит об этом полем `saved_meaning_fits`.
+    saved_meaning = ""
+    _native_side = target_text if sl == "de" else source_text
+    if str(_native_side or "").strip() and str(_native_side or "").strip() != german_word:
+        saved_meaning = str(_native_side).strip()
     try:
         raw = asyncio.run(
             run_dictionary_lookup_multilang(
@@ -10335,6 +10380,9 @@ def _rich_enrich_card_fields(
                 source_lang="de",
                 target_lang=native_lang,
                 explanation_lang=native_lang,
+                extra_payload=(
+                    {"saved_meaning": {"text": saved_meaning, "language": native_lang}}
+                    if saved_meaning else None),
                 # Промпт и модель — те же, что у живого разбора (system_instruction_key не
                 # трогаем), меняется ТОЛЬКО имя задачи. Иначе в ведомости фоновый досбор и
                 # запрос живого человека пишутся одной строкой и различить их нечем: за
@@ -10351,6 +10399,19 @@ def _rich_enrich_card_fields(
         return {}
     if not isinstance(raw, dict) or not raw:
         return {}
+    # ⚠ СМЫСЛ МЕНЯЕТСЯ, ЯЗЫК ПОЛЕЙ — НЕТ, и на модель тут полагаться нельзя.
+    #
+    # Как только рядом со словом появляется русский смысл, модель начинает путать
+    # стороны: на «die Hose anhaben» со смыслом «Быть главным» она положила в немецкое
+    # поле примера русское предложение «В этой семье традиционно папа всегда носит
+    # штаны.» Прямая просьба в задании («example_source в языке слова») это не
+    # вылечила — проверено дважды 22.08.2026.
+    #
+    # Поэтому стороны примеров выправляются кодом, тем же правилом, что чинит уже
+    # лежащие разборы: если слева чужой язык, а справа нужный — половины меняются
+    # местами. Не выбрасываем: пример хороший, он просто повёрнут.
+    from backend.lex_units import orient_examples_to_unit_language
+    raw = orient_examples_to_unit_language(raw, "de")
     try:
         item, _direction, _detected, _sv, _tv = _build_dictionary_result_from_raw(
             raw=raw,

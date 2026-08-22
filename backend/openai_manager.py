@@ -2710,7 +2710,8 @@ Input JSON:
   "target_language": "ru|en|de|es|it",
   "explanation_language": "ru|en|de|es|it",
   "word": "<user input>",
-  "verified_entry": {"lemma": "...", "pos": "...", "gloss": "..."}   // OPTIONAL
+  "verified_entry": {"lemma": "...", "pos": "...", "gloss": "..."},  // OPTIONAL
+  "saved_meaning": {"text": "<what THIS learner saved>", "language": "ru|en|de|es|it"}  // OPTIONAL
 }
 
 Task:
@@ -2729,6 +2730,33 @@ Task:
   "blad" (adjective, "fat") must NOT become "Blatt" or "bald"; correction_applied
   stays false and word_source/word_target keep the given lemma. A card about a
   different word is worse than no card at all.
+- SAVED MEANING DECIDES WHICH SENSE THE CARD IS ABOUT. When "saved_meaning" is present,
+  this learner already met the expression in a particular sense and saved it with that
+  translation. The card is FOR HIM, so that sense goes FIRST — meanings.primary, the
+  first entry of translations, the governing pattern, the collocations, the examples and
+  the memory tip all describe THAT sense. The everyday/literal sense is not dropped: it
+  goes into meanings.secondary, clearly marked, so he also learns what the words mean
+  outside the idiom.
+  * Worked example. word = "die Hose anhaben", saved_meaning = "Быть главным". This is
+    the idiom "to wear the trousers" = to be the one in charge. Primary = быть главным,
+    with examples about who decides in a family or a team. Secondary = literally wearing
+    trousers. What must NOT happen (and did, 22.08.2026): a whole card about clothes —
+    "etwas anhaben — Er hat einen Anzug an", "ein Hemd anhaben", "Welche Hose hast du
+    heute an?" — while the learner's own note still said "Быть главным". Heading and
+    content were about different things.
+  * CHECK IT FIRST, do not obey blindly. If the saved meaning cannot belong to this
+    expression at all — a different word, a mistranslation, a note that is not a meaning —
+    ignore it, build the ordinary card, and set "saved_meaning_fits": false. If it fits
+    (including as a rare, figurative, slang or regional sense), set it to true.
+  * A sense being rare is NOT a reason to reject it. Idioms and slang are exactly why a
+    learner saves an expression by hand.
+  * "saved_meaning" is written in the LEARNER'S language and must never leak into a
+    field that holds the word's own language. Examples stay as everywhere else:
+    example_source in the language of "word", example_target in the other one. Observed
+    22.08.2026 on the very first run of this rule: with saved_meaning = "Быть главным"
+    the model put "В этой семье традиционно папа всегда носит штаны." into
+    example_source — a Russian sentence in the German slot. The sense changed; the
+    language of the fields did not.
 - If the input is a noisy pedagogical grammar fragment such as
   "erinnert... an + Akkusativ", "ist... ähnlich + Dativ",
   "hat Ähnlichkeit mit + Dativ":
@@ -2740,6 +2768,8 @@ Task:
 Return STRICT JSON with keys:
 {
   "detected_language": "source" | "target",
+  // Present ONLY when "saved_meaning" came in: does it really belong to this expression?
+  "saved_meaning_fits": true | false,
   "word_source": "<normalized word/phrase in source_language>",
   "word_target": "<normalized word/phrase in target_language>",
   "translations": [
