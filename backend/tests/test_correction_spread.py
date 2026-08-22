@@ -147,3 +147,33 @@ def test_case_only_correction_is_a_real_change_in_german():
     assert cur.cards[0][3]["word_de"] == new
     assert cur.pool[900][0] == new
     assert report["cards"] == 1
+
+
+def test_the_function_cleans_its_own_input():
+    """Чистка живёт ВНУТРИ развоза, а не у вызывающего.
+
+    Раньше оба вызывающих чистили текст сами, и дырки не было — пока их двое. Третий
+    пришёл бы без чистки, и грязь разъехалась бы разом по трём хранилищам. Правило,
+    которое держится на дисциплине вызывающего, рано или поздно не держится: 21.08.2026
+    соседний агент переименовал семь заголовков своим запросом, и пятнадцать записей
+    пула остались со старым написанием.
+    """
+    cur = _build()
+    # Невидимый символ и двойные пробелы — ровно та грязь, из-за которой одно и то же
+    # слово перестаёт быть равно самому себе.
+    db.spread_correction_everywhere(
+        cur, unit_id=1, old_text=OLD, new_text="Daher nehme​ ich  Korrekturen selbst vor")
+    _entry_id, word_de, _translation_de, _payload, _canonical = cur.cards[0]
+    assert word_de == NEW, f"развоз обязан был почистить вход, а положил {word_de!r}"
+
+
+def test_mangled_text_is_never_spread():
+    """Развоз порчи — худшее, что может случиться: она размножится по трём хранилищам.
+
+    Признак берётся из общего модуля backend/mangled_text.py, своего здесь нет.
+    """
+    cur = _build()
+    report = db.spread_correction_everywhere(
+        cur, unit_id=1, old_text=OLD, new_text="Daher nehme ich Korrekturen selbst vor......")
+    assert report["cards"] == 0
+    assert cur.cards[0][1] == OLD, "испорченный текст не должен никуда уехать"
