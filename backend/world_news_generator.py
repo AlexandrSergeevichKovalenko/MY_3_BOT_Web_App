@@ -1222,14 +1222,33 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
     # формулировка вопроса содержит саму единицу с карточки, пакет бракуется и модель
     # переспрашивается. Латать вопрос своими руками нельзя — придумывать за неё нечего.
     if needs_quote:
-        card_keys = {(_quote_fingerprint(p["de"]), p["de"]) for p in phrases
-                     if len(_quote_fingerprint(p["de"])) >= 4}
+        # Бракуем ТОЛЬКО вопрос, который спрашивает ЗНАЧЕНИЕ уже разобранной единицы —
+        # человек прочитал ответ строкой выше, и вопрос ничего не проверяет.
+        #
+        # Первая версия этой проверки была слишком жадной: она бракевала любой вопрос, где
+        # встречались слова карточки. 22.08.2026 карточка «vollständig gelöscht» и законный
+        # вопрос «Wann wurde das Feuer vollständig gelöscht?» (КОГДА потушили, а не что это
+        # значит) забраковали весь пакет трижды подряд — выпуск не собрался вовсе. Защита
+        # оказалась вреднее дефекта, от которого стерегла.
+        #
+        # Признак вопроса-определения: единица взята в кавычки ИЛИ рядом стоит слово,
+        # которым по-немецки спрашивают значение.
+        meaning_markers = ("gemeint", "bedeutet", "bedeutung", "versteht man", "heißt",
+                           "heisst", "rolle spielt", "meint ")
         for q in quiz:
-            q_fp = _quote_fingerprint(q["question_de"])
-            for key, original in card_keys:
-                if key in q_fp:
+            question = str(q["question_de"])
+            q_low = question.lower()
+            q_fp = _quote_fingerprint(question)
+            asks_meaning = any(m in q_low for m in meaning_markers)
+            for p in phrases:
+                key = _quote_fingerprint(p["de"])
+                if len(key) < 4 or key not in q_fp:
+                    continue
+                quoted = any(f"{mark}{p['de']}{close}" in question
+                             for mark, close in (("«", "»"), ("'", "'"), ('"', '"')))
+                if quoted or asks_meaning:
                     raise ValueError(
-                        f"quiz question repeats a card unit: {original!r}"
+                        f"quiz question asks the meaning of a card unit: {p['de']!r}"
                     )
 
     return {"summary_ru": summary_ru, "phrases": phrases, "quiz": quiz}

@@ -715,7 +715,7 @@ def test_quiz_may_not_repeat_a_card_unit():
     pack["quiz"][1]["question_de"] = "Welche Rolle spielt das Wort 'Digger' im Auftritt?"
     with pytest.raises(ValueError) as err:
         _validate_and_normalize_pack(pack, STANDUP_PROFILE, transcript)
-    assert "repeats a card unit" in str(err.value)
+    assert "asks the meaning of a card unit" in str(err.value)
 
 
 def test_quiz_about_the_show_itself_is_fine():
@@ -1274,3 +1274,23 @@ def test_judge_keeps_every_requirement_we_paid_for():
     from backend.daily_video_judge import _JUDGE_SYSTEM
 
     _assert_requirements(_JUDGE_SYSTEM, _JUDGE_REQUIREMENTS, "судья приёмки")
+
+
+def test_a_normal_question_may_mention_a_card_unit():
+    """Первая версия проверки «вопрос не повторяет карточку» была слишком жадной: она
+    бракевала ЛЮБОЙ вопрос, где встречались слова карточки. 22.08.2026 карточка
+    «vollständig gelöscht» и законный вопрос «Wann wurde das Feuer vollständig gelöscht?»
+    (КОГДА потушили, а не что это значит) забраковали весь пакет трижды подряд — выпуск не
+    собрался вовсе. Защита оказалась вреднее дефекта, от которого стерегла.
+
+    Бракуем только вопрос-определение: единица в кавычках или рядом слово, которым
+    по-немецки спрашивают значение."""
+    transcript = _TRANSCRIPT + " Das Feuer wurde vollständig gelöscht."
+    phrases = _good_phrases(4) + [
+        _phrase("vollständig gelöscht", "Das Feuer wurde vollständig gelöscht.")
+    ]
+    phrases[-1]["de_in_text"] = "vollständig gelöscht"
+    pack = _pack(phrases)
+    pack["quiz"][0]["question_de"] = "Wann wurde das Feuer vollständig gelöscht?"
+    out = _validate_and_normalize_pack(pack, STANDUP_PROFILE, transcript)
+    assert len(out["quiz"]) == 4, "содержательный вопрос обязан проходить"
