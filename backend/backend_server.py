@@ -56133,6 +56133,9 @@ def get_worldnews_today():
             # к словарной форме не приводятся — вместо этого карточка форму называет.
             "form_ru": str(p.get("form_ru") or "").strip(),
             "literal_ru": str(p.get("literal_ru") or "").strip(),
+            # Форма из текста: та же единица, но в том виде, в каком она стоит в ролике.
+            # Человек видит обе — словарную, чтобы выучить, и живую, чтобы узнать на слух.
+            "de_in_text": str(p.get("de_in_text") or "").strip(),
             "quote_de": str(p.get("quote_de") or "").strip(),
             "quote_ru": str(p.get("quote_ru") or "").strip(),
         }

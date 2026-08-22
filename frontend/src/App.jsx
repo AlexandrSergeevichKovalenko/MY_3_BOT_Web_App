@@ -37971,6 +37971,15 @@ function AppInner() {
                                 Без неё сленг остаётся сухим переводом, а он у сленга неверный. */}
                             {phrase.quote_de && (
                               <div className="worldnews-card-quote">
+                                {/* Форма из текста: та же единица, но так, как она звучит в
+                                    ролике. Без неё человек выучит «ausrasten», услышит
+                                    «da rasten alle aus» и не свяжет одно с другим. */}
+                                {phrase.de_in_text && (
+                                  <span className="worldnews-card-intext">
+                                    <span className="worldnews-card-intext-label">{tr('В тексте', 'Im Text')}</span>
+                                    {phrase.de_in_text}
+                                  </span>
+                                )}
                                 <span className="worldnews-card-quote-de">«{phrase.quote_de}»</span>
                                 {phrase.quote_ru && (
                                   <span className="worldnews-card-quote-ru">{phrase.quote_ru}</span>

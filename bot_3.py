@@ -11239,6 +11239,8 @@ def _world_news_preview_text(entry: dict, *, header: str) -> str:
         marks = [str(p.get(k) or "").strip() for k in ("register_ru", "form_ru")]
         marks_txt = f" <i>({' · '.join(m for m in marks if m)})</i>" if any(marks) else ""
         lines.append(f"• <b>{p.get('de')}</b>{marks_txt} — {p.get('translation_ru')}")
+        if p.get("de_in_text"):
+            lines.append(f"   ↪️ в тексте: <b>{p['de_in_text']}</b>")
         if p.get("quote_de"):
             lines.append(f"   🎬 «{p['quote_de']}»")
     if len(phrases) > shown:

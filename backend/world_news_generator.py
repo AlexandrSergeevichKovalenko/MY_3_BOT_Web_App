@@ -779,6 +779,13 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
        (Rektion des Verbs, Artikelform) — rate NICHT.
      - "translation_ru": knappe russische Übersetzung in DERSELBEN grammatischen Form wie
        "de". Steht das Deutsche im Akkusativ, steht auch das Russische im Akkusativ.
+     - "de_in_text": die Einheit GENAU SO, wie sie im Zitat steht — nur die Einheit
+       selbst, nicht der ganze Satz (aus «Ein Uropa bekäme einen Herzinfarkt» → "bekäme
+       einen Herzinfarkt"). MUSS wörtlich im Zitat vorkommen, sonst ist die Karte falsch.
+       Wozu: der Lernende sieht dann BEIDES — die Form zum Merken ("einen Herzinfarkt
+       bekommen") und die Form, in der man sie im echten Gespräch hört. Ohne die zweite
+       erkennt er das Gelernte in der Rede nicht wieder.
+       Steht die Einheit im Zitat schon in der Nachschlageform, wiederhol sie hier einfach.
      - "quote_de": der Satz aus dem TRANSKRIPT, in dem die Einheit vorkommt — WÖRTLICH
        kopiert, 4–20 Wörter. NICHT umformulieren, NICHT ausdenken. Ohne Satz ist eine
        Wortgruppe für den Nutzer nicht zu verstehen, egal in welchem Kasus.
@@ -817,8 +824,8 @@ Erzeuge das JSON exakt in diesem Format:
 {{
   "summary_points": ["…", "…", "…"],
   "phrases": [
-    {{"de": "…", "form_ru": "…", "translation_ru": "…", "quote_de": "…", "quote_ru": "…",
-      "usage_ru": "…"}}
+    {{"de": "…", "form_ru": "…", "translation_ru": "…", "de_in_text": "…",
+      "quote_de": "…", "quote_ru": "…", "usage_ru": "…"}}
   ],
   "quiz": [
     {{"question_de": "…", "options": ["…","…","…","…"], "correct_index": 0, "explanation_ru": "…"}}
@@ -980,6 +987,7 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
     dropped_thin = 0
     dropped_quote_off_topic = 0
     dropped_neutral = 0
+    dropped_form_not_in_quote = 0
 
     phrases = []
     for p in raw_phrases:
@@ -1028,6 +1036,20 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
             if not _quote_shows_the_unit(de, quote_de):
                 dropped_quote_off_topic += 1
                 continue
+            # ФОРМА ИЗ ТЕКСТА (решение владельца 22.08.2026). На карточке человек видит
+            # ДВЕ формы: словарную — чтобы сохранить и выучить, и ту, что стоит в ролике, —
+            # чтобы узнать выученное в живой речи. Без второй он услышит «da rasten alle
+            # aus» и не свяжет это с «ausrasten».
+            # Проверяемо насквозь: форма из текста обязана дословно найтись в цитате,
+            # цитата — в субтитрах. Выдумать негде ни на одном шаге.
+            de_in_text = str(p.get("de_in_text") or "").strip()
+            if not de_in_text:
+                dropped_thin += 1
+                continue
+            if _quote_fingerprint(de_in_text) not in _quote_fingerprint(quote_de):
+                dropped_form_not_in_quote += 1
+                continue
+            item["de_in_text"] = de_in_text
             # Нейтральное бытовое слово в рубрике сленга — это добор до количества, ровно
             # тот мусор, которого владелец просил избегать. `die Kommentarspalte` с пометой
             # «нейтральное» (21.08.2026) человек и так знает, а место карточки занял.
@@ -1045,18 +1067,20 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
         phrases.append(item)
 
     if needs_quote and (dropped_no_quote or dropped_thin or dropped_quote_off_topic
-                        or dropped_neutral):
+                        or dropped_neutral or dropped_form_not_in_quote):
         logger.info(
             "daily_video[%s]: карточек отброшено — цитаты нет в субтитрах: %d, цитата не "
-            "показывает слово: %d, нейтральных: %d, неполных: %d (осталось %d)",
+            "показывает слово: %d, формы нет в цитате: %d, нейтральных: %d, "
+            "неполных: %d (осталось %d)",
             getattr(profile, "key", "?"), dropped_no_quote, dropped_quote_off_topic,
-            dropped_neutral, dropped_thin, len(phrases),
+            dropped_form_not_in_quote, dropped_neutral, dropped_thin, len(phrases),
         )
     if len(phrases) < min_phrases:
         raise ValueError(
             f"need >={min_phrases} valid phrases, got {len(phrases)} "
             f"(quote_not_in_transcript={dropped_no_quote}, "
-            f"quote_off_topic={dropped_quote_off_topic}, neutral={dropped_neutral}, "
+            f"quote_off_topic={dropped_quote_off_topic}, "
+            f"form_not_in_quote={dropped_form_not_in_quote}, neutral={dropped_neutral}, "
             f"incomplete={dropped_thin})"
         )
     phrases = phrases[:max_phrases]

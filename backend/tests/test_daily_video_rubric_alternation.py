@@ -457,6 +457,8 @@ def _phrase(de, quote, **over):
         "translation_ru": "перевод здесь",
         "literal_ru": "",
         "quote_de": quote,
+        # Форма из текста обязана лежать ВНУТРИ цитаты — иначе карточку выбросит страж.
+        "de_in_text": " ".join(quote.split()[:3]),
         "quote_ru": "перевод цитаты",
         "usage_ru": "с друзьями свободно",
     }
@@ -559,7 +561,8 @@ def _news_phrases(n=6, **over):
     out = []
     for de, quote in rows[:n]:
         item = {"de": de, "form_ru": "словарная форма", "translation_ru": "перевод",
-                "usage_ru": "с артиклем", "quote_de": quote, "quote_ru": "перевод строки"}
+                "usage_ru": "с артиклем", "quote_de": quote, "quote_ru": "перевод строки",
+                "de_in_text": " ".join(quote.split()[:3])}
         item.update(over)
         out.append(item)
     return out
@@ -740,3 +743,36 @@ def test_prompt_demands_proper_german_headword_spelling():
     assert "herzinfarkt bekommen" in prompt, "нужен пример НЕПРАВИЛЬНОГО написания"
     assert "sich ins eigene Bein" in prompt
     assert "UNPERSÖNLICH" in prompt
+
+
+# ── Форма из текста рядом со словарной (решение владельца 22.08.2026) ─────────
+
+def test_card_carries_both_forms():
+    """Человек должен видеть ДВЕ формы: словарную — чтобы сохранить и выучить, и ту, что
+    стоит в ролике, — чтобы узнать выученное в живой речи. Выучив «ausrasten», он услышит
+    «da rasten alle aus» и без второй формы не свяжет одно с другим."""
+    phrases = _good_phrases(5)
+    out = _validate_and_normalize_pack(_pack(phrases), STANDUP_PROFILE, _TRANSCRIPT)
+    card = out["phrases"][0]
+    assert card["de"], "словарная форма"
+    assert card["de_in_text"], "форма из текста"
+    assert card["de_in_text"] in card["quote_de"]
+
+
+def test_form_invented_outside_the_quote_is_thrown_away():
+    """Форма из текста проверяется насквозь: она обязана дословно найтись в цитате, а
+    цитата — в субтитрах. Если модель напишет форму, которой в цитате нет, это выдумка."""
+    phrases = _good_phrases(5)
+    phrases[0]["de_in_text"] = "diese Form steht nirgends"
+    out = _validate_and_normalize_pack(_pack(phrases), STANDUP_PROFILE, _TRANSCRIPT)
+    assert len(out["phrases"]) == 4
+    assert all("nirgends" not in p.get("de_in_text", "") for p in out["phrases"])
+
+
+def test_card_without_the_text_form_is_not_shown_half_done():
+    """Карточка без формы из текста не показывается частично — она выбрасывается и
+    считается, как и любая неполная."""
+    phrases = _good_phrases(5)
+    phrases[0]["de_in_text"] = ""
+    out = _validate_and_normalize_pack(_pack(phrases), STANDUP_PROFILE, _TRANSCRIPT)
+    assert len(out["phrases"]) == 4

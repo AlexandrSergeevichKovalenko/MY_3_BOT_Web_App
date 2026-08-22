@@ -166,6 +166,13 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
      - "literal_ru": die gewöhnliche/wörtliche Bedeutung — NUR wenn sie sich wirklich von
        der Bedeutung hier unterscheidet, plus ein Satz, wie das eine zum anderen wurde.
        Wenn es keinen Unterschied gibt: LEERER STRING "". ERFINDE KEINE zweite Bedeutung.
+     - "de_in_text": die Einheit GENAU SO, wie sie im Zitat steht — nur die Einheit
+       selbst, nicht der ganze Satz (aus «Ein Uropa bekäme einen Herzinfarkt» → "bekäme
+       einen Herzinfarkt"). MUSS wörtlich im Zitat vorkommen, sonst ist die Karte falsch.
+       Wozu: der Lernende sieht dann BEIDES — die Form zum Merken ("einen Herzinfarkt
+       bekommen") und die Form, in der man sie im echten Gespräch hört. Ohne die zweite
+       erkennt er das Gelernte in der Rede nicht wieder.
+       Steht die Einheit im Zitat schon in der Nachschlageform, wiederhol sie hier einfach.
      - "quote_de": die Zeile aus dem TRANSKRIPT, in der die Einheit vorkommt — WÖRTLICH
        aus dem Transkript kopiert, 4–20 Wörter. NICHT umformulieren, NICHT ausdenken.
        DIE ZEILE MUSS DIE EINHEIT WIRKLICH ENTHALTEN — auch in gebeugter oder getrennter
@@ -209,7 +216,8 @@ Erzeuge das JSON exakt in diesem Format:
   "summary_points": ["…", "…"],
   "phrases": [
     {{"de": "…", "register_ru": "…", "form_ru": "…", "translation_ru": "…",
-      "literal_ru": "…", "quote_de": "…", "quote_ru": "…", "usage_ru": "…"}}
+      "literal_ru": "…", "de_in_text": "…", "quote_de": "…", "quote_ru": "…",
+      "usage_ru": "…"}}
   ],
   "quiz": [
     {{"question_de": "…", "options": ["…","…","…","…"], "correct_index": 0, "explanation_ru": "…"}}
