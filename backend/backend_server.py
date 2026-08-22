@@ -3310,12 +3310,17 @@ def _notify_admins_new_user_async(user_id: int, display_name: str, source: str) 
             f"Откуда: {source}\n\n"
             f"Закрыть доступ: /deny {int(user_id)}"
         )
-        url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendMessage"
+        # Через честную доставку: отказ Telegram приходит телом ответа, и прежний вызов
+        # его не видел — уведомление о новом человеке могло не приходить неделями, а в
+        # логах не осталось бы ни следа (там стоял даже не warning, а debug).
+        from backend.telegram_delivery import send_telegram_message
         for admin_id in admin_ids:
-            try:
-                requests.post(url, json={"chat_id": int(admin_id), "text": text}, timeout=10)
-            except Exception:
-                logging.debug("new-user admin notify failed", exc_info=True)
+            дошло, почему = send_telegram_message(
+                chat_id=int(admin_id), text=text, parse_mode=None,
+                what="уведомление о новом человеке")
+            if not дошло:
+                logging.warning("уведомление о новом человеке не дошло до %s — %s",
+                                admin_id, почему)
 
     try:
         threading.Thread(target=_send, name="notify-new-user", daemon=True).start()
@@ -52178,18 +52183,30 @@ def _shortcut_send_dm(user_id: int, caption: str, poster, *, pro_button: bool) -
         reply_markup = json.dumps({"inline_keyboard": [[
             {"text": "✨ Оформить полный доступ", "url": _build_webapp_deeplink("subscription")}]]})
     token = TELEGRAM_Deutsch_BOT_TOKEN
+    # Это уходит ЧЕЛОВЕКУ, а не в лог: если карточка не дошла, он просто не получил
+    # результат своего запуска и не узнает почему. Telegram отвечает на отказ телом
+    # `{"ok": false, …}`, а не исключением, поэтому прежний вызов без взгляда на ответ
+    # считал доставленным даже то, что бот отправить не смог.
     try:
         if poster:
             data = {"chat_id": int(user_id), "caption": caption, "parse_mode": "HTML"}
             if reply_markup:
                 data["reply_markup"] = reply_markup
-            requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",
-                          data=data, files={"photo": ("card.png", poster, "image/png")}, timeout=30)
+            ответ = requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",
+                                  data=data, files={"photo": ("card.png", poster, "image/png")},
+                                  timeout=30)
+            тело = ответ.json() if ответ.content else {}
+            if ответ.status_code != 200 or not тело.get("ok"):
+                logging.warning("карточка Ярлыка не дошла до %s — %s", user_id,
+                                str(тело.get("description") or f"HTTP {ответ.status_code}"))
         else:
-            data = {"chat_id": int(user_id), "text": caption, "parse_mode": "HTML"}
-            if reply_markup:
-                data["reply_markup"] = reply_markup
-            requests.post(f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=30)
+            from backend.telegram_delivery import send_telegram_message
+            дошло, почему = send_telegram_message(
+                chat_id=int(user_id), text=caption, token=token,
+                reply_markup=json.loads(reply_markup) if reply_markup else None,
+                what="карточка Ярлыка")
+            if not дошло:
+                logging.warning("карточка Ярлыка не дошла до %s — %s", user_id, почему)
     except Exception:
         logging.warning("shortcut DM send failed user=%s", user_id, exc_info=True)
 
@@ -52267,13 +52284,17 @@ def _shortcut_check_abuse(user_id: int) -> None:
                 f"(&gt;{_SHORTCUT_ABUSE_ALERT_THRESHOLD}).\n\n"
                 f"Вероятно, сломанный/отредактированный шорткат или украденный токен долбит эндпоинт. "
                 f"Смотри <code>/shortcut_runs</code>. При необходимости отзови токен (пользователь переустанавливает — re-pair).")
+        # Тревога о злоупотреблении — сообщение, которое обязано дойти. Здесь стояло
+        # `except Exception: pass`: отказ Telegram глушился насовсем, и тревога могла
+        # не приходить, ничем себя не выдав.
+        from backend.telegram_delivery import send_telegram_message
         token = TELEGRAM_Deutsch_BOT_TOKEN
         for admin_id in get_admin_telegram_ids():
-            try:
-                requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                              data={"chat_id": int(admin_id), "text": text, "parse_mode": "HTML"}, timeout=15)
-            except Exception:
-                pass
+            дошло, почему = send_telegram_message(
+                chat_id=int(admin_id), text=text, token=token,
+                what="тревога о злоупотреблении Ярлыком")
+            if not дошло:
+                logging.warning("тревога о злоупотреблении не дошла до %s — %s", admin_id, почему)
     except Exception:
         logging.debug("shortcut abuse check failed user=%s", user_id, exc_info=True)
 

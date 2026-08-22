@@ -133,16 +133,14 @@ def send_dictionary_layer_report() -> dict:
     admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
     if not token or not admin_ids:
         return {"sent": 0, "reason": "нет токена или админов"}
-    sent = 0
-    for uid in admin_ids:
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": uid, "text": text, "parse_mode": "HTML",
-                      "disable_web_page_preview": True},
-                timeout=20,
-            )
-            sent += 1
-        except Exception:
-            logging.warning("dictionary layer report send failed for %s", uid, exc_info=True)
-    return {"sent": sent}
+    # «Отправлено» считается по ФАКТУ доставки, а не по факту вызова. Telegram
+    # отвечает на отказ телом `{"ok": false, …}`, а не исключением, поэтому прежний
+    # счётчик рос и при мёртвом токене: отчёт бодро сообщал «отправлено 1», а владелец
+    # не видел ничего. Ровно так он месяц не получал отчёт о фразах (разбор 20.08.2026).
+    from backend.telegram_delivery import send_telegram_message_to_all
+    sent, отказы = send_telegram_message_to_all(
+        admin_ids, text=text, token=token, what="отчёт о слое словаря")
+    if отказы:
+        logging.warning("отчёт о слое словаря не дошёл: %s",
+                        "; ".join(f"{uid}: {why}" for uid, why in отказы))
+    return {"sent": sent, "отказы": [f"{uid}: {why}" for uid, why in отказы]}

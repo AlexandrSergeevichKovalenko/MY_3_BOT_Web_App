@@ -101,9 +101,15 @@ def send_article_review_dm(*, force: bool = False) -> dict[str, Any]:
         sent = 0
         for uid in admin_ids:
             try:
-                requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                              json={"chat_id": uid, "text": head, "parse_mode": "HTML",
-                                    "disable_web_page_preview": True}, timeout=_HTTP_TIMEOUT)
+                # Шапка идёт через честную доставку: Telegram отвечает на отказ телом,
+                # а не исключением, и прежний вызов не смотрел на ответ вовсе.
+                from backend.telegram_delivery import send_telegram_message
+                дошла, почему = send_telegram_message(
+                    chat_id=uid, text=head, token=token, what="шапка разбора артиклей")
+                if not дошла:
+                    logging.warning("шапка разбора не дошла до %s: %s", uid, почему)
+                    continue
+                все_дошли = True
                 for i, item in enumerate(items, start=1):
                     resp = requests.post(
                         f"https://api.telegram.org/bot{token}/sendMessage",
@@ -115,7 +121,12 @@ def send_article_review_dm(*, force: bool = False) -> dict[str, Any]:
                     )
                     if resp.status_code >= 400:
                         logging.warning("article review DM failed uid=%s: %s", uid, resp.text[:200])
-                sent += 1
+                        все_дошли = False
+                if все_дошли:
+                    # «Отправлено» — это доставлено, а не «вызвали отправку». Раньше
+                    # счётчик рос даже когда отказ был записан строкой выше, и работа
+                    # отчитывалась «выполнено» с числом, которого не было.
+                    sent += 1
             except Exception:
                 logging.warning("article review DM failed uid=%s", uid, exc_info=True)
         if not force:

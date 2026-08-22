@@ -1088,19 +1088,24 @@ def send_cost_breakdown_report(*, days: int = 7, limit: int = 30) -> dict[str, A
         return {"ok": False, "sent": 0, "reason": "no_token_or_admins"}
     text = build_cost_breakdown_text(days=days, limit=limit)
     sent = 0
+    # «Отправлено» считается по ФАКТУ доставки. Прежде счётчик рос всегда: отказ
+    # Telegram приходит телом ответа, а не исключением, и его никто не смотрел —
+    # отчёт о расходах мог не доходить, продолжая числиться отправленным.
+    from backend.telegram_delivery import send_telegram_message
+    отказы: list[str] = []
     for uid in admin_ids:
+        все_части_дошли = True
         for part in _split_telegram_text(text):
-            try:
-                requests.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": uid, "text": part, "parse_mode": "HTML",
-                          "disable_web_page_preview": True},
-                    timeout=20,
-                )
-            except Exception:
-                logging.warning("cost breakdown DM failed uid=%s", uid, exc_info=True)
-        sent += 1
-    return {"ok": True, "sent": sent, "days": int(days)}
+            дошло, почему = send_telegram_message(
+                chat_id=uid, text=part, token=token, what="разбор расходов")
+            if not дошло:
+                все_части_дошли = False
+                отказы.append(f"{uid}: {почему}")
+        if все_части_дошли:
+            sent += 1
+    if отказы:
+        logging.warning("разбор расходов не дошёл: %s", "; ".join(отказы))
+    return {"ok": True, "sent": sent, "days": int(days), "отказы": отказы}
 
 
 def _split_telegram_text(text: str, limit: int = 3800) -> list[str]:
