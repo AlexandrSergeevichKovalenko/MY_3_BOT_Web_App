@@ -1300,3 +1300,40 @@ def test_a_normal_question_may_mention_a_card_unit():
     pack["quiz"][0]["question_de"] = "Wann wurde das Feuer vollständig gelöscht?"
     out = _validate_and_normalize_pack(pack, STANDUP_PROFILE, transcript)
     assert len(out["quiz"]) == 4, "содержательный вопрос обязан проходить"
+
+
+# ── Артикль берётся из справочника, а не у модели (22.08.2026) ────────────────
+
+def test_article_comes_from_the_reference_not_from_the_model(monkeypatch):
+    """Правило ноль: ответ берётся из источника, модель только читает. Род существительного
+    — ровно тот случай, где источник есть и давно построен (article_authority). Спрашивать
+    род у модели, когда справочник под рукой, значит предпочесть догадку знанию."""
+    import backend.daily_video_quality as Q
+
+    monkeypatch.setattr(Q, "article_from_reference",
+                        lambda de, allow_network=False: ("der", "wiktionary"))
+    fixed, what = Q.correct_article_from_reference({"de": "das Schwarzmarkt"})
+    assert fixed["de"] == "der Schwarzmarkt"
+    assert "wiktionary" in what, "источник обязан быть назван по имени"
+
+
+def test_silent_reference_is_not_a_reason_to_guess(monkeypatch):
+    """Справочник промолчал — карточка остаётся как есть. Неизвестность честнее выдумки."""
+    import backend.daily_video_quality as Q
+
+    monkeypatch.setattr(Q, "article_from_reference",
+                        lambda de, allow_network=False: (None, "справочник не знает"))
+    card = {"de": "die Kommentarspalte"}
+    fixed, what = Q.correct_article_from_reference(card)
+    assert fixed == card and what == ""
+
+
+def test_reference_is_asked_only_where_gender_exists():
+    """У оборотов и глаголов рода нет — справочник туда не ходит вовсе, иначе мы будем
+    спрашивать про «sich unter den Tisch saufen» и получать мусор."""
+    from backend.daily_video_quality import split_article
+
+    assert split_article("die Kommentarspalte") == ("die", "Kommentarspalte")
+    assert split_article("sich unter den Tisch saufen") == (None, None)
+    assert split_article("heulen") == (None, None)
+    assert split_article("Bock haben (auf etwas)") == (None, None)

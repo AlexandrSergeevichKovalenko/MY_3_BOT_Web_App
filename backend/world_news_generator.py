@@ -1418,6 +1418,32 @@ def prepare_world_news(
             f"негодный разбор — последняя причина: {last_err}"
         )
 
+    # ── АРТИКЛЬ БЕРЁТСЯ ИЗ СПРАВОЧНИКА, А НЕ У МОДЕЛИ ─────────────────────────
+    # Правило ноль: ответ берётся из источника, модель только читает. Род существительного
+    # — ровно тот случай, где источник есть и давно построен (article_authority: свой
+    # справочник + Wiktionary). Спрашивать род у модели, когда справочник под рукой, значит
+    # предпочесть догадку знанию.
+    # Идёт ДО судьи: пусть он видит уже выверенные артикли и не тратит проход на них.
+    # Справочник промолчал — карточка остаётся как есть: неизвестность честнее выдумки.
+    article_fixes = []
+    try:
+        from backend.daily_video_quality import correct_article_from_reference
+        checked = []
+        for card in pack["phrases"]:
+            fixed, what = correct_article_from_reference(card, allow_network=True)
+            if what:
+                article_fixes.append(f"«{card.get('de')}»: {what}")
+            checked.append(fixed)
+        pack["phrases"] = checked
+    except Exception:
+        # Недоступный справочник не повод рушить выпуск, но и молчать нельзя: значит
+        # артикли в этом выпуске держатся на слове модели.
+        logger.warning("daily_video[%s]: сверка артиклей со справочником не отработала",
+                       profile.key, exc_info=True)
+    if article_fixes:
+        logger.info("daily_video[%s]: артиклей выправлено по справочнику: %d",
+                    profile.key, len(article_fixes))
+
     # ── СУДЬЯ ПРИЁМКИ ──────────────────────────────────────────────────────────
     # Идёт ПО КАРТОЧКАМ и правит их поштучно. Ролик, субтитры и тест не трогает вовсе:
     # выбрасывать готовый выпуск из-за одного слова со строчной буквы — это выбрасывать
@@ -1436,6 +1462,10 @@ def prepare_world_news(
             # непроверенный, иначе мы решим, что проверка была.
             logger.exception("daily_video[%s]: судья приёмки не отработал", profile.key)
             judge_report = {"failed": True}
+    if article_fixes:
+        judge_report = dict(judge_report or {})
+        judge_report["article_fixes"] = article_fixes
+        judge_report.setdefault("reasons", []).extend(article_fixes)
     if len(pack["phrases"]) < profile.min_phrases:
         # После правки карточек осталось меньше порога — значит ролик и вправду беден на
         # годный материал. Вот ЭТО повод взять другой, а не одна помарка.

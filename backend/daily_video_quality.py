@@ -197,3 +197,84 @@ def check_cards(cards: list, *, transcript: str = "", requires_register: bool = 
         "by_kind": dict(sorted(by_kind.items(), key=lambda kv: -kv[1])),
         "cards": flagged,
     }
+
+
+# ── Сверка со справочником: артикль берётся из источника, а не у модели ────────
+#
+# Правило ноль: ответ берётся из источника, модель только читает. Род существительного —
+# ровно тот случай, где источник есть и давно построен: backend/article_authority.py
+# (собственный справочник + Wiktionary). Спрашивать род у модели, когда есть справочник,
+# значит сознательно предпочесть догадку знанию.
+#
+# Почему сюда можно ходить в сеть, а на сохранение слова — нельзя: рубрика готовится
+# фоновой работой раз в день и никого не заставляет ждать. Живой путь сохранения такого
+# позволить не может, и там справочник спрашивают только из прогретой памяти.
+
+_ARTICLES = ("der", "die", "das")
+
+
+def split_article(de: str) -> tuple:
+    """Разделить «die Kommentarspalte» на («die», «Kommentarspalte»).
+
+    Возвращает (None, None), если это не одиночное существительное с артиклем: у оборотов
+    и глаголов рода нет, и сверять там нечего.
+    """
+    parts = str(de or "").strip().split()
+    if len(parts) != 2:
+        return (None, None)
+    article, word = parts[0].lower(), parts[1]
+    if article not in _ARTICLES or not re.fullmatch(r"[A-ZÄÖÜ][A-Za-zÄÖÜäöüß-]+", word):
+        return (None, None)
+    return (article, word)
+
+
+def article_from_reference(de: str, *, allow_network: bool = False) -> tuple:
+    """Что о роде этого слова говорит справочник.
+
+    Возвращает (артикль, откуда) или (None, причина). None означает «справочник не знает» —
+    и это НЕ повод что-то подставлять: неизвестность честнее догадки.
+    """
+    article, word = split_article(de)
+    if not word:
+        return (None, "не одиночное существительное — рода нет")
+    try:
+        from backend.article_authority import authoritative_article
+        found, source = authoritative_article(word, allow_network=allow_network)
+    except Exception:
+        return (None, "справочник недоступен")
+    if not found:
+        return (None, f"справочник не знает слова «{word}»")
+    return (found.lower(), source)
+
+
+def article_disagrees_with_reference(card: dict, *, allow_network: bool = False) -> str:
+    """Расходится ли артикль на карточке со справочником.
+
+    Пустая строка — расхождения нет ИЛИ справочник промолчал. Молчание справочника не
+    делает карточку виноватой: мы просто не знаем, и придумывать не станем.
+    """
+    ours, word = split_article(card.get("de"))
+    if not ours:
+        return ""
+    theirs, source = article_from_reference(card.get("de"), allow_network=allow_network)
+    if not theirs or theirs == ours:
+        return ""
+    return (f"артикль расходится со справочником: у нас «{ours} {word}», "
+            f"источник даёт «{theirs}» ({source})")
+
+
+def correct_article_from_reference(card: dict, *, allow_network: bool = False) -> tuple:
+    """Поправить артикль по справочнику. Возвращает (карточка, что сделали).
+
+    Это НЕ выдумывание: новый артикль берётся из источника, названного по имени. Если
+    источник молчит — карточка возвращается нетронутой. Молчание не повод угадывать.
+    """
+    ours, word = split_article(card.get("de"))
+    if not ours:
+        return (card, "")
+    theirs, source = article_from_reference(card.get("de"), allow_network=allow_network)
+    if not theirs or theirs == ours:
+        return (card, "")
+    fixed = dict(card)
+    fixed["de"] = f"{theirs} {word}"
+    return (fixed, f"артикль исправлен по справочнику ({source}): «{ours}» → «{theirs}»")
