@@ -36686,6 +36686,76 @@ def get_reader_library_document(
     return _reader_library_row_to_dict(row, include_content=include_content)
 
 
+def get_reader_document_pages_window(
+    *,
+    document_id: int,
+    start_page: int,
+    end_page: int,
+) -> dict:
+    """Отдать ОКНО страниц книги, не вытаскивая книгу целиком.
+
+    Читалка всегда показывает окно (50 страниц вокруг закладки), но раньше сервер на
+    каждый такой запрос тянул из базы ВЕСЬ массив страниц и резал его в питоне. Замер
+    22.08.2026 на «Innere Medizin 2023» (3215 страниц): целиком — 1.37 с, окном через
+    jsonpath — 0.12 с. Именно эта неэффективность и была настоящей причиной потолка на
+    размер книги: чем толще книга, тем дороже КАЖДОЕ перелистывание. Теперь цена
+    перелистывания от толщины книги не зависит.
+
+    Нумерация страниц у читалки с единицы, в jsonb-массиве — с нуля.
+    Возвращает {"total_pages": N, "pages": [...], "start_page": s, "end_page": e}.
+    """
+    safe_document_id = int(document_id)
+    safe_start = max(1, int(start_page))
+    safe_end = max(safe_start, int(end_page))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    jsonb_array_length(content_pages) AS total_pages,
+                    jsonb_path_query_array(
+                        content_pages, '$[$s to $e]',
+                        jsonb_build_object('s', %s::int, 'e', %s::int)
+                    ) AS window_pages
+                FROM bt_3_reader_library
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (safe_start - 1, safe_end - 1, safe_document_id),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return {"total_pages": 0, "pages": [], "start_page": safe_start, "end_page": safe_start}
+    total_pages = int(row[0] or 0)
+    pages = row[1] if isinstance(row[1], list) else []
+    if total_pages <= 0:
+        return {"total_pages": 0, "pages": [], "start_page": 1, "end_page": 0}
+    clamped_start = min(safe_start, total_pages)
+    clamped_end = min(safe_end, total_pages)
+    return {
+        "total_pages": total_pages,
+        "pages": pages,
+        "start_page": clamped_start,
+        "end_page": max(clamped_start, clamped_end),
+    }
+
+
+def get_reader_document_language_sample(*, document_id: int, sample_chars: int = 200_000) -> str:
+    """Начало текста книги для определения языка — вместо чтения книги целиком.
+
+    Язык определяется по большому куску (200 000 знаков ≈ 100 страниц), а не по одной
+    странице: короткая плотная страница указателя когда-то определилась как английская
+    и книгу озвучил английский голос."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT left(content_text, %s) FROM bt_3_reader_library WHERE id = %s LIMIT 1;",
+                (int(sample_chars), int(document_id)),
+            )
+            row = cursor.fetchone()
+    return str(row[0] or "") if row else ""
+
+
 def get_reader_library_document_pages_only(
     *,
     user_id: int,
@@ -36805,7 +36875,47 @@ def upsert_public_library_document(
                 )
                 return _public_library_row_to_dict(cursor.fetchone())
             if existing:
-                cursor.execute("DELETE FROM bt_3_reader_library WHERE id = %s;", (int(existing[0]),))
+                # Текст книги поменялся — обновляем ТУ ЖЕ строку, НЕ создавая новую.
+                # Раньше здесь было DELETE + INSERT: книга получала новый номер, а
+                # вместе со старой строкой каскадом умирали закладки читателей и
+                # прогретое аудио. Перезаливка 22.08.2026 так стёрла 7 закладок из 9
+                # (bt_3_reader_public_progress ссылается на id ON DELETE CASCADE).
+                # Закладка хранится в процентах, поэтому переживает перевёрстку страниц.
+                cursor.execute(
+                    f"""
+                    UPDATE bt_3_reader_library
+                    SET title = %s, source_type = %s, source_url = %s,
+                        text_hash = %s, content_text = %s, content_pages = %s::jsonb,
+                        total_chars = %s,
+                        cover_image_url = COALESCE(%s, cover_image_url),
+                        public_author = %s, public_sort = %s,
+                        is_public = TRUE, is_archived = FALSE, archived_at = NULL,
+                        processing_status = 'ready', processing_error = NULL,
+                        processing_finished_at = NOW(), updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING {_PUBLIC_LIBRARY_SELECT_COLS};
+                    """,
+                    (
+                        resolved_title, resolved_source_type, resolved_source_url,
+                        text_hash, resolved_content,
+                        json.dumps(resolved_pages, ensure_ascii=False), total_chars,
+                        resolved_cover, resolved_author, int(sort or 0), int(existing[0]),
+                    ),
+                )
+                updated_row = cursor.fetchone()
+                # Страницы перевёрстаны — старая озвучка привязана к прежним границам
+                # страниц и совпасть больше не может (ключ включает text_hash страницы).
+                # Убираем её явно, чтобы не копить мёртвые строки; она нагреется заново.
+                cursor.execute(
+                    "DELETE FROM bt_3_reader_audio_pages WHERE document_id = %s;",
+                    (int(existing[0]),),
+                )
+                logging.info(
+                    "public library: книга %s обновлена НА МЕСТЕ (id=%s), закладки сохранены, "
+                    "снято озвученных страниц: %s",
+                    resolved_slug, existing[0], cursor.rowcount,
+                )
+                return _public_library_row_to_dict(updated_row)
             cursor.execute(
                 f"""
                 INSERT INTO bt_3_reader_library (

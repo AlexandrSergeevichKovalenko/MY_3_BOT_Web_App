@@ -176,8 +176,14 @@ class EpubBookArrivesWholeTests(unittest.TestCase):
         self.assertIn("Satz 1999.", text)
 
     def test_total_book_ceiling_is_the_only_limit_left(self):
-        """Единственный оставшийся потолок — общий на книгу, и он честно соблюдается."""
-        self.assertEqual(server._EPUB_MAX_TOTAL_TEXT_CHARS, 3_000_000)
+        """Единственный оставшийся потолок — общий на книгу, один для всех форматов.
+
+        Само число проверяется в test_reader_never_serves_half_a_book.py вместе с
+        замером памяти, из которого оно выведено. Здесь важно одно: у EPUB нет
+        СВОЕГО потолка, иначе форматы снова разъедутся."""
+        self.assertEqual(
+            server._EPUB_MAX_TOTAL_TEXT_CHARS, server._READER_BOOK_MAX_TOTAL_CHARS
+        )
 
 
 if __name__ == "__main__":

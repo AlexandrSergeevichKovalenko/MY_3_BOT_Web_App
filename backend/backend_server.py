@@ -745,6 +745,8 @@ from backend.database import (
     list_reader_library_documents,
     get_reader_library_document,
     get_reader_library_document_pages_only,
+    get_reader_document_pages_window,
+    get_reader_document_language_sample,
     get_reader_library_document_ingest_state,
     set_reader_library_document_processing_status,
     set_reader_library_document_ingest_payload,
@@ -18967,12 +18969,41 @@ def _extract_text_from_pdf_bytes(data: bytes) -> str:
     return text
 
 
-# Reader book limits. The whole book is kept (up to a safety ceiling) instead of
-# the old 250-page / 150k-char truncation, and repaginated into fixed pages so the
-# page count is computed ONCE on the server and never drifts on the client.
-_READER_PDF_MAX_SOURCE_PAGES = 4000  # hard ceiling on physical PDF pages we read
-_READER_BOOK_MAX_TOTAL_CHARS = 3_000_000  # keep in sync with EPUB (_EPUB_MAX_TOTAL_TEXT_CHARS)
+# ── Сколько книги мы вправду можем открыть ──────────────────────────────────────
+#
+# Книга НИКОГДА не обрезается молча. Раньше здесь стояло 3 000 000 знаков — число из
+# первого коммита читалки, ни из чего не выведенное; книга сверх него просто кончалась,
+# и человеку об этом не говорили («Innere Medizin 2023» лежала ровно на 3 000 000).
+#
+# Что вправду ограничивает, замер 22.08.2026:
+#   • Хранение — не ограничивает. Книга на 3 млн знаков занимает в базе 1.7 МБ
+#     (Postgres сжимает), предел одного значения — 1 ГБ.
+#   • Выдача — больше не ограничивает. Страницы режутся окном в самой базе
+#     (get_reader_document_pages_window), цена перелистывания от толщины не зависит.
+#   • Ограничивает РАЗБОР при загрузке: пик памяти растёт линейно, ~28 МБ на каждый
+#     миллион знаков (3 млн → 205 МБ, 12 млн → 468 МБ, 24 млн → 785 МБ; время
+#     ~0.2 с на миллион). Контейнер BACKEND_WEB имеет 8 ГБ, в покое занято ~220 МБ.
+#
+# Отсюда потолок: 20 000 000 знаков ≈ 670 МБ пика на одну загрузку — с запасом даже
+# при нескольких одновременных. Это в 6 раз больше самой толстой живой книги и
+# покрывает многотомные справочники. Книга сверх потолка получает ЧЕСТНЫЙ ОТКАЗ с
+# числами — не обрезок. Поднимать потолок можно, пересняв замер памяти.
+_READER_BOOK_MAX_TOTAL_CHARS = 20_000_000
+# Физические страницы PDF больше не ограничиваем отдельным числом: сколько текста мы
+# осилим, решает потолок выше. Оставлен только предохранитель от бесконечного файла.
+_READER_PDF_MAX_SOURCE_PAGES = 50_000
 _READER_FIXED_PAGE_CHARS = 1100  # target chars per fixed reader page (~one phone screen)
+
+
+def _raise_reader_book_too_large(chars_seen: int) -> None:
+    """Честный отказ вместо обрезанной книги."""
+    limit_millions = _READER_BOOK_MAX_TOTAL_CHARS / 1_000_000
+    seen_millions = max(chars_seen, _READER_BOOK_MAX_TOTAL_CHARS) / 1_000_000
+    raise ValueError(
+        f"Эта книга слишком большая: в ней больше {seen_millions:.0f} млн знаков, "
+        f"а открыть я могу до {limit_millions:.0f} млн. "
+        f"Пришлите её томами или частями — каждую часть открою целиком."
+    )
 
 
 def _extract_pdf_source_page_texts(data: bytes) -> list[str]:
@@ -19265,10 +19296,12 @@ def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     if not data:
         return "", []
     source_texts = _extract_pdf_source_page_texts(data)
-    full_text = _normalize_reader_text(
-        "\n\n".join(chunk for chunk in source_texts if chunk),
-        max_chars=_READER_BOOK_MAX_TOTAL_CHARS,
-    )
+    joined_text = "\n\n".join(chunk for chunk in source_texts if chunk)
+    # Книга либо открывается целиком, либо человек получает честный отказ с числами.
+    # Обрезки посередине нет: «показали кусок и промолчали» — худшее из двух.
+    if len(joined_text) > _READER_BOOK_MAX_TOTAL_CHARS:
+        _raise_reader_book_too_large(len(joined_text))
+    full_text = _normalize_reader_text(joined_text, max_chars=_READER_BOOK_MAX_TOTAL_CHARS)
     if not full_text:
         return "", []
     pages = _repaginate_reader_text_fixed(full_text)
@@ -19520,7 +19553,8 @@ def _build_toc_from_pages(pages: list, source_type: str) -> list[dict]:
 # so the counter matches what the reader actually swipes. (Re-paginates on
 # ingest → existing EPUBs need a re-upload; bookmarks are stored as % and survive.)
 _EPUB_PAGE_SPLIT_CHARS = _READER_FIXED_PAGE_CHARS  # was 3000
-_EPUB_MAX_TOTAL_TEXT_CHARS = 3_000_000
+# Один потолок на книгу для ВСЕХ форматов — см. _READER_BOOK_MAX_TOTAL_CHARS.
+_EPUB_MAX_TOTAL_TEXT_CHARS = _READER_BOOK_MAX_TOTAL_CHARS
 _EPUB_LEGACY_TRUNCATED_TOTAL_CHARS = 150_000
 
 
@@ -19840,13 +19874,11 @@ def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     dropped_navigation = 0
     dropped_unreadable = 0
     dropped_empty = 0
-    hit_total_ceiling = False
 
     for item in ordered_items:
         chapter_num += 1
-        if total_chars >= _EPUB_MAX_TOTAL_TEXT_CHARS:
-            hit_total_ceiling = True
-            break
+        if total_chars > _EPUB_MAX_TOTAL_TEXT_CHARS:
+            _raise_reader_book_too_large(total_chars)
         try:
             html_bytes = item.get_body_content()
             raw_html = html_bytes.decode("utf-8", errors="ignore") if isinstance(html_bytes, bytes) else str(html_bytes or "")
@@ -19877,17 +19909,11 @@ def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
         if not normalized:
             dropped_empty += 1
             continue
-        # Обрезки главы больше нет. Была `min(50000, …)`: книга, лежащая одним файлом,
-        # молча кончалась на 56-й странице (замер 22.08.2026 — 150 000 знаков доезжали
-        # как 50 000). Единственный потолок — общий на книгу, и о нём мы сообщаем.
-        remaining_chars = max(0, _EPUB_MAX_TOTAL_TEXT_CHARS - total_chars)
-        if remaining_chars <= 0:
-            hit_total_ceiling = True
-            break
-        if len(normalized) > remaining_chars:
-            normalized = normalized[:remaining_chars].rstrip()
-            chapter_blocks = [b for b in chapter_blocks if int(b["start"]) < len(normalized)]
-            hit_total_ceiling = True
+        # Обрезки нет ни на главе, ни на книге. Была `min(50000, …)`: книга, лежащая
+        # одним файлом, молча кончалась на 56-й странице (замер 22.08.2026 — 150 000
+        # знаков доезжали как 50 000). Книга сверх общего потолка — честный отказ.
+        if total_chars + len(normalized) > _EPUB_MAX_TOTAL_TEXT_CHARS:
+            _raise_reader_book_too_large(total_chars + len(normalized))
         chapter_title = _extract_html_heading_title(raw_html, chapter_num)
         chunks.append(normalized)
         total_chars += len(normalized) + 2
@@ -19896,9 +19922,9 @@ def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
 
     logging.info(
         "EPUB разобран: документов %d, страниц %d, знаков %d; "
-        "пропущено оглавлений %d, нечитаемых %d, пустых %d; потолок книги достигнут: %s",
+        "пропущено оглавлений %d, нечитаемых %d, пустых %d",
         len(ordered_items), len(pages), total_chars,
-        dropped_navigation, dropped_unreadable, dropped_empty, hit_total_ceiling,
+        dropped_navigation, dropped_unreadable, dropped_empty,
     )
     # Re-number pages sequentially after all chapters are processed
     for i, p in enumerate(pages):
@@ -58015,7 +58041,10 @@ def reader_library_open():
                 document_id=int(document_id),
                 source_lang=source_lang,
                 target_lang=target_lang,
-                include_content=True,
+                # Книгу целиком сюда НЕ тянем: язык и страницы берутся отдельными
+                # дешёвыми запросами (образец + окно), иначе открытие толстой книги
+                # стоит тем дороже, чем книга толще.
+                include_content=False,
             )
         except Exception as exc:
             _log_flow_observation(
@@ -58077,7 +58106,9 @@ def reader_library_open():
                 and re.fullmatch(r"[a-zа-яё]{0,4}\s*\d{4,}", str(doc.get("title") or "").strip().lower())
             ):
                 better_title = _infer_reader_title(
-                    input_text=str(doc.get("content_text") or ""),
+                    input_text=get_reader_document_language_sample(
+                        document_id=int(document_id), sample_chars=20_000
+                    ),
                     input_url=str(doc.get("source_url") or ""),
                     source_type="html",
                 )
@@ -58171,16 +58202,21 @@ def reader_library_open():
                     }
                 ), 403
         detect_started_perf = time.perf_counter()
-        content_text = str(doc.get("content_text") or "")
-        all_content_pages = _normalize_reader_pages_for_response(
-            str(doc.get("source_type") or "text"),
-            doc.get("content_pages") if isinstance(doc.get("content_pages"), list) else [],
-        )
-        detected_lang = _detect_reader_language(content_text, fallback=target_lang)
-        detect_duration_ms = _elapsed_ms_since(detect_started_perf)
-        total_pages = len(all_content_pages)
+        # Ни текст книги, ни все её страницы сюда больше не тянутся: язык определяем по
+        # большому образцу, страницы берём окном прямо из базы. Иначе цена ОТКРЫТИЯ
+        # книги росла вместе с её толщиной — и ради этого стоял потолок на размер книги.
         source_type = str(doc.get("source_type") or "text").strip().lower()
-        # Compute window of 50 pages around bookmark/progress
+        language_sample = get_reader_document_language_sample(document_id=int(document_id))
+        detected_lang = _detect_reader_language(language_sample, fallback=target_lang)
+        detect_duration_ms = _elapsed_ms_since(detect_started_perf)
+
+        total_pages = int(doc.get("total_pages") or 0)
+        if total_pages <= 0:
+            probe = get_reader_document_pages_window(
+                document_id=int(document_id), start_page=1, end_page=1
+            )
+            total_pages = int(probe.get("total_pages") or 0)
+        # Окно в 50 страниц вокруг закладки.
         if total_pages > 0:
             bookmark_pct = float(doc.get("bookmark_percent") or doc.get("progress_percent") or 0)
             if bookmark_pct > 0:
@@ -58191,13 +58227,21 @@ def reader_library_open():
             pages_start_idx = max(0, raw_target - 5)
             pages_end_idx = min(total_pages, pages_start_idx + window_size)
             pages_start_idx = max(0, pages_end_idx - window_size)
-            content_pages = all_content_pages[pages_start_idx:pages_end_idx]
-            pages_start = pages_start_idx + 1
-            pages_end = pages_end_idx
+            window = get_reader_document_pages_window(
+                document_id=int(document_id),
+                start_page=pages_start_idx + 1,
+                end_page=pages_end_idx,
+            )
+            content_pages = _normalize_reader_pages_for_response(
+                source_type,
+                window.get("pages") if isinstance(window.get("pages"), list) else [],
+            )
+            pages_start = window["start_page"]
+            pages_end = window["end_page"]
         else:
-            content_pages = all_content_pages
+            content_pages = []
             pages_start = 1
-            pages_end = total_pages
+            pages_end = 0
         document_payload = dict(doc)
         document_payload.pop("content_text", None)
         document_payload.pop("content_pages", None)
@@ -58346,31 +58390,34 @@ def reader_library_pages():
         return jsonify({"error": "user_id отсутствует"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
+        # Сначала ПРАВО на книгу (без содержимого — это дёшево), потом только окно
+        # страниц. Раньше здесь читалась вся книга ради 50 страниц.
         doc, _doc_is_public = _resolve_reader_document_for_user(
             user_id=int(user_id),
             document_id=int(document_id),
             source_lang=source_lang,
             target_lang=target_lang,
-            pages_only=True,
+            include_content=False,
+        )
+        if not doc:
+            return jsonify({"error": "Книга не найдена"}), 404
+        window = get_reader_document_pages_window(
+            document_id=int(document_id),
+            start_page=start_page,
+            end_page=end_page,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка загрузки страниц: {exc}"}), 500
-    if not doc:
-        return jsonify({"error": "Книга не найдена"}), 404
-    all_pages = _normalize_reader_pages_for_response(
+    pages_slice = _normalize_reader_pages_for_response(
         str(doc.get("source_type") or "text"),
-        doc.get("content_pages") if isinstance(doc.get("content_pages"), list) else [],
+        window.get("pages") if isinstance(window.get("pages"), list) else [],
     )
-    total_pages = len(all_pages)
-    safe_start = max(1, min(start_page, total_pages))
-    safe_end = max(safe_start, min(end_page, total_pages))
-    pages_slice = all_pages[safe_start - 1:safe_end]
     return jsonify({
         "ok": True,
         "pages": pages_slice,
-        "pages_start": safe_start,
-        "pages_end": safe_end,
-        "total_pages": total_pages,
+        "pages_start": window["start_page"],
+        "pages_end": window["end_page"],
+        "total_pages": window["total_pages"],
     })
 
 
