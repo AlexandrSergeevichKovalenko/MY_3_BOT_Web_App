@@ -165,6 +165,15 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
        einer Konjunktion enden. «die Koalition auffordern, die» ist kein Ausdruck, sondern
        ein abgerissenes Stück Satz — richtig wäre "die Koalition auffordern". Endet deine
        Einheit auf der/die/das/und/oder/dass, hast du zu weit geschnitten.
+
+   ВОЗВРАТНОСТЬ ЧИТАЕТСЯ ИЗ ЦИТАТЫ, А НЕ ДОДУМЫВАЕТСЯ. Не всякому немецкому глаголу нужно
+   «sich», и подставлять его «для словарной формы» — значит выдумывать грамматику.
+   Смотри, какое дополнение стоит в цитате:
+     • «habe ich DICH unter den Tisch gesoffen» → дополнение не возвратное, значит единица
+       «jemanden unter den Tisch saufen» (перепить кого-то). Ставить «sich» здесь НЕЛЬЗЯ:
+       «sich unter den Tisch saufen» значит другое — напиться до бесчувствия самому.
+     • «um SICH ein Bild zu machen» → возвратное, значит «sich ein Bild machen».
+   Нет в цитате ни «sich», ни личного дополнения — не добавляй ничего от себя.
      - "register_ru": Stilmarkierung auf RUSSISCH, kurz: «разговорное», «сленг»,
        «грубое», «молодёжное», «ироничное», «региональное (баварское)», «нейтральное».
        Wenn es derb/vulgär ist, sag das offen — der Lernende muss wissen, wo er das NICHT

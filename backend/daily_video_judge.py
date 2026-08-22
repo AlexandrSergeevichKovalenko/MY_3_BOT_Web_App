@@ -62,6 +62,16 @@ Prüfe bei jeder Karte:
    ("sich ins eigene Bein schießen"). Die richtige Schreibweise steht im Transkript —
    nimm sie von dort, denk sie dir NICHT aus.
 
+
+   ВОЗВРАТНОСТЬ ЧИТАЕТСЯ ИЗ ЦИТАТЫ, А НЕ ДОДУМЫВАЕТСЯ. Не всякому немецкому глаголу нужно
+   «sich», и подставлять его «для словарной формы» — значит выдумывать грамматику.
+   Смотри, какое дополнение стоит в цитате:
+     • «habe ich DICH unter den Tisch gesoffen» → дополнение не возвратное, значит единица
+       «jemanden unter den Tisch saufen» (перепить кого-то). Ставить «sich» здесь НЕЛЬЗЯ:
+       «sich unter den Tisch saufen» значит другое — напиться до бесчувствия самому.
+     • «um SICH ein Bild zu machen» → возвратное, значит «sich ein Bild machen».
+   Нет в цитате ни «sich», ни личного дополнения — не добавляй ничего от себя.
+
 2) GRAMMATIK der Einheit. Ist "de" eine saubere Nachschlageform? Eine in der 2. Person
    stehende Replik ("Steckst nicht drin") gehört unpersönlich formuliert
    ("da steckt man nicht drin").

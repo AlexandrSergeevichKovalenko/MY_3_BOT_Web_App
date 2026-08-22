@@ -809,6 +809,15 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
 
    Jedes Element:
      - "de": die Einheit nach den Regeln oben, korrekt geschrieben.
+
+   ВОЗВРАТНОСТЬ ЧИТАЕТСЯ ИЗ ЦИТАТЫ, А НЕ ДОДУМЫВАЕТСЯ. Не всякому немецкому глаголу нужно
+   «sich», и подставлять его «для словарной формы» — значит выдумывать грамматику.
+   Смотри, какое дополнение стоит в цитате:
+     • «habe ich DICH unter den Tisch gesoffen» → дополнение не возвратное, значит единица
+       «jemanden unter den Tisch saufen» (перепить кого-то). Ставить «sich» здесь НЕЛЬЗЯ:
+       «sich unter den Tisch saufen» значит другое — напиться до бесчувствия самому.
+     • «um SICH ein Bild zu machen» → возвратное, значит «sich ein Bild machen».
+   Нет в цитате ни «sich», ни личного дополнения — не добавляй ничего от себя.
      - "form_ru": in welcher Form "de" dasteht — ЗАКРЫТЫЙ СПИСОК, пиши ТОЛЬКО одно из
        этих значений, дословно: «словарная форма» · «устойчивое выражение» · «инфинитив» ·
        «именительный падеж» · «винительный падеж» · «дательный падеж» ·
@@ -1019,40 +1028,23 @@ def _headword_ends_dangling(de: str) -> bool:
 
 
 def _card_passes_source_guards(card: dict, transcript_text: str, profile=None) -> tuple[bool, str]:
-    """Три сверки карточки с источником. Возвращает (прошла, почему нет).
+    """Проходит ли карточка проверки. Возвращает (прошла, первая претензия).
 
-    Вынесено отдельно, потому что через это обязана пройти не только СВЕЖАЯ карточка от
-    модели, но и ИСПРАВЛЕННАЯ судьёй. Иначе судья под видом правки мог бы подставить
-    цитату, которой в ролике не звучало, — и его правка стала бы дырой в той самой защите,
-    ради которой он поставлен.
+    Проверки живут в ОДНОМ месте — backend/daily_video_quality.py. Раньше они были
+    рассыпаны по генератору, судье и тестам, каждая со своим счётчиком, и одно правило
+    жило в трёх местах, устаревая в двух из них.
+
+    Через это обязана пройти не только свежая карточка от модели, но и ИСПРАВЛЕННАЯ
+    судьёй — иначе его правка стала бы дырой в той самой защите, ради которой он поставлен.
     """
-    de = str(card.get("de") or "").strip()
-    quote_de = str(card.get("quote_de") or "").strip()
-    de_in_text = str(card.get("de_in_text") or "").strip()
-    if not de or not quote_de:
-        return False, "нет единицы или цитаты"
-    if _headword_ends_dangling(de):
-        # Обрезать хвост своими руками нельзя: мы не знаем, где вправду кончается оборот.
-        # Карточка выбрасывается, и модель на повторе соберёт её целиком.
-        return False, "единица кончается висящим артиклем или союзом"
-    if _quote_fingerprint(quote_de) not in _quote_fingerprint(transcript_text):
-        return False, "цитаты нет в субтитрах"
-    if not _quote_shows_the_unit(de, quote_de):
-        return False, "цитата не показывает слово"
-    if not de_in_text:
-        return False, "нет формы из текста"
-    if _quote_fingerprint(de_in_text) not in _quote_fingerprint(quote_de):
-        return False, "формы из текста нет в цитате"
-    # Судья не имеет права СНЯТЬ обязательное поле. 22.08.2026 он убрал помету регистра у
-    # «Applaus», потому что слово нейтральное, — и карточка проскочила в рубрику сленга
-    # уже без пометы, хотя нейтральные слова оттуда положено выбрасывать. Правильный
-    # исход был «выбросить», а не «снять помету».
-    if profile is not None and getattr(profile, "requires_register", False):
-        register = str(card.get("register_ru") or "").strip()
-        if not register:
-            return False, "снята помета регистра"
-        if register.lower().startswith("нейтральн"):
-            return False, "нейтральное слово в рубрике сленга"
+    from backend.daily_video_quality import check_card
+
+    problems = check_card(
+        card, transcript=transcript_text,
+        requires_register=bool(profile is not None and getattr(profile, "requires_register", False)),
+    )
+    if problems:
+        return False, problems[0][1]
     return True, ""
 
 

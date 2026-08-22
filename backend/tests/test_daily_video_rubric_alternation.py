@@ -945,7 +945,7 @@ def test_judge_may_not_strip_a_required_marking(monkeypatch):
     out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
                                            transcript=_JUDGE_TRANSCRIPT)
     assert out == [], "карточка без обязательной пометы не должна дойти до экрана"
-    assert any("снята помета регистра" in r for r in report["reasons"])
+    assert any("пометы регистра" in r for r in report["reasons"])
 
 
 def test_news_cards_do_not_need_a_register_marking(monkeypatch):
@@ -1170,11 +1170,14 @@ def test_a_torn_off_headword_never_reaches_the_screen():
     Карточка выбрасывается, и на повторе модель соберёт её целиком."""
     from backend.world_news_generator import _card_passes_source_guards
 
+    # Карточка полная во всём остальном — иначе заслон назовёт первую претензию
+    # (пустое поле) и до висящего хвоста дело не дойдёт.
     ok, why = _card_passes_source_guards(
         {"de": "die Koalition auffordern, die", "quote_de": "ich hab null Bock auf Montag",
-         "de_in_text": "null Bock"}, _TRANSCRIPT)
+         "de_in_text": "null Bock", "translation_ru": "перевод", "usage_ru": "с падежом",
+         "form_ru": "словарная форма"}, _TRANSCRIPT)
     assert ok is False
-    assert "висящим артиклем" in why
+    assert "обрезана посреди фразы" in why
 
 
 def test_form_label_is_gone_from_the_user_card_but_stays_in_the_preview():
@@ -1221,6 +1224,7 @@ _NEWS_REQUIREMENTS = {
     "помета формы из закрытого списка": ("ЗАКРЫТЫЙ СПИСОК", "словарная форма"),
     "помета без немецких слов внутри": ("инфинитив с sich",),
     "перевод в той же форме, что показана": ("DERSELBEN Form",),
+    "возвратность читается из цитаты": ("ВОЗВРАТНОСТЬ ЧИТАЕТСЯ ИЗ ЦИТАТЫ",),
     "форма из текста обязана быть в цитате": ("de_in_text", "wörtlich im Zitat"),
 }
 
@@ -1232,6 +1236,7 @@ _STANDUP_REQUIREMENTS = {
     "английские цитаты и разовые шутки — вон": ("Yes, Queen!", "EINMALWITZE"),
     "нейтральное выбрасывают, а не раздевают": ("NEUTRALE Alltagswörter",),
     "помета регистра обязательна": ("register_ru", "derb/vulgär"),
+    "возвратность читается из цитаты": ("ВОЗВРАТНОСТЬ ЧИТАЕТСЯ ИЗ ЦИТАТЫ",),
     "помета формы из закрытого списка": ("ЗАКРЫТЫЙ СПИСОК",),
     "спойлер развязки запрещён": ("AUSGANG",),
     "заголовок по правилам немецкой орфографии": ("RECHTSCHREIBUNG DER KARTE",),
@@ -1243,6 +1248,7 @@ _JUDGE_REQUIREMENTS = {
     "пишет пометы по-русски": ("AUF RUSSISCH", "«Akkusativ»"),
     "закрытый список помет": ("ЗАКРЫТЫЙ СПИСОК",),
     "предложения из новости — вон": ("SÄTZE und Satzteile mit Subjekt",),
+    "возвратность читается из цитаты": ("ВОЗВРАТНОСТЬ ЧИТАЕТСЯ ИЗ ЦИТАТЫ", "jemanden unter den Tisch saufen"),
     "висящий артикль в конце — вон": ("auf einem Artikel oder einer Konjunktion ENDEN",),
     "перевранные имена — вон": ("Bafer",),
     "нейтральное выбрасывают, а не раздевают": ("keine reparierte Karte",),
