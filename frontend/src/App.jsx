@@ -23389,6 +23389,14 @@ function AppInner() {
             showDictionarySaveLimitToast();
           } else {
             console.warn('[dictionary] save failed:', message);
+            // Отметка «Сохранено ✅» снимается при ЛЮБОМ отказе, а не только при
+            // достижении лимита. Иначе человек видел два взаимоисключающих сообщения
+            // сразу: в строке перевода «Сохранено ✅», а рядом «Не удалось сохранить».
+            // Верит он отметке — и слово считает своим, хотя его нет.
+            setDictionarySaved('');
+            if (inlineMode) {
+              clearSelectionInlineSavedMarker();
+            }
             setDictionaryError(tr(
               'Слово пока не сохранилось. Попробуйте ещё раз.',
               'Das Wort ist noch nicht gespeichert. Versuch es noch einmal.'

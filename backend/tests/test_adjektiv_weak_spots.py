@@ -118,3 +118,39 @@ class PersonalDailySetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_клетка_таблицы_едет_вместе_с_заданием():
+    """Ответ человека должен ложиться в СВОЮ клетку, иначе он бесполезен.
+
+    Замер 22.08.2026 по 200 последним наборам живой базы: у всех 2430 заданий ключ
+    клетки был пустым («::»). Набор кладётся в базу через `_adjektiv_item_for_game`,
+    а при сдаче ответов `adjektiv_cell_key` читает `typ`/`case`/`gender` — которых та
+    функция в задание не клала. Первый же сыгравший записал бы 15 ответов ни о чём, и
+    персональный подбор по слабым клеткам не получил бы ни одной пригодной строки.
+
+    Ответы при этом не терялись — терялся их смысл. Класс тот же: человек отвечает, а
+    система от этого не умнеет.
+    """
+    from backend.database import _adjektiv_item_for_game, adjektiv_cell_key
+
+    задание = _adjektiv_item_for_game({
+        "correct": "e", "full": "die muntere Ausrüstung",
+        "before": "die munter", "after": " Ausrüstung",
+        "typ": "weak", "case": "Nom", "gender": "f",
+        "hint_ru": "Именительный, жен. род, слабое",
+    })
+    assert adjektiv_cell_key(задание) == "weak:Nom:f"
+    assert задание["typ"] == "weak"
+    assert задание["case"] == "Nom"
+    assert задание["gender"] == "f"
+
+
+def test_сто_заданий_генератора_дают_непустую_клетку():
+    from backend.adjektiv_endings import build_adjektiv_items
+    from backend.database import _adjektiv_item_for_game, adjektiv_cell_key
+
+    for сырое in build_adjektiv_items(100):
+        ключ = adjektiv_cell_key(_adjektiv_item_for_game(сырое))
+        assert ключ != "::", f"клетка потерялась у {сырое.get('full')!r}"
+        assert ключ.count(":") == 2
