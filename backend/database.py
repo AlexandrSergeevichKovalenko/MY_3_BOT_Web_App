@@ -23198,8 +23198,29 @@ def set_telegram_quiz_next_mode(chat_id: int, next_mode: str) -> None:
 
 
 def update_webapp_dictionary_entry(entry_id: int, response_json: dict, translation_de: str | None = None) -> None:
+    """Переписать разбор карточки (и, если дан, немецкий перевод).
+
+    ВХОД ПРОВЕРЯЕТСЯ ЗДЕСЬ. У этой функции восемь вызывающих — ночное обогащение,
+    починка карточек, перегенерация пропусков, — и требовать чистку от каждого значит
+    рано или поздно получить девятого, который забудет. Проверка стоит на дне записи,
+    как на канонических дверях словаря.
+
+    Разбор, размноженный сам на себя, НЕ ЗАПИСЫВАЕТСЯ: тот же страж, что и на
+    `lex_units.save_unit_card`. Порча 16.08.2026 дошла до `response_json` у 143
+    карточек именно этим путём. Отвергаем запись, а не чиним текст: испорченный
+    разбор — след поломки у отправителя, и тихая подчистка её спрячет.
+    """
     if not entry_id:
         return
+    from backend.dictionary_intake import clean_text
+    from backend.mangled_text import mangled_strings_inside
+    порча = mangled_strings_inside(response_json)
+    if порча:
+        logging.warning("разбор карточки %s не записан — текст размножен сам на себя: %s",
+                        entry_id, " | ".join(x[:70] for x in порча[:3]))
+        return
+    if translation_de is not None:
+        translation_de = clean_text(translation_de)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             # updated_at ОБЯЗАТЕЛЕН: приложение держит локальную копию словаря и досинхронизирует
@@ -25385,6 +25406,18 @@ def update_dictionary_entry_full_columns(
     Pass source_lang/target_lang to also re-file an entry saved with an inverted pair."""
     if not entry_id:
         return
+    # ВХОД ПРОВЕРЯЕТСЯ ЗДЕСЬ, а не у вызывающего — по той же причине, что и у
+    # `update_webapp_dictionary_entry`: функция перезаписывает ВСЕ текстовые колонки
+    # карточки целиком, и грязь, попавшая сюда, вытеснит собой верное значение.
+    from backend.dictionary_intake import clean_all
+    from backend.mangled_text import mangled_strings_inside
+    порча = mangled_strings_inside(response_json)
+    if порча:
+        logging.warning("карточка %s не переписана — текст размножен сам на себя: %s",
+                        entry_id, " | ".join(x[:70] for x in порча[:3]))
+        return
+    word_ru, word_de, translation_de, translation_ru = clean_all(
+        word_ru, word_de, translation_de, translation_ru)
     pair_sql = ""
     pair_params: list = []
     if source_lang and target_lang:
