@@ -85,6 +85,12 @@ Prüfe bei jeder Karte:
        hier DEUTSCH; nur fest eingedeutschte Anglizismen bleiben (der Shitstorm);
      • EINMALWITZE über Eigennamen ("Halle an der fucking Saale") — das ist ein Gag über
        EINEN Ortsnamen, den sagt er nie wieder;
+     • SÄTZE und Satzteile mit Subjekt und konjugiertem Verb («Opfer fordern ihre
+       Rechte», «eine wirksame Kontrolle muss es geben») — daraus gehört die WENDUNG auf
+       die Karte, nicht der Satz. Kannst du die Wendung sauber herausnehmen, korrigiere
+       die Karte; wenn nicht, wirf sie raus;
+     • Karten, deren Name durch die Spracherkennung verstümmelt ist («Bafer» statt BAFA):
+       schreib den Namen richtig, wenn du sicher bist, sonst raus;
      • NEUTRALE Alltagswörter, die jeder kennt ("Applaus"). Solche Karten wirfst du RAUS —
        du entfernst NICHT ihre Stilmarkierung, um sie durchzulassen. Eine Karte ohne
        Markierung ist keine reparierte Karte, sondern eine kaputte.

@@ -763,6 +763,13 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
    nicht «афд». «Knapp» heisst OHNE Wasser — NICHT ohne Grossbuchstaben. Jede These beginnt
    mit einem Grossbuchstaben.
 
+
+   EIGENNAMEN: die Spracherkennung verstümmelt Namen von Ämtern, Parteien und Personen
+   («Bafer» statt BAFA, «Rentenpflege» statt «Renten-, Pflege-»). Schreib den Namen
+   RICHTIG, so wie die Einrichtung wirklich heisst. Bist du dir nicht sicher, wie sie
+   heisst — benutz den Namen GAR NICHT, weder in den Thesen noch in den Fragen. Einen
+   falschen Namen liest der Nutzer als richtigen.
+
 2) "phrases": 12–18 wirklich nützliche, im Transkript tatsächlich vorkommende Wörter und
    Wendungen (bevorzugt Wortgruppen/Kollokationen, nicht triviale Wörter wie "und", "sein").
 
@@ -782,6 +789,16 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
    ENTSCHEIDENDES KRITERIUM — WIEDERVERWENDBARKEIT: Eine Einheit gehört nur dann auf eine
    Karte, wenn der Lernende sie in einer ANDEREN Nachricht, in einem ANDEREN Gespräch
    benutzen kann.
+     WAS EINE EINHEIT IST: ein Wort oder eine feste Wortgruppe — Nomen mit Adjektiv,
+       Verb mit Präposition, Funktionsverbgefüge. Sie hat KEIN eigenes Subjekt und KEIN
+       konjugiertes Verb dazu.
+     WAS KEINE EINHEIT IST: alles, was schon ein Satz oder ein Satzteil MIT Subjekt und
+       konjugiertem Verb ist. «Opfer fordern ihre Rechte», «eine wirksame Kontrolle muss
+       es geben», «Menschenrechte und Umweltstandards eingehalten werden» — das sind
+       SÄTZE aus dieser Meldung. Aus dem Satz nimmst du die WENDUNG heraus:
+       aus «Opfer fordern ihre Rechte» → "seine Rechte fordern";
+       aus «eine wirksame Kontrolle muss es geben» → "eine wirksame Kontrolle";
+       aus «…Umweltstandards eingehalten werden» → "Standards einhalten".
      RICHTIG: "unter Druck stehen", "einen langen Atem brauchen", "in Klausur gehen",
        "die Höchstarbeitszeit" — das begegnet ihm wieder.
      FALSCH: "das Bundeskabinett geht in Klausur" (ein ganzer Satz),

@@ -37978,7 +37978,7 @@ function AppInner() {
                                     строка повторяла бы её слово в слово. Смысл этой
                                     строки — показать КУСОК, который надо узнать. */}
                                 {phrase.de_in_text
-                                  && phrase.de_in_text.trim() !== phrase.quote_de.trim().replace(/^[«"]|[»".]+$/g, '').trim() && (
+                                  && phrase.de_in_text.trim().replace(/[.!?…,\s]+$/g, '') !== phrase.quote_de.trim().replace(/^[«"']+|[»"'.!?…,\s]+$/g, '').trim() && (
                                   <span className="worldnews-card-intext">
                                     <span className="worldnews-card-intext-label">{tr('В тексте', 'Im Text')}</span>
                                     {phrase.de_in_text}

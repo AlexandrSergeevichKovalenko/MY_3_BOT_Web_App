@@ -11243,7 +11243,7 @@ def _world_news_preview_text(entry: dict, *, header: str) -> str:
         # глагол, причастие). Когда она занимает всю цитату, строка повторяет её слово
         # в слово и только засоряет экран.
         in_text = str(p.get("de_in_text") or "").strip()
-        quote_bare = str(p.get("quote_de") or "").strip().strip("«»\".")
+        quote_bare = str(p.get("quote_de") or "").strip().strip("«»\"'.!?…, ")
         if in_text and in_text != quote_bare:
             lines.append(f"   ↪️ в тексте: <b>{in_text}</b>")
         if p.get("quote_de"):

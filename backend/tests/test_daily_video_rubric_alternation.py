@@ -1024,3 +1024,40 @@ def test_judge_stops_when_it_swings_back_and_forth(monkeypatch):
     assert report["passes"] <= 2, "качели обязаны обрываться, а не крутиться до предела"
     assert report["frozen"] >= 1
     assert len(out) == 1, "карточка остаётся, её просто перестают трогать"
+
+
+# ── Дефекты четвёртого живого выпуска (22.08.2026, новости) ───────────────────
+
+def test_news_prompt_says_what_is_a_unit_and_what_is_a_sentence():
+    """В новостях снова прошли куски новости целиком: «Opfer fordern ihre Rechte», «eine
+    wirksame Kontrolle muss es geben». Причина: два требования тянули в разные стороны —
+    «предпочитай словосочетания» и «оборот остаётся в падеже» толкали брать длинные куски,
+    а правило воспроизводимости было одно против двух. Теперь сказано прямо, где граница:
+    у единицы нет своего подлежащего и спрягаемого глагола."""
+    from backend.world_news_generator import _LLM_SYSTEM
+
+    assert "WAS EINE EINHEIT IST" in _LLM_SYSTEM
+    assert "KEIN eigenes Subjekt" in _LLM_SYSTEM
+    assert "Opfer fordern ihre Rechte" in _LLM_SYSTEM, "нужен пример негодной карточки"
+    assert "seine Rechte fordern" in _LLM_SYSTEM, "и что из неё надо было взять"
+
+
+def test_both_prompts_forbid_garbled_proper_names():
+    """Расшифровка субтитров переврала название ведомства — «Bafer» вместо BAFA, — и оно
+    уехало человеку в резюме и в два вопроса теста. Такого ведомства нет, а человек
+    прочтёт его как настоящее."""
+    from backend.world_news_generator import _LLM_SYSTEM
+
+    for prompt in (_LLM_SYSTEM, STANDUP_PROFILE.llm_system):
+        assert "EIGENNAMEN" in prompt
+        assert "Bafer" in prompt, "нужен живой пример искажения"
+        assert "GAR NICHT" in prompt, "не уверен в имени — не использовать вовсе"
+
+
+def test_judge_also_drops_sentences_and_garbled_names():
+    """Судья видел эти карточки и пропустил: в его требованиях предложения из новости и
+    перевранные имена названы не были."""
+    from backend.daily_video_judge import _JUDGE_SYSTEM
+
+    assert "SÄTZE und Satzteile mit Subjekt" in _JUDGE_SYSTEM
+    assert "Bafer" in _JUDGE_SYSTEM

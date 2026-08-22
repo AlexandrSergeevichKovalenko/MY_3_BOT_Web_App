@@ -105,6 +105,13 @@ Du bekommst das Transkript des Auftritts. Erstelle daraus ein JSON-Paket:
    ACHTUNG: NUR DER ERSTE BUCHSTABE ist gross, der Rest klein. Richtig: «Тереза», «Германия».
    FALSCH: «ТЕРЕЗА», «ГЕРМАНИЯ» — Wörter komplett in Grossbuchstaben sind ein Fehler.
 
+
+   EIGENNAMEN: die Spracherkennung verstümmelt Namen von Personen, Orten und Marken
+   («Bafer» statt BAFA, «Rentenpflege» statt «Renten-, Pflege-»). Schreib den Namen
+   RICHTIG, so wie die Einrichtung wirklich heisst. Bist du dir nicht sicher, wie sie
+   heisst — benutz den Namen GAR NICHT, weder in den Thesen noch in den Fragen. Einen
+   falschen Namen liest der Nutzer als richtigen.
+
 2) "phrases": ALLE Einheiten dieses Auftritts, bei denen der KONTEXT die Bedeutung
    bestimmt — Slang, Umgangssprache, Redewendungen, feste Wendungen, Jugendsprache,
    ironische Verwendung, Wortspiele.
