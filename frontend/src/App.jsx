@@ -6187,7 +6187,10 @@ function AppInner() {
   const [worldNewsLoading, setWorldNewsLoading] = useState(false);
   const [worldNewsSelected, setWorldNewsSelected] = useState(() => new Set()); // saved phrase indices
   const [worldNewsQuizAnswers, setWorldNewsQuizAnswers] = useState({}); // {questionIdx: chosenOptionIdx}
-  const [worldNewsScrollToQuiz, setWorldNewsScrollToQuiz] = useState(false); // deep-link ?startapp=worldnews_quiz
+  const [worldNewsScrollToQuiz, setWorldNewsScrollToQuiz] = useState(false);
+  // Какой день показывать. Пусто — сегодняшний, как и было. Заполняется только из ссылки
+  // предпросмотра, которой пользуется владелец.
+  const [worldNewsDate, setWorldNewsDate] = useState(''); // deep-link ?startapp=worldnews_quiz
   // Stepwise wizard: 'words' (swipe deck) → 'video' (player) → 'quiz' (one Q at a time).
   const [worldNewsStage, setWorldNewsStage] = useState('words');
   const [worldNewsCardIndex, setWorldNewsCardIndex] = useState(0); // current phrase card in the deck
@@ -19729,6 +19732,11 @@ function AppInner() {
       setFlashcardsOnly(false);
       setFlashcardSessionActive(false);
       setYoutubeNewsMode(true);
+      // Дата в ссылке: «worldnews_20260823». Нужна для кнопки «посмотреть как увидит
+      // человек» в превью владельца — превью обычно про ЗАВТРА, а экран без даты
+      // показал бы сегодняшнюю запись, то есть соврал бы.
+      const wnDate = startParam.match(/^worldnews[_-](\d{4})(\d{2})(\d{2})/);
+      if (wnDate) setWorldNewsDate(`${wnDate[1]}-${wnDate[2]}-${wnDate[3]}`);
       if (startParam.includes('quiz')) setWorldNewsScrollToQuiz(true);
       setSelectedSections(new Set(['youtube']));
       const t = setTimeout(() => { scrollToRef(youtubeRef, { block: 'start' }); }, 120);
@@ -32604,7 +32612,7 @@ function AppInner() {
         const response = await fetch('/api/webapp/worldnews/today', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData }),
+          body: JSON.stringify(worldNewsDate ? { initData, date: worldNewsDate } : { initData }),
         });
         const data = response.ok ? await response.json() : null;
         if (data && data.available) {
@@ -32629,7 +32637,7 @@ function AppInner() {
         setWorldNewsLoading(false);
       }
     })();
-  }, [youtubeNewsMode, initData]);
+  }, [youtubeNewsMode, initData, worldNewsDate]);
 
   // Auto-load subtitles once the video id resolves — the user shouldn't have to tap «Субтитры»:
   //  • News mode (curated daily video), and

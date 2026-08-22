@@ -17849,11 +17849,25 @@ body.worldnews-active .webapp-topbar {
 }
 
 /* Word swipe deck — each card is a compact word breakdown */
+/* Колода вписана в экран: длинная карточка НЕ имеет права выдавить кнопку «Смотреть
+   видео» за нижний край (случай владельца 22.08.2026 — карточки со сленгом выросли
+   вчетверо против новостных, и кнопка ушла под сгиб).
+   Устройство то же, что у интерактивов: потолок по высоте экрана, середина
+   прокручивается, счётчик сверху и стрелки с кнопкой снизу прибиты и видны всегда. */
 .worldnews-deck {
   min-width: 0;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
   padding: 2px 0 8px;
+  /* Вычитаем то, что занято над колодой: шапка экрана и полоса шагов. Значение в
+     переменной — на планшете и в Telegram-шторке высота хрома другая. */
+  max-height: calc(100dvh - var(--wn-deck-chrome, 150px));
+}
+.worldnews-deck-progress,
+.worldnews-deck-nav,
+.worldnews-next-cta {
+  flex: 0 0 auto;   /* не сжимаются и не уезжают: это опоры экрана */
 }
 .worldnews-deck-progress {
   text-align: center;
@@ -17867,11 +17881,19 @@ body.worldnews-active .webapp-topbar {
 .worldnews-card {
   min-width: 0;
   overflow-x: clip;
-  min-height: 236px;
+  /* Прокручивается ИМЕННО карточка — то, что может быть сколь угодно длинным.
+     min-height: 0 обязателен: без него flex-элемент отказывается сжиматься ниже
+     содержимого, и никакая прокрутка не включится. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* Короткая карточка стоит по центру, длинная начинается сверху: при центрировании
+     прокручиваемого блока верх содержимого срезается. */
+  justify-content: flex-start;
   text-align: center;
   gap: 14px;
   padding: 30px 22px;

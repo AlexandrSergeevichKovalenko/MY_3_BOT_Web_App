@@ -1127,3 +1127,35 @@ def test_emergency_refill_is_not_choked_by_an_old_budget():
     src = inspect.getsource(prepare_world_news)
     assert "STANDUP_EMERGENCY_REFILL_BUDGET_SEC" in src
     assert "max_add=2, budget_sec=70" not in src, "старый зажатый бюджет вернулся"
+
+
+# ── Владелец должен видеть НАСТОЯЩУЮ карточку прямо из превью (22.08.2026) ────
+
+def test_preview_has_a_button_to_the_real_card_with_the_right_date():
+    """Владелец весь день судил о продукте по сводке для одобрения и ни разу не открыл
+    настоящую карточку: кнопка «Смотреть» жила на другом сообщении, о котором надо было
+    помнить. Теперь она стоит в самом превью.
+
+    Дата зашита в ссылку намеренно: превью обычно про ЗАВТРА, а экран без даты показал бы
+    СЕГОДНЯШНЮЮ запись — кнопка соврала бы владельцу о том, что он одобряет."""
+    import re
+
+    src = open("bot_3.py", encoding="utf-8").read()
+    rows = src[src.index("def _world_news_preview_keyboard_rows"):]
+    rows = rows[:rows.index("\nasync def ")]
+    assert "Посмотреть как увидит человек" in rows
+    assert 'worldnews_{compact_date}' in rows, "ссылка обязана нести дату записи"
+    # Дата идёт без дефисов: Telegram допускает в start_param только буквы, цифры, _ и -.
+    assert 'date_str.replace("-", "")' in rows
+    assert re.search(r"compact_date\.isdigit\(\)", rows), (
+        "кривую дату в ссылку класть нельзя"
+    )
+
+
+def test_frontend_reads_the_date_from_the_deep_link():
+    """Вторая половина той же кнопки: экран обязан прочитать дату из ссылки и запросить
+    ИМЕННО этот день, иначе владелец увидит не то, что одобряет."""
+    src = open("frontend/src/App.jsx", encoding="utf-8").read()
+    assert "worldNewsDate" in src
+    assert "worldnews[_-]" in src, "разбор даты из start_param"
+    assert "date: worldNewsDate" in src, "дата обязана уйти в запрос записи"

@@ -11505,6 +11505,17 @@ def _world_news_preview_keyboard_rows(entry: dict) -> list[list[InlineKeyboardBu
         "✅ Одобрено — уйдёт утром" if approved else "✅ Одобрить (уйдёт утром в 6:30)",
         callback_data=f"wn_pin:{date_str}",
     )]]
+    # «Посмотреть как увидит человек» — прямо отсюда, без отдельной команды. Владелец
+    # 22.08.2026 весь день судил о продукте по этой сводке и ни разу не открыл настоящую
+    # карточку, потому что кнопка жила на другом сообщении.
+    # Дата зашита в ссылку: превью обычно про ЗАВТРА, а экран без даты показал бы
+    # сегодняшнюю запись — то есть кнопка соврала бы.
+    compact_date = date_str.replace("-", "")
+    if compact_date.isdigit():
+        rows.append([InlineKeyboardButton(
+            "👁 Посмотреть как увидит человек",
+            url=get_webapp_deeplink(f"worldnews_{compact_date}"),
+        )])
     if n_words:
         rows.append([InlineKeyboardButton(
             f"🔤 Сохранить слова в словарь ({n_words})", callback_data=f"wn_words:{date_str}"
