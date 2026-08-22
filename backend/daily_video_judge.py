@@ -78,9 +78,16 @@ Prüfe bei jeder Karte:
    Zitat.
 
 6) WIEDERVERWENDBARKEIT. Die Einheit taugt nur, wenn der Lernende sie in einer ANDEREN
-   Situation benutzen kann. Repliken aus der Sendung ("Privatversicherte verstehen den
-   Joke") und erfundene Wortspiele des Moderators ("Niceinger Diceinger") sind KEINE
-   Spracheinheiten — solche Karten wirfst du raus.
+   Situation benutzen kann. Wirf raus:
+     • Repliken aus der Sendung ("Privatversicherte verstehen den Joke");
+     • erfundene Wortspiele des Moderators ("Niceinger Diceinger");
+     • ENGLISCHE Wendungen, die nur zitiert werden ("Yes, Queen!") — der Nutzer lernt
+       hier DEUTSCH; nur fest eingedeutschte Anglizismen bleiben (der Shitstorm);
+     • EINMALWITZE über Eigennamen ("Halle an der fucking Saale") — das ist ein Gag über
+       EINEN Ortsnamen, den sagt er nie wieder;
+     • NEUTRALE Alltagswörter, die jeder kennt ("Applaus"). Solche Karten wirfst du RAUS —
+       du entfernst NICHT ihre Stilmarkierung, um sie durchzulassen. Eine Karte ohne
+       Markierung ist keine reparierte Karte, sondern eine kaputte.
 
 {register_rule}
 Antworte NUR mit validem JSON:

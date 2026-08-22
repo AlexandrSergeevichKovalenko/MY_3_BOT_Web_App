@@ -981,3 +981,19 @@ def test_news_cards_do_not_need_a_register_marking(monkeypatch):
     out, _ = J.judge_and_repair_cards([card], profile=NEWS_PROFILE,
                                       transcript=_JUDGE_TRANSCRIPT)
     assert len(out) == 1
+
+
+# ── Требования владельца 22.08.2026 по слабым карточкам ───────────────────────
+
+def test_judge_is_told_to_drop_one_off_jokes_and_english():
+    """Владелец о карточках стендапа: «Yes, Queen!» — английская фраза, «Halle an der
+    fucking Saale» — разовая шутка про название города, нигде больше не пригодится.
+    Немецкий там не неверный, но и учить там нечего."""
+    from backend.daily_video_judge import _JUDGE_SYSTEM
+
+    assert "Yes, Queen!" in _JUDGE_SYSTEM
+    assert "EINMALWITZE" in _JUDGE_SYSTEM
+    assert "der Shitstorm" in _JUDGE_SYSTEM, "прижившиеся англицизмы остаются"
+    assert "keine reparierte Karte" in _JUDGE_SYSTEM, (
+        "нейтральное слово выбрасывается, а не раздевается ради пропуска"
+    )

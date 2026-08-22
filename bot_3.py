@@ -11239,8 +11239,13 @@ def _world_news_preview_text(entry: dict, *, header: str) -> str:
         marks = [str(p.get(k) or "").strip() for k in ("register_ru", "form_ru")]
         marks_txt = f" <i>({' · '.join(m for m in marks if m)})</i>" if any(marks) else ""
         lines.append(f"• <b>{p.get('de')}</b>{marks_txt} — {p.get('translation_ru')}")
-        if p.get("de_in_text"):
-            lines.append(f"   ↪️ в тексте: <b>{p['de_in_text']}</b>")
+        # Строка «в тексте» нужна там, где единица в речи выглядит иначе (отделяемый
+        # глагол, причастие). Когда она занимает всю цитату, строка повторяет её слово
+        # в слово и только засоряет экран.
+        in_text = str(p.get("de_in_text") or "").strip()
+        quote_bare = str(p.get("quote_de") or "").strip().strip("«»\".")
+        if in_text and in_text != quote_bare:
+            lines.append(f"   ↪️ в тексте: <b>{in_text}</b>")
         if p.get("quote_de"):
             lines.append(f"   🎬 «{p['quote_de']}»")
     if len(phrases) > shown:

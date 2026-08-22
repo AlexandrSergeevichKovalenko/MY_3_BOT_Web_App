@@ -37974,7 +37974,11 @@ function AppInner() {
                                 {/* Форма из текста: та же единица, но так, как она звучит в
                                     ролике. Без неё человек выучит «ausrasten», услышит
                                     «da rasten alle aus» и не свяжет одно с другим. */}
-                                {phrase.de_in_text && (
+                                {/* Не показываем, когда единица занимает всю цитату:
+                                    строка повторяла бы её слово в слово. Смысл этой
+                                    строки — показать КУСОК, который надо узнать. */}
+                                {phrase.de_in_text
+                                  && phrase.de_in_text.trim() !== phrase.quote_de.trim().replace(/^[«"]|[»".]+$/g, '').trim() && (
                                   <span className="worldnews-card-intext">
                                     <span className="worldnews-card-intext-label">{tr('В тексте', 'Im Text')}</span>
                                     {phrase.de_in_text}
