@@ -1337,3 +1337,42 @@ def test_reference_is_asked_only_where_gender_exists():
     assert split_article("sich unter den Tisch saufen") == (None, None)
     assert split_article("heulen") == (None, None)
     assert split_article("Bock haben (auf etwas)") == (None, None)
+
+
+# ── Написание и существование слова — из справочника (22.08.2026) ─────────────
+
+def test_reference_fixes_a_lowercase_noun():
+    """«herzinfarkt» со строчной буквы владелец увидел на экране. Немецкое существительное
+    пишется с заглавной, и справочник знает это сам — просить об этом модель не нужно."""
+    from backend.daily_video_quality import split_article
+
+    # Разделитель обязан принимать строчное написание: артикль уже сказал, что это
+    # существительное, а неверный регистр — ровно то, что мы пришли чинить.
+    assert split_article("die kommentarspalte") == ("die", "kommentarspalte")
+
+
+def test_reference_is_not_applied_to_a_role_it_did_not_answer(monkeypatch):
+    """Проверка на живых словах показала дефект в самой задумке: на «heulen» справочник
+    отвечает «Heulen» с заглавной — и он прав со своей стороны, «das Heulen» существует
+    как отглагольное существительное. Но на карточке это ГЛАГОЛ «рыдать», и подставив
+    заглавную, мы своими руками сделали бы верную карточку неверной.
+
+    Справочник отвечает на вопрос «как пишется слово в роли, которую выбрал Я», а нам
+    нужна роль с карточки. Без артикля роль неизвестна — написание не трогаем."""
+    import backend.daily_video_quality as Q
+
+    monkeypatch.setattr(Q, "spelling_from_reference",
+                        lambda de, allow_network=False: ("исправлено", "Heulen"))
+    card, what = Q.correct_spelling_from_reference({"de": "heulen"})
+    assert card["de"] == "heulen" and what == "", "у слова без артикля роль неизвестна"
+
+
+def test_slang_is_not_judged_by_a_reference(monkeypatch):
+    """Справочники знают живую речь плохо, а стендап — это сплошь сленг. Решение владельца
+    22.08.2026: карточке со сленговой пометой верим больше, чем справочнику."""
+    import backend.daily_video_quality as Q
+
+    monkeypatch.setattr(Q, "spelling_from_reference",
+                        lambda de, allow_network=False: ("не слово", ""))
+    assert Q.word_not_german({"de": "Digger", "register_ru": "молодёжное"}) == ""
+    assert Q.word_not_german({"de": "Abschiebu"}) != "", "в новостях мусор выбрасывается"

@@ -223,7 +223,11 @@ def split_article(de: str) -> tuple:
     if len(parts) != 2:
         return (None, None)
     article, word = parts[0].lower(), parts[1]
-    if article not in _ARTICLES or not re.fullmatch(r"[A-ZÄÖÜ][A-Za-zÄÖÜäöüß-]+", word):
+    # Заглавная буква НЕ требуется: артикль уже сказал, что это существительное, а
+    # неверный регистр — как раз то, что мы пришли чинить. Требовать заглавную здесь
+    # значило бы исключить ровно те карточки, ради которых сверка и делается
+    # (поймано на «die kommentarspalte» 22.08.2026).
+    if article not in _ARTICLES or not re.fullmatch(r"[A-Za-zÄÖÜäöüß-]{2,}", word):
         return (None, None)
     return (article, word)
 
@@ -278,3 +282,106 @@ def correct_article_from_reference(card: dict, *, allow_network: bool = False) -
     fixed = dict(card)
     fixed["de"] = f"{theirs} {word}"
     return (fixed, f"артикль исправлен по справочнику ({source}): «{ours}» → «{theirs}»")
+
+
+# ── Существование и написание слова — тоже из справочника ─────────────────────
+#
+# Второй незакрытый резерв достоверности. `backend/german_word_gate.py` умеет две вещи,
+# которые я до сих пор просил у модели:
+#   • существует ли такое немецкое слово вообще (ходит в DWDS и второй справочник);
+#   • как оно пишется — включая заглавную букву у существительных.
+#
+# Именно этим закрывается дефект «herzinfarkt bekommen» со строчной буквы, который
+# владелец увидел 22.08.2026: справочник поднимает заглавную сам, и просить об этом
+# модель больше не нужно. Просьба — надежда, справочник — знание.
+#
+# Модель здесь НЕ спрашивается (allow_model=False): нам нужен источник, а не вторая
+# догадка поверх первой.
+
+def _single_word_of(de: str) -> str:
+    """Одно слово из заголовка — с артиклем или без. Для оборотов возвращает пустую
+    строку: дверь слова разбирает ОДНО слово, многословное до неё не доходит."""
+    text = re.sub(r"\(.*?\)", " ", str(de or "")).strip()
+    parts = text.split()
+    if len(parts) == 2 and parts[0].lower() in _ARTICLES:
+        parts = parts[1:]
+    if len(parts) != 1:
+        return ""
+    word = parts[0].strip(".,!?»«\"'")
+    return word if re.fullmatch(r"[A-Za-zÄÖÜäöüß-]{2,}", word) else ""
+
+
+def spelling_from_reference(de: str, *, allow_network: bool = False) -> tuple:
+    """Что справочник говорит о написании и существовании слова.
+
+    Возвращает (статус, исправленное_написание). Статус «неизвестно» — справочник не
+    ответил; это НЕ повод ни выбрасывать карточку, ни что-то подставлять.
+    """
+    word = _single_word_of(de)
+    if not word:
+        return ("не одиночное слово", "")
+    try:
+        from backend.german_word_gate import CONFIRMED, NOT_A_WORD, REPAIRED, check_word
+        verdict = check_word(word, allow_network=allow_network, allow_model=False)
+    except Exception:
+        return ("справочник недоступен", "")
+    status = str(verdict.get("status") or "")
+    fixed = str(verdict.get("text") or "").strip()
+    if status == NOT_A_WORD:
+        return ("не слово", "")
+    if status == REPAIRED and fixed and fixed != word:
+        return ("исправлено", fixed)
+    if status == CONFIRMED:
+        return ("подтверждено", fixed or word)
+    return ("не подтверждено", "")
+
+
+def correct_spelling_from_reference(card: dict, *, allow_network: bool = False) -> tuple:
+    """Поправить написание заголовка по справочнику. Возвращает (карточка, что сделали).
+
+    Правится ТОЛЬКО само слово, артикль остаётся на месте — им занимается сверка рода.
+    Слово, которого справочник не знает, не трогается: у стендапа это сплошь сленг, и
+    решение владельца 22.08.2026 — верить карточке, а не справочнику, когда речь живая.
+    """
+    # ТОЛЬКО существительное с артиклем. Проверка 22.08.2026 показала, почему это важно:
+    # на «heulen» справочник отвечает «Heulen» с заглавной — и он прав со своей стороны,
+    # «das Heulen» существует как отглагольное существительное. Но на карточке «heulen» —
+    # это ГЛАГОЛ «рыдать», и подставив заглавную, мы своими руками сделали бы верную
+    # карточку неверной.
+    #
+    # Справочник отвечает на вопрос «как пишется это слово в роли, которую я для него
+    # выбрал», а нам нужна роль, в которой слово стоит на карточке. Применять ответ
+    # источника к другому вопросу — то же выдумывание, только чужими руками.
+    #
+    # Артикль на карточке роль называет однозначно: это существительное. Без артикля роль
+    # неизвестна, и написание не трогаем.
+    article, _noun = split_article(card.get("de"))
+    if not article:
+        return (card, "")
+    word = _single_word_of(card.get("de"))
+    if not word:
+        return (card, "")
+    status, fixed = spelling_from_reference(card.get("de"), allow_network=allow_network)
+    if status != "исправлено" or not fixed:
+        return (card, "")
+    updated = dict(card)
+    updated["de"] = str(card.get("de") or "").replace(word, fixed, 1)
+    return (updated, f"написание исправлено по справочнику: «{word}» → «{fixed}»")
+
+
+def word_not_german(card: dict, *, allow_network: bool = False) -> str:
+    """Справочник прямо говорит, что такого слова нет. Тогда карточке не место на экране.
+
+    «Не подтверждено» сюда НЕ попадает: справочники плохо знают сленг, а стендап — это
+    сплошь сленг. Выбрасываем только то, что источник назвал не словом.
+    """
+    # Живую речь справочники знают плохо, а стендап — это сплошь сленг. Решение владельца
+    # 22.08.2026: карточке со сленговой пометой верим больше, чем справочнику. Поэтому
+    # помеченную живую речь на существование не проверяем вовсе.
+    register = str(card.get("register_ru") or "").strip().lower()
+    if register and not register.startswith("нейтральн"):
+        return ""
+    status, _ = spelling_from_reference(card.get("de"), allow_network=allow_network)
+    if status == "не слово":
+        return f"справочник не знает такого слова: «{card.get('de')}»"
+    return ""

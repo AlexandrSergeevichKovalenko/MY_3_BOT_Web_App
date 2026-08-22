@@ -1427,12 +1427,23 @@ def prepare_world_news(
     # Справочник промолчал — карточка остаётся как есть: неизвестность честнее выдумки.
     article_fixes = []
     try:
-        from backend.daily_video_quality import correct_article_from_reference
+        from backend.daily_video_quality import (
+            correct_article_from_reference, correct_spelling_from_reference, word_not_german,
+        )
         checked = []
         for card in pack["phrases"]:
-            fixed, what = correct_article_from_reference(card, allow_network=True)
-            if what:
-                article_fixes.append(f"«{card.get('de')}»: {what}")
+            # Справочник прямо говорит, что такого слова нет («Abschiebu») — карточке не
+            # место на экране. Помеченную живую речь сюда не пускают: справочники знают
+            # сленг плохо, и владелец 22.08.2026 решил верить карточке, а не справочнику.
+            junk = word_not_german(card, allow_network=True)
+            if junk:
+                article_fixes.append(f"выброшена: {junk}")
+                continue
+            fixed, what_art = correct_article_from_reference(card, allow_network=True)
+            fixed, what_spell = correct_spelling_from_reference(fixed, allow_network=True)
+            for what in (what_art, what_spell):
+                if what:
+                    article_fixes.append(f"«{card.get('de')}»: {what}")
             checked.append(fixed)
         pack["phrases"] = checked
     except Exception:
@@ -1441,7 +1452,7 @@ def prepare_world_news(
         logger.warning("daily_video[%s]: сверка артиклей со справочником не отработала",
                        profile.key, exc_info=True)
     if article_fixes:
-        logger.info("daily_video[%s]: артиклей выправлено по справочнику: %d",
+        logger.info("daily_video[%s]: справочник вмешался %d раз(а)",
                     profile.key, len(article_fixes))
 
     # ── СУДЬЯ ПРИЁМКИ ──────────────────────────────────────────────────────────
