@@ -980,7 +980,7 @@ def _quote_shows_the_unit(de: str, quote: str) -> bool:
     return any(root in fp for root in roots)
 
 
-def _card_passes_source_guards(card: dict, transcript_text: str) -> tuple[bool, str]:
+def _card_passes_source_guards(card: dict, transcript_text: str, profile=None) -> tuple[bool, str]:
     """Три сверки карточки с источником. Возвращает (прошла, почему нет).
 
     Вынесено отдельно, потому что через это обязана пройти не только СВЕЖАЯ карточка от
@@ -1001,6 +1001,16 @@ def _card_passes_source_guards(card: dict, transcript_text: str) -> tuple[bool, 
         return False, "нет формы из текста"
     if _quote_fingerprint(de_in_text) not in _quote_fingerprint(quote_de):
         return False, "формы из текста нет в цитате"
+    # Судья не имеет права СНЯТЬ обязательное поле. 22.08.2026 он убрал помету регистра у
+    # «Applaus», потому что слово нейтральное, — и карточка проскочила в рубрику сленга
+    # уже без пометы, хотя нейтральные слова оттуда положено выбрасывать. Правильный
+    # исход был «выбросить», а не «снять помету».
+    if profile is not None and getattr(profile, "requires_register", False):
+        register = str(card.get("register_ru") or "").strip()
+        if not register:
+            return False, "снята помета регистра"
+        if register.lower().startswith("нейтральн"):
+            return False, "нейтральное слово в рубрике сленга"
     return True, ""
 
 

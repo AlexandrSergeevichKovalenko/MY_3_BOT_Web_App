@@ -211,10 +211,20 @@ def judge_and_repair_cards(cards: list, *, profile, transcript: str) -> tuple[li
                     continue
                 merged = dict(card)
                 merged.update({k: v for k, v in fixed.items() if k != "i"})
+                # ПРАВКА, НИЧЕГО НЕ МЕНЯЮЩАЯ, — НЕ ПРАВКА. 22.08.2026 судья три прохода
+                # подряд «исправлял» «das kurze Vergnügen» на «das kurze Vergnügen»,
+                # объясняя это отсутствием артикля, которого не было только в его
+                # объяснении. Проверка не сходилась, потому что он выдумывал себе работу
+                # на уже исправленной карточке. Если после правки карточка та же — значит
+                # править было нечего, и проход считается чистым.
+                if merged == card:
+                    logger.info("судья: пустая правка на %r — считаем годной", card.get("de"))
+                    next_cards.append(card)
+                    continue
                 # ГЛАВНЫЙ ЗАСЛОН: исправленная карточка проходит те же стражи, что и свежая.
                 # Если судья под видом правки что-то присочинил — цитату, которой нет в
                 # субтитрах, или форму, которой нет в цитате, — карточка выбрасывается.
-                ok, why = _card_passes_source_guards(merged, transcript)
+                ok, why = _card_passes_source_guards(merged, transcript, profile=profile)
                 if not ok:
                     touched += 1
                     report["dropped"] += 1

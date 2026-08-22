@@ -924,3 +924,60 @@ def test_judge_is_told_to_fix_errors_not_polish_style():
 
     assert "du verbesserst nicht den STIL" in _JUDGE_SYSTEM
     assert "kommt nie zum Ende" in _JUDGE_SYSTEM
+
+
+# ── Судья: зацикливание и снятие обязательных полей (22.08.2026) ──────────────
+
+def test_empty_fix_does_not_keep_the_judge_spinning(monkeypatch):
+    """Судья три прохода подряд «исправлял» «das kurze Vergnügen» на «das kurze
+    Vergnügen» — до и после одно и то же, а причиной называл отсутствие артикля, которого
+    не было только в его объяснении. Проверка не сходилась, потому что он выдумывал себе
+    работу на уже исправленной карточке. Правка, ничего не меняющая, — не правка."""
+    import backend.daily_video_judge as J
+
+    cards = [_judge_card("das kurze Vergnügen", "ich hab null Bock auf Montag", "null Bock")]
+    monkeypatch.setattr(J, "_ask_judge",
+                        lambda c, *, profile, transcript: [
+                            {"i": 0, "verdict": "fix", "reason": "существительное без артикля",
+                             "card": dict(c[0])}])
+    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
+                                           transcript=_JUDGE_TRANSCRIPT)
+    assert report["passes"] == 1, "пустая правка не должна гнать судью на новый проход"
+    assert report["clean"] is True
+    assert report["fixed"] == 0
+    assert out == cards
+
+
+def test_judge_may_not_strip_a_required_marking(monkeypatch):
+    """Судья снял помету регистра у «Applaus», потому что слово нейтральное, — и карточка
+    проскочила в рубрику сленга уже без пометы. Правильный исход был «выбросить», а не
+    «снять помету»: нейтральным словам в стендапе не место."""
+    import backend.daily_video_judge as J
+
+    # Единица обязана встречаться в цитате, иначе её отобьёт другой заслон, и тест будет
+    # проверять не то, что задумано.
+    cards = [_judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
+    stripped = dict(cards[0], register_ru="")
+    monkeypatch.setattr(J, "_ask_judge",
+                        lambda c, *, profile, transcript: [
+                            {"i": 0, "verdict": "fix", "reason": "нейтральное слово",
+                             "card": stripped}])
+    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
+                                           transcript=_JUDGE_TRANSCRIPT)
+    assert out == [], "карточка без обязательной пометы не должна дойти до экрана"
+    assert any("снята помета регистра" in r for r in report["reasons"])
+
+
+def test_news_cards_do_not_need_a_register_marking(monkeypatch):
+    """Защита пометы — правило СТЕНДАПА. В новостях речь нейтральная, и требовать помету
+    там значило бы выбрасывать всё подряд."""
+    import backend.daily_video_judge as J
+
+    card = {"de": "unter Druck stehen", "form_ru": "инфинитив", "translation_ru": "перевод",
+            "usage_ru": "с предлогом", "de_in_text": "null Bock",
+            "quote_de": "ich hab null Bock auf Montag", "quote_ru": "перевод строки"}
+    monkeypatch.setattr(J, "_ask_judge",
+                        lambda c, *, profile, transcript: [{"i": 0, "verdict": "ok"}])
+    out, _ = J.judge_and_repair_cards([card], profile=NEWS_PROFILE,
+                                      transcript=_JUDGE_TRANSCRIPT)
+    assert len(out) == 1
