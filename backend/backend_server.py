@@ -8052,6 +8052,21 @@ def _build_dictionary_result_from_raw(
     # returns native-language paraphrases (e.g. Russian «неприятный человек» for a German
     # phrase). Drop wrong-script entries so we never show native-language "synonyms".
     _sanitize_learning_language_fields(decorated, target_lang)
+    # ── АРТИКЛЬ НЕ КЛЕИТСЯ К ФРАЗЕ — И НА ЖИВОМ ОТВЕТЕ ТОЖЕ ──────────────────────
+    #
+    # Это же правило стояло с утра 22.08.2026, но ТОЛЬКО на пути сохранения
+    # (`_prepare_dictionary_response_json_for_save`), и не сработало там, где владелец
+    # его и увидел. Он набрал «Aus Gag» в быстром словаре, ответ помечен «машинный
+    # перевод — этого слова нет в словаре», то есть через сохранение НЕ проходил, — и
+    # над двумя словами снова стояло «die», а фраза числилась существительным.
+    # Проверять надо было путём экрана, а не вызовом функции.
+    #
+    # Здесь общий сборщик ответа: через него идут и живой поиск, и обогащение карточки.
+    # Поэтому правило живёт тут, а на сохранении остаётся вторым рубежом — туда приходят
+    # записи из импортов, которые сюда не заглядывают.
+    decorated = _apply_german_headword_normalization(
+        payload=decorated, source_lang=source_lang, target_lang=target_lang,
+    )
     return decorated, direction, detected, source_value, target_value
 
 

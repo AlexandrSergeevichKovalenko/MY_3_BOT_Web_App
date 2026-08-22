@@ -2730,6 +2730,21 @@ Task:
   "blad" (adjective, "fat") must NOT become "Blatt" or "bald"; correction_applied
   stays false and word_source/word_target keep the given lemma. A card about a
   different word is worse than no card at all.
+- THE GERMAN HEADWORD IS SPELLED BY GERMAN ORTHOGRAPHY, NEVER COPIED FROM THE TYPING.
+  What the user typed is a search query, not a spelling decision: people type from the
+  start of a sentence, from a screenshot, from a subtitle, with Caps Lock. In German only
+  NOUNS are capitalised — a preposition, verb, adjective, adverb or pronoun stays lower
+  case wherever it stands in the entry, including first position.
+  * Worked example, 22.08.2026. The user typed "Aus Gag". The entry is "aus Gag" —
+    preposition + noun, "as a joke". Echoing the capital "A" made the whole thing look
+    like one noun, so it was labelled a noun, given the article "die" and a declension
+    table "die Aus Gag / der Aus Gags". None of those words exist. One capital letter
+    produced a whole fake word.
+  * Same for a phrase that starts with an adjective: "ziehender, dumpfer Schmerz in der
+    Seite" keeps its lower-case "ziehender".
+  * A genuine sentence keeps its sentence capital: "Das war nur aus Gag gemeint."
+  * If the typing is capitalised and the word IS a noun, keep the capital. The rule
+    changes case only where German requires it, and never invents a different word.
 - SAVED MEANING DECIDES WHICH SENSE THE CARD IS ABOUT. When "saved_meaning" is present,
   this learner already met the expression in a particular sense and saved it with that
   translation. The card is FOR HIM, so that sense goes FIRST — meanings.primary, the

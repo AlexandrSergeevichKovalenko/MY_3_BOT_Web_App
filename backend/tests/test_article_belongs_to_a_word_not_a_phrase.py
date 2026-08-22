@@ -81,3 +81,45 @@ class TestSingleWordsAreUntouched:
         assert result["article"] == ""
         assert result["part_of_speech"] == "phrase"
         assert result["source_text"] == "die Hose anhaben"
+
+
+class TestTheLiveAnswerToo:
+    """Правило обязано стоять на ЖИВОМ ответе, а не только на сохранении.
+
+    Утром 22.08.2026 я поставил его в `_prepare_dictionary_response_json_for_save` и
+    проверил вызовом функции. Владелец в тот же день прислал экран, где оно не
+    сработало: он набрал «Aus Gag» в быстром словаре, ответ был помечен «машинный
+    перевод — этого слова нет в словаре», то есть через сохранение не проходил вовсе,
+    и над двумя словами снова стояло «die». Проверять надо было путём экрана.
+
+    Теперь правило стоит в общем сборщике ответа — через него идут и живой поиск, и
+    обогащение карточки; на сохранении оно остаётся вторым рубежом для импортов.
+    """
+
+    def _build(self, raw):
+        import backend.backend_server as server
+        item, *_rest = server._build_dictionary_result_from_raw(
+            raw=raw, query_word=raw.get("word_source", ""),
+            source_lang="de", target_lang="ru",
+            query_source_lang="de", query_target_lang="ru", lookup_lang="de")
+        return item
+
+    def test_the_owners_case_on_the_live_path(self):
+        item = self._build({
+            "detected_language": "source", "word_source": "Aus Gag",
+            "word_target": "шутка", "article": "die", "part_of_speech": "noun",
+            "entry_kind": "word",
+            "translations": [{"value": "шутка", "is_primary": True}],
+        })
+        assert item.get("article") == ""
+        assert item.get("part_of_speech") == "phrase"
+
+    def test_a_single_noun_keeps_its_article_on_the_live_path(self):
+        item = self._build({
+            "detected_language": "source", "word_source": "Brücke",
+            "word_target": "мост", "article": "die", "part_of_speech": "noun",
+            "entry_kind": "word",
+            "translations": [{"value": "мост", "is_primary": True}],
+        })
+        assert item.get("article") == "die"
+        assert item.get("part_of_speech") == "noun"
