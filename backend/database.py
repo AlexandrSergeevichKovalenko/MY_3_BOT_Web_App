@@ -24911,9 +24911,14 @@ def reset_dictionary_card_for_rebuild(
              source_lang, target_lang, payload, canonical_entry_id) = row
             source_lang = _normalize_lang_code(source_lang)
             target_lang = _normalize_lang_code(target_lang)
-            german_word = str(corrected_word or "").strip() or str(
-                word_de or (translation_de if source_lang != "de" else "") or ""
-            ).strip()
+            # `corrected_word` печатает ЧЕЛОВЕК: он говорит «тут ошибка» и вписывает,
+            # как правильно. Дальше это написание уезжает в ПЯТЬ мест — в его карточку,
+            # в разбор карточки, в общий пул и в разбор пула — и по нему же ночь заново
+            # покупает разбор. Пустить сюда невычищенный текст значит развезти грязь по
+            # всем хранилищам разом и заплатить за неё модели.
+            from backend.dictionary_intake import clean_text
+            german_word = clean_text(corrected_word) or clean_text(
+                word_de or (translation_de if source_lang != "de" else "") or "")
             report["word"] = german_word
 
             # 1. Личная карточка: тело разбора долой, опознание на месте.
@@ -32207,7 +32212,12 @@ def split_vocabulary_entry_senses(
              canonical_entry_id, semantic_tag, lex_unit_id) = row
             payload = _coerce_json_object(response_json)
 
-            first = str(senses[0].get("value") or "").strip()
+            # ТУТ ТОЖЕ ПЕЧАТАЕТ ЧЕЛОВЕК: он разбивает свою карточку на значения и
+            # набирает каждое руками. Дверь у такого текста должна быть та же, что и у
+            # обычного сохранения, — иначе грязь заходит именно этим путём, потому что
+            # ниже идёт ПРЯМОЙ INSERT мимо _create_or_attach_…, где чистка стоит.
+            from backend.dictionary_intake import clean_text
+            first = clean_text(senses[0].get("value"))
             if first:
                 cursor.execute(
                     """
@@ -32220,7 +32230,7 @@ def split_vocabulary_entry_senses(
 
             created = 0
             for sense in senses[1:]:
-                value = str(sense.get("value") or "").strip()
+                value = clean_text(sense.get("value"))
                 if not value:
                     continue
                 sense_payload = dict(payload)
@@ -32395,16 +32405,27 @@ def edit_vocabulary_entry(
 
             set_parts = []
             params: list = []
-            normalized_word = word_de.strip() if isinstance(word_de, str) else None
-            normalized_translation = translation_ru.strip() if isinstance(translation_ru, str) else None
+            # ЧЕЛОВЕК ПЕЧАТАЕТ РУКАМИ — значит вход проходит ту же дверь, что и всё
+            # остальное. Здесь стоял голый `.strip()`, и в карточку ложилось ровно то,
+            # что набрано: невидимые символы из буфера обмена, двойные пробелы, разные
+            # начертания одной и той же буквы «ä». После этого одно и то же слово
+            # перестаёт быть равно самому себе — не находится поиском, задваивается в
+            # словаре, не сходится с общей записью.
+            #
+            # clean_text ничего не додумывает и смысл не меняет: только убирает грязь.
+            # Она идемпотентна, поэтому чистый ввод проходит через неё без изменений.
+            from backend.dictionary_intake import clean_text
+            normalized_word = clean_text(word_de) if isinstance(word_de, str) else None
+            normalized_translation = (
+                clean_text(translation_ru) if isinstance(translation_ru, str) else None)
             normalized_senses = None
             if dictionary_senses is not None:
                 normalized_senses = []
                 for item in dictionary_senses:
                     if isinstance(item, dict):
-                        value = str(item.get("value") or "").strip()
+                        value = clean_text(item.get("value"))
                     else:
-                        value = str(item or "").strip()
+                        value = clean_text(item)
                     if value:
                         normalized_senses.append(value)
                 normalized_senses = normalized_senses[:3]
