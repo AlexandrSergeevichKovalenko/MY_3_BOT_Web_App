@@ -1114,3 +1114,16 @@ def test_judge_writes_labels_in_russian():
     assert "AUF RUSSISCH" in _JUDGE_SYSTEM
     assert "«Akkusativ»" in _JUDGE_SYSTEM, "нужен пример того, чего писать нельзя"
     assert "винительный падеж" in _JUDGE_SYSTEM
+
+
+def test_emergency_refill_is_not_choked_by_an_old_budget():
+    """22.08.2026 полка кончилась днём, а аварийное пополнение не справилось: у него
+    стояло «два ролика, 70 секунд» — от тех времён, когда потолок всей подготовки был 300
+    секунд. Потолок подняли до 600, а это забыли, и полка осталась на нуле до ночи."""
+    import inspect
+
+    from backend.world_news_generator import prepare_world_news
+
+    src = inspect.getsource(prepare_world_news)
+    assert "STANDUP_EMERGENCY_REFILL_BUDGET_SEC" in src
+    assert "max_add=2, budget_sec=70" not in src, "старый зажатый бюджет вернулся"

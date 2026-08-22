@@ -1273,10 +1273,17 @@ def prepare_world_news(
             logger.warning("daily_video[%s]: полка пуста — пробую пополнить на месте", profile.key)
             try:
                 from backend.standup_shelf import refill_standup_shelf
-                # Короткий бюджет: у вечерней подготовки всего ~300 секунд на ВСЁ, включая
-                # запрос к модели. Пополнение здесь — аварийное, добрать один-два ролика,
-                # чтобы выпуск состоялся; остальное доложит ночная работа без спешки.
-                refill_standup_shelf(max_add=2, budget_sec=70)
+                # Аварийное пополнение: добрать столько, чтобы выпуск состоялся И полка
+                # не осталась на нуле до ночи. Бюджет считается от потолка подготовки:
+                # он 600 секунд, из них ~250 нужно модели на разбор, значит пополнению
+                # можно отдать 200 и оно спокойно возьмёт несколько роликов.
+                # 22.08.2026 здесь стояло «два ролика, 70 секунд» — от тех времён, когда
+                # потолок был 300. Потолок я поднял, а это забыл, и полка, кончившаяся
+                # днём, не пополнилась вовсе.
+                refill_standup_shelf(
+                    max_add=_env_int("STANDUP_EMERGENCY_REFILL_MAX", 6),
+                    budget_sec=_env_int("STANDUP_EMERGENCY_REFILL_BUDGET_SEC", 200),
+                )
             except Exception:
                 logger.exception("daily_video[%s]: пополнение полки не удалось", profile.key)
             shelf_item = take_next_from_standup_shelf(base_exclude)
