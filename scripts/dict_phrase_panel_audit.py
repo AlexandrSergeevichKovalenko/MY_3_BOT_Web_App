@@ -40,7 +40,7 @@ import json
 import os
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SKIP_STARTUP_SCHEMA_BOOTSTRAP", "1")
@@ -138,7 +138,11 @@ class Panel:
                               prod("OPENAI_API_KEY", "BACKEND_WEB(backend:server.py)"))
         from openai import OpenAI
         from google import genai
-        self._openai = OpenAI()
+        # ⏱ ТАЙМАУТ ОБЯЗАТЕЛЕН. Прогон 23.08.2026 завис на 3 800-й карточке из 4 953:
+        # запрос ушёл без ограничения и висел 55 минут, а вместе с ним стояла и вся
+        # очередь. Провайдер, который «думает» дольше минуты, — это авария, а не долгий
+        # ответ: лучше честно не спросить эту карточку и оставить её в остатке.
+        self._openai = OpenAI(timeout=60.0, max_retries=0)
         self._gemini = genai.Client(
             api_key=prod("GEMINI_API_KEY", "BACKEND_WEB(backend:server.py)"))
         self.cost = 0.0
@@ -156,11 +160,23 @@ class Panel:
         from google.genai import types
         answer = self._gemini.models.generate_content(
             model=MODEL_C, contents=payload,
-            config=types.GenerateContentConfig(system_instruction=SYSTEM, temperature=0,
-                                               response_mime_type="application/json"))
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM, temperature=0,
+                response_mime_type="application/json",
+                http_options=types.HttpOptions(timeout=60_000)))   # мс, см. выше
         usage = answer.usage_metadata
+        # ⚠ «РАЗМЫШЛЕНИЯ» ТОЖЕ ПЛАТНЫЕ, и это стоило нам реальных денег 23.08.2026.
+        # Замер одного запроса: вход 67, ОТВЕТ 5, размышления 343, всего 415 токенов.
+        # Считая только ответ, я занижал выход в семьдесят раз: счётчик показал $5.83,
+        # счёт Google пришёл на €8.28. Потолок расхода, построенный на такой арифметике,
+        # не защищает вообще — он просто врёт медленнее.
+        #
+        # Поэтому берём выход как candidates + thoughts. Если Google заведёт ещё одно
+        # поле выхода, разница снова всплывёт на счёте — сверка со счётом обязательна,
+        # мои формулы её не заменяют.
         self.cost += ((usage.prompt_token_count or 0) * PRICE_GEMINI[0]
-                      + (usage.candidates_token_count or 0) * PRICE_GEMINI[1])
+                      + ((usage.candidates_token_count or 0)
+                         + (usage.thoughts_token_count or 0)) * PRICE_GEMINI[1])
         return _fields(answer.text)
 
     def judge(self, entry: dict) -> tuple[str, str]:
@@ -249,8 +265,13 @@ def main() -> int:
         return unit_id, display, verdict, why
 
     stopped_by_budget = False
+    # ⏱ Результаты берём ПО МЕРЕ ГОТОВНОСТИ, а не по порядку. Прежняя версия шла
+    # `pool.map`, и одна зависшая карточка держала всю очередь: работа стояла, лог молчал,
+    # а снаружи это выглядело как «идёт».
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        for unit_id, display, verdict, why in pool.map(one, rows):
+        futures = [pool.submit(one, row) for row in rows]
+        for future in as_completed(futures):
+            unit_id, display, verdict, why = future.result()
             if verdict is None:
                 stopped_by_budget = True
                 continue
