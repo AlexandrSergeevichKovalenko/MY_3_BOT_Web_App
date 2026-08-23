@@ -199,6 +199,37 @@ def _rule_write_without_a_door(cur) -> tuple[int, list]:
     open_places = places_without_a_door()
     sample = [(item["number"], item["human"], item["state"]) for item in open_places[:5]]
     return len(open_places), sample
+def _rule_verb_without_a_conjugation_source(cur) -> tuple[int, list]:
+    """Глагол, у которого таблицу спряжения строить НЕ ИЗ ЧЕГО.
+
+    Страж: german_grammar_tables.build_verb_conjugation отдаёт только напечатанное —
+    справочник de.wiktionary или ответ модели, подтверждённый вторым спросом
+    (german_verb_paradigms). Счёт от основы удалён 23.08.2026 (решение владельца):
+    на не-глаголе он давал «ich boree», «ich aspettiamoe», «ich besagte».
+
+    Поэтому это число — НЕ поломка, а наряд на работу: столько заголовков помечены
+    глаголом, а таблицы у них нет. Обычно это значит одно из двух: глагола ещё не
+    спрашивали (закроет ночь) или заголовком стоит не глагол — причастие, форма,
+    чужое слово, — и чинить надо часть речи.
+    """
+    cur.execute("""SELECT DISTINCT lower(display) FROM bt_3_lex_units
+                    WHERE lang='de' AND display ~ '^[a-zäöüßA-ZÄÖÜ]+$'
+                      AND (pos='verb' OR card->>'part_of_speech'='verb');""")
+    words = [r[0] for r in cur.fetchall()]
+    if not words:
+        return 0, []
+    # Справочник читается ОДНИМ запросом: иначе на каждое слово приходится поход в базу.
+    from backend.german_verb_paradigms import _MODEL_KEY_PREFIX
+    import backend.german_verb_paradigms as paradigms
+    cur.execute("SELECT verb, tables, documented FROM bt_3_german_verb_paradigms;")
+    known = {v: (t if d else {}) for v, t, d in cur.fetchall()}
+    original = paradigms.load_paradigm
+    paradigms.load_paradigm = lambda verb: known.get(str(verb or "").strip().lower())
+    try:
+        hits = [w for w in words if not paradigms.paradigm_for_verb(w)]
+    finally:
+        paradigms.load_paradigm = original
+    return len(hits), hits[:5]
 
 
 RULES: tuple[tuple[str, Callable], ...] = (
@@ -214,6 +245,7 @@ RULES: tuple[tuple[str, Callable], ...] = (
     ("русский текст в немецком поле", _rule_russian_in_german_field),
     ("выбор владельца не первый", _rule_owner_choice_not_first),
     ("немецкий текст пишется мимо двери", _rule_write_without_a_door),
+    ("глагол без источника спряжения", _rule_verb_without_a_conjugation_source),
 )
 
 

@@ -5,9 +5,17 @@
 а после исправления заголовка — «ich klarkomme». Ни того, ни другого в немецком нет:
 правильно «ich komme klar».
 
-Замер: из 1321 глагола справочника 435 отделяемых — то есть у каждого третьего глагола
-таблица спряжения показывала несуществующие формы. Таблицы нигде не хранятся, они
-строятся на выдаче, поэтому правило в движке исправляет всех сразу.
+ЧТО ИЗМЕНИЛОСЬ 23.08.2026. Тогда правило отделения приставки стояло в нашей арифметике:
+движок сам резал основу, приклеивал окончания и переставлял приставку. Владелец эту
+арифметику отменил целиком — «как мы можем механически что-то делать, когда это касается
+языка?». Теперь таблица берётся напечатанной: своя страница Flexion, полная форма
+разговорного усечения, основа составного глагола, а если справочника нет — модель,
+спрошенная дважды с полным совпадением ответов.
+
+Поэтому здесь осталось два предмета проверки:
+  • `split_separable_verb` — он живёт дальше, им пользуется поиск основы в справочнике
+    («rausbringen» → «heraus» + «bringen»);
+  • `build_verb_conjugation` — что он ОТДАЁТ НАПЕЧАТАННОЕ и не сочиняет своего.
 """
 import pytest
 
@@ -41,62 +49,51 @@ def test_left_joined_when_not_certainly_separable(verb):
     assert split_separable_verb(verb) == ("", verb)
 
 
-def test_present_tense_puts_the_prefix_at_the_end():
-    table = build_verb_conjugation(
-        word_de="klarkommen",
-        seed={"praeteritum": "kam klar", "perfekt": "ist klargekommen"},
-    )
-    assert table["praesens"]["ich"] == "komme klar"
-    assert table["praesens"]["du"] == "kommst klar"
-    assert table["praesens"]["wir"] == "kommen klar"
+def _reference(monkeypatch, table):
+    """Подставить справочник: движок обязан отдать ровно то, что в нём напечатано."""
+    import backend.german_grammar_tables as G
+    seen: list[str] = []
+
+    def fake(infinitive):
+        seen.append(infinitive)
+        return dict(table) if table else None
+
+    monkeypatch.setattr(G, "_documented_conjugation", fake)
+    return seen
 
 
-def test_past_tense_is_not_glued_letter_by_letter():
-    """«kam klar» разворачивалось как «kam klarst», «kam klaren» — приклеиванием
-    окончаний к целой строке вместе с приставкой."""
-    table = build_verb_conjugation(
-        word_de="klarkommen",
-        seed={"praeteritum": "kam klar", "perfekt": "ist klargekommen"},
-    )
-    assert table["praeteritum"]["du"] == "kamst klar"
-    assert table["praeteritum"]["wir"] == "kamen klar"
+class TestTheTableComesFromTheReference:
+    def test_the_printed_prefix_position_is_kept(self, monkeypatch):
+        """«ich komme klar» напечатано в справочнике — так и уходит на экран."""
+        _reference(monkeypatch, {
+            "praesens": {"ich": "komme klar", "du": "kommst klar", "wir": "kommen klar"},
+            "praeteritum": {"du": "kamst klar", "wir": "kamen klar"},
+            "partizip2": "klargekommen", "auxiliary": "sein",
+            "source": "wiktionary-flexion",
+        })
+        table = build_verb_conjugation(word_de="klarkommen",
+                                       seed={"praeteritum": "выдумка", "perfekt": "выдумка"})
+        assert table["praesens"]["ich"] == "komme klar"
+        assert table["praeteritum"]["du"] == "kamst klar"
+        assert table["partizip2"] == "klargekommen"
 
+    def test_the_seed_from_the_card_no_longer_builds_anything(self, monkeypatch):
+        """`seed` — непроверенные поля модели. Формы из них больше НЕ строятся.
 
-def test_imperative_and_polite_form():
-    table = build_verb_conjugation(word_de="aufstehen", seed={"praeteritum": "stand auf"})
-    assert table["imperativ"]["du"] == "steh auf"
-    assert table["imperativ"]["Sie"] == "stehen Sie auf"
+        Раньше именно они дописывали таблицу там, где справочник молчал, и на не-глаголе
+        давали «ich boree», «ich aspettiamoe». Замер 22.08.2026 — 96 таких таблиц.
+        """
+        _reference(monkeypatch, None)
+        assert build_verb_conjugation(
+            word_de="bore",
+            seed={"present_3sg": "bort", "praeteritum": "borte",
+                  "perfekt": "hat gebort", "imperative_sg": "bor"}) is None
 
-
-def test_participle_stays_joined():
-    """В Perfekt приставка НЕ отделяется: «ist klargekommen»."""
-    table = build_verb_conjugation(
-        word_de="klarkommen", seed={"perfekt": "ist klargekommen"})
-    assert table["perfekt"]["ich"] == "bin klargekommen"
-    assert table["partizip2"] == "klargekommen"
-
-
-def test_inseparable_verb_is_untouched():
-    table = build_verb_conjugation(word_de="verstehen", seed={"praeteritum": "verstand"})
-    assert table["praesens"]["ich"] == "verstehe"
-    assert table["praeteritum"]["wir"] == "verstanden"
-
-
-def test_glued_seed_form_is_repaired():
-    """Разбор мог прислать уже склеенную форму — её тоже разбираем."""
-    table = build_verb_conjugation(
-        word_de="ankommen",
-        seed={"present_2sg": "ankommst", "praeteritum": "ankam"},
-    )
-    assert table["praesens"]["du"] == "kommst an"
-    assert table["praeteritum"]["ich"] == "kam an"
-
-
-def test_razbor_may_veto_the_split():
-    """Разбор прямо сказал «не отделяемый» — верим ему, а не списку приставок."""
-    table = build_verb_conjugation(
-        word_de="umfassen", seed={"is_separable": False, "praeteritum": "umfasste"})
-    assert table["praesens"]["ich"] == "umfasse"
+    def test_the_reference_is_asked_about_the_lowercase_word(self, monkeypatch):
+        """Заголовок бывает с заглавной («Aufwachen»), справочник знает строчное."""
+        seen = _reference(monkeypatch, {"praesens": {"ich": "wache auf"}})
+        build_verb_conjugation(word_de="Aufwachen")
+        assert seen == ["aufwachen"]
 
 
 def test_zu_infinitive_still_builds_no_table():

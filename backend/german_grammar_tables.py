@@ -172,31 +172,6 @@ def build_noun_declension(
 _PRON = ("ich", "du", "er/sie/es", "wir", "ihr", "sie/Sie")
 
 
-def _verb_stem(infinitive: str) -> tuple[str, str]:
-    """Return (stem, plural_ending). Most verbs end in -en (stem = drop -en,
-    plural ending -en); -eln/-ern verbs drop only -n (plural ending -n)."""
-    inf = str(infinitive or "").strip()
-    if inf.endswith("eln") or inf.endswith("ern"):
-        return inf[:-1], "n"
-    if inf.endswith("en"):
-        return inf[:-2], "en"
-    if inf.endswith("n"):
-        return inf[:-1], "n"
-    return inf, "en"
-
-
-def _present_du_er(stem: str) -> tuple[str, str]:
-    """Regular 2sg/3sg present endings with the -est/-et expansion after t/d and
-    the -t (not -st) shortcut after a sibilant stem."""
-    low = stem.lower()
-    if low.endswith(("t", "d")) or low.endswith(("ffn", "chn", "tm")):
-        return stem + "est", stem + "et"
-    if low.endswith(("s", "ß", "z", "x")):
-        return stem + "t", stem + "t"  # du gives just -t after a sibilant
-    return stem + "st", stem + "t"
-
-
-# Отделяемые приставки: с них начинается zu-инфинитив «klar-zu-kommen».
 _SEPARABLE_PREFIXES = (
     "ab", "an", "auf", "aus", "bei", "durch", "ein", "fest", "her", "hin", "los", "mit",
     "nach", "über", "um", "unter", "vor", "weg", "weiter", "zurück", "zusammen", "klar",
@@ -278,24 +253,6 @@ def split_separable_verb(word: str) -> tuple[str, str]:
             continue
         return body[:len(prefix)], rest
     return "", body
-
-
-def _detach(form: str, prefix: str) -> str:
-    """Личная форма отделяемого глагола: приставка становится отдельным словом в конце.
-
-    Умеет и починить уже склеенную форму («klarkommst» → «kommst klar»): именно
-    такие лежат в разборах, собранных до этой правки, и приходят в `seed`."""
-    if not prefix:
-        return form
-    text = str(form or "").strip()
-    if not text:
-        return text
-    low, low_prefix = text.casefold(), prefix.casefold()
-    if low.startswith(low_prefix) and len(text) > len(prefix):
-        text = text[len(prefix):]
-    elif low.endswith(" " + low_prefix):
-        return text  # приставка уже отделена
-    return f"{text} {prefix}".strip()
 
 
 def looks_like_zu_infinitive(word: str) -> bool:
@@ -460,166 +417,41 @@ def build_verb_conjugation(
     word_de: str,
     seed: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Conjugation tables (Präsens, Präteritum, Perfekt, Konjunktiv II, Imperativ)
-    built from the infinitive plus the LLM `seed` for the irregular parts:
-        present_2sg, present_3sg, praeteritum (ich/er form), perfekt
-        ("hat/ist <PII>"), konjunktiv2 (ich form), imperative_sg.
-    Regular cells are computed; seed cells override when present."""
+    """Таблица спряжения ИЗ ИСТОЧНИКА или None. Своих форм код не строит.
+
+    Владелец 23.08.2026: «как мы можем просто брать и механически что-то делать, когда
+    это касается языка? у нас же есть либо справочник, либо, если справочника нет, нужно
+    запрашивать у модели».
+
+    До этого дня здесь стоял счёт от основы: резали инфинитив, приклеивали окончания,
+    недостающее брали из `seed` — полей, которые модель приписала к карточке мимоходом и
+    которые никто не сверял. На настоящих немецких глаголах чаще всего совпадало, но
+    заголовком бывает не глагол, и тогда на экран уходило несуществующее слово: «ich
+    boree», «ich aspettiamoe», «ich besagte». Замер 22.08.2026 — 96 таких таблиц.
+
+    Теперь источник один: `german_verb_paradigms.paradigm_for_verb` — своя страница
+    Flexion в de.wiktionary, полная форма разговорного усечения, основа составного
+    глагола, а когда справочника нет — модель, спрошенная дважды с полным совпадением
+    ответов (спрашивает ночь, выдача читает подтверждённое). Не подтвердилось ничем —
+    таблицы нет, и глагол считается в отчёте как незакрытая задача. Существительные
+    (:141) и прилагательные (:619) живут по этому же правилу с 17.08.2026.
+
+    `seed` остаётся в подписи ради вызывающих, но формы из него БОЛЬШЕ НЕ СТРОЯТСЯ:
+    непроверенный ответ модели — не источник.
+    """
     inf = _strip_article(word_de)
     if not inf or " " in inf:
         return None
-    # СНАЧАЛА СПРАВОЧНИК. У de.wiktionary для глагола напечатана полная таблица, и
-    # формы берутся из неё дословно — включая то, что правилом не выводится: «du hältst»
-    # против «du arbeitest», «du liest», и место отделяемой приставки («ich komme klar»).
-    # Владелец 17.08.2026: «это лингвистическое приложение, тут не должно быть
-    # придуманного». Ниже — прежний счёт от основы; он остаётся только для глаголов,
-    # которых в справочнике нет, и живёт под своим именем в поле `source`.
-    documented = _documented_conjugation(inf)
-    if documented:
-        return documented
-    # Лучше НЕ показать таблицу, чем показать выдуманную. Заголовок в форме zu-инфинитива
-    # спрягать нельзя — получается «ich klarzukomme», чего в языке нет. Раньше движок брал
-    # любой одиночный токен за инфинитив без единой проверки.
+    # Заголовок в форме zu-инфинитива спрягать нельзя — «ich klarzukomme» не существует.
     if looks_like_zu_infinitive(inf):
         return None
-    # СПРЯГАЕМЫЙ ГЛАГОЛ ПИШЕТСЯ СО СТРОЧНОЙ — всегда, кроме начала предложения.
-    # Заголовок в базе может стоять с заглавной: «Aufwachen», «Hineingehen» — это
-    # субстантивированный инфинитив, и в таком виде он приходит из сохранения. Движок
-    # приклеивал окончания как есть, и человек читал «ich Gehe», «ich Hineingehe»,
-    # «ich Aufwache» — форм, которых в языке нет. Замер 15.08.2026 воспроизведён на
-    # gehen/Gehen, arbeiten/Arbeiten, Aufwachen, Hineingehen.
+    # СПРЯГАЕМЫЙ ГЛАГОЛ ПИШЕТСЯ СО СТРОЧНОЙ. В базе заголовок бывает с заглавной
+    # («Aufwachen» — субстантивированный инфинитив), и справочник по такому написанию
+    # не найдётся, хотя глагол документирован.
     inf = inf[:1].lower() + inf[1:]
-    seed = seed or {}
-    # Отделяемая приставка: спрягаем ОСНОВНОЙ глагол, а приставку ставим в конец личной
-    # формы. Разбор сам сообщает `is_separable`; когда он молчит, решает список
-    # однозначно отделяемых приставок. Слитная форма «ich ankomme» — не немецкий язык.
-    prefix, base_verb = split_separable_verb(inf)
-    if seed.get("is_separable") is False:
-        prefix, base_verb = "", inf
-    stem, pl_end = _verb_stem(base_verb)
-    reg_du, reg_er = _present_du_er(stem)
-
-    du = str(seed.get("present_2sg") or "").strip() or reg_du
-    er = str(seed.get("present_3sg") or "").strip() or reg_er
-    # If the LLM gave only the 3sg of a vowel-changing strong verb, mirror its
-    # stem change into the du-form when we otherwise only have the regular one.
-    if seed.get("present_3sg") and not seed.get("present_2sg") and er.lower().endswith("t"):
-        cand = er[:-1]
-        if not cand.lower().endswith(("s", "ß", "z", "x")):
-            du = cand + "st"
-
-    ihr_present = stem + ("et" if stem.lower().endswith(("t", "d")) else "t")
-    praesens = dict(zip(_PRON, [
-        _detach(stem + "e", prefix), _detach(du, prefix), _detach(er, prefix),
-        _detach(stem + pl_end, prefix), _detach(ihr_present, prefix),
-        _detach(stem + pl_end, prefix),
-    ]))
-
-    tables: dict[str, Any] = {"praesens": praesens}
-
-    # Präteritum: expand from the ich/er base form.
-    praet_base = _strip_article(str(seed.get("praeteritum") or "").strip())
-    if praet_base:
-        tables["praeteritum"] = _expand_with_prefix(praet_base, prefix)
-
-    # Konjunktiv II: the ich form already ends in -e for strong verbs (ginge),
-    # weak verbs fall back to "würde + Infinitiv".
-    konj2_base = _strip_article(str(seed.get("konjunktiv2") or "").strip())
-    if konj2_base and konj2_base.lower().startswith("würde"):
-        tables["konjunktiv2"] = dict(zip(_PRON, [
-            "würde " + inf, "würdest " + inf, "würde " + inf,
-            "würden " + inf, "würdet " + inf, "würden " + inf,
-        ]))
-    elif konj2_base:
-        tables["konjunktiv2"] = _expand_with_prefix(konj2_base, prefix)
-
-    # Perfekt: conjugate the parsed auxiliary; keep the participle fixed.
-    aux, participle = _parse_perfekt(str(seed.get("perfekt") or ""), inf)
-    if participle:
-        forms = _AUX_FORMS.get(aux)
-        if forms:
-            tables["perfekt"] = dict(zip(
-                _PRON, [f"{a} {participle}" for a in forms]
-            ))
-            tables["auxiliary"] = aux
-            tables["partizip2"] = participle
-
-    # Imperativ (du / ihr / Sie).
-    imp_du = str(seed.get("imperative_sg") or "").strip() or stem
-    tables["imperativ"] = {
-        "du": _detach(imp_du, prefix),
-        "ihr": _detach(ihr_present, prefix),
-        # Вежливая форма: приставка уходит за «Sie» — «kommen Sie klar».
-        "Sie": f"{stem + pl_end} Sie{(' ' + prefix) if prefix else ''}",
-    }
-
-    tables["infinitive"] = inf
-    tables["is_separable"] = seed.get("is_separable")
-    return tables
+    return _documented_conjugation(inf)
 
 
-def _expand_with_prefix(base: str, prefix: str) -> dict[str, str]:
-    """Развернуть форму ich/er на все шесть лиц, помня про отделяемую приставку.
-
-    Разбор присылает основу уже с приставкой — иногда слитно («klarkam»), иногда
-    отдельным словом («kam klar»). Приклеивать окончания к такой строке нельзя: так
-    получались «kam klarst» и «kam klaren». Поэтому приставку снимаем, разворачиваем
-    чистую основу и возвращаем приставку на её место — в конец."""
-    text = str(base or "").strip()
-    if prefix:
-        low, low_prefix = text.casefold(), prefix.casefold()
-        if low.endswith(" " + low_prefix):
-            text = text[: -(len(prefix) + 1)].strip()
-        elif low.startswith(low_prefix) and len(text) > len(prefix):
-            text = text[len(prefix):].strip()
-    expanded = _expand_from_base(text, ends_in_e_default=True)
-    if not prefix:
-        return expanded
-    return {person: f"{form} {prefix}".strip() for person, form in expanded.items()}
-
-
-def _expand_from_base(base: str, *, ends_in_e_default: bool) -> dict[str, str]:
-    """Expand a single ich/er stem (Präteritum or Konjunktiv II) into all six
-    persons. Strong bases ('ging') take -en/-st/-t; bases already ending in -e
-    ('machte', 'ginge') take -n/-st/-t."""
-    low = base.lower()
-    ends_e = low.endswith("e")
-    du = base + ("est" if low.endswith(("t", "d")) and not ends_e else "st")
-    if low.endswith(("s", "ß", "z", "x")) and not ends_e:
-        du = base + "t"
-    pl = base + ("n" if ends_e else "en")
-    ihr = base + ("t" if ends_e or not low.endswith(("t", "d")) else "et")
-    return dict(zip(_PRON, [base, du, base, pl, ihr, pl]))
-
-
-_AUX_FORMS = {
-    "haben": ("habe", "hast", "hat", "haben", "habt", "haben"),
-    "sein": ("bin", "bist", "ist", "sind", "seid", "sind"),
-}
-
-
-def _parse_perfekt(perfekt: str, infinitive: str) -> tuple[str, str]:
-    """From an LLM 'hat gemacht' / 'ist gegangen' / 'haben gemacht' string return
-    (auxiliary_infinitive, participle). Defaults to 'haben' when only a participle
-    is present."""
-    text = str(perfekt or "").strip()
-    if not text:
-        return "haben", ""
-    tokens = text.split()
-    aux = "haben"
-    rest = tokens
-    head = tokens[0].lower()
-    if head in ("hat", "habe", "hast", "haben", "habt"):
-        aux, rest = "haben", tokens[1:]
-    elif head in ("ist", "bin", "bist", "sind", "seid"):
-        aux, rest = "sein", tokens[1:]
-    participle = " ".join(rest).strip()
-    return aux, participle
-
-
-# ── Adjective comparison ────────────────────────────────────────────────────────
-# Окончания, которые прилагательное получает при склонении, и суффиксы, по которым
-# видно, что перед нами именно прилагательное, а не существительное на -e.
 _ADJ_DECLENSION_ENDINGS = ("en", "em", "es", "er", "e")
 _ADJ_SUFFIXES = ("ig", "lich", "isch", "bar", "sam", "haft", "los", "voll", "iv", "abel")
 

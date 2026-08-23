@@ -357,7 +357,156 @@ def _paradigm_from_base_verb(verb: str, *, allow_network: bool) -> dict | None:
     return built or None
 
 
-def paradigm_for_verb(infinitive: str, *, allow_network: bool = False) -> dict | None:
+# ── Ступень «спросить модель», когда справочника нет ─────────────────────────
+#
+# Владелец 23.08.2026, дословно: «как мы можем просто брать и механически что-то делать,
+# когда это касается языка? у нас же есть либо справочник, либо, если справочника нет,
+# нужно запрашивать у модели. а как мы строим это механически — что это за бред?»
+#
+# До этого дня у глаголов ступени с моделью НЕ БЫЛО ВООБЩЕ: каскад обрывался на
+# справочнике, а дальше `german_grammar_tables.build_verb_conjugation` досчитывал формы
+# нашей арифметикой — резал основу и приклеивал окончания. На настоящих немецких
+# глаголах это чаще всего совпадало, а на всём остальном давало несуществующие слова:
+# «ich aspettiamoe» (итальянское слово), «ich boree» (английское), «ich besagte» (не
+# инфинитив, а форма). Замер 22.08.2026 — 96 таких записей.
+#
+# Существительные и прилагательные этот путь прошли 17.08.2026: справочник → композит →
+# модель с двойным подтверждением → честное «не знаю». Здесь ровно он же, без изобретений.
+#
+# Ответ модели лежит в той же таблице, но под своим ключом: строка самого глагола
+# принадлежит справочнику (там `{}` значит «страницы в Wiktionary нет»), и подменять её
+# ответом модели нельзя — иначе завтрашний поход в справочник её уже не перезапишет.
+_MODEL_KEY_PREFIX = "модель:"
+
+_PARADIGM_TASK = "german_verb_paradigm_reference"
+
+_PARADIGM_INSTRUCTION = """Du bist ein deutsches Flexionswörterbuch.
+Gib für das genannte Verb die Konjugation als JSON zurück, sonst nichts.
+Format exakt:
+{"praesens":{"ich":"gehe","du":"gehst","er/sie/es":"geht","wir":"gehen","ihr":"geht","sie/Sie":"gehen"},
+ "praeteritum":{"ich":"ging","du":"gingst","er/sie/es":"ging","wir":"gingen","ihr":"gingt","sie/Sie":"gingen"},
+ "konjunktiv2":{"ich":"ginge","du":"gingest","er/sie/es":"ginge","wir":"gingen","ihr":"ginget","sie/Sie":"gingen"},
+ "imperativ":{"du":"geh","ihr":"geht"},
+ "partizip2":"gegangen",
+ "auxiliary":"sein"}
+Regeln:
+- "auxiliary" ist genau "haben" oder "sein".
+- Trennbare Verben: die Vorsilbe steht am Ende der finiten Form ("ich komme an"), im
+  Partizip II in der Mitte ("angekommen").
+- Ist das genannte Wort KEIN Verb im Infinitiv (Partizip, flektierte Form, Fremdsprache,
+  Unsinn), gib exakt {"not_a_verb": true} zurück.
+- Erfinde nichts."""
+
+_PARADIGM_CELLS = ("ich", "du", "er/sie/es", "wir", "ihr", "sie/Sie")
+
+
+def _ask_paradigm_once(verb: str) -> dict | None:
+    """Один спрос модели о спряжении.
+
+    `None` — МОДЕЛЬ НЕ ОТВЕТИЛА: сеть, таймаут, нечитаемый ответ. Это не «не знаю»,
+    а «мы не спросили», и путать их нельзя: 22.08.2026 прогон шёл на рвущейся сети,
+    и настоящие глаголы («wehren», «entpuppen») были записаны как неподтверждённые
+    навсегда — то есть ошибка притворилась ответом.
+    `{}` — ответила, но пусто. Словарь — разобранный ответ.
+    """
+    import asyncio
+    from backend.openai_manager import llm_execute, parse_llm_json_object, system_message
+    system_message.setdefault(_PARADIGM_TASK, _PARADIGM_INSTRUCTION)
+    try:
+        text = asyncio.run(llm_execute(
+            task_name=_PARADIGM_TASK, system_instruction_key=_PARADIGM_TASK,
+            user_message=str(verb or "").strip(), poll_interval_seconds=1.0,
+        ))
+    except RuntimeError:
+        logging.warning("спряжение: модель вызвана из асинхронного контекста")
+        return None
+    except Exception:
+        logging.warning("спряжение: модель не ответила про %s", verb, exc_info=True)
+        return None
+    parsed = parse_llm_json_object(text, context=_PARADIGM_TASK)
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _paradigms_agree(first: dict, second: dict) -> dict:
+    """Ответ принимается ТОЛЬКО когда оба спроса дали одно и то же, ячейка в ячейку.
+
+    Сверять со справочником нечего — слова там нет, иначе мы бы сюда не дошли. Поэтому
+    подтверждение = согласие двух независимых ответов. Разошлись хоть в одной клетке —
+    молчим, и глагол уходит в отчёт владельцу, а не подставляется наугад.
+    """
+    if not first or not second:
+        return {}
+    if first.get("not_a_verb") or second.get("not_a_verb"):
+        # Хотя бы один спрос говорит «это не глагол» — таблицы не будет. Это ответ,
+        # а не отказ: «besagt», «aspettiamo», «bore» спрягать нельзя.
+        return {}
+
+    def norm(value) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip()
+
+    out: dict = {}
+    for block in ("praesens", "praeteritum", "konjunktiv2", "imperativ"):
+        a, b = first.get(block), second.get(block)
+        if not isinstance(a, dict) or not isinstance(b, dict):
+            if a or b:
+                return {}
+            continue
+        cells = _PARADIGM_CELLS if block != "imperativ" else ("du", "ihr")
+        merged: dict[str, str] = {}
+        for cell in cells:
+            left, right = norm(a.get(cell)), norm(b.get(cell))
+            if left.lower() != right.lower():
+                return {}
+            if left:
+                merged[cell] = left
+        if merged:
+            out[block] = merged
+    for flat in ("partizip2", "auxiliary"):
+        left, right = norm(first.get(flat)), norm(second.get(flat))
+        if left.lower() != right.lower():
+            return {}
+        if left:
+            out[flat] = left
+    if out.get("auxiliary") not in ("haben", "sein"):
+        # Вспомогательный глагол бывает только один из двух. Всё прочее — не ответ.
+        return {}
+    return out if out.get("praesens") else {}
+
+
+# Почему спряжения нет. Хранится вместе с записью и уходит владельцу словами: без
+# причины «таблицы нет» одинаково выглядит и у итальянского слова, и у нашего обрыва сети.
+NOT_A_VERB = "не глагол"
+DISAGREED = "ответы разошлись"
+NO_ANSWER = "модель не ответила"
+
+
+def paradigm_from_model(verb: str) -> tuple[dict | None, str]:
+    """Спряжение от модели при совпадении двух независимых ответов.
+
+    Возвращает (таблица, причина). Таблица есть — причина пустая. Таблицы нет —
+    причина называется словом, и от неё зависит, спросим ли мы ещё раз: `NO_ANSWER`
+    означает, что вопрос ОСТАЛСЯ, а не получил отрицательный ответ.
+    """
+    first = _ask_paradigm_once(verb)
+    if first is None:
+        return None, NO_ANSWER
+    second = _ask_paradigm_once(verb)
+    if second is None:
+        return None, NO_ANSWER
+    if first.get("not_a_verb") and second.get("not_a_verb"):
+        return None, NOT_A_VERB
+    agreed = _paradigms_agree(first, second)
+    if agreed:
+        return agreed, ""
+    if first.get("not_a_verb") or second.get("not_a_verb"):
+        # Один спрос сказал «не глагол», другой всё-таки проспрягал. Согласия нет —
+        # таблицы не будет, но и ярлык «не глагол» вешать не на чем.
+        return None, DISAGREED
+    return None, DISAGREED
+
+
+def paradigm_for_verb(infinitive: str, *, allow_network: bool = False,
+                      allow_model: bool = False) -> dict | None:
     """Документированная таблица спряжения или None, если справочник её не подтвердил.
 
     Три пути, все опираются на источник:
@@ -397,6 +546,25 @@ def paradigm_for_verb(infinitive: str, *, allow_network: bool = False) -> dict |
     from_base = _paradigm_from_base_verb(verb, allow_network=allow_network)
     if from_base:
         return {**from_base, "infinitive": verb, "source": "wiktionary-flexion:основа"}
+
+    # ── Справочник молчит. Раньше здесь каскад кончался, и таблицу досчитывала наша
+    # арифметика в german_grammar_tables. Теперь спрашиваем модель — но НЕ на глазах у
+    # человека: два спроса это секунды и деньги, поэтому на выдаче читаем только уже
+    # подтверждённое, а спрашивает ночь (warm_verb_paradigms). Ровно так же устроены
+    # существительные и прилагательные с 17.08.2026.
+    remembered = load_paradigm(_MODEL_KEY_PREFIX + verb.lower())
+    if remembered and remembered.get("praesens"):
+        return {**remembered, "infinitive": verb, "source": "модель"}
+    if remembered is not None:
+        # Уже спрашивали, и это был ОТВЕТ: «не глагол» или «ответы разошлись». Второй
+        # раз за то же самое не платим. Обрыв связи сюда не попадает — он не пишется.
+        return None
+    if allow_model:
+        answer, reason = paradigm_from_model(verb)
+        if reason != NO_ANSWER:
+            store_paradigm(_MODEL_KEY_PREFIX + verb.lower(), answer or {"reason": reason})
+        if answer:
+            return {**answer, "infinitive": verb, "source": "модель"}
     return None
 
 
@@ -440,6 +608,56 @@ def warm_verb_paradigms(*, limit: int = 200, pause_sec: float = 1.5) -> dict:
         else:
             report["no_page"] += 1
         time.sleep(pause_sec)
+    report.update(warm_verb_paradigms_from_model(limit=limit))
+    return report
+
+
+def warm_verb_paradigms_from_model(*, limit: int = 60) -> dict:
+    """Ночной добор моделью: глаголы, которых нет в справочнике.
+
+    Спрашивать в момент показа нельзя — это два обращения к модели прямо на глазах у
+    человека. Поэтому днём выдача читает уже подтверждённое, а спрашивает ночь.
+    Не совпали два ответа — записываем `{}` («спрашивали, не подтвердилось») и уходим
+    в отчёт владельцу; выдумывать таблицу вместо этого запрещено.
+    """
+    from backend.database import get_db_connection_context
+    ensure_german_verb_paradigm_schema()
+    report = {"model_asked": 0, "model_confirmed": 0, "model_unclear": 0,
+              "model_no_answer": 0}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT lower(u.display) FROM bt_3_lex_units u
+                     JOIN bt_3_german_verb_paradigms p ON p.verb = lower(u.display)
+                     WHERE u.lang = 'de' AND u.kind = 'word'
+                       AND (u.pos = 'verb' OR u.card->>'part_of_speech' = 'verb')
+                       AND p.documented IS FALSE
+                       AND NOT EXISTS (SELECT 1 FROM bt_3_german_verb_paradigms m
+                                        WHERE m.verb = %s || lower(u.display))
+                     ORDER BY 1 LIMIT %s;
+                    """,
+                    (_MODEL_KEY_PREFIX, int(limit)),
+                )
+                verbs = [r[0] for r in cur.fetchall()]
+    except Exception:
+        logging.warning("парадигмы глаголов: не выбрал кандидатов для модели", exc_info=True)
+        return report
+
+    for verb in verbs:
+        # Полная форма и основа проверяются раньше: если «rausbringen» закрывается
+        # справочником через «herausbringen», платить модели незачем.
+        if paradigm_for_verb(verb, allow_model=False):
+            continue
+        answer, reason = paradigm_from_model(verb)
+        report["model_asked"] += 1
+        if reason == NO_ANSWER:
+            # Не записываем НИЧЕГО: вопрос остался, и завтрашняя ночь спросит снова.
+            report["model_no_answer"] += 1
+            continue
+        store_paradigm(_MODEL_KEY_PREFIX + verb, answer or {"reason": reason})
+        report["model_confirmed" if answer else "model_unclear"] += 1
     return report
 
 
@@ -495,9 +713,14 @@ def form_is_documented(form: str) -> str:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
+                    # Строки с ключом «модель:…» сюда НЕ ПОПАДАЮТ. Это ответ модели,
+                    # подтверждённый вторым спросом, — им можно построить таблицу
+                    # спряжения, но нельзя возражать модели её же словами: тогда
+                    # проверка правки сверялась бы сама с собой.
                     """SELECT verb, tables FROM bt_3_german_verb_paradigms
-                        WHERE documented AND tables::text ILIKE %s LIMIT 40;""",
-                    ("%" + word + "%",),
+                        WHERE documented AND verb NOT LIKE %s
+                          AND tables::text ILIKE %s LIMIT 40;""",
+                    (_MODEL_KEY_PREFIX + "%", "%" + word + "%"),
                 )
                 rows = cur.fetchall()
     except Exception:

@@ -41,6 +41,14 @@ _DEFAULT_TASK_MODELS = {
     # LLM_TASK_MODEL_GERMAN_NOUN_DECLENSION_REFERENCE / _GERMAN_ADJECTIVE_DEGREES_REFERENCE.
     "german_noun_declension_reference": "gpt-4.1-mini",
     "german_adjective_degrees_reference": "gpt-4.1-mini",
+    # ПОСЛЕДНЯЯ ступень каскада СПРЯЖЕНИЯ (backend/german_verb_paradigms.py). Здесь
+    # НАРОЧНО не mini: сюда попадают глаголы, которых нет в de.wiktionary, то есть
+    # редкие и составные, а у глагола неправильных форм больше, чем у существительного
+    # («du hältst», «ich ging», место отделяемой приставки). Ответ, как и у форм,
+    # принимается только при совпадении двух независимых спросов; объём маленький —
+    # 96 слов разово плюс редкий ночной добор. Переопределяется через
+    # LLM_TASK_MODEL_GERMAN_VERB_PARADIGM_REFERENCE.
+    "german_verb_paradigm_reference": "gpt-4.1-2025-04-14",
     "shortcut_split": "gpt-4.1-mini",
     "shortcut_split_fallback": "gpt-4.1-2025-04-14",
     # Translation-sentence generation is a simple, high-volume task — gpt-4.1-mini

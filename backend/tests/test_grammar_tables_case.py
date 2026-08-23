@@ -10,29 +10,51 @@
 from backend.german_grammar_tables import build_verb_conjugation, build_adjective_comparison
 
 
-def test_capitalized_infinitive_is_conjugated_in_lowercase():
+def _reference(monkeypatch, table):
+    """Подставной справочник: он же ведёт учёт, о каком написании его спросили."""
+    import backend.german_grammar_tables as G
+    asked: list[str] = []
+
+    def fake(infinitive):
+        asked.append(infinitive)
+        return dict(table) if table else None
+
+    monkeypatch.setattr(G, "_documented_conjugation", fake)
+    return asked
+
+
+def test_capitalized_infinitive_is_asked_about_in_lowercase(monkeypatch):
+    """Ожидание обновлено 23.08.2026: формы больше не считает код.
+
+    Тест писался про РЕГИСТР, а формы брал такие, какие тогда дописывал движок. Счёт от
+    основы удалён целиком (решение владельца 23.08.2026): на не-глаголе он давал «ich
+    boree», «ich aspettiamoe». Теперь таблица приходит напечатанной из
+    `german_verb_paradigms`, а правило регистра проверяется по тому, О ЧЁМ спрошен
+    справочник: он знает строчное «gehen», а не «Gehen».
+    """
+    asked = _reference(monkeypatch, {"praesens": {"ich": "gehe", "du": "gehst"}})
     table = build_verb_conjugation(word_de="Gehen")
+    assert asked == ["gehen"], "справочник обязан спрашиваться о слове со строчной"
     assert table["praesens"]["ich"] == "gehe"
-    assert table["praesens"]["du"] == "gehst"
 
 
-def test_separable_verb_too():
-    """Ожидание обновлено 17.08.2026: «ich hineingehe» — не немецкий язык.
-
-    Тест писался про РЕГИСТР и проверял, что заглавная опущена, а форму брал такой,
-    какую тогда печатал движок. Форма была неверной: у отделяемого глагола приставка
-    в личной форме уходит в конец — «ich gehe hinein». Владелец нашёл это на карточке
-    «klarkommen», где таблица показывала «ich klarkomme». Правило отделения живёт в
-    split_separable_verb, проверки — в test_separable_verb_conjugation.py.
-
-    Регистр проверяется здесь по-прежнему: приставка приходит с заглавной
-    («Hineingehen»), а в форме стоит со строчной."""
+def test_separable_verb_too(monkeypatch):
+    asked = _reference(monkeypatch, {"praesens": {"ich": "gehe hinein"}})
     table = build_verb_conjugation(word_de="Hineingehen")
+    assert asked == ["hineingehen"]
     assert table["praesens"]["ich"] == "gehe hinein"
 
 
-def test_lowercase_infinitive_is_unchanged():
-    assert build_verb_conjugation(word_de="gehen")["praesens"]["ich"] == "gehe"
+def test_lowercase_infinitive_is_unchanged(monkeypatch):
+    asked = _reference(monkeypatch, {"praesens": {"ich": "gehe"}})
+    build_verb_conjugation(word_de="gehen")
+    assert asked == ["gehen"]
+
+
+def test_verb_without_reference_has_no_invented_table(monkeypatch):
+    """Справочник молчит — таблицы нет. Раньше здесь появлялось спряжение не-глагола."""
+    _reference(monkeypatch, None)
+    assert build_verb_conjugation(word_de="Besagt", seed={"present_3sg": "besagt"}) is None
 
 
 def test_adjective_degrees_are_lowercase(monkeypatch):

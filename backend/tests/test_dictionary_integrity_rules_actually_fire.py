@@ -108,6 +108,44 @@ def test_a_healthy_pool_row_is_not_a_violation():
     assert count == 0
 
 
+def test_a_verb_without_a_conjugation_source_is_seen():
+    """Помечено глаголом, а спрягать не из чего — это наряд на работу, а не «чисто».
+
+    «aspettiamo» помечено глаголом и попало на экран со спряжением «ich aspettiamoe»,
+    которое досчитал наш код. Счёт удалён 23.08.2026; теперь такое слово обязано быть
+    ВИДНО числом, иначе оно просто молча останется без таблицы.
+    """
+    count, sample = integrity._rule_verb_without_a_conjugation_source(
+        _Cursor([("aspettiamo",)]))
+    assert count == 1 and sample == ["aspettiamo"]
+
+
+class _TwoQueries:
+    """Правило делает два запроса: заголовки, потом весь справочник спряжений."""
+
+    def __init__(self, words, paradigms):
+        self._answers = [words, paradigms]
+
+    def execute(self, sql, params=None):
+        pass
+
+    def fetchall(self):
+        return self._answers.pop(0) if self._answers else []
+
+
+def test_a_verb_with_a_documented_table_is_not_a_violation():
+    count, _ = integrity._rule_verb_without_a_conjugation_source(
+        _TwoQueries([("gehen",)], [("gehen", {"praesens": {"ich": "gehe"}}, True)]))
+    assert count == 0
+
+
+def test_a_paradigm_marked_undocumented_does_not_count_as_a_source():
+    """`documented is false` значит «спрашивали, страницы нет» — таблицы всё ещё нет."""
+    count, _ = integrity._rule_verb_without_a_conjugation_source(
+        _TwoQueries([("erschweigen",)], [("erschweigen", {}, False)]))
+    assert count == 1
+
+
 def test_every_rule_is_listed_in_the_report():
     """Правило, забытое в списке, не гоняется — и его ноль ничего не значит."""
     listed = {rule for _title, rule in integrity.RULES}
