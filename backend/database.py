@@ -27611,6 +27611,24 @@ def record_daily_video_shown(
             )
 
 
+def get_assigned_daily_video_ids(rubric: str | None = None) -> set:
+    """Ролики, уже занятые какой-нибудь записью дня — включая неодобренные черновики.
+
+    Черновик не считается израсходованным (расход — это доставка человеку), но и выбрать
+    его второй раз на другой день нельзя: он уже стоит в плане. Это занятость, а не трата.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if rubric:
+                cursor.execute(
+                    "SELECT video_id FROM bt_3_world_news_daily WHERE rubric = %s "
+                    "AND video_id IS NOT NULL;", (str(rubric).strip(),))
+            else:
+                cursor.execute(
+                    "SELECT video_id FROM bt_3_world_news_daily WHERE video_id IS NOT NULL;")
+            return {str(r[0]).strip() for r in cursor.fetchall() if r and r[0]}
+
+
 def get_shown_daily_video_ids(rubric: str | None = None) -> set:
     """Все ролики, когда-либо показанные рубрикой. Генератор вычитает их при выборе.
 

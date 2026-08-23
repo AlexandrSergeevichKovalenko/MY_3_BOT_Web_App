@@ -11907,6 +11907,18 @@ async def run_world_news_morning_broadcast(context: CallbackContext):
 
     try:
         await asyncio.to_thread(set_world_news_status, today, "sent")
+        # ВОТ ЗДЕСЬ ролик становится израсходованным — когда он ВПРАВДУ ушёл людям.
+        # Раньше пометка стояла при сборке, и владелец, пересобирая выпуск, сжигал по
+        # выступлению за попытку: полка опустела за день, а показано не было ничего
+        # (разобрано 23.08.2026). Черновик не стоит ничего; расход — это доставка.
+        from backend.database import mark_standup_shelf_used, record_daily_video_shown
+        await asyncio.to_thread(
+            record_daily_video_shown,
+            video_id=entry.get("video_id"), rubric=_rubric_of(entry), shown_on=today,
+            video_title=entry.get("video_title"), channel_title=entry.get("channel_title"),
+        )
+        if _rubric_of(entry) == "standup":
+            await asyncio.to_thread(mark_standup_shelf_used, entry.get("video_id"), today)
     except Exception:
         logging.debug("world_news morning: set status=sent failed", exc_info=True)
     logging.info("world_news morning broadcast %s: group=%s dm_sent=%d/%d", today, group_ok, sent, len(uids))

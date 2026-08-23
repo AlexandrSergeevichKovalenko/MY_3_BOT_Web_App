@@ -1329,8 +1329,8 @@ def prepare_world_news(
     variety is preferred, but never at the cost of having no news at all."""
     from backend.database import (
         upsert_world_news_daily, get_world_news_for_date, get_recent_world_news_video_ids,
-        upsert_youtube_transcript_cache, get_shown_daily_video_ids, record_daily_video_shown,
-        upsert_daily_video_pool_snapshot,
+        upsert_youtube_transcript_cache, get_shown_daily_video_ids,
+        get_assigned_daily_video_ids, upsert_daily_video_pool_snapshot,
     )
     from backend.daily_video_rubrics import get_profile, rubric_for_date
 
@@ -1426,6 +1426,14 @@ def prepare_world_news(
             except Exception:
                 logger.warning("world_news: recent-video lookup failed — оставляем вечный реестр",
                                exc_info=True)
+        # Черновик уже занял ролик — второй раз его брать нельзя, даже если он никому не
+        # уходил. Это занятость, а не расход.
+        try:
+            shown = shown | get_assigned_daily_video_ids(profile.key)
+        except Exception:
+            logger.exception("daily_video[%s]: не прочитать занятые черновиками ролики",
+                             profile.key)
+            raise
         diag["shown_excluded"] = len(shown)
         rotated_exclude = base_exclude | shown
         if rotated_exclude:
@@ -1562,35 +1570,20 @@ def prepare_world_news(
         rubric=profile.key,
         judge_report=judge_report,
     )
-    # Вечный реестр показанного — единственная память рубрики о том, что уже было: ночная
-    # чистка стирает саму строку дня. Пишется СРАЗУ после сохранения пакета, а не в момент
-    # утренней рассылки: если владелец переформирует день, израсходованный ролик всё равно
-    # не должен вернуться завтра.
-    record_daily_video_shown(
-        video_id=picked["video_id"],
-        rubric=profile.key,
-        shown_on=date_str,
-        video_title=picked["title"],
-        channel_title=picked["channel_title"],
-        had_manual_captions=picked.get("has_manual_captions"),
-    )
-    # Ролик израсходован — помечаем на полке, чтобы он не вышел вторым кругом. С полки не
-    # удаляем: так видно, что рубрика уже показывала, даже когда реестр почистят.
-    if diag.get("source") == "shelf":
-        from backend.database import mark_standup_shelf_used
-        mark_standup_shelf_used(picked["video_id"], date_str)
-    # Прежний ролик этого дня возвращается на полку, если он был другим и НЕ уходил людям.
-    if (_previous and _previous.get("video_id")
-            and _previous["video_id"] != picked["video_id"]
-            and str(_previous.get("status") or "") != "sent"):
-        try:
-            from backend.database import release_standup_shelf_video
-            if release_standup_shelf_video(_previous["video_id"]):
-                logger.info("daily_video[%s]: ролик %s возвращён на полку — людям он не уходил",
-                            profile.key, _previous["video_id"])
-        except Exception:
-            logger.warning("daily_video: не удалось вернуть ролик %s на полку",
-                           _previous.get("video_id"), exc_info=True)
+    # РОЛИК НЕ ПОМЕЧАЕТСЯ ИЗРАСХОДОВАННЫМ ЗДЕСЬ — и это главное отличие от прежней схемы.
+    #
+    # Раньше пометка ставилась при СБОРКЕ. Владелец, пересобирая выпуск пять раз за вечер,
+    # сжигал пять выступлений, ни одно из которых людям не ушло; полка опустела за день, а
+    # материал был совершенно годный (разобрано 23.08.2026). То же случилось с новостями:
+    # семь роликов числились показанными, а вправду ушёл ОДИН.
+    #
+    # Расход — это ДОСТАВКА ЧЕЛОВЕКУ. Черновик, который переделали или не одобрили, не
+    # стоит ничего: ролик остаётся доступным. Пометка ставится в утренней рассылке, когда
+    # выпуск вправду ушёл людям.
+    #
+    # Чтобы черновик всё же не выбрали второй раз на другой день, выбор исключает ролики,
+    # уже занятые какой-нибудь записью дня — это занятость, а не трата.
+
     # Снимок пула — из того, что обход и так увидел. Отчёт владельцу собирается потом из
     # него и из реестра показанного, не тратя ни единицы квоты. При ручной выдаче по ссылке
     # обхода не было, и снимка нет — тогда прежний остаётся нетронутым, а не обнуляется.

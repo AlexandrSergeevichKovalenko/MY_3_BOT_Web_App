@@ -1064,16 +1064,23 @@ def test_reformed_day_returns_the_unused_video_to_the_shelf(monkeypatch):
     assert "старый" in released
 
 
-def test_a_video_that_reached_people_is_not_returned():
-    """Ушедший людям ролик обратно не возвращается: его уже видели, и показать второй раз
-    значило бы повториться."""
+def test_returning_a_video_is_no_longer_needed():
+    """Механизм «вернуть ролик на полку, если выпуск пересобрали» был нужен, пока ЧЕРНОВИК
+    тратил ролик. Теперь расход считается в момент доставки человеку, черновик не стоит
+    ничего — и возвращать стало нечего.
+
+    Это не потеря защиты, а её упрощение: нет траты — нет и нужды её отменять. Сама
+    функция возврата в базе остаётся для ручных случаев (23.08.2026 ею вернули 13 роликов,
+    сгоревших до этой перестройки)."""
     import inspect
 
+    from backend.database import release_standup_shelf_video
     from backend.world_news_generator import prepare_world_news
 
+    assert callable(release_standup_shelf_video), "возврат остаётся для ручной уборки"
     src = inspect.getsource(prepare_world_news)
-    assert 'str(_previous.get("status") or "") != "sent"' in src, (
-        "возврат обязан проверять, что выпуск НЕ уходил людям"
+    assert "release_standup_shelf_video" not in src, (
+        "в сборке возврату больше не место: она и не тратит ролик"
     )
 
 
@@ -1505,3 +1512,42 @@ def test_the_quote_survives_the_explain_step():
 
     src = inspect.getsource(build_pack_in_steps)
     assert 'card["quote_de"] = chunk[i]["quote_de"]' in src
+
+
+# ── Расход — это доставка человеку, а не сборка черновика (23.08.2026) ────────
+
+def test_preparing_an_issue_does_not_consume_the_video():
+    """Владелец пересобирал стендап пять раз за вечер — и сжёг пять выступлений, ни одно
+    из которых людям не ушло. Полка опустела за день при совершенно годном материале.
+    Та же беда с новостями: семь роликов числились показанными, а вправду ушёл ОДИН.
+
+    Черновик не стоит ничего. Ролик тратится тогда, когда доходит до человека."""
+    import inspect
+
+    from backend.world_news_generator import prepare_world_news
+
+    src = inspect.getsource(prepare_world_news)
+    assert "mark_standup_shelf_used" not in src, "сборка не имеет права тратить ролик"
+    assert "record_daily_video_shown" not in src, "и не имеет права метить его показанным"
+
+
+def test_the_morning_broadcast_is_what_consumes_the_video():
+    """Пометка расхода стоит там, где выпуск ВПРАВДУ уходит людям."""
+    bot = open("bot_3.py", encoding="utf-8").read()
+    start = bot.index("async def run_world_news_morning_broadcast")
+    block = bot[start:start + 6000]
+    assert "record_daily_video_shown" in block
+    assert "mark_standup_shelf_used" in block
+
+
+def test_a_draft_occupies_the_video_but_does_not_spend_it():
+    """Черновик всё же не должен быть выбран второй раз на другой день: он уже стоит в
+    плане. Но это ЗАНЯТОСТЬ, а не трата — стоит запись убрать, и ролик снова доступен."""
+    import inspect
+
+    from backend.world_news_generator import prepare_world_news
+
+    src = inspect.getsource(prepare_world_news)
+    assert "get_assigned_daily_video_ids" in src, (
+        "выбор обязан исключать ролики, занятые черновиками"
+    )
