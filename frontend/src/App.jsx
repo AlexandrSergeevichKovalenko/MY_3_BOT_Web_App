@@ -6122,8 +6122,6 @@ function AppInner() {
 
   const [browserAuthLoading, setBrowserAuthLoading] = useState(false);
   const [browserAuthError, setBrowserAuthError] = useState('');
-  // Отрисовал ли telegram.org свою кнопку. Пока нет — показываем вход через бота.
-  const [telegramWidgetReady, setTelegramWidgetReady] = useState(false);
   const [browserAuthBotUsername, setBrowserAuthBotUsername] = useState('');
   const [sessionId, setSessionId] = useState(null);
   // Standalone home-screen app: authenticated by a durable app-browser token (minted in
@@ -18469,19 +18467,6 @@ function AppInner() {
 
     const container = telegramLoginWidgetRef.current;
     container.innerHTML = '';
-    setTelegramWidgetReady(false);
-    // ЗАПАСНОЙ ВЫХОД ОБЯЗАТЕЛЕН. Кнопку рисует ЧУЖОЙ скрипт с telegram.org, и если он не
-    // загрузился (сеть, блокировка, кеш автономного приложения), человек видел пустую
-    // карточку без единого способа войти — ровно это владелец прислал 23.08.2026 двумя
-    // снимками подряд. Ждём четыре секунды и, если кнопки нет, показываем путь через бота:
-    // он работает всегда и ни от какого внешнего скрипта не зависит.
-    const appeared = window.setInterval(() => {
-      if (container.querySelector('iframe, a, button')) {
-        setTelegramWidgetReady(true);
-        window.clearInterval(appeared);
-      }
-    }, 300);
-    const giveUp = window.setTimeout(() => window.clearInterval(appeared), 4000);
     const script = document.createElement('script');
     script.async = true;
     script.src = 'https://telegram.org/js/telegram-widget.js?22';
@@ -18494,8 +18479,6 @@ function AppInner() {
     container.appendChild(script);
 
     return () => {
-      window.clearInterval(appeared);
-      window.clearTimeout(giveUp);
       delete window.onTelegramAuth;
       if (container) {
         container.innerHTML = '';
@@ -36302,23 +36285,6 @@ function AppInner() {
                       {t('browser_login_hint')}
                     </p>
                     <div className="webapp-telegram-login-slot" ref={telegramLoginWidgetRef} />
-                    {!telegramWidgetReady && browserAuthBotUsername && (
-                      <div className="webapp-login-fallback">
-                        <p className="webapp-muted">
-                          {tr(
-                            'Кнопка Telegram не загрузилась. Войдите через бота — это тот же аккаунт.',
-                            'Der Telegram-Button hat nicht geladen. Melde dich über den Bot an — dasselbe Konto.'
-                          )}
-                        </p>
-                        <a
-                          className="primary-button"
-                          href={`https://t.me/${browserAuthBotUsername}`}
-                          rel="noopener noreferrer"
-                        >
-                          {tr('Открыть бота в Telegram', 'Bot in Telegram öffnen')}
-                        </a>
-                      </div>
-                    )}
                     {browserAuthLoading && <div className="webapp-muted">{t('auth_loading')}</div>}
                     {browserAuthError && <div className="webapp-error">{browserAuthError}</div>}
                     {!browserAuthBotUsername && (
