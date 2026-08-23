@@ -105,6 +105,7 @@ from backend.background_jobs import (  # noqa: E402
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
     run_tts_prewarm_quota_control_actor,
+    run_tts_voice_reconcile_actor,
     run_tts_admin_alerts_actor,
     run_tts_admin_digest_actor,
     run_sentence_prewarm_actor,
@@ -351,6 +352,11 @@ def _dispatch_tts_admin_digest() -> None:
 def _dispatch_tts_admin_alerts() -> None:
     run_tts_admin_alerts_actor.send()
     _plumbing_heartbeat("tts_admin_alerts")
+
+
+def _dispatch_tts_voice_reconcile() -> None:
+    run_tts_voice_reconcile_actor.send()
+    _plumbing_heartbeat("tts_voice_reconcile")
 
 
 def _dispatch_tts_prewarm_quota_control() -> None:
@@ -1133,6 +1139,19 @@ def _build_scheduler():
             max_instances=1,
             coalesce=True,
             misfire_grace_time=120,
+        )
+
+    # -- Ночная сверка голосов озвучки (cron) --
+    # Ночью, когда нет трафика: работа заказывает синтез, потолок TTS_VOICE_RECONCILE_BATCH.
+    if _enabled("TTS_VOICE_RECONCILE_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_tts_voice_reconcile,
+            "cron",
+            hour=_int_env("TTS_VOICE_RECONCILE_HOUR", 3),
+            minute=_int_env("TTS_VOICE_RECONCILE_MINUTE", 40),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
         )
 
     # -- TTS prewarm quota control --

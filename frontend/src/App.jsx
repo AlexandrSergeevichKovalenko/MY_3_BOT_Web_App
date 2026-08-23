@@ -61,6 +61,17 @@ import {
 import './styles/topbar-redesign.css';
 import './styles/home-browser-redesign.css';
 
+// Пустой клип для разблокировки звукового элемента внутри касания.
+// Та же константа, что в быстром словаре (dictionary/WordBreakdown.jsx:1045).
+// Сколько ждём готовности звука для ближайших карточек и как часто спрашиваем.
+// 6 секунд — столько же, сколько ждёт само воспроизведение (playTts), чтобы подогрев
+// и проигрывание не расходились в терпении. Две карточки — текущая и следующая.
+const TTS_PRELOAD_WAIT_MS = 6000;
+const TTS_PRELOAD_POLL_MS = 400;
+const TTS_PRELOAD_WAIT_CARDS = 2;
+const TTS_SILENT_CLIP = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+
+
 // Rich, POS-aware detail card for a saved Library word — the SAME breakdown the
 // quick dictionary shows, fed by the entry's saved response_json (declension/
 // conjugation, synonyms/antonyms/related, etymology, «как запомнить», examples +
@@ -7466,6 +7477,8 @@ function AppInner() {
   const ttsPendingCacheRef = useRef(new Map());
   const ttsLastRef = useRef({ key: '', ts: 0 });
   const ttsCurrentAudioRef = useRef(null);
+  const ttsSharedAudioRef = useRef(null);
+  const ttsBlockedPlaysRef = useRef(0);
   const ttsPlaybackSeqRef = useRef(0);
   const dictionaryLookupPollTokenRef = useRef(0);
   const dictBreakdownAbortRef = useRef(null); // aborts an in-flight breakdown SSE stream
@@ -10013,6 +10026,50 @@ function AppInner() {
     return (await response.json()) || null;
   }, [initData, readApiError]);
 
+  // ОДИН переиспользуемый закадровый <video> на всю озвучку — не новый Audio на каждое
+  // проигрывание. Причин две, обе проверены на этом же проекте (dictionary/WordBreakdown.jsx:1064):
+  //   1. Телефон разрешает играть БЕЗ касания только тому элементу, который уже играл
+  //      после касания. Новый элемент каждый раз — каждый раз заново запертый, поэтому
+  //      автозапуск на карточке тренировки молчал, а нажатие на динамик работало.
+  //   2. На iOS <audio> глушится аппаратным переключателем звука, а <video> идёт по
+  //      медиаканалу и играет.
+  // playsinline не даёт открыться полноэкранному плееру.
+  const ensureTtsAudioEl = useCallback(() => {
+    let el = ttsSharedAudioRef.current;
+    if (!el) {
+      try {
+        el = document.createElement('video');
+        el.setAttribute('playsinline', '');
+        el.setAttribute('webkit-playsinline', '');
+        el.playsInline = true;
+        el.preload = 'auto';
+        el.muted = false;
+        el.volume = 1;
+        el.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+        if (typeof document !== 'undefined' && document.body) document.body.appendChild(el);
+      } catch (_error) {
+        el = new Audio();
+      }
+      ttsSharedAudioRef.current = el;
+    }
+    return el;
+  }, []);
+
+  // Разблокировка ОБЯЗАНА выполниться синхронно внутри касания, до любого await:
+  // проигрываем на общем элементе пустой клип, и этим разрешаем ему играть позже,
+  // когда ответ раскроется сам. Вызывается из обработчиков касаний тренировки.
+  const unlockTtsAudio = useCallback(() => {
+    try {
+      const el = ensureTtsAudioEl();
+      el.muted = false;
+      el.src = TTS_SILENT_CLIP;
+      const promise = el.play();
+      if (promise && typeof promise.catch === 'function') promise.catch(() => {});
+    } catch (_error) {
+      // разблокировать не вышло — звук просто потребует касания, это не ошибка данных
+    }
+  }, [ensureTtsAudioEl]);
+
   const stopTtsPlayback = useCallback((options = {}) => {
     const invalidatePending = options?.invalidatePending !== false;
     if (invalidatePending) {
@@ -10079,7 +10136,7 @@ function AppInner() {
         resolve();
         return;
       }
-      const audio = new Audio(audioUrl);
+      const audio = ensureTtsAudioEl();
       audio.preload = 'auto';
       let settled = false;
       const finish = () => {
@@ -10093,12 +10150,23 @@ function AppInner() {
       audio.onended = finish;
       audio.onerror = finish;
       ttsCurrentAudioRef.current = audio;
-      audio.currentTime = 0;
+      audio.muted = false;
+      audio.volume = 1;
+      audio.src = audioUrl;
+      try { audio.load(); } catch (_error) { /* элемент сам разберётся */ }
       if (isStalePlayback()) {
         finish();
         return;
       }
-      audio.play().catch(() => finish());
+      // Отказ браузера БОЛЬШЕ НЕ НЕВИДИМ. Раньше здесь стоял .catch(() => finish()), и
+      // заблокированный автозапуск был неотличим от честно доигравшего звука — из-за
+      // этого дефект жил незамеченным. Теперь причина отказа называется вслух и считается.
+      audio.play().catch((error) => {
+        ttsBlockedPlaysRef.current += 1;
+        console.warn('[tts] браузер отказал в воспроизведении:', error?.name || error,
+          'подряд отказов:', ttsBlockedPlaysRef.current);
+        finish();
+      });
     });
     const cachedAudioUrl = getTtsCacheValue(key);
     if (cachedAudioUrl) {
@@ -10484,7 +10552,12 @@ function AppInner() {
   // /tts/generate up front — new words are synthesised lazily, only on an actual
   // tap. This is the same money-saving stance as the quick dictionary: we don't
   // synthesise audio for the ~60% of lookups nobody ever listens to.
-  const preloadTts = useCallback((text, language = 'de-DE', voice = '', allowSynth = true) => {
+  // waitForReady=true — дождаться готовности и положить ссылку в кеш. Без этого подогрев
+  // заказывал синтез и УХОДИЛ, не забрав результат (замер 23.08.2026): для впервые
+  // встреченного текста ссылка не попадала в кеш никогда, автозапуск уходил ждать сеть на
+  // несколько секунд, и телефон отказывался играть — карточка молчала до касания динамика.
+  // Ждём ТОЛЬКО для ближайших карточек: опрашивать всю очередь значит шуметь сетью впустую.
+  const preloadTts = useCallback((text, language = 'de-DE', voice = '', allowSynth = true, waitForReady = false) => {
     if (!initData) return;
     const normalizedText = String(text || '').trim();
     if (!normalizedText) return;
@@ -10523,6 +10596,29 @@ function AppInner() {
           if (generatedStatus === 'failed') {
             ttsPendingCacheRef.current.delete(key);
             return null;
+          }
+          if (waitForReady) {
+            // Синтез начат, но ещё идёт. Опрашиваем до готовности — иначе ссылки в кеше
+            // не будет и весь подогрев окажется бессмысленной тратой синтеза.
+            const deadline = Date.now() + TTS_PRELOAD_WAIT_MS;
+            while (Date.now() < deadline) {
+              await new Promise((resolve) => { window.setTimeout(resolve, TTS_PRELOAD_POLL_MS); });
+              const polled = await fetchTtsUrlStatus(normalizedText, normalizedLang, normalizedVoice);
+              const polledStatus = String(polled?.status || '').trim().toLowerCase();
+              const polledUrl = String(polled?.audio_url || '').trim();
+              if (polledStatus === 'ready' && polledUrl) {
+                ttsPendingCacheRef.current.delete(key);
+                setTtsCacheValue(key, polledUrl);
+                return polledUrl;
+              }
+              if (polledStatus === 'failed') {
+                ttsPendingCacheRef.current.delete(key);
+                return null;
+              }
+            }
+            // Не успели за отведённое время — это НЕ ошибка и не «нет звука»: запись
+            // осталась в работе, следующий показ карточки застанет её готовой.
+            console.info('[tts] подогрев не дождался готовности за', TTS_PRELOAD_WAIT_MS, 'мс:', normalizedText);
           }
         }
       } catch (error) {
@@ -16504,6 +16600,11 @@ function AppInner() {
       setFlashcardSessionActive(false);
       setFlashcardPreviewActive(false);
       setSrsError('');
+      // Разблокировка звука ВНУТРИ касания «начать тренировку». Эта ветка выходила
+      // раньше, чем unlockAudio() ниже, и Space Repetition оставался единственным
+      // режимом, где звуковой элемент так и не получал разрешения играть сам.
+      unlockAudio();
+      unlockTtsAudio();
       return;
     }
 
@@ -19883,7 +19984,7 @@ function AppInner() {
   useEffect(() => {
     if (!initData || !isSectionVisible('flashcards') || !flashcardsVisible || flashcardActiveMode !== 'fsrs') return;
     const cardsToWarm = [srsCard, ...srsPrefetchQueue.slice(0, 12)];
-    cardsToWarm.forEach((card) => {
+    cardsToWarm.forEach((card, cardIndex) => {
       if (!card) return;
       const direction = (card?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
       const _cardTexts = getDictionarySourceTarget(card, direction);
@@ -19891,7 +19992,9 @@ function AppInner() {
       const text = String((_cardReversed ? _cardTexts?.sourceText : _cardTexts?.targetText) || '').trim();
       if (!text) return;
       const locale = getTtsLocaleForLang(detectTtsLangFromText(text));
-      preloadTts(text, locale);
+      // Текущая карточка и следующая за ней — с ожиданием готовности: именно их человек
+      // увидит в ближайшие секунды. Остальные догреются к своему часу.
+      preloadTts(text, locale, '', true, cardIndex < TTS_PRELOAD_WAIT_CARDS);
     });
   }, [
     initData,
@@ -41094,6 +41197,10 @@ function AppInner() {
                                       type="button"
                                       className="fsrs-show-answer-btn"
                                       onClick={() => {
+                                        // Разблокировка обязана быть первой и синхронной:
+                                        // раскрытие ответа запускает звук через кадр, и без
+                                        // разрешения, взятого здесь, телефон его отклонит.
+                                        unlockTtsAudio();
                                         setSrsRevealStartedAt(Date.now());
                                         srsRevealActiveMsRef.current = 0;
                                         setSrsRevealElapsedSec(0);
@@ -44295,7 +44402,9 @@ const YoutubeQueryInputField = React.memo(function YoutubeQueryInputField({
   );
 });
 
-export default function App() {
+export default // Пустой клип для разблокировки звукового элемента внутри касания.
+
+function App() {
   return (
     <ErrorBoundary>
       <AppInner />

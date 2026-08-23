@@ -37,6 +37,13 @@ def run_tts_admin_digest_scheduler_job() -> None:
     _run_tts_admin_digest_scheduler_job()
 
 
+def run_tts_voice_reconcile_scheduler_job() -> None:
+    """Ночная сверка: озвучка под голосом, которого экран не просит, — это молчание
+    у человека и оплаченный впустую синтез. Добор накопленного, потолок за ночь."""
+    from backend.backend_server import _run_tts_voice_reconcile_scheduler_job
+    _run_tts_voice_reconcile_scheduler_job()
+
+
 def run_tts_prewarm_quota_control_scheduler_job() -> None:
     from backend.backend_server import _run_tts_prewarm_quota_control_scheduler_job
     _run_tts_prewarm_quota_control_scheduler_job()

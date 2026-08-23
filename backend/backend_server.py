@@ -1271,6 +1271,17 @@ TTS_GENERATION_RECOVERY_BATCH_SIZE = max(
     1,
     min(1000, int((os.getenv("TTS_GENERATION_RECOVERY_BATCH_SIZE") or "100").strip() or "100")),
 )
+# Ночная сверка голосов. Имя файла озвучки считается ИЗ ГОЛОСА, а голос выбирается по
+# тексту (одиночное немецкое слово -> Standard, всё остальное -> Polyglot). Пока прогрев
+# при сохранении брал голос по умолчанию, накопились файлы, которые экран никогда не
+# попросит: замер 23.08.2026 — 240 готовых озвучек из 1356 (18%). Источник закрыт
+# (голос везде считается одним правилом), эта работа догоняет накопленное.
+# Потолок за ночь — чтобы разовый сбой правила не превратился в тысячи обращений к Google.
+TTS_VOICE_RECONCILE_ENABLED = str(os.getenv("TTS_VOICE_RECONCILE_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+TTS_VOICE_RECONCILE_BATCH = max(
+    1,
+    min(1000, int((os.getenv("TTS_VOICE_RECONCILE_BATCH") or "200").strip() or "200")),
+)
 TTS_GENERATION_RECOVERY_PENDING_AGE_MINUTES = max(
     1,
     min(240, int((os.getenv("TTS_GENERATION_RECOVERY_PENDING_AGE_MINUTES") or "2").strip() or "2")),
@@ -24856,7 +24867,13 @@ def _tts_public_url_for_text(text: str, lang_short: str = "de") -> str:
         if not normalized_text:
             return ""
         short = _normalize_short_lang_code(lang_short, "de")
-        voice = _normalize_tts_voice_name(None, short)
+        # Голос обязан совпадать с тем, что попросит экран: имя файла считается
+        # ИЗ ГОЛОСА, и разные голоса — разные файлы. Здесь стоял голос по умолчанию,
+        # а плеер для одиночного немецкого слова просит Standard (:24751). Замер
+        # 23.08.2026: 240 готовых озвучек из 1356 лежали под неспрашиваемым голосом —
+        # для человека их не существовало, приложение синтезировало заново и платило
+        # премиум-ведром второй раз, а первый показ карточки молчал.
+        voice = _pick_interactive_tts_voice(normalized_text, short, None)
         speed = TTS_WEBAPP_DEFAULT_SPEED
         cache_key = _tts_object_cache_key(short, voice, speed, normalized_text)
         object_key = _tts_object_key(short, voice, cache_key)
@@ -25383,7 +25400,9 @@ def _list_predicted_tts_candidates_for_user(
     raw_limit = max(10, safe_item_limit * 4)
     candidates: list[dict] = []
     seen_cache_keys: set[str] = set()
-    voice = _normalize_tts_voice_name(None, target_lang)
+    # Голос выбирается ПО ТЕКСТУ (одиночное немецкое слово -> Standard), поэтому один
+    # голос на весь список брать нельзя: прогретый файл окажется под чужим именем и
+    # экран его не найдёт. Замер 23.08.2026 — 240 таких записей из 1356.
     language_code = _TTS_LANG_CODES.get(target_lang, _TTS_LANG_CODES["de"])
     speaking_rate = TTS_WEBAPP_DEFAULT_SPEED
 
@@ -25462,6 +25481,7 @@ def _list_predicted_tts_candidates_for_user(
         normalized_text = _normalize_utterance_text(target_text)
         if not normalized_text:
             continue
+        voice = _pick_interactive_tts_voice(normalized_text, target_lang, None)
         cache_key = _tts_object_cache_key(target_lang, voice, speaking_rate, normalized_text)
         if cache_key in seen_cache_keys:
             continue
@@ -25888,7 +25908,8 @@ def _enqueue_dictionary_entry_tts_prewarm(
         _record_tts_admin_monitor_event("enqueue", "skipped", source=str(origin_process or "dictionary_save"), count=1)
         return {"ok": True, "queued": False, "reason": "empty_target_text"}
 
-    voice = _normalize_tts_voice_name(None, normalized_target_lang)
+    # Тот же голос, что попросит экран (см. пояснение у _tts_public_url_for_text).
+    voice = _pick_interactive_tts_voice(normalized_text, normalized_target_lang, None)
     language_code = _TTS_LANG_CODES.get(normalized_target_lang, _TTS_LANG_CODES["de"])
     speaking_rate = TTS_WEBAPP_DEFAULT_SPEED
     cache_key = _tts_object_cache_key(normalized_target_lang, voice, speaking_rate, normalized_text)
@@ -55251,6 +55272,115 @@ def _recover_stale_tts_generation_jobs(*, source: str = "scheduler") -> dict:
     if attempted or skipped_invalid or queue_full or errors:
         logging.info("✅ TTS recovery finished: %s", result)
     return result
+
+
+def _find_tts_voice_mismatch(limit: int) -> list[dict]:
+    """Тексты, у которых готовый файл есть, но НЕ под тем голосом, что попросит экран.
+
+    Читает по одному запросу все готовые записи и группирует их по тексту: голосов у
+    одного текста бывает несколько (его могли озвучить разными путями). Правило выбора
+    голоса берём у продукта (_pick_interactive_tts_voice), а не переписываем здесь —
+    иначе сверка начнёт расходиться с плеером ровно так же, как разошёлся прогрев.
+    """
+    safe_limit = max(1, int(limit or 1))
+    grouped: dict[tuple[str, str], set[str]] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT source_text, language, voice
+                FROM bt_3_tts_object_cache
+                WHERE status = 'ready' AND COALESCE(source_text, '') <> '';
+                """
+            )
+            for source_text, language, voice in cursor.fetchall() or []:
+                short_lang, _language_code = _normalize_tts_language_code(str(language or "de-DE"))
+                grouped.setdefault((str(source_text), short_lang), set()).add(str(voice or ""))
+
+    missing: list[dict] = []
+    for (source_text, short_lang), voices in grouped.items():
+        wanted = _pick_interactive_tts_voice(source_text, short_lang, None)
+        if wanted in voices:
+            continue
+        missing.append({"text": source_text, "short_lang": short_lang, "voice": wanted})
+        if len(missing) >= safe_limit:
+            break
+    return missing
+
+
+def _reconcile_tts_voices(*, source: str = "scheduler") -> dict:
+    """Догнать накопленное: заказать озвучку тем голосом, который просит экран.
+
+    Ничего не удаляет: старый файл остаётся, он валиден для тех поверхностей, что
+    просят его голос. Считает и отдаёт числа — молчаливой работы здесь быть не должно.
+    """
+    if not TTS_VOICE_RECONCILE_ENABLED:
+        result = {"ok": True, "skipped": True, "reason": "disabled"}
+        _record_tts_admin_monitor_event("voice_reconcile", "skipped", source=source, count=1, meta=result)
+        return result
+
+    missing = _find_tts_voice_mismatch(TTS_VOICE_RECONCILE_BATCH)
+    queued = 0
+    already = 0
+    failed = 0
+    fail_reason = ""
+    for item in missing:
+        text = str(item["text"])
+        short_lang = str(item["short_lang"])
+        voice = str(item["voice"])
+        language_code = _TTS_LANG_CODES.get(short_lang, _TTS_LANG_CODES["de"])
+        speed = TTS_WEBAPP_DEFAULT_SPEED
+        cache_key = _tts_object_cache_key(short_lang, voice, speed, text)
+        object_key = _tts_object_key(short_lang, voice, cache_key)
+        meta = get_tts_object_meta(cache_key, touch_hit=False)
+        if meta and str(meta.get("status") or "").strip().lower() in {"ready", "pending"}:
+            already += 1
+            continue
+        if not create_tts_object_pending(
+            cache_key=cache_key, language=language_code, voice=voice,
+            speed=speed, source_text=text, object_key=object_key,
+        ):
+            already += 1
+            continue
+        enqueue_result = _enqueue_tts_generation_job_result(
+            user_id=0, language=language_code, tts_lang_short=short_lang,
+            voice=voice, speaking_rate=speed, normalized_text=text,
+            cache_key=cache_key, object_key=object_key, had_existing_meta=bool(meta),
+            request_id="", correlation_id="", enqueue_ts_ms=_to_epoch_ms(),
+        )
+        if bool(enqueue_result.get("queued")):
+            queued += 1
+        else:
+            failed += 1
+            fail_reason = fail_reason or str(enqueue_result.get("reason") or "unknown")
+
+    result = {
+        "ok": True,
+        "found": len(missing),
+        "queued": queued,
+        "already": already,
+        "failed": failed,
+        "fail_reason": fail_reason,
+        "batch_cap": int(TTS_VOICE_RECONCILE_BATCH),
+    }
+    status = "error" if failed else "ok"
+    _record_tts_admin_monitor_event(
+        "voice_reconcile", status, source=source, count=max(1, len(missing)), meta=result,
+    )
+    if missing:
+        logging.info("\u2705 Сверка голосов озвучки: %s", result)
+    return result
+
+
+def _run_tts_voice_reconcile_scheduler_job() -> None:
+    try:
+        _reconcile_tts_voices(source="scheduler")
+    except Exception:
+        _record_tts_admin_monitor_event(
+            "voice_reconcile", "error", source="scheduler", count=1,
+            meta={"reason": "scheduler_exception"},
+        )
+        logging.exception("\u274c Сверка голосов озвучки упала")
 
 
 def _run_tts_generation_recovery_scheduler_job() -> None:

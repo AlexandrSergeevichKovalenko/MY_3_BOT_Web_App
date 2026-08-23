@@ -2660,6 +2660,12 @@ def run_tts_admin_alerts_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_tts_voice_reconcile_actor() -> None:
+    from backend.tts_scheduler import run_tts_voice_reconcile_scheduler_job
+    run_tts_voice_reconcile_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_tts_prewarm_quota_control_actor() -> None:
     from backend.tts_scheduler import run_tts_prewarm_quota_control_scheduler_job
     run_tts_prewarm_quota_control_scheduler_job()
