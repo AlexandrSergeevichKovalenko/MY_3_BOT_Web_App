@@ -25882,6 +25882,50 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
         _TTS_PREWARM_LOCK.release()
 
 
+def _pick_learning_language_utterance(
+    *,
+    source_text: str,
+    source_lang: str,
+    target_text: str,
+    target_lang: str,
+    learning_lang: str,
+) -> tuple[str, str]:
+    """Какую сторону карточки вообще имеет смысл озвучивать.
+
+    Озвучке подлежит ТОЛЬКО изучаемый язык: русский вслух человеку не нужен, а стоит
+    столько же. Раньше здесь озвучивалась «целевая сторона» словарного запроса — а
+    запрос чаще всего идёт de->ru (замер 23.08.2026: 3052 карточки против 240 обратных),
+    и целевой стороной оказывался РУССКИЙ перевод. Итог: 1612 русских озвучек, из
+    которых хоть раз запрошены 8. Немецких — 1618, запрошены 839.
+
+    Сторону выбираем по письму, а не по графе: графа бывает перепутана (у части карточек
+    немецкий текст лежит в русской колонке), и именно из-за неё мы платили за русский.
+    Ни одна сторона не подошла — возвращаем пустую строку: озвучки не будет, и это
+    честный ответ, а не выдуманная.
+    """
+    learning = str(learning_lang or "").strip().lower() or "de"
+    sides = [
+        (str(source_text or "").strip(), str(source_lang or "").strip().lower()),
+        (str(target_text or "").strip(), str(target_lang or "").strip().lower()),
+    ]
+
+    def _script_fits(text: str) -> bool:
+        if not text:
+            return False
+        has_cyrillic = _text_has_cyrillic(text)
+        return has_cyrillic if learning == "ru" else not has_cyrillic
+
+    # 1) сторона, у которой И графа изучаемая, И письмо не противоречит
+    for text, lang in sides:
+        if lang == learning and _script_fits(text):
+            return text, learning
+    # 2) графа соврала — берём ту сторону, чьё письмо подходит
+    for text, lang in sides:
+        if _script_fits(text):
+            return text, learning
+    return "", learning
+
+
 def _enqueue_dictionary_entry_tts_prewarm(
     *,
     user_id: int,
@@ -25903,17 +25947,33 @@ def _enqueue_dictionary_entry_tts_prewarm(
         source_text_hint=source_text_hint,
         target_text_hint=target_text_hint,
     )
-    normalized_text = _normalize_utterance_text(target_text)
+    # Изучаемый язык человека — из его профиля, а не из направления запроса: человек
+    # смотрит немецкое слово «de->ru», но учит немецкий, и вслух ему нужен немецкий.
+    _native_lang, learning_lang, _profile = _get_user_language_pair(int(user_id))
+    spoken_text, spoken_lang = _pick_learning_language_utterance(
+        source_text=source_text,
+        source_lang=normalized_source_lang,
+        target_text=target_text,
+        target_lang=normalized_target_lang,
+        learning_lang=learning_lang,
+    )
+    normalized_text = _normalize_utterance_text(spoken_text)
     if not normalized_text:
-        _record_tts_admin_monitor_event("enqueue", "skipped", source=str(origin_process or "dictionary_save"), count=1)
-        return {"ok": True, "queued": False, "reason": "empty_target_text"}
+        # Считаем отдельно: «нечего озвучивать» и «не нашли изучаемую сторону» — разные
+        # случаи, и второй означает кривую карточку, а не отсутствие текста.
+        reason = "empty_target_text" if not str(target_text or "").strip() else "no_learning_language_side"
+        _record_tts_admin_monitor_event(
+            "enqueue", "skipped", source=str(origin_process or "dictionary_save"), count=1,
+            meta={"reason": reason},
+        )
+        return {"ok": True, "queued": False, "reason": reason}
 
     # Тот же голос, что попросит экран (см. пояснение у _tts_public_url_for_text).
-    voice = _pick_interactive_tts_voice(normalized_text, normalized_target_lang, None)
-    language_code = _TTS_LANG_CODES.get(normalized_target_lang, _TTS_LANG_CODES["de"])
+    voice = _pick_interactive_tts_voice(normalized_text, spoken_lang, None)
+    language_code = _TTS_LANG_CODES.get(spoken_lang, _TTS_LANG_CODES["de"])
     speaking_rate = TTS_WEBAPP_DEFAULT_SPEED
-    cache_key = _tts_object_cache_key(normalized_target_lang, voice, speaking_rate, normalized_text)
-    object_key = _tts_object_key(normalized_target_lang, voice, cache_key)
+    cache_key = _tts_object_cache_key(spoken_lang, voice, speaking_rate, normalized_text)
+    object_key = _tts_object_key(spoken_lang, voice, cache_key)
 
     meta = get_tts_object_meta(cache_key, touch_hit=False)
     if meta:
@@ -25974,7 +26034,7 @@ def _enqueue_dictionary_entry_tts_prewarm(
     enqueue_result = _enqueue_tts_generation_job_result(
         user_id=int(user_id),
         language=language_code,
-        tts_lang_short=normalized_target_lang,
+        tts_lang_short=spoken_lang,
         voice=voice,
         speaking_rate=speaking_rate,
         normalized_text=normalized_text,
