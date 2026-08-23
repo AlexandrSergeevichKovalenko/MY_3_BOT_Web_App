@@ -128,6 +128,55 @@ def _strip_pronoun(form: str) -> str:
     return text
 
 
+# Прочерк на странице Flexion значит «такой формы нет», а не форму. Разные тире у
+# Wiktionary встречаются вперемешку, поэтому перечислены все.
+_DASHES = {"—", "–", "-", "―", "‒", "−"}
+
+
+# Заголовки блоков страницы Flexion. Разбор одного блока обязан на них останавливаться:
+# иначе он перелезает в следующую таблицу и заполняет её формами чужую колонку.
+_BLOCK_HEADERS = {"Präsens", "Präteritum", "Perfekt", "Plusquamperfekt", "Futur I",
+                  "Futur II", "Imperative", "Infinitive", "Partizipien", "Hilfsverb"}
+
+
+NO_SUCH_FORM = "—"
+
+
+def _is_dash(value: str) -> bool:
+    """Прочерк — это ОТВЕТ справочника «такой формы не существует», а не мусор.
+
+    Разница принципиальная, и я её сам чуть не потерял 23.08.2026. Безличный глагол
+    («geschehen», «erfolgen», «vorliegen», «besagen») в первом и втором лице форм НЕ
+    ИМЕЕТ, и страница печатает там прочерк, а в третьем — настоящую форму. Выбросив
+    прочерк как мусор, я снял таблицы у десяти обычных глаголов: человек перестал
+    видеть «es geschieht». Прочерк остаётся в таблице как явное «формы нет» — это
+    напечатано в источнике и это правда о языке.
+    """
+    return str(value or "").strip() in _DASHES
+
+
+def _is_note(value: str) -> bool:
+    """Ячейка-ПРИМЕЧАНИЕ, а не форма: «veraltet:», «gehoben:», «—».
+
+    Владелец не видел этого сам — дефект принёс соседний агент 23.08.2026, и он
+    подтвердился: у «zeigen» в прошедшем времени во всех шести лицах стояло «veraltet:»
+    («устарело:») вместо «zeigte». На странице это подпись к варианту формы, набранная
+    такой же ячейкой таблицы; разбор брал её за форму, а выбор «самого длинного из
+    вариантов» отдавал ей победу над настоящей «zeigte».
+
+    Замер 23.08.2026 по 1467 таблицам: 9 таблиц с «veraltet:», 12 с прочерком, у шести
+    из них сломан именно Präteritum (bedienen, keilen, stammen, verpönen, zähmen,
+    zeigen). Все 21 при этом помечены documented — то есть система считала их
+    подтверждёнными источником, и снаружи это было не отличить.
+
+    Двоеточие на конце — надёжный признак: немецкая словоформа на него не кончается.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return True
+    return text.endswith(":") or text in _DASHES
+
+
 def _column_forms(cells: list[str], start: int, *, column: int) -> dict[str, str]:
     """Формы одного столбца для шести лиц, начиная от заголовка блока.
 
@@ -138,7 +187,16 @@ def _column_forms(cells: list[str], start: int, *, column: int) -> dict[str, str
         («du hieltest,» | «du hieltst»), а не соседний столбец. Без этого конъюнктив
         съезжал на форму из другого столбца."""
     out: dict[str, str] = {}
-    index, limit = start, min(len(cells), start + 240)
+    # Блок кончается там, где начинается следующий. Раньше стояло «240 ячеек от
+    # заголовка», и разбор перелезал в соседнюю таблицу: у «zeigen» конъюнктив II
+    # заполнился формами «habe gezeigt» из блока Perfekt, потому что в своём блоке
+    # столбец оказался пустым, а сканирование не остановилось (23.08.2026).
+    limit = min(len(cells), start + 240)
+    for ahead in range(start + 1, limit):
+        if cells[ahead] in _BLOCK_HEADERS:
+            limit = ahead
+            break
+    index = start
     while index < limit and len(out) < 6:
         person = _PERSON_LABELS.get(cells[index])
         if not person:
@@ -156,6 +214,28 @@ def _column_forms(cells: list[str], start: int, *, column: int) -> dict[str, str
             if value in _PRONOUNS:
                 cursor += 1
                 continue
+            if _is_dash(value):
+                # Прочерк занимает МЕСТО СТОЛБЦА и остаётся в таблице как «формы нет».
+                # Выкинуть его нельзя дважды: во-первых, следующий столбец сдвинется на
+                # его место, во-вторых, у безличных глаголов это и есть ответ языка.
+                group.append([NO_SUCH_FORM])
+                pending_variant = False
+                cursor += 1
+                continue
+            if _is_note(value):
+                # ПОДПИСЬ К СЛЕДУЮЩЕМУ ВАРИАНТУ ТОЙ ЖЕ КЛЕТКИ, а не к строке. У «zeigen»
+                # напечатано: «ich zeigte,» | «veraltet:» | «ich zeigete». Современная
+                # форма стоит ДО подписи, устаревшая — после. Правило «берём самый
+                # длинный вариант» (оно спасает «ich dämme ein» от разговорного «ich
+                # dämm ein») отдало бы победу устаревшей «zeigete» — форме XIX века.
+                # Поэтому подпись и помеченный ею вариант проходят мимо, а слот
+                # варианта закрывается: дальше начинается СЛЕДУЮЩИЙ столбец.
+                cursor += 1
+                if (cursor < limit and cells[cursor] not in _PERSON_LABELS
+                        and cells[cursor] not in _PRONOUNS):
+                    cursor += 1
+                pending_variant = False
+                continue
             if pending_variant and group:
                 group[-1].append(value)
             else:
@@ -166,9 +246,15 @@ def _column_forms(cells: list[str], start: int, *, column: int) -> dict[str, str
             variants = [_strip_pronoun(v).rstrip("!,") for v in group[column]]
             variants = [v for v in variants if v]
             if variants:
-                out[person] = max(variants, key=len)
+                out[person] = (NO_SUCH_FORM if variants == [NO_SUCH_FORM]
+                               else max((v for v in variants if v != NO_SUCH_FORM),
+                                        key=len, default=NO_SUCH_FORM))
         index = cursor
-    return out if len(out) == 6 else {}
+    if len(out) != 6:
+        return {}
+    # Таблица из ОДНИХ прочерков — не таблица: это блок, которого у глагола нет вовсе
+    # (например, повелительное у безличного). Хотя бы одна настоящая форма обязана быть.
+    return out if any(v != NO_SUCH_FORM for v in out.values()) else {}
 
 
 def documented_tables(rendered_html: str) -> dict[str, Any]:
@@ -213,10 +299,21 @@ def documented_tables(rendered_html: str) -> dict[str, Any]:
         imperativ: dict[str, str] = {}
         index = imperative_at
         while index + 1 < len(cells) and index < imperative_at + 60 and len(imperativ) < 2:
-            if cells[index] == "2. Person Singular" and "du" not in imperativ:
-                imperativ["du"] = _strip_pronoun(cells[index + 1]).rstrip("!,")
-            elif cells[index] == "2. Person Plural" and "ihr" not in imperativ:
-                imperativ["ihr"] = _strip_pronoun(cells[index + 1]).rstrip("!,")
+            # Повелительное наклонение разбирается отдельно от остальных блоков, и до
+            # 23.08.2026 общий фильтр служебных ячеек сюда не доставал: у безличных
+            # глаголов («geschehen», «erfolgen», «naheliegen») страница печатает в этих
+            # клетках прочерк — повелительного у них не бывает, — и прочерк уходил на
+            # экран как форма. Пустая клетка означает, что формы нет; тогда и строки
+            # в таблице быть не должно.
+            form = ""
+            if cells[index] in ("2. Person Singular", "2. Person Plural"):
+                candidate = cells[index + 1]
+                if not _is_dash(candidate) and not _is_note(candidate):
+                    form = _strip_pronoun(candidate).rstrip("!,")
+            if form and cells[index] == "2. Person Singular" and "du" not in imperativ:
+                imperativ["du"] = form
+            elif form and cells[index] == "2. Person Plural" and "ihr" not in imperativ:
+                imperativ["ihr"] = form
             index += 1
         if imperativ:
             tables["imperativ"] = imperativ
@@ -673,7 +770,7 @@ def _printed_words(tables: dict) -> set[str]:
     def walk(node) -> None:
         if isinstance(node, str):
             value = node.strip()
-            if value:
+            if value and value not in _DASHES:
                 words.add(value)
                 for part in value.split():
                     if part:
