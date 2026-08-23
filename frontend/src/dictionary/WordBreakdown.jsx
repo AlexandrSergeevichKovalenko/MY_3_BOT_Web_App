@@ -537,245 +537,32 @@ function pronunciationText(item) {
   return ipa || stress || '';
 }
 
-// ── Client-side grammar-table engine (mirrors backend german_grammar_tables.py).
-// Used as a FALLBACK when an item has no server-built `grammar_tables` (e.g. saved
-// Library entries from before the engine existed) — builds the full declension/
-// conjugation/comparison from `forms` + `article`, so every card shows real tables
-// instead of bare "Артикль/Мн.число" chips. ────────────────────────────────────
-const _ART_SG = {
-  m: { nom: 'der', akk: 'den', dat: 'dem', gen: 'des' },
-  f: { nom: 'die', akk: 'die', dat: 'der', gen: 'der' },
-  n: { nom: 'das', akk: 'das', dat: 'dem', gen: 'des' },
-};
-const _ART_PL = { nom: 'die', akk: 'die', dat: 'den', gen: 'der' };
-const _CASES = ['nom', 'akk', 'dat', 'gen'];
-const _CASE_LABELS = { nom: 'Nominativ', akk: 'Akkusativ', dat: 'Dativ', gen: 'Genitiv' };
-const _ARTICLE_TOKENS = new Set(['der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einen', 'einem', 'einer', 'eines']);
-const _PRON = ['ich', 'du', 'er/sie/es', 'wir', 'ihr', 'sie/Sie'];
+// ── СЧЁТА ФОРМ ЗДЕСЬ БОЛЬШЕ НЕТ. Удалён 23.08.2026 по решению владельца. ──────
+//
+// Тут стоял «запасной» движок: когда сервер не давал таблицу, экран строил её сам —
+// приклеивал окончания по последней букве слова. Родительный «+s», дательный
+// множественного «+n», настоящее время «+st / +en / +t», степени «+er / am …sten».
+// Ровно этот счёт убрали с сервера 17.08.2026 («МЫ НИЧЕГО НЕ ПРИДУМЫВАЕМ»), а копия
+// во фронте осталась — и рисовала человеку именно она, потому что сервер отдаёт
+// таблицу только на то, что есть в справочнике.
+//
+// Что человек видел (снимки владельца 22.08.2026):
+//     «Die Ruhestände»  →  die/die/der Ruhestände, Genitiv «der Ruhestands»
+//                          верно: der Ruhestand, des Ruhestands, мн. die Ruhestände
+//     «die Umschaltsituationen» → в таблице «die Umschaltsituatio» — такого слова нет
+//
+// Цена удаления измерена ДО удаления, по всей живой базе:
+//     существительные 2886 · сервер знает 2857 → без таблицы остаются  29
+//     прилагательные   759 · сервер знает  756 → без таблицы остаются   3
+//     глаголы         1326 · сервер знает 1324 → без таблицы остаются   2
+//     итого 34 слова из 4971 — 0,7%, и это ровно те, у которых сломан заголовок.
+//
+// Теперь на их месте честная строка «формы уточняем», а слово уходит в ночную
+// очередь. Пустое место лечится за ночь; выдуманная таблица не лечится никогда,
+// потому что выглядит правильной.
+//
+// НЕ ВОЗВРАЩАТЬ. Нет таблицы от сервера — значит её нет.
 
-function _stripArticle(s) {
-  const parts = String(s || '').trim().split(/\s+/);
-  if (parts[0] && _ARTICLE_TOKENS.has(parts[0].toLowerCase())) return parts.slice(1).join(' ');
-  return String(s || '').trim();
-}
-function _genderFromArticle(a) {
-  const x = String(a || '').trim().toLowerCase();
-  return x === 'der' ? 'm' : x === 'die' ? 'f' : x === 'das' ? 'n' : null;
-}
-// `lemma`/`number` описывают, ЧТО нам дали: слово или его форму. У формы
-// множественного колонка Singular обязана строиться от ЛЕММЫ — иначе выходит
-// выдуманное «die Probleme / der Probleme» (именно это и было на экране). Леммы нет —
-// колонки единственного нет вовсе: врать нельзя, а показать множественное можно.
-/* ┌─ НАЙДЕНО 22.08.2026, ОТКРЫТО, ЖДЁТ РЕШЕНИЯ ВЛАДЕЛЬЦА ────────────────────────┐
-   │                                                                              │
-   │ ЭТА ФУНКЦИЯ ВЫДУМЫВАЕТ НЕМЕЦКИЕ ФОРМЫ, и это то самое, что запрещено          │
-   │ правилом ноль. Счёт падежей убрали из backend/german_grammar_tables.py        │
-   │ 17.08.2026 («МЫ НИЧЕГО НЕ ПРИДУМЫВАЕМ. Вообще») — но ЗДЕСЬ он остался, и      │
-   │ именно он рисует таблицу человеку, потому что сервер отдаёт таблицу только    │
-   │ на слова, которые есть в справочнике, а на остальные — ничего.                │
-   │                                                                              │
-   │ Что видит человек (снимки экрана от владельца 22.08.2026):                    │
-   │                                                                              │
-   │   «die Umschaltsituationen» — заголовок обрезан в разборе до                  │
-   │   «die Umschaltsituatio», и в таблице печатается ОН: die Umschaltsituatio /   │
-   │   die Umschaltsituatio / der Umschaltsituatio. Слова такого нет.              │
-   │                                                                              │
-   │   «Die Ruhestände» — множественное принято за женское единственное:           │
-   │   die/die/der Ruhestände, Genitiv «der Ruhestands». Верно: der Ruhestand,     │
-   │   des Ruhestands, мн. die Ruhestände.                                         │
-   │                                                                              │
-   │ Где именно выдумывается: родительный достраивается «+s/+es» по хвосту слова,  │
-   │ дательный множественного — «+n», а именительный/винительный/дательный         │
-   │ единственного печатаются голым словом, каким бы оно ни было.                  │
-   │                                                                              │
-   │ ПОЧЕМУ НЕ УБРАНО СРАЗУ: убрать — значит оставить без таблицы ВСЕ слова, каких │
-   │ нет в справочнике, а это решение продуктовое, не моё. Владельцу показано.     │
-   └──────────────────────────────────────────────────────────────────────────────┘ */
-function buildNounDeclension(wordDe, article, plural, genitive, lemma, number) {
-  const isPlural = number === 'pl';
-  const lemmaNoun = _stripArticle(lemma || '');
-  const surface = _stripArticle(wordDe);
-  if (!surface) return null;
-  const noun = isPlural ? lemmaNoun : surface;
-  const gender = _genderFromArticle(isPlural ? '' : article) || (noun ? _genderFromArticle(article) : '');
-  if (isPlural && !lemmaNoun) {
-    // Только множественное: артикли die/die/den/der, падежи по правилу.
-    const pl = surface;
-    return {
-      gender: '', article: 'die', singular: '', plural: pl, has_plural: true,
-      has_singular: false, requested: 'plural',
-      rows: _CASES.map((c) => ({
-        case: c, label: _CASE_LABELS[c],
-        plural: `${_ART_PL[c]} ${(c === 'dat' && !/[ns]$/i.test(pl)) ? `${pl}n` : pl}`.trim(),
-      })),
-    };
-  }
-  if (!gender || !noun) return null;
-  const pluralNoun = isPlural ? surface : (plural ? _stripArticle(plural) : '');
-  let genSg = _stripArticle(genitive || '');
-  if (!genSg) {
-    if (gender === 'f') genSg = noun;
-    else genSg = noun + (/(s|ß|x|z|sch)$/i.test(noun) ? 'es' : 's');
-  }
-  const sg = { nom: noun, akk: noun, dat: noun, gen: genSg };
-  const rows = _CASES.map((c) => {
-    const row = { case: c, label: _CASE_LABELS[c], singular: `${_ART_SG[gender][c]} ${sg[c]}`.trim() };
-    if (pluralNoun) {
-      const pl = (c === 'dat' && !/[ns]$/i.test(pluralNoun)) ? pluralNoun + 'n' : pluralNoun;
-      row.plural = `${_ART_PL[c]} ${pl}`.trim();
-    }
-    return row;
-  });
-  return {
-    gender, article: _ART_SG[gender].nom, singular: noun,
-    plural: pluralNoun || null, has_plural: !!pluralNoun, has_singular: true,
-    requested: isPlural ? 'plural' : 'singular', rows,
-  };
-}
-function _expandFromBase(base) {
-  const low = base.toLowerCase();
-  const endsE = low.endsWith('e');
-  let du = base + ((/[td]$/.test(low) && !endsE) ? 'est' : 'st');
-  if (/[sßzx]$/.test(low) && !endsE) du = base + 't';
-  const pl = base + (endsE ? 'n' : 'en');
-  const ihr = base + ((endsE || !/[td]$/.test(low)) ? 't' : 'et');
-  return { ich: base, du, 'er/sie/es': base, wir: pl, ihr, 'sie/Sie': pl };
-}
-const _AUX_FORMS = {
-  haben: ['habe', 'hast', 'hat', 'haben', 'habt', 'haben'],
-  sein: ['bin', 'bist', 'ist', 'sind', 'seid', 'sind'],
-};
-function _parsePerfekt(perfekt) {
-  const text = String(perfekt || '').trim();
-  if (!text) return ['haben', ''];
-  const tokens = text.split(/\s+/);
-  const head = tokens[0].toLowerCase();
-  if (['hat', 'habe', 'hast', 'haben', 'habt'].includes(head)) return ['haben', tokens.slice(1).join(' ')];
-  if (['ist', 'bin', 'bist', 'sind', 'seid'].includes(head)) return ['sein', tokens.slice(1).join(' ')];
-  return ['haben', text];
-}
-function buildVerbConjugation(wordDe, seed) {
-  let inf = _stripArticle(wordDe);
-  if (!inf || /\s/.test(inf)) return null;
-  // Лучше не показать таблицу, чем показать выдуманную: от zu-инфинитива выходит
-  // «ich klarzukomme, du klarzukommst» — форм, которых в языке нет.
-  if (looksLikeZuInfinitive(inf)) return null;
-  // Спрягаемый глагол пишется со строчной — всегда, кроме начала предложения.
-  // Заголовок в базе может стоять с заглавной («Aufwachen», «Hineingehen»), и без
-  // этой строки человек читал «ich Gehe», «ich Hineingehe». То же правило стоит на
-  // сервере, в german_grammar_tables.build_verb_conjugation.
-  inf = inf.charAt(0).toLowerCase() + inf.slice(1);
-  seed = seed || {};
-  let stem; let plEnd;
-  if (inf.endsWith('eln') || inf.endsWith('ern')) { stem = inf.slice(0, -1); plEnd = 'n'; }
-  else if (inf.endsWith('en')) { stem = inf.slice(0, -2); plEnd = 'en'; }
-  else if (inf.endsWith('n')) { stem = inf.slice(0, -1); plEnd = 'n'; }
-  else { stem = inf; plEnd = 'en'; }
-  const low = stem.toLowerCase();
-  let regDu; let regEr;
-  if (/(t|d|ffn|chn|tm)$/.test(low)) { regDu = stem + 'est'; regEr = stem + 'et'; }
-  else if (/[sßzx]$/.test(low)) { regDu = stem + 't'; regEr = stem + 't'; }
-  else { regDu = stem + 'st'; regEr = stem + 't'; }
-  let du = clean(seed.present_2sg) || regDu;
-  const er = clean(seed.present_3sg) || regEr;
-  if (clean(seed.present_3sg) && !clean(seed.present_2sg) && er.toLowerCase().endsWith('t')) {
-    const cand = er.slice(0, -1);
-    if (!/[sßzx]$/i.test(cand)) du = cand + 'st';
-  }
-  const ihr = stem + (/[td]$/.test(low) ? 'et' : 't');
-  const tables = { praesens: { ich: stem + 'e', du, 'er/sie/es': er, wir: stem + plEnd, ihr, 'sie/Sie': stem + plEnd } };
-  const praet = _stripArticle(clean(seed.praeteritum));
-  if (praet) tables.praeteritum = _expandFromBase(praet);
-  const konj2 = _stripArticle(clean(seed.konjunktiv2));
-  if (konj2 && konj2.toLowerCase().startsWith('würde')) {
-    tables.konjunktiv2 = { ich: 'würde ' + inf, du: 'würdest ' + inf, 'er/sie/es': 'würde ' + inf, wir: 'würden ' + inf, ihr: 'würdet ' + inf, 'sie/Sie': 'würden ' + inf };
-  } else if (konj2) tables.konjunktiv2 = _expandFromBase(konj2);
-  const [aux, participle] = _parsePerfekt(clean(seed.perfekt));
-  if (participle && _AUX_FORMS[aux]) {
-    tables.perfekt = {};
-    _PRON.forEach((p, i) => { tables.perfekt[p] = `${_AUX_FORMS[aux][i]} ${participle}`; });
-    tables.auxiliary = aux;
-    tables.partizip2 = participle;
-  }
-  tables.imperativ = { du: clean(seed.imperative_sg) || stem, ihr, Sie: `${stem + plEnd} Sie` };
-  tables.infinitive = inf;
-  return tables;
-}
-// Отделяемые приставки — с них начинается zu-инфинитив «klar-zu-kommen».
-const SEPARABLE_PREFIXES = ['ab','an','auf','aus','bei','durch','ein','fest','her','hin','los','mit',
-  'nach','über','um','unter','vor','weg','weiter','zurück','zusammen','klar','fort','heim','statt',
-  'teil','wieder','zu'];
-// Зеркало backend/german_grammar_tables.py: «klarzukommen» — это zu-инфинитив, а не
-// словарная форма. Спрягать его нельзя, выходит «ich klarzukomme», чего в языке нет.
-// Правила держим одинаковыми с сервером: этот движок работает, когда сервер таблицу не
-// прислал, и расхождение означало бы, что одно и то же слово выглядит по-разному.
-function looksLikeZuInfinitive(word) {
-  const body = clean(word).toLowerCase();
-  if (!body || /\s/.test(body) || !/(en|eln|ern)$/.test(body)) return false;
-  if (/^(hinzu|dazu|herzu|wozu|darzu)/.test(body)) return false;   // приставка сама на «zu»
-  return SEPARABLE_PREFIXES.some((p) => {
-    if (!body.startsWith(p + 'zu')) return false;
-    const rest = body.slice(p.length + 2);
-    return rest.length >= 5 && /(en|eln|ern)$/.test(rest);         // «zusammenzucken» отсекается
-  });
-}
-const ADJ_SUFFIXES = ['ig','lich','isch','bar','sam','haft','los','voll','iv','abel'];
-// «schlammigen», «winzigen» — склонённые формы. Степени сравнения от них выходят
-// несуществующими: «schlammigener», «am schlammigensten».
-function looksLikeDeclinedAdjective(word) {
-  const body = clean(word).toLowerCase();
-  if (!body || /\s/.test(body)) return false;
-  return ['en','em','es','er','e'].some((end) => {
-    if (!body.endsWith(end)) return false;
-    const stem = body.slice(0, body.length - end.length);
-    return stem.length >= 4 && ADJ_SUFFIXES.some((s) => stem.endsWith(s));
-  });
-}
-function buildAdjectiveComparison(wordDe, comparative, superlative) {
-  let positive = _stripArticle(wordDe);
-  if (!positive || /\s/.test(positive)) return null;
-  // Лучше не показать таблицу, чем показать выдуманную.
-  if (looksLikeDeclinedAdjective(positive)) return null;
-  // Степени сравнения тоже со строчной: «Nahtlos» в заголовке — след сохранения.
-  positive = positive.charAt(0).toLowerCase() + positive.slice(1);
-  let comp = clean(comparative);
-  let sup = clean(superlative);
-  if (!comp) comp = positive + 'er';
-  // После t/d/s/ß/z/x положено «-esten»: «am ältesten», а не «am altsten».
-  if (!sup) sup = `am ${positive}${/[tdsßzx]$/i.test(positive) ? 'esten' : 'sten'}`;
-  else if (!sup.toLowerCase().startsWith('am ')) sup = 'am ' + sup;
-  return { positive, comparative: comp, superlative: sup };
-}
-// Build tables from an item's forms+article when the server didn't (idempotent).
-function buildGrammarTablesJS(item) {
-  if (!item || typeof item !== 'object') return null;
-  const pos = clean(item.part_of_speech).toLowerCase();
-  const f = (item.forms && typeof item.forms === 'object') ? item.forms : {};
-  // Регистр заголовка чиним ДО построения таблиц, иначе «Gelingen» спрягается как
-  // «ich Gelinge / wir Gelingen».
-  const wordDe = displaySurface(item, item.word_de);
-  if (pos === 'noun') {
-    // Gender from the RESOLVED article (word_de token first), never the raw
-    // `article` field — a wrong "der" there built a masculine "der Kabel" table.
-    const t = buildNounDeclension(wordDe, resolveArticle(item), f.plural, f.genitive,
-      resolveLemma(item), resolveNumber(item));
-    return t ? { declension: t } : null;
-  }
-  if (pos === 'verb') {
-    const t = buildVerbConjugation(wordDe, {
-      present_2sg: f.present_2sg, present_3sg: f.present_3sg, praeteritum: f.praeteritum,
-      perfekt: f.perfekt, konjunktiv2: f.konjunktiv2, imperative_sg: f.imperative_sg,
-    });
-    return t ? { conjugation: t } : null;
-  }
-  if (pos === 'adjective' || pos === 'adverb') {
-    const t = buildAdjectiveComparison(wordDe, f.comparative, f.superlative);
-    return t ? { comparison: t } : null;
-  }
-  return null;
-}
-
-// A tappable German word/phrase pill that saves to the dictionary on tap.
 function SaveChip({ text, gloss, className, label, saved, onSave }) {
   const t = clean(text);
   if (!t) return null;
@@ -996,9 +783,17 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
     resolveNumber(item) === 'pl'
     || (_resolvedArt
         && !clean(serverGt.declension.rows?.[0]?.singular).toLowerCase().startsWith(_resolvedArt + ' '))));
-  const gt = (serverGt && !_serverDeclBad && (serverGt.declension || serverGt.conjugation || serverGt.comparison))
-    ? serverGt : buildGrammarTablesJS(item);
+  // Только то, что пришло с сервера из справочника. Отброшенная таблица (заголовок —
+  // форма множественного, или артикль спорит с родом) ничем не заменяется: показать
+  // нечего — значит показываем честную строку ниже, а не считаем сами.
+  const gt = (serverGt && !_serverDeclBad
+    && (serverGt.declension || serverGt.conjugation || serverGt.comparison))
+    ? serverGt : null;
   const hasTables = !!(gt && (gt.declension || gt.conjugation || gt.comparison));
+  // Кому таблица положена по части речи: существительному, глаголу, прилагательному.
+  // Наречию, предлогу и союзу склонять нечего — им строка «уточняем» не нужна.
+  const needsTables = ['noun', 'verb', 'adjective'].includes(
+    clean(item.part_of_speech).toLowerCase());
   const government = governmentList(item);
   const collocations = collocationList(item);
   const examples = collectExamples(item);
@@ -1153,7 +948,23 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
         <div className="dq-block">
           <GrammarTables tables={gt} tablesOpen={tablesOpen} />
         </div>
-      ) : grammar.length > 0 && (
+      ) : null}
+
+      {/* Таблицы нет — говорим об этом словами, а не оставляем пустое место молча.
+          Раньше здесь дорисовывалась выдуманная таблица; теперь человек видит, что
+          формы ещё не готовы, и знает, что они появятся сами. Так пустота лечится
+          за ночь, а не живёт неверными формами в голове ученика. */}
+      {!hasTables && needsTables ? (
+        <div className="dq-block">
+          <strong>Формы</strong>
+          <p className="dq-muted dq-forms-pending">
+            Уточняем формы этого слова по справочнику — появятся в ближайшую ночь.
+            Мы не показываем формы, в которых не уверены.
+          </p>
+        </div>
+      ) : null}
+
+      {!hasTables && grammar.length > 0 && (
         <div className="dq-block">
           <strong>Грамматика</strong>
           <div className="dq-grammar">

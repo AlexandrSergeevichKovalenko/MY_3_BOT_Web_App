@@ -1692,3 +1692,11 @@ html[data-scheme="light"] .dq-gt > summary,
 .dq-live-ex-de { font-size: 15px; font-weight: 650; color: var(--dmps-text-title, #f1f5f9); }
 .dq-live-ex-ru { font-size: 13.5px; color: var(--dmps-text-secondary, #cbd5e1); }
 .dq-live-ex-src { font-size: 11px; color: var(--dmps-text-muted, #94a3b8); opacity: 0.85; }
+
+/* «Формы уточняем» — на месте бывшей выдуманной таблицы. Спокойная строка, не
+   тревожная: человеку тут делать нечего, формы приедут сами ночью. */
+.dq-forms-pending {
+  margin: 6px 0 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
