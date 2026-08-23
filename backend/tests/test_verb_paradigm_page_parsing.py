@@ -26,11 +26,18 @@ ZEIGEN = [
     "2. Person Singular",
     "du zeigtest,", "veraltet:", "du zeigetest",
     "du zeigtest,", "veraltet:", "du zeigetest",
-    "du wurdest gezeigt", "du würdest gezeigt", "du warst gezeigt", "du wärest gezeigt",
+    "du wurdest gezeigt", "du würdest gezeigt", "du warst gezeigt",
+    "du wärest gezeigt,", "du wärst gezeigt",
+    # ⚠ ТРЕТЬЕ ЛИЦО УСТРОЕНО ИНАЧЕ: местоимение повторяется перед КАЖДЫМ вариантом,
+    # в том числе перед устаревшим. Первая версия правила пропускала подпись и одну
+    # следующую ячейку — и съедала местоимение вместо «zeigete». Я тогда написал
+    # фикстуру ПО ПАМЯТИ, без повторов, тест прошёл, а на боевом ответе третье лицо
+    # показывало «zeigete». Ячейки ниже сняты со страницы дословно.
     "3. Person Singular", "er/sie/es",
-    "zeigte,", "veraltet:", "zeigete",
-    "zeigte,", "veraltet:", "zeigete",
-    "wurde gezeigt", "würde gezeigt", "war gezeigt", "wäre gezeigt",
+    "zeigte,", "veraltet:", "er/sie/es", "zeigete",
+    "er/sie/es", "zeigte,", "veraltet:", "er/sie/es", "zeigete",
+    "er/sie/es", "wurde gezeigt", "er/sie/es", "würde gezeigt",
+    "er/sie/es", "war gezeigt", "er/sie/es", "wäre gezeigt",
     "1. Person Plural",
     "wir zeigten,", "veraltet:", "wir zeigeten",
     "wir zeigten,", "veraltet:", "wir zeigeten",
@@ -38,7 +45,8 @@ ZEIGEN = [
     "2. Person Plural",
     "ihr zeigtet,", "veraltet:", "ihr zeigetet",
     "ihr zeigtet,", "veraltet:", "ihr zeigetet",
-    "ihr wurdet gezeigt", "ihr würdet gezeigt", "ihr wart gezeigt", "ihr wäret gezeigt",
+    "ihr wurdet gezeigt", "ihr würdet gezeigt", "ihr wart gezeigt",
+    "ihr wäret gezeigt,", "ihr wärt gezeigt",
     "3. Person Plural",
     "sie zeigten,", "veraltet:", "sie zeigeten",
     "sie zeigten,", "veraltet:", "sie zeigeten",
@@ -48,7 +56,7 @@ ZEIGEN = [
     "Person", "Indikativ", "Konjunktiv I", "Indikativ", "Konjunktiv I",
     "1. Person Singular", "ich habe gezeigt", "ich habe gezeigt",
     "2. Person Singular", "du hast gezeigt", "du habest gezeigt",
-    "3. Person Singular", "er/sie/es", "hat gezeigt", "habe gezeigt",
+    "3. Person Singular", "er/sie/es", "hat gezeigt", "er/sie/es", "habe gezeigt",
     "1. Person Plural", "wir haben gezeigt", "wir haben gezeigt",
     "2. Person Plural", "ihr habt gezeigt", "ihr habet gezeigt",
     "3. Person Plural", "sie haben gezeigt", "sie haben gezeigt",
@@ -87,12 +95,19 @@ class TestПодписьЭтоНеФорма:
         assert forms == {"ich": "zeigte", "du": "zeigtest", "er/sie/es": "zeigte",
                          "wir": "zeigten", "ihr": "zeigtet", "sie/Sie": "zeigten"}
 
+    def test_третье_лицо_тоже_современное(self):
+        """Местоимение повторяется перед устаревшим вариантом — и правило чуть на этом
+        не сломалось молча: два лица из шести были верны, третье показывало «zeigete»."""
+        for column in (0, 1):
+            forms = _column_forms(ZEIGEN, 0, column=column)
+            assert forms["er/sie/es"] == "zeigte", f"столбец {column}: {forms}"
+
     def test_устаревший_вариант_не_побеждает_по_длине(self):
         """«zeigete» длиннее «zeigte», а правило берёт самый длинный вариант — оно
         спасает «ich dämme ein» от разговорного «ich dämm ein». Подпись «veraltet:»
         обязана вывести помеченный ею вариант из соревнования."""
-        forms = _column_forms(ZEIGEN, 0, column=0)
-        assert "zeigete" not in forms.values()
+        for column in (0, 1):
+            assert "zeigete" not in _column_forms(ZEIGEN, 0, column=column).values()
 
     def test_конъюнктив_не_съезжает_на_соседний_столбец(self):
         """Подпись стоит между столбцами, и если её просто пропустить, столбцы

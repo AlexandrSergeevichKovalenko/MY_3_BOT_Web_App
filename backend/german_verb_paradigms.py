@@ -231,8 +231,17 @@ def _column_forms(cells: list[str], start: int, *, column: int) -> dict[str, str
                 # Поэтому подпись и помеченный ею вариант проходят мимо, а слот
                 # варианта закрывается: дальше начинается СЛЕДУЮЩИЙ столбец.
                 cursor += 1
+                # Местоимение перед помеченной формой повторяется: в третьем лице
+                # напечатано «zeigte,» | «veraltet:» | «er/sie/es» | «zeigete». Первая
+                # версия правила пропускала подпись и ОДНУ следующую ячейку — и съедала
+                # местоимение вместо устаревшей формы, а «zeigete» уезжало в конъюнктив.
+                # Поймано 23.08.2026 на боевом ответе: первое и второе лицо были верны,
+                # а третье показывало «zeigete». Пропускаем местоимения, потом ровно
+                # одну форму — ту, к которой подпись и относится.
+                while cursor < limit and cells[cursor] in _PRONOUNS:
+                    cursor += 1
                 if (cursor < limit and cells[cursor] not in _PERSON_LABELS
-                        and cells[cursor] not in _PRONOUNS):
+                        and not _is_note(cells[cursor])):
                     cursor += 1
                 pending_variant = False
                 continue
