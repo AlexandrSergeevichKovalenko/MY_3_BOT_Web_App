@@ -99,14 +99,25 @@ class NightlyReconcileIsWiredTests(unittest.TestCase):
         self.assertTrue(hasattr(tts_scheduler, "run_tts_voice_reconcile_scheduler_job"))
 
     def test_disabled_reconcile_says_so_instead_of_reporting_a_clean_run(self):
-        """Выключенная сверка обязана отличаться от сверки, которая ничего не нашла."""
+        """Выключенная сверка обязана отличаться от сверки, которая ничего не нашла.
+
+        Запись события ПОДМЕНЯЕТСЯ: на машине разработчика лежат боевые креденшелы, и
+        первый прогон этого теста насыпал в живую таблицу наблюдений три строки от
+        несуществующего источника «test» (поймано 23.08.2026). Тест не имеет права
+        оставлять следы в боевых данных.
+        """
         import backend.backend_server as server
-        original = server.TTS_VOICE_RECONCILE_ENABLED
+        original_flag = server.TTS_VOICE_RECONCILE_ENABLED
+        original_record = server._record_tts_admin_monitor_event
+        recorded = []
         server.TTS_VOICE_RECONCILE_ENABLED = False
+        server._record_tts_admin_monitor_event = lambda *a, **kw: recorded.append((a, kw))
         try:
             result = server._reconcile_tts_voices(source="test")
         finally:
-            server.TTS_VOICE_RECONCILE_ENABLED = original
+            server.TTS_VOICE_RECONCILE_ENABLED = original_flag
+            server._record_tts_admin_monitor_event = original_record
+        self.assertTrue(recorded, "сверка обязана оставлять след о том, что она не работала")
         self.assertTrue(result.get("skipped"))
         self.assertEqual(result.get("reason"), "disabled")
         self.assertNotIn("found", result)
