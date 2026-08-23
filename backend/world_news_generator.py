@@ -135,7 +135,12 @@ WORLD_NEWS_PREF_MIN_SECONDS = _env_int("WORLD_NEWS_PREF_MIN_SECONDS", 300)
 WORLD_NEWS_PREF_MAX_SECONDS = _env_int("WORLD_NEWS_PREF_MAX_SECONDS", 420)
 WORLD_NEWS_CANDIDATES = _env_int("WORLD_NEWS_CANDIDATES", 20)
 WORLD_NEWS_MIN_TRANSCRIPT_CHARS = _env_int("WORLD_NEWS_MIN_TRANSCRIPT_CHARS", 300)
-WORLD_NEWS_MAX_TRANSCRIPT_CHARS = _env_int("WORLD_NEWS_MAX_TRANSCRIPT_CHARS", 8000)
+# Сколько текста субтитров уходит модели. Замер 23.08.2026: у 14-минутной новости субтитры
+# занимают 14611 символов, а порог стоял 8000 — модель НЕ ВИДЕЛА 46% ролика. Владелец
+# увидел это как «очень много интересных оборотов осталось без внимания»: они там были, но
+# их никто не читал. Порог поднят так, чтобы ролик любой допустимой длины (до 15 минут)
+# доходил целиком; окно модели это выдерживает с большим запасом.
+WORLD_NEWS_MAX_TRANSCRIPT_CHARS = _env_int("WORLD_NEWS_MAX_TRANSCRIPT_CHARS", 32000)
 # Wall-clock budget for the whole candidate sweep. Each transcript fetch has retries but NO hard
 # socket timeout, so a blocked IP (see the 2026-07-10 datacenter-block incident) could make the
 # loop crawl for many minutes. Cap it: once the budget is spent we stop trying more candidates and
@@ -773,7 +778,15 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
    heisst — benutz den Namen GAR NICHT, weder in den Thesen noch in den Fragen. Einen
    falschen Namen liest der Nutzer als richtigen.
 
-2) "phrases": 12–18 SPRACHEINHEITEN aus dem Transkript.
+2) "phrases": ALLE SPRACHEINHEITEN dieser Meldung, die dem Lernenden etwas geben.
+
+   ES GIBT KEINE ZIELZAHL. Das ist eine SPRACH-App: hier wird erklärt, was erklärt werden
+   muss. Findest du 25 lohnende Einheiten — nimm 25. Findest du 8 — nimm 8. Was du
+   auslässt, erfährt der Nutzer nie: er sieht nur deine Karten, das Video schaut er
+   danach. Eine nützliche Wendung wegzulassen kostet ihn mehr, als eine mittelmässige
+   mitzunehmen.
+   Geh das Transkript von ANFANG BIS ENDE durch — auch die zweite Hälfte. Nimm alles,
+   was ein Lernender auf B1–B2 nicht sicher beherrscht und wiederverwenden kann.
 
    WAS EINE SPRACHEINHEIT IST: ein Wort oder eine feste Wendung, die dem Lernenden in
    einer ANDEREN Nachricht und in einem ANDEREN Gespräch wiederbegegnet.

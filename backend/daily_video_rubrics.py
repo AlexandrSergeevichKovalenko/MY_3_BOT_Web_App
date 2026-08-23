@@ -307,7 +307,9 @@ NEWS_PROFILE = RubricProfile(
     pref_min_seconds=300,
     pref_max_seconds=420,
     min_phrases=6,
-    max_phrases=18,
+    # Потолок, а не цель. Стоял 18 — и обрезал богатый ролик ровно так же, как обрезанный
+    # транскрипт: полезное выбрасывалось молча (замер 23.08.2026).
+    max_phrases=40,
     archive_pages=1,
     env_channels_var="WORLD_NEWS_CHANNEL_IDS",
 )
@@ -352,7 +354,7 @@ STANDUP_PROFILE = RubricProfile(
     # четырёх, это не материал для рубрики, и генератор честно берёт следующий ролик,
     # а не показывает пустой разбор. max_phrases бережёт экран.
     min_phrases=4,
-    max_phrases=18,
+    max_phrases=40,
     archive_pages=8,  # до 400 роликов на канал — ровно та глубина, что измерена
     llm_system=_STANDUP_LLM_SYSTEM,
     llm_user_tmpl=_STANDUP_LLM_USER_TMPL,

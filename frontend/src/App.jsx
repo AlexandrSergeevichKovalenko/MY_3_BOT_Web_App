@@ -37984,12 +37984,7 @@ function AppInner() {
                                 ему предлагают сохранить. Слово — смысл карточки. */}
                             <div className="worldnews-card-body">
                             {phrase.translation_ru && (
-                              <div className="worldnews-card-ru">
-                                {phrase.quote_de && (
-                                  <span className="worldnews-card-ru-label">{tr('Здесь: ', 'Hier: ')}</span>
-                                )}
-                                {phrase.translation_ru}
-                              </div>
+                              <div className="worldnews-card-ru">{phrase.translation_ru}</div>
                             )}
                             {/* Слово в контексте: дословная строка из субтитров этого ролика.
                                 Без неё сленг остаётся сухим переводом, а он у сленга неверный. */}

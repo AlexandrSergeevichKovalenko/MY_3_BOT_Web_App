@@ -1376,3 +1376,40 @@ def test_slang_is_not_judged_by_a_reference(monkeypatch):
                         lambda de, allow_network=False: ("не слово", ""))
     assert Q.word_not_german({"de": "Digger", "register_ru": "молодёжное"}) == ""
     assert Q.word_not_german({"de": "Abschiebu"}) != "", "в новостях мусор выбрасывается"
+
+
+# ── Модель обязана видеть ролик ЦЕЛИКОМ (23.08.2026) ─────────────────────────
+
+def test_the_model_sees_the_whole_video_not_half_of_it():
+    """Главная находка 23.08.2026. Владелец: «очень много интересных оборотов осталось без
+    внимания». Замер: у 14-минутной новости субтитры занимают 14611 символов, а порог стоял
+    8000 — модель НЕ ВИДЕЛА 46% ролика. Обороты там были, но их никто не читал.
+
+    Порог обязан покрывать ролик любой допустимой длины: рубрика берёт видео до 15 минут,
+    это примерно 16 тысяч символов субтитров."""
+    from backend.world_news_generator import (
+        WORLD_NEWS_MAX_TRANSCRIPT_CHARS as CAP, WORLD_NEWS_MAX_SECONDS as MAX_SEC,
+    )
+
+    # ~1000 символов субтитров на минуту речи — замер на живых роликах 22–23.08.2026.
+    chars_needed = (MAX_SEC / 60) * 1000
+    assert CAP >= chars_needed, (
+        f"при ролике до {MAX_SEC // 60} минут нужно ≥{int(chars_needed)} символов, стоит {CAP}"
+    )
+
+
+def test_neither_rubric_has_a_target_number_of_cards():
+    """Это языковая программа: объясняется то, что нужно объяснить. Нашлось 25 годных
+    оборотов — берём 25. Потолок остаётся потолком, но не должен резать богатый ролик так
+    же молча, как резал обрезанный транскрипт."""
+    from backend.world_news_generator import _LLM_SYSTEM
+
+    assert "KEINE ZIELZAHL" in _LLM_SYSTEM, "у новостей плана по количеству быть не должно"
+    assert "KEINE ZIELZAHL" in STANDUP_PROFILE.llm_system
+    assert NEWS_PROFILE.max_phrases >= 40 and STANDUP_PROFILE.max_phrases >= 40
+
+
+def test_translation_needs_no_label_on_the_card():
+    """Владелец: «нахуя слово „здесь“?» На карточке один перевод — подписывать его нечем."""
+    jsx = open("frontend/src/App.jsx", encoding="utf-8").read()
+    assert "worldnews-card-ru-label" not in jsx
