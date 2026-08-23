@@ -83,7 +83,15 @@ const TTS_SILENT_CLIP = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAR
 // a clean, human fallback instead — a user should see "что-то не загрузилось", not our plumbing.
 const TECHNICAL_ERROR_RE = /internal server error|connection to server|pgbouncer|railway\.internal|password authentication|psycopg|operationalerror|sqlstate|traceback|could not connect|econnrefused|connection refused|bad gateway|gateway time|service unavailable|server closed the connection|remaining connection slots|too many connections/i;
 function looksLikeTechnicalError(text) {
-  return TECHNICAL_ERROR_RE.test(String(text || ''));
+  const raw = String(text || '').trim();
+  if (TECHNICAL_ERROR_RE.test(raw)) return true;
+  // ТЕЛО ОТВЕТА СЕРВЕРА, ПОКАЗАННОЕ ЦЕЛИКОМ. Владелец 23.08.2026 прислал экран входа, где
+  // вместо человеческого текста стояло {"error":"Telegram login hash invalid"} — это тело
+  // ответа, попавшее на экран как есть. Список технических слов такое не ловил: там нет
+  // ни «traceback», ни «pgbouncer», просто английская строка в фигурных скобках. Ловим по
+  // ФОРМЕ, а не по словам: JSON на экране — всегда наша недоработка, а не сообщение человеку.
+  if (raw.startsWith('{') && raw.includes('"')) return true;
+  return false;
 }
 
 // Generic embedded deep card for a breakdown `item` (a lookup result or a saved
@@ -9832,6 +9840,35 @@ function AppInner() {
     setWebappError('');
   };
 
+  // Что показать человеку на неудачном входе. Каждый ответ сервера переведён в действие:
+  // «подпись не сошлась» человеку ничего не говорит, а «попробуйте ещё раз, а если не
+  // выйдет — откройте из бота» говорит.
+  const browserAuthMessage = useCallback((status, code) => {
+    const c = String(code || '').toLowerCase();
+    if (c.includes('expired')) {
+      return tr(
+        'Вход просрочен — Telegram выдаёт его на несколько минут. Нажмите кнопку ещё раз.',
+        'Die Anmeldung ist abgelaufen — Telegram gibt sie nur für wenige Minuten aus. Bitte erneut tippen.'
+      );
+    }
+    if (c.includes('hash') || c.includes('invalid')) {
+      return tr(
+        'Telegram не подтвердил вход. Попробуйте ещё раз, а если не выйдет — откройте приложение из чата с ботом.',
+        'Telegram hat die Anmeldung nicht bestätigt. Versuch es noch einmal — oder öffne die App aus dem Chat mit dem Bot.'
+      );
+    }
+    if (status === 403) {
+      return tr(
+        'Доступ к приложению закрыт. Напишите боту — откроем.',
+        'Der Zugang ist gesperrt. Schreib dem Bot — wir schalten ihn frei.'
+      );
+    }
+    return tr(
+      'Войти пока не получилось. Попробуйте ещё раз через минуту.',
+      'Die Anmeldung hat noch nicht geklappt. Versuch es in einer Minute noch einmal.'
+    );
+  }, [tr]);
+
   const handleBrowserTelegramAuth = async (authUser) => {
     if (!authUser || typeof authUser !== 'object') {
       setBrowserAuthError(tr('Не удалось получить данные Telegram Login.', 'Telegram-Login-Daten konnten nicht gelesen werden.'));
@@ -9847,7 +9884,14 @@ function AppInner() {
         body: JSON.stringify(authUser),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        // Сырое тело ответа наружу НЕ отдаём: на экране входа человек видел
+        // {"error":"Telegram login hash invalid"}. Разбираем ответ и говорим словами,
+        // что делать; техническую строку оставляем себе в консоль.
+        const raw = await response.text();
+        try { console.warn('[browser login failed]', response.status, raw); } catch (_e) { /* ignore */ }
+        let code = '';
+        try { code = String((JSON.parse(raw) || {}).error || ''); } catch (_e) { code = ''; }
+        throw new Error(browserAuthMessage(response.status, code));
       }
       const data = await response.json();
       if (!isAsyncGuardCurrent(browserAuthRequestIdRef, requestId)) {

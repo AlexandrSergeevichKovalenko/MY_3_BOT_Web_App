@@ -582,6 +582,11 @@ function installDictTokenAuthShim() {
       let u;
       try { u = new URL(input, window.location.origin); } catch (_e) { return origFetch(input, init); }
       if (u.origin !== window.location.origin || !u.pathname.startsWith('/api/')) return origFetch(input, init);
+      // РУКОПОЖАТИЕ ВХОДА НЕ ТРОГАЕМ. Тело запроса /api/web/auth/* подписано Telegram, и
+      // любое наше добавление ломает подпись: дописанное поле `aqt` попадало в строку
+      // подписи на сервере, и вход через виджет не работал НИКОГДА (23.08.2026). Токен
+      // здесь и не нужен — человек как раз входит, чтобы его получить.
+      if (u.pathname.startsWith('/api/web/auth/')) return origFetch(input, init);
       const opts = { ...(init || {}) };
       const method = String(opts.method || 'GET').toUpperCase();
       const headers = new Headers(opts.headers || {});

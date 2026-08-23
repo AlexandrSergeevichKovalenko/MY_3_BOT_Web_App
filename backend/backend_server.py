@@ -4633,14 +4633,43 @@ def _parse_telegram_init_data(init_data: str) -> dict:
     }
 
 
+# Поля, которые подписывает виджет Telegram Login. Список закрытый и взят из документации
+# Telegram: id, first_name, last_name, username, photo_url, auth_date.
+_TELEGRAM_LOGIN_SIGNED_FIELDS = frozenset({
+    "id", "first_name", "last_name", "username", "photo_url", "auth_date",
+})
+
+
 def _telegram_login_hash_is_valid(payload: dict) -> bool:
+    """Подпись считается ТОЛЬКО по полям, которые подписал Telegram.
+
+    Раньше в строку подписи шло ВСЁ, что пришло в теле запроса, — и вход через виджет не
+    работал НИКОГДА. Причина в нашем же коде: у автономного приложения есть перехватчик
+    запросов, который дописывает свой токен полем `aqt` в тело каждого POST к /api/
+    (frontend/src/main.jsx). Дописанное поле попадало в строку подписи, а подпись Telegram
+    его не покрывает — хеш не сходился ни разу. Владелец увидел это 23.08.2026, когда
+    впервые дошёл до экрана входа: до того приложение держало сохранённый пропуск и логин
+    не требовался.
+
+    Лишние поля теперь просто не участвуют в проверке. Это не послабление: подпись
+    по-прежнему обязана сойтись по всем полям Telegram, и подделать её нельзя. Зато
+    добавка чего угодно снаружи больше не ломает вход.
+    """
     received_hash = str(payload.get("hash") or "").strip()
     if not received_hash:
         return False
     telegram_bot_token = _ensure_telegram_bot_token()
+    unexpected = sorted(
+        str(k) for k in payload.keys()
+        if str(k) != "hash" and str(k) not in _TELEGRAM_LOGIN_SIGNED_FIELDS
+    )
+    if unexpected:
+        # Не ошибка, но знать надо: значит кто-то ещё дописывает поля в тело входа.
+        logging.info("вход через Telegram: в теле лишние поля %s — в подписи не учитываю",
+                     unexpected)
     data = {}
     for key, value in payload.items():
-        if key == "hash":
+        if key == "hash" or str(key) not in _TELEGRAM_LOGIN_SIGNED_FIELDS:
             continue
         if value is None:
             continue
