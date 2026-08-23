@@ -175,3 +175,55 @@ def test_a_broken_rule_is_reported_and_not_counted_as_clean(monkeypatch):
     result = integrity.run()
     assert result["failed"], "падение правила потерялось"
     assert "подставное правило" in result["failed"]
+
+
+# ── В отчёте не бывает строки без действия ────────────────────────────────────
+#
+# Владелец 23.08.2026: «я иду по улице с телефоном, приходит такое сообщение — мои
+# действия какие? Я должен какой-то вывод по ним сделать или что это значит?»
+#
+# Число, на которое нельзя нажать, — не работа, а перекладывание работы на владельца.
+# Поэтому у каждой строки есть хозяин: её чинит ночь (смотреть не надо) или нужен
+# человек (и сказано, где кнопка). Третьего состояния «просто посмотри» нет.
+
+
+def test_у_каждого_правила_назван_хозяин():
+    """Правило без хозяина — это незакрытая моя задача, а не строка владельцу."""
+    listed = {title for title, _rule in integrity.RULES}
+    named = set(integrity.CLOSED_BY)
+    assert listed <= named, f"без хозяина: {sorted(listed - named)}"
+    assert named <= listed, f"хозяин назван у несуществующего правила: {sorted(named - listed)}"
+
+
+def test_хозяин_бывает_только_двух_видов():
+    for title, (who, how) in integrity.CLOSED_BY.items():
+        assert who in (integrity.FIXES_ITSELF, integrity.NEEDS_OWNER), title
+        assert how.strip(), f"не сказано, чем закрывается: {title}"
+
+
+def _report(monkeypatch, broken):
+    monkeypatch.setattr(integrity, "run", lambda: {
+        "total": sum(broken.values()), "broken": broken, "samples": {}, "failed": {}})
+    return integrity.report_lines()
+
+
+def test_самочинящееся_отделено_от_того_что_ждёт_человека(monkeypatch):
+    lines = _report(monkeypatch, {"глагол без источника спряжения": 33,
+                                  "немецкий текст пишется мимо двери": 2})
+    text = "\n".join(lines)
+    assert "Чинится само, смотреть не надо" in text
+    assert "Нужен человек:" in text
+    verb_line = next(l for l in lines if "спряжения" in l)
+    assert "ночь спрашивает справочник" in verb_line, "не сказано, кто это закроет"
+
+
+def test_чистый_словарь_не_печатает_пустых_разделов(monkeypatch):
+    lines = _report(monkeypatch, {})
+    assert lines[-1].strip() == "всё чисто"
+    assert not any("Нужен человек" in line for line in lines)
+
+
+def test_незнакомое_правило_считается_моей_недоделкой(monkeypatch):
+    """Появилось правило, а хозяина ему не назвали — это НЕ строка владельцу."""
+    lines = _report(monkeypatch, {"какое-то новое правило": 5})
+    assert any("это моя задача" in line for line in lines)

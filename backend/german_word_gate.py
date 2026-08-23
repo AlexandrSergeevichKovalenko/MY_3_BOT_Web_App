@@ -202,7 +202,38 @@ def _reference_says_about_all(words: list[str]) -> dict | None:
         if old_spelling:
             out[name] = ["__устаревшее__" + old_spelling[0].strip()]
             continue
-        out[name] = re.findall(r"\{\{Wortart\|([^|}]+)", text)
+        # ЗАГОЛОВОК ОКАЗАЛСЯ ФОРМОЙ. У «abgezogen», «hätte», «zurückgetreten» страница
+        # ЕСТЬ, но помечена «Partizip II» / «Konjugierte Form» — своей словарной статьи
+        # у них нет. Раньше дверь читала «страница есть» как «слово настоящее», ставила
+        # «подтверждено», и форма оставалась заголовком навсегда: замер 23.08.2026 — 21
+        # такая запись среди помеченных глаголом. Настоящее слово напечатано на той же
+        # странице шаблоном {{Grundformverweis}}, поэтому чинится источником.
+        #
+        # Здесь же закрыт второй дефект того же дня: части речи читались со ВСЕЙ страницы.
+        # У «slay» немецкого раздела нет вовсе, есть английский — и дверь отвечала
+        # «подтверждено, глагол». У «aspettiamo» так же подтверждался итальянский раздел.
+        # Немецкий заголовок подтверждает только НЕМЕЦКИЙ раздел.
+        from backend.german_form_headword import german_section, headword_kind
+        if not german_section(text):
+            # Страница есть, а НЕМЕЦКОГО раздела на ней нет: «slay» лежит английским,
+            # «aspettiamo» итальянским. Для немецкого заголовка это не подтверждение —
+            # ответа просто нет, и слово идёт дальше по каскаду (DWDS, модель), где
+            # чужой язык будет назван вслух. 23.08.2026: до этой строки дверь отвечала
+            # «подтверждено, глагол» на английское «slay».
+            continue
+        seen = headword_kind(text)
+        if seen["kind"] == "form" and len(seen["bases"]) == 1:
+            # Через «|» едет часть речи базового слова: у причастия и личной формы это
+            # всегда глагол. Без неё «umgeworfen» переименовывалось в «umwerfen», но
+            # оставалось подписано прилагательным — подпись от прежнего заголовка.
+            out[name] = [f"__форма__{seen['pos']}|{seen['bases'][0]}"]
+            continue
+        if seen["kind"] == "form":
+            # Двух базовых слов достаточно, чтобы промолчать: у «rast» это «rasten»
+            # (отдыхать) и «rasen» (мчаться), и выбрать за человека мы не вправе.
+            out[name] = ["__форма_неясная__"]
+            continue
+        out[name] = re.findall(r"\{\{Wortart\|([^|}]+)", german_section(text))
     return out
 
 
@@ -224,10 +255,11 @@ def _second_reference_says(words: list[str]) -> dict[str, str] | None:
         return None
 
 
-_POS_BY_WORTART = {
-    "Substantiv": "noun", "Verb": "verb", "Adjektiv": "adjective", "Adverb": "adverb",
-    "Präposition": "preposition", "Konjunktion": "conjunction", "Pronomen": "pronoun",
-}
+# Части речи берутся из ОДНОЙ таблицы на весь проект — backend/german_form_headword.py.
+# Своя копия здесь знала шесть разделов из двадцати, и «heute» (Temporaladverb),
+# «wehe» (Interjektion), «wohingegen» (Subjunktion) возвращались без части речи вовсе,
+# хотя справочник называет её прямо.
+from backend.german_form_headword import POS_BY_WORTART as _POS_BY_WORTART
 
 
 def check_word(word: str, *, pos_hint: str = "", allow_network: bool = True,
@@ -289,10 +321,22 @@ def _decide(asked: str, *, pos_hint: str, allow_network: bool, allow_model: bool
     text = german_dictionary_headword(text) or text
     repaired = text != asked
 
-    known, where, known_pos = _known_by_our_data(text)
-    if known:
-        return _finish(text, REPAIRED if repaired else CONFIRMED, known_pos or pos_hint,
-                       where, asked)
+    # ДЕШЁВАЯ ПРОВЕРКА НЕ ПЕРЕБИВАЕТ НАПЕЧАТАННУЮ СТРАНИЦУ. Справочник родов знает
+    # артикль — и этим объявляет слово существительным. Но в немецком заглавная буква
+    # несёт смысл: «heute» это наречие «сегодня», а «das Heute» — редкое существительное;
+    # «rast» это форма глагола, «die Rast» — привал; «wehe» это междометие, «die Wehe» —
+    # схватка. Дешёвый путь стоял ПЕРВЫМ и объявлял эти три слова существительными,
+    # переписывая заголовок с заглавной: человек получал чужое слово (23.08.2026).
+    #
+    # Правило: у слова со СТРОЧНОЙ сначала спрашивается страница. Своей статьи у
+    # строчного написания нет — справочник родов снова в силе, и «brücke» по-прежнему
+    # чинится в «Brücke».
+    cheap_may_answer = text[:1].isupper() or not allow_network
+    if cheap_may_answer:
+        known, where, known_pos = _known_by_our_data(text)
+        if known:
+            return _finish(text, REPAIRED if repaired else CONFIRMED, known_pos or pos_hint,
+                           where, asked)
 
     if not allow_network:
         return _finish(text, UNCONFIRMED, pos_hint, "не спрашивали справочник", asked)
@@ -313,6 +357,18 @@ def _decide(asked: str, *, pos_hint: str, allow_network: bool, allow_model: bool
         if kinds and str(kinds[0]).startswith("__устаревшее__"):
             modern = modern or str(kinds[0])[len("__устаревшее__"):]
             continue
+        if kinds and str(kinds[0]) == "__форма_неясная__":
+            # Форма, но словарных слов несколько. Это не наша неполнота, а настоящая
+            # двусмысленность немецкого — она уходит человеку, а не решается за него.
+            return _finish(text, UNCONFIRMED, pos_hint,
+                           "справочник: это форма, но словарных слов несколько", asked)
+        if kinds and str(kinds[0]).startswith("__форма__"):
+            base_pos, _, base = str(kinds[0])[len("__форма__"):].partition("|")
+            # Настоящее слово названо страницей. Дальше его подхватывает ночной проход:
+            # если такое слово в словаре уже есть — пара уходит на слияние
+            # (scripts/merge_form_units_into_lemma.py), если нет — чинится заголовок.
+            return _finish(base, REPAIRED, base_pos or pos_hint,
+                           "справочник (заголовок был формой слова)", asked)
         pos = next((_POS_BY_WORTART[k] for k in kinds if k in _POS_BY_WORTART), pos_hint)
         if candidate == text:
             return _finish(text, REPAIRED if repaired else CONFIRMED, pos, "справочник", asked)
@@ -330,6 +386,13 @@ def _decide(asked: str, *, pos_hint: str, allow_network: bool, allow_model: bool
     #
     # Он спрашивается ПОСЛЕ Wiktionary и ДО модели: печатный источник всегда весомее
     # ответа модели, и слово, подтверждённое словарём, к человеку не попадает вовсе.
+    # Страница строчного написания ничего не дала — дешёвый путь снова в силе.
+    if not cheap_may_answer:
+        known, where, known_pos = _known_by_our_data(text)
+        if known:
+            return _finish(text, REPAIRED if repaired else CONFIRMED, known_pos or pos_hint,
+                           where, asked)
+
     second = _second_reference_says(candidates)
     if second:
         found = next(iter(second))
@@ -400,7 +463,7 @@ def _finish(text: str, status: str, pos: str, source: str, asked: str) -> dict:
 
 
 # ── Ночной проход: дорогая половина двери ────────────────────────────────────
-def warm_word_gate(*, limit: int = 150) -> dict:
+def warm_word_gate(*, limit: int = 150, words: list[str] | None = None) -> dict:
     """Прогнать через полную дверь слова, которых она ещё не видела.
 
     На сохранении работает только дешёвая половина — человек не должен ждать справочник,
@@ -420,23 +483,37 @@ def warm_word_gate(*, limit: int = 150) -> dict:
     ensure_word_check_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT u.id, u.lemma, COALESCE(u.pos, '')
-                  FROM bt_3_lex_units u
-                 WHERE u.lang = 'de' AND u.kind = 'word'
-                   AND u.lemma IS NOT NULL AND position(' ' in u.lemma) = 0
-                   AND NOT EXISTS (SELECT 1 FROM bt_3_word_check w WHERE w.asked = u.lemma)
-                 ORDER BY u.updated_at DESC NULLS LAST
-                 LIMIT %s;
-                """,
-                (int(limit),),
-            )
-            words = [(int(a), str(b), str(c)) for a, b, c in (cur.fetchall() or [])]
+            if words:
+                # Названный список: тем же ночным путём, но по заданным словам. Нужен,
+                # когда класс уже найден и ждать очереди по 150 слов за ночь незачем.
+                cur.execute(
+                    """
+                    SELECT u.id, u.lemma, COALESCE(u.pos, '')
+                      FROM bt_3_lex_units u
+                     WHERE u.lang = 'de' AND lower(u.lemma) = ANY(%s)
+                     ORDER BY u.lemma;
+                    """,
+                    ([str(w or "").strip().lower() for w in words],),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT u.id, u.lemma, COALESCE(u.pos, '')
+                      FROM bt_3_lex_units u
+                     WHERE u.lang = 'de' AND u.kind = 'word'
+                       AND u.lemma IS NOT NULL AND position(' ' in u.lemma) = 0
+                       AND NOT EXISTS (SELECT 1 FROM bt_3_word_check w
+                                        WHERE w.asked = u.lemma)
+                     ORDER BY u.updated_at DESC NULLS LAST
+                     LIMIT %s;
+                    """,
+                    (int(limit),),
+                )
+            rows = [(int(a), str(b), str(c)) for a, b, c in (cur.fetchall() or [])]
 
-    stats = {"смотрели": len(words), "подтверждено": 0, "исправлено": 0,
+    stats = {"смотрели": len(rows), "подтверждено": 0, "исправлено": 0,
              "не подтверждено": 0, "не слово": 0, "дубль": 0, "справочник молчал": 0}
-    for unit_id, lemma, pos in words:
+    for unit_id, lemma, pos in rows:
         verdict = check_word(lemma, pos_hint=pos)
         status = verdict.get("status") or ""
         if verdict.get("source") == "справочник молчал":
@@ -459,8 +536,14 @@ def warm_word_gate(*, limit: int = 150) -> dict:
                                ON CONFLICT (word) DO UPDATE SET reason=EXCLUDED.reason;""",
                             (lemma, pos, f"дубль формы: настоящее слово «{fixed}», нужно слияние"))
                     else:
-                        cur.execute("UPDATE bt_3_lex_units SET lemma=%s, lemma_key=lower(%s), "
-                                    "updated_at=NOW() WHERE id=%s", (fixed, fixed, unit_id))
+                        # Через retitle_unit, а не UPDATE вручную. Ручной запрос менял
+                        # `lemma` и ключ, но НЕ `display` — а человек видит именно
+                        # display. Поймано 23.08.2026 на «Hätte»: ключ стал «haben»,
+                        # а на карточке осталось «Hätte», то есть слово разъехалось
+                        # само с собой. retitle_unit меняет всё сразу и заводит старое
+                        # написание дверью поиска, чтобы человек нашёл слово по-старому.
+                        from backend.lex_units import retitle_unit
+                        retitle_unit(cur, unit_id, fixed)
                         logging.info("дверь слова: заголовок исправлен ночью %r → %r",
                                      lemma, fixed)
                 conn.commit()

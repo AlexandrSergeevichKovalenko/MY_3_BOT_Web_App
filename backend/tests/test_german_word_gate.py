@@ -243,3 +243,107 @@ def test_модуль_двери_импортирует_всё_что_испол
     assert not обязательные, (
         f"дверь использует, но не импортирует: {sorted(обязательные)} — "
         "в проде это NameError на живом запросе")
+
+
+# ── Заголовок оказался ФОРМОЙ слова ───────────────────────────────────────────
+#
+# Владелец 23.08.2026, разбирая глаголы без спряжения: «конечно нужно поменять часть речи
+# по источнику в этих 30 словах, которые не глаголы». Оказалось, что у 21 из них беды не
+# в подписи, а в самом заголовке: «abgezogen», «hätte», «zurückgetreten» — не слова, а
+# формы, своей словарной статьи у них нет. Дверь читала «страница есть» как «слово
+# настоящее» и оставляла форму заголовком навсегда.
+
+
+def test_заголовок_форма_чинится_на_словарное_слово(monkeypatch):
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"abgezogen": ["__форма__verb|abziehen"]}))
+    verdict = G.check_word("abgezogen")
+    assert verdict["status"] == G.REPAIRED
+    assert verdict["text"] == "abziehen"
+    assert "формой слова" in verdict["source"]
+
+
+def test_часть_речи_берётся_у_базового_слова(monkeypatch):
+    """«umgeworfen» лежало прилагательным. После починки заголовка на «umwerfen» подпись
+    обязана стать глаголом: причастие бывает только у глагола, и это печатный факт,
+    а не наш вывод. Раньше подпись оставалась от прежнего заголовка."""
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"umgeworfen": ["__форма__verb|umwerfen"]}))
+    verdict = G.check_word("umgeworfen", pos_hint="adjective")
+    assert verdict["text"] == "umwerfen"
+    assert verdict["pos"] == "verb"
+
+
+def test_у_склонённой_формы_часть_речи_не_придумывается(monkeypatch):
+    """«Deklinierte Form» бывает и у существительного, и у прилагательного — молчим."""
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"laueren": ["__форма__|lau"]}))
+    verdict = G.check_word("laueren")
+    assert verdict["text"] == "lau"
+    assert verdict["pos"] == ""
+
+
+def test_два_словарных_слова_у_формы_решает_человек(monkeypatch):
+    """«rast» — это и «rasten» (отдыхать), и «rasen» (мчаться). Выбирать за человека
+    нельзя: это не наша неполнота, а настоящая двусмысленность немецкого."""
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"rast": ["__форма_неясная__"]}))
+    monkeypatch.setattr("backend.german_reference_forms.word_exists_by_model",
+                        lambda word: None)
+    verdict = G.check_word("rast")
+    assert verdict["status"] == G.UNCONFIRMED
+    assert verdict["text"] == "rast", "заголовок не тронут"
+
+
+def test_настоящее_слово_с_разделом_формы_рядом_остаётся_словом(monkeypatch):
+    """У «gefeiert» на странице И «Adjektiv», И «Partizip II». Своя статья есть —
+    значит заголовок стоит в словаре по праву."""
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"gefeiert": ["Adjektiv", "Partizip II"]}))
+    verdict = G.check_word("gefeiert")
+    assert verdict["status"] == G.CONFIRMED
+    assert verdict["pos"] == "adjective"
+
+
+# ── Дешёвая проверка не перебивает напечатанную страницу ──────────────────────
+#
+# Справочник родов знает артикль — и этим объявляет слово существительным. Но заглавная
+# буква в немецком несёт смысл: «heute» это наречие, «das Heute» — редкое
+# существительное. Дешёвый путь стоял первым и переписывал заголовок с заглавной.
+
+
+def test_строчное_слово_со_своей_страницей_не_становится_существительным(monkeypatch):
+    monkeypatch.setattr(G, "_known_by_our_data",
+                        lambda word: (True, "справочник родов", "noun"))
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"heute": ["Temporaladverb"]}))
+    verdict = G.check_word("heute")
+    assert verdict["text"] == "heute", "наречие превратили в существительное «Heute»"
+    assert verdict["pos"] == "adverb"
+
+
+def test_строчное_существительное_по_прежнему_получает_заглавную(monkeypatch):
+    """Своей страницы у «brücke» нет — тогда справочник родов снова в силе."""
+    monkeypatch.setattr(G, "_known_by_our_data",
+                        lambda word: (True, "справочник родов", "noun"))
+    monkeypatch.setattr(G, "_reference_says_about_all", _reference({}))
+    verdict = G.check_word("brücke")
+    assert verdict["text"] == "Brücke"
+    assert verdict["pos"] == "noun"
+
+
+def test_без_сети_дешёвая_проверка_отвечает_как_раньше(monkeypatch):
+    monkeypatch.setattr(G, "_known_by_our_data",
+                        lambda word: (True, "справочник родов", "noun"))
+    verdict = G.check_word("brücke", allow_network=False, allow_model=False)
+    assert verdict["text"] == "Brücke"
+
+
+def test_части_речи_берутся_из_общей_таблицы():
+    """Своя копия таблицы знала шесть разделов из двадцати — «heute», «wehe»,
+    «wohingegen» возвращались вообще без части речи."""
+    from backend.german_form_headword import POS_BY_WORTART
+    assert G._POS_BY_WORTART is POS_BY_WORTART
+    assert POS_BY_WORTART["Temporaladverb"] == "adverb"
+    assert POS_BY_WORTART["Interjektion"] == "interjection"
+    assert POS_BY_WORTART["Subjunktion"] == "conjunction"
