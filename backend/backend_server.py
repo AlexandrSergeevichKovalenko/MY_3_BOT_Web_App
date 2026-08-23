@@ -1388,22 +1388,27 @@ TTS_PREWARM_OFFPEAK_START_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFP
 TTS_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_END_HOUR") or "7").strip())))
 TTS_PREWARM_ALLOW_DAYTIME = str(os.getenv("TTS_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
 TTS_ADMIN_DIGEST_ENABLED = str(os.getenv("TTS_ADMIN_DIGEST_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+# Сутки, а не полсуток: решение владельца 23.08.2026 — сводка приходит раз в день,
+# значит и считать она обязана ровно за прошедший день, иначе половина работы выпадет
+# из отчёта и «просили звук 40 раз» окажется вдвое меньше правды.
 TTS_ADMIN_DIGEST_WINDOW_MINUTES = max(
     15,
     min(
-        720,
+        1440,
         int(
             (
                 os.getenv("TTS_ADMIN_DIGEST_WINDOW_MINUTES")
                 or os.getenv("TTS_ADMIN_DIGEST_INTERVAL_MINUTES")
-                or "720"
+                or "1440"
             ).strip()
-            or "720"
+            or "1440"
         ),
     ),
 )
-TTS_ADMIN_DIGEST_MORNING_HOUR = max(0, min(23, int((os.getenv("TTS_ADMIN_DIGEST_MORNING_HOUR") or "7").strip() or "7")))
-TTS_ADMIN_DIGEST_EVENING_HOUR = max(0, min(23, int((os.getenv("TTS_ADMIN_DIGEST_EVENING_HOUR") or "19").strip() or "19")))
+# Час суточной отправки сводки. Утренняя и вечерняя точки убраны 23.08.2026 вместе с
+# переходом на одну отправку в день — константы не оставлены «на всякий случай», чтобы
+# никто потом не включил вечернюю рассылку, которую владелец отменил.
+TTS_ADMIN_DIGEST_HOUR = max(0, min(23, int((os.getenv("TTS_ADMIN_DIGEST_HOUR") or "9").strip() or "9")))
 TTS_ADMIN_DIGEST_MINUTE = max(0, min(59, int((os.getenv("TTS_ADMIN_DIGEST_MINUTE") or "0").strip() or "0")))
 TTS_ADMIN_ALERT_BURST_THRESHOLD = max(10, min(5000, int((os.getenv("TTS_ADMIN_ALERT_BURST_THRESHOLD") or "50").strip() or "50")))
 TTS_ADMIN_ALERT_BURST_WINDOW_MINUTES = max(1, min(120, int((os.getenv("TTS_ADMIN_ALERT_BURST_WINDOW_MINUTES") or "5").strip() or "5")))
@@ -23766,160 +23771,153 @@ def _maybe_send_reader_audio_budget_alert() -> None:
         logging.exception("❌ reader audio budget alert failed")
 
 
+def _get_tts_spend_window_usd(minutes: int) -> dict | None:
+    """Сколько денег ушло на озвучку за окно — ИЗ ВЕДОМОСТИ, а не нашим умножением.
+
+    Считать самим «символы × цена из переменной окружения» нельзя: голоса разных типов
+    стоят по-разному (Standard ~$4 за миллион знаков, Neural2 ~$16, книжный Chirp3-HD
+    ~$30), и одна цена на всех дала бы владельцу красивое, но выдуманное число. В
+    ведомости `bt_3_billing_events` у каждой строки своя цена, проставленная в момент
+    события, — это и есть источник истины по расходу.
+
+    Возвращает None, если прочитать ведомость не удалось. None и ноль — разные вещи:
+    ноль значит «не тратили», None значит «не знаем», и в письме это пишется словами.
+    """
+    safe_minutes = max(1, int(minutes or 1))
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(SUM(cost_amount), 0),
+                           COALESCE(SUM(units_value), 0),
+                           COUNT(*)
+                    FROM bt_3_billing_events
+                    WHERE provider LIKE 'google_tts%%'
+                      AND units_type = 'chars'
+                      AND event_time >= NOW() - (%s || ' minutes')::interval;
+                    """,
+                    (safe_minutes,),
+                )
+                row = cursor.fetchone() or (0, 0, 0)
+        return {"usd": float(row[0] or 0.0), "chars": int(row[1] or 0), "events": int(row[2] or 0)}
+    except Exception:
+        logging.warning("Сводка озвучки: не смог прочитать ведомость расходов", exc_info=True)
+        return None
+
+
+def _plural_ru(count: int, one: str, few: str, many: str) -> str:
+    """1 знак / 2 знака / 5 знаков. Отчёт читает человек, а не парсер."""
+    number = abs(int(count))
+    if 11 <= number % 100 <= 14:
+        return many
+    last = number % 10
+    if last == 1:
+        return one
+    if 2 <= last <= 4:
+        return few
+    return many
+
+
+def _format_money_usd(amount: float) -> str:
+    """Копейки — копейками. $0.02 читается как ноль, «2 ¢» читается как два цента."""
+    value = float(amount or 0.0)
+    if value <= 0:
+        return "0 ¢"
+    if value < 1:
+        return f"{value * 100:.1f} ¢".replace(".", ",")
+    return f"${value:.2f}".replace(".", ",")
+
+
 def _build_tts_admin_digest() -> str:
-    events = _get_tts_admin_monitor_window(int(TTS_ADMIN_DIGEST_WINDOW_MINUTES) * 60)
-    enqueue_queued = sum(
-        int(item.get("count") or 0)
-        for item in events
-        if item.get("kind") == "enqueue" and item.get("status") == "queued"
-    )
-    enqueue_ready = sum(
-        int(item.get("count") or 0)
-        for item in events
-        if item.get("kind") == "enqueue" and item.get("status") == "ready"
-    )
-    enqueue_pending = sum(
-        int(item.get("count") or 0)
-        for item in events
-        if item.get("kind") == "enqueue" and item.get("status") == "pending"
-    )
-    generation_generated = sum(
-        int(item.get("count") or 0)
-        for item in events
-        if item.get("kind") == "generation" and item.get("status") == "generated"
-    )
-    generation_errors = sum(
-        int(item.get("count") or 0)
-        for item in events
-        if item.get("kind") == "generation" and item.get("status") == "error"
-    )
-    generation_durations = [
-        int(item.get("duration_ms") or 0)
-        for item in events
-        if item.get("kind") == "generation" and item.get("status") == "generated" and item.get("duration_ms") is not None
-    ]
+    """Пять строк о том, как жила озвучка за сутки. Не лог, а приборная панель.
+
+    Раньше здесь собиралось сорок строк английского технического текста
+    («Prewarm users considered (recent active learners scanned): 14»). Владелец
+    23.08.2026: писать по-человечески и раз в день. Каждое число ниже — измеренное;
+    там, где источник промолчал, так и написано, а не подставлен ноль.
+    """
+    window_minutes = int(TTS_ADMIN_DIGEST_WINDOW_MINUTES)
+    events = _get_tts_admin_monitor_window(window_minutes * 60)
+
+    def _sum(kind: str, *statuses: str) -> int:
+        return sum(
+            int(item.get("count") or 0)
+            for item in events
+            if item.get("kind") == kind and item.get("status") in statuses
+        )
+
+    asked_new = _sum("enqueue", "queued")
+    asked_ready = _sum("enqueue", "ready")
+    asked_pending = _sum("enqueue", "pending")
+    asked_total = asked_new + asked_ready + asked_pending
+    generated = _sum("generation", "generated")
+    generation_errors = _sum("generation", "error")
+
     prewarm_runs = [item for item in events if item.get("kind") == "prewarm_run"]
-    prewarm_ok_runs = [item for item in prewarm_runs if item.get("status") == "ok"]
-    prewarm_skipped_runs = [item for item in prewarm_runs if item.get("status") == "skipped"]
-    prewarm_skip_reasons = Counter(
-        str((item.get("meta") or {}).get("reason") or "").strip().lower() or "unknown"
-        for item in prewarm_skipped_runs
-    )
     prewarm_generated = sum(int((item.get("meta") or {}).get("generated") or 0) for item in prewarm_runs)
-    prewarm_cached_hits = sum(int((item.get("meta") or {}).get("cached_hits") or 0) for item in prewarm_runs)
-    prewarm_requeued = sum(int((item.get("meta") or {}).get("requeued") or 0) for item in prewarm_runs)
     prewarm_errors = sum(int((item.get("meta") or {}).get("errors") or 0) for item in prewarm_runs)
-    latest_prewarm_meta = (prewarm_ok_runs[-1].get("meta") or {}) if prewarm_ok_runs else ((prewarm_runs[-1].get("meta") or {}) if prewarm_runs else {})
-    recovery_runs = [item for item in events if item.get("kind") == "recovery_run"]
-    recovery_active_runs = [
-        item
-        for item in recovery_runs
-        if str(item.get("status") or "").strip().lower() != "skipped"
-        or int((item.get("meta") or {}).get("attempted") or 0) > 0
-        or int((item.get("meta") or {}).get("queued") or 0) > 0
-        or int((item.get("meta") or {}).get("duplicates") or 0) > 0
-        or int((item.get("meta") or {}).get("queue_full") or 0) > 0
-        or int((item.get("meta") or {}).get("skipped_invalid") or 0) > 0
-    ]
-    recovery_idle_runs = max(0, len(recovery_runs) - len(recovery_active_runs))
-    recovery_attempted = sum(int((item.get("meta") or {}).get("attempted") or 0) for item in recovery_runs)
-    recovery_queued = sum(int((item.get("meta") or {}).get("queued") or 0) for item in recovery_runs)
-    recovery_duplicates = sum(int((item.get("meta") or {}).get("duplicates") or 0) for item in recovery_runs)
-    recovery_queue_full = sum(int((item.get("meta") or {}).get("queue_full") or 0) for item in recovery_runs)
-    recovery_skipped_invalid = sum(int((item.get("meta") or {}).get("skipped_invalid") or 0) for item in recovery_runs)
+    prewarm_ok = [item for item in prewarm_runs if item.get("status") == "ok"]
+    latest_prewarm_meta = (prewarm_ok[-1].get("meta") or {}) if prewarm_ok else {}
+    prewarm_users = int(latest_prewarm_meta.get("eligible_users") or 0)
+
     snapshot = _get_tts_object_cache_snapshot(stale_minutes=TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)
-    avg_generation_ms = int(sum(generation_durations) / len(generation_durations)) if generation_durations else 0
-    max_generation_ms = max(generation_durations) if generation_durations else 0
-    personalized_prewarm_block = ""
-    if str(latest_prewarm_meta.get("planner_mode") or "").strip() == "personalized_fsrs":
-        digest_item_limit = int(latest_prewarm_meta.get("per_user_item_limit") or TTS_PREWARM_PER_USER_ITEM_LIMIT)
-        digest_char_limit = int(latest_prewarm_meta.get("per_user_char_limit") or _get_effective_tts_prewarm_per_user_char_limit())
-        personalized_prewarm_block = (
-            f"Prewarm users considered (recent active learners scanned): {int(latest_prewarm_meta.get('users_considered') or 0)}\n"
-            f"Prewarm eligible users (allowed users included in plan): {int(latest_prewarm_meta.get('eligible_users') or 0)}\n"
-            f"Users with prediction (had likely next-session texts): {int(latest_prewarm_meta.get('users_with_prediction') or 0)}\n"
-            f"Base quota fit (users fully covered by {digest_item_limit} texts / {digest_char_limit} chars): {int(latest_prewarm_meta.get('base_quota_fit_pct') or 0)}%\n"
-            f"Final fit after redistribution (users fully covered after extra budget): {int(latest_prewarm_meta.get('final_quota_fit_pct') or 0)}%\n"
-            f"Predicted total (all likely next-session texts): {int(latest_prewarm_meta.get('predicted_items') or 0)}\n"
-            f"Assigned total (texts chosen for tonight): {int(latest_prewarm_meta.get('assigned_items') or 0)}\n"
-            f"Unique assigned total (duplicate texts merged before generation): {int(latest_prewarm_meta.get('unique_assigned_items') or 0)}\n"
-            f"Predicted chars p50/p90/p95 per user: "
-            f"{int(latest_prewarm_meta.get('predicted_chars_per_user_p50') or 0)}/"
-            f"{int(latest_prewarm_meta.get('predicted_chars_per_user_p90') or 0)}/"
-            f"{int(latest_prewarm_meta.get('predicted_chars_per_user_p95') or 0)}\n"
-            f"Assigned chars p50/p90/p95 per user: "
-            f"{int(latest_prewarm_meta.get('assigned_chars_per_user_p50') or 0)}/"
-            f"{int(latest_prewarm_meta.get('assigned_chars_per_user_p90') or 0)}/"
-            f"{int(latest_prewarm_meta.get('assigned_chars_per_user_p95') or 0)}\n"
-            f"Dictionary adds yesterday p50/p90/max per user: "
-            f"{int(latest_prewarm_meta.get('dictionary_adds_1d_per_user_p50') or 0)}/"
-            f"{int(latest_prewarm_meta.get('dictionary_adds_1d_per_user_p90') or 0)}/"
-            f"{int(latest_prewarm_meta.get('dictionary_adds_1d_per_user_max') or 0)}\n"
-            f"Top 10%% users share of predicted chars (how concentrated demand is): "
-            f"{int(latest_prewarm_meta.get('predicted_chars_top10pct_share') or 0)}%\n"
+    stuck = int(snapshot.get("pending_stale") or 0)
+    spend = _get_tts_spend_window_usd(window_minutes)
+
+    lines = [f"\U0001f50a Озвучка за сутки", ""]
+
+    if asked_total:
+        lines.append(
+            f"Заявок на звук {asked_total}: {asked_ready} уже были готовы, "
+            f"{asked_new} ушли в работу" +
+            (f", {asked_pending} уже делались" if asked_pending else "") + "."
         )
-    prewarm_skip_reason_lines: list[str] = []
-    skip_reason_labels = {
-        "outside_offpeak_window": "outside off-peak window",
-        "already_running": "already running in another worker",
-        "disabled": "disabled by config",
-        "no_active_users": "no active users found",
-    }
-    for reason, count in prewarm_skip_reasons.most_common():
-        if not reason:
-            continue
-        prewarm_skip_reason_lines.append(
-            f"Prewarm skip reason ({skip_reason_labels.get(reason, reason)}): {int(count)}"
-        )
-    prewarm_skip_reason_block = ""
-    if prewarm_skip_reason_lines:
-        prewarm_skip_reason_block = "\n" + "\n".join(prewarm_skip_reason_lines)
-    recovery_block = (
-        "Stuck-task recovery:\n"
-        f"Recovery active runs (found stale work to inspect or handle): {len(recovery_active_runs)}\n"
-        f"Recovery idle checks (woke up, found nothing stale): {recovery_idle_runs}\n"
-        f"Recovery checked (old pending items inspected): {recovery_attempted}\n"
-        f"Recovery requeued (stuck items pushed back into generation): {recovery_queued}\n"
-        f"Recovery duplicates (already being processed elsewhere): {recovery_duplicates}\n"
-        f"Recovery skipped invalid (broken rows that could not be rebuilt): {recovery_skipped_invalid}\n"
-        f"Recovery queue full (could not enqueue because worker queue was full): {recovery_queue_full}\n\n"
+    else:
+        lines.append("Заявок на звук не было — за сутки никто не сохранял новых слов.")
+
+    # Деньги отдельной фразой и только из ведомости. Не прочиталась — так и говорим:
+    # «не посчитан» честнее, чем ноль, который читается как «бесплатно».
+    if spend is None:
+        money_text = "расход не посчитан — ведомость не ответила"
+    elif spend["events"] == 0 and generated == 0:
+        money_text = "синтезировать не пришлось, денег не потратили"
+    elif spend["events"] == 0:
+        money_text = "расхода в ведомости нет — это странно, синтез был"
+    else:
+        money_text = (f"потрачено {_format_money_usd(spend['usd'])} за {spend['chars']} "
+                      + _plural_ru(spend["chars"], "знак", "знака", "знаков"))
+    errors_text = ("ошибок нет" if not generation_errors
+                   else f"ОШИБОК {generation_errors}")
+    # «Сделано» шире «заявок»: сюда же попадают читалка, ролики и ночной прогрев, у
+    # которых своего события-заявки нет. Поэтому число тут законно больше — и это
+    # названо словами, иначе владелец видит «сделано 72 из 45» и считает это ошибкой.
+    lines.append(f"Всего озвучено за сутки {generated} со всех экранов "
+                 f"(словарь, читалка, ролики): {errors_text}, {money_text}.")
+
+    if prewarm_generated or prewarm_users:
+        people = f" для {prewarm_users} чел." if prewarm_users else ""
+        tail = f", ошибок {prewarm_errors}" if prewarm_errors else ""
+        lines.append(f"Ночью подготовили заранее {prewarm_generated} слов{people}{tail}.")
+    elif prewarm_runs:
+        lines.append("Ночной прогрев отработал, готовить было нечего — всё уже озвучено.")
+    else:
+        lines.append("Ночной прогрев за сутки не запускался.")
+
+    lines.append(
+        f"Сейчас в базе: готово {int(snapshot.get('ready') or 0)}, "
+        f"в работе {int(snapshot.get('pending') or 0)}, "
+        f"сломано {int(snapshot.get('failed') or 0)}."
     )
-    if not recovery_active_runs and recovery_attempted == 0 and recovery_queued == 0 and recovery_duplicates == 0 and recovery_skipped_invalid == 0 and recovery_queue_full == 0:
-        recovery_block = (
-            "Stuck-task recovery:\n"
-            f"Recovery idle checks only (scheduler woke up, but there were no stale pending items): {recovery_idle_runs}\n\n"
-        )
-    return (
-        "📊 TTS twice-daily digest\n\n"
-        f"Window: last {int(TTS_ADMIN_DIGEST_WINDOW_MINUTES)} min\n\n"
-        "Dictionary-triggered audio requests:\n"
-        f"New tasks queued after save (new words added and sent to audio generation): {enqueue_queued}\n"
-        f"Already ready at save time (audio already existed): {enqueue_ready}\n"
-        f"Already pending at save time (audio task was already waiting): {enqueue_pending}\n\n"
-        "Generation workers:\n"
-        f"Generated by runners (audio finished successfully): {generation_generated}\n"
-        f"Generation errors (audio generation failed): {generation_errors}\n"
-        f"Avg generation time (average time to produce one audio): {avg_generation_ms} ms\n"
-        f"Max generation time (slowest finished audio): {max_generation_ms} ms\n\n"
-        "Night/automatic prewarm:\n"
-        f"Prewarm runs total (automatic background passes): {len(prewarm_runs)}\n"
-        f"Prewarm ok runs (actually processed): {len(prewarm_ok_runs)}\n"
-        f"Prewarm skipped runs (scheduler woke up but intentionally did nothing): {len(prewarm_skipped_runs)}\n"
-        f"Prewarm generated (new audios prepared automatically): {prewarm_generated}\n"
-        f"Prewarm cache hits (audio was already ready): {prewarm_cached_hits}\n"
-        f"Prewarm requeued failed (old failed items sent again): {prewarm_requeued}\n"
-        f"Prewarm errors (automatic prewarm failures): {prewarm_errors}\n"
-        f"{prewarm_skip_reason_block}\n"
-        f"{personalized_prewarm_block}\n"
-        f"{recovery_block}"
-        "Current DB snapshot:\n"
-        f"Ready now (audio already prepared and downloadable): {int(snapshot.get('ready') or 0)}\n"
-        f"Pending now (audio tasks still not finished): {int(snapshot.get('pending') or 0)}\n"
-        f"Failed now (audio tasks ended with error): {int(snapshot.get('failed') or 0)}\n"
-        f"Stuck pending older than {int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)} min"
-        f" (waiting too long): {int(snapshot.get('pending_stale') or 0)}\n"
-        f"Oldest pending age (age of the oldest unfinished task): {int(snapshot.get('oldest_pending_minutes') or 0)} min"
-    )
+    if stuck:
+        oldest = int(snapshot.get("oldest_pending_minutes") or 0)
+        oldest_text = (f"{oldest // 1440} дн." if oldest >= 1440
+                       else f"{oldest // 60} ч." if oldest >= 60 else f"{oldest} мин.")
+        lines.append(f"ЗАСТРЯЛО {stuck} — самое старое ждёт {oldest_text}. Эти слова молчат у людей.")
+    else:
+        lines.append("Застрявших нет — всё, что просили, доведено до звука.")
+
+    return "\n".join(lines)
 
 
 def _run_tts_admin_digest_scheduler_job() -> None:
@@ -68153,7 +68151,10 @@ def _start_audio_scheduler() -> None:
         _audio_scheduler.add_job(
             _run_tts_admin_digest_scheduler_job,
             "cron",
-            hour=f"{int(TTS_ADMIN_DIGEST_MORNING_HOUR)},{int(TTS_ADMIN_DIGEST_EVENING_HOUR)}",
+            # Раз в день. Было дважды (утро и вечер) — владелец 23.08.2026 оставил одну
+            # отправку. Час берётся из TTS_ADMIN_DIGEST_HOUR, как и у планировщика,
+            # чтобы две точки запуска не разъехались во времени.
+            hour=int(TTS_ADMIN_DIGEST_HOUR),
             minute=TTS_ADMIN_DIGEST_MINUTE,
             max_instances=1,
             coalesce=True,

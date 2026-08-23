@@ -45,6 +45,45 @@ class WatchdogIsActuallyScheduledTests(unittest.TestCase):
         self.assertTrue(hasattr(tts_scheduler, "run_tts_admin_alerts_scheduler_job"))
 
 
+class DailyDigestIsHumanAndWiredTests(unittest.TestCase):
+    """Сводка по озвучке: раз в день, по-русски, без выдуманных чисел.
+
+    До 23.08.2026 это были сорок строк английского лога дважды в день, и они вообще
+    не отправлялись — задача умерла вместе со сторожем. Владелец попросил пять строк
+    человеческим языком и одну отправку в сутки.
+    """
+
+    def test_scheduler_service_sends_the_digest_once_a_day(self):
+        source = _source("backend/scheduler_service.py")
+        self.assertIn("_dispatch_tts_admin_digest", source,
+                      "суточная сводка не отправляется планировщиком")
+        self.assertIn("TTS_ADMIN_DIGEST_HOUR", source,
+                      "у сводки нет часа отправки — значит она не раз в день")
+
+    def test_evening_send_stays_removed(self):
+        source = _source("backend/backend_server.py")
+        self.assertNotIn("TTS_ADMIN_DIGEST_EVENING_HOUR", source,
+                         "вернулась вторая отправка за день — владелец её отменил")
+
+    def test_worker_has_the_digest_actor(self):
+        source = _source("backend/background_jobs.py")
+        self.assertIn("def run_tts_admin_digest_actor", source)
+
+    def test_money_is_not_printed_as_a_bare_zero_dollar(self):
+        from backend.backend_server import _format_money_usd
+        # $0.02 глазами читается как ноль. Копейки показываем копейками.
+        self.assertEqual(_format_money_usd(0.0198), "2,0 ¢")
+        self.assertEqual(_format_money_usd(0), "0 ¢")
+        self.assertTrue(_format_money_usd(2.5).startswith("$"))
+
+    def test_plural_reads_like_russian(self):
+        from backend.backend_server import _plural_ru
+        self.assertEqual(_plural_ru(1, "знак", "знака", "знаков"), "знак")
+        self.assertEqual(_plural_ru(2172, "знак", "знака", "знаков"), "знака")
+        self.assertEqual(_plural_ru(15, "знак", "знака", "знаков"), "знаков")
+        self.assertEqual(_plural_ru(111, "знак", "знака", "знаков"), "знаков")
+
+
 class RecoveryOutcomeNeverLiesTests(unittest.TestCase):
     """Текст про расклинивание обязан отличать «проверил» от «не запускался»."""
 

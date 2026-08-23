@@ -23,17 +23,20 @@ from backend.database import (
 from backend.telegram_notify import _send_private_message
 
 
+# Сутки, а не полсуток: решение владельца 23.08.2026 — сводка приходит раз в день,
+# значит и считать она обязана ровно за прошедший день, иначе половина работы выпадет
+# из отчёта и «просили звук 40 раз» окажется вдвое меньше правды.
 TTS_ADMIN_DIGEST_WINDOW_MINUTES = max(
     15,
     min(
-        720,
+        1440,
         int(
             (
                 os.getenv("TTS_ADMIN_DIGEST_WINDOW_MINUTES")
                 or os.getenv("TTS_ADMIN_DIGEST_INTERVAL_MINUTES")
-                or "720"
+                or "1440"
             ).strip()
-            or "720"
+            or "1440"
         ),
     ),
 )

@@ -2637,6 +2637,12 @@ def run_tts_generation_recovery_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_tts_admin_digest_actor() -> None:
+    from backend.tts_scheduler import run_tts_admin_digest_scheduler_job
+    run_tts_admin_digest_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_tts_admin_alerts_actor() -> None:
     from backend.tts_scheduler import run_tts_admin_alerts_scheduler_job
     run_tts_admin_alerts_scheduler_job()

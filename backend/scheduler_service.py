@@ -105,6 +105,7 @@ from backend.background_jobs import (  # noqa: E402
     run_tts_generation_recovery_actor,
     run_tts_prewarm_quota_control_actor,
     run_tts_admin_alerts_actor,
+    run_tts_admin_digest_actor,
     run_sentence_prewarm_actor,
     run_translation_focus_pool_refill_job,       # existing actor — reused
     run_translation_focus_pool_admin_report_actor,
@@ -339,6 +340,11 @@ def _dispatch_tts_prewarm() -> None:
 def _dispatch_tts_generation_recovery() -> None:
     run_tts_generation_recovery_actor.send()
     _plumbing_heartbeat("tts_generation_recovery")
+
+
+def _dispatch_tts_admin_digest() -> None:
+    run_tts_admin_digest_actor.send()
+    _plumbing_heartbeat("tts_admin_digest")
 
 
 def _dispatch_tts_admin_alerts() -> None:
@@ -1078,6 +1084,20 @@ def _build_scheduler():
             max_instances=1,
             coalesce=True,
             misfire_grace_time=120,
+        )
+
+    # -- Суточная сводка по озвучке (cron) --
+    # Раз в день, а не дважды: решение владельца 23.08.2026. Вечерняя отправка убрана
+    # вместе с сорока строками английского лога, которые тут были вместо отчёта.
+    if _enabled("TTS_ADMIN_DIGEST_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_tts_admin_digest,
+            "cron",
+            hour=_int_env("TTS_ADMIN_DIGEST_HOUR", 9),
+            minute=_int_env("TTS_ADMIN_DIGEST_MINUTE", 0),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
         )
 
     # -- Сторож озвучки (interval) --

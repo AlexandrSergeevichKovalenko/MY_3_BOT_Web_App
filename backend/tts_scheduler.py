@@ -31,6 +31,12 @@ def run_tts_admin_alerts_scheduler_job() -> None:
     _run_tts_admin_alerts_scheduler_job()
 
 
+def run_tts_admin_digest_scheduler_job() -> None:
+    """Суточная сводка по озвучке владельцу. Раз в день, решение владельца 23.08.2026."""
+    from backend.backend_server import _run_tts_admin_digest_scheduler_job
+    _run_tts_admin_digest_scheduler_job()
+
+
 def run_tts_prewarm_quota_control_scheduler_job() -> None:
     from backend.backend_server import _run_tts_prewarm_quota_control_scheduler_job
     _run_tts_prewarm_quota_control_scheduler_job()
