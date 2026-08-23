@@ -122,6 +122,24 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
     ranked.sort(key=lambda r: (0 if r["has_manual_captions"] else 1,
                                -(r["view_count"] or 0)))
 
+    # СНИМОК ПУЛА пишется ЗДЕСЬ, потому что обход каналов происходит именно здесь.
+    # Раньше он писался в подготовке выпуска — но с появлением полки выпуск берёт готовое
+    # и каналы не обходит вовсе, поэтому снимок не писался никогда, и еженедельный отчёт
+    # показывал владельцу «чем пополнять: 0 годных роликов» при сотнях доступных
+    # (замечено владельцем 23.08.2026).
+    in_range_total = report["swept"] - report["dur_skipped"]
+    try:
+        from backend.database import upsert_daily_video_pool_snapshot
+        upsert_daily_video_pool_snapshot(
+            rubric=STANDUP_PROFILE.key,
+            scanned=report["swept"],
+            in_range=max(0, in_range_total),
+            manual_captions=sum(1 for r in ranked if r["has_manual_captions"]),
+            measured_on=__import__("datetime").date.today(),
+        )
+    except Exception:
+        logger.warning("standup shelf: снимок пула не записан", exc_info=True)
+
     need = want - counts["unused"]
     cap = int(max_add) if max_add is not None else _env_int("STANDUP_SHELF_MAX_ADD", 12)
     need = min(need, cap)

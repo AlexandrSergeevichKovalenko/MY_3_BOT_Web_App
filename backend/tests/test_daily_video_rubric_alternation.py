@@ -277,7 +277,9 @@ def test_standup_prep_reads_the_shelf_and_does_not_fetch_anything(monkeypatch):
     monkeypatch.setattr(G, "_fetch_transcript", lambda vid: (_ for _ in ()).throw(
         AssertionError("выпуск не имеет права качать субтитры")))
     # Дальше подготовки ролика не идём — модель и запись в базу здесь не проверяются.
-    monkeypatch.setattr(G, "_call_llm", lambda *a, **kw: (_ for _ in ()).throw(
+    # Сборка разбора идёт по шагам (backend/daily_video_pack.py), поэтому останавливаемся
+    # на общем переносчике запросов, а не на прежнем одном большом вызове.
+    monkeypatch.setattr(G, "_ask_model", lambda *a, **kw: (_ for _ in ()).throw(
         RuntimeError("СТОП: ролик выбран")))
 
     with pytest.raises(RuntimeError) as err:
@@ -323,7 +325,7 @@ def test_bad_pack_makes_us_ask_again_not_give_up(monkeypatch):
 
     calls = {"n": 0}
 
-    def _fake_llm(title, transcript, profile=None):
+    def _fake_llm(title, transcript, profile=None):  # noqa: ANN001 — заглушка сборки
         calls["n"] += 1
         quiz = [{"question_de": f"Frage {i}?", "options": ["a", "b", "c", "d"],
                  "correct_index": 0, "explanation_ru": "потому что"} for i in range(4)]
@@ -332,7 +334,9 @@ def test_bad_pack_makes_us_ask_again_not_give_up(monkeypatch):
         return {"summary_points": ["Комик про понедельник"],
                 "phrases": _good_phrases(5), "quiz": quiz}
 
-    monkeypatch.setattr(G, "_call_llm", _fake_llm)
+    import backend.daily_video_pack as P
+    monkeypatch.setattr(P, "build_pack_in_steps",
+                        lambda *, title, transcript, profile, call_json: _fake_llm(title, transcript, profile))
     # Останавливаемся СРАЗУ после сборки пакета. Подменять надо `backend.database`, а не
     # модуль генератора: prepare_world_news импортирует запись внутри функции, и подмена
     # на генераторе не действует. Проверено на себе 21.08.2026 — тест дописал поддельный
@@ -1454,3 +1458,50 @@ def test_recheck_is_a_scheduled_job_not_a_manual_chore():
     assert "run_daily_video_recheck" in bot
     assert 'hour=3, minute=20' in bot, "перепроверка обязана быть в ночном расписании"
     assert "daily_video_recheck_result" in bot, "сторож расписания должен о ней знать"
+
+
+# ── Снимок пула пишется там, где вправду идёт обход (23.08.2026) ─────────────
+
+def test_pool_snapshot_is_written_where_the_sweep_happens():
+    """Владелец получил еженедельный отчёт: «Чем пополнять: 0 годных роликов у 12 каналов»
+    — при сотнях доступных. Снимок пула писался в подготовке выпуска, но с появлением
+    полки выпуск берёт ГОТОВОЕ и каналы не обходит вовсе, поэтому снимок не писался
+    никогда. Обход происходит в пополнении полки — туда снимок и перенесён."""
+    import inspect
+
+    from backend.standup_shelf import refill_standup_shelf
+
+    src = inspect.getsource(refill_standup_shelf)
+    assert "upsert_daily_video_pool_snapshot" in src, (
+        "снимок обязан писаться там, где происходит обход каналов"
+    )
+
+
+def test_the_pack_is_built_in_separate_steps():
+    """Владелец 23.08.2026: «когда я обращаюсь к модели, она объясняет нормально — почему
+    в твоей реализации ерунда?» Потому что он задаёт ОДИН вопрос об ОДНОЙ вещи, а прежняя
+    реализация просила за один ответ пятнадцать карточек, восемь полей, тест и пересказ с
+    двумя десятками требований — и требования начинали конкурировать.
+
+    Теперь четыре разных дела, у каждого свой запрос: найти → объяснить → пересказать →
+    спросить. У шага «найти» нет переводов, у шага «объяснить» нет решений об отборе."""
+    from backend.daily_video_pack import (
+        _EXPLAIN_SYSTEM, _FIND_SYSTEM, _QUIZ_SYSTEM, _SUMMARY_SYSTEM, build_pack_in_steps,
+    )
+
+    assert "EINZIGE Aufgabe" in _FIND_SYSTEM, "шаг поиска решает только отбор"
+    assert "Übersetze nichts" in _FIND_SYSTEM, "и ничего не переводит"
+    assert "Auswahl ist getroffen" in _EXPLAIN_SYSTEM, "шаг объяснения не отбирает"
+    assert "summary_points" in _SUMMARY_SYSTEM and "quiz" in _QUIZ_SYSTEM
+    assert callable(build_pack_in_steps)
+
+
+def test_the_quote_survives_the_explain_step():
+    """Цитата берётся из шага ПОИСКА: она уже сверена с транскриптом. Позволить
+    объясняющему переписать её значило бы открыть дорогу выдумке там, где её уже закрыли."""
+    import inspect
+
+    from backend.daily_video_pack import build_pack_in_steps
+
+    src = inspect.getsource(build_pack_in_steps)
+    assert 'card["quote_de"] = chunk[i]["quote_de"]' in src

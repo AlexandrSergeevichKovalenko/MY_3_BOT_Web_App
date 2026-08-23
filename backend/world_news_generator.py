@@ -888,6 +888,52 @@ Erzeuge das JSON exakt in diesem Format:
 }}"""
 
 
+def _ask_model(system: str, user: str, profile=None, *, what: str = "") -> dict:
+    """Один запрос к модели с разбором JSON. Здесь и только здесь живут ключ, таймаут,
+    повторы и учёт расхода — шаги сборки об этом ничего не знают.
+
+    Сбой НЕ глушится: пустой ответ от ошибки неотличим от честного «нечего сказать».
+    """
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    payload = {
+        "model": _model(profile),
+        "temperature": 0.4,
+        "response_format": {"type": "json_object"},
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    timeout_sec = _env_int("DAILY_VIDEO_LLM_TIMEOUT_SEC", 240)
+    attempts = max(1, _env_int("DAILY_VIDEO_LLM_RETRIES", 2))
+    resp = None
+    for attempt in range(attempts):
+        started = time.monotonic()
+        try:
+            resp = requests.post("https://api.openai.com/v1/chat/completions",
+                                 headers=headers, json=payload, timeout=timeout_sec)
+        except requests.Timeout:
+            if attempt + 1 < attempts:
+                logger.warning("daily_video: модель молчала на шаге «%s» — повтор", what)
+                continue
+            raise RuntimeError(f"модель не ответила на шаге «{what}» за {timeout_sec}s")
+        logger.info("daily_video: шаг «%s» — %ds", what, int(time.monotonic() - started))
+        break
+    if not resp.ok:
+        raise RuntimeError(f"OpenAI HTTP {resp.status_code} на шаге «{what}»: {resp.text[:200]}")
+    resp_json = resp.json()
+    try:
+        from backend.openai_usage_logging import log_openai_raw_usage
+        action = "pool_standup" if (profile and profile.key == "standup") else "pool_world_news"
+        log_openai_raw_usage(action_type=action, model=str(payload.get("model") or ""),
+                             usage=resp_json.get("usage"), user_id=None)
+    except Exception:
+        logger.debug("daily_video: расход не записан", exc_info=True)
+    raw = (resp_json.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    return json.loads(raw)
+
+
 def _call_llm(title: str, transcript: str, profile=None) -> dict:
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:
@@ -1415,9 +1461,12 @@ def prepare_world_news(
     last_err = None
     for attempt in range(pack_attempts):
         try:
-            pack = _validate_and_normalize_pack(
-                _call_llm(picked["title"], picked["text"], profile), profile, picked["text"]
+            from backend.daily_video_pack import build_pack_in_steps
+            raw_pack = build_pack_in_steps(
+                title=picked["title"], transcript=picked["text"], profile=profile,
+                call_json=lambda sys_p, usr_p, what: _ask_model(sys_p, usr_p, profile, what=what),
             )
+            pack = _validate_and_normalize_pack(raw_pack, profile, picked["text"])
             break
         except ValueError as exc:
             last_err = exc
