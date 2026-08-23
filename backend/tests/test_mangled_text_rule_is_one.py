@@ -107,6 +107,35 @@ class TheRuleItselfTests(unittest.TestCase):
         self.assertFalse(is_mangled("11118 карточек"))
         self.assertFalse(is_mangled("2026-08-16T01:20:32.777708"))
 
+    def test_a_multi_letter_chunk_glued_to_the_stem_is_found_too(self):
+        """Между «одной буквой» и «целым словом» был зазор — кусок из нескольких букв.
+
+        Живой случай: слово 17883, «Vorbehalt» + «en»×6, та же транзакция 16.08.2026
+        18:16:15. Шесть правил его не ловили: «en» не буква, не знак и не слово.
+        Замер 23.08.2026 по 2 029 327 строкам живой базы: 64 попадания, все 64 — этот
+        самый текст, законного не задето ни разу."""
+        self.assertTrue(is_mangled("Ich stimme zu, aber mit Vorbehaltenenenenenen"))
+        self.assertTrue(is_mangled("Ich stimme zu, aber mit Vorbehaltenenenenenen."))
+        self.assertFalse(is_mangled("Ich stimme zu, aber mit Vorbehalten"))
+
+    def test_a_word_that_is_itself_a_repetition_survives(self):
+        """Основа в три буквы — не украшение, а то, что отделяет порчу от живого слова.
+
+        У порчи повтор ПРИКЛЕЕН к основе, у живого удвоения повтор и есть всё слово.
+        Без основы правило снесло бы законные мнемоники и человеческий русский."""
+        for text in ("хахахаха", "трататата", "бла-бла-бла", "нееееет",
+                     "Wischiwaschi", "Bonbon", "Kuckuck", "Tamtam"):
+            self.assertFalse(is_mangled(text), text)
+
+    def test_the_witness_chooses_how_much_of_the_chunk_to_undo(self):
+        """Восстановление куска перечисляет варианты и здесь — решает свидетель.
+
+        Основу считаем отрыванием повторов с конца, а не по скобкам правила: скобка
+        жадная и утаскивает часть повторов в основу («Vorbehaltenen»). Свидетель
+        `lemma_key` слова 17883 — «ich stimme zu, aber mit vorbehalten»."""
+        self.assertIn("Ich stimme zu, aber mit Vorbehalten",
+                      undo_candidates("Ich stimme zu, aber mit Vorbehaltenenenenenen"))
+
     def test_damage_inside_a_breakdown_is_found_at_any_depth(self):
         card = {"word_de": "sterile Gazen",
                 "examples": [{"source": "Er erlag der Versuchung......"}],
@@ -163,9 +192,14 @@ class TheRuleLivesInOnePlaceTests(unittest.TestCase):
         разбору и не нужно колонке, и в SQL его сознательно нет. Поэтому счёт
         сверяется с поправкой ровно на него.
         """
-        # Два питоновских правила в SQL сознательно не идут: «порча в СЕРЕДИНЕ строки»
-        # для буквы и для слова. В колонке лежит заголовок, а не предложение, и цена
-        # ошибки там выше — CHECK роняет запись целиком.
+        # ТРИ питоновских правила в SQL сознательно не идут: «порча в СЕРЕДИНЕ строки»
+        # для буквы и для слова и «повтор буквы в начале слова». В колонке лежит
+        # заголовок, а не предложение, и цена ошибки там выше — CHECK роняет запись
+        # целиком.
+        #
+        # Седьмое правило (многобуквенный кусок) в SQL ИДЁТ, и это не непоследовательность:
+        # оно единственное из новых, чья порча доказанно легла В КОЛОНКУ — `display` и
+        # `lemma` слова 17883. Замок её пропустил, потому что не знал этого вида.
         self.assertEqual(len(SQL_MANGLED), len(MANGLED_ALL) - 3)
 
 

@@ -45,6 +45,12 @@
 проверка на дне записи разбора (`lex_units.save_unit_card`) — это отдельная работа, и
 она НЕ сделана. Не считать эту тему закрытой целиком.
 
+СТАВИТСЯ БЕЗОПАСНО, И ЭТО НЕ ФОРМАЛЬНОСТЬ. Прямой `ADD CONSTRAINT` 21.08.2026 положил
+словарь на 45 минут — не потому, что долго работал (сверка занимает секунды), а потому,
+что монопольный замок встал в очередь за читающим запросом и заблокировал за собой всех.
+Поэтому здесь `lock_timeout` + `NOT VALID` + отдельный `VALIDATE`; подробности в коде
+у самой установки. Не сумели взять замок — скрипт честно падает, а не молчит.
+
     python3 scripts/dict_guard_repeated_tail.py            # проверить, ничего не менять
     python3 scripts/dict_guard_repeated_tail.py --apply    # поставить замки
 """
@@ -111,23 +117,82 @@ def main() -> int:
         print("\nЖивые данные чистые — замки встанут. Поставить: --apply\n")
         return 0
 
+    # ═══ СПОСОБ УСТАНОВКИ ВАЖЕН. ЭТО УЖЕ СТОИЛО НАМ 45 МИНУТ ПРОСТОЯ. ═══════════════
+    #
+    # 21.08.2026 замки ставились прямым `ADD CONSTRAINT` — и словарь встал на 45 минут.
+    # Причина НЕ в длительности работы: сама сверка занимает секунды (замер 23.08.2026
+    # по живой базе — 2,85 с + 2,34 с + 2,03 с на трёх таблицах). Причина в ОЧЕРЕДИ:
+    # `ADD CONSTRAINT` берёт монопольный замок, встаёт за любым уже идущим читающим
+    # запросом и блокирует за собой ВСЕХ, кто пришёл после. Одного долгого читателя
+    # хватает, чтобы словарь встал целиком.
+    #
+    # Урок был записан в коммит 59d1c48d, но в сам скрипт НЕ ПОПАЛ: до 23.08.2026 здесь
+    # стоял прямой ADD CONSTRAINT, то есть инструмент повторял бы поломку при каждом
+    # запуске. Поэтому порядок теперь ЗДЕСЬ, в коде, а не в истории.
+    #
+    #   lock_timeout    не ждать очереди дольше трёх секунд — лучше честно упасть, чем
+    #                   держать за собой словарь;
+    #   NOT VALID       монопольный замок берётся на мгновение и без прохода по таблице;
+    #   VALIDATE        отдельной транзакцией и СЛАБЫМ замком: читателям и пишущим не
+    #                   мешает, хотя проход по таблице делает именно он.
+    #
+    # Не сумели взять замок — НЕ ПРОДОЛЖАЕМ и не делаем вид, что поставили. Возвращаем
+    # ошибку и говорим, что повторить.
+    import psycopg2                                                    # noqa: PLC0415
+
+    поставлено, не_смогли = [], []
     with get_db_connection_context() as conn:
         for table, name, columns in LOCKS:
             checks, params = [], []
             for column, when in columns:
                 checks.append(_column_check(column, when))
                 params.extend(SQL_MANGLED)
-            with conn.cursor() as cursor:
-                # Замок мог стоять со старым, более узким правилом — снимаем и ставим
-                # заново, иначе новый вид хвоста останется незакрытым.
-                cursor.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {name};")
-                cursor.execute(
-                    f"ALTER TABLE {table} ADD CONSTRAINT {name} "
-                    f"CHECK ({' AND '.join(checks)});",
-                    tuple(params),
-                )
-            conn.commit()
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '3s';")
+                    # Замок мог стоять со старым, более узким правилом — снимаем и ставим
+                    # заново, иначе новый вид хвоста останется незакрытым.
+                    cursor.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {name};")
+                    cursor.execute(
+                        f"ALTER TABLE {table} ADD CONSTRAINT {name} "
+                        f"CHECK ({' AND '.join(checks)}) NOT VALID;",
+                        tuple(params),
+                    )
+                conn.commit()
+            except psycopg2.errors.LockNotAvailable:
+                conn.rollback()
+                не_смогли.append((table, "не дали монопольный замок за 3 секунды"))
+                continue
+            except Exception as exc:
+                conn.rollback()
+                не_смогли.append((table, str(exc).strip().splitlines()[0]))
+                continue
+            # Сверка — ОТДЕЛЬНОЙ транзакцией. Иначе монопольный замок от ADD держался бы
+            # всё время прохода по таблице, и мы вернулись бы ровно к тому, от чего ушли.
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '3s';")
+                    cursor.execute(f"ALTER TABLE {table} VALIDATE CONSTRAINT {name};")
+                conn.commit()
+            except Exception as exc:
+                conn.rollback()
+                # Замок УЖЕ стоит и уже не пускает новую порчу — не сверено только то,
+                # что накоплено раньше. Это разные вещи, и путать их нельзя.
+                не_смогли.append(
+                    (table, f"замок поставлен, но сверка накопленного не прошла: "
+                            f"{str(exc).strip().splitlines()[0]}"))
+                continue
+            поставлено.append(table)
             print(f"🔒 {table}: {name}")
+
+    if не_смогли:
+        print("\n⚠ НЕ ЗАКРЫТО ПОЛНОСТЬЮ:\n")
+        for table, почему in не_смогли:
+            print(f"   {table}: {почему}")
+        print("\nЭто НЕ отказ навсегда: значит, в этот момент по таблице шёл долгий")
+        print("запрос. Повторите позже — скрипт можно запускать сколько угодно раз.\n")
+        return 1
+
     print("\nЗамки поставлены. Немецкий текст с размноженным хвостом больше не запишется.\n")
     return 0
 
