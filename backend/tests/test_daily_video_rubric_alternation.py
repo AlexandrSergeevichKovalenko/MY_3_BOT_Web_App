@@ -1551,3 +1551,45 @@ def test_a_draft_occupies_the_video_but_does_not_spend_it():
     assert "get_assigned_daily_video_ids" in src, (
         "выбор обязан исключать ролики, занятые черновиками"
     )
+
+
+# ── Доставленный выпуск неприкосновенен (23.08.2026) ─────────────────────────
+
+def test_a_delivered_issue_cannot_be_rebuilt(monkeypatch):
+    """23.08.2026 команда /standup перезаписала день, новость которого уже ушла людям
+    утром. Сама рассылка никуда не делась, но система перестала о ней знать — а значит
+    ролик той новости снова считался бы свободным и мог выйти второй раз.
+
+    Переформировать можно черновик. То, что уже у людей в телефонах, — нельзя: отменить
+    доставку мы не в состоянии, а притворяться, будто её не было, значит врать себе."""
+    import backend.database as db
+    import backend.world_news_generator as G
+
+    monkeypatch.setattr(db, "get_world_news_for_date",
+                        lambda d: {"video_id": "ушедший", "status": "sent"})
+    monkeypatch.setattr(G, "_ask_model", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("до модели дело дойти не должно")))
+
+    with pytest.raises(RuntimeError) as err:
+        G.prepare_world_news("2026-08-23", rubric=RUBRIC_NEWS)
+    assert "уже отправлен людям" in str(err.value)
+
+
+def test_a_draft_can_still_be_rebuilt(monkeypatch):
+    """Защита касается ТОЛЬКО доставленного. Черновик переформировывать можно и нужно —
+    иначе кнопка «Переформировать» перестанет работать."""
+    import backend.database as db
+    import backend.world_news_generator as G
+
+    monkeypatch.setattr(db, "get_world_news_for_date",
+                        lambda d: {"video_id": "черновик", "status": "ready"})
+    monkeypatch.setattr(db, "get_shown_daily_video_ids", lambda rubric=None: set())
+    monkeypatch.setattr(db, "get_assigned_daily_video_ids", lambda rubric=None: set())
+    monkeypatch.setattr(db, "take_next_from_standup_shelf", lambda exclude=None: None)
+    import backend.standup_shelf as S
+    monkeypatch.setattr(S, "refill_standup_shelf", lambda **kw: {"added": 0})
+
+    # Падение будет про пустую полку, а НЕ про запрет переформирования.
+    with pytest.raises(RuntimeError) as err:
+        G.prepare_world_news("2026-08-24", rubric=RUBRIC_STANDUP)
+    assert "уже отправлен" not in str(err.value)

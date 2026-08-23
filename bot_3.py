@@ -11354,6 +11354,12 @@ async def admin_world_news_command(update: Update, context: CallbackContext,
                 f"{left} Квота сбрасывается раз в сутки (≈утром по Киеву).\n"
                 f"Ролик по ссылке работает и сейчас: {cmd} <youtube_url> — это стоит одну единицу."
             )
+        elif "уже отправлен людям" in str(exc):
+            await status.edit_text(
+                f"🔒 Выпуск за сегодня уже ушёл людям — переформировать его нельзя.\n"
+                "Отменить доставку мы не можем, а делать вид, что её не было, нечестно.\n"
+                f"Следующий выпуск можно собрать так: /worldnews_tomorrow"
+            )
         elif "quota" in str(exc).lower():
             await status.edit_text(
                 "⏳ Дневная квота YouTube API исчерпана — ролик сейчас не подобрать. "

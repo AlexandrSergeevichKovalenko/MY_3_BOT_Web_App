@@ -1344,6 +1344,19 @@ def prepare_world_news(
         logger.warning("daily_video: не удалось прочитать прежнюю запись на %s", date_str,
                        exc_info=True)
         _previous = None
+    # ДОСТАВЛЕННЫЙ ВЫПУСК НЕПРИКОСНОВЕНЕН. 23.08.2026 команда /standup перезаписала день,
+    # новость которого уже ушла людям утром: сама рассылка никуда не делась, но система
+    # перестала о ней знать — а значит ролик той новости снова считался бы свободным и мог
+    # выйти второй раз.
+    #
+    # Переформировать можно черновик. То, что уже у людей в телефонах, переформировать
+    # нельзя: отменить доставку мы не в состоянии, а притворяться, будто её не было, —
+    # значит врать самим себе.
+    if _previous and str(_previous.get("status") or "") == "sent":
+        raise RuntimeError(
+            f"daily_video: выпуск за {date_str} уже отправлен людям — переформировать его "
+            "нельзя. Черновик можно, доставленное нет."
+        )
     rubric_key = (rubric or "").strip().lower() or rubric_for_date(date_str)
     profile = get_profile(rubric_key)
     base_exclude = {str(v).strip() for v in (exclude_video_ids or set()) if str(v).strip()}
