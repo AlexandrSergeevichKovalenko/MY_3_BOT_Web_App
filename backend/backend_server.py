@@ -55668,6 +55668,36 @@ def webapp_tts_generate():
         prefix="tts",
     )
 
+    # Синтезируем ТОЛЬКО изучаемый язык. Решение владельца 23.08.2026: «we do not need
+    # russian to play and we do not need to spend money for that». Замер того дня: 1612
+    # русских озвучек, из них за десять дней прослушано три; накопленные удалены.
+    # Проверка стоит ИМЕННО ЗДЕСЬ, на синтезе, а не на выдаче ссылки: уже готовый файл
+    # по-прежнему отдаётся и играет, мы отказываемся только ПЛАТИТЬ за новый.
+    _native_lang, _learning_lang, _profile = _get_user_language_pair(int(user_id))
+    if tts_lang_short and _learning_lang and tts_lang_short != _learning_lang:
+        _record_tts_admin_monitor_event(
+            "generation_enqueue", "skipped", source="tts_generate", count=1,
+            chars=len(normalized_text), meta={"reason": "not_learning_language",
+                                              "requested": tts_lang_short,
+                                              "learning": _learning_lang},
+        )
+        _log_flow_observation(
+            "tts", "tts_generate_completed", request_id=request_id,
+            correlation_id=_build_observability_correlation_id(payload=body, prefix="tts"),
+            user_id=user_id, cache_key=cache_key, final_status="skipped",
+            status="not_learning_language", duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+        )
+        return jsonify({
+            "ok": True,
+            "status": "failed",
+            "state": "not_learning_language",
+            "cache_key": cache_key,
+            "object_key": object_key,
+            "reason": "not_learning_language",
+            "message": "Озвучиваем только изучаемый язык",
+        }), 200
+
     db_lookup_started_perf = time.perf_counter()
     meta = get_tts_object_meta(cache_key, touch_hit=False)
     db_lookup_duration_ms = _elapsed_ms_since(db_lookup_started_perf)
