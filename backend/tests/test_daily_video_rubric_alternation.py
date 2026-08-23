@@ -1413,3 +1413,44 @@ def test_translation_needs_no_label_on_the_card():
     """Владелец: «нахуя слово „здесь“?» На карточке один перевод — подписывать его нечем."""
     jsx = open("frontend/src/App.jsx", encoding="utf-8").read()
     assert "worldnews-card-ru-label" not in jsx
+
+
+# ── Заслон должен догонять то, что уже лежит в базе (23.08.2026) ──────────────
+
+def test_stored_cards_are_rechecked_not_only_new_ones():
+    """Владелец увидел на экране карточку, которую заслон уже умел ловить, — но она
+    собралась ДО появления проверки, а заслон стоит на входе. Почищено было руками, и
+    владелец справедливо спросил: «а в будущем как, опять руками?»
+
+    Не руками: перепроверка сохранённых карточек стала ночной работой. Иначе любая НОВАЯ
+    проверка никогда не применяется к тому, что собрано раньше."""
+    from backend.daily_video_quality import recheck_cards
+
+    bad = {"de": "ein neuer Markt, der Graumarkt", "translation_ru": "перевод",
+           "usage_ru": "подсказка", "form_ru": "словарная форма",
+           "quote_de": "нечто", "de_in_text": "нечто"}
+    result = recheck_cards([bad])
+    assert result["keep"] == [] and len(result["removed"]) == 1
+    assert "запятой" in result["removed"][0]["why"]
+
+
+def test_a_missing_transcript_is_not_evidence_against_a_card():
+    """Ночная чистка стирает субтитры прошлых дней. Проверки, сверяющие карточку с текстом
+    ролика, без него дали бы «цитаты нет в субтитрах» на КАЖДОЙ карточке и вычистили бы
+    всё подчистую. Отсутствие источника — не улика."""
+    from backend.daily_video_quality import recheck_cards
+
+    good = {"de": "der Schwarzmarkt", "translation_ru": "чёрный рынок",
+            "usage_ru": "с артиклем", "form_ru": "словарная форма",
+            "quote_de": "текста больше нет", "de_in_text": "текста больше нет"}
+    result = recheck_cards([good], transcript="")
+    assert result["keep"] == [good], "без субтитров чистая карточка обязана уцелеть"
+    assert result["checked_against_transcript"] is False
+
+
+def test_recheck_is_a_scheduled_job_not_a_manual_chore():
+    """Повторяющаяся работа идёт на автомат, а не в список задач владельца."""
+    bot = open("bot_3.py", encoding="utf-8").read()
+    assert "run_daily_video_recheck" in bot
+    assert 'hour=3, minute=20' in bot, "перепроверка обязана быть в ночном расписании"
+    assert "daily_video_recheck_result" in bot, "сторож расписания должен о ней знать"

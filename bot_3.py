@@ -10514,6 +10514,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("world_news_evening_result", "Новость дня — вечерняя подготовка (20:00)", 30, True, "guard"),
     ("standup_pool_report_result", "Стендап — отчёт о состоянии пула (вс 11:00)", 10, True, "guard"),
     ("standup_shelf_refill_result", "Стендап — пополнение полки (3:40)", 30, True, "guard"),
+    ("daily_video_recheck_result", "Видеорубрика — ночная проверка карточек (3:20)", 30, True, "guard"),
     ("world_news_morning_result", "Новость дня — утренняя рассылка (6:30)", 30, True, "guard"),
     # --- Nightly maintenance / cleanups (heartbeat from the job body in backend_server) ---
     ("system_message_cleanup", "Чистка системных сообщений", 30, True, "guard"),
@@ -11373,6 +11374,102 @@ async def admin_world_news_command(update: Update, context: CallbackContext,
     text = _world_news_preview_text(entry, header=f"✅ <b>{_rubric_title(entry)} — готово</b>")
     kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
     await status.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def run_daily_video_recheck(context: CallbackContext):
+    """Ночная перепроверка карточек, УЖЕ лежащих в базе.
+
+    Заслон качества стоит на входе: он смотрит свежую карточку и не пускает негодную
+    дальше. Но карточка, уже сохранённая, через него больше никогда не проходит — значит
+    всё, собранное до появления проверки, остаётся с прежними дефектами, а любая НОВАЯ
+    проверка к накопленному не применяется.
+
+    23.08.2026 владелец увидел на экране карточку, которую заслон уже умел ловить, но она
+    собралась раньше. Почищено это было руками, и владелец справедливо спросил: «а в
+    будущем как, опять руками?» Не руками — вот этой работой.
+    """
+    from backend.database import get_admin_telegram_ids
+    try:
+        removed_total, touched = await asyncio.to_thread(_recheck_stored_daily_video_cards)
+    except Exception as exc:
+        logging.exception("ночная перепроверка карточек не отработала")
+        _record_sched_heartbeat("daily_video_recheck_result", "failed", {"error": str(exc)[:200]})
+        return
+    _record_sched_heartbeat("daily_video_recheck_result", "completed",
+                            {"removed": len(removed_total), "entries": touched})
+    if not removed_total:
+        return   # тишина, когда чистить нечего: сообщать не о чем
+    admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    lines = ["🧹 <b>Ночная проверка карточек</b>", "",
+             f"Убрано негодных: <b>{len(removed_total)}</b> из {touched} записи(ей)", ""]
+    lines += [f"· «{r['de']}» — {r['why']}" for r in removed_total[:8]]
+    if len(removed_total) > 8:
+        lines.append(f"…ещё {len(removed_total) - 8}")
+    text = "\n".join(lines)
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+        except Exception:
+            logging.debug("перепроверка: ДМ админу не ушёл id=%s", admin_id, exc_info=True)
+
+
+def _recheck_stored_daily_video_cards():
+    """Прогнать заслон по сохранённым записям. Возвращает (что убрано, сколько записей)."""
+    import json as _json
+
+    from backend.daily_video_quality import recheck_cards
+    from backend.database import get_db_connection_context
+
+    removed_all, touched = [], 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT news_date, rubric, video_id, phrases FROM bt_3_world_news_daily;")
+            rows = cur.fetchall()
+            for news_date, rubric, video_id, phrases in rows:
+                cards = _json.loads(phrases) if isinstance(phrases, str) else (phrases or [])
+                cur.execute("SELECT items FROM bt_3_youtube_transcripts WHERE video_id = %s;",
+                            (video_id,))
+                row = cur.fetchone()
+                items = (_json.loads(row[0]) if isinstance(row[0], str) else row[0]) if row else []
+                transcript = " ".join(str((i or {}).get("text") or "") for i in (items or []))
+                result = recheck_cards(cards, transcript=transcript,
+                                       requires_register=(rubric == "standup"))
+                if not result["removed"]:
+                    continue
+                touched += 1
+                removed_all.extend(result["removed"])
+                cur.execute(
+                    "UPDATE bt_3_world_news_daily SET phrases = %s, updated_at = NOW() "
+                    "WHERE news_date = %s;",
+                    (_json.dumps(result["keep"], ensure_ascii=False), news_date),
+                )
+                logging.info("перепроверка %s: убрано %d карточек", news_date,
+                             len(result["removed"]))
+    return removed_all, touched
+
+
+async def admin_daily_video_recheck_command(update: Update, context: CallbackContext):
+    """/recheck_cards — прогнать заслон качества по уже сохранённым карточкам сейчас."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    status = await message.reply_text("🧹 Проверяю сохранённые карточки…")
+    try:
+        removed, touched = await asyncio.to_thread(_recheck_stored_daily_video_cards)
+    except Exception as exc:
+        logging.exception("admin recheck_cards failed user_id=%s", int(sender.id))
+        await status.edit_text(f"❌ Не удалось проверить: {exc}")
+        return
+    if not removed:
+        await status.edit_text("✅ Все сохранённые карточки проходят проверку — убирать нечего.")
+        return
+    lines = [f"🧹 Убрано негодных: <b>{len(removed)}</b> из {touched} записи(ей)", ""]
+    lines += [f"· «{r['de']}» — {r['why']}" for r in removed[:10]]
+    await status.edit_text("\n".join(lines), parse_mode="HTML")
 
 
 async def run_standup_shelf_refill(context: CallbackContext):
@@ -43612,6 +43709,7 @@ def main():
     application.add_handler(CommandHandler("standup", admin_standup_command))
     application.add_handler(CommandHandler("standup_pool", admin_standup_pool_command))
     application.add_handler(CommandHandler("standup_shelf", admin_standup_shelf_command))
+    application.add_handler(CommandHandler("recheck_cards", admin_daily_video_recheck_command))
     application.add_handler(CommandHandler("worldnews_card", admin_world_news_card_command))
     application.add_handler(CommandHandler("admin_worldnews_image", admin_world_news_image_command))
     application.add_handler(CommandHandler("worldnews_approve", admin_world_news_approve_command))
@@ -44212,6 +44310,10 @@ def main():
         # «всё, что я должен вызывать командой, я забуду».
         scheduler.add_job(lambda: submit_async(run_standup_pool_report,CallbackContext(application=application)),"cron", day_of_week="sun", hour=11, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Пополнение полки — ночью, когда нет трафика. Пока запас есть, в YouTube не ходит.
+        # Перепроверка сохранённых карточек — ночью, до пополнения полки. Заслон стоит на
+        # входе, а эта работа прогоняет его по уже накопленному: иначе новые проверки
+        # никогда не применяются к тому, что собрано раньше.
+        scheduler.add_job(lambda: submit_async(run_daily_video_recheck,CallbackContext(application=application)),"cron", hour=3, minute=20, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         scheduler.add_job(lambda: submit_async(run_standup_shelf_refill,CallbackContext(application=application)),"cron", hour=3, minute=40, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Drain Mini-App «⚔️ Battles» create requests every few seconds (bot runs the
