@@ -10408,6 +10408,40 @@ function AppInner() {
     languageProfile?.native_language,
   ]);
 
+  // ЧТО именно звучит на карточке тренировки — решает ОДНА функция. Раньше это
+  // считалось в трёх местах по-разному: подогрев брал сторону по графе карточки и
+  // прогонял её через артикль и чистку («der Tisch»), автозапуск и кнопка динамика
+  // брали сырое поле («Tisch»). Имя звукового файла считается из текста, поэтому
+  // подогретый файл оказывался не тем, который потом просят: карточка молчала, а
+  // синтез оплачивался дважды. Расхождение вскрыто 23.08.2026; на карточках владельца
+  // оно тогда не выстреливало (артикль у них не заполнен), но правило разъезжается
+  // молча — поэтому сведено в одну точку, а не оставлено «до случая».
+  const resolveSrsSpokenTts = useCallback((card) => {
+    if (!card) return { text: '', locale: getLearningTtsLocale() };
+    const direction = (card?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
+    const reversed = (card?.source_lang || 'ru') === 'de';
+    const cardTexts = getDictionarySourceTarget(card, direction);
+    // Сторону выбираем ПО ПИСЬМУ (resolveDictionaryTargetTts): направление карточки —
+    // лишь запись в графе, и у части старых карточек оно перепутано, из-за чего вслух
+    // читался русский. Графа остаётся запасным вариантом, если письмо не различило.
+    const side = resolveDictionaryTargetTts(card, direction);
+    const text = String(
+      side?.text
+      || (reversed ? cardTexts?.sourceText : cardTexts?.targetText)
+      || ''
+    ).trim();
+    const learning = normalizeLangCode(languageProfile?.learning_language) || 'de';
+    const locale = getTtsLocaleForLang(detectTtsLangFromText(text) || learning);
+    return { text, locale };
+  }, [
+    detectTtsLangFromText,
+    getDictionarySourceTarget,
+    getLearningTtsLocale,
+    getTtsLocaleForLang,
+    languageProfile?.learning_language,
+    resolveDictionaryTargetTts,
+  ]);
+
   const resolveFlashcardTexts = (entry) => {
     const responseJson = entry?.response_json || {};
     const sourceText = String(
@@ -13564,18 +13598,7 @@ function AppInner() {
     const key = String(srsCard?.id || srsCard?.entry_id || '');
     if (!key) return;
     if (srsAutoTtsPlayedRef.current === key) return;
-    const _srsCardDir = (srsCard?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
-    const _srsCardTexts = getDictionarySourceTarget(srsCard, _srsCardDir);
-    const _srsCardReversed = (srsCard?.source_lang || 'ru') === 'de';
-    // Вслух читаем изучаемый язык, а не «ответную сторону»: у части старых карточек
-    // стороны записаны наоборот, и озвучивался русский текст. Письмо надёжнее графы.
-    const _srsLearning = normalizeLangCode(languageProfile?.learning_language) || 'de';
-    const _srsSide = resolveDictionaryTargetTts(srsCard, _srsCardDir);
-    const answerText = _srsSide?.text
-      || (_srsCardReversed ? _srsCardTexts?.sourceText : _srsCardTexts?.targetText)
-      || '';
-    const langCode = detectTtsLangFromText(answerText) || _srsLearning;
-    const locale = getTtsLocaleForLang(langCode);
+    const { text: answerText, locale } = resolveSrsSpokenTts(srsCard);
     srsAutoTtsPlayedRef.current = key;
     let timerId = null;
     const rafId = window.requestAnimationFrame(() => {
@@ -13589,7 +13612,7 @@ function AppInner() {
         window.clearTimeout(timerId);
       }
     };
-  }, [srsRevealAnswer, srsCard, dictionaryDirection, languageProfile?.learning_language, languageProfile?.native_language]);
+  }, [srsRevealAnswer, srsCard, resolveSrsSpokenTts, dictionaryDirection, languageProfile?.learning_language, languageProfile?.native_language]);
 
   const normalizeStarterDictionaryOffer = useCallback((value) => {
     const payload = value && typeof value === 'object' ? value : {};
@@ -19986,12 +20009,8 @@ function AppInner() {
     const cardsToWarm = [srsCard, ...srsPrefetchQueue.slice(0, 12)];
     cardsToWarm.forEach((card, cardIndex) => {
       if (!card) return;
-      const direction = (card?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
-      const _cardTexts = getDictionarySourceTarget(card, direction);
-      const _cardReversed = (card?.source_lang || 'ru') === 'de';
-      const text = String((_cardReversed ? _cardTexts?.sourceText : _cardTexts?.targetText) || '').trim();
+      const { text, locale } = resolveSrsSpokenTts(card);
       if (!text) return;
-      const locale = getTtsLocaleForLang(detectTtsLangFromText(text));
       // Текущая карточка и следующая за ней — с ожиданием готовности: именно их человек
       // увидит в ближайшие секунды. Остальные догреются к своему часу.
       preloadTts(text, locale, '', true, cardIndex < TTS_PRELOAD_WAIT_CARDS);
@@ -20006,7 +20025,7 @@ function AppInner() {
     srsCard,
     srsPrefetchQueue,
     preloadTts,
-    getDictionarySourceTarget,
+    resolveSrsSpokenTts,
   ]);
 
   useEffect(() => {
@@ -41120,7 +41139,9 @@ function AppInner() {
                               : getSavedEntrySupplementalMeaningRows(srsCard, targetText, 2);
                             const srsReplayTtsKey = `srs-replay-${srsCard?.id || srsCard?.entry_id || 'current'}`;
                             const srsReplayTtsLoading = isTtsPending(srsReplayTtsKey);
-                            const srsReplayTtsTarget = resolveDictionaryTargetTts(srsCard, direction);
+                            // Кнопка обязана просить ТО ЖЕ, что подогрето и что играет само:
+                            // иначе нажатие уходит за третьим файлом и снова платит за синтез.
+                            const srsReplayTtsTarget = resolveSrsSpokenTts(srsCard);
                             const srsFeelEntryId = resolveFlashcardFeelEntryId(srsCard);
                             const srsFeelQueued = srsFeelEntryId ? !!flashcardFeelQueuedMap[srsFeelEntryId] : false;
                             const srsFeelStatus = srsFeelEntryId ? String(flashcardFeelStatusMap[srsFeelEntryId] || '').trim() : '';
