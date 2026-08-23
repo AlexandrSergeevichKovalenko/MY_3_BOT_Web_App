@@ -2604,6 +2604,17 @@ def run_word_audit_reminder_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_word_review_dm_actor() -> None:
+    """Личка со словами, которых не подтвердил ни один справочник.
+
+    Дверь словаря не выбрасывает такое слово и не придумывает ответ — оно ждёт человека.
+    С 19.08 по 23.08.2026 ждало впустую: список собирался, а не вызывал его никто, и три
+    чужих слова владелец нашёл руками. Теперь очередь уходит ему сама, с кнопками."""
+    from backend.word_review import send_word_review_dm
+    logging.info("разбор слов: %s", send_word_review_dm())
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_reference_forms_review_dm_actor() -> None:
     """Личка со словами, которым каскад не нашёл форм: пн/ср/пт."""
     from backend.reference_forms_review import send_reference_forms_review_dm

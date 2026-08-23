@@ -76,6 +76,11 @@ def ensure_word_check_schema() -> None:
                     );
                     """
                 )
+                # Спрошенное у владельца второй раз не приходит. Без этой отметки
+                # рассылка каждый раз показывала бы одни и те же слова, и её перестали
+                # бы читать — так уже было с отчётами, которые никто не открывает.
+                cur.execute("ALTER TABLE bt_3_word_check ADD COLUMN IF NOT EXISTS "
+                            "reviewed BOOLEAN NOT NULL DEFAULT FALSE;")
             conn.commit()
     except Exception:
         logging.warning("дверь слова: схема не создана", exc_info=True)
@@ -231,7 +236,7 @@ def _reference_says_about_all(words: list[str]) -> dict | None:
         if seen["kind"] == "form":
             # Двух базовых слов достаточно, чтобы промолчать: у «rast» это «rasten»
             # (отдыхать) и «rasen» (мчаться), и выбрать за человека мы не вправе.
-            out[name] = ["__форма_неясная__"]
+            out[name] = ["__форма_неясная__" + "|".join(seen["bases"])]
             continue
         out[name] = re.findall(r"\{\{Wortart\|([^|}]+)", german_section(text))
     return out
@@ -357,11 +362,12 @@ def _decide(asked: str, *, pos_hint: str, allow_network: bool, allow_model: bool
         if kinds and str(kinds[0]).startswith("__устаревшее__"):
             modern = modern or str(kinds[0])[len("__устаревшее__"):]
             continue
-        if kinds and str(kinds[0]) == "__форма_неясная__":
+        if kinds and str(kinds[0]).startswith("__форма_неясная__"):
+            bases_unclear = str(kinds[0])[len("__форма_неясная__"):].split("|")
             # Форма, но словарных слов несколько. Это не наша неполнота, а настоящая
             # двусмысленность немецкого — она уходит человеку, а не решается за него.
             return _finish(text, UNCONFIRMED, pos_hint,
-                           "справочник: это форма, но словарных слов несколько", asked)
+                           "справочник: это форма слов " + ", ".join(bases_unclear), asked)
         if kinds and str(kinds[0]).startswith("__форма__"):
             base_pos, _, base = str(kinds[0])[len("__форма__"):].partition("|")
             # Настоящее слово названо страницей. Дальше его подхватывает ночной проход:
@@ -557,25 +563,102 @@ def warm_word_gate(*, limit: int = 150, words: list[str] | None = None) -> dict:
     return stats
 
 
-def words_awaiting_owner(limit: int = 50) -> list[tuple[str, str, str]]:
-    """Слова с вердиктом «не слово» — их удаление показывается владельцу."""
+# Вердикты, после которых машина сделала всё, что могла, и дальше нужен человек.
+# «Не спросили» сюда не попадает по построению: в кеш ложится только окончательное
+# (см. _is_final), а «справочник молчал» окончательным не считается.
+OWNER_STATUSES = (NOT_A_WORD, UNCONFIRMED)
+
+
+def words_awaiting_owner(limit: int = 50) -> list[tuple[str, str, str, str]]:
+    """Слова, по которым нужен ответ ЧЕЛОВЕКА: (слово, вердикт, почему, часть речи).
+
+    ⚠ ЭТА ФУНКЦИЯ ДОЛЖНА БЫТЬ КОМУ-ТО НУЖНА. С 19.08 по 23.08.2026 она существовала и
+    её НЕ ВЫЗЫВАЛ НИКТО: слова копились, до владельца не доходили, и три чужих слова
+    («slay», «bore», «aspettiamo») он нашёл только потому, что я наткнулся на них
+    руками. Это ровно тот мёртвый список, который правилами запрещён. Теперь её зовёт
+    backend/word_review.py — личка с кнопками, как у родов и у форм.
+    """
     from backend.database import get_db_connection_context
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT w.asked, w.source, COALESCE(u.pos, '')
+                    """SELECT w.asked, w.status, w.source, COALESCE(u.pos, '')
                          FROM bt_3_word_check w
                          LEFT JOIN bt_3_lex_units u
                                 ON u.lang='de' AND lower(u.lemma) = lower(w.asked)
-                        WHERE w.status = %s
+                        WHERE w.status = ANY(%s) AND NOT w.reviewed
                         ORDER BY w.checked_at DESC LIMIT %s;""",
-                    (NOT_A_WORD, int(limit)),
+                    (list(OWNER_STATUSES), int(limit)),
                 )
-                return [(str(a), str(b), str(c)) for a, b, c in (cur.fetchall() or [])]
+                return [(str(a), str(b), str(c), str(d))
+                        for a, b, c, d in (cur.fetchall() or [])]
     except Exception:
-        logging.warning("дверь слова: не прочитал список на удаление", exc_info=True)
+        logging.warning("дверь слова: не прочитал список владельцу", exc_info=True)
         return []
+
+
+def count_words_awaiting_owner() -> int:
+    """Сколько всего ждёт ответа человека. Ноль — очередь пуста, и это проверяемо."""
+    from backend.database import get_db_connection_context
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM bt_3_word_check "
+                            "WHERE status = ANY(%s) AND NOT reviewed;",
+                            (list(OWNER_STATUSES),))
+                return int((cur.fetchone() or [0])[0])
+    except Exception:
+        logging.warning("дверь слова: не посчитал очередь владельцу", exc_info=True)
+        return 0
+
+
+def confirm_word_by_owner(word: str) -> None:
+    """Владелец сказал «слово настоящее». Это ОТВЕТ, а не молчание.
+
+    Вердикт становится «подтверждено» с источником «владелец»: иначе кнопка «оставить»
+    значила бы только «больше не спрашивай», слово навсегда оставалось бы сомнительным,
+    и единственный канал, по которому владелец о нём узнаёт, мы бы сами и заткнули.
+    Владелец 23.08.2026: «а что произойдёт, когда я нажму оставить? где программа возьмёт
+    перевод, артикль, род, склонение?»
+
+    После подтверждения слово идёт обычным путём дообогащения: род — через
+    article_authority (справочник, банк родов, правило составного слова), формы — через
+    german_reference_forms (справочник, составное слово, модель с двумя совпавшими
+    ответами). Что не закрылось и там — возвращается владельцу УЖЕ ДРУГИМ вопросом,
+    узким: «какой род у этого слова?» с кнопками der/die/das.
+    """
+    from backend.database import get_db_connection_context
+    name = str(word or "").strip()
+    if not name:
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE bt_3_word_check
+                          SET status = %s, source = 'владелец подтвердил в личке',
+                              reviewed = TRUE, checked_at = NOW()
+                        WHERE lower(asked) = lower(%s);""",
+                    (CONFIRMED, name),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("дверь слова: не записал подтверждение владельца %s", name,
+                        exc_info=True)
+
+
+def mark_word_reviewed(word: str) -> None:
+    """Слово разобрано владельцем — второй раз не спрашиваем."""
+    from backend.database import get_db_connection_context
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE bt_3_word_check SET reviewed = TRUE "
+                            "WHERE lower(asked) = lower(%s);", (str(word or "").strip(),))
+            conn.commit()
+    except Exception:
+        logging.warning("дверь слова: не отметил разобранным %s", word, exc_info=True)
 
 
 # ── Подсказка правильного написания ──────────────────────────────────────────

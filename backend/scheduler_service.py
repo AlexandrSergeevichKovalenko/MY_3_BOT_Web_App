@@ -92,6 +92,7 @@ from backend.background_jobs import (  # noqa: E402
     run_cap_health_report_actor,
     run_article_review_dm_actor,
     run_reference_forms_review_dm_actor,
+    run_word_review_dm_actor,
     run_word_audit_reminder_actor,
     run_reference_forms_warm_actor,
     run_retire_review_dm_actor,
@@ -449,6 +450,10 @@ def _dispatch_reference_forms_warm() -> None:
 
 def _dispatch_word_audit_reminder() -> None:
     run_word_audit_reminder_actor.send()
+
+
+def _dispatch_word_review_dm() -> None:
+    run_word_review_dm_actor.send()
 
 
 def _dispatch_reference_forms_review_dm() -> None:
@@ -921,6 +926,23 @@ def _build_scheduler():
     # понедельник, среда, пятница. Очередь не конечная: новые слова приходят с каждым
     # прогревом, поэтому рассылка сама не замолчит, размер пачки держит
     # REFERENCE_FORMS_REVIEW_BATCH.
+    # Слова, которых не знает ни один справочник: чужие, обрубки, формы сразу нескольких
+    # слов. Машина по ним исчерпала себя, дальше нужен человек — и он получает их
+    # кнопками, а не строкой в отчёте. Два раза в неделю: вторник и суббота, чтобы не
+    # сталкиваться с разбором форм (пн/ср/пт).
+    if _enabled("WORD_REVIEW_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_word_review_dm,
+            "cron",
+            day_of_week="tue,sat",
+            hour=_int_env("WORD_REVIEW_HOUR", 11),
+            minute=_int_env("WORD_REVIEW_MINUTE", 30),
+            timezone=_tz(os.getenv("WORD_REVIEW_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
+
     if _enabled("REFERENCE_FORMS_REVIEW_ENABLED", "1"):
         scheduler.add_job(
             _dispatch_reference_forms_review_dm,

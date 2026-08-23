@@ -14282,6 +14282,40 @@ async def handle_artikel_fill_go_command(update: Update, context: CallbackContex
     await update.message.reply_text(text, parse_mode="HTML")
 
 
+async def handle_word_review_callback(update: Update, context: CallbackContext) -> None:
+    """Тап по слову без подтверждения: убрать, оставить, это форма слова X, пропустить."""
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+    # wrev:<drop|keep|skip|form|БАЗА>:<слово>. В очередь попадают только одиночные
+    # лексемы без пробелов и без «:», поэтому хвост берём целиком.
+    parts = str(query.data or "").split(":", 2)
+    action = parts[1] if len(parts) > 1 else ""
+    word = parts[2] if len(parts) > 2 else ""
+    if not action or not word:
+        await query.answer("Не понял кнопку.", show_alert=True)
+        return
+    await query.answer("Записываю…", show_alert=False)
+    try:
+        from backend.word_review import apply_word_review
+        text = await asyncio.to_thread(apply_word_review, action, word)
+    except Exception:
+        logging.warning("word review action failed", exc_info=True)
+        try:
+            await query.message.reply_text("Не получилось записать. Подробности в логах.")
+        except Exception:
+            pass
+        return
+    try:
+        await query.edit_message_text(text, parse_mode="HTML")
+    except Exception:
+        logging.debug("разбор слов: сообщение не заменилось", exc_info=True)
+
+
 async def handle_reference_forms_review_callback(update: Update, context: CallbackContext) -> None:
     """Тап по слову без форм в личке: der/die/das, «без степеней» или «пропустить»."""
     query = update.callback_query
@@ -43811,6 +43845,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_appcap_callback, pattern=r"^appcap:"))
     application.add_handler(CallbackQueryHandler(handle_article_review_callback, pattern=r"^artrev:"))
     application.add_handler(CallbackQueryHandler(handle_retire_review_callback, pattern=r"^artret:"))
+    application.add_handler(CallbackQueryHandler(handle_word_review_callback, pattern=r"^wrev:"))
     application.add_handler(CallbackQueryHandler(handle_reference_forms_review_callback, pattern=r"^reffrm:"))
     application.add_handler(CallbackQueryHandler(handle_fill_control_callback, pattern=r"^artfill:"))
     application.add_handler(CallbackQueryHandler(handle_artwords_callback, pattern=r"^artwords:"))
