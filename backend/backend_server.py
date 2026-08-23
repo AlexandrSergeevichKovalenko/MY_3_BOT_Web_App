@@ -23589,6 +23589,102 @@ def _maybe_send_tts_admin_burst_alert() -> None:
     _send_tts_admin_message(message_text)
 
 
+_TTS_BACKLOG_ALERT_FLAG_PREFIX = "tts_backlog_alert"
+
+
+def _tts_backlog_alert_already_sent_today() -> bool:
+    """Уже писали владельцу про вставшую озвучку сегодня?
+
+    Отметка durable (`bt_3_schema_migrations`), а не в памяти процесса: прежний
+    антиповтор жил в переменной и обнулялся каждым деплоем, поэтому одно и то же
+    письмо приходило по кругу — 23.08.2026 владелец получал его каждые полчаса
+    третий месяц подряд, потому что застрявшие с мая записи сами рассосаться не могут.
+
+    Ошибка хранилища отметки -> отвечаем «не писали». Сигнал тревоги имеет право
+    прозвучать лишний раз; молча проглотить его нельзя.
+    """
+    day_key = f"{_TTS_BACKLOG_ALERT_FLAG_PREFIX}:{datetime.now(timezone.utc):%Y-%m-%d}"
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM bt_3_schema_migrations WHERE migration_key = %s LIMIT 1;",
+                    (day_key,),
+                )
+                return cursor.fetchone() is not None
+    except Exception:
+        logging.warning("TTS backlog alert: не смог прочитать отметку дня", exc_info=True)
+        return False
+
+
+def _mark_tts_backlog_alert_sent_today() -> None:
+    day_key = f"{_TTS_BACKLOG_ALERT_FLAG_PREFIX}:{datetime.now(timezone.utc):%Y-%m-%d}"
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO bt_3_schema_migrations (migration_key) VALUES (%s) "
+                    "ON CONFLICT DO NOTHING;",
+                    (day_key,),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("TTS backlog alert: не смог поставить отметку дня", exc_info=True)
+
+
+def _describe_tts_recovery_outcome(recovery_result) -> str:
+    """Что на самом деле сделало автоматическое расклинивание — словами.
+
+    Раньше здесь печатались три нуля «Recovery checked/requeued/duplicates: 0» и
+    В ТОМ ЧИСЛЕ тогда, когда расклинивание вообще не запускалось: выключено рубильником
+    или упало. Владелец читал нули как «проверили, всё чисто». Ноль от «проверил и не
+    нашёл» обязан отличаться от нуля «никто не проверял» — иначе сигнал врёт.
+    """
+    if not isinstance(recovery_result, dict):
+        return ("Автоматическое расклинивание: НЕ ОТРАБОТАЛО — упало с ошибкой. "
+                "Само не починится, смотрите логи.")
+    if recovery_result.get("skipped"):
+        reason = str(recovery_result.get("reason") or "").strip()
+        if reason == "disabled":
+            return ("Автоматическое расклинивание ВЫКЛЮЧЕНО (TTS_GENERATION_RECOVERY_ENABLED). "
+                    "Никто ничего не проверял — застрявшее так и будет висеть.")
+        if reason == "tts_generation_async_disabled":
+            return ("Автоматическое расклинивание не работает: очередь озвучки выключена "
+                    "(TTS_GENERATION_ASYNC_ENABLED). Застрявшее так и будет висеть.")
+        return f"Автоматическое расклинивание не запускалось: {reason or 'причина не названа'}."
+    parts = [
+        f"проверено застрявших: {int(recovery_result.get('attempted') or 0)}",
+        f"отправлено делать заново: {int(recovery_result.get('queued') or 0)}",
+        f"уже делаются где-то ещё: {int(recovery_result.get('duplicates') or 0)}",
+    ]
+    if int(recovery_result.get("errors") or 0):
+        parts.append(f"НЕ ПРИНЯЛА ОЧЕРЕДЬ: {int(recovery_result.get('errors') or 0)}"
+                     + (f" ({recovery_result.get('error_reason')})" if recovery_result.get("error_reason") else ""))
+    if int(recovery_result.get("skipped_invalid") or 0):
+        parts.append(f"НЕ СМОГ СОБРАТЬ ЗАДАНИЕ: {int(recovery_result.get('skipped_invalid') or 0)}")
+    if int(recovery_result.get("queue_full") or 0):
+        parts.append("очередь переполнена — остаток уйдёт следующим заходом")
+    return "Автоматическое расклинивание отработало: " + ", ".join(parts) + "."
+
+
+def _tts_stuck_examples_text(limit: int = 8) -> str:
+    """Какие именно слова молчат. Без примеров письмо нечитаемо: «31 штука» ничего
+    не говорит, а «Haus, Wort, Spiel» сразу показывает масштаб."""
+    try:
+        rows = list_stale_pending_tts_objects(
+            limit=max(1, int(limit)),
+            older_than_minutes=int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES),
+        )
+    except Exception:
+        logging.warning("TTS backlog alert: не смог прочитать примеры застрявших", exc_info=True)
+        return ""
+    samples = [_shorten_tts_admin_text(row.get("source_text"), 40) for row in rows]
+    samples = [item for item in samples if item]
+    if not samples:
+        return ""
+    return "Что именно молчит: " + "; ".join(samples)
+
+
 def _maybe_send_tts_admin_pending_alert() -> None:
     if TTS_ADMIN_ALERT_PENDING_THRESHOLD <= 0:
         return
@@ -23605,24 +23701,27 @@ def _maybe_send_tts_admin_pending_alert() -> None:
             return
     except Exception:
         logging.exception("❌ TTS pending backlog recovery kick failed")
-    if not _should_send_tts_admin_alert("tts_pending_backlog"):
+    # Раз в сутки, а не раз в полчаса: условие «звук встал» само не рассасывается, и
+    # прежний антиповтор в памяти процесса превращал сигнал в шум (решение владельца
+    # 23.08.2026). Примеры и число всё равно свежие — их пересчитывает каждое письмо.
+    if _tts_backlog_alert_already_sent_today():
         return
-    recovery_suffix = ""
-    if isinstance(recovery_result, dict):
-        recovery_suffix = (
-            f"\nRecovery checked (old stuck items inspected): {int(recovery_result.get('attempted') or 0)}"
-            f"\nRecovery requeued (stuck items pushed back into generation): {int(recovery_result.get('queued') or 0)}"
-            f"\nRecovery duplicates (already being processed elsewhere): {int(recovery_result.get('duplicates') or 0)}"
-        )
+    _mark_tts_backlog_alert_sent_today()
+    oldest_minutes = int(snapshot.get("oldest_pending_minutes") or 0)
+    oldest_text = (f"{oldest_minutes // 1440} дн." if oldest_minutes >= 1440
+                   else f"{oldest_minutes // 60} ч." if oldest_minutes >= 60
+                   else f"{oldest_minutes} мин.")
+    examples = _tts_stuck_examples_text()
     message_text = (
-        "🚨 TTS backlog alert\n\n"
-        f"Stuck pending older than {int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)} min"
-        f" (audio tasks waiting too long): {pending_stale_count}\n"
-        f"Alert threshold (when we warn admin): {int(TTS_ADMIN_ALERT_PENDING_THRESHOLD)}\n"
-        f"Pending now total (all not-finished audio tasks): {int(snapshot.get('pending') or 0)}\n"
-        f"Oldest pending age (how long the oldest task waits): {int(snapshot.get('oldest_pending_minutes') or 0)} min"
-        f"{recovery_suffix}\n\n"
-        "Meaning: audio generation looks stuck or heavily delayed."
+        "🔇 Озвучка встала\n\n"
+        f"Не сделан звук у {pending_stale_count} слов и фраз: человек нажимает "
+        "🔊 и не слышит ничего. Самое старое ждёт " + oldest_text + ".\n"
+        + (examples + "\n" if examples else "")
+        + "\n" + _describe_tts_recovery_outcome(recovery_result) + "\n\n"
+        f"Всего незаконченных заданий на звук: {int(snapshot.get('pending') or 0)}. "
+        f"Сигнал срабатывает от {int(TTS_ADMIN_ALERT_PENDING_THRESHOLD)} застрявших "
+        f"старше {int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)} мин. Приходит раз в сутки, "
+        "пока не расклинится."
     )
     _send_tts_admin_message(message_text)
 
@@ -55096,6 +55195,11 @@ def _recover_stale_tts_generation_jobs(*, source: str = "scheduler") -> dict:
     duplicates = 0
     queue_full = 0
     skipped_invalid = 0
+    # «Не смогли поставить в очередь» — отдельный счёт, а не приписка к дублям. Дубль
+    # означает «этим уже занимаются, всё хорошо»; отказ брокера означает «не делается
+    # никто». Складывать их в одно число значит рассказывать владельцу, что работа идёт.
+    errors = 0
+    error_reason = ""
     candidates = list_stale_pending_tts_objects(
         limit=TTS_GENERATION_RECOVERY_BATCH_SIZE,
         older_than_minutes=TTS_GENERATION_RECOVERY_PENDING_AGE_MINUTES,
@@ -55114,7 +55218,11 @@ def _recover_stale_tts_generation_jobs(*, source: str = "scheduler") -> dict:
         if reason == "queue_full":
             queue_full += 1
             break
-        duplicates += 1
+        if reason in {"duplicate_in_process", "duplicate_in_flight"}:
+            duplicates += 1
+            continue
+        errors += 1
+        error_reason = error_reason or reason
     result = {
         "ok": True,
         "attempted": attempted,
@@ -55122,12 +55230,14 @@ def _recover_stale_tts_generation_jobs(*, source: str = "scheduler") -> dict:
         "duplicates": duplicates,
         "queue_full": queue_full,
         "skipped_invalid": skipped_invalid,
+        "errors": errors,
+        "error_reason": error_reason,
         "candidate_count": len(candidates),
         "pending_age_minutes": int(TTS_GENERATION_RECOVERY_PENDING_AGE_MINUTES),
         "queue_size": _tts_generation_queue_size(),
     }
     status = "ok"
-    if queue_full:
+    if queue_full or errors:
         status = "error"
     elif not attempted and not candidates:
         status = "skipped"
@@ -55140,7 +55250,7 @@ def _recover_stale_tts_generation_jobs(*, source: str = "scheduler") -> dict:
         count=max(1, int(attempted or len(candidates) or skipped_invalid or queue_full or 1)),
         meta=result,
     )
-    if attempted or skipped_invalid or queue_full:
+    if attempted or skipped_invalid or queue_full or errors:
         logging.info("✅ TTS recovery finished: %s", result)
     return result
 

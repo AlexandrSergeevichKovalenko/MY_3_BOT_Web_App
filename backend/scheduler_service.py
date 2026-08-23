@@ -104,6 +104,7 @@ from backend.background_jobs import (  # noqa: E402
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
     run_tts_prewarm_quota_control_actor,
+    run_tts_admin_alerts_actor,
     run_sentence_prewarm_actor,
     run_translation_focus_pool_refill_job,       # existing actor — reused
     run_translation_focus_pool_admin_report_actor,
@@ -338,6 +339,11 @@ def _dispatch_tts_prewarm() -> None:
 def _dispatch_tts_generation_recovery() -> None:
     run_tts_generation_recovery_actor.send()
     _plumbing_heartbeat("tts_generation_recovery")
+
+
+def _dispatch_tts_admin_alerts() -> None:
+    run_tts_admin_alerts_actor.send()
+    _plumbing_heartbeat("tts_admin_alerts")
 
 
 def _dispatch_tts_prewarm_quota_control() -> None:
@@ -1069,6 +1075,19 @@ def _build_scheduler():
             _dispatch_tts_generation_recovery,
             "interval",
             minutes=_int_env("TTS_GENERATION_RECOVERY_INTERVAL_MINUTES", 10),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=120,
+        )
+
+    # -- Сторож озвучки (interval) --
+    # По умолчанию ВКЛЮЧЁН: это не отчёт, а сигнал «людям не отдаётся звук». Молчащий
+    # сторож неотличим от исправного — ровно так с 01.06.2026 и жила вставшая очередь.
+    if _enabled("TTS_ADMIN_ALERTS_SCHEDULER_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_tts_admin_alerts,
+            "interval",
+            minutes=_int_env("TTS_ADMIN_ALERT_CHECK_INTERVAL_MINUTES", 10),
             max_instances=1,
             coalesce=True,
             misfire_grace_time=120,

@@ -92,6 +92,11 @@ class VerdictTests(unittest.TestCase):
         self.assertIn("ДНО", verdict(3))
         self.assertIn("мало", verdict(20))
         self.assertEqual(verdict(45), "норма")
+        # Подпись «мало» обязана называть ТУ ЖЕ границу, по которой она поставлена.
+        # 23.08.2026 отчёт написал «хватит на 42 дн. (мало: меньше месяца)»: цель подняли
+        # до 45, а текст остался от старой цели в 30 дней и стал враньём.
+        self.assertIn(str(TARGET_SUPPLY_DAYS), verdict(TARGET_SUPPLY_DAYS - 1))
+        self.assertNotIn("месяц", verdict(TARGET_SUPPLY_DAYS - 1))
         self.assertEqual(verdict(400), "с запасом")
         self.assertEqual(verdict(float("inf")), "не расходуется")
 

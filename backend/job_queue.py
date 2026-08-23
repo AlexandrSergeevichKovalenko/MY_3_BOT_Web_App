@@ -440,6 +440,12 @@ def enqueue_tts_generation_job(payload: dict) -> dict:
     cache_key = str((payload or {}).get("cache_key") or "").strip()
     if not cache_key:
         return {"queued": False, "reason": "missing_cache_key"}
+    # Redis лежит и «этим уже кто-то занят» — РАЗНЫЕ вещи, а заявка не удалась одинаково.
+    # Раньше оба случая уходили наверх как duplicate_in_flight, и отчёт владельцу писал
+    # «все застрявшие уже делаются» ровно тогда, когда не делался никто (поймано прогоном
+    # 23.08.2026: с недоступным Redis все 31 записи отчитались «уже делается»).
+    if get_redis_client() is None:
+        return {"queued": False, "reason": "redis_unavailable"}
     if not claim_tts_generation_in_flight(cache_key):
         return {"queued": False, "reason": "duplicate_in_flight"}
     try:
