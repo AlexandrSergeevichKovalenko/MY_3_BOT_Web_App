@@ -52309,19 +52309,25 @@ def get_user_task_state(user_id: int, kind: str, task_keys: list) -> dict:
 _INBOX_KIND = {"rb": "rb", "cw": "cw", "ag": "ag", "au": "au", "ls": "ls",
                "article_quiz": "aq"}
 
-# Виды, у которых расход банка считается по СДАЧАМ, а не по отправкам, — и запрос,
-# который эти сдачи достаёт: (человек, сколько заданий он сдал за окно).
+# Расход банка считается по СДАЧАМ — по каждой игре. Запрос отдаёт (человек, сколько
+# заданий этого вида он СДАЛ за окно, в пересчёте на сутки).
 #
 # Решение владельца 24.08.2026: «отправил, а никто не открыл — это не расход». И он прав
 # по факту: замер 24.08.2026 по кроссвордам — 157 отправок за 30 дней в реальных слотах,
 # из них хоть одно слово вписано в 15 (9,5%); девять человек из одиннадцати не тронули
 # ни одного. Пока расход считался по отправкам, ночной дозаказ пополнял банк под тех,
 # кто ничего не открывал, и цель гналась за рассылкой, а не за учёбой.
+#
 # Считаем по времени СДАЧИ, а не отправки: задание, ушедшее месяц назад и решённое
 # вчера, израсходовано вчера. Одна сдача = одно задание, поэтому `DISTINCT dispatch_id`.
-# Остальные виды здесь отсутствуют НЕ по недосмотру: у них отдых карточки по-прежнему
-# наступает по отправке, и считать одно по сдачам, а другое по отправкам — значит
-# развести отчёт с выдачей (ровно та беда, что разбиралась 19.08.2026).
+# У аудирования отметка называется `submitted_at`: проверка там идёт отдельно и позже,
+# а израсходовано задание в тот момент, когда человек СДАЛ ответ, а не когда судья
+# закончил его читать.
+#
+# Отправки при этом продолжаем мерить отдельно (`_INBOX_KIND` ниже): у игр, где ОСТАЛСЯ
+# общий отдых карточки, свободный запас выедается именно рассылкой, и строка «свободно
+# прямо сейчас» обязана делиться на отправки, а не на решения. Два числа с разным
+# смыслом — два числа, а не одно; подписывать одно другим нельзя.
 _SOLVED_CONSUMPTION_SQL = {
     "cw": """SELECT user_id, COUNT(DISTINCT dispatch_id)::float / GREATEST(%s, 1)
              FROM bt_3_crossword_answers
@@ -52330,6 +52336,22 @@ _SOLVED_CONSUMPTION_SQL = {
     "ag": """SELECT user_id, COUNT(DISTINCT dispatch_id)::float / GREATEST(%s, 1)
              FROM bt_3_anagram_answers
              WHERE answered_at > NOW() - (%s || ' days')::interval
+             GROUP BY user_id;""",
+    "rb": """SELECT user_id, COUNT(DISTINCT dispatch_id)::float / GREATEST(%s, 1)
+             FROM bt_3_rebus_answers
+             WHERE answered_at > NOW() - (%s || ' days')::interval
+             GROUP BY user_id;""",
+    "au": """SELECT user_id, COUNT(DISTINCT dispatch_id)::float / GREATEST(%s, 1)
+             FROM bt_3_aufgabe_answers
+             WHERE answered_at > NOW() - (%s || ' days')::interval
+             GROUP BY user_id;""",
+    "article_quiz": """SELECT user_id, COUNT(DISTINCT dispatch_id)::float / GREATEST(%s, 1)
+             FROM bt_3_article_quiz_answers
+             WHERE answered_at > NOW() - (%s || ' days')::interval
+             GROUP BY user_id;""",
+    "ls": """SELECT user_id, COUNT(DISTINCT dispatch_id)::float / GREATEST(%s, 1)
+             FROM bt_3_listening_answers
+             WHERE submitted_at > NOW() - (%s || ' days')::interval
              GROUP BY user_id;""",
 }
 
@@ -52403,38 +52425,32 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
                         (int(cooldown),),
                     )
                     free_now = int((cursor.fetchone() or [0])[0])
-                # Расход на человека в сутки и его личный «закрытый» список — одним
-                # запросом, чтобы отчёт не расходился между двумя замерами.
+                # РАСХОД БАНКА = СДАЧИ (решение владельца 24.08.2026, раскатано на все
+                # игры). Фильтр «живых» тут не нужен: человек, который сдал задание,
+                # живой по определению.
                 # На число людей расход НЕ умножается: разным людям можно давать одно и
                 # то же задание, поэтому банк от прихода новых не растёт.
-                solved_sql = _SOLVED_CONSUMPTION_SQL.get(str(kind))
-                if solved_sql:
-                    # Расход = СДАЧИ. Фильтр «живых» тут не нужен: человек, который сдал
-                    # задание, живой по определению.
-                    cursor.execute(solved_sql, (int(window_days), int(window_days)))
-                else:
-                    # Расход — по журналу выдачи, среди живых людей за окно.
-                    # «Живой» = хоть раз ответил хоть на что-то за это окно: тот, кто
-                    # перестал заходить, продолжает получать задания, и если считать по
-                    # нему, мы закажем больше, чем нужно тем, кто учится (замер
-                    # 15.08.2026: трое из семи не ответили ни разу за месяц).
-                    cursor.execute(
-                        """WITH active AS (
-                               SELECT DISTINCT user_id FROM bt_3_interactive_inbox
-                               WHERE answered
-                                 AND created_at > NOW() - (%s || ' days')::interval
-                           )
-                           SELECT i.user_id, COUNT(*)::float / GREATEST(%s, 1)
-                           FROM bt_3_interactive_inbox i
-                           JOIN active a ON a.user_id = i.user_id
-                           WHERE i.kind = %s
-                             AND i.created_at > NOW() - (%s || ' days')::interval
-                           GROUP BY i.user_id;""",
-                        (int(window_days), int(window_days),
-                         _INBOX_KIND.get(str(kind), str(kind)), int(window_days)),
-                    )
+                cursor.execute(_SOLVED_CONSUMPTION_SQL[str(kind)],
+                               (int(window_days), int(window_days)))
                 rates_by_user = {int(r[0]): float(r[1] or 0.0)
                                  for r in (cursor.fetchall() or [])}
+                # ОТПРАВКИ — отдельное число с другим смыслом, и оно тоже нужно.
+                # Во-первых, свободный запас у игр с общим отдыхом выедает именно
+                # рассылка: показали кому угодно — карточка выпала у всех на N дней.
+                # Делить «свободно прямо сейчас» на решения нельзя — решают втрое реже,
+                # чем получают, и строка обещала бы запас, которого нет.
+                # Во-вторых, без отправок неотличимы две разные беды: «игру не
+                # выдавали» и «выдаём, а никто не открывает».
+                cursor.execute(
+                    """SELECT user_id, COUNT(*)::float / GREATEST(%s, 1)
+                       FROM bt_3_interactive_inbox
+                       WHERE kind = %s
+                         AND created_at > NOW() - (%s || ' days')::interval
+                       GROUP BY user_id;""",
+                    (int(window_days), _INBOX_KIND.get(str(kind), str(kind)),
+                     int(window_days)),
+                )
+                sent_rates = [float(r[1] or 0.0) for r in (cursor.fetchall() or [])]
                 # Сколько заданий человеку уже закрыто — из памяти личной ротации.
                 cursor.execute(
                     """SELECT user_id,
@@ -52473,18 +52489,25 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
         "kind": str(kind), "title": TASK_KIND_TITLES.get(str(kind), str(kind)),
         "bank_total": bank_total, "bank_ripening": max(0, bank_alive - bank_total),
         "people": len(rows),
-        # Чем меряли расход — это ДВА разных числа, и в отчёте они читаются по-разному:
-        # «решено в сутки» и «отправлено в сутки». Молча подписать одно другим нельзя.
-        "spend_basis": "solved" if str(kind) in _SOLVED_CONSUMPTION_SQL else "sent",
+        # Расход банка везде считается по РЕШЁННЫМ. Отправки — отдельное число с другим
+        # смыслом, оно живёт ниже в `sent_per_day` и подписывается своими словами.
+        "spend_basis": "solved",
         "per_day": round(per_day, 2), "per_day_measured": round(top_rate, 2),
         "per_day_avg": round(avg_rate, 2),
         "people_active": len(rates), "blocked_deepest": deepest_blocked,
         "available": available, "supply_days": days,
         "order_now": shortfall(available, per_day),
     }
+    # Сколько заданий этого вида уходит людям в сутки — ВСЕМ вместе. Это и есть ответ
+    # на вопрос «а мы её вообще шлём?», без которого «никто не решает» читается как
+    # «игра выключена».
+    out["sent_total_per_day"] = round(sum(sent_rates), 2)
     if free_now is not None:
+        # Свободный запас выедает рассылка, поэтому делим его на ОТПРАВКИ самого
+        # активного получателя — тем же 95-м процентилем и с тем же запасом 20%.
         out["free_now"] = free_now
         out["cooldown_days"] = int(cooldown)
+        out["sent_per_day"] = round(percentile(sent_rates, 0.95) * FORECAST_MARGIN, 2)
     return out
 
 

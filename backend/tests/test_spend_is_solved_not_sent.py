@@ -33,12 +33,53 @@ class SpendBasisTests(unittest.TestCase):
             self.assertIn("COUNT(DISTINCT dispatch_id)", sql,
                           "одна сдача = одно задание, даже если слов в нём четыре")
 
-    def test_other_games_still_measure_what_was_sent(self):
-        """Остальным видам правило не меняли: у них отдых карточки по-прежнему
-        наступает по отправке, и мерить одно по сдачам, а другое по отправкам —
-        значит развести отчёт с выдачей."""
-        for kind in ("rb", "au", "ls", "article_quiz"):
-            self.assertNotIn(kind, db._SOLVED_CONSUMPTION_SQL)
+    def test_every_game_measures_solved_tasks(self):
+        """Правило раскатано на все игры (решение владельца 24.08.2026): банк
+        расходуют решения, а не рассылка. Вид, у которого нет своего запроса сдач,
+        замер обязан уронить, а не молча посчитать по отправкам."""
+        self.assertEqual(set(db._SOLVED_CONSUMPTION_SQL), set(db._TASK_BANKS))
+        for kind, sql in db._SOLVED_CONSUMPTION_SQL.items():
+            with self.subTest(kind=kind):
+                self.assertNotIn("bt_3_interactive_inbox", sql)
+                self.assertIn("COUNT(DISTINCT dispatch_id)", sql)
+
+    def test_listening_counts_the_moment_the_answer_was_handed_in(self):
+        """У аудирования проверка идёт отдельно и позже: израсходовано задание тогда,
+        когда человек СДАЛ ответ, а не когда судья дочитал."""
+        self.assertIn("submitted_at", db._SOLVED_CONSUMPTION_SQL["ls"])
+
+    def test_free_pool_is_divided_by_sends_not_by_solves(self):
+        """«Свободно прямо сейчас» — про рассылку. Карточку выедает ПОКАЗ: показали
+        кому угодно — она выпала у всех на срок отдыха. Решают втрое реже, чем
+        получают, и раздели эту строку на решения — она пообещает запас, которого нет.
+        """
+        from backend.task_supply_report import build_task_supply_report
+        row = {"kind": "rb", "title": "Ребусы", "bank_total": 78, "available": 78,
+               "per_day": 1.0, "per_day_measured": 0.83, "per_day_avg": 0.5,
+               "supply_days": 78.0, "order_now": 0, "spend_basis": "solved",
+               "free_now": 30, "cooldown_days": 15, "sent_per_day": 6.0,
+               "sent_total_per_day": 12.0}
+        text = build_task_supply_report([row])
+        # 30 свободных при 6 отправках в сутки — это пять дней, а не тридцать.
+        self.assertIn("это на 5 дн. рассылки", text)
+
+    def test_sent_but_never_solved_is_not_called_unsent(self):
+        """Две разные беды. «Не выдавали» чинится расписанием, «выдаём, а никто не
+        открывает» — самим заданием. До 24.08.2026 обе писались одной строкой, и
+        вторая читалась как «игра выключена»."""
+        from backend.task_supply_report import build_task_supply_report
+        ignored = {"kind": "ls", "title": "Аудирование", "bank_total": 68,
+                   "available": 68, "per_day": 0.0, "supply_days": float("inf"),
+                   "order_now": 0, "sent_total_per_day": 3.4}
+        text = build_task_supply_report([ignored])
+        self.assertIn("Отправляем, но никто не решает", text)
+        self.assertIn("3.4/сутки", text)
+        self.assertNotIn("Не выдавались", text)
+
+        silent = dict(ignored, title="Ребусы", sent_total_per_day=0.0)
+        text = build_task_supply_report([silent])
+        self.assertIn("Не выдавались", text)
+        self.assertNotIn("никто не решает", text)
 
     def test_report_says_which_number_it_shows(self):
         """«Решает» и «получает» — разные слова для разных чисел."""
