@@ -9851,6 +9851,45 @@ def _run_phrase_night_check_safe() -> None:
         _record_sched_heartbeat("phrase_night_check", "failed", {"error": str(exc)[:300]})
 
 
+def _run_examples_retry_safe() -> None:
+    """Ночная порция повтора. Падение печатаем: тихо упавшая ночная работа неотличима
+    от сделанной, и это мы уже проходили на планировщике."""
+    try:
+        from backend.example_retry import retry_batch
+        stats = retry_batch(
+            limit=int((os.getenv("EXAMPLES_RETRY_BATCH") or "20").strip() or "20"),
+            budget_usd=float((os.getenv("EXAMPLES_RETRY_BUDGET_USD") or "0.30").strip() or "0.30"),
+        )
+        logging.info("ночной повтор примеров закончен: %s", stats)
+    except Exception:
+        logging.error("ночной повтор примеров упал", exc_info=True)
+
+
+def _examples_retry_line() -> str:
+    """Строка про примеры, которые не удалось переписать, — в ТОТ ЖЕ утренний отчёт.
+
+    Владелец 24.08.2026 спросил про эти 111 карточек: «а как число будет уменьшаться?
+    есть ли механизм под капотом?» Механизма не было, и число молча стояло бы вечно.
+    Теперь его каждую ночь разбирает `backend.example_retry`, а здесь видно, сколько
+    осталось. Отдельного канала не заводим: седьмое место, куда надо заглядывать, —
+    это то же самое, что не сообщить вовсе.
+    """
+    try:
+        from backend.example_retry import count_open_defects
+        left = count_open_defects()
+    except Exception:
+        logging.warning("строка про непереписанные примеры не собрана", exc_info=True)
+        return ""
+    if left < 0:
+        # Прочитать не смогли. Молчать нельзя: «не знаю» и «ноль» — разные вещи, и
+        # именно на их смешении мы уже обжигались.
+        return "\n\n⚠️ Примеры к переписыванию: посчитать не удалось."
+    if left == 0:
+        return "\n\n✅ Кривых примеров не осталось."
+    return (f"\n\n📝 Примеры к переписыванию: <b>{left}</b>"
+            f"\nНочью разбирается порция; что не вышло трижды — уходит в спорные.")
+
+
 def _send_phrase_check_morning_report() -> None:
     """Утренний отчёт о ночной проверке фраз. Формат согласован с владельцем 06.08.2026:
     только цифры, без списка молча исправленного — список нужен лишь по спорным, и он
@@ -9898,6 +9937,7 @@ def _send_phrase_check_morning_report() -> None:
                    f"{'ь' if nights == 1 else 'и' if nights < 5 else 'ей'} по {cap})\n"
                    if left else "✅ Все фразы проверены.\n")
                 + (f"\nРазобрать спорные: /admin_phrase_review" if open_reviews else "")
+                + _examples_retry_line()
             )
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
@@ -44480,6 +44520,25 @@ def main():
             hour=int((os.getenv("POOL_NIGHT_ENRICH_HOUR") or "3").strip() or "3"),
             minute=int((os.getenv("POOL_NIGHT_ENRICH_MINUTE") or "10").strip() or "10"),
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Ночной повтор кривых примеров (03:40 Europe/Vienna) --
+        # Панель 24.08.2026 нашла 655 карточек с кривыми примерами; 544 переписались
+        # сразу, 111 не поддались. Владелец спросил: «а как число будет уменьшаться?»
+        # Вот так: маленькая порция каждую ночь, пишет OpenAI, проверяет второй голос,
+        # в базу идёт только одобренное. Три неудачи подряд — карточка уходит владельцу
+        # в разбор спорных, чтобы машина не жгла деньги на одном слове вечно.
+        #
+        # 03:40, после добора в 03:10: они делят один и тот же дневной кошелёк, и
+        # запускать их одновременно значило бы драться за него.
+        scheduler.add_job(
+            _run_examples_retry_safe,
+            "cron",
+            hour=int((os.getenv("EXAMPLES_RETRY_HOUR") or "3").strip() or "3"),
+            minute=int((os.getenv("EXAMPLES_RETRY_MINUTE") or "40").strip() or "40"),
+            timezone=ZoneInfo(os.getenv("EXAMPLES_RETRY_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
             misfire_grace_time=3600,
