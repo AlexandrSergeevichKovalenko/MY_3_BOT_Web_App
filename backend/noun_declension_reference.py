@@ -87,6 +87,53 @@ def article_from_declension_tables(word: str, tables: dict) -> tuple:
     return (_GENDER_TO_ARTICLE[gender], SOURCE_NAME)
 
 
+def has_documented_plural(tables: dict) -> bool:
+    """Есть ли в таблице множественное число.
+
+    Зачем это отдельно. Артикль в ЗАГОЛОВКЕ словаря уместен не у всякого слова, у
+    которого есть род. Замер 24.08.2026 на живых единицах:
+
+        Athen       род n, множественного нет   — «das Athen» в заголовке неверно
+        Marokko     род n, множественного нет   — то же
+        Altwerden   род n, множественного нет   — субстантивированный глагол
+        Schnapsidee род f, множественное есть   — обычное существительное
+
+    Отсутствие множественного — признак имени собственного или субстантивированной формы,
+    и он взят ИЗ ИСТОЧНИКА, а не выведен нами из написания. Правило намеренно строгое:
+    оно заодно отсекает «Milch» и «Obst», у которых множественного тоже нет. Пропустить
+    хорошее слово дешевле, чем показать «das Athen».
+    """
+    if not isinstance(tables, dict):
+        return False
+    for gender in tables:
+        if gender not in _GENDER_TO_ARTICLE:
+            continue
+        for row in (tables[gender] or {}).get("rows") or []:
+            if str(row.get("plural") or "").strip():
+                return True
+    return False
+
+
+def declension_facts(word: str) -> tuple:
+    """(артикль, источник|причина, есть ли множественное) — для тех, кому мало артикля."""
+    text = str(word or "").strip()
+    if not text:
+        return (None, "пустое слово", False)
+    from backend.database import get_db_connection_context
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT tables FROM bt_3_german_noun_declensions WHERE lower(noun) = %s LIMIT 1",
+                (text.casefold(),),
+            )
+            row = cursor.fetchone()
+    if not row or not row[0]:
+        return (None, "справочник склонений не знает слова", False)
+    article, source = article_from_declension_tables(text, row[0])
+    return (article, source, has_documented_plural(row[0]))
+
+
 def article_from_declension_reference(word: str) -> tuple:
     """Спросить справочник склонений про одно слово. (артикль, источник) либо (None, причина).
 
