@@ -1373,6 +1373,137 @@ def check_item(item: dict) -> list[str]:
     return problems
 
 
+# ┌─ ПРОВЕРЕНО 24.08.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────┐
+# │ 29.07.2026 поставили стражи от «человека в списке вещей» — но ТОЛЬКО на    │
+# │ сборке. Собранное задание живёт своей копией: очередь «работа над ошибками»│
+# │ хранит фотографию карточки и месяцами показывает её как есть. Поэтому      │
+# │ 24.08 владельцу выпала карточка от 21.07 «Worauf nimmst du Rücksicht? —    │
+# │ Ребёнок», где вопрос о ВЕЩИ задан о человеке.                              │
+# │                                                                            │
+# │ Замер по живой базе 24.08.2026 (scripts/wofrage_review_audit.py):          │
+# │   очередь ошибок: до 29.07 — 80 карточек, кривых 2; после — 29, кривых 0.  │
+# │   дневные наборы: до 29.07 — 610 заданий, кривых 2; после — 800, кривых 0. │
+# │ Вывод: стражи сборки РАБОТАЮТ, дыра была только в показе старых копий.     │
+# │                                                                            │
+# │ ЛОЖНЫЙ СЛЕД, не повторять: 27 карточек «вещь в вопросе о человеке» — это   │
+# │ НЕ дефект. В режиме человека подсказка это голое имя (David, Julia), и в   │
+# │ списке существительных его быть не должно.                                 │
+# └────────────────────────────────────────────────────────────────────────────┘
+def stored_item_problems(payload: dict) -> list[str]:
+    """Перепроверка УЖЕ СОБРАННОГО задания — теми же источниками, что и на сборке.
+
+    Зачем отдельно от check_item: у сохранённой карточки нет ни предлога, ни падежа
+    (их не кладут в payload) — есть лемма. Поэтому управление достаём ИЗ БАНКА по
+    лемме и выводим верный ответ заново. Проверяем ровно то, из-за чего карточка
+    становится нечестной:
+
+      • одушевлённость — о человеке нельзя спрашивать «Worauf» (класс, из-за
+        которого это написано; от банка не зависит вовсе);
+      • управление — ответ обязан выводиться из предлога глагола;
+      • вариантов четыре разных и верный среди них.
+
+    Если глагола в банке НЕТ (лемму переименовали, запись убрали) — управление не
+    судим: судить не по чему, а догадываться запрещено. Проверка одушевлённости
+    при этом всё равно работает.
+
+    Стоит одно обращение к словарю в памяти: ~1 мкс на карточку (замер 24.08.2026
+    на 1519 живых карточках), страница из 15 карточек — 0,016 мс. Ни базы, ни сети,
+    ни модели, поэтому её не жалко звать перед каждой выдачей.
+    """
+    p = payload if isinstance(payload, dict) else {}
+    problems: list[str] = []
+    target = str(p.get("target") or "")
+    obj = str(p.get("obj") or "")
+    # В очереди ошибок верный ответ лежит под ключом "correct", в наборе — под "a".
+    answer = str(p.get("correct") or p.get("a") or "")
+    opts = [str(o) for o in (p.get("opts") or []) if str(o).strip()]
+    if target == "thing" and _is_person_noun(obj):
+        problems.append(f"о человеке «{obj}» спрашивают как о вещи")
+    entry = _bank_by_lemma().get(str(p.get("lemma") or "").strip().lower())
+    if entry and answer:
+        expected = (_wo_form(entry["prep"]).capitalize() if target == "thing"
+                    else _person_form(entry["prep"], entry["case"]))
+        if answer != expected:
+            problems.append(f"ответ «{answer}» не выводится из управления: ждали «{expected}»")
+    if answer and opts and answer not in opts:
+        problems.append("верного ответа нет среди вариантов")
+    if opts and (len(opts) != 4 or len(set(opts)) != 4):
+        problems.append(f"вариантов должно быть 4 разных, а тут {opts}")
+    return problems
+
+
+def repair_stored_item(payload: dict) -> tuple[dict | None, str]:
+    """Правильная версия сохранённой карточки — или None, если починить нечем.
+
+    Решение владельца 24.08.2026: кривую карточку в очереди ошибок НЕ удалять, а
+    приводить к правильному виду. Человек уже ошибся на этой конструкции — она и
+    должна ему вернуться, только верной.
+
+    Чиним двумя способами, оба — по банку управления, ничего не придумывая:
+
+      • глагол допускает вопрос о ЧЕЛОВЕКЕ («Rücksicht nehmen auf j-n») —
+        значит карточка просто стояла не в том режиме: объект (das Kind) остаётся,
+        верным ответом становится «Auf wen», пояснение и правило пересобираются;
+      • глагол о человеке не спрашивают («bereit sein zu jemandem» — не немецкий),
+        значит неверен ОБЪЕКТ: берём проверенный из банка того же глагола
+        (das Opfer → der Kompromiss). Ответ не меняется — тренируется то же самое.
+
+    Починенная карточка ОБЯЗАНА пройти полную check_item — ту же, что стоит на
+    сборке. Не прошла — возвращаем None и причину: пусть лучше карточка уйдёт,
+    чем человек снова увидит неверный немецкий.
+    """
+    p = dict(payload if isinstance(payload, dict) else {})
+    entry = _bank_by_lemma().get(str(p.get("lemma") or "").strip().lower())
+    if not entry:
+        return None, "глагола нет в банке управления — чинить не по чему"
+    prep, case = entry["prep"], entry["case"]
+    woword, personword = _wo_form(prep).capitalize(), _person_form(prep, case)
+    frame = str(p.get("s") or "").replace("___", "").strip()
+
+    if bool(entry.get("person")) or bool(entry.get("person_only")):
+        target = "person"
+        p["target"], p["correct"] = "person", personword
+        changed = f"верный ответ «{payload.get('correct')}» → «{personword}»: спрашиваем о человеке"
+    else:
+        things = [pair for pair in entry["obj"] if not _is_person_noun(pair[0])]
+        if not things:
+            return None, "у этого глагола в банке не осталось проверенных вещей"
+        obj_de, obj_ru = things[0]
+        target = "thing"
+        p["target"], p["correct"] = "thing", woword
+        p["obj"], p["obj_ru"] = obj_de, obj_ru
+        p["clue"] = "— " + obj_ru[:1].upper() + obj_ru[1:] + "."
+        old_clue = str(payload.get("clue") or "").strip("— .").strip()
+        changed = f"подсказка «{old_clue}» → «{obj_ru}»: о человеке этот глагол не спрашивают"
+
+    p["erklaerung"] = _erklaerung(entry, target, woword, personword)
+    p["tip"] = _tip(entry, target, woword)
+    p["frage_ru"] = question_ru(entry["lemma"], frame, target)
+    p["hint_ru"] = p.get("verb_ru") or p.get("clue")
+
+    # check_item'у нужны предлог и падеж, которых в сохранённой карточке нет:
+    # подставляем из банка — оттуда они и взялись при сборке.
+    check = dict(p)
+    check["a"], check["prep"], check["case"] = p["correct"], prep, case
+    problems = check_item(check)
+    if problems:
+        return None, "починенная карточка не прошла проверку: " + "; ".join(problems)
+    return p, changed
+
+
+
+_BANK_BY_LEMMA: dict | None = None
+
+
+def _bank_by_lemma() -> dict:
+    """Указатель «лемма → запись банка». Банк — константа модуля, строим один раз."""
+    global _BANK_BY_LEMMA
+    if _BANK_BY_LEMMA is None:
+        _BANK_BY_LEMMA = {str(e.get("lemma") or "").strip().lower(): e for e in _BANK}
+    return _BANK_BY_LEMMA
+
+
+
 def build_wofrage_items(n: int = 10) -> list[dict]:
     """`n` заданий: проверенных поштучно и без повторов внутри набора.
 

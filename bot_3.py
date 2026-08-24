@@ -17229,8 +17229,73 @@ def _format_wofrage_health_text(rows: list[dict], quarantined: list[dict]) -> st
     return "\n".join(lines)
 
 
+def _n_karten(n: int) -> str:
+    """«1 карточку», «2 карточки», «5 карточек» — чтобы отчёт читался как речь."""
+    n = abs(int(n))
+    if 11 <= n % 100 <= 14:
+        return f"{n} карточек"
+    return f"{n} " + {1: "карточку", 2: "карточки", 3: "карточки", 4: "карточки"}.get(n % 10, "карточек")
+
+
+def _format_wofrage_heal_text(fixed: list[dict], removed: list[dict]) -> str:
+    """Короткий отчёт о ночной починке очереди ошибок.
+
+    Как писан: владелец читает это между делом. Значит — одна строка «что сделано»,
+    живой пример на экране, одна строка «почему это было плохо» и прямой ответ на
+    его единственный вопрос: нужно ли ему что-то делать. Ни id, ни имён таблиц,
+    ни слова «формат».
+    """
+    head = []
+    if fixed:
+        head.append(f"починил {_n_karten(len(fixed))}")
+    if removed:
+        head.append(f"убрал {_n_karten(len(removed))}")
+    lines = [f"🧹 <b>Wo-Fragen: {' и '.join(head)} в «работе над ошибками»</b>", ""]
+    for r in fixed[:5]:
+        lines.append(f"• <code>{r['sentence']}</code> — {r['clue']}")
+        lines.append(f"   {r['problem']}")
+        lines.append(f"   ✅ {r['change']}")
+    for r in removed[:5]:
+        lines.append(f"• <code>{r['sentence']}</code> — {r['clue']}")
+        lines.append(f"   {r['problem']}")
+        lines.append(f"   ❌ починить нечем: {r['change']}")
+    hidden = max(0, len(fixed) - 5) + max(0, len(removed) - 5)
+    if hidden:
+        lines.append(f"…и ещё {_n_karten(hidden)}.")
+    lines.append("")
+    lines.append("Такая карточка засчитывает верный ответ как ошибку — учит неправильному.")
+    lines.append("От тебя ничего не нужно: заслон на сборке стоит, новые такие не появляются.")
+    return "\n".join(lines)
+
+
+async def _wofrage_heal_review_queue(context: CallbackContext) -> None:
+    """Ночью приводим в порядок карточки Wo-Fragen в очереди «работа над ошибками».
+
+    Очередь хранит СВОЮ копию задания и показывает её месяцами, поэтому правило,
+    поставленное на сборке, старых копий не касается. Здесь — касается.
+    """
+    try:
+        from backend.database import heal_broken_wofrage_mistakes
+        res = await asyncio.to_thread(heal_broken_wofrage_mistakes)
+        fixed, removed = res.get("fixed") or [], res.get("removed") or []
+        if not fixed and not removed:
+            return
+        logging.warning("wofrage: ночная починка очереди ошибок — исправлено %s, убрано %s",
+                        len(fixed), len(removed))
+        text = _format_wofrage_heal_text(fixed, removed)
+        for admin_id in get_admin_telegram_ids():
+            try:
+                await context.bot.send_message(chat_id=int(admin_id), text=text, parse_mode="HTML")
+            except Exception as exc:
+                logging.warning("wofrage_heal: не доставлено админу %s: %s", admin_id, exc)
+    except Exception:
+        logging.exception("wofrage heal review queue failed")
+
+
 async def _wofrage_bank_health_job(context: CallbackContext) -> None:
     """Ночной осмотр банка: подозрительные задания — в карантин, отчёт админу."""
+    # Сначала очередь ошибок: там лежат КОПИИ заданий, собранные до нынешних правил.
+    await _wofrage_heal_review_queue(context)
     try:
         from backend.database import get_wofrage_item_health, quarantine_wofrage_item
         rows = await asyncio.to_thread(get_wofrage_item_health,
