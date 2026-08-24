@@ -32,6 +32,16 @@ if ! python3 -c "import pytest" >/dev/null 2>&1; then
     exit 1
 fi
 
+# Фронт — первым: он идёт полсекунды, и если сломан, незачем ждать минуту бэкенда.
+if [ -x "$REPO_ROOT/scripts/test-frontend.sh" ]; then
+    if ! "$REPO_ROOT/scripts/test-frontend.sh"; then
+        echo ""
+        echo "⛔️ Пуш не начат: фронтовые тесты красные."
+        echo "   Запушить всё равно:  git push --no-verify $*"
+        exit 1
+    fi
+fi
+
 echo "▶️  Тесты (около минуты)…"
 if ! python3 -m pytest backend/tests -q; then
     echo ""

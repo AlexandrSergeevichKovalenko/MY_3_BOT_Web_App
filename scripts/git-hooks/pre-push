@@ -64,6 +64,18 @@ if [ -f "$HOOK_SRC" ] && [ -f "$HOOK_INSTALLED" ] && ! cmp -s "$HOOK_SRC" "$HOOK
     echo "   Обновить:  ./scripts/git-hooks/install.sh"
 fi
 
+# Фронтовые тесты — ДО памяти о зелёном прогоне: она про backend/tests, который идёт
+# минуту, а здесь весь набор укладывается в полсекунды и кешировать его незачем.
+# Красное здесь останавливает пуш так же, как красный backend.
+if [ -x "$REPO_ROOT/scripts/test-frontend.sh" ]; then
+    if ! "$REPO_ROOT/scripts/test-frontend.sh"; then
+        echo ""
+        echo "⛔️ Пуш остановлен: фронтовые тесты красные."
+        echo "   Запушить всё равно:  git push --no-verify"
+        exit 1
+    fi
+fi
+
 VERIFIED_FILE=$(git rev-parse --git-path pre-push-verified 2>/dev/null)
 FINGERPRINT=$(code_fingerprint)
 
