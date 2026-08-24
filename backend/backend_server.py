@@ -31454,7 +31454,21 @@ def _phrase_review_payload(limit: int = 200) -> dict:
     except Exception:
         logging.debug("phrasereview: blind count failed", exc_info=True)
         blind = 0
-    return {"items": items, "total": len(items), "noise": noise, "blind": blind}
+    # ⚠ «ВСЕГО» — ЭТО ВСЯ ОЧЕРЕДЬ, А НЕ ЗАГРУЖЕННОЕ ОКНО.
+    #
+    # Владелец 24.08.2026 прислал скриншот: «1 из 200», он разбирает фразу за фразой, а
+    # 200 не двигается. Так и было: экран грузит не больше 200 штук, а в очереди их 202.
+    # Решил одну — сервер дослал следующую из хвоста, и число снова 200. Работа шла
+    # (187 фраз уже разобрано), но на экране она была невидима — а невидимая работа
+    # выглядит как бесполезная.
+    from backend.database import count_open_phrase_reviews
+    try:
+        total = count_open_phrase_reviews()
+    except Exception:
+        logging.debug("phrasereview: total count failed", exc_info=True)
+        total = len(items)          # честнее показать окно, чем соврать нулём
+    return {"items": items, "total": total, "loaded": len(items),
+            "noise": noise, "blind": blind}
 
 
 @app.route("/api/answer/phrasereview/list", methods=["POST"])

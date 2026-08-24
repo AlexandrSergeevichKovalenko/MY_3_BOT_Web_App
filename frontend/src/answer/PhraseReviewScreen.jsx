@@ -67,6 +67,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   const [note, setNote] = useState('');
   // Сколько в очереди пустых придирок: заявлена ошибка, а исправить нечего.
   const [noise, setNoise] = useState(0);
+  const [total, setTotal] = useState(0);      // вся очередь, а не загруженное окно
   // Сколько вердиктов вынесено ДО того, как судья стал видеть перевод. Такие слепые:
   // предлог и падеж выбираются по смыслу, а смысла судья не видел.
   const [blind, setBlind] = useState(0);
@@ -91,9 +92,10 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
     try {
       const r = await api('/api/answer/phrasereview/list', {});
       setItems(r.items || []);
+      setTotal(Number(r.total) || (r.items || []).length);
       setNoise(Number(r.noise) || 0);
       setBlind(Number(r.blind) || 0);
-      if (loud) setNote(`🔄 Проверил: спорных фраз — ${(r.items || []).length}.`);
+      if (loud) setNote(`🔄 Проверил: спорных фраз — ${Number(r.total) || (r.items || []).length}.`);
     } catch (e) {
       console.warn('[phrasereview] load', e);
       setError(e?.status === 403
@@ -123,8 +125,12 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
 
   useEffect(() => () => { if (doneTimer.current) clearTimeout(doneTimer.current); }, []);
 
+  // `total` — сколько ВСЕГО ждёт решения, а не сколько влезло в загруженное окно.
+  // Владелец 24.08.2026: разбираю фразу за фразой, а «из 200» не двигается. Так и было:
+  // окно 200, в очереди 202 — решил одну, сервер дослал следующую, число прежнее.
   const applyResponse = (r) => {
     setItems(r.items || []);
+    setTotal(Number(r.total) || (r.items || []).length);
     setNoise(Number(r.noise) || 0);
     setBlind(Number(r.blind) || 0);
     setNote('');
@@ -276,7 +282,6 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   }
 
   const variants = card.variants || [];
-  const position = Math.min(idx, queue.length - 1) + 1;
 
   const arbiter = card.arbiter || null;
 
@@ -291,7 +296,9 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
     <div className={`pinw frrev-w${typing ? ' typing' : ''}`}>
       <div className="pinw-top pinw-top-row">
         <span className="pinw-title">📝 Спорные фразы</span>
-        <span className="pinw-count">{position} из {queue.length}</span>
+        <span className="pinw-count">
+          осталось {Math.max(total || queue.length, 0)}
+        </span>
       </div>
 
       {done ? (
