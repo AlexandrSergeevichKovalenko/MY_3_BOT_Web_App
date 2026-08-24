@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import '../answer/answer.css';
 import './dict.css';
 import { WordBreakdown, useTts, SpeakButton, genderClass, resolveArticle, resolveNumber, resolveLemma, clean, cleanArticle as cleanArticleText, stripLeadingArticle, api, haptic, getInitData, getDictToken } from './WordBreakdown';
 import BreakdownSkeleton from './BreakdownSkeleton';
 import LiveExamples from './LiveExamples';
 import { guessPair, buildDictionarySavePayload } from './saveUtils';
-import { languageName, resolvePair, parsePairCode, pairCode, flipPair, DEFAULT_PAIR } from './langPair.js';
+import { languageName, resolvePair, parsePairCode, displayPair } from './langPair.js';
 import { humanizeDictError } from './errors.js';
 import ProFeatureModal from '../components/ProFeatureModal';
 import SaveWordHint from './SaveWordHint';
@@ -53,14 +53,6 @@ const QUICK_POS_LABELS = {
 // Языки и выбор пары живут в одном месте — ./langPair.js. Здесь раньше стояла своя
 // копия правила «есть кириллица → ru-de, иначе de-ru» и свой список имён языков;
 // с третьим языком две копии разошлись бы, а «table» правило назвало бы немецким.
-// Строка вида 'ru-de' осталась внутренним представлением — это ровно pairCode().
-function effectiveDir(text, forced) {
-  const pair = resolvePair(text, { override: parsePairCode(forced) });
-  return pairCode(pair);
-}
-function dirToPair(dir) {
-  return parsePairCode(dir) || DEFAULT_PAIR;
-}
 
 // All dictionary errors go through the shared humanizer so a raw machine code
 // (e.g. "cost_cap_exceeded") is never shown to the user — see ./errors.js. Kept as a
@@ -224,7 +216,16 @@ export default function DictionaryOverlay({ onClose } = {}) {
   const [wordHint, setWordHint] = useState(null); // {word, suggestion, why}
   const [savedChips, setSavedChips] = useState(() => new Set()); // synonyms/collocations tapped to save
   const [error, setError] = useState('');
-  const [forcedDir, setForcedDir] = useState(null); // null=auto, else 'ru-de'|'de-ru'
+  // Пара, которую видит человек в панели. Пересчитывается на КАЖДОЕ нажатие клавиши:
+  // начал писать по-русски — стало «Русский → Deutsch», по-немецки — наоборот.
+  // Если на экране уже лежит ответ ровно на этот текст, показываем не догадку по
+  // алфавиту, а то, в какую сторону его вправду перевели.
+  //
+  // Пока идёт перевод, прежний ответ намеренно НЕ учитывается: он про то, что было
+  // до нажатия, и панель на секунду показывала бы прошлую пару.
+  const panelPair = useMemo(() => displayPair(query, {
+    result: (quick && phase !== 'loading') ? { text: quick.source, pair: parsePairCode(quick.direction) } : null,
+  }), [query, quick, phase]);
   const [autoOn, setAutoOn] = useState(() => {
     try { return localStorage.getItem('dq_auto') !== '0'; } catch (_e) { return true; }
   });
@@ -407,6 +408,15 @@ export default function DictionaryOverlay({ onClose } = {}) {
     : (quick?.targetLang === 'de'
       ? (corrDe || stripLeadingArticle(quick?.translation) || '—')
       : (bestRu || quick?.translation || '—'));
+  // Текст для обратного поиска — ровно то, что человек видит крупно как перевод.
+  // Пусто — значит переворачивать нечего (ещё не переводили, или ответ пуст), и
+  // кнопка ⇄ гаснет, а не делает вид, что работает.
+  const reverseQuery = (() => {
+    const t = String(headTranslation || '').trim();
+    if (!t || t === '—') return '';
+    if (t === query.trim()) return '';  // искать то же самое — не действие
+    return t;
+  })();
   const headSource = (quick?.sourceLang === 'de')
     ? ((chosenEntry ? chosenEntry.headword : '') || corrDe || stripLeadingArticle(quick?.source) || '')
     : (quick?.source || '');
@@ -432,7 +442,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
     if (germanText) resolveTtsUrls([germanText], 'de-DE');
   }, [germanText, resolveTtsUrls]);
 
-  const translate = useCallback(async (overrideText, dirOverride) => {
+  const translate = useCallback(async (overrideText) => {
     const text = (typeof overrideText === 'string' ? overrideText : query).trim();
     if (!text || phase === 'loading') return;
     if (text !== query) setQuery(text);
@@ -447,18 +457,21 @@ export default function DictionaryOverlay({ onClose } = {}) {
     chipHintDoneRef.current = false; setChipHint(false);
     haptic('light');
     try {
-      // Direction: an explicit swap wins, then the panel choice, else auto by script.
-      const chosenDir = parsePairCode(dirOverride)
-        ? dirOverride : effectiveDir(text, forcedDir);
-      const pair = dirToPair(chosenDir);
+      // Направление — по алфавиту, и только по нему (langPair.js). Ручного
+      // переключателя больше нет: ⇄ переворачивает СОДЕРЖИМОЕ, а не режим, и для
+      // перевёрнутого текста алфавит спрашивают заново. Прошлый ответ здесь не
+      // участвует вовсе — именно он раньше и залипал.
+      const pair = resolvePair(text);
       const data = await api('/api/translate/quick', {
         text, source_lang: pair.source, target_lang: pair.target,
       });
       if (mySeq !== seqRef.current) return;
       const detected = String(data?.detected_source_lang || pair.source).toLowerCase();
       const targetLang = detected === pair.target ? pair.source : pair.target;
-      // Keep the language panel in sync with what was actually detected.
-      setForcedDir(`${detected}-${targetLang}`);
+      // ЗДЕСЬ РАНЬШЕ СТОЯЛО setForcedDir(`${detected}-${targetLang}`) — и оно
+      // выключало автоопределение навсегда. Направление ответа теперь никуда не
+      // закрепляется: панель читает его из самой карточки (quick.direction), и
+      // только пока в поле лежит ТОТ ЖЕ текст.
       const nextQuick = {
         source: text,
         translation: String(data?.translation || '').trim(),
@@ -527,7 +540,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
       }
       setError(friendlyError(e)); setPhase('error'); haptic('bad');
     }
-  }, [query, phase, tts, forcedDir]);
+  }, [query, phase, tts]);
 
   // Drop the current result and return to the initial compose screen. Called when the
   // field is emptied (manually or via the × button) so a stale card never lingers.
@@ -592,7 +605,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
     if (!t || t === lastAutoRef.current || phase === 'loading') return undefined;
     const id = setTimeout(() => translate(t), autoDelayMs);
     return () => clearTimeout(id);
-  }, [query, forcedDir, phase, translate, autoOn, autoDelayMs]);
+  }, [query, phase, translate, autoOn, autoDelayMs]);
 
   const toggleAuto = useCallback(() => {
     setAutoOn((v) => {
@@ -1121,14 +1134,27 @@ export default function DictionaryOverlay({ onClose } = {}) {
     } catch (_e) { try { inputRef.current?.focus(); } catch (_e2) { /* ignore */ } }
   }, [translate]);
 
-  // Swap the language direction (⇄) and re-translate with the new direction.
+  // ⇄ — «перевести обратно»: ПРОШЛЫЙ ПЕРЕВОД становится новым запросом. Нашли
+  // «Krieg → война», нажали ⇄ — в поле встаёт «война» и ищется обратно, в немецкий.
+  // Направление для неё определит алфавит, как и для любого другого набранного слова.
+  //
+  // РАНЬШЕ ЭТА КНОПКА МЕНЯЛА НАПРАВЛЕНИЕ — и была единственным местом в словаре, где
+  // человек мог получить заведомо мусорный ответ: нажатие на немецком слове говорило
+  // переводчику «Krieg — это русский», и «Krieg» возвращалось само себе. Кириллица и
+  // латиница не пересекаются, значит на паре ru↔de переключать нечего.
+  //
+  // Решение владельца 24.08.2026 после разбора чужих решений: у dict.cc и Linguee
+  // направления как настройки нет вовсе, у LEO сторону выбирают данные, у Google
+  // Translate переключатель недоступен при автоопределении, а патент US9524293B2
+  // описывает ровно это — прежний перевод становится новым исходным текстом.
   const onSwap = useCallback(() => {
-    const next = pairCode(flipPair(dirToPair(effectiveDir(query, forcedDir))));
-    setForcedDir(next);
+    const back = reverseQuery;
+    if (!back) return;   // переворачивать нечего — кнопка в этот момент погашена
     haptic('light');
-    const t = query.trim();
-    if (t) { lastAutoRef.current = t; translate(t, next); }
-  }, [query, forcedDir, translate]);
+    setQuery(back);
+    lastAutoRef.current = back;
+    translate(back);
+  }, [reverseQuery, translate]);
 
   // Enter translates; Shift+Enter inserts a newline.
   // Ярлык части речи для быстрого ответа. Показываем только когда разбора ещё нет:
@@ -1312,13 +1338,19 @@ export default function DictionaryOverlay({ onClose } = {}) {
 
 
         {(() => {
-          const dir = effectiveDir(query, forcedDir);
-          const [src, tgt] = dir.split('-');
+          const [src, tgt] = [panelPair.source, panelPair.target];
           return (
             <div className="dq-langrow">
               <div className="dq-langbar">
                 <span className="dq-lang">{languageName(src)}</span>
-                <button type="button" className="dq-swap" onClick={onSwap} aria-label="Поменять языки">⇄</button>
+                <button
+                  type="button"
+                  className="dq-swap"
+                  onClick={onSwap}
+                  disabled={!reverseQuery}
+                  aria-label="Перевести обратно"
+                  title={reverseQuery ? `Перевести обратно: ${reverseQuery}` : 'Сначала переведите слово'}
+                >⇄</button>
                 <span className="dq-lang">{languageName(tgt)}</span>
               </div>
               <button

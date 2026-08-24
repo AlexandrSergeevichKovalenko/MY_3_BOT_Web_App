@@ -405,6 +405,15 @@
   justify-content: center;
 }
 .dq-swap:active { transform: scale(0.92); }
+/* Переводить обратно нечего (ещё не переводили) — кнопка гаснет. Погашенная кнопка
+   честнее пропавшей: место остаётся за ней, и человек видит, что действие есть. */
+.dq-swap[disabled] {
+  background: var(--dq-chip-strong);
+  color: var(--dq-accent-ink);
+  opacity: 0.55;
+  cursor: default;
+}
+.dq-swap[disabled]:active { transform: none; }
 
 /* COMPOSE (start screen): big input filling the card, action button at the bottom */
 .dq-compose {
