@@ -31970,7 +31970,129 @@ def search_dictionary_pool(
             "display_word": german_display or source_text,
             "display_translation": native_display or target_text,
         })
+    _attach_pool_articles(items)
     return items
+
+
+# Немецкие части речи, у которых рода нет и артикль в заголовке был бы ошибкой. Список
+# закрытый и держится отдельно от `_LOWERCASE_POS` регистра: там решается заглавная
+# буква, здесь — принадлежность рода. Смешивать нельзя, это два разных вопроса.
+_POOL_ARTICLE_ALLOWED_POS = ("noun",)
+
+# ОТКУДА взялась часть речи — здесь это важнее, чем ЧТО она говорит.
+#
+# `pos_source='wiktionary'` значит, что часть речи взята ответом на вопрос «существует ли
+# существительное с таким написанием». Это НЕ тот вопрос, который нам нужен: нам нужно
+# «про существительное ли ЭТА карточка». Замер 24.08.2026 показал цену разницы:
+#
+#     «Manche»         единица: noun/die   карточка: «некоторые»    → «die Manche» ✗
+#     «Eigen»          единица: noun/das   карточка: «собственный»  → «das Eigen»  ✗
+#     «Unentschieden»  единица: noun/das   карточка: «ничейный»     → «das Unentschieden» ✗
+#
+# Справочник во всех трёх случаях прав: такие существительные в немецком есть. Неверен
+# вопрос. Поэтому артикль клеим, только когда часть речи пришла из разбора САМОЙ записи
+# (карточка, пул, справочник форм, дверь слова) — там она про это слово в этом значении.
+#
+# Цена решения названа числом: 162 заголовка получают артикль сразу, 111 со слабым
+# подтверждением остаются без него и учитываются как незакрытая задача
+# (scripts/dict_defect_audit.py, пункт «заголовки пула без артикля»). Среди этих 111 есть
+# и заведомо хорошие «Auto», «Haus», «Frühstück» — они ждут не выдумки, а второго
+# источника части речи. Показать неверный немецкий хуже, чем показать слово без артикля.
+_POOL_ARTICLE_WEAK_POS_SOURCES = ("wiktionary",)
+
+
+def _attach_pool_articles(items: list) -> None:
+    """Приклеить артикль к заголовкам выдачи ОБЩЕГО словаря — по справочнику.
+
+    Зачем это здесь
+    ───────────────
+    Личная карточка собирает заголовок через `compose_german_headword` и артикль
+    показывает (`list_user_vocabulary`). Общий словарь этого не делал: `display_word`
+    собирался как «что лежит, то и показываем». Из-за этого одно и то же слово выглядело
+    по-разному на двух экранах, и человек, ищущий слово в общем словаре, видел «Kosten»
+    вместо «die Kosten».
+
+    Замер на живой базе 24.08.2026: 1871 заголовок выдачи пула стоял без артикля; из них
+    306 — существительные с известным родом. После сверки со справочником склонений
+    артикль можно поставить у 278. Остальные 28 не трогаем и вот почему:
+
+        13  форма множественного или обрезок  «Türen», «Bücher», «Ausprägungen»
+         1  род расходится со справочником    «Vertriebene» (у нас die, источник der)
+        14  справочника не знает              «Kosten», «Eltern» (только множественное),
+                                              «Finster», «Tärigkeiten» (опечатки)
+
+    Три условия, и каждое поймано на живых данных (спасибо соседней сессии, 24.08.2026):
+
+    1. **Часть речи — существительное.** «gehen», «wenn», «vier» лежали в единицах с
+       `pos='noun'`, и справочник на них честно отвечает «das Gehen», «das Wenn»,
+       «die Vier»: такие существительные ЕСТЬ, но карточка не про них. Источник прав,
+       вопрос неверен — поэтому спрашиваем только там, где часть речи сама сказала «noun».
+    2. **Справочник склонений подтвердил.** Внутри него стоит сторож множественного:
+       артикль отдаётся, только если заголовок совпал с именительным единственного.
+    3. **Наш род не спорит с источником.** Разошлись — не показываем ни тот, ни другой:
+       выбирать между двумя ответами значит угадывать.
+
+    Ничего не пишется в базу: это сборка ответа, а не правка данных.
+    """
+    if not items:
+        return
+    # Кандидаты: заголовок — одно слово, с заглавной, без артикля. Артикль уже стоящий
+    # в строке трогать нельзя, а слово со строчной — не существительное.
+    candidates = {}
+    for item in items:
+        head = str(item.get("display_word") or "").strip()
+        if not head or " " in head or not head[:1].isupper():
+            continue
+        candidates.setdefault(head, []).append(item)
+    if not candidates:
+        return
+    try:
+        from backend.noun_declension_reference import articles_from_declension_reference
+        verdicts = articles_from_declension_reference(list(candidates))
+    except Exception:
+        # Справочник недоступен — показываем заголовки как есть. Это не подмена ответа:
+        # слово остаётся тем же, просто без артикля, и в логе видно, что сверки не было.
+        logging.warning("общий словарь: сверка артиклей со справочником не отработала",
+                        exc_info=True)
+        return
+    confirmed = {word: found for word, (found, _why) in verdicts.items() if found}
+    if not confirmed:
+        return
+    # Часть речи и наш род — из слоя единиц, тем же ключом, что и везде.
+    known = {}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT lemma_key, pos, pos_source, gender FROM bt_3_lex_units "
+                    "WHERE lang = 'de' AND lemma_key = ANY(%s)",
+                    ([w.casefold() for w in confirmed],),
+                )
+                known = {row[0]: (row[1], row[2], row[3]) for row in cursor.fetchall()}
+    except Exception:
+        logging.warning("общий словарь: часть речи для заголовков не прочиталась",
+                        exc_info=True)
+        return
+    unresolved = 0
+    for word, article in confirmed.items():
+        pos, pos_source, gender = known.get(word.casefold(), (None, None, None))
+        if str(pos or "").strip().lower() not in _POOL_ARTICLE_ALLOWED_POS:
+            continue
+        if str(pos_source or "").strip().lower() in _POOL_ARTICLE_WEAK_POS_SOURCES:
+            # Часть речи подтверждена слабо — см. комментарий у списка выше.
+            unresolved += 1
+            continue
+        if gender and str(gender).strip().lower() != article:
+            # Наш род спорит с источником. Выбирать между двумя ответами значит угадывать.
+            unresolved += 1
+            continue
+        for item in candidates[word]:
+            item["display_word"] = f"{article} {word}"
+    if unresolved:
+        # Молчащий счётчик неотличим от нуля: раз слова остались без артикля, это должно
+        # быть видно числом, а не только на экране у человека.
+        logging.info("общий словарь: %d заголовков остались без артикля — "
+                     "часть речи подтверждена слабо или род спорит с источником", unresolved)
 
 
 # Личные заметки к слову. Потолок сознательный: пять — это ещё заметки, дальше конспект,
