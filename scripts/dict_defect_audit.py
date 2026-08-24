@@ -546,6 +546,73 @@ def audit_separable_gap_tasks(cur, examples: int) -> None:
         ))
 
 
+def audit_pool_headwords_without_article(cur, examples: int) -> None:
+    """Заголовки общего словаря, оставшиеся без артикля, — и ПОЧЕМУ каждый остался.
+
+    С 24.08.2026 выдача пула клеит артикль (backend/database.py, `_attach_pool_articles`),
+    но только там, где за него ручается источник. Всё, что источник не подтвердил, обязано
+    быть видно ЧИСЛОМ, иначе оно превращается в тихий список, который никто не выполняет.
+    Правило отбора здесь то же самое, что в продукте: оно импортируется, а не
+    переписывается словами, — иначе отчёт разойдётся с экраном.
+
+    Замер 24.08.2026: 1853 голых заголовка, артикль получили 162.
+    """
+    from backend.database import _POOL_ARTICLE_WEAK_POS_SOURCES
+    from backend.noun_declension_reference import articles_from_declension_reference
+
+    cur.execute("""
+        SELECT DISTINCT COALESCE(NULLIF(word_de,''),
+                 CASE WHEN lower(source_lang)='de' THEN source_text ELSE '' END,
+                 CASE WHEN lower(target_lang)='de' THEN target_text ELSE '' END,
+                 source_text)
+        FROM bt_3_dictionary_entries
+    """)
+    heads = [str(r[0] or "").strip() for r in cur.fetchall()]
+    heads = [h for h in heads if h and " " not in h and h[:1].isupper()]
+    verdicts = articles_from_declension_reference(heads)
+    confirmed = {w: a for w, (a, _why) in verdicts.items() if a}
+
+    cur.execute("SELECT lemma_key, pos, pos_source, gender FROM bt_3_lex_units "
+                "WHERE lang='de' AND lemma_key = ANY(%s)",
+                ([w.lower() for w in confirmed],))
+    units = {r[0]: (r[1], r[2], r[3]) for r in cur.fetchall()}
+
+    поставлен, слабая_часть_речи, спор, нет_источника = [], [], [], []
+    for head in heads:
+        article = confirmed.get(head)
+        if not article:
+            нет_источника.append(head)
+            continue
+        pos, pos_source, gender = units.get(head.lower(), (None, None, None))
+        if str(pos or "").strip().lower() != "noun":
+            нет_источника.append(head)
+        elif str(pos_source or "").strip().lower() in _POOL_ARTICLE_WEAK_POS_SOURCES:
+            слабая_часть_речи.append(head)
+        elif gender and str(gender).strip().lower() != article:
+            спор.append(head)
+        else:
+            поставлен.append(head)
+
+    осталось = len(слабая_часть_речи) + len(спор)
+    say("ВЛАДЕЛЬЦУ", "Заголовки общего словаря без артикля",
+        "%d из %d" % (осталось, len(heads)), "111 слабых + 1 спорный из 1853",
+        measured_at="24.08.2026")
+    print("""      Артикль ставится только по подтверждению справочника склонений и только
+      когда часть речи пришла из разбора самой записи. Остальное ждёт ВТОРОГО
+      источника части речи, а не выдумки: показать «die Manche» у карточки
+      «некоторые» хуже, чем показать слово без артикля.""")
+    print("      артикль поставлен            %d" % len(поставлен))
+    print("      часть речи подтверждена слабо %d  (pos_source='wiktionary')" % len(слабая_часть_речи))
+    print("      наш род спорит с источником   %d" % len(спор))
+    print("      источник молчит               %d  (не дефект: множественное, опечатки, не существительные)"
+          % len(нет_источника))
+    for head in слабая_часть_речи[:examples]:
+        print("      слабо: %s" % head)
+    for head in спор[:examples]:
+        print("      спор:  %s (у нас %s, источник %s)"
+              % (head, units.get(head.lower(), (None, None, None))[2], confirmed.get(head)))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--list", type=int, default=8, help="сколько примеров печатать на пункт")
@@ -564,6 +631,7 @@ def main() -> None:
             audit_duplicates(cur, screen, names, args.list)
             audit_german_capitals(cur, args.list)
             audit_separable_gap_tasks(cur, args.list)
+            audit_pool_headwords_without_article(cur, args.list)
     print("\n" + "═" * 78)
     print("Скрипт ничего не менял. Все правила отбора — в этом файле, рядом с числом.")
     print("═" * 78)
