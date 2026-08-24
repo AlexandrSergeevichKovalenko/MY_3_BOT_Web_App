@@ -15973,6 +15973,41 @@ def _sync_openai_price_snapshots_from_env() -> dict:
         else:
             errors.append({"env": env_name, **payload})
 
+        # ── Та же цена под КОРОТКИМ именем модели ────────────────────────────────
+        # Код зовёт модель так, как её зовёт OpenAI в запросе: `gpt-4.1`. Цена же
+        # приходит из переменной с ДАТИРОВАННЫМ именем (`gpt-4.1-2025-04-14`), и SKU
+        # получался `gpt-4.1-2025-04-14_input` — а искали `gpt-4.1_input`. Не нашли →
+        # строка ложилась в ведомость с ценой ноль. Замер 24.08.2026: 132 события за
+        # 21 день, все от судьи кроссвордов и судьи отделяемых глаголов.
+        #
+        # Короткое имя получаем СНЯТИЕМ ДАТЫ с конца, а не сравнением по началу строки:
+        # по началу `gpt-4.1` совпало бы и с `gpt-4.1-mini-2025-04-14`, и судью посчитали
+        # бы по цене mini — вчетверо дешевле. Неверное число хуже отсутствующего.
+        alias_match = re.match(r"^(?P<alias>.+)-\d{4}-\d{2}-\d{2}$", model_name)
+        if alias_match:
+            alias_model = alias_match.group("alias")
+            if side == "input":
+                input_prices.setdefault(alias_model, per_1m)
+            elif side == "cached":
+                cached_seen.add(alias_model)
+            alias_status, alias_payload = _upsert_price_snapshot_if_changed(
+                provider="openai",
+                sku=f"{alias_model}_{side}",
+                unit=unit,
+                price_per_unit=price_per_unit,
+                currency=currency,
+                source="alias_of_dated",
+                raw_payload={"env_var": env_name, "price_per_1m": per_1m,
+                             "dated_model": model_name},
+            )
+            alias_entry = {"env": f"(короткое имя {alias_model})", **alias_payload}
+            if alias_status == "created":
+                created.append(alias_entry)
+            elif alias_status == "unchanged":
+                skipped.append({**alias_entry, "reason": "unchanged"})
+            else:
+                errors.append(alias_entry)
+
     # Цена кешированного входа для моделей, у которых её не задали явно. Без неё
     # кешированная половина расхода уходила бы в ноль — и отчёт врал бы уже в другую
     # сторону, показывая ночной добор дешевле, чем он есть.
@@ -30836,14 +30871,22 @@ def submit_answer():
             # СОДЕРЖИМОМУ задания («rb:42»), а не по рассылке, поэтому годится как
             # ключ памяти без всякой переделки. Без этой записи следующая выдача
             # выбирается вслепую и человеку приходит пройденное.
-            try:
-                from backend.database import record_user_task_answer
-                record_user_task_answer(user_id=user_id, kind=kind,
-                                        task_key=challenge_key,
-                                        is_correct=is_correct, source="chat")
-            except Exception:
-                logging.warning("ротация: не удалось запомнить ответ kind=%s key=%s",
-                                kind, challenge_key, exc_info=True)
+            #
+            # Только ПЕРВАЯ сдача. Открыть уже сданное задание и нажать «проверить»
+            # снова можно сколько угодно раз (проверяющие возвращают сохранённый
+            # разбор с флагом `already_answered`), а лестница возврата обязана считать
+            # СДАЧИ: иначе три захода в решённый кроссворд протащили бы человека
+            # 90 → 120 → «никогда», а три захода в заваленный — 7 → 14 → 30.
+            # `record_challenge_result` выше от этого защищён своим ON CONFLICT.
+            if not result.get("already_answered"):
+                try:
+                    from backend.database import record_user_task_answer
+                    record_user_task_answer(user_id=user_id, kind=kind,
+                                            task_key=challenge_key,
+                                            is_correct=is_correct, source="chat")
+                except Exception:
+                    logging.warning("ротация: не удалось запомнить ответ kind=%s key=%s",
+                                    kind, challenge_key, exc_info=True)
             result["ranking"] = compute_challenge_ranking(challenge_key=challenge_key, user_id=user_id)
             # Overtake plaques: a faster correct answer pushes slower players down.
             # Notify whoever just lost #1, AND refresh the current place on every

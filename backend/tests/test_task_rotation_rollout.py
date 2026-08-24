@@ -60,14 +60,27 @@ class PickerExclusionTests(unittest.TestCase):
         self.assertIn(["42", "77"], list(params))
 
     def test_crossword_excludes_too(self):
-        sql, params = self._sql_of(db.pick_next_crossword, cooldown_days=14,
-                                   exclude_ids=["7"])
+        sql, params = self._sql_of(db.pick_next_crossword, exclude_ids=["7"])
         self.assertIn("<> ALL(%s)", sql)
 
     def test_anagram_excludes_too(self):
-        sql, params = self._sql_of(db.pick_next_anagram, cooldown_days=10,
-                                   exclude_ids=["7"])
+        sql, params = self._sql_of(db.pick_next_anagram, exclude_ids=["7"])
         self.assertIn("<> ALL(%s)", sql)
+
+    def test_crossword_and_anagram_have_no_shared_rest_left(self):
+        """Общий отдых карточки снят (решение владельца 24.08.2026).
+
+        Проверяем ровно две вещи: условия «показан кому-то недавно — никому не давать»
+        в отборе НЕТ, а `last_sent_at` остался — но только в сортировке, как порядок
+        очереди. Без второй половины человек, который игру не открывает, получал бы
+        каждый день буквально одну и ту же карточку.
+        """
+        for picker in (db.pick_next_crossword, db.pick_next_anagram):
+            with self.subTest(picker=picker.__name__):
+                sql, _ = self._sql_of(picker, exclude_ids=[])
+                self.assertNotIn("last_sent_at <", sql)
+                self.assertNotIn("last_sent_at IS NULL OR", sql)
+                self.assertIn("ORDER BY last_sent_at NULLS FIRST", sql)
 
     def test_aufgabe_excludes_too(self):
         sql, params = self._sql_of(db.pick_next_aufgabe, cooldown_days=15,

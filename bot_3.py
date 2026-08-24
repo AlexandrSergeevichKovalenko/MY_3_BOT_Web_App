@@ -514,10 +514,13 @@ ARTICLE_QUIZ_SLOT_TIMES = {(9, 15), (13, 15), (17, 15), (10, 15), (18, 15)}  # 3
 from backend.task_cooldowns import ARTICLE_QUIZ_COOLDOWN_DAYS
 ARTICLE_QUIZ_POOL_TARGET = max(5, int((os.getenv("ARTICLE_QUIZ_POOL_TARGET") or "30").strip() or "30"))
 ARTICLE_QUIZ_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("ARTICLE_QUIZ_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
-CROSSWORD_SLOT_TIMES = {(11, 45), (17, 45)}  # 2x/day at :45
+# ОДИН кроссворд в день — решение владельца 24.08.2026. Было два слота (11:45 и 17:45).
+# Кроссворд — единственная игра, чья карточка стоит денег и почти не переиспользуется:
+# 0,35 цента за штуку (замер по ведомости 24.08.2026), а взялись за неё 15 раз из 157
+# отправок за месяц. Слать её дважды в день значит платить за рассылку, а не за учёбу.
+CROSSWORD_SLOT_TIMES = {(11, 45)}
 ANAGRAM_SLOT_TIMES   = {(12, 15), (19, 15)}  # 2x/day — assemble-the-word Mini-App card
 ANAGRAM_POOL_TARGET  = max(4, int((os.getenv("ANAGRAM_POOL_TARGET") or "12").strip() or "12"))
-from backend.task_cooldowns import ANAGRAM_COOLDOWN_DAYS
 # One daily slot pinned to each format → EVERY B2+ format is sent every day.
 # Satzbau (assemble-the-sentence) goes 2×/day per the product decision.
 AUFGABE_FORMAT_SLOTS = {
@@ -581,12 +584,11 @@ NUMDICT_POOL_TARGET   = max(12, int((os.getenv("NUMDICT_POOL_TARGET") or "120").
 NUMDICT_SESSION_ITEMS = 3
 # Bump when the audio reading logic changes → new R2 key → no stale cached audio.
 NUMDICT_AUDIO_VERSION = "v4"  # v4 = alnum codes read digit runs in pairs (two-digit numbers), letters spelled
-# Pool must comfortably exceed slots/day × cooldown so a card is always past cooldown
-# at send time: 2 slots/day × 14d = 28, and target 50 leaves headroom (was 15 — BELOW
-# the live pool size, so the nightly top-up generated nothing and the pool slowly drained
-# to a cooldown-wall blackout). The group send also now falls back to cooldown=0 as a
-# hard no-blackout floor regardless of these numbers.
-from backend.task_cooldowns import CROSSWORD_COOLDOWN_DAYS
+# Общего отдыха у карточки больше нет (решение владельца 24.08.2026, см.
+# backend/task_cooldowns.py): банк не обязан превышать «слоты × дни отдыха», потому что
+# одну и ту же карточку можно давать разным людям. Размер банка держит ночной замер
+# запаса по СДАЧАМ (`measure_task_supply`), а не эта константа: она осталась для ручных
+# команд наполнения пула.
 CROSSWORD_POOL_TARGET = max(5, int((os.getenv("CROSSWORD_POOL_TARGET") or "50").strip() or "50"))
 CROSSWORD_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("CROSSWORD_POOL_TOPUP_TRIGGER") or "3").strip() or "3"))
 VISUAL_RIDDLE_POOL_TOPUP_HOUR = max(0, min(23, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_HOUR") or "6").strip() or "6")))
@@ -4494,9 +4496,8 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             except Exception: pass
         return ok
     if kind == "anagram":
-        entry = await _pick_for_person(pick_next_anagram,
-                                       cooldown_days=ANAGRAM_COOLDOWN_DAYS,
-                                       blocked=blocked)
+        # Как у кроссворда: общего отдыха нет, повтор держит только личная память.
+        entry = await asyncio.to_thread(pick_next_anagram, exclude_ids=blocked)
         if not entry:
             return False
         try:
@@ -4530,9 +4531,9 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             except Exception: pass
         return ok
     if kind == "crossword":
-        entry = await _pick_for_person(pick_next_crossword,
-                                       cooldown_days=CROSSWORD_COOLDOWN_DAYS,
-                                       blocked=blocked)
+        # Общего отдыха у кроссворда нет — отбор идёт только по личной памяти,
+        # поэтому и послаблений (`_pick_for_person`) больше не нужно.
+        entry = await asyncio.to_thread(pick_next_crossword, exclude_ids=blocked)
         if not entry:
             return False
         object_key = str(entry.get("image_object_key") or "")
@@ -34277,9 +34278,7 @@ async def _send_scheduled_crossword(context: CallbackContext) -> None:
             continue
         try:
             blocked = await _drip_blocked_ids(target_chat_id, "crossword")
-            entry = await _pick_for_person(pick_next_crossword,
-                                           cooldown_days=CROSSWORD_COOLDOWN_DAYS,
-                                           blocked=blocked)
+            entry = await asyncio.to_thread(pick_next_crossword, exclude_ids=blocked)
         except Exception:
             logging.warning("cw_slot: подбор не удался chat=%s", target_chat_id, exc_info=True)
             continue
@@ -34495,7 +34494,7 @@ async def admin_crossword_send_command(update: Update, context: CallbackContext)
     last_error = "no ready crossword"
     for _attempt in range(6):
         try:
-            entry = await asyncio.to_thread(pick_next_crossword, cooldown_days=0)
+            entry = await asyncio.to_thread(pick_next_crossword)
         except Exception as exc:
             await status_msg.edit_text(f"pick_next_crossword failed: {exc}")
             return
@@ -34576,7 +34575,7 @@ async def admin_crossword_resend_command(update: Update, context: CallbackContex
     entry = None
     image_url = None
     for _ in range(6):
-        entry = await asyncio.to_thread(pick_next_crossword, cooldown_days=0)
+        entry = await asyncio.to_thread(pick_next_crossword)
         if not entry:
             break
         cid = str(entry.get("crossword_id") or "")
@@ -34818,7 +34817,7 @@ async def prepare_anagram_pool_job(context: CallbackContext) -> None:
     """Startup + nightly: fill the anagram pool to target (off critical path), so a
     slot is never missed when generation hiccups (like the other games' pools)."""
     try:
-        have = await asyncio.to_thread(count_available_anagram_cards, cooldown_days=ANAGRAM_COOLDOWN_DAYS)
+        have = await asyncio.to_thread(count_available_anagram_cards)
     except Exception:
         have = 0
     made = 0
@@ -34859,9 +34858,7 @@ async def _send_scheduled_anagram(context: CallbackContext) -> None:
             continue
         try:
             blocked = await _drip_blocked_ids(target_chat_id, "anagram")
-            entry = await _pick_for_person(pick_next_anagram,
-                                           cooldown_days=ANAGRAM_COOLDOWN_DAYS,
-                                           blocked=blocked)
+            entry = await asyncio.to_thread(pick_next_anagram, exclude_ids=blocked)
         except Exception:
             logging.warning("ag_slot: подбор не удался chat=%s", target_chat_id, exc_info=True)
             continue
@@ -40488,7 +40485,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     rebus_ready_total = await asyncio.to_thread(count_available_rebuses, cooldown_days=0)
     cross = await asyncio.to_thread(count_crossword_bank_entries, exclude_retired=True)
     artic = await asyncio.to_thread(count_available_article_quiz_entries, cooldown_days=14)
-    anag = await asyncio.to_thread(count_available_anagram_cards, cooldown_days=ANAGRAM_COOLDOWN_DAYS)
+    anag = await asyncio.to_thread(count_available_anagram_cards)
     listen = await asyncio.to_thread(count_listening_bank_entries, exclude_retired=True)
     numdict = await asyncio.to_thread(count_numdict_bank_entries, exclude_retired=True)
     prep = await asyncio.to_thread(count_prepared_telegram_quizzes)
@@ -40589,7 +40586,7 @@ async def admin_crossword_health_command(update: Update, context: CallbackContex
         await message.reply_text("Allowed users only.")
         return
     try:
-        h = await asyncio.to_thread(crossword_pool_health, cooldown_days=CROSSWORD_COOLDOWN_DAYS)
+        h = await asyncio.to_thread(crossword_pool_health)
     except Exception as exc:
         await message.reply_text(f"❌ cw_health failed: {exc}")
         return
@@ -40598,13 +40595,11 @@ async def admin_crossword_health_command(update: Update, context: CallbackContex
     slots = ", ".join(f"{hh:02d}:{mm:02d}" for (hh, mm) in sorted(CROSSWORD_SLOT_TIMES))
     last_sent = h.get("last_sent_at")
     last_sent_s = last_sent.strftime("%Y-%m-%d %H:%M") if last_sent else "никогда"
-    frees = h.get("oldest_cooldown_sent_at")
-    frees_s = (frees + timedelta(days=CROSSWORD_COOLDOWN_DAYS)).strftime("%Y-%m-%d %H:%M") if frees else None
 
     lines = [
         "🔤 <b>Kreuzwort — health</b>",
         f"• включено: {'✅ да' if enabled else '❌ НЕТ (CROSSWORDS_ENABLED=off)'}",
-        f"• слоты: {slots} · cooldown {CROSSWORD_COOLDOWN_DAYS}д",
+        f"• слоты: {slots} · общего отдыха у карточки нет (24.08.2026)",
         f"• последняя отправка: <b>{last_sent_s}</b>",
         "",
         f"<b>Пул ({h['total']} всего):</b>",
@@ -40614,10 +40609,8 @@ async def admin_crossword_health_command(update: Update, context: CallbackContex
         f"• 🚫 retired: {h['retired']}",
         "",
         f"<b>➡️ отправляемо ПРЯМО СЕЙЧАС: {h['sendable_now']}</b>",
-        f"• в cooldown (ready, но рано): {h['in_cooldown']}",
+        f"• ни разу не показывались: {h['never_sent']}",
     ]
-    if h["sendable_now"] == 0 and frees_s:
-        lines.append(f"• ближайший выйдет из cooldown: {frees_s}")
 
     # Verdict — the single most-likely cause.
     if not enabled:
@@ -40633,10 +40626,6 @@ async def admin_crossword_health_command(update: Update, context: CallbackContex
             verdict = "🔴 Нет ready-записей — догенерируй пул: /admin_cw_pool 50."
     elif h["total"] == 0:
         verdict = "🔴 Банк пустой — сгенерируй пул: /admin_cw_pool 50."
-    elif h["in_cooldown"] > 0:
-        # Not a blackout anymore (send falls back to cooldown=0), but a small pool = early repeats.
-        hint = " Есть retired — оживи /admin_cw_revive." if h["retired"] > 0 else " Долей: /admin_cw_pool 50."
-        verdict = "🟠 Все ready-карты в cooldown — блэкаута не будет (fallback), но возможны ранние повторы." + hint
     else:
         verdict = "🟠 Отправлять нечего по неочевидной причине — проверь логи cw_slot."
     lines += ["", verdict]
@@ -41121,7 +41110,7 @@ async def admin_crossword_revive_command(update: Update, context: CallbackContex
         await message.reply_text(f"❌ revive failed: {exc}")
         return
     try:
-        h = await asyncio.to_thread(crossword_pool_health, cooldown_days=CROSSWORD_COOLDOWN_DAYS)
+        h = await asyncio.to_thread(crossword_pool_health)
         tail = f"\nСейчас: ready {h['ready']}, retired {h['retired']}, отправляемо сейчас {h['sendable_now']}."
     except Exception:
         tail = ""

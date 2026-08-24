@@ -26,16 +26,26 @@ def _days(env_name: str, default: int, floor: int) -> int:
 
 REBUS_COOLDOWN_DAYS = _days("REBUS_COOLDOWN_DAYS", 15, 7)
 ARTICLE_QUIZ_COOLDOWN_DAYS = _days("ARTICLE_QUIZ_COOLDOWN_DAYS", 14, 7)
-ANAGRAM_COOLDOWN_DAYS = _days("ANAGRAM_COOLDOWN_DAYS", 10, 1)
 AUFGABE_SEND_COOLDOWN_DAYS = _days("AUFGABE_SEND_COOLDOWN_DAYS", 15, 1)
 LISTENING_COOLDOWN_DAYS = _days("LISTENING_COOLDOWN_DAYS", 7, 5)
-CROSSWORD_COOLDOWN_DAYS = _days("CROSSWORD_COOLDOWN_DAYS", 14, 7)
+
+# У КРОССВОРДОВ И АНАГРАММ ОБЩЕГО ОТДЫХА НЕТ — решение владельца 24.08.2026.
+#
+# Их прежние сроки (14 и 10 дней) убраны отсюда насовсем, а не выставлены в ноль:
+# ноль читался бы как «отдых есть, но нулевой», а его не существует. Кто повторов не
+# допускает — личная память человека (`backend/task_rotation.py`), и только она.
+#
+# Почему сняли: отдых был ОБЩИЙ и наступал по ОТПРАВКЕ. Карточка, ушедшая одному
+# человеку, выпадала у всех на две недели, даже если он её не открыл. Замер 24.08.2026:
+# 11 человек в день выедали 12-13 кроссвордов из 107 готовых, свободным оставался 21,
+# а взялись за задание 15 раз из 157 отправок. Банк из-за этого приходилось растить от
+# ЧИСЛА ЛЮДЕЙ (11 чел. × 14 дн. = 168 карточек, а на 2000 человек — 28 000), хотя закон
+# ровно обратный: разным людям одно и то же задание давать можно.
 
 # Вид задания (как он назван в замере запаса) → его срок отдыха.
+# Вида здесь нет → общего отдыха у него нет. Читать через `.get`, а не по ключу.
 COOLDOWN_DAYS_BY_KIND = {
     "rb": REBUS_COOLDOWN_DAYS,
-    "cw": CROSSWORD_COOLDOWN_DAYS,
-    "ag": ANAGRAM_COOLDOWN_DAYS,
     "au": AUFGABE_SEND_COOLDOWN_DAYS,
     "article_quiz": ARTICLE_QUIZ_COOLDOWN_DAYS,
     "ls": LISTENING_COOLDOWN_DAYS,
