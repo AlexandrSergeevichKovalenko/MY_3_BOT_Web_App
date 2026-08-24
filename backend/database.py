@@ -2601,6 +2601,15 @@ def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
         #  • a lemma shown WITH its ending / an article word → the item hands over
         #    the grammar it is supposed to test.
         return bool(wortgruppe_lemma_leak(payload))
+    if fmt == "wofrage":
+        # Wo-Fragen: карточка в очереди ошибок — СОБСТВЕННАЯ копия задания, собранная
+        # когда-то давно. Стражи генератора её уже не защищают (они стоят на сборке),
+        # поэтому перед показом прогоняем её по тем же правилам: одушевлённость плюс
+        # управление глагола из банка. Класс, из-за которого это написано: карточка
+        # «Worauf … — Ребёнок» от 21.07 всплыла у владельца 24.08, через месяц после
+        # починки генератора. Проверка стоит ~1 мкс, базы не трогает.
+        from backend.wofrage_generator import stored_item_problems
+        return bool(stored_item_problems(payload))
     return False
 
 
@@ -3078,7 +3087,17 @@ def get_next_due_mistake(user_id: int, *, family: str | None = None) -> dict | N
                 bad_ids = []
                 for row in rows:
                     payload = row[2] if isinstance(row[2], dict) else {}
-                    if is_degenerate_aufgabe(str(row[1]), payload, row[3]):
+                    if str(row[1]) == "wofrage" and is_degenerate_aufgabe("wofrage", payload):
+                        # Wo-Fragen чинятся по банку управления, а не выбрасываются:
+                        # человек ошибся на этой конструкции — она и должна вернуться,
+                        # только верной. Непочинимую _heal_wofrage_row убирает сам.
+                        payload, why = _heal_wofrage_row(cur, int(row[0]), payload)
+                        logging.warning("wofrage: карточка %s в очереди ошибок — %s (%s)",
+                                        row[0], "починена" if payload else "убрана", why)
+                        if payload is None:
+                            continue
+                        row = (row[0], row[1], payload, str(payload.get("correct") or ""))
+                    elif is_degenerate_aufgabe(str(row[1]), payload, row[3]):
                         bad_ids.append(row[0])
                         continue
                     picked = {"id": int(row[0]), "format": str(row[1]),
@@ -54462,14 +54481,91 @@ def get_due_wofrage_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
                     (int(user_id), int(user_id), int(left), min(int(limit), int(left))),
                 )
                 rows = cur.fetchall() or []
+        # Последний рубеж перед экраном: карточка тут — КОПИЯ, собранная когда-то
+        # давно, а правила сборки с тех пор могли измениться. Ночная починка обычно
+        # успевает раньше; если нет — чиним прямо сейчас, по банку управления, и
+        # пишем исправленную обратно. Проверка стоит ~1 мкс на карточку, база
+        # трогается, только если что-то вправду кривое (в норме — никогда).
+        from backend.wofrage_generator import stored_item_problems
         out = []
-        for r in rows:
-            payload = r[1] if isinstance(r[1], dict) else {}
-            out.append({"id": int(r[0]), "payload": payload})
+        suspect = [(int(r[0]), r[1] if isinstance(r[1], dict) else {}) for r in rows]
+        if any(stored_item_problems(p) for _, p in suspect):
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    healed = {}
+                    for mid, p in suspect:
+                        if not stored_item_problems(p):
+                            continue
+                        new_payload, why = _heal_wofrage_row(cur, mid, p)
+                        healed[mid] = new_payload
+                        logging.warning("wofrage: карточка %s в очереди ошибок — %s (%s)",
+                                        mid, "починена" if new_payload else "убрана", why)
+                conn.commit()
+            suspect = [(mid, healed[mid] if mid in healed else p) for mid, p in suspect]
+        for mid, payload in suspect:
+            if payload is None:
+                continue
+            out.append({"id": mid, "payload": payload})
         return out
     except Exception:
         logging.warning("get_due_wofrage_mistakes_batch failed user_id=%s", user_id, exc_info=True)
         return []
+
+
+def _heal_wofrage_row(cur, mistake_id: int, payload: dict) -> tuple[dict | None, str]:
+    """Одна кривая карточка Wo-Fragen: чиним по банку и пишем обратно; если починить
+    нечем — убираем из очереди. Возвращает (исправленный payload или None, что сделали).
+
+    Одна точка правды для трёх мест: ночная чистка, страница «работы над ошибками»
+    и разбор по одной карточке. Курсор передаётся снаружи — правка идёт в той же
+    транзакции, что и чтение, иначе человек успеет увидеть карточку между ними.
+    """
+    from backend.wofrage_generator import repair_stored_item
+    fixed, why = repair_stored_item(payload)
+    if fixed:
+        cur.execute(
+            "UPDATE bt_3_aufgabe_mistakes SET payload=%s, correct_answer=%s WHERE id=%s;",
+            (Json(fixed), str(fixed.get("correct") or ""), int(mistake_id)),
+        )
+        return fixed, why
+    cur.execute("DELETE FROM bt_3_aufgabe_mistakes WHERE id=%s;", (int(mistake_id),))
+    return None, why
+
+
+def heal_broken_wofrage_mistakes() -> dict:
+    """Ночной проход по очереди «работа над ошибками»: кривые карточки Wo-Fragen
+    приводим к правильному виду, непочинимые убираем.
+
+    Возвращает НЕ число, а что именно сделано, — владелец должен увидеть отчёт, а не
+    строку в логе, которую никто не читает. Пустой результат = очередь чиста, и это
+    нормальный ежедневный исход: стражи стоят на входе, сюда попадает только то, что
+    собрано до появления очередного правила.
+    """
+    from backend.wofrage_generator import stored_item_problems
+    ensure_aufgabe_mistakes_schema()
+    fixed: list[dict] = []
+    removed: list[dict] = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, user_id, payload FROM bt_3_aufgabe_mistakes WHERE format='wofrage';"
+            )
+            for mid, uid, payload in cur.fetchall() or []:
+                p = payload if isinstance(payload, dict) else {}
+                problems = stored_item_problems(p)
+                if not problems:
+                    continue
+                card = {"id": int(mid), "user_id": int(uid),
+                        "sentence": str(p.get("s") or "").replace("___", "…"),
+                        "clue": str(p.get("clue") or "").strip("— ").strip(),
+                        "answer": str(p.get("correct") or ""),
+                        "problem": problems[0]}
+                new_payload, why = _heal_wofrage_row(cur, int(mid), p)
+                card["change"] = why
+                (fixed if new_payload else removed).append(card)
+        conn.commit()
+    return {"fixed": fixed, "removed": removed}
+
 
 
 def get_article_noun_images(pairs) -> dict:

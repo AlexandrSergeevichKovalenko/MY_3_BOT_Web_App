@@ -126,5 +126,95 @@ class WoFrageApprovedObjectsTests(unittest.TestCase):
         self.assertEqual(offenders, [], f"люди в проверенном списке вещей: {offenders}")
 
 
+# Найдено владельцем 24.08.2026: страж 29.07 стоял только на СБОРКЕ, а очередь
+# «работа над ошибками» хранит свою копию карточки и показывает её месяцами. Поэтому
+# карточка от 21.07 «Worauf nimmst du Rücksicht? — Ребёнок» всплыла через месяц после
+# починки генератора. Ниже — проверки того, что старая копия больше не доходит до
+# экрана: её ловят перед показом и приводят к правильному виду.
+JULY_CARD = {
+    "s": "___ nimmst du Rücksicht?",
+    "clue": "— Ребёнок.",
+    "opts": ["Worauf", "In wen", "Woraus", "Auf wen"],
+    "correct": "Worauf",
+    "target": "thing",
+    "lemma": "Rücksicht nehmen auf",
+    "verb_ru": "считаться (с)",
+    "obj": "das Kind",
+    "obj_ru": "ребёнок",
+    "erklaerung": "«Rücksicht nehmen auf» управляет предлогом «auf» (Akkusativ). "
+                  "Вопрос о вещи → Worauf. О человеке было бы «Auf wen».",
+    "tip": "Предлог «auf» на гласную → вставляем -r-: wo+r+auf = Worauf.",
+}
+
+
+class WoFrageStoredCardTests(unittest.TestCase):
+    """Сохранённая карточка проверяется теми же правилами, что и свежесобранная."""
+
+    def test_july_card_is_caught(self):
+        problems = wg.stored_item_problems(JULY_CARD)
+        self.assertTrue(problems, "карточка «Worauf … das Kind» обязана быть отбракована")
+        self.assertIn("как о вещи", problems[0])
+
+    def test_healthy_card_passes(self):
+        good = dict(JULY_CARD, target="person", correct="Auf wen", obj="David", obj_ru="")
+        self.assertEqual(wg.stored_item_problems(good), [])
+
+    def test_person_name_clue_is_not_a_defect(self):
+        """Ложный след 24.08: в режиме человека подсказка — голое имя, и в списке
+        существительных его нет. Это НЕ дефект, отбраковывать такие нельзя."""
+        for name in ("David", "Julia", "Ben"):
+            card = dict(JULY_CARD, target="person", correct="Auf wen", obj=name, obj_ru="")
+            self.assertEqual(wg.stored_item_problems(card), [], f"имя {name} посчитали дефектом")
+
+    def test_repair_switches_to_person_question(self):
+        fixed, why = wg.repair_stored_item(JULY_CARD)
+        self.assertIsNotNone(fixed, why)
+        self.assertEqual(fixed["correct"], "Auf wen")
+        self.assertEqual(fixed["target"], "person")
+        self.assertEqual(fixed["obj"], "das Kind", "объект менять незачем — он тут ни при чём")
+        self.assertIn("Auf wen", fixed["erklaerung"])
+        self.assertEqual(wg.stored_item_problems(fixed), [])
+
+    def test_repair_swaps_object_when_verb_takes_no_person(self):
+        """«bereit sein zu jemandem» — не немецкий, значит неверен объект, а не режим."""
+        card = dict(JULY_CARD, s="___ seid ihr bereit?", clue="— Жертва.", correct="Wozu",
+                    opts=["Wofür", "Worum", "Zu wem", "Wozu"], lemma="bereit sein zu",
+                    obj="das Opfer", obj_ru="жертва", verb_ru="быть готовым (к)",
+                    erklaerung="", tip="")
+        fixed, why = wg.repair_stored_item(card)
+        self.assertIsNotNone(fixed, why)
+        self.assertEqual(fixed["correct"], "Wozu", "ответ верный, менять его нельзя")
+        self.assertEqual(fixed["target"], "thing")
+        self.assertFalse(wg._is_person_noun(fixed["obj"]), "объект обязан стать вещью")
+        self.assertEqual(wg.stored_item_problems(fixed), [])
+
+    def test_repair_refuses_when_the_verb_is_unknown(self):
+        """Глагола нет в банке — управление выводить не из чего. Догадываться запрещено."""
+        fixed, why = wg.repair_stored_item(dict(JULY_CARD, lemma="выдуманный глагол zu"))
+        self.assertIsNone(fixed)
+        self.assertIn("банке", why)
+
+    def test_review_page_heals_the_card_before_showing_it(self):
+        """Страница «работы над ошибками» отдаёт уже исправленную карточку."""
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [(256, dict(JULY_CARD))]
+        cursor.__enter__ = lambda s: s
+        cursor.__exit__ = lambda s, *a: False
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        ctx = MagicMock()
+        ctx.__enter__ = lambda s: conn
+        ctx.__exit__ = lambda s, *a: False
+        with patch.object(db, "get_db_connection_context", return_value=ctx), \
+             patch.object(db, "review_portion_left", return_value=15), \
+             patch.object(db, "ensure_aufgabe_mistakes_schema", return_value=None):
+            got = db.get_due_wofrage_mistakes_batch(117649764, 15)
+        self.assertEqual(len(got), 1, "карточку не выбросили, а починили")
+        self.assertEqual(got[0]["payload"]["correct"], "Auf wen")
+        self.assertEqual(wg.stored_item_problems(got[0]["payload"]), [])
+        wrote = [c for c in cursor.execute.call_args_list if "UPDATE" in str(c[0][0])]
+        self.assertTrue(wrote, "исправленная карточка обязана лечь обратно в базу")
+
+
 if __name__ == "__main__":
     unittest.main()
