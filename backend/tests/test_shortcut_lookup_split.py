@@ -578,6 +578,8 @@ class ShortcutLookupSplitTests(unittest.TestCase):
              patch.object(server, "_shortcut_run_gate",
                           return_value=(True, "ok", {"is_pro": True, "in_window": True, "total_runs": 3})), \
              patch.object(server, "record_shortcut_run_check"), \
+             patch.object(server, "_record_shortcut_forwarded_message_accepted",
+                          lambda **kwargs: None), \
              patch.object(server, "_start_shortcut_lookup_enqueue_runner", return_value="job-456") as enqueue_mock:
             response = self.client.post(
                 "/api/shortcut/lookup",

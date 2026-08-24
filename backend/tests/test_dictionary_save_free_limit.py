@@ -38,6 +38,15 @@ class DictionarySaveFreeLimitTests(unittest.TestCase):
         costs_nothing_mock = stack.enter_context(
             patch.object(server, "_dictionary_save_costs_us_nothing", return_value=costs_nothing)
         )
+        # Артикль к заголовку приклеивается ПО СПРАВОЧНИКУ, а справочник живёт в базе.
+        # Тест проверяет не справочник, а то, что ворота лимита спрашивают про НЕМЕЦКОЕ
+        # слово вместе с артиклем, — поэтому ответ источника задаём здесь сами. Без
+        # этого тест зависел от живой базы и краснел от чужого параллельного прогона
+        # (замер 24.08.2026: 42 таких теста в 14 файлах).
+        stack.enter_context(patch.object(
+            server, "_authoritative_german_article",
+            lambda lemma: {"haus": "das"}.get(str(lemma or "").strip().lower(), ""),
+        ))
         stack.enter_context(patch.object(server, "WEBAPP_SINGLE_INSTANCE_GUARD_ENABLED", False))
         stack.enter_context(patch.object(server, "_telegram_hash_is_valid", return_value=True))
         stack.enter_context(

@@ -152,6 +152,8 @@ class TranslationSessionAccountingTests(unittest.TestCase):
              patch.object(server, "get_pending_daily_sentences", return_value=items), \
              patch.object(server, "_mark_translation_sentences_delivered", return_value={"updated": 1}) as mark_mock, \
              patch.object(server, "is_translation_sentence_fill_async_enabled", return_value=False), \
+             patch.object(server, "_maybe_restart_translation_session_fill",
+                          lambda **kwargs: None), \
              patch.object(server, "_estimate_json_payload_size_bytes", return_value=0), \
              patch.object(server, "_log_flow_observation"), \
              patch.object(server, "summarize_db_acquire_events", return_value={}):
