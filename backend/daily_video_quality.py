@@ -212,9 +212,39 @@ def check_cards(cards: list, *, transcript: str = "", requires_register: bool = 
 
 _ARTICLES = ("der", "die", "das")
 
+# Неопределённый артикль в заголовке — НЕ словарная форма, но такое же доказательство
+# того, что перед нами существительное, как и определённый.
+#
+# До 24.08.2026 `split_article` принимала только der/die/das, и карточка, пришедшая из
+# колоды как «eine Schnapsidee», для заслона не существовала вовсе: он её не проверял,
+# не исправлял и не заносил в отчёт. Дальше дверь записи снимала «eine» (правильно —
+# это не словарный артикль), а определённый никто не ставил, и слово уезжало человеку
+# голым. Владелец увидел это на карточке «Schnapsidee» 23.08.2026.
+#
+# Живой замер того же дня: в невыданном ещё выпуске на 24.08 таких карточек было 3 из 10
+# («eine Schnapsidee», «eine Dauerkarte», «eine Wildcard»); среди 356 сохранений из
+# колоды за три месяца — 101 карточка пришла правильно, «der/die/das + слово».
+#
+# Оборотов это не касается и коснуться не может: ниже стоит `len(parts) != 2`, поэтому
+# «einen Kater haben» и «eine Pressekonferenz abhalten» сюда не попадают. Артикль
+# приклеивается ТОЛЬКО к одиночному существительному — правило владельца от 22.08.2026,
+# см. backend/tests/test_article_belongs_to_a_word_not_a_phrase.py.
+_INDEFINITE_ARTICLES = ("ein", "eine", "einen", "einem", "einer", "eines")
+
+
+def is_indefinite_article(article: str) -> bool:
+    """Неопределённый ли это артикль. Нужен там, где важно не «какой род», а «форма
+    не словарная»: род по «eine» не определяется — женский и средний дают одну и ту же
+    форму («eine Idee», но «ein Buch» и «ein Mann» тоже совпадают)."""
+    return str(article or "").strip().lower() in _INDEFINITE_ARTICLES
+
 
 def split_article(de: str) -> tuple:
     """Разделить «die Kommentarspalte» на («die», «Kommentarspalte»).
+
+    Понимает и определённый артикль, и неопределённый: «eine Schnapsidee» →
+    («eine», «Schnapsidee»). Что с этим делать — решают вызывающие: определённый
+    сверяется со справочником, неопределённый ЗАМЕНЯЕТСЯ на определённый из справочника.
 
     Возвращает (None, None), если это не одиночное существительное с артиклем: у оборотов
     и глаголов рода нет, и сверять там нечего.
@@ -227,7 +257,9 @@ def split_article(de: str) -> tuple:
     # неверный регистр — как раз то, что мы пришли чинить. Требовать заглавную здесь
     # значило бы исключить ровно те карточки, ради которых сверка и делается
     # (поймано на «die kommentarspalte» 22.08.2026).
-    if article not in _ARTICLES or not re.fullmatch(r"[A-Za-zÄÖÜäöüß-]{2,}", word):
+    if article not in _ARTICLES and not is_indefinite_article(article):
+        return (None, None)
+    if not re.fullmatch(r"[A-Za-zÄÖÜäöüß-]{2,}", word):
         return (None, None)
     return (article, word)
 
@@ -246,9 +278,22 @@ def article_from_reference(de: str, *, allow_network: bool = False) -> tuple:
         found, source = authoritative_article(word, allow_network=allow_network)
     except Exception:
         return (None, "справочник недоступен")
-    if not found:
+    if found:
+        return (found.lower(), source)
+    # Вторая ступень: НАПЕЧАТАННАЯ таблица склонения. 23.08.2026 их стало 89 704 вместо
+    # 2 909, и там род уже проставлен в самом именительном падеже («die Ratte»). Арбитр
+    # `authoritative_article` про эту выгрузку пока не знает — замер 24.08.2026 на пяти
+    # застрявших словах: Kurzbefehl, Bugfahrwerk, Kostenhochlaufkurve и Wildcard арбитр
+    # не знает, а таблица склонений даёт der, das, die и die соответственно.
+    # Ходить сюда дёшево (свой Postgres, без сети), поэтому спрашиваем всегда.
+    try:
+        from backend.noun_declension_reference import article_from_declension_reference
+        found, source = article_from_declension_reference(word)
+    except Exception:
         return (None, f"справочник не знает слова «{word}»")
-    return (found.lower(), source)
+    if found:
+        return (found.lower(), source)
+    return (None, f"справочник не знает слова «{word}»")
 
 
 def article_disagrees_with_reference(card: dict, *, allow_network: bool = False) -> str:
@@ -261,6 +306,16 @@ def article_disagrees_with_reference(card: dict, *, allow_network: bool = False)
     if not ours:
         return ""
     theirs, source = article_from_reference(card.get("de"), allow_network=allow_network)
+    if is_indefinite_article(ours):
+        # Неопределённый артикль — это не «расхождение о роде», а неверная ФОРМА
+        # заголовка: в словаре слово стоит с определённым. Претензия справедлива и
+        # тогда, когда справочник промолчал, — иначе «eine Wildcard» ушла бы человеку
+        # молча, а молчание тут запрещено ровно так же, как выдумка.
+        if theirs:
+            return (f"в заголовке неопределённый артикль: «{ours} {word}» — "
+                    f"словарная форма «{theirs} {word}» ({source})")
+        return (f"в заголовке неопределённый артикль: «{ours} {word}» — "
+                f"словарная форма требует der/die/das, а справочник рода не знает")
     if not theirs or theirs == ours:
         return ""
     return (f"артикль расходится со справочником: у нас «{ours} {word}», "
@@ -277,10 +332,21 @@ def correct_article_from_reference(card: dict, *, allow_network: bool = False) -
     if not ours:
         return (card, "")
     theirs, source = article_from_reference(card.get("de"), allow_network=allow_network)
-    if not theirs or theirs == ours:
+    if not theirs:
+        # Справочник молчит. Подставлять нечего — но и промолчать нельзя, если в
+        # заголовке стоит неопределённый артикль: это заведомо не словарная форма, и
+        # владелец обязан увидеть такую карточку числом, а не найти её глазами на экране.
+        if is_indefinite_article(ours):
+            return (card, f"НЕ ИСПРАВЛЕНО, нужен род: «{ours} {word}» — "
+                          f"неопределённый артикль, справочник слова не знает")
+        return (card, "")
+    if theirs == ours:
         return (card, "")
     fixed = dict(card)
     fixed["de"] = f"{theirs} {word}"
+    if is_indefinite_article(ours):
+        return (fixed, f"заголовок приведён к словарной форме по справочнику ({source}): "
+                       f"«{ours} {word}» → «{theirs} {word}»")
     return (fixed, f"артикль исправлен по справочнику ({source}): «{ours}» → «{theirs}»")
 
 
