@@ -48,6 +48,7 @@ class DailySetTakesThemesOfAnySizeTests(unittest.TestCase):
              patch("backend.database.get_article_sprint_verified_sample",
                    side_effect=lambda key, size: _words(min(theme_words, size))), \
              patch("backend.database.upsert_article_sprint_set", side_effect=_upsert), \
+             patch("backend.database.list_article_sprint_themes", return_value=[]), \
              patch("backend.article_sprint_generator.resolve_article",
                    side_effect=lambda word, article: article):
             return sets.build_daily_set(self.DAY), saved

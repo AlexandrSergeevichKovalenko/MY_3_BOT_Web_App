@@ -24,6 +24,14 @@ class SavedTranslationExplanationTests(unittest.TestCase):
             patch.object(server, "_parse_telegram_init_data", return_value={"user": {"id": 77, "username": "Iryna"}}),
             patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})),
             patch.object(server, "_resolve_webapp_user_allowed", return_value=(True, "test")),
+            # Проверка оплаты на каждом защищённом запросе читает тариф ИЗ БАЗЫ:
+            # сверка подписки со Stripe и дневной потолок расходов. К предмету
+            # этих тестов отношения не имеют, а привязывали их к живым данным —
+            # замер 24.08.2026: 42 таких теста в 14 файлах, красневших от чужого
+            # параллельного прогона. Stripe у нас отключён, синхронизировать нечего.
+            patch.object(server, "_sync_user_subscription_from_live_stripe",
+                         lambda **kwargs: {}),
+            patch.object(server, "enforce_daily_cost_cap", lambda **kwargs: None),
         )
 
     def _explain_payload(self, **extra):
@@ -39,7 +47,7 @@ class SavedTranslationExplanationTests(unittest.TestCase):
     def test_explain_saves_breakdown_under_translation_id(self):
         structured = {"summary": "Кратко", "errors": [], "alternatives": [], "synonyms": []}
         auth = self._auth()
-        with auth[0], auth[1], auth[2], auth[3], \
+        with auth[0], auth[1], auth[2], auth[3], auth[4], auth[5], \
              patch.object(server, "reserve_free_feature_usage", return_value={"ok": True, "blocked": False}), \
              patch.object(server, "run_translation_explanation_structured", AsyncMock(return_value=structured)), \
              patch.object(server, "get_last_llm_usage", return_value={}), \
@@ -63,7 +71,7 @@ class SavedTranslationExplanationTests(unittest.TestCase):
     def test_grammar_call_saves_only_the_grammar_half(self):
         grammar = {"grammar": [{"part": "Ich will trinken", "structure": "Modalverb"}]}
         auth = self._auth()
-        with auth[0], auth[1], auth[2], auth[3], \
+        with auth[0], auth[1], auth[2], auth[3], auth[4], auth[5], \
              patch.object(server, "reserve_free_feature_usage", return_value={"ok": True, "blocked": False}), \
              patch.object(server, "run_correct_sentence_grammar_structured", AsyncMock(return_value=grammar)), \
              patch.object(server, "get_last_llm_usage", return_value={}), \
@@ -85,7 +93,7 @@ class SavedTranslationExplanationTests(unittest.TestCase):
         """Побочная запись не имеет права утащить за собой уже оплаченный ответ."""
         structured = {"summary": "Кратко", "errors": []}
         auth = self._auth()
-        with auth[0], auth[1], auth[2], auth[3], \
+        with auth[0], auth[1], auth[2], auth[3], auth[4], auth[5], \
              patch.object(server, "reserve_free_feature_usage", return_value={"ok": True, "blocked": False}), \
              patch.object(server, "run_translation_explanation_structured", AsyncMock(return_value=structured)), \
              patch.object(server, "get_last_llm_usage", return_value={}), \
@@ -104,7 +112,7 @@ class SavedTranslationExplanationTests(unittest.TestCase):
     def test_explain_without_translation_id_does_not_save(self):
         structured = {"summary": "Кратко", "errors": []}
         auth = self._auth()
-        with auth[0], auth[1], auth[2], auth[3], \
+        with auth[0], auth[1], auth[2], auth[3], auth[4], auth[5], \
              patch.object(server, "reserve_free_feature_usage", return_value={"ok": True, "blocked": False}), \
              patch.object(server, "run_translation_explanation_structured", AsyncMock(return_value=structured)), \
              patch.object(server, "get_last_llm_usage", return_value={}), \
@@ -119,7 +127,7 @@ class SavedTranslationExplanationTests(unittest.TestCase):
 
     def test_followup_answer_is_appended_to_the_saved_breakdown(self):
         auth = self._auth()
-        with auth[0], auth[1], auth[2], auth[3], \
+        with auth[0], auth[1], auth[2], auth[3], auth[4], auth[5], \
              patch.object(server, "reserve_free_feature_usage", return_value={"ok": True, "blocked": False}), \
              patch.object(server, "run_language_learning_private_question_detailed",
                           AsyncMock(return_value={"answer": "Потому что так говорят."})), \
@@ -157,7 +165,7 @@ class SavedTranslationExplanationTests(unittest.TestCase):
             "updated_at": "2026-08-18T10:00:00+02:00",
         }
         auth = self._auth()
-        with auth[0], auth[1], auth[2], auth[3], \
+        with auth[0], auth[1], auth[2], auth[3], auth[4], auth[5], \
              patch.object(server, "get_saved_translation_explanation", return_value=saved) as get_mock, \
              patch.object(server, "run_translation_explanation_structured", AsyncMock()) as model_mock:
             response = self.client.post(
@@ -175,7 +183,7 @@ class SavedTranslationExplanationTests(unittest.TestCase):
 
     def test_saved_endpoint_says_found_false_instead_of_an_empty_breakdown(self):
         auth = self._auth()
-        with auth[0], auth[1], auth[2], auth[3], \
+        with auth[0], auth[1], auth[2], auth[3], auth[4], auth[5], \
              patch.object(server, "get_saved_translation_explanation", return_value=None):
             response = self.client.post(
                 "/api/webapp/explain/saved",
@@ -189,7 +197,7 @@ class SavedTranslationExplanationTests(unittest.TestCase):
 
     def test_flags_endpoint_reports_which_sentences_have_a_saved_breakdown(self):
         auth = self._auth()
-        with auth[0], auth[1], auth[2], auth[3], \
+        with auth[0], auth[1], auth[2], auth[3], auth[4], auth[5], \
              patch.object(server, "get_saved_translation_explanation_langs",
                           return_value={4242: ["ru"], 4243: ["de", "ru"]}) as flags_mock:
             response = self.client.post(

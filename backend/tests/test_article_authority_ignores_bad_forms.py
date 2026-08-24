@@ -52,6 +52,32 @@ class _Conn:
         return self._cur
 
 
+@contextmanager
+def _frozen_reference(*, wiki=(), bad_forms=(), bank=()):
+    """Справочник загружен ИЗ ПОДМЕНЫ и остаётся подменённым, пока идёт проверка.
+
+    Зачем отдельно от `_load_with`. Тот грузит справочник и ВЫХОДИТ из подмены; а
+    `authoritative_article` внутри себя зовёт `_load()` ещё раз — и второй раз читает
+    уже боевую базу. Из-за этого два теста зависели от живых данных и краснели от
+    чужого параллельного прогона (замер 24.08.2026). Здесь подмена живёт до конца
+    проверки, поэтому арбитр отвечает по тем данным, которые тест ему и дал.
+    """
+    cur = _Cur(list(wiki), list(bank))
+
+    @contextmanager
+    def ctx(*a, **k):
+        yield _Conn(cur)
+
+    import backend.database as db
+    auth._genus, auth._ambiguous, auth._loaded_at = {}, set(), 0.0
+    auth._bad_forms.clear()
+    with patch.object(db, "get_db_connection_context", ctx), \
+         patch.object(db, "list_bad_word_forms", lambda: {w.lower() for w in bad_forms}), \
+         patch.object(auth, "_two_gender", lambda: set()):
+        auth._load()
+        yield
+
+
 def _load_with(*, wiki=(), bad_forms=(), bank=()):
     cur = _Cur(list(wiki), list(bank))
 
@@ -120,16 +146,16 @@ class NoStageAnswersForABadFormTests(unittest.TestCase):
 
     def test_door_says_it_knows_there_is_nothing_to_ask(self):
         """Ответ не «не знаем», а «негодная форма»: разница видна в отчётах."""
-        _load_with(bad_forms=["fotos"], bank=[("Fotos", "das")])
-        art, src = auth.authoritative_article("Fotos", allow_network=False)
+        with _frozen_reference(bad_forms=["fotos"], bank=[("Fotos", "das")]):
+            art, src = auth.authoritative_article("Fotos", allow_network=False)
         self.assertIsNone(art)
         self.assertEqual(src, "негодная форма слова")
 
     def test_network_is_not_asked_for_a_bad_form(self):
         """Живой Wiktionary тоже не спрашиваем: это деньги и задержка ради ответа,
         который мы всё равно не примем."""
-        _load_with(bad_forms=["fotos"], bank=[("Fotos", "das")])
-        with patch.object(auth, "_wiktionary_live", side_effect=AssertionError("спросили сеть")):
+        with _frozen_reference(bad_forms=["fotos"], bank=[("Fotos", "das")]), \
+             patch.object(auth, "_wiktionary_live", side_effect=AssertionError("спросили сеть")):
             art, _src = auth.authoritative_article("Fotos", allow_network=True)
         self.assertIsNone(art)
 

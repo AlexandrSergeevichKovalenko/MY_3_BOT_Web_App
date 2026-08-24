@@ -11,7 +11,12 @@ class SrsManualQueueTests(unittest.TestCase):
 
         with patch.object(server, "get_next_due_srs_card", return_value=None) as due_mock, \
              patch.object(server, "count_new_cards_introduced_today", return_value=0), \
-             patch.object(server, "get_next_new_srs_candidate", return_value=None):
+             patch.object(server, "get_next_new_srs_candidate", return_value=None), \
+             patch.object(server, "get_next_new_srs_candidate_with_subscription",
+                          return_value=None):
+            # Подменена была только «...candidate», а код зовёт «...candidate_with_subscription»
+            # — и та уходила в живую базу. Тест выглядел изолированным и им не был
+            # (замер 24.08.2026).
             payload = server._build_next_srs_payload(
                 user_id=55,
                 source_lang="ru",

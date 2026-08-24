@@ -16,6 +16,14 @@ class AskGptFreeLimitWebAppTests(unittest.TestCase):
             patch.object(server, "_parse_telegram_init_data", return_value={"user": {"id": 77, "username": "Iryna"}}),
             patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})),
             patch.object(server, "_resolve_webapp_user_allowed", return_value=(True, "test")),
+            # Проверка оплаты на каждом защищённом запросе читает тариф ИЗ БАЗЫ:
+            # сверка подписки со Stripe и дневной потолок расходов. К предмету
+            # этих тестов отношения не имеют, а привязывали их к живым данным —
+            # замер 24.08.2026: 42 таких теста в 14 файлах, красневших от чужого
+            # параллельного прогона. Stripe у нас отключён, синхронизировать нечего.
+            patch.object(server, "_sync_user_subscription_from_live_stripe",
+                         lambda **kwargs: {}),
+            patch.object(server, "enforce_daily_cost_cap", lambda **kwargs: None),
         )
 
     def _payload(self):
@@ -29,7 +37,8 @@ class AskGptFreeLimitWebAppTests(unittest.TestCase):
         }
 
     def test_webapp_explain_question_consumes_usage_before_openai(self):
-        with self._auth_patches()[0], self._auth_patches()[1], self._auth_patches()[2], self._auth_patches()[3], \
+        a = self._auth_patches()
+        with a[0], a[1], a[2], a[3], a[4], a[5], \
              patch.object(server, "reserve_free_feature_usage", return_value={"ok": True, "blocked": False, "event": {"id": 1}}) as reserve_mock, \
              patch.object(server, "run_language_learning_private_question_detailed", AsyncMock(return_value={"answer": "Потому что это идиоматично."})) as run_mock, \
              patch.object(server, "get_last_llm_usage", return_value={}), \
@@ -53,7 +62,8 @@ class AskGptFreeLimitWebAppTests(unittest.TestCase):
             "used": 5,
             "reset_at": "2026-06-07T00:00:00+02:00",
         }
-        with self._auth_patches()[0], self._auth_patches()[1], self._auth_patches()[2], self._auth_patches()[3], \
+        a = self._auth_patches()
+        with a[0], a[1], a[2], a[3], a[4], a[5], \
              patch.object(server, "reserve_free_feature_usage", return_value={"ok": False, "blocked": True, "error": blocked_error}) as reserve_mock, \
              patch.object(server, "run_language_learning_private_question_detailed", AsyncMock()) as run_mock:
             response = self.client.post("/api/webapp/explain/question", json=self._payload())

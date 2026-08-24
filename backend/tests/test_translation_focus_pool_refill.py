@@ -7,6 +7,17 @@ import backend.backend_server as server
 import backend.translation_workflow as workflow
 
 
+@contextmanager
+def _yield_conn(conn):
+    """Подменённое соединение как КОНТЕКСТ.
+
+    Тест подменял `get_db_connection`, а код зовёт `get_db_connection_context` —
+    и та уходила в живую базу мимо подмены. Тест выглядел изолированным и им не был
+    (замер 24.08.2026: 42 таких теста в 14 файлах).
+    """
+    yield conn
+
+
 class _FakeRedis:
     def __init__(self):
         self.set_calls = []
@@ -278,6 +289,8 @@ class TranslationFocusPoolRefillTests(unittest.TestCase):
         with patch.object(workflow, "_log_flow_observation", side_effect=fake_log_flow_observation), \
              patch.object(workflow, "db_acquire_scope", self._fake_db_scope), \
              patch.object(workflow, "get_db_connection", return_value=fake_conn), \
+             patch.object(workflow, "get_db_connection_context",
+                          lambda *a, **k: _yield_conn(fake_conn)), \
              patch.object(workflow, "_load_skill_catalog_with_cursor", return_value=[]), \
              patch.object(workflow, "_count_shared_sentence_pool_entries_with_cursor", side_effect=[0, 1, 2]), \
              patch.object(workflow, "_list_shared_sentence_pool_sentence_keys_with_cursor", return_value=set()), \

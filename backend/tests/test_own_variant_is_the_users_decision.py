@@ -34,6 +34,7 @@ class OwnVariantCheckTests(unittest.TestCase):
              patch.object(bs, "_telegram_hash_is_valid", return_value=True), \
              patch.object(bs, "_parse_telegram_init_data",
                           return_value={"user": {"id": 7, "first_name": "U"}}), \
+             patch.object(bs, "_resolve_webapp_user_allowed", return_value=(True, "test")), \
              patch.object(bs, "_resolve_webapp_user_id", return_value=7), \
              patch.object(bs, "_dict_user_has_left_bot", return_value=False), \
              patch.object(bs, "_billing_log_openai_usage", return_value=None), \
@@ -80,6 +81,7 @@ class OwnVariantCheckTests(unittest.TestCase):
              patch.object(bs, "_telegram_hash_is_valid", return_value=True), \
              patch.object(bs, "_parse_telegram_init_data",
                           return_value={"user": {"id": 7, "first_name": "U"}}), \
+             patch.object(bs, "_resolve_webapp_user_allowed", return_value=(True, "test")), \
              patch.object(bs, "_resolve_webapp_user_id", return_value=7), \
              patch.object(bs, "_dict_user_has_left_bot", return_value=False), \
              patch("backend.openai_manager.run_phrase_grammar_verdict",
@@ -95,6 +97,7 @@ class OwnVariantCheckTests(unittest.TestCase):
              patch.object(bs, "_telegram_hash_is_valid", return_value=True), \
              patch.object(bs, "_parse_telegram_init_data",
                           return_value={"user": {"id": 7, "first_name": "U"}}), \
+             patch.object(bs, "_resolve_webapp_user_allowed", return_value=(True, "test")), \
              patch.object(bs, "_resolve_webapp_user_id", return_value=7):
             r = self.client.post("/api/webapp/dictionary/check-variant",
                                  json={"de": "  ", "ru": "х", "initData": "x"})

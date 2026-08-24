@@ -48,7 +48,16 @@ class PaidSurfaceGateTests(unittest.TestCase):
         with patch.object(server, "_telegram_hash_is_valid", return_value=True), \
              patch.object(server, "_parse_telegram_init_data", return_value={"user": {"id": 77, "username": "Iryna"}}), \
              patch.object(server, "_resolve_webapp_user_allowed", return_value=(True, "test")), \
-             patch.object(server, "_get_authenticated_user_from_request_init_data", return_value=(77, "Iryna", None)):
+             patch.object(server, "_get_authenticated_user_from_request_init_data", return_value=(77, "Iryna", None)), \
+             patch.object(server, "_sync_user_subscription_from_live_stripe",
+                          lambda **kwargs: {}), \
+             patch.object(server, "enforce_daily_cost_cap", lambda **kwargs: None):
+            # Сверка подписки со Stripe читает тариф ИЗ БАЗЫ на каждый защищённый
+            # запрос. Здесь тариф задаёт сам тест через _resolve_user_entitlement,
+            # поэтому поход в базу лишний — и вреден: он привязывал тест к живым
+            # данным (замер 24.08.2026). Stripe у нас отключён, синхронизировать
+            # нечего. Дневной потолок расходов читает тариф оттуда же и тем же
+            # способом — здесь он к делу не относится, проверяются ворота доступа.
             yield
 
     def _post_analytics(self, path: str, payload: dict | None = None):
