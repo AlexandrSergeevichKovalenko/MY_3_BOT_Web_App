@@ -17,6 +17,8 @@ import backend.article_word_gate as gate
 import backend.database as db
 import backend.openai_manager as om
 import backend.article_sprint_themes as themes_mod
+import backend.article_headword as headword_mod
+import backend.article_anglicism as anglicism_mod
 
 
 class VerifyAlignmentTests(unittest.TestCase):
@@ -35,15 +37,33 @@ class VerifyAlignmentTests(unittest.TestCase):
         inserted: list[dict] = []
         recorded: list[tuple] = []
 
+        # Ещё две подмены добавлены 24.08.2026 по той же причине, и вторая из них
+        # ВАЖНА особо: quarantine_article_sprint_nouns ПИШЕТ. Без подмены прогон
+        # тестов складывал карантинные слова прямо в боевую базу.
+        # ДВА стража — заголовков (article_headword) и происхождения
+        # (article_anglicism) — появились в fill_theme ПОЗЖЕ
+        # этих тестов, и подменить его забыли: он ходит и в свой кэш в базе, и в
+        # de.wiktionary по сети. Из-за этого тест зависел от живой базы и краснел от
+        # чужого параллельного прогона — замер 24.08.2026: 42 таких теста в 14 файлах,
+        # причём падали каждый раз РАЗНЫЕ, потому что дрались за соединение.
+        # Здесь проверяется РЕШЕНИЕ fill_theme про стоп-лист и карантин, а не сам страж:
+        # у него свои тесты. Пустой ответ значит «негодных заголовков нет» — страж
+        # никого не отсеивает и на счёт не влияет.
         with patch.object(themes_mod, "article_sprint_themes", lambda: [
                 {"key": "haus_wohnen", "label_de": "Haus", "target_count": 150,
                  "subtopics": ["Küche"]}]), \
+                patch.object(headword_mod, "bad_headwords", lambda words: {}), \
+                patch.object(anglicism_mod, "tail_anglicisms",
+                             lambda words, **kw: {}), \
                 patch.object(db, "ensure_article_sprint_schema", lambda: None), \
                 patch.object(db, "count_article_sprint_nouns", lambda *a, **k: 10), \
                 patch.object(db, "list_article_sprint_words", lambda t: []), \
                 patch.object(db, "list_article_sprint_words_all_themes", set), \
                 patch.object(db, "list_article_sprint_meanings", lambda t: []), \
                 patch.object(db, "list_retired_article_words", lambda: set()), \
+                patch.object(db, "list_retired_article_words_for_prompt", lambda t: []), \
+                patch.object(db, "quarantine_article_sprint_nouns",
+                             lambda t, rows: len(list(rows))), \
                 patch.object(db, "list_article_word_blacklist", lambda: set()), \
                 patch.object(db, "blacklist_article_words", lambda items: recorded.extend(items)), \
                 patch.object(db, "insert_article_sprint_nouns",
