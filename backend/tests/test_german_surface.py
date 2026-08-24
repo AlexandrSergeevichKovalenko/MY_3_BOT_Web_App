@@ -136,7 +136,7 @@ class GermanSurfaceTests(unittest.TestCase):
         выдумывать: он либо молчит, либо отвечает по документированному роду."""
         with patch("backend.database.get_db_connection_context", side_effect=RuntimeError("no db")):
             gs.reset_caches()
-            with patch.object(gs, "_documented_singular", return_value=""):
+            with patch.object(gs, "_documented_singular", return_value=("", "")):
                 verdict = gs.german_surface("Probleme")
         self.assertEqual(verdict["article"], "")
 

@@ -173,8 +173,39 @@ def _load_form_index() -> dict[str, tuple[str, str, str]]:
     return index
 
 
-def _documented_singular(word: str, *, allow_network: bool) -> str:
-    """Артикль, если род САМОЙ поверхности документирован в Wiktionary, иначе ''.
+# Какие подписи справочника отвечают про САМУ поверхность, а не про её часть.
+#
+# Здесь решается не «доверяем ли мы источнику», а «про то ли слово он ответил».
+# Правило композита отвечает про род ГОЛОВЫ слова: на «Fußballen» оно даст род от
+# «Ballen», хотя перед нами форма множественного от «Fußball». Поэтому его сюда не
+# пускают — и это правильно.
+#
+# Таблица склонений под то же возражение НЕ попадает: внутри неё стоит собственный
+# сторож — артикль отдаётся, только если заголовок совпал с именительным единственного
+# из самой таблицы (`noun_declension_reference.article_from_declension_tables`). То есть
+# ровно тот случай, которого боится этот фильтр, она отсекает сама.
+#
+# Почему это понадобилось (24.08.2026). Арбитр научился спрашивать таблицу склонений —
+# 89 704 существительных, свой Postgres, без сети. Но его ответ приходил с подписью
+# «справочник склонений», а сюда пускалась только «wiktionary», и ответ выбрасывался.
+# Владелец увидел это на «Unentschlossenheit»: слова не было в кеше родов, таблица
+# склонений знала его со вчера, а на экране быстрого словаря артикля не было.
+# Замер того дня: Akkordlohn → der, Akkordzeit → die, Akkordarbeiterin → die —
+# арбитр отвечал, german_surface отдавал пусто.
+def _source_answers_about_this_surface(source) -> bool:
+    from backend.noun_declension_reference import SOURCE_NAME as DECLENSION_SOURCE
+    text = str(source or "")
+    return text.startswith("wiktionary") or text == DECLENSION_SOURCE
+
+
+def _documented_singular(word: str, *, allow_network: bool) -> tuple:
+    """(артикль, ИМЯ ИСТОЧНИКА), если род САМОЙ поверхности документирован; иначе ('', '').
+
+    Источник возвращается вместе с ответом, а не подписывается вызывающим: раньше
+    ответ таблицы склонений уезжал на экран под чужим именем «wiktionary», и по отчёту
+    нельзя было понять, кто на самом деле ответил. Правило ноль требует обратного —
+    источник называется вслух.
+
     Правило композита сюда не пускаем: оно отвечает про род, а не про число, и на
     форме множественного («Fußballen») выдаст род головы."""
     try:
@@ -182,10 +213,10 @@ def _documented_singular(word: str, *, allow_network: bool) -> str:
         article, source = authoritative_article(word, allow_network=allow_network)
     except Exception:
         logging.warning("german_surface: справочник родов недоступен для %s", word, exc_info=True)
-        return ""
-    if article and str(source).startswith("wiktionary"):
-        return article
-    return ""
+        return ("", "")
+    if article and _source_answers_about_this_surface(source):
+        return (article, str(source))
+    return ("", "")
 
 
 def _bank_article(word: str) -> str:
@@ -260,10 +291,10 @@ def german_surface(word: str, *, allow_network: bool = False) -> dict:
                 "source": "pluralia_tantum", "confidence": "high"}
 
     # 2. Род документирован у самой поверхности ⇒ это лемма единственного числа.
-    documented = _documented_singular(surface, allow_network=allow_network)
+    documented, documented_source = _documented_singular(surface, allow_network=allow_network)
     if documented:
         return {"number": SG, "lemma": surface, "article": documented,
-                "source": "wiktionary", "confidence": "high"}
+                "source": documented_source or "wiktionary", "confidence": "high"}
 
     # 3. Индекс форм: точный ответ «форма такого-то слова».
     entry = _load_form_index().get(low)
@@ -272,7 +303,7 @@ def german_surface(word: str, *, allow_network: bool = False) -> dict:
         if number_tag == PL:
             return {"number": PL, "lemma": lemma or surface, "article": "die",
                     "source": source or "form_index", "confidence": "high"}
-        article = _documented_singular(lemma, allow_network=False) if lemma else ""
+        article = _documented_singular(lemma, allow_network=False)[0] if lemma else ""
         return {"number": SG, "lemma": lemma or surface, "article": article,
                 "source": source or "form_index", "confidence": "high"}
 
@@ -292,7 +323,7 @@ def german_surface(word: str, *, allow_network: bool = False) -> dict:
 
     # 5. Догадка по окончанию: годится, чтобы промолчать, но не чтобы утверждать.
     for candidate in _singular_candidates(surface):
-        if _documented_singular(candidate, allow_network=False):
+        if _documented_singular(candidate, allow_network=False)[0]:
             return {"number": PL, "lemma": candidate, "article": "",
                     "source": "правило окончания", "confidence": "low"}
 
