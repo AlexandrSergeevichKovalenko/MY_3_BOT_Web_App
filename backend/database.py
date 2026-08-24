@@ -8,6 +8,7 @@ from psycopg2.pool import ThreadedConnectionPool, PoolError
 import os
 from backend.r2_storage import r2_get_bytes, r2_put_bytes, r2_public_url
 from backend.word_frequency import compute_frequency_rank
+from backend.task_rotation import WRONG_LADDER_DAYS
 from backend.dictionary_frequency import normalize_frequency_lemma
 from backend import dictionary_intake as intake
 import hashlib
@@ -40624,6 +40625,19 @@ def log_billing_event(
             resolved_currency = str(snapshot.get("currency") or resolved_currency)
             if resolved_cost is None:
                 resolved_cost = units_value_number * float(snapshot.get("price_per_unit") or 0.0)
+            metadata_value = {**metadata_value, "pricing_state": "priced"}
+        else:
+            # Цены нет — и это НЕ ноль. Строка «стоила 0» неотличима от бесплатной, и
+            # ровно так ведомость врала про судью кроссвордов: модель зовётся `gpt-4.1`,
+            # а цена в справочнике лежала под датированным именем `gpt-4.1-2025-04-14` —
+            # 132 события за 21 день ушли в отчёт по нулю (замер 24.08.2026).
+            # Помечаем словом, которое отчёты уже умеют считать (`missing_snapshot`,
+            # см. unpriced_events в сводках расходов), и говорим в лог, какого SKU не
+            # хватило: без этого «дырка в учёте» не всплывает никогда.
+            metadata_value = {**metadata_value, "pricing_state": "missing_snapshot",
+                              "price_sku_missing": str(price_sku)}
+            logging.warning("billing: нет цены для sku=%s unit=%s provider=%s action=%s",
+                            price_sku, price_unit, price_provider, action_value)
 
     if resolved_cost is None:
         resolved_cost = 0.0
@@ -51627,8 +51641,23 @@ def mark_crossword_image_failed(crossword_id: str) -> None:
         conn.commit()
 
 
-def pick_next_crossword(*, cooldown_days: int = 14, exclude_ids: list | None = None) -> dict | None:
-    """Return the oldest unsent (or cooldown-expired) ready crossword.
+def pick_next_crossword(*, exclude_ids: list | None = None) -> dict | None:
+    """Кроссворд для ЭТОГО человека: тот, которого дольше всех никому не показывали.
+
+    Общего отдыха у карточки больше нет (решение владельца 24.08.2026). Раньше здесь
+    стояло условие «показан кому угодно за последние 14 дней — никому не предлагать»,
+    и оно делало ровно то, чего мы не хотели: карточка, ушедшая одному человеку,
+    выпадала у ВСЕХ, поэтому банк приходилось растить от числа людей. Замер 24.08.2026:
+    11 человек в день выедали 12-13 карточек из 107, свободным оставался 21.
+    А главное — отдых наступал по ОТПРАВКЕ: карточка считалась израсходованной, даже
+    если человек её не открывал (за 30 дней взялись за 15 отправок из 157).
+
+    Теперь так: разным людям одну и ту же карточку давать МОЖНО, повторять одному и тому
+    же — нельзя, и следит за этим только личная память (`exclude_ids`, лестница
+    90/120/никогда за решённое и 7/14/30 за заваленное). `last_sent_at` остался, но
+    работает как ПОРЯДОК ОЧЕРЕДИ, а не как замок: первым идёт тот, кого дольше всех не
+    показывали, — иначе человек, который кроссворды не открывает, каждый день получал бы
+    буквально одну и ту же карточку.
 
     Последний сторож перед отправкой: кроссворд, в котором загаданное слово стоит с
     одной пустой клеткой, не уходит никому — он снимается с ротации, и берётся
@@ -51648,15 +51677,13 @@ def pick_next_crossword(*, cooldown_days: int = 14, exclude_ids: list | None = N
                 FROM bt_3_crossword_bank
                 WHERE image_status = 'ready'
                   AND retired = FALSE
-                  AND (last_sent_at IS NULL
-                       OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
                 """
                 + ("  AND crossword_id::text <> ALL(%s)\n" if skip else "")
                 + """
                 ORDER BY last_sent_at NULLS FIRST, created_at
                 LIMIT 10
                 """,
-                ((int(cooldown_days), skip) if skip else (int(cooldown_days),)),
+                ((skip,) if skip else None),
             )
             rows = cursor.fetchall() or []
     cols = ["crossword_id", "topic", "difficulty", "grid_json", "words_json",
@@ -51726,11 +51753,14 @@ def mark_crossword_send_failed(crossword_id: str, *, retire_after: int = 3) -> N
         conn.commit()
 
 
-def crossword_pool_health(*, cooldown_days: int = 21) -> dict:
-    """READ-ONLY snapshot of the crossword bank so we can see WHY the scheduler picks
-    nothing. `pick_next_crossword` needs image_status='ready' AND retired=FALSE AND
-    (never sent OR sent > cooldown ago) — this breaks that gate down into buckets and
-    reports the most-recent send + when the next cooldown-blocked card frees up."""
+def crossword_pool_health() -> dict:
+    """READ-ONLY снимок банка кроссвордов: почему выдача берёт или не берёт карточку.
+
+    `pick_next_crossword` требует image_status='ready' AND retired=FALSE — и всё:
+    общего отдыха у карточки с 24.08.2026 нет, поэтому «в отдыхе» и «освободится
+    такого-то числа» отсюда убраны, а не показаны нулями. Отдельно считаем ни разу не
+    показанные: это тот запас, который человеку точно в новинку.
+    """
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -51743,30 +51773,19 @@ def crossword_pool_health(*, cooldown_days: int = 21) -> dict:
                     COUNT(*) FILTER (WHERE NOT retired AND image_status = 'failed')  AS failed,
                     COUNT(*) FILTER (
                         WHERE NOT retired AND image_status = 'ready'
-                          AND (last_sent_at IS NULL
-                               OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
-                    )                                                               AS sendable_now,
-                    COUNT(*) FILTER (
-                        WHERE NOT retired AND image_status = 'ready'
-                          AND last_sent_at IS NOT NULL
-                          AND last_sent_at >= NOW() - INTERVAL '1 day' * %s
-                    )                                                               AS in_cooldown,
-                    MAX(last_sent_at)                                               AS last_sent_at,
-                    MIN(last_sent_at) FILTER (
-                        WHERE NOT retired AND image_status = 'ready'
-                          AND last_sent_at IS NOT NULL
-                          AND last_sent_at >= NOW() - INTERVAL '1 day' * %s
-                    )                                                               AS oldest_cooldown_sent_at
+                          AND last_sent_at IS NULL
+                    )                                                               AS never_sent,
+                    MAX(last_sent_at)                                               AS last_sent_at
                 FROM bt_3_crossword_bank
-                """,
-                (int(cooldown_days), int(cooldown_days), int(cooldown_days)),
+                """
             )
             row = cursor.fetchone() or []
-    cols = ["total", "retired", "ready", "pending", "failed", "sendable_now",
-            "in_cooldown", "last_sent_at", "oldest_cooldown_sent_at"]
+    cols = ["total", "retired", "ready", "pending", "failed", "never_sent", "last_sent_at"]
     out = dict(zip(cols, row))
-    for k in ("total", "retired", "ready", "pending", "failed", "sendable_now", "in_cooldown"):
+    for k in ("total", "retired", "ready", "pending", "failed", "never_sent"):
         out[k] = int(out.get(k) or 0)
+    # Годно к выдаче ровно то, что ready: отдыха, который что-то придерживал бы, нет.
+    out["sendable_now"] = out["ready"]
     return out
 
 
@@ -52290,6 +52309,30 @@ def get_user_task_state(user_id: int, kind: str, task_keys: list) -> dict:
 _INBOX_KIND = {"rb": "rb", "cw": "cw", "ag": "ag", "au": "au", "ls": "ls",
                "article_quiz": "aq"}
 
+# Виды, у которых расход банка считается по СДАЧАМ, а не по отправкам, — и запрос,
+# который эти сдачи достаёт: (человек, сколько заданий он сдал за окно).
+#
+# Решение владельца 24.08.2026: «отправил, а никто не открыл — это не расход». И он прав
+# по факту: замер 24.08.2026 по кроссвордам — 157 отправок за 30 дней в реальных слотах,
+# из них хоть одно слово вписано в 15 (9,5%); девять человек из одиннадцати не тронули
+# ни одного. Пока расход считался по отправкам, ночной дозаказ пополнял банк под тех,
+# кто ничего не открывал, и цель гналась за рассылкой, а не за учёбой.
+# Считаем по времени СДАЧИ, а не отправки: задание, ушедшее месяц назад и решённое
+# вчера, израсходовано вчера. Одна сдача = одно задание, поэтому `DISTINCT dispatch_id`.
+# Остальные виды здесь отсутствуют НЕ по недосмотру: у них отдых карточки по-прежнему
+# наступает по отправке, и считать одно по сдачам, а другое по отправкам — значит
+# развести отчёт с выдачей (ровно та беда, что разбиралась 19.08.2026).
+_SOLVED_CONSUMPTION_SQL = {
+    "cw": """SELECT user_id, COUNT(DISTINCT dispatch_id)::float / GREATEST(%s, 1)
+             FROM bt_3_crossword_answers
+             WHERE answered_at > NOW() - (%s || ' days')::interval
+             GROUP BY user_id;""",
+    "ag": """SELECT user_id, COUNT(DISTINCT dispatch_id)::float / GREATEST(%s, 1)
+             FROM bt_3_anagram_answers
+             WHERE answered_at > NOW() - (%s || ' days')::interval
+             GROUP BY user_id;""",
+}
+
 _TASK_BANKS = {
     "rb": ("bt_3_rebus_bank", "compound_id",
            "composed_status = 'ready' AND retired = FALSE"),
@@ -52345,40 +52388,51 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
                 # делил весь банк на расход одного человека. Срок отдыха берётся оттуда
                 # же, откуда его берёт выдача (`backend/task_cooldowns.py`), иначе отчёт
                 # снова разойдётся с тем, что видит человек.
+                # У кроссвордов и анаграмм общего отдыха больше НЕТ (решение владельца
+                # 24.08.2026) — для них этой строки в отчёте не будет вовсе: печатать
+                # «остальные отдыхают N дн.» про отдых, которого нет, значит соврать.
                 from backend.task_cooldowns import COOLDOWN_DAYS_BY_KIND
-                cooldown = int(COOLDOWN_DAYS_BY_KIND[str(kind)])
-                cursor.execute(
-                    f"""SELECT COUNT(*) FROM {table}
-                        WHERE {ready}
-                          AND (last_sent_at IS NULL
-                               OR last_sent_at < NOW() - (%s || ' days')::interval);""",
-                    (cooldown,),
-                )
-                free_now = int((cursor.fetchone() or [0])[0])
+                cooldown = COOLDOWN_DAYS_BY_KIND.get(str(kind))
+                free_now = None
+                if cooldown is not None:
+                    cursor.execute(
+                        f"""SELECT COUNT(*) FROM {table}
+                            WHERE {ready}
+                              AND (last_sent_at IS NULL
+                                   OR last_sent_at < NOW() - (%s || ' days')::interval);""",
+                        (int(cooldown),),
+                    )
+                    free_now = int((cursor.fetchone() or [0])[0])
                 # Расход на человека в сутки и его личный «закрытый» список — одним
                 # запросом, чтобы отчёт не расходился между двумя замерами.
-                # Расход — СРЕДНИЙ по живым людям за окно, из журнала выдачи.
-                # «Живой» = хоть раз ответил хоть на что-то за это окно: тот, кто
-                # перестал заходить, продолжает получать задания, и если считать по
-                # нему, мы закажем больше, чем нужно тем, кто учится (замер 15.08.2026:
-                # трое из семи не ответили ни разу за месяц).
                 # На число людей расход НЕ умножается: разным людям можно давать одно и
                 # то же задание, поэтому банк от прихода новых не растёт.
-                cursor.execute(
-                    """WITH active AS (
-                           SELECT DISTINCT user_id FROM bt_3_interactive_inbox
-                           WHERE answered
-                             AND created_at > NOW() - (%s || ' days')::interval
-                       )
-                       SELECT i.user_id, COUNT(*)::float / GREATEST(%s, 1)
-                       FROM bt_3_interactive_inbox i
-                       JOIN active a ON a.user_id = i.user_id
-                       WHERE i.kind = %s
-                         AND i.created_at > NOW() - (%s || ' days')::interval
-                       GROUP BY i.user_id;""",
-                    (int(window_days), int(window_days),
-                     _INBOX_KIND.get(str(kind), str(kind)), int(window_days)),
-                )
+                solved_sql = _SOLVED_CONSUMPTION_SQL.get(str(kind))
+                if solved_sql:
+                    # Расход = СДАЧИ. Фильтр «живых» тут не нужен: человек, который сдал
+                    # задание, живой по определению.
+                    cursor.execute(solved_sql, (int(window_days), int(window_days)))
+                else:
+                    # Расход — по журналу выдачи, среди живых людей за окно.
+                    # «Живой» = хоть раз ответил хоть на что-то за это окно: тот, кто
+                    # перестал заходить, продолжает получать задания, и если считать по
+                    # нему, мы закажем больше, чем нужно тем, кто учится (замер
+                    # 15.08.2026: трое из семи не ответили ни разу за месяц).
+                    cursor.execute(
+                        """WITH active AS (
+                               SELECT DISTINCT user_id FROM bt_3_interactive_inbox
+                               WHERE answered
+                                 AND created_at > NOW() - (%s || ' days')::interval
+                           )
+                           SELECT i.user_id, COUNT(*)::float / GREATEST(%s, 1)
+                           FROM bt_3_interactive_inbox i
+                           JOIN active a ON a.user_id = i.user_id
+                           WHERE i.kind = %s
+                             AND i.created_at > NOW() - (%s || ' days')::interval
+                           GROUP BY i.user_id;""",
+                        (int(window_days), int(window_days),
+                         _INBOX_KIND.get(str(kind), str(kind)), int(window_days)),
+                    )
                 rates_by_user = {int(r[0]): float(r[1] or 0.0)
                                  for r in (cursor.fetchall() or [])}
                 # Сколько заданий человеку уже закрыто — из памяти личной ротации.
@@ -52415,17 +52469,23 @@ def measure_task_supply(kind: str, *, window_days: int = 30) -> dict:
     deepest_blocked = int(percentile(blocked, 0.95))
     available = max(0, bank_total - deepest_blocked)
     days = supply_days(available, per_day)
-    return {
+    out = {
         "kind": str(kind), "title": TASK_KIND_TITLES.get(str(kind), str(kind)),
         "bank_total": bank_total, "bank_ripening": max(0, bank_alive - bank_total),
-        "free_now": free_now, "cooldown_days": cooldown,
         "people": len(rows),
+        # Чем меряли расход — это ДВА разных числа, и в отчёте они читаются по-разному:
+        # «решено в сутки» и «отправлено в сутки». Молча подписать одно другим нельзя.
+        "spend_basis": "solved" if str(kind) in _SOLVED_CONSUMPTION_SQL else "sent",
         "per_day": round(per_day, 2), "per_day_measured": round(top_rate, 2),
         "per_day_avg": round(avg_rate, 2),
         "people_active": len(rates), "blocked_deepest": deepest_blocked,
         "available": available, "supply_days": days,
         "order_now": shortfall(available, per_day),
     }
+    if free_now is not None:
+        out["free_now"] = free_now
+        out["cooldown_days"] = int(cooldown)
+    return out
 
 
 def measure_all_task_supply(*, window_days: int = 30) -> list:
@@ -52468,12 +52528,28 @@ def get_user_blocked_content_ids(user_id: int, kind: str) -> list:
         return []
 
 
+# Виды, у которых НЕТ своей очереди работы над ошибками: заваленное задание возвращает
+# им сама ротация — через 7 дней, потом 14, потом 30 (решение владельца 24.08.2026).
+# Замер 24.08.2026: в `bt_3_aufgabe_mistakes` лежат artikel 238, wofrage 109, cloze 10,
+# transform 9, satzbau 8, wortbildung 8, wortgruppe 7, video 4, error 4 — и НИ ОДНОЙ
+# строки кроссворда или анаграммы. Из-за этого неверно решённый кроссворд не закрывался
+# для человека ничем, кроме общего отдыха карточки, а его тем же решением сняли.
+# Остальные виды в карту не добавлять, не проверив, что их формат вправду попадает в
+# очередь ошибок: иначе одно и то же задание будут держать два механизма сразу.
+WRONG_LADDER_BY_KIND = {"cw": WRONG_LADDER_DAYS, "ag": WRONG_LADDER_DAYS}
+
+
 def record_user_task_answer(*, user_id: int, kind: str, task_key: str,
                             is_correct: bool, source: str = "sprint") -> None:
     """Записать ответ и передвинуть лестницу возврата по правилу из `task_rotation`.
 
     Память служебная: если запись упала, ответ человеку всё равно должен пройти —
     поэтому наружу отсюда ничего не летит.
+
+    Зовётся ТОЛЬКО на первой сдаче задания. Повторное открытие уже сданного лестницу
+    двигать не должно: три захода в решённый кроссворд протащили бы человека
+    90 → 120 → «никогда», а три захода в заваленный — 7 → 14 → 30. Сторож стоит у
+    вызывающего (`backend/backend_server.py`, флаг `already_answered`).
     """
     if _task_rotation_writes_disabled():
         return
@@ -52486,7 +52562,8 @@ def record_user_task_answer(*, user_id: int, kind: str, task_key: str,
             str(task_key)) or {}
         st = next_state(seen_count=int(prev.get("seen_count") or 0),
                         correct_count=int(prev.get("correct_count") or 0),
-                        is_correct=bool(is_correct), now=now)
+                        is_correct=bool(is_correct), now=now,
+                        wrong_ladder=WRONG_LADDER_BY_KIND.get(str(kind), ()))
         params = [int(user_id), str(kind), str(task_key), st["seen_count"],
                   st["correct_count"], str(source)[:16]]
         if st["next_eligible_at"] is not None:
@@ -58200,7 +58277,12 @@ ANAGRAM_MIN_LETTERS = 8
 _ANAGRAM_LETTERS_LEN = "LENGTH(REGEXP_REPLACE(word, '[^A-Za-zÄÖÜäöüß]', '', 'g'))"
 
 
-def count_available_anagram_cards(*, cooldown_days: int = 14) -> int:
+def count_available_anagram_cards() -> int:
+    """Сколько карточек анаграмм годны к выдаче.
+
+    Отдыха у карточки больше нет (решение владельца 24.08.2026), поэтому годна ЛЮБАЯ
+    неснятая карточка нужной длины: кому её показывать, решает личная память человека.
+    """
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -58208,15 +58290,20 @@ def count_available_anagram_cards(*, cooldown_days: int = 14) -> int:
                 SELECT COUNT(*) FROM bt_3_anagram_cards
                 WHERE retired = FALSE
                   AND {_ANAGRAM_LETTERS_LEN} >= %s
-                  AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
                 """,
-                (int(ANAGRAM_MIN_LETTERS), int(cooldown_days)),
+                (int(ANAGRAM_MIN_LETTERS),),
             )
             return int((cursor.fetchone() or [0])[0])
 
 
-def pick_next_anagram(*, cooldown_days: int = 14, exclude_ids: list | None = None) -> dict | None:
-    """Oldest unsent (or cooldown-expired) active anagram card.
+def pick_next_anagram(*, exclude_ids: list | None = None) -> dict | None:
+    """Анаграмма для ЭТОГО человека: та, которую дольше всех никому не показывали.
+
+    Устройство и причина — те же, что у кроссвордов (`pick_next_crossword`, решение
+    владельца 24.08.2026): общий отдых карточки снят, повтор одному и тому же человеку
+    держит только личная память, а `last_sent_at` работает как порядок очереди.
+    Замер 24.08.2026: с 21.08 слот выедал по 13 разных карточек в сутки из 98 — ровно
+    та же картина, что у кроссвордов.
 
     `exclude_ids` — что закрыто ЛИЧНО этому человеку (см. `get_user_blocked_content_ids`).
     """
@@ -58229,15 +58316,14 @@ def pick_next_anagram(*, cooldown_days: int = 14, exclude_ids: list | None = Non
                 FROM bt_3_anagram_cards
                 WHERE retired = FALSE
                   AND {_ANAGRAM_LETTERS_LEN} >= %s
-                  AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
                 """
                 + ("  AND card_id::text <> ALL(%s)\n" if skip else "")
                 + """
                 ORDER BY last_sent_at NULLS FIRST, created_at
                 LIMIT 1
                 """,
-                ((int(ANAGRAM_MIN_LETTERS), int(cooldown_days), skip) if skip
-                 else (int(ANAGRAM_MIN_LETTERS), int(cooldown_days))),
+                ((int(ANAGRAM_MIN_LETTERS), skip) if skip
+                 else (int(ANAGRAM_MIN_LETTERS),)),
             )
             row = cursor.fetchone()
     if not row:

@@ -27,7 +27,7 @@ class GroupSlotTests(unittest.IsolatedAsyncioTestCase):
         """Слот с двумя получателями и банком `bank` (список номеров кроссвордов)."""
         sent = []
 
-        def _pick(*, cooldown_days, exclude_ids=None, **kw):
+        def _pick(*, exclude_ids=None, **kw):
             skip = set(exclude_ids or ())
             for cid in bank:
                 if cid not in skip:

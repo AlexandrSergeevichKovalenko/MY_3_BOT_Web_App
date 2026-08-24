@@ -126,7 +126,7 @@ class AnagramPoolGateTests(unittest.TestCase):
     def test_picking_skips_words_shorter_than_the_minimum(self):
         cursor = _DummyCursor(fetchone_results=[None])
         with patch("backend.database.get_db_connection_context", _db_context(cursor)):
-            self.assertIsNone(pick_next_anagram(cooldown_days=14))
+            self.assertIsNone(pick_next_anagram())
 
         sql, params = cursor.executed[0]
         self.assertIn("REGEXP_REPLACE", sql)
@@ -136,7 +136,7 @@ class AnagramPoolGateTests(unittest.TestCase):
     def test_availability_count_uses_the_same_gate(self):
         cursor = _DummyCursor(fetchone_results=[(3,)])
         with patch("backend.database.get_db_connection_context", _db_context(cursor)):
-            self.assertEqual(count_available_anagram_cards(cooldown_days=14), 3)
+            self.assertEqual(count_available_anagram_cards(), 3)
 
         sql, params = cursor.executed[0]
         self.assertIn("REGEXP_REPLACE", sql)
