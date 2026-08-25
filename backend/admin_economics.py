@@ -112,9 +112,6 @@ _LIMIT_BUTTON_DELTAS: dict[str, tuple[int, ...]] = {
     "dictionary_lookup_save_daily": (-5, 5),
     "translation_daily_sets": (-1, 1),
     "feel_word_daily": (-1, 1),
-    # «Отличия»: три новые пары в день. Расход считается сам — резерв пишет строку
-    # с action_type=word_diff_daily, и общий запрос экрана лимитов её уже видит.
-    "word_diff_daily": (-1, 1),
 }
 
 

@@ -12892,7 +12892,6 @@ def ensure_webapp_tables() -> None:
             free_skill_training_daily = Decimal(0) if _skill_raw.lower() in ("", "null") else Decimal(_skill_raw)
             free_translation_daily_sets = _env_decimal("FREE_TRANSLATION_DAILY_SETS_LIMIT", "1")
             free_numdict_practice_daily = _env_decimal("NUMDICT_PRACTICE_FREE_LIMIT", "3")
-            free_word_diff_daily = _env_decimal("WORD_DIFF_FREE_DAILY_LIMIT", "3")
             plan_limit_seed_rows: list[tuple] = []
             if free_translation_daily_sets is not None and free_translation_daily_sets >= 0:
                 plan_limit_seed_rows.append(
@@ -12900,16 +12899,6 @@ def ensure_webapp_tables() -> None:
                         "free",
                         "translation_daily_sets",
                         free_translation_daily_sets,
-                        "count",
-                        "day",
-                    )
-                )
-            if free_word_diff_daily is not None and free_word_diff_daily >= 0:
-                plan_limit_seed_rows.append(
-                    (
-                        "free",
-                        "word_diff_daily",
-                        free_word_diff_daily,
                         "count",
                         "day",
                     )
@@ -31009,6 +30998,36 @@ def count_word_diff_misses(days: int = 7) -> dict:
     return {str(row[0]): int(row[1]) for row in rows}
 
 
+def list_word_diff_popular(limit: int = 40) -> list[dict]:
+    """Всё, что кто-либо уже сравнивал, по убыванию частоты обращений.
+
+    Список общий на всех: пара разобрана один раз и дальше открывается из базы даром.
+    Порядок по числу открытий — это и есть защита от мусора: чью-то случайную ерунду
+    никто не открывает второй раз, и она сама опускается вниз.
+
+    Показываем только пары ТЕКУЩЕЙ версии разбора: их можно открыть из кеша бесплатно,
+    а устаревшая потребовала бы нового обращения к модели.
+    """
+    ensure_word_diff_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT pair_key, words, open_count
+                FROM bt_3_word_diff_cards
+                WHERE schema_version = %s
+                ORDER BY open_count DESC, created_at DESC
+                LIMIT %s;
+                """,
+                (WORD_DIFF_SCHEMA_VERSION, max(1, min(int(limit or 40), 100))),
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {"pair_key": row[0], "words": list(row[1] or []), "opens": int(row[2] or 0)}
+        for row in rows
+    ]
+
+
 def list_word_diff_history(user_id: int, limit: int = 20) -> list[dict]:
     """Список «вы уже сравнивали» — свежие сверху."""
     if not user_id:
@@ -43967,14 +43986,6 @@ FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
     "numdict_practice_daily": {
         "title": "Числа на слух (тренажёр)",
         "free_limit": max(1, int((os.getenv("NUMDICT_PRACTICE_FREE_LIMIT") or "3").strip() or "3")),
-        "reset_policy": "daily_europe_vienna",
-    },
-    "word_diff_daily": {
-        "title": "Разбор отличий между словами",
-        # Free: 3 НОВЫЕ пары в день. Считается только разбор, которого ещё нет в общем
-        # кеше: открыть уже разобранную пару стоит нам ноль, и брать за это дневную
-        # единицу означало бы отказывать человеку в том, что у нас уже лежит.
-        "free_limit": max(1, int((os.getenv("WORD_DIFF_FREE_DAILY_LIMIT") or "3").strip() or "3")),
         "reset_policy": "daily_europe_vienna",
     },
     "reader_web_article_daily": {

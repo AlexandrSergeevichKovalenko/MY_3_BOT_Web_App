@@ -42809,6 +42809,21 @@ def _word_diff_gaps(diff: dict, words: list[str]) -> list[str]:
     return gaps
 
 
+def _word_diff_can_create(user_id: int) -> bool:
+    """Может ли человек заказать НОВЫЙ разбор пары. Готовые открывают все и бесплатно."""
+    try:
+        entitlement, _subscription = _resolve_user_entitlement(
+            user_id=int(user_id), now_ts_utc=datetime.now(timezone.utc),
+        )
+        mode = str(entitlement.get("effective_mode") or "free").strip().lower()
+        return mode != "free"
+    except Exception:
+        # Не смогли выяснить тариф — не берём деньги наугад и не открываем платное даром:
+        # честнее отказать в НОВОМ разборе, готовые останутся доступны.
+        logging.exception("word_diff: не удалось определить тариф пользователя %s", user_id)
+        return False
+
+
 def _word_diff_begin(payload: dict) -> dict:
     """Быстрая часть: кто спрашивает, какие слова, какая языковая пара. Без сети и модели."""
     user_id = _resolve_webapp_user_id(payload)
@@ -42908,23 +42923,20 @@ def _word_diff_prepare(payload: dict) -> dict:
             "created_at": cached.get("created_at"),
         }}
 
-    # 3. Настоящий промах кеша — только теперь платим и считаем.
-    reservation = reserve_free_feature_usage(
-        user_id=int(user_id),
-        feature_key="word_diff_daily",
-        idempotency_key=f"worddiff:{int(user_id)}:{hashlib.sha1(pair_key.encode('utf-8')).hexdigest()[:24]}",
-        source_lang=explain_lang,
-        target_lang=studied_lang,
-        metadata={"origin": "webapp_word_diff", "words": words},
-        tz="Europe/Vienna",
-    )
-    if reservation.get("blocked"):
-        error_payload = reservation.get("error")
-        if not isinstance(error_payload, dict):
-            error_payload = build_free_limit_error(
-                "word_diff_daily", used=reservation.get("used") or 0, tz="Europe/Vienna"
-            )
-        return {"refuse": (error_payload, 429)}
+    # 3. Настоящий промах кеша — здесь начинается платная работа.
+    #
+    # Владелец 25.08.2026 снял дневную норму в три пары: новый разбор дорог, а три штуки
+    # в день на бесплатном тарифе — заметные деньги. Вместо лимита прямое правило:
+    # НОВЫЙ разбор делает только полный доступ, а всё уже разобранное открывается всем и
+    # бесплатно, из базы. Для бесплатного человека это витрина: он видит, что тут есть,
+    # и решает, нужно ли ему это.
+    if not _word_diff_can_create(int(user_id)):
+        return {"refuse": ({
+            "ok": False,
+            "reason": "paid_only",
+            "message": "Новые сравнения — в полном доступе. Всё, что уже разобрали, "
+                       "открывается бесплатно: список ниже.",
+        }, 200)}
 
     return {"ctx": {
         "user_id": int(user_id),
@@ -43167,8 +43179,13 @@ def get_webapp_word_diff_shared():
 
 @app.route("/api/webapp/dictionary/diff/history", methods=["POST"])
 def get_webapp_dictionary_word_diff_history():
-    """Список «вы уже сравнивали». Открытие оттуда идёт через /diff и берётся из кеша."""
-    from backend.database import list_word_diff_history
+    """Свои сравнения и ОБЩИЙ список того, что разбирали все, по частоте обращений.
+
+    Общий список — витрина и защита от мусора разом: случайную ерунду никто не открывает
+    второй раз, и она сама опускается вниз. Открытие из списка идёт через /diff, попадает
+    в кеш и не стоит нам ничего.
+    """
+    from backend.database import list_word_diff_history, list_word_diff_popular
 
     payload = request.get_json(silent=True) or {}
     user_id = _resolve_webapp_user_id(payload)
@@ -43178,7 +43195,12 @@ def get_webapp_dictionary_word_diff_history():
         limit = int(payload.get("limit") or 20)
     except (TypeError, ValueError):
         limit = 20
-    return jsonify({"ok": True, "items": list_word_diff_history(int(user_id), limit=limit)})
+    return jsonify({
+        "ok": True,
+        "items": list_word_diff_history(int(user_id), limit=limit),
+        "popular": list_word_diff_popular(limit=40),
+        "can_create": _word_diff_can_create(int(user_id)),
+    })
 
 
 def _strip_html(html_text: str) -> str:

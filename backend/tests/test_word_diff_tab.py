@@ -101,7 +101,7 @@ def _patch_db(monkeypatch, **overrides):
 def test_unknown_word_stops_before_the_model_and_before_the_limit(client, monkeypatch):
     misses = []
     _patch_db(monkeypatch, record_word_diff_miss=lambda uid, words, reason, detail="": misses.append((words, reason)))
-    monkeypatch.setattr(backend_server, "reserve_free_feature_usage", _forbid("резерв лимита"))
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
     monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
     monkeypatch.setattr(
         backend_server, "_word_diff_lookup_sources",
@@ -129,7 +129,7 @@ def test_unknown_word_is_looked_up_right_now_not_tomorrow(client, monkeypatch):
     """
     looked_up = []
     _patch_db(monkeypatch)
-    monkeypatch.setattr(backend_server, "reserve_free_feature_usage", lambda **k: {"ok": True, "blocked": False})
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
     monkeypatch.setattr(
         backend_server, "_word_diff_full_lookup",
         lambda word, studied, explain: looked_up.append(word) or {
@@ -209,7 +209,7 @@ def test_cached_pair_costs_no_daily_unit(client, monkeypatch):
         "created_at": "2026-08-25T10:00:00+00:00",
     }
     _patch_db(monkeypatch, get_word_diff_card=lambda *a, **k: cached)
-    monkeypatch.setattr(backend_server, "reserve_free_feature_usage", _forbid("резерв лимита"))
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
     monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
     monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", lambda *a, **k: ENTRY)
 
@@ -229,10 +229,7 @@ def test_incomplete_answer_is_not_shown_and_is_counted(client, monkeypatch):
         record_word_diff_miss=lambda uid, words, reason, detail="": misses.append(reason),
         save_word_diff_card=lambda **k: saved.append(k),
     )
-    monkeypatch.setattr(
-        backend_server, "reserve_free_feature_usage",
-        lambda **k: {"ok": True, "blocked": False},
-    )
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
     monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", lambda *a, **k: ENTRY)
 
     async def _half_answer(*args, **kwargs):
@@ -253,7 +250,7 @@ def test_stream_serves_cache_as_plain_json_without_touching_the_model(client, mo
     """Готовая пара обязана прийти сразу и без потока: поток тут не нужен и не бесплатен."""
     cached = {"words": ["Miete", "Pacht"], "payload": FULL_ANSWER, "sources": {}, "created_at": None}
     _patch_db(monkeypatch, get_word_diff_card=lambda *a, **k: cached)
-    monkeypatch.setattr(backend_server, "reserve_free_feature_usage", _forbid("резерв лимита"))
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
     monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", lambda *a, **k: ENTRY)
 
     resp = client.post(
@@ -278,7 +275,7 @@ def test_stream_never_stores_half_an_answer(client, monkeypatch):
         save_word_diff_card=lambda **k: saved.append(k),
         record_word_diff_miss=lambda uid, words, reason, detail="": misses.append(reason),
     )
-    monkeypatch.setattr(backend_server, "reserve_free_feature_usage", lambda **k: {"ok": True, "blocked": False})
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
     monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", lambda *a, **k: ENTRY)
 
     def _half_stream(*args, **kwargs):
@@ -429,4 +426,48 @@ def test_old_cached_answer_is_not_served_after_the_format_changes():
     assert "DO UPDATE" in write_src, "устаревшая запись не переписывается новым разбором"
     assert "schema_version < EXCLUDED.schema_version" in write_src, (
         "новый разбор может затереть более свежий"
+    )
+
+
+def test_free_user_reads_the_shared_shelf_but_orders_nothing_new(client, monkeypatch):
+    """Бесплатному — всё уже разобранное, но НОВЫЙ разбор не запускается.
+
+    Владелец 25.08.2026 снял дневную норму в три пары: новый разбор дорог. Зато готовое
+    открывается всем и бесплатно — это витрина, по которой человек решает, нужен ли доступ.
+    """
+    _patch_db(monkeypatch)
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: False)
+    monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
+    monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", lambda *a, **k: ENTRY)
+
+    resp = _post(client, ["Anzahlung", "Vorschuss"])
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["ok"] is False and body["reason"] == "paid_only"
+    assert "бесплатно" in body["message"]
+
+
+def test_ready_pair_opens_for_everyone_including_free(client, monkeypatch):
+    """Готовая пара приходит из базы и тарифа не спрашивает — она нам ничего не стоит."""
+    cached = {"words": ["Miete", "Pacht"], "payload": FULL_ANSWER, "sources": {}, "created_at": None}
+    _patch_db(monkeypatch, get_word_diff_card=lambda *a, **k: cached)
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", _forbid("проверка тарифа"))
+    monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
+    monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", lambda *a, **k: ENTRY)
+
+    resp = _post(client, ["Miete", "Pacht"])
+
+    assert resp.status_code == 200
+    assert resp.get_json()["from_cache"] is True
+
+
+def test_shared_shelf_is_sorted_by_how_often_a_pair_is_opened():
+    """Общий список ранжируется частотой: случайная ерунда сама уходит вниз."""
+    import inspect
+    from backend import database
+    src = inspect.getsource(database.list_word_diff_popular)
+    assert "ORDER BY open_count DESC" in src, "список не ранжирован по частоте"
+    assert "schema_version = %s" in src, (
+        "в общий список попадут устаревшие пары — их открытие потребует новой оплаты"
     )
