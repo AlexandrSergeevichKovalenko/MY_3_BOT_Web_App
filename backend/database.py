@@ -30459,7 +30459,13 @@ _WORD_DIFF_SCHEMA_READY = False
 #   1 — первый выпуск (25.08.2026)
 #   2 — сравнимость слов, пересечение значений, часть речи и управление из справочника,
 #       симметричные примеры и сочетания на каждое слово
-WORD_DIFF_SCHEMA_VERSION = 2
+#   3 — обязательный перевод у каждого примера
+#   4 — работа разрезана надвое: «Полнота слова» собирает факты о слове, сравнение только
+#       сравнивает готовое; заменяемость попарная, номера значений наши, контраст типизован
+WORD_DIFF_SCHEMA_VERSION = 4
+
+# Версия задания «Полнота слова». Меняется промпт — устаревают все собранные им статьи.
+WORD_USAGE_SCHEMA_VERSION = 1
 
 
 def ensure_word_diff_schema() -> None:
@@ -30530,6 +30536,177 @@ def ensure_word_diff_schema() -> None:
             )
         conn.commit()
     _WORD_DIFF_SCHEMA_READY = True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# «Полнота слова»: как слово живёт в языке — возвратность, управление, предлоги,
+# сочетания, родня по приставкам. Хранится НА СЛОВЕ и служит всем: сравнению, поиску,
+# тренировкам. Собирается один раз и переиспользуется.
+#
+# Номера значений (s1, s2, …) присваивает ЭТОТ код, а не модель. Если бы их давала
+# модель, после переобогащения «s1» могло бы означать другое значение, и все ссылки —
+# в сравнении, в карточке, в тренировке — стали бы указывать не туда.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_WORD_USAGE_SCHEMA_READY = False
+
+
+def ensure_word_usage_schema() -> None:
+    """Таблица употребления слова. Идемпотентно, DDL один раз на процесс."""
+    global _WORD_USAGE_SCHEMA_READY
+    if _WORD_USAGE_SCHEMA_READY:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_word_usage (
+                    id             BIGSERIAL PRIMARY KEY,
+                    lang           TEXT NOT NULL,
+                    explain_lang   TEXT NOT NULL,
+                    lemma_key      TEXT NOT NULL,
+                    lemma          TEXT NOT NULL,
+                    payload        JSONB NOT NULL,
+                    schema_version INTEGER NOT NULL DEFAULT 1,
+                    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (lang, explain_lang, lemma_key)
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_word_usage_lookup "
+                "ON bt_3_word_usage (lang, explain_lang, lemma_key, schema_version);"
+            )
+        conn.commit()
+    _WORD_USAGE_SCHEMA_READY = True
+
+
+def _word_usage_key(word: str) -> str:
+    return " ".join(str(word or "").split()).casefold()
+
+
+def assign_sense_ids(new_senses: list, previous: dict | None = None) -> list:
+    """Присвоить значениям постоянные номера. Совпавшие по тексту сохраняют свой номер.
+
+    Модель возвращает значения без номеров и в следующий раз может выдать их в другом
+    порядке. Номер держится за ТЕКСТОМ значения, поэтому ссылка «ausweisen:s2» не
+    начинает вдруг означать другое.
+    """
+    old_by_meaning: dict[str, str] = {}
+    max_index = 0
+    for item in ((previous or {}).get("senses") or []):
+        if not isinstance(item, dict):
+            continue
+        meaning = str(item.get("meaning") or "").strip().casefold()
+        sense_id = str(item.get("id") or "").strip()
+        if meaning and sense_id:
+            old_by_meaning[meaning] = sense_id
+            if sense_id.startswith("s") and sense_id[1:].isdigit():
+                max_index = max(max_index, int(sense_id[1:]))
+
+    out: list[dict] = []
+    used: set[str] = set()
+    for item in (new_senses or []):
+        if not isinstance(item, dict):
+            continue
+        meaning = str(item.get("meaning") or "").strip()
+        if not meaning:
+            continue
+        sense_id = old_by_meaning.get(meaning.casefold())
+        if not sense_id or sense_id in used:
+            max_index += 1
+            sense_id = f"s{max_index}"
+        used.add(sense_id)
+        out.append({
+            "id": sense_id,
+            "meaning": meaning,
+            "context": str(item.get("context") or "").strip(),
+            "register": str(item.get("register") or "").strip(),
+        })
+    return out
+
+
+def get_word_usage(word: str, *, lang: str = "de", explain_lang: str = "ru") -> dict | None:
+    """Готовая картина употребления слова. None — «ещё не собирали»."""
+    key = _word_usage_key(word)
+    if not key:
+        return None
+    ensure_word_usage_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT payload FROM bt_3_word_usage
+                WHERE lang = %s AND explain_lang = %s AND lemma_key = %s
+                  AND schema_version = %s;
+                """,
+                (str(lang).lower(), str(explain_lang).lower(), key, WORD_USAGE_SCHEMA_VERSION),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    payload = row[0]
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (ValueError, TypeError):
+            return None
+    return payload if isinstance(payload, dict) else None
+
+
+def save_word_usage(word: str, payload: dict, *, lang: str = "de", explain_lang: str = "ru") -> dict:
+    """Сохранить картину употребления, проставив НАШИ номера значений. Возвращает сохранённое."""
+    key = _word_usage_key(word)
+    if not key or not isinstance(payload, dict) or not payload:
+        return {}
+    ensure_word_usage_schema()
+    previous = get_word_usage(word, lang=lang, explain_lang=explain_lang)
+    stored = dict(payload)
+    stored["senses"] = assign_sense_ids(payload.get("senses") or [], previous)
+    # Модель ссылается на значение ТЕКСТОМ — переводим ссылки в наши номера.
+    by_meaning = {str(x["meaning"]).casefold(): x["id"] for x in stored["senses"]}
+
+    def _link(items, field: str = "sense"):
+        out = []
+        for item in (items or []):
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            row["sense_id"] = by_meaning.get(str(item.get(field) or "").strip().casefold(), "")
+            row.pop(field, None)
+            out.append(row)
+        return out
+
+    stored["constructions"] = _link(payload.get("constructions"))
+    stored["collocations"] = _link(payload.get("collocations"))
+    reflexivity = payload.get("reflexivity")
+    if isinstance(reflexivity, dict):
+        reflexivity = dict(reflexivity)
+        reflexivity["forms"] = _link(reflexivity.get("forms"))
+        stored["reflexivity"] = reflexivity
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_word_usage
+                    (lang, explain_lang, lemma_key, lemma, payload, schema_version)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (lang, explain_lang, lemma_key) DO UPDATE SET
+                    payload = EXCLUDED.payload,
+                    lemma = EXCLUDED.lemma,
+                    schema_version = EXCLUDED.schema_version,
+                    updated_at = NOW();
+                """,
+                (
+                    str(lang).lower(), str(explain_lang).lower(), key,
+                    " ".join(str(word or "").split()),
+                    Json(stored), WORD_USAGE_SCHEMA_VERSION,
+                ),
+            )
+        conn.commit()
+    return stored
 
 
 def get_lex_unit_card(unit_id: int) -> dict | None:

@@ -1915,3 +1915,18 @@ html[data-scheme="light"] .dq-gt > summary,
 .wd-colloc-chip { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }
 .wd-colloc-de { font-weight: 700; }
 .wd-colloc-ru { font-size: 11.5px; font-weight: 500; color: var(--dmps-text-muted, #94a3b8); }
+
+/* Употребление слова: возвратность, обязательность конструкции, родня по приставкам. */
+.wd-usage { display: flex; flex-direction: column; gap: 6px; }
+.wd-usage + .wd-usage { margin-top: 10px; }
+.wd-usage-row { display: flex; gap: 8px; font-size: 13.5px; }
+.wd-usage-row .k { flex: 0 0 104px; color: var(--dmps-text-muted, #94a3b8); font-weight: 600; }
+.wd-usage-row .v { flex: 1 1 auto; color: var(--dmps-text-secondary, #cbd5e1); }
+.wd-oblig { font-size: 11.5px; font-weight: 700; color: var(--dq-warn); }
+.wd-construction-ru { display: block; color: var(--dmps-text-muted, #94a3b8); }
+.wd-swap-pair { font-size: 13px; font-weight: 700; color: var(--dmps-text-title, #f1f5f9); }
+.wd-compare-note.is-partial { border-color: var(--dq-accent); background: var(--dq-accent-wash); }
+/* Замена возможна, но смысл сместится — это не ошибка, и красным её красить нельзя. */
+.wd-ex.is-shift .wd-ex-mark { color: var(--dq-warn); }
+.wd-swap { flex-wrap: wrap; }
+.wd-swap + .wd-swap { margin-top: 6px; }

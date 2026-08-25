@@ -399,6 +399,7 @@ from backend.openai_manager import (
     run_feel_word,
     run_feel_word_multilang,
     run_word_diff_multilang,
+    run_word_usage_enrichment,
     run_enrich_word,
     run_enrich_word_multilang,
     run_theory_generation,
@@ -42170,13 +42171,15 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
             source="dictionary_units",
         )
         if payload:
-            return payload
+            payload["usage"] = _word_diff_usage(text, card or {}, studied_lang, explain_lang)
+            return _word_diff_build_article(payload)
 
     if str(studied_lang or "").strip().lower() == "de":
         wiki = _fetch_wiktionary_entry(text)
         if isinstance(wiki, dict) and (wiki.get("glosses_en") or []):
-            return {
+            return _word_diff_build_article({
                 "word": text,
+                "headword": text,
                 "pos": str(wiki.get("pos") or ""),
                 # Толкования английские — так и помечаем, чтобы модель не выдала их
                 # человеку за русский перевод.
@@ -42187,7 +42190,7 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
                 "collocations": [],
                 "register": "",
                 "source": "wiktionary",
-            }
+            })
 
     # Ни в слое, ни в Wiktionary. Дверь слова — и разбираем сейчас.
     if _word_diff_word_gate_blocks(text, studied_lang):
@@ -42195,7 +42198,11 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
     fresh = _word_diff_full_lookup(text, studied_lang, explain_lang)
     if not isinstance(fresh, dict) or not fresh:
         return None
-    return _word_diff_payload_from_card(text, fresh, source="dictionary_lookup")
+    payload = _word_diff_payload_from_card(text, fresh, source="dictionary_lookup")
+    if not payload:
+        return None
+    payload["usage"] = _word_diff_usage(text, fresh, studied_lang, explain_lang)
+    return _word_diff_build_article(payload)
 
 
 def _word_diff_card_is_thin(card) -> bool:
@@ -42320,6 +42327,146 @@ def _word_diff_payload_from_card(
     }
 
 
+def _word_diff_build_article(payload: dict) -> dict:
+    """Готовая статья для сравнения: значения с номерами, конструкции с ярлыками.
+
+    Сравнению отдаётся именно это. У каждой конструкции и каждого сочетания есть свой
+    ярлык (c1, l1…) — сравнение ссылается на них, когда решает, что показать человеку, и
+    поэтому физически не может подсунуть конструкцию, которой у нас нет.
+    """
+    if not isinstance(payload, dict) or not payload:
+        return {}
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    word = str(payload.get("word") or "")
+
+    senses = [
+        {"id": str(item.get("id") or ""), "meaning": str(item.get("meaning") or ""),
+         "context": str(item.get("context") or "")}
+        for item in (usage.get("senses") or []) if isinstance(item, dict) and item.get("meaning")
+    ]
+    if not senses:
+        # Картины употребления нет — работаем на значениях из карточки, без номеров.
+        senses = [
+            {"id": f"s{i + 1}", "meaning": str(item.get("meaning") or ""),
+             "context": str(item.get("context") or "")}
+            for i, item in enumerate(payload.get("senses") or []) if item.get("meaning")
+        ]
+
+    constructions = []
+    seen_patterns: set[str] = set()
+    for source in ((usage.get("constructions") or []), (payload.get("constructions") or [])):
+        for item in source:
+            if not isinstance(item, dict):
+                continue
+            pattern = str(item.get("pattern") or "").strip()
+            if not pattern or pattern.casefold() in seen_patterns:
+                continue
+            seen_patterns.add(pattern.casefold())
+            constructions.append({
+                "id": f"c{len(constructions) + 1}",
+                "pattern": pattern,
+                "case": str(item.get("case") or ""),
+                "preposition": str(item.get("preposition") or "" ) or None,
+                "obligatory": bool(item.get("obligatory")),
+                "sense_id": str(item.get("sense_id") or ""),
+                "example_de": str(item.get("example_de") or ""),
+                "example_ru": str(item.get("example_ru") or ""),
+            })
+            if len(constructions) >= 6:
+                break
+
+    collocations = []
+    for item in (usage.get("collocations") or []):
+        if not isinstance(item, dict) or not item.get("phrase"):
+            continue
+        collocations.append({
+            "id": f"l{len(collocations) + 1}",
+            "phrase": str(item.get("phrase") or ""),
+            "translation": str(item.get("translation") or ""),
+            "sense_id": str(item.get("sense_id") or ""),
+        })
+    for phrase in (payload.get("collocations") or []):
+        text = str(phrase or "").strip()
+        if not text or any(text.casefold() == c["phrase"].casefold() for c in collocations):
+            continue
+        collocations.append({"id": f"l{len(collocations) + 1}", "phrase": text,
+                             "translation": "", "sense_id": ""})
+        if len(collocations) >= 6:
+            break
+
+    return {
+        "word": word,
+        "headword": str(payload.get("headword") or word),
+        "pos": str(usage.get("pos") or payload.get("pos") or ""),
+        "senses": senses[:6],
+        "reflexivity": usage.get("reflexivity") if isinstance(usage.get("reflexivity"), dict) else {},
+        "constructions": constructions,
+        "collocations": collocations[:6],
+        "word_family": [x for x in (usage.get("word_family") or []) if isinstance(x, dict)][:4],
+        "examples": payload.get("examples") or [],
+        "register": str(payload.get("register") or ""),
+        "source": str(payload.get("source") or ""),
+    }
+
+
+def _word_diff_usage(word: str, card: dict, studied_lang: str, explain_lang: str) -> dict:
+    """Картина употребления слова: возвратность, управление, предлоги, сочетания, родня.
+
+    Берётся из базы; нет — собирается ЗДЕСЬ И СЕЙЧАС для этого самого слова и остаётся
+    в базе навсегда. Никакого «прогрева впрок»: мы не угадываем, что человек введёт.
+
+    Это отдельная работа от сравнения. Сравнение словарных фактов не выдумывает — оно
+    получает уже собранное. Разрезано 25.08.2026 после разбора с владельцем: раньше одна
+    модель была и анализатором, и источником фактов, и грамматика бралась из воздуха.
+    """
+    from backend.database import get_word_usage, save_word_usage
+    text = " ".join(str(word or "").split())
+    if not text:
+        return {}
+    try:
+        stored = get_word_usage(text, lang=studied_lang, explain_lang=explain_lang)
+        if stored:
+            return stored
+    except Exception:
+        logging.exception("word_usage: не смогли прочитать картину употребления %r", text)
+        return {}
+
+    known = {
+        "pos": str((card or {}).get("part_of_speech") or ""),
+        "senses": [
+            str((item or {}).get("value") if isinstance(item, dict) else item or "").strip()
+            for item in ((card or {}).get("translations") or [])
+        ][:6],
+        "examples": [
+            {"de": str(item.get("source") or ""), "ru": str(item.get("target") or "")}
+            for item in ((card or {}).get("usage_examples") or [])
+            if isinstance(item, dict) and item.get("source")
+        ][:3],
+        "constructions": [
+            {"pattern": str(item.get("pattern") or ""), "case": str(item.get("case") or "")}
+            for item in ((card or {}).get("government_patterns") or [])
+            if isinstance(item, dict) and item.get("pattern")
+        ][:5],
+    }
+    try:
+        fresh = asyncio.run(
+            run_word_usage_enrichment(
+                text, known,
+                studied_language=studied_lang, explain_language=explain_lang,
+            )
+        )
+    except Exception:
+        logging.exception("word_usage: сбор картины употребления %r не удался", text)
+        return {}
+    if not isinstance(fresh, dict) or not fresh.get("senses"):
+        return {}
+    try:
+        return save_word_usage(text, fresh, lang=studied_lang, explain_lang=explain_lang)
+    except Exception:
+        logging.exception("word_usage: не смогли сохранить картину употребления %r", text)
+        return fresh
+
+
 def _word_diff_full_lookup(word: str, studied_lang: str, explain_lang: str) -> dict | None:
     """Полный разбор слова нашим обычным путём. Возвращает карточку или None.
 
@@ -42417,15 +42564,17 @@ def _word_diff_clean_text(value, limit: int = 400) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
-def _word_diff_validate(raw: dict, words: list[str], sources: list[dict] | None = None) -> tuple[dict, str]:
-    """Ответ модели → то, что можно показать. Второе значение — причина отказа ('' если цело).
+def _word_diff_validate(
+    raw: dict,
+    words: list[str],
+    sources: list[dict] | None = None,
+    studied_lang: str = "de",
+) -> tuple[dict, str]:
+    """Ответ сравнения → то, что можно показать. Второе значение — причина отказа.
 
-    Обязателен ровно один блок — «Главное»: по строке на каждое слово. Без него экрана
-    нет, и подставлять вместо него нечего. Остальные блоки необязательны: не пришёл блок —
-    блока на экране не будет, но выдумывать его мы не станем.
-
-    Часть речи и УПРАВЛЕНИЕ приходят не отсюда: их кладёт сервер из нашей статьи
-    (`sources`). У модели они не спрашиваются вовсе — это данные справочника.
+    Сравнение не имеет права принести НОВЫЙ словарный факт: конструкции и сочетания
+    подставляем мы сами по ярлыкам из поданных статей, а всё, что модель придумала мимо
+    них, отбрасывается. Часть речи и значения — тоже наши.
     """
     if not isinstance(raw, dict) or not raw:
         return {}, "empty"
@@ -42435,25 +42584,25 @@ def _word_diff_validate(raw: dict, words: list[str], sources: list[dict] | None 
         if isinstance(item, dict) and item.get("word"):
             by_word[str(item["word"]).casefold()] = item
 
-    # Показываем словарное написание («abschieben», не «Abschieben»), а не то, как слово
-    # написала модель или как его набрал человек.
     wanted: dict[str, str] = {}
     for word in words:
         key = word.casefold()
         source = by_word.get(key) or {}
         wanted[key] = str(source.get("headword") or word)
 
-    verdict = []
-    seen_words = set()
+    def _word_of(item, field: str = "word") -> str:
+        return _word_diff_clean_text((item or {}).get(field), 64).casefold()
+
+    verdict, seen_words = [], set()
     for item in (raw.get("verdict") or []):
         if not isinstance(item, dict):
             continue
-        word_key = _word_diff_clean_text(item.get("word"), 64).casefold()
+        key = _word_of(item)
         line = _word_diff_clean_text(item.get("line"), 240)
-        if word_key not in wanted or not line or word_key in seen_words:
+        if key not in wanted or not line or key in seen_words:
             continue
-        seen_words.add(word_key)
-        verdict.append({"word": wanted[word_key], "line": line})
+        seen_words.add(key)
+        verdict.append({"word": wanted[key], "line": line})
     if len(seen_words) != len(wanted):
         return {}, "incomplete"
 
@@ -42461,142 +42610,220 @@ def _word_diff_validate(raw: dict, words: list[str], sources: list[dict] | None 
     raw_comparable = raw.get("comparable")
     if isinstance(raw_comparable, dict):
         value = _word_diff_clean_text(raw_comparable.get("value"), 16).lower()
-        if value in {"overlap", "one_sense", "none"}:
+        if value in {"broad", "partial", "none"}:
             comparable = {"value": value, "note": _word_diff_clean_text(raw_comparable.get("note"), 240)}
+    no_overlap = comparable.get("value") == "none"
+
+    compared_senses = []
+    for item in (raw.get("compared_senses") or []):
+        if not isinstance(item, dict):
+            continue
+        key = _word_of(item)
+        sense_id = _word_diff_clean_text(item.get("sense_id"), 16)
+        known_ids = {str(x.get("id")) for x in ((by_word.get(key) or {}).get("senses") or [])}
+        if key in wanted and sense_id in known_ids:
+            compared_senses.append({"word": wanted[key], "sense_id": sense_id})
 
     overlap = {}
     raw_overlap = raw.get("overlap")
-    if isinstance(raw_overlap, dict):
+    if isinstance(raw_overlap, dict) and not no_overlap:
         roles = []
         for item in (raw_overlap.get("roles") or []):
-            if not isinstance(item, dict):
-                continue
-            word_key = _word_diff_clean_text(item.get("word"), 64).casefold()
-            role = _word_diff_clean_text(item.get("role"), 160)
-            if word_key in wanted and role:
-                roles.append({"word": wanted[word_key], "role": role})
+            key = _word_of(item)
+            role = _word_diff_clean_text((item or {}).get("role"), 160)
+            if key in wanted and role:
+                roles.append({"word": wanted[key], "role": role})
         note = _word_diff_clean_text(raw_overlap.get("note"), 300)
         if note or roles:
             overlap = {"note": note, "roles": roles}
 
-    interchangeable = {}
+    # Заменяемость ПОПАРНО: слов может быть до четырёх, и одно общее «иногда» было бы
+    # неправдой — A↔B может быть «иногда», а A↔C «нельзя».
+    interchangeable = []
     raw_inter = raw.get("interchangeable")
-    if isinstance(raw_inter, dict):
-        value = _word_diff_clean_text(raw_inter.get("value"), 16).lower()
-        if value in {"no", "sometimes", "yes"}:
-            interchangeable = {"value": value, "note": _word_diff_clean_text(raw_inter.get("note"), 240)}
+    if isinstance(raw_inter, dict):  # старый формат одного вердикта — принимаем как пару
+        raw_inter = [dict(raw_inter, a=words[0], b=words[1])] if len(words) >= 2 else []
+    seen_pairs = set()
+    for item in (raw_inter or []):
+        if not isinstance(item, dict) or no_overlap:
+            continue
+        a, b = _word_of(item, "a"), _word_of(item, "b")
+        value = _word_diff_clean_text(item.get("value"), 16).lower()
+        if a not in wanted or b not in wanted or a == b or value not in {"no", "sometimes", "yes"}:
+            continue
+        pair = tuple(sorted((a, b)))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        interchangeable.append({
+            "a": wanted[a], "b": wanted[b], "value": value,
+            "note": _word_diff_clean_text(item.get("note"), 240),
+        })
 
     word_cards = []
     for item in (raw.get("words") or []):
         if not isinstance(item, dict):
             continue
-        word_key = _word_diff_clean_text(item.get("word"), 64).casefold()
-        if word_key not in wanted:
+        key = _word_of(item)
+        if key not in wanted:
             continue
-        source = by_word.get(word_key) or {}
+        source = by_word.get(key) or {}
         word_cards.append({
-            "word": wanted[word_key],
+            "word": wanted[key],
+            "sense_id": _word_diff_clean_text(item.get("sense_id"), 16),
             "meaning": _word_diff_clean_text(item.get("meaning"), 200),
             "when": _word_diff_clean_text(item.get("when"), 200),
             "register": _word_diff_clean_text(item.get("register"), 80),
-            # Из НАШЕЙ статьи, а не из ответа модели.
             "pos": str(source.get("pos") or ""),
-            "constructions": [
-                {
-                    "pattern": str(c.get("pattern") or ""),
-                    "case": str(c.get("case") or ""),
-                    "example_de": str(c.get("example_de") or ""),
-                    "example_ru": str(c.get("example_ru") or ""),
-                }
-                for c in (source.get("constructions") or [])[:3]
-                if isinstance(c, dict) and c.get("pattern")
-            ],
         })
 
-    examples = []
+    # Не больше двух примеров на слово, и у каждого обязателен перевод: немецкая фраза
+    # без перевода ученику бесполезна, а придумывать перевод мы не станем.
+    examples, per_word = [], {}
     for item in (raw.get("examples") or []):
         if not isinstance(item, dict):
             continue
+        key = _word_of(item)
         de = _word_diff_clean_text(item.get("de"), 240)
-        if not de:
+        translation = _word_diff_clean_text(item.get("translation"), 240)
+        if key not in wanted or not de or not translation or per_word.get(key, 0) >= 2:
             continue
-        word_key = _word_diff_clean_text(item.get("word"), 64).casefold()
-        examples.append({
-            "word": wanted.get(word_key, ""),
-            "correct": bool(item.get("correct")),
-            "de": de,
-            "translation": _word_diff_clean_text(item.get("translation"), 240),
-            "why": _word_diff_clean_text(item.get("why"), 240),
-        })
+        per_word[key] = per_word.get(key, 0) + 1
+        row = {"word": wanted[key], "de": de, "translation": translation}
+        contrast = item.get("contrast")
+        if isinstance(contrast, dict):
+            c_type = _word_diff_clean_text(contrast.get("type"), 40).lower()
+            c_de = _word_diff_clean_text(contrast.get("de"), 240)
+            allowed = {"wrong", "possible_but_different_meaning", "possible_but_different_register"}
+            if c_type in allowed and c_de:
+                row["contrast"] = {
+                    "type": c_type,
+                    "de": c_de,
+                    "translation": _word_diff_clean_text(contrast.get("translation"), 240),
+                    "why": _word_diff_clean_text(contrast.get("why"), 240),
+                }
+        examples.append(row)
 
     chooser = []
     for item in (raw.get("chooser") or []):
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or no_overlap:
             continue
-        word_key = _word_diff_clean_text(item.get("word"), 64).casefold()
+        key = _word_of(item)
         situation = _word_diff_clean_text(item.get("situation"), 160)
-        if word_key not in wanted or not situation:
-            continue
-        chooser.append({"situation": situation, "word": wanted[word_key]})
+        if key in wanted and situation:
+            chooser.append({"situation": situation, "word": wanted[key]})
 
-    # Сочетания — не больше трёх на слово: три сильных полезнее десяти случайных.
-    collocations = []
-    per_word: dict[str, int] = {}
-    for item in (raw.get("collocations") or []):
-        if not isinstance(item, dict):
+    # Конструкции и сочетания подставляем МЫ по ярлыкам. Ярлык неизвестен — строки нет.
+    def _pick(kind: str, limit_per_word: int) -> list:
+        picked, counts = [], {}
+        marks = ((raw.get("highlight") or {}).get(kind) or []) if isinstance(raw.get("highlight"), dict) else []
+        for mark in marks:
+            text = str(mark or "").strip()
+            if ":" not in text:
+                continue
+            word_part, item_id = text.split(":", 1)
+            key = word_part.strip().casefold()
+            source = by_word.get(key)
+            if key not in wanted or not source or counts.get(key, 0) >= limit_per_word:
+                continue
+            for row in (source.get(kind) or []):
+                if str(row.get("id")) == item_id.strip():
+                    counts[key] = counts.get(key, 0) + 1
+                    picked.append(dict(row, word=wanted[key]))
+                    break
+        # Модель промолчала — показываем первые из наших же данных, ничего не выдумывая.
+        for key, display in wanted.items():
+            source = by_word.get(key) or {}
+            for row in (source.get(kind) or []):
+                if counts.get(key, 0) >= limit_per_word:
+                    break
+                if any(p.get("id") == row.get("id") and p.get("word") == display for p in picked):
+                    continue
+                counts[key] = counts.get(key, 0) + 1
+                picked.append(dict(row, word=display))
+        return picked
+
+    constructions = [] if no_overlap else _pick("constructions", 3)
+    collocations = [] if no_overlap else _pick("collocations", 3)
+
+    # Возвратность и родня по приставкам — из наших статей, не из ответа модели.
+    usage_blocks = []
+    for key, display in wanted.items():
+        source = by_word.get(key) or {}
+        reflexivity = source.get("reflexivity") if isinstance(source.get("reflexivity"), dict) else {}
+        family = source.get("word_family") or []
+        if not reflexivity and not family:
             continue
-        phrase = _word_diff_clean_text(item.get("phrase"), 120)
-        if not phrase:
-            continue
-        word_key = _word_diff_clean_text(item.get("word"), 64).casefold()
-        if per_word.get(word_key, 0) >= 3:
-            continue
-        per_word[word_key] = per_word.get(word_key, 0) + 1
-        collocations.append({
-            "word": wanted.get(word_key, ""),
-            "phrase": phrase,
-            "translation": _word_diff_clean_text(item.get("translation"), 160),
+        usage_blocks.append({
+            "word": display,
+            "reflexivity": reflexivity,
+            # Родня по приставкам показывается, только когда сравниваемые слова сами
+            # родственники: человек, открывший «abschieben», не должен вдруг учить
+            # «verschieben» (решение владельца 25.08.2026).
+            "word_family": [
+                row for row in family
+                if str(row.get("word") or "").casefold() in wanted
+            ],
         })
 
     return {
         "comparable": comparable,
+        "compared_senses": compared_senses,
         "verdict": verdict,
         "overlap": overlap,
         "interchangeable": interchangeable,
         "words": word_cards,
-        "examples": examples[:12],
+        "examples": examples,
         "chooser": chooser,
-        "trap": _word_diff_clean_text(raw.get("trap"), 400),
+        "trap": "" if no_overlap else _word_diff_clean_text(raw.get("trap"), 400),
+        "constructions": constructions,
         "collocations": collocations,
+        "usage": usage_blocks,
     }, ""
 
 
 def _word_diff_gaps(diff: dict, words: list[str]) -> list[str]:
     """Чего в готовом разборе не хватает. Показывать это НЕ мешает, считать — обязаны.
 
-    Владелец 25.08.2026: на экране примеры и сочетания были только для первого слова —
-    второе оставалось без единого показа, как его употреблять. Такой разбор неполон,
-    и знать об этом мы должны числом, а не по жалобе.
+    Владелец 25.08.2026: на экране примеры и сочетания были только для первого слова.
+    Такой разбор неполон, и знать об этом мы должны числом, а не по жалобе.
     """
     if not isinstance(diff, dict) or not diff:
         return ["пустой разбор"]
+    if (diff.get("comparable") or {}).get("value") == "none":
+        return []  # слова не пересекаются — короткий экран это норма, а не пробел
+
     gaps: list[str] = []
-    correct_words = {
-        str(ex.get("word") or "").casefold()
-        for ex in (diff.get("examples") or [])
-        if isinstance(ex, dict) and ex.get("correct")
-    }
-    colloc_words = {
-        str(row.get("word") or "").casefold()
-        for row in (diff.get("collocations") or []) if isinstance(row, dict)
-    }
     shown = {str(row.get("word") or "").casefold() for row in (diff.get("verdict") or [])}
-    for word in shown or {w.casefold() for w in words}:
-        if word not in correct_words:
-            gaps.append(f"нет верного примера: {word}")
+    example_words = {str(ex.get("word") or "").casefold() for ex in (diff.get("examples") or [])}
+    colloc_words = {str(row.get("word") or "").casefold() for row in (diff.get("collocations") or [])}
+    construction_words = {str(row.get("word") or "").casefold() for row in (diff.get("constructions") or [])}
+
+    for word in (shown or {w.casefold() for w in words}):
+        if word not in example_words:
+            gaps.append(f"нет примера: {word}")
         if word not in colloc_words:
             gaps.append(f"нет сочетаний: {word}")
+        if word not in construction_words:
+            gaps.append(f"нет конструкций: {word}")
     return gaps
+
+
+def _word_diff_begin(payload: dict) -> dict:
+    """Быстрая часть: кто спрашивает, какие слова, какая языковая пара. Без сети и модели."""
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return {"refuse": ({"error": "Не удалось определить пользователя"}, 401)}
+    words = _word_diff_normalize_words(payload.get("words"))
+    if len(words) < _WORD_DIFF_MIN_WORDS:
+        return {"refuse": ({"error": "Впишите хотя бы два слова, которые хотите сравнить."}, 400)}
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    return {"ctx": {
+        "user_id": int(user_id),
+        "words": words,
+        "studied_lang": str(target_lang or "de").strip().lower(),
+        "explain_lang": str(source_lang or "ru").strip().lower(),
+    }}
 
 
 def _word_diff_prepare(payload: dict) -> dict:
@@ -42793,15 +43020,28 @@ def stream_webapp_dictionary_word_diff():
     from backend.database import record_word_diff_miss
     from backend.openai_manager import stream_word_diff_sections, set_llm_billing_user
 
-    prepared = _word_diff_prepare(request.get_json(silent=True) or {})
-    if "refuse" in prepared:
-        body, status = prepared["refuse"]
+    request_payload = request.get_json(silent=True) or {}
+    begun = _word_diff_begin(request_payload)
+    if "refuse" in begun:
+        body, status = begun["refuse"]
         return jsonify(body), status
-    if "cached" in prepared:
-        return jsonify(prepared["cached"])
-    ctx = prepared["ctx"]
 
     def _generate():
+        # Сбор статей идёт ВНУТРИ потока: незнакомое слово собирается впервые до
+        # полуминуты, и всё это время человек не должен смотреть в пустой экран.
+        # Шаги настоящие, а не нарисованные для вида.
+        yield _sse_pack("stage", {"name": "sources", "text": "Ищем слова в словаре"})
+        prepared = _word_diff_prepare(request_payload)
+        if "refuse" in prepared:
+            body, _status = prepared["refuse"]
+            yield _sse_pack("refuse", body)
+            return
+        if "cached" in prepared:
+            yield _sse_pack("done", prepared["cached"])
+            return
+        ctx = prepared["ctx"]
+        yield _sse_pack("stage", {"name": "compare", "text": "Сравниваем значения"})
+
         merged: dict = {}
         sections_seen = 0
         set_llm_billing_user(ctx["user_id"])
