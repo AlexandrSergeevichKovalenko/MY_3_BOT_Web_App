@@ -38,6 +38,7 @@ os.environ.setdefault("SKIP_BILLING_LEDGER_WRITES", "1")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.database import get_db_connection_context  # noqa: E402
+from backend.lex_units import merge_unit_into  # noqa: E402
 
 
 def _pairs(cur) -> list[tuple[int, str, int, str]]:
@@ -87,47 +88,10 @@ def main() -> None:
 
             moved = 0
             for form_id, form, keep_id, keep in pairs:
-                # Поверхности: форма становится поверхностью настоящего слова. Совпавшие
-                # пропускаем — уникальность (lang, surface_key, unit_id).
-                cur.execute("""UPDATE bt_3_lex_surfaces s SET unit_id=%s
-                               WHERE s.unit_id=%s AND NOT EXISTS (
-                                   SELECT 1 FROM bt_3_lex_surfaces t
-                                    WHERE t.lang=s.lang AND t.surface_key=s.surface_key
-                                      AND t.unit_id=%s)""", (keep_id, form_id, keep_id))
-                cur.execute("DELETE FROM bt_3_lex_surfaces WHERE unit_id=%s", (form_id,))
-                # Личные карточки — человек своё слово не теряет.
-                cur.execute("UPDATE bt_3_webapp_dictionary_queries SET lex_unit_id=%s "
-                            "WHERE lex_unit_id=%s", (keep_id, form_id))
-                # Источники: уникальность (unit_id, entry_id, side).
-                cur.execute("""UPDATE bt_3_lex_unit_sources s SET unit_id=%s
-                               WHERE s.unit_id=%s AND NOT EXISTS (
-                                   SELECT 1 FROM bt_3_lex_unit_sources t
-                                    WHERE t.unit_id=%s AND t.entry_id=s.entry_id
-                                      AND t.side=s.side)""", (keep_id, form_id, keep_id))
-                cur.execute("DELETE FROM bt_3_lex_unit_sources WHERE unit_id=%s", (form_id,))
-                # Связи с обеих сторон. Уникальность (from_unit, to_unit) — переносим
-                # только те, которых у настоящего слова ещё нет, остальные снимаем:
-                # связь «форма → X» и «слово → X» это одна и та же связь.
-                # Прогон 19.08.2026 упал именно здесь, и слияние откатилось целиком.
-                cur.execute("""UPDATE bt_3_lex_links l SET from_unit=%s
-                               WHERE l.from_unit=%s AND l.to_unit <> %s AND NOT EXISTS (
-                                   SELECT 1 FROM bt_3_lex_links t
-                                    WHERE t.from_unit=%s AND t.to_unit=l.to_unit)""",
-                            (keep_id, form_id, keep_id, keep_id))
-                cur.execute("""UPDATE bt_3_lex_links l SET to_unit=%s
-                               WHERE l.to_unit=%s AND l.from_unit <> %s AND NOT EXISTS (
-                                   SELECT 1 FROM bt_3_lex_links t
-                                    WHERE t.to_unit=%s AND t.from_unit=l.from_unit)""",
-                            (keep_id, form_id, keep_id, keep_id))
-                cur.execute("DELETE FROM bt_3_lex_links WHERE from_unit=%s OR to_unit=%s",
-                            (form_id, form_id))
-                # Разбор фраз.
-                for table in ("bt_3_phrase_check", "bt_3_phrase_review"):
-                    cur.execute(f"UPDATE {table} SET unit_id=%s WHERE unit_id=%s",
-                                (keep_id, form_id))
-                # Значения формы уходят вместе со строкой — см. шапку.
-                cur.execute("DELETE FROM bt_3_lex_senses WHERE unit_id=%s", (form_id,))
-                cur.execute("DELETE FROM bt_3_lex_units WHERE id=%s", (form_id,))
+                # Двадцать запросов переноса живут в backend/lex_units.py:
+                # у них появился второй вызывающий (применение приговоров двери),
+                # а копия такого размера расходится с оригиналом на первой правке.
+                merge_unit_into(cur, form_id, keep_id)
                 cur.execute("DELETE FROM bt_3_reference_forms_unresolved WHERE word=%s", (form,))
                 moved += 1
         conn.commit()

@@ -347,3 +347,76 @@ def test_части_речи_берутся_из_общей_таблицы():
     assert POS_BY_WORTART["Temporaladverb"] == "adverb"
     assert POS_BY_WORTART["Interjektion"] == "interjection"
     assert POS_BY_WORTART["Subjunktion"] == "conjunction"
+
+
+def test_часть_речи_основы_не_наследуется_от_спрошенного_слова(monkeypatch):
+    """«Erfolgen» → «Erfolg», а НЕ «erfolg».
+
+    Живой дефект, найденный 25.08.2026 при применении накопленных приговоров.
+    Справочник отвечает «__форма__|Erfolg»: словарное слово назвал, часть речи — нет
+    (у форм существительного она приезжает пустой, у форм глагола — нет). Код брал
+    `base_pos or pos_hint`, то есть часть речи СПРОШЕННОГО слова: в карточке
+    «Erfolgen» стояло `verb`, правило регистра опускало заглавную, и приговором
+    становилось «erfolg» — слова, которого в немецком нет.
+
+    Часть речи основы спрашивается У СПРАВОЧНИКА про саму основу. Прежнюю подпись
+    брать нельзя никогда: она принадлежит другому слову.
+    """
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"Erfolgen": ["__форма__|Erfolg"],
+                                    "Erfolg": ["Substantiv"]}))
+    verdict = G.check_word("Erfolgen", pos_hint="verb")
+    assert verdict["text"] == "Erfolg", "заглавная у существительного обязана остаться"
+    assert verdict["pos"] == "noun", "часть речи взята про основу, а не унаследована"
+
+
+def test_если_справочник_не_назвал_часть_речи_основы_регистр_не_трогаем(monkeypatch):
+    """Не назвал — не выдумываем. Слово ложится ровно так, как напечатано в источнике.
+
+    Пустая часть речи здесь не заглушка: написание пришло ИЗ ИСТОЧНИКА, мы лишь не
+    применяем к нему правило регистра, которого не на чем основать.
+    """
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"Verdecken": ["__форма__|Verdeck"]}))
+    verdict = G.check_word("Verdecken", pos_hint="verb")
+    assert verdict["text"] == "Verdeck", "старая часть речи не имеет права опустить заглавную"
+    assert verdict["pos"] == ""
+
+
+def test_настоящее_слово_не_подменяется_вариантом_починки(monkeypatch):
+    """«Mausi» остаётся «Mausi», хотя у «Maus» страница есть.
+
+    Живой дефект, найденный 25.08.2026 при применении накопленных приговоров.
+    Варианты починки строятся отрезанием последней буквы — для обрезка с экрана это
+    верно («Sauerstoffk» → «Sauerstoff»), но настоящее слово, которого нет в
+    Wiktionary, так превращалось в ЧУЖОЕ, и человек учил не то, что искал.
+
+    Разделяет случаи ВТОРОЙ СПРАВОЧНИК, а не наша догадка: DWDS знает «Mausi»
+    существительным, а «Spatzi», «Kramp», «Sauerstoffk» не знает.
+    """
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"Maus": ["Substantiv"]}))
+    monkeypatch.setattr(G, "_second_reference_says", lambda words: {"Mausi": "Substantiv"})
+    verdict = G.check_word("Mausi")
+    assert verdict["text"] == "Mausi", "настоящее слово подменили другим словом"
+
+
+def test_обрезок_с_экрана_чинится_как_прежде(monkeypatch):
+    """Обратная сторона того же правила: второй справочник обрезка НЕ знает."""
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"Sauerstoff": ["Substantiv"]}))
+    monkeypatch.setattr(G, "_second_reference_says", lambda words: {})
+    verdict = G.check_word("Sauerstoffk")
+    assert verdict["text"] == "Sauerstoff"
+    assert verdict["status"] == G.REPAIRED
+
+
+def test_молчание_второго_справочника_не_даёт_подменить_слово(monkeypatch):
+    """Молчание источника — не ответ. Не подтверждаем и не чиним, спросим позже."""
+    monkeypatch.setattr(G, "_reference_says_about_all",
+                        _reference({"Maus": ["Substantiv"]}))
+    monkeypatch.setattr(G, "_second_reference_says", lambda words: None)
+    verdict = G.check_word("Mausi")
+    assert verdict["text"] == "Mausi"
+    assert verdict["status"] == G.UNCONFIRMED
+    assert verdict["source"] == "второй справочник молчал"

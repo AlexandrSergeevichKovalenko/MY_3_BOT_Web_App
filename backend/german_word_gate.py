@@ -81,6 +81,14 @@ def ensure_word_check_schema() -> None:
                 # бы читать — так уже было с отчётами, которые никто не открывает.
                 cur.execute("ALTER TABLE bt_3_word_check ADD COLUMN IF NOT EXISTS "
                             "reviewed BOOLEAN NOT NULL DEFAULT FALSE;")
+                # ВЫНЕСЕННЫЙ ПРИГОВОР И ПРИГОВОР, ДОЕХАВШИЙ ДО ДАННЫХ, — РАЗНЫЕ ВЕЩИ.
+                # Без этой отметки они были неразличимы, и 25.08.2026 выяснилось, что 47
+                # приговоров лежат вынесенными, но НЕ применёнными: ночной проход берёт
+                # только слова, которых в этой таблице ещё нет (`NOT EXISTS ... w.asked =
+                # u.lemma`), поэтому слово с приговором он не трогает больше никогда.
+                # Один сбой применения — и правка теряется навсегда, молча.
+                cur.execute("ALTER TABLE bt_3_word_check ADD COLUMN IF NOT EXISTS "
+                            "applied_at TIMESTAMPTZ;")
             conn.commit()
     except Exception:
         logging.warning("дверь слова: схема не создана", exc_info=True)
@@ -370,14 +378,59 @@ def _decide(asked: str, *, pos_hint: str, allow_network: bool, allow_model: bool
                            "справочник: это форма слов " + ", ".join(bases_unclear), asked)
         if kinds and str(kinds[0]).startswith("__форма__"):
             base_pos, _, base = str(kinds[0])[len("__форма__"):].partition("|")
-            # Настоящее слово названо страницей. Дальше его подхватывает ночной проход:
-            # если такое слово в словаре уже есть — пара уходит на слияние
-            # (scripts/merge_form_units_into_lemma.py), если нет — чинится заголовок.
-            return _finish(base, REPAIRED, base_pos or pos_hint,
+            # СТАРУЮ ЧАСТЬ РЕЧИ ЗДЕСЬ БРАТЬ НЕЛЬЗЯ. Справочник назвал словарное слово, но
+            # не всегда называет его часть речи: «Erfolgen» → «__форма__|Erfolg», где до
+            # «|» пусто. Раньше стояло `base_pos or pos_hint`, и в дело шла часть речи
+            # СПРОШЕННОГО слова — а она принадлежит другому слову. У «Erfolgen» в карточке
+            # стояло `verb`, правило регистра опустило заглавную, и приговором становилось
+            # «erfolg» — слова, которого в немецком нет. То же вышло с «Verdecken» →
+            # «verdeck» (справочник назвал «Verdeck», существительное).
+            #
+            # Часть речи берётся ТОЛЬКО про само словарное слово и только из справочника:
+            # он в этом же ответе обычно уже назвал её отдельной строкой.
+            if not base_pos:
+                # Основы нет среди спрошенных кандидатов — спрашиваем справочник про неё
+                # отдельно. Один запрос про одно слово, и только в этой редкой ветке:
+                # у форм ГЛАГОЛА часть речи приезжает сразу, пусто бывает у форм
+                # существительного («Erfolgen», «Verdecken», «Seifenblasen»).
+                про_основу = _reference_says_about_all([base])
+                виды_основы = (про_основу or {}).get(base) or []
+                base_pos = next((_POS_BY_WORTART[k] for k in виды_основы
+                                 if k in _POS_BY_WORTART), "")
+            # Не назвал — оставляем пустой. Пустая часть речи означает «правило регистра
+            # не применять», и слово уходит в базу ровно так, как напечатано в источнике.
+            # Это не заглушка: написание пришло из источника, а не от нас.
+            return _finish(base, REPAIRED, base_pos,
                            "справочник (заголовок был формой слова)", asked)
         pos = next((_POS_BY_WORTART[k] for k in kinds if k in _POS_BY_WORTART), pos_hint)
         if candidate == text:
             return _finish(text, REPAIRED if repaired else CONFIRMED, pos, "справочник", asked)
+
+        # ⛔ ПЕРЕД ТЕМ КАК ПОДМЕНИТЬ СЛОВО — СПРОСИТЬ ВТОРОЙ СПРАВОЧНИК ПРО ИСХОДНОЕ.
+        #
+        # Сюда мы попадаем, когда страницы у самого слова нет, а у ВАРИАНТА ПОЧИНКИ есть.
+        # Варианты строит repair_candidates: снять последнюю букву, дописать окончание,
+        # вернуть умлаут. Для обрезка с экрана это верно — «Sauerstoffk» → «Sauerstoff».
+        # Но ровно так же «настоящее слово, которого нет в Wiktionary» превращается в
+        # ЧУЖОЕ слово, и человек учит не то, что искал.
+        #
+        # Доказано на живых данных 25.08.2026: «Mausi» → «Maus». DWDS знает «Mausi»
+        # существительным, то есть слово настоящее, а мы подменяли его другим. Рядом
+        # лежали «Spatzi» → «Spatz» и «Kramp» → «Kram» — там DWDS молчит, и починка
+        # остаётся в силе. То есть второй справочник эти случаи РАЗДЕЛЯЕТ, а не гадает.
+        #
+        # DWDS стоял в каскаде ниже и до этой ветки не доживал: она возвращает ответ
+        # раньше. Спрашиваем его здесь, и только здесь — на подтверждённом слове лишний
+        # запрос не нужен.
+        второй = _second_reference_says([text])
+        if второй is None:
+            # Второй справочник молчал — это НЕ «слова нет». Подменять слово, не
+            # дослушав источник, нельзя: приговор не запоминается, спросим позже.
+            return {"text": text, "status": UNCONFIRMED, "pos": pos_hint,
+                    "source": "второй справочник молчал", "note": "спросим позже"}
+        if второй.get(text):
+            return _finish(text, REPAIRED if repaired else CONFIRMED, pos_hint,
+                           "DWDS (слово настоящее, чинить нечего)", asked)
         return _finish(candidate, REPAIRED, pos, "справочник (исправлено написание)", asked)
 
     if modern:
@@ -508,6 +561,11 @@ def warm_word_gate(*, limit: int = 150, words: list[str] | None = None) -> dict:
                       FROM bt_3_lex_units u
                      WHERE u.lang = 'de' AND u.kind = 'word'
                        AND u.lemma IS NOT NULL AND position(' ' in u.lemma) = 0
+                       -- Этот проход берёт только НОВЫЕ слова. Приговор, который уже
+                       -- вынесен, но до данных не доехал, подбирает отдельная работа —
+                       -- `scripts/word_gate_apply_verdicts.py`: она переспрашивает дверь
+                       -- заново и применяет. Так сделано нарочно, чтобы логика применения
+                       -- не жила в двух местах и не разошлась.
                        AND NOT EXISTS (SELECT 1 FROM bt_3_word_check w
                                         WHERE w.asked = u.lemma)
                      ORDER BY u.updated_at DESC NULLS LAST
@@ -550,8 +608,31 @@ def warm_word_gate(*, limit: int = 150, words: list[str] | None = None) -> dict:
                         # написание дверью поиска, чтобы человек нашёл слово по-старому.
                         from backend.lex_units import retitle_unit
                         retitle_unit(cur, unit_id, fixed)
+                        # …И РАЗВЕЗТИ ПО ОСТАЛЬНЫМ ХРАНИЛИЩАМ. Одного retitle_unit мало:
+                        # он правит СТРОКУ СЛОВАРЯ, а экран разбора читает личную карточку
+                        # человека и общий пул, где лежит копия того же текста. Без развозки
+                        # слово «исправлено» только у нас в базе, а человек открывает
+                        # карточку и видит прежнее написание — ровно это описано в
+                        # scripts/dict_fix_headwords_everywhere.py по замеру 16.08.2026
+                        # («klarzukommen»: word_de починено, translation_de и пул нет).
+                        # Найдено 25.08.2026 при разборе, почему приговоры не доезжают.
+                        from backend.database import spread_correction_everywhere
+                        spread_correction_everywhere(cur, unit_id=unit_id,
+                                                     old_text=lemma, new_text=fixed)
                         logging.info("дверь слова: заголовок исправлен ночью %r → %r",
                                      lemma, fixed)
+                    # ОТМЕТКА «ДОЕХАЛО». Ставится ВНУТРИ той же транзакции, что и сама
+                    # правка: иначе отметка и правка расходятся при обрыве, и мы снова
+                    # не отличаем вынесенный приговор от применённого.
+                    cur.execute("UPDATE bt_3_word_check SET applied_at=NOW() "
+                                "WHERE asked=%s;", (lemma,))
+                conn.commit()
+        elif status == REPAIRED:
+            # Чинить нечего: приговор совпал с тем, что уже лежит. Тоже применён.
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE bt_3_word_check SET applied_at=NOW() "
+                                "WHERE asked=%s;", (lemma,))
                 conn.commit()
         if new_pos and new_pos != pos:
             with get_db_connection_context() as conn:

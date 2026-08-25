@@ -812,6 +812,62 @@ def retitle_unit(cur, unit_id: int, text: str) -> str:
     return kind
 
 
+def merge_unit_into(cur, form_id: int, keep_id: int) -> None:
+    """Склеить лишнюю строку словаря с настоящим словом. Переносит, а не удаляет.
+
+    ПОЧЕМУ НЕ ПРОСТО DELETE. Проверка вреда 19.08.2026: на строку словаря ссылаются
+    восемь таблиц — поверхности, личные карточки людей, источники, связи, значения,
+    разбор фраз. Простой DELETE либо падает на внешнем ключе, либо утаскивает за собой
+    чужие данные. Поэтому сначала ПЕРЕНОС, потом снятие строки.
+
+    ЖИВЁТ ЗДЕСЬ, А НЕ В СКРИПТЕ. До 25.08.2026 эти двадцать запросов лежали внутри
+    `scripts/merge_form_units_into_lemma.py`, и второму вызывающему пришлось бы их
+    скопировать. Копия такого размера расходится с оригиналом на первой же правке —
+    а цена расхождения тут потеря чьей-то карточки. Скрипт теперь зовёт эту функцию.
+
+    ЧТО КУДА ЕДЕТ
+        поверхности      → на настоящее слово: поиск по старому написанию продолжает
+                           находить слово;
+        личные карточки  → перецепляются, человек своё слово не теряет;
+        источники, связи → переносятся, при совпадении пропускаются (есть уникальность);
+        значения         → НЕ переносятся: они описывают форму, а у настоящего слова
+                           свои. Уходят вместе со строкой, и это осознанно.
+    """
+    cur.execute("""UPDATE bt_3_lex_surfaces s SET unit_id=%s
+                   WHERE s.unit_id=%s AND NOT EXISTS (
+                       SELECT 1 FROM bt_3_lex_surfaces t
+                        WHERE t.lang=s.lang AND t.surface_key=s.surface_key
+                          AND t.unit_id=%s)""", (keep_id, form_id, keep_id))
+    cur.execute("DELETE FROM bt_3_lex_surfaces WHERE unit_id=%s", (form_id,))
+    cur.execute("UPDATE bt_3_webapp_dictionary_queries SET lex_unit_id=%s "
+                "WHERE lex_unit_id=%s", (keep_id, form_id))
+    cur.execute("""UPDATE bt_3_lex_unit_sources s SET unit_id=%s
+                   WHERE s.unit_id=%s AND NOT EXISTS (
+                       SELECT 1 FROM bt_3_lex_unit_sources t
+                        WHERE t.unit_id=%s AND t.entry_id=s.entry_id
+                          AND t.side=s.side)""", (keep_id, form_id, keep_id))
+    cur.execute("DELETE FROM bt_3_lex_unit_sources WHERE unit_id=%s", (form_id,))
+    # Связи с обеих сторон. Уникальность (from_unit, to_unit): переносим только те,
+    # которых у настоящего слова ещё нет. Прогон 19.08.2026 упал именно здесь, и
+    # слияние откатилось целиком.
+    cur.execute("""UPDATE bt_3_lex_links l SET from_unit=%s
+                   WHERE l.from_unit=%s AND l.to_unit <> %s AND NOT EXISTS (
+                       SELECT 1 FROM bt_3_lex_links t
+                        WHERE t.from_unit=%s AND t.to_unit=l.to_unit)""",
+                (keep_id, form_id, keep_id, keep_id))
+    cur.execute("""UPDATE bt_3_lex_links l SET to_unit=%s
+                   WHERE l.to_unit=%s AND l.from_unit <> %s AND NOT EXISTS (
+                       SELECT 1 FROM bt_3_lex_links t
+                        WHERE t.to_unit=%s AND t.from_unit=l.from_unit)""",
+                (keep_id, form_id, keep_id, keep_id))
+    cur.execute("DELETE FROM bt_3_lex_links WHERE from_unit=%s OR to_unit=%s",
+                (form_id, form_id))
+    for table in ("bt_3_phrase_check", "bt_3_phrase_review"):
+        cur.execute(f"UPDATE {table} SET unit_id=%s WHERE unit_id=%s", (keep_id, form_id))
+    cur.execute("DELETE FROM bt_3_lex_senses WHERE unit_id=%s", (form_id,))
+    cur.execute("DELETE FROM bt_3_lex_units WHERE id=%s", (form_id,))
+
+
 def door_check(text: str, lang: str) -> tuple[str, str, str] | None:
     """Дверь единицы, механическая половина. Возвращает (текст, ключ поиска, вид) или
     None, если заводить нельзя.
