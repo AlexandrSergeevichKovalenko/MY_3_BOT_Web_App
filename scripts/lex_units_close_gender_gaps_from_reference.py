@@ -89,16 +89,25 @@ def main() -> int:
             conn.set_session(readonly=True)
         with conn.cursor() as cursor:
             кандидаты = _кандидаты(cursor)
+            # Имена собственные — те, что разобраны с владельцем поимённо.
+            cursor.execute(
+                "SELECT unit_id FROM bt_3_field_checks "
+                "WHERE field = 'gender' AND verdict = %s",
+                ("имя собственное — артикль не ставится",),
+            )
+            PROPER_NOUN_IDS = {row[0] for row in cursor.fetchall()}
 
         решено, не_знает = [], []
         for unit_id, head, pos, card_pos in кандидаты:
-            article, source, есть_множественное = declension_facts(head)
-            if article and not есть_множественное:
-                # Множественного нет — имя собственное или субстантивированная форма.
-                # «das Athen», «das Marokko» в заголовке словаря неверны.
+            article, source, _есть_множественное = declension_facts(head)
+            # ⚠ 25.08.2026 отсюда УБРАН вывод «нет множественного ⇒ имя собственное».
+            # Он был неверен, и цена измерена: без множественного 12 050 слов, среди них
+            # обычные «Milch», «Plastikmüll», «Bürgertum», «Jünglingsalter». Имена
+            # собственные опознаются ПОИМЁННОЙ пометкой в bt_3_field_checks (решение
+            # владельца 24.08.2026), а не отсутствием формы.
+            if PROPER_NOUN_IDS and unit_id in PROPER_NOUN_IDS:
                 не_знает.append((unit_id, head,
-                                 "справочник не документирует множественное — "
-                                 "похоже на имя собственное", pos, card_pos))
+                                 "имя собственное — артикль не ставится", pos, card_pos))
             elif article:
                 решено.append((unit_id, head, article, source, pos, card_pos))
             else:
