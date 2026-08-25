@@ -247,3 +247,4 @@ gunicorn
 # Card.lapses), and the loss was silent — the scheduler kept working while both counters
 # wrote 0 for months. A major bump must be a deliberate, tested step, not a redeploy.
 fsrs>=6.1.1,<7
+pymorphy3
