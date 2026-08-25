@@ -69,7 +69,9 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
   const [missing, setMissing] = useState([]);
   const [error, setError] = useState('');
   const [limitReached, setLimitReached] = useState(false);
-  const [history, setHistory] = useState([]);
+  const [history, setHistory] = useState([]);   // свои сравнения
+  const [popular, setPopular] = useState([]);   // всё, что разбирали все, по частоте
+  const [canCreate, setCanCreate] = useState(true); // новый разбор — по полному доступу
   const [saved, setSaved] = useState(() => new Set());
   const [sharing, setSharing] = useState(false);
   const [streaming, setStreaming] = useState(false); // разбор ещё дописывается
@@ -83,10 +85,13 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
     try {
       const data = await api('/api/webapp/dictionary/diff/history', { limit: 20 });
       setHistory(Array.isArray(data?.items) ? data.items : []);
+      setPopular(Array.isArray(data?.popular) ? data.popular : []);
+      setCanCreate(data?.can_create !== false);
     } catch (_e) {
-      // История — витрина, а не ответ на вопрос человека. Её отсутствие не должно
-      // мешать сравнивать слова, поэтому здесь тихо. Ошибка самого разбора — громкая.
+      // Списки — витрина, а не ответ на вопрос человека. Их отсутствие не должно мешать
+      // сравнивать слова, поэтому здесь тихо. Ошибка самого разбора — громкая.
       setHistory([]);
+      setPopular([]);
     }
   }, []);
 
@@ -150,6 +155,13 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           setPhase('missing');
           return;
         }
+        if (data && data.ok === false && data.reason === 'paid_only') {
+          setLimitReached(true);
+          setError(String(data.message || ''));
+          setPhase('error');
+          setCanCreate(false);
+          return;
+        }
         setResult(data);
         setPhase('ready');
         void loadHistory();
@@ -180,6 +192,11 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           if (data && data.reason === 'not_found') {
             setMissing(Array.isArray(data.missing) ? data.missing : []);
             setPhase('missing');
+          } else if (data && data.reason === 'paid_only') {
+            setLimitReached(true);
+            setCanCreate(false);
+            setError(String(data.message || ''));
+            setPhase('error');
           } else {
             setError(String(data?.message || data?.error || 'Не получилось разобрать.'));
             setLimitReached(String(data?.error || '') === 'free_limit_exceeded');
@@ -254,6 +271,13 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
     setMissing([]);
     setPhase('idle');
   }, []);
+
+  const openPair = useCallback((pairWords) => {
+    const list = (Array.isArray(pairWords) ? pairWords : []).slice(0, MAX_WORDS);
+    if (list.length < MIN_WORDS) return;
+    setCells(list);
+    void runDiff(list);
+  }, [runDiff]);
 
   const startOver = useCallback(() => {
     setCells(['', '']);
@@ -665,14 +689,30 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
         </div>
       )}
 
-      <button
-        type="button"
-        className={`wd-cta${canSubmit ? '' : ' is-off'}`}
-        onClick={submit}
-        disabled={!canSubmit}
-      >
-        {phase === 'loading' ? 'Разбираю…' : 'Объяснить отличия'}
-      </button>
+      {canCreate ? (
+        <button
+          type="button"
+          className={`wd-cta${canSubmit ? '' : ' is-off'}`}
+          onClick={submit}
+          disabled={!canSubmit}
+        >
+          {phase === 'loading' ? 'Разбираю…' : 'Объяснить отличия'}
+        </button>
+      ) : (
+        <div className="wd-notice is-paid">
+          <div className="wd-notice-title">Свои сравнения — в полном доступе</div>
+          <div className="wd-notice-row">
+            <span>Всё, что уже разобрали другие, открывается бесплатно — список ниже.</span>
+          </div>
+          {onNeedFullAccess && (
+            <div className="wd-notice-row">
+              <button type="button" className="wd-notice-btn is-primary" onClick={onNeedFullAccess}>
+                Открыть полный доступ
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {phase === 'loading' && (
         <div className="wd-steps">
@@ -744,14 +784,31 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
                 type="button"
                 className="wd-history-row"
                 key={row.pair_key}
-                onClick={() => {
-                  const words = Array.isArray(row.words) ? row.words : [];
-                  if (words.length < MIN_WORDS) return;
-                  setCells(words.slice(0, MAX_WORDS));
-                  void runDiff(words.slice(0, MAX_WORDS));
-                }}
+                onClick={() => openPair(row.words)}
               >
-                {(row.words || []).join(' · ')}
+                <span className="wd-history-pair">{(row.words || []).join(' · ')}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Общий список: что разбирали ВСЕ. Открывается из базы, поэтому бесплатен и для
+          бесплатного тарифа. Порядок по числу обращений — он же и защита от мусора:
+          случайную ерунду никто не открывает второй раз, и она уходит вниз. */}
+      {!isGuest && popular.length > 0 && (
+        <div className="wd-block">
+          <div className="wd-label">Уже разобрано — открывается бесплатно</div>
+          <div className="wd-history">
+            {popular.map((row) => (
+              <button
+                type="button"
+                className="wd-history-row"
+                key={`p-${row.pair_key}`}
+                onClick={() => openPair(row.words)}
+              >
+                <span className="wd-history-pair">{(row.words || []).join(' · ')}</span>
+                <span className="wd-history-count">{row.opens}</span>
               </button>
             ))}
           </div>

@@ -1930,3 +1930,13 @@ html[data-scheme="light"] .dq-gt > summary,
 .wd-ex.is-shift .wd-ex-mark { color: var(--dq-warn); }
 .wd-swap { flex-wrap: wrap; }
 .wd-swap + .wd-swap { margin-top: 6px; }
+
+/* Общий список разобранных пар: слева пара, справа — сколько раз её открывали. */
+.wd-history-row { display: flex; align-items: center; gap: 10px; }
+.wd-history-pair { flex: 1 1 auto; min-width: 0; }
+.wd-history-count {
+  flex: 0 0 auto;
+  font-size: 12px; font-weight: 700;
+  color: var(--dmps-text-muted, #94a3b8);
+  font-variant-numeric: tabular-nums;
+}
