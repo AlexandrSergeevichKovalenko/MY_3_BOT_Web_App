@@ -87,14 +87,43 @@ def test_unknown_word_stops_before_the_model_and_before_the_limit(client, monkey
         lambda word, studied, explain: ENTRY if word == "Anzahlung" else None,
     )
     monkeypatch.setattr(backend_server, "_word_diff_spelling_suggestion", lambda *a, **k: "Vorschuss")
+    monkeypatch.setattr(backend_server, "_word_diff_queue_for_sources", _forbid("очередь на карточку"))
 
     resp = _post(client, ["Anzahlung", "Vorschuß"])
 
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["ok"] is False and body["reason"] == "not_found"
-    assert body["missing"] == [{"word": "Vorschuß", "suggestion": "Vorschuss"}]
+    # Написание поправимо — предлагаем правку и НЕ заводим кривую форму в словарь.
+    assert body["missing"] == [{"word": "Vorschuß", "suggestion": "Vorschuss", "queued": False}]
     assert misses and misses[0][1] == "not_found", "промах не посчитан — владелец его не увидит"
+
+
+def test_unknown_word_without_a_suggestion_goes_into_the_source_queue(client, monkeypatch):
+    """Слова нет и поправить нечего → оно уходит в общий слой, ночная работа достроит карточку.
+
+    Пустой ответ «не нашли» — незакрытая задача. Закрывается она достройкой ИСТОЧНИКА,
+    и произойти это должно само, без человека.
+    """
+    queued = []
+    _patch_db(monkeypatch)
+    monkeypatch.setattr(backend_server, "reserve_free_feature_usage", _forbid("резерв лимита"))
+    monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
+    monkeypatch.setattr(
+        backend_server, "_word_diff_lookup_sources",
+        lambda word, studied, explain: ENTRY if word == "Anzahlung" else None,
+    )
+    monkeypatch.setattr(backend_server, "_word_diff_spelling_suggestion", lambda *a, **k: "")
+    monkeypatch.setattr(
+        backend_server, "_word_diff_queue_for_sources",
+        lambda word, lang: queued.append(word) or True,
+    )
+
+    resp = _post(client, ["Anzahlung", "Vorauszahlung"])
+
+    assert resp.status_code == 200
+    assert queued == ["Vorauszahlung"], "слово не поставлено в очередь — источник не достроится"
+    assert resp.get_json()["missing"][0]["queued"] is True
 
 
 def test_cached_pair_costs_no_daily_unit(client, monkeypatch):

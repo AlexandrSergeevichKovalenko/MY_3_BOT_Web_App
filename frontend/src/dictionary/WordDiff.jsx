@@ -442,13 +442,15 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
                     Исправить
                   </button>
                 </>
+              ) : row.queued ? (
+                <span>«{row.word}» — взяли в работу. Обычно слово появляется к следующему дню.</span>
               ) : (
                 <span>«{row.word}» — проверьте написание.</span>
               )}
             </div>
           ))}
           <div className="wd-notice-foot">
-            Пока слово не найдено, разбор не начнём: объяснение вышло бы выдуманным.
+            Пока слова нет в словаре, разбор не начнём: объяснение вышло бы выдуманным.
           </div>
         </div>
       )}

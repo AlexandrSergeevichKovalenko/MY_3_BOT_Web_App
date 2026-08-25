@@ -42149,6 +42149,31 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
     return None
 
 
+def _word_diff_queue_for_sources(word: str, studied_lang: str) -> bool:
+    """Слова нет в источниках → ставим его в общий слой, чтобы источник ДОСТРОИЛСЯ.
+
+    Пустой ответ «не нашли» — незакрытая задача, а не решение. Здесь она закрывается
+    сама: `ensure_unit` — та самая дверь единицы (с проверкой «это вообще слово» и
+    правкой регистра заголовка), а ночная работа в 03:10 достраивает карточку тем
+    единицам, у которых её нет. К следующему дню сравнение уже работает.
+
+    В момент запроса это не стоит ни денег, ни ожидания: дверь в сеть не ходит.
+    Мусор («Abschiebu») дверь не пропустит, а трижды не собравшееся слово уводит в
+    карантин уже существующий механизм.
+    """
+    text = " ".join(str(word or "").split())
+    if not text:
+        return False
+    try:
+        from backend.lex_units import ensure_unit
+        return bool(ensure_unit(text, str(studied_lang or "de").strip().lower()))
+    except Exception:
+        # Молчать нельзя: неудача здесь означает, что источник НЕ достраивается и
+        # человек будет получать «не нашли» бесконечно.
+        logging.exception("word_diff: не удалось поставить %r в очередь на карточку", text)
+        return False
+
+
 def _word_diff_spelling_suggestion(word: str, studied_lang: str, explain_lang: str) -> str:
     """Подсказка написания, ПОДТВЕРЖДЁННАЯ источником, — иначе пустая строка.
 
@@ -42314,9 +42339,13 @@ def get_webapp_dictionary_word_diff():
         if found:
             resolved.append(found)
         else:
+            suggestion = _word_diff_spelling_suggestion(word, studied_lang, explain_lang)
             missing.append({
                 "word": word,
-                "suggestion": _word_diff_spelling_suggestion(word, studied_lang, explain_lang),
+                "suggestion": suggestion,
+                # Похожее написание нашлось — значит человеку надо просто исправить, и
+                # заводить кривое написание в словарь незачем.
+                "queued": False if suggestion else _word_diff_queue_for_sources(word, studied_lang),
             })
     if missing:
         record_word_diff_miss(
