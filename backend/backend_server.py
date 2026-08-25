@@ -31863,6 +31863,43 @@ def answer_review_wofrage_answer():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/answer/topic/videos", methods=["POST"])
+def answer_topic_videos():
+    """Теория по теме тренажёра: ролики, которые админ отобрал руками (/addvideo).
+
+    Кнопка «🎬 Посмотреть видео» под спринтами (Wo-Fragen · Артикли · Окончания
+    прилагательных) открывает этот экран. Отдаём ВЕСЬ пул темы — решение владельца
+    25.08.2026: «пусть там будут все по данной теме, человек листает и выбирает». Свои,
+    отобранные через /addvideo, идут первыми.
+
+    За то, что в пуле нет чужого, отвечает не этот эндпоинт, а уборка и страж на входе:
+    ролик не по теме выключается (is_blocked), и автопрогрев не может его вернуть. Ничего
+    не подбирается на лету. Пусто — честный пустой список, а кнопка в боте для такой темы
+    не рисуется вовсе (см. _topic_video_button_row в bot_3.py).
+    """
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    topic_key = str(payload.get("topic") or "").strip().lower()
+    from backend.grammar_video_catalog import get_topic
+    topic = get_topic(topic_key)
+    if not topic:
+        return jsonify({"error": "Тема не найдена"}), 404
+    from backend.database import list_topic_theory_videos
+    videos = list_topic_theory_videos(skill_id=topic_key)
+    if not videos:
+        # Не «тихо пусто»: это наряд на работу — в теме нет ни одного отобранного ролика.
+        logging.warning("topic videos: curated pool empty topic=%s user=%s", topic_key, user_id)
+    return jsonify({
+        "ok": True,
+        "topic_key": topic_key,
+        "topic_ru": str(topic.get("ru") or ""),
+        "topic_de": str(topic.get("de") or ""),
+        "videos": videos,
+    })
+
+
 @app.route("/api/answer/numdict/session", methods=["POST"])
 def answer_numdict_session():
     """Zahlen-Diktat: the 3-item session bundle (audio + prompt per item)."""
