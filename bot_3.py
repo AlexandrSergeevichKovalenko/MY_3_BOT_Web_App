@@ -4580,6 +4580,7 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⚡ Играть (2 минуты)", url=get_webapp_deeplink("ans_as_0"))],
             [InlineKeyboardButton("🎯 Своя тема (Premium)", url=get_webapp_deeplink("ans_asp_0"))],
+            *_topic_video_button_row("artikel"),
         ])
         caption = ("⚡ *Artikel Sprint*\n\n2 минуты — успей указать *der/die/das* для как можно "
                    "большего числа слов!\n🏆 Победитель — у кого больше верных.")
@@ -15072,8 +15073,10 @@ async def handle_button_click(update: Update, context: CallbackContext):
         else:
             await update.message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
     elif text == ARTIKEL_LEARN_BUTTON_TEXT:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-            "📚 Открыть тренажёр", url=get_webapp_deeplink("ans_al_0"))]])
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📚 Открыть тренажёр", url=get_webapp_deeplink("ans_al_0"))],
+            *_topic_video_button_row("artikel"),
+        ])
         await update.message.reply_text(
             "📚 <b>Artikel Trainer</b> — учим der/die/das в своём темпе 👇",
             parse_mode="HTML", reply_markup=kb)
@@ -32423,6 +32426,7 @@ async def admin_artikel_play_command(update: Update, context: CallbackContext) -
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Играть Artikel Sprint", url=get_webapp_deeplink("ans_as_0"))],
         [InlineKeyboardButton("🎯 Своя тема (Premium)", url=get_webapp_deeplink("ans_asp_0"))],
+        *_topic_video_button_row("artikel"),
     ])
     await message.reply_text(
         "⚡ <b>Artikel Sprint</b> — 2 минуты, тапай der/die/das как можно быстрее 👇",
@@ -38300,8 +38304,10 @@ async def adjektiv_learn_command(update: Update, context: CallbackContext) -> No
     message = update.effective_message
     if not message:
         return
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "📚 Учить окончания", url=get_webapp_deeplink("ans_adl_0"))]])
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📚 Учить окончания", url=get_webapp_deeplink("ans_adl_0"))],
+        *_topic_video_button_row("adjektivdeklination"),
+    ])
     await message.reply_text(
         "📚 <b>Adjektiv Trainer</b> — учи окончания прилагательных в своём темпе: "
         "фраза, выбери окончание, читай правило, свайпай дальше 👇",
@@ -38939,8 +38945,10 @@ async def wofrage_learn_command(update: Update, context: CallbackContext) -> Non
     message = update.effective_message
     if not message:
         return
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))]])
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
+        *_topic_video_button_row("fragen"),
+    ])
     await message.reply_text(
         "📚 <b>Wo-Frage Trainer</b> — тренируй вопросительные слова (Worauf/Womit/Woran…) "
         "в своём темпе: вопрос, выбери слово, читай правило, свайпай дальше 👇",
@@ -39203,6 +39211,7 @@ async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Играть (2 минуты)", url=get_webapp_deeplink("ans_as_0"))],
         [InlineKeyboardButton("🎯 Своя тема (Premium)", url=get_webapp_deeplink("ans_asp_0"))],
+        *_topic_video_button_row("artikel"),
     ])
     caption = (
         "⚡ *Artikel Sprint*\n\n"

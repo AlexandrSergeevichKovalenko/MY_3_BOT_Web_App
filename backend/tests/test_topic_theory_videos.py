@@ -140,5 +140,39 @@ class GenericOverviewGuardTests(unittest.TestCase):
         self.assertNotIn("return []", code)
 
 
+class EveryTopicSurfaceOffersTheVideoTests(unittest.TestCase):
+    """Кнопка обязана быть в КАЖДОМ сообщении трёх тем, а не в тех, что вспомнились.
+
+    Живой промах 25.08.2026: вставку привязали к строке «📚 Учить…», а в сообщении
+    Artikel Sprint такой строки нет («⚡ Играть (2 минуты)» + «🎯 Своя тема»), и спринт
+    артиклей остался без кнопки. Владелец заметил это раньше, чем я. Тест перебирает
+    раскладки в исходнике, поэтому новая раскладка без кнопки красит прогон сразу.
+    """
+
+    TOPIC_LINKS = ("ans_as_0", "ans_al_0", "ans_ad_0", "ans_adl_0", "ans_wf_0", "ans_wfl_0")
+
+    def test_every_keyboard_with_a_topic_game_also_offers_its_videos(self):
+        import io as _io
+        import re as _re
+        src = _io.open("bot_3.py", encoding="utf-8").read()
+        lines = src.split("\n")
+        misses = []
+        for i, line in enumerate(lines):
+            if "InlineKeyboardMarkup([" not in line:
+                continue
+            block = []
+            for j in range(i, min(i + 16, len(lines))):
+                block.append(lines[j])
+                if j > i and "])" in lines[j]:
+                    break
+            text = "\n".join(block)
+            if not any(link in text for link in self.TOPIC_LINKS):
+                continue
+            if "_topic_video_button_row" not in text:
+                buttons = _re.findall(r'InlineKeyboardButton\(\s*"([^"]+)"', text)
+                misses.append("строка %d: %s" % (i + 1, " | ".join(buttons)))
+        self.assertEqual(misses, [], "Раскладки трёх тем без кнопки «Посмотреть видео»:\n" + "\n".join(misses))
+
+
 if __name__ == "__main__":
     unittest.main()
