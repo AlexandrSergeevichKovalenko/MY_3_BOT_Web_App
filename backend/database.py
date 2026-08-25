@@ -30517,6 +30517,31 @@ def ensure_word_diff_schema() -> None:
     _WORD_DIFF_SCHEMA_READY = True
 
 
+def get_lex_unit_card(unit_id: int) -> dict | None:
+    """Разбор, лежащий НА САМОЙ единице словаря.
+
+    Вкладка «Отличия» читает его напрямую: в карточке лежит то, чего нет в связях —
+    значения с контекстом, управление (`ausweisen + Akkusativ`), сочетания, примеры.
+    Замер 25.08.2026: сравнение строилось на одних связях, и «abschieben» приходило к
+    модели одним словом «убраться», хотя в карточке того же слова данных больше.
+    """
+    if not unit_id:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT card FROM bt_3_lex_units WHERE id = %s;", (int(unit_id),))
+            row = cursor.fetchone()
+    if not row or not row[0]:
+        return None
+    card = row[0]
+    if isinstance(card, str):
+        try:
+            card = json.loads(card)
+        except (ValueError, TypeError):
+            return None
+    return card if isinstance(card, dict) else None
+
+
 def build_word_diff_pair_key(words, studied_lang: str, explain_lang: str) -> str:
     """Ключ сравнения. Регистр и порядок слов на него не влияют.
 

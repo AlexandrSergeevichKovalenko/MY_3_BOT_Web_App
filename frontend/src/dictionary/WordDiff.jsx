@@ -27,7 +27,22 @@ const HINTS = [
 const INTERCHANGEABLE_LABEL = {
   no: 'Заменять нельзя',
   sometimes: 'Иногда заменяют',
-  yes: 'Взаимозаменяемы',
+  yes: 'Обычно заменяемы',
+};
+
+// Части речи показываем по-человечески: «Verb» ученику ничего не говорит.
+const POS_LABEL = {
+  noun: 'существительное', verb: 'глагол', adjective: 'прилагательное',
+  adverb: 'наречие', pronoun: 'местоимение', preposition: 'предлог',
+  conjunction: 'союз', phrase: 'выражение', participle: 'причастие',
+  numeral: 'числительное', particle: 'частица', interjection: 'междометие',
+};
+
+// Слова не пересеклись по смыслу — это ответ, а не ошибка: человек мог свести
+// «ausweisen» и «abschieben» наугад, и честнее сказать прямо.
+const COMPARABLE_LABEL = {
+  none: 'Общего смысла нет',
+  one_sense: 'Пересекаются в одном значении',
 };
 
 function normalizeCells(cells) {
@@ -273,6 +288,8 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
     const diff = result.diff || {};
     const words = Array.isArray(result.words) ? result.words : [];
     const inter = diff.interchangeable || {};
+    const comparable = diff.comparable || {};
+    const overlap = diff.overlap || {};
     const cards = Array.isArray(diff.words) ? diff.words : [];
     const examples = Array.isArray(diff.examples) ? diff.examples : [];
     const chooser = Array.isArray(diff.chooser) ? diff.chooser : [];
@@ -310,6 +327,31 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           </div>
         )}
 
+        {(comparable.value === 'none' || comparable.value === 'one_sense') && comparable.note && (
+          <div className="wd-block">
+            <div className={`wd-compare-note is-${comparable.value}`}>
+              <b>{COMPARABLE_LABEL[comparable.value]}.</b> {comparable.note}
+            </div>
+          </div>
+        )}
+
+        {(overlap.note || (overlap.roles || []).length > 0) && (
+          <div className="wd-block">
+            <div className="wd-label">Где значения пересекаются</div>
+            {overlap.note && <div className="wd-trap">{overlap.note}</div>}
+            {(overlap.roles || []).length > 0 && (
+              <div className="wd-when">
+                {overlap.roles.map((row) => (
+                  <div className="wd-when-row" key={row.word}>
+                    <span className="wd-when-word">{row.word}</span>
+                    <span className="wd-when-sit">{row.role}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {inter.value && (
           <div className="wd-block">
             <div className="wd-swap">
@@ -334,6 +376,25 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
                   </div>
                   {card.meaning && <div className="wd-card-gloss">{card.meaning}</div>}
                   <div className="wd-card-rows">
+                    {card.pos && (
+                      <div className="wd-card-row"><span className="k">Часть речи</span><span className="v">{POS_LABEL[card.pos] || card.pos}</span></div>
+                    )}
+                    {(card.constructions || []).length > 0 && (
+                      <div className="wd-card-row">
+                        <span className="k">Конструкция</span>
+                        <span className="v">
+                          {card.constructions.map((c, i) => (
+                            <span className="wd-construction" key={`${c.pattern}-${i}`}>
+                              <b>{c.pattern}</b>{c.case ? ` · ${c.case}` : ''}
+                              {c.example_de && <span className="wd-construction-ex">{c.example_de}</span>}
+                            </span>
+                          ))}
+                        </span>
+                      </div>
+                    )}
+                    {card.register && (
+                      <div className="wd-card-row"><span className="k">Регистр</span><span className="v">{card.register}</span></div>
+                    )}
                     {card.when && (
                       <div className="wd-card-row"><span className="k">Когда</span><span className="v">{card.when}</span></div>
                     )}
@@ -365,7 +426,26 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
         {examples.length > 0 && (
           <div className="wd-block">
             <div className="wd-label">Одна ситуация — разные слова</div>
-            {examples.map((ex, i) => (
+            {words.map((word) => {
+              const mine = examples.filter((ex) => ex.word === word);
+              if (!mine.length) return null;
+              return (
+                <div className="wd-ex-group" key={`ex-${word}`}>
+                  <div className="wd-ex-group-title">{word}</div>
+                  {mine.map((ex, i) => (
+                    <div className={`wd-ex${ex.correct ? ' is-ok' : ' is-no'}`} key={`${ex.de}-${i}`}>
+                      <span className="wd-ex-mark">{ex.correct ? '✓' : '✗'}</span>
+                      <div className="wd-ex-body">
+                        <div className="wd-ex-de">{ex.de}</div>
+                        {ex.translation && <div className="wd-ex-ru">{ex.translation}</div>}
+                        {ex.why && <div className="wd-ex-why">{ex.why}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+            {examples.filter((ex) => !words.includes(ex.word)).map((ex, i) => (
               <div className={`wd-ex${ex.correct ? ' is-ok' : ' is-no'}`} key={`${ex.de}-${i}`}>
                 <span className="wd-ex-mark">{ex.correct ? '✓' : '✗'}</span>
                 <div className="wd-ex-body">
@@ -401,10 +481,36 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
 
         {collocations.length > 0 && (
           <div className="wd-block">
-            <div className="wd-label">Готовые сочетания</div>
+            <div className="wd-label">Типичные сочетания</div>
             {!isGuest && <div className="wd-hint-line">Нажмите на любое — сохраним сочетание целиком, экран не уйдёт.</div>}
+            {words.map((word) => {
+              const mine = collocations.filter((row) => row.word === word);
+              if (!mine.length) return null;
+              return (
+                <div className="wd-colloc-group" key={`col-${word}`}>
+                  <div className="wd-ex-group-title">{word}</div>
+                  <div className="wd-colloc">
+                    {mine.map((row, i) => {
+                      const isSaved = saved.has(`c:${row.phrase}`);
+                      return (
+                        <button
+                          type="button"
+                          key={`${row.phrase}-${i}`}
+                          className={`wd-colloc-chip${isSaved ? ' is-saved' : ''}`}
+                          onClick={() => !isGuest && saveCollocation(row.phrase, row.translation)}
+                          disabled={isGuest || isSaved}
+                        >
+                          <span className="wd-colloc-de">{isSaved ? `✓ ${row.phrase}` : row.phrase}</span>
+                          {row.translation && <span className="wd-colloc-ru">{row.translation}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
             <div className="wd-colloc">
-              {collocations.map((row, i) => {
+              {collocations.filter((row) => !words.includes(row.word)).map((row, i) => {
                 const isSaved = saved.has(`c:${row.phrase}`);
                 return (
                   <button
