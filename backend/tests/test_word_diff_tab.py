@@ -87,7 +87,6 @@ def test_unknown_word_stops_before_the_model_and_before_the_limit(client, monkey
         lambda word, studied, explain: ENTRY if word == "Anzahlung" else None,
     )
     monkeypatch.setattr(backend_server, "_word_diff_spelling_suggestion", lambda *a, **k: "Vorschuss")
-    monkeypatch.setattr(backend_server, "_word_diff_queue_for_sources", _forbid("очередь на карточку"))
 
     resp = _post(client, ["Anzahlung", "Vorschuß"])
 
@@ -95,35 +94,77 @@ def test_unknown_word_stops_before_the_model_and_before_the_limit(client, monkey
     body = resp.get_json()
     assert body["ok"] is False and body["reason"] == "not_found"
     # Написание поправимо — предлагаем правку и НЕ заводим кривую форму в словарь.
-    assert body["missing"] == [{"word": "Vorschuß", "suggestion": "Vorschuss", "queued": False}]
+    assert body["missing"] == [{"word": "Vorschuß", "suggestion": "Vorschuss"}]
     assert misses and misses[0][1] == "not_found", "промах не посчитан — владелец его не увидит"
 
 
-def test_unknown_word_without_a_suggestion_goes_into_the_source_queue(client, monkeypatch):
-    """Слова нет и поправить нечего → оно уходит в общий слой, ночная работа достроит карточку.
+def test_unknown_word_is_looked_up_right_now_not_tomorrow(client, monkeypatch):
+    """Слова нет в наших источниках → разбираем его СЕЙЧАС, в этом же запросе.
 
-    Пустой ответ «не нашли» — незакрытая задача. Закрывается она достройкой ИСТОЧНИКА,
-    и произойти это должно само, без человека.
+    Владелец 25.08.2026: «то есть я запросил сейчас, а ответ дадут утром?». Нет.
+    Незнакомое слово проходит обычный путь словаря (тот же, что в поиске), карточка
+    ложится в общий пул, и сравнение идёт дальше. Ночная очередь ответом человеку
+    быть не может — этот тест держит именно это.
     """
-    queued = []
+    looked_up = []
     _patch_db(monkeypatch)
-    monkeypatch.setattr(backend_server, "reserve_free_feature_usage", _forbid("резерв лимита"))
-    monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
+    monkeypatch.setattr(backend_server, "reserve_free_feature_usage", lambda **k: {"ok": True, "blocked": False})
     monkeypatch.setattr(
-        backend_server, "_word_diff_lookup_sources",
-        lambda word, studied, explain: ENTRY if word == "Anzahlung" else None,
+        backend_server, "_word_diff_lookup_live",
+        lambda word, studied, explain: looked_up.append(word) or {
+            "word": word,
+            "entries": [{"headword": word, "pos": "noun", "translations": ["предоплата"], "examples": []}],
+            "source": "dictionary_lookup",
+        },
     )
-    monkeypatch.setattr(backend_server, "_word_diff_spelling_suggestion", lambda *a, **k: "")
-    monkeypatch.setattr(
-        backend_server, "_word_diff_queue_for_sources",
-        lambda word, lang: queued.append(word) or True,
-    )
+    monkeypatch.setattr(backend_server, "_fetch_wiktionary_entry", lambda *a, **k: None)
+
+    def _fake_entries(word, source_lang="", target_lang=""):
+        return [] if word == "Vorauszahlung" else [
+            {"headword": word, "pos": "noun", "translations": ["задаток"], "examples": []}
+        ]
+
+    import backend.dictionary_entries as de
+    monkeypatch.setattr(de, "entries_for_query", _fake_entries)
+
+    async def _answer(*args, **kwargs):
+        return {
+            "verdict": [
+                {"word": "Anzahlung", "line": "часть цены вперёд"},
+                {"word": "Vorauszahlung", "line": "вся сумма до услуги"},
+            ],
+        }
+
+    monkeypatch.setattr(backend_server, "run_word_diff_multilang", _answer)
 
     resp = _post(client, ["Anzahlung", "Vorauszahlung"])
 
-    assert resp.status_code == 200
-    assert queued == ["Vorauszahlung"], "слово не поставлено в очередь — источник не достроится"
-    assert resp.get_json()["missing"][0]["queued"] is True
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    body = resp.get_json()
+    assert body["ok"] is True, "человека отправили ждать вместо ответа"
+    assert looked_up == ["Vorauszahlung"], "незнакомое слово не разобрали на месте"
+    assert body["sources"]["Vorauszahlung"] == "dictionary_lookup"
+
+
+def test_nothing_sends_the_person_to_wait_until_tomorrow():
+    """Ни сервер, ни экран не имеют права предлагать человеку подождать до завтра.
+
+    Проверяем две стороны: обработчик не заводит слово в ночную очередь вместо ответа,
+    и на экране нет обещания «появится к следующему дню».
+    """
+    import inspect
+    from pathlib import Path
+
+    handler = inspect.getsource(backend_server.get_webapp_dictionary_word_diff)
+    assert "ensure_unit" not in handler, "слово снова уходит в ночную очередь вместо разбора"
+    assert "_word_diff_lookup_live" in inspect.getsource(backend_server._word_diff_lookup_sources), (
+        "незнакомое слово больше не разбирается на месте"
+    )
+
+    screen = Path(backend_server.__file__).resolve().parents[1] / "frontend/src/dictionary/WordDiff.jsx"
+    text = screen.read_text(encoding="utf-8")
+    for promise in ("к следующему дню", "взяли в работу"):
+        assert promise not in text, f"экран снова обещает ждать: {promise!r}"
 
 
 def test_cached_pair_costs_no_daily_unit(client, monkeypatch):

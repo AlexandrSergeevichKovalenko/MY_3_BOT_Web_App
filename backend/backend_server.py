@@ -42146,32 +42146,109 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
                 }],
                 "source": "wiktionary",
             }
-    return None
+
+    # Ни в слое, ни в Wiktionary — разбираем сейчас, обычным путём словаря.
+    return _word_diff_lookup_live(text, studied_lang, explain_lang)
 
 
-def _word_diff_queue_for_sources(word: str, studied_lang: str) -> bool:
-    """Слова нет в источниках → ставим его в общий слой, чтобы источник ДОСТРОИЛСЯ.
+def _word_diff_entry_from_card(word: str, item: dict) -> dict | None:
+    """Разбор словаря → та же форма статьи, что отдаёт слой единиц.
 
-    Пустой ответ «не нашли» — незакрытая задача, а не решение. Здесь она закрывается
-    сама: `ensure_unit` — та самая дверь единицы (с проверкой «это вообще слово» и
-    правкой регистра заголовка), а ночная работа в 03:10 достраивает карточку тем
-    единицам, у которых её нет. К следующему дню сравнение уже работает.
+    Ни одного поля здесь не выводится: берём то, что разбор вернул, и если брать
+    нечего — возвращаем None, а не пустую статью.
+    """
+    if not isinstance(item, dict) or not item:
+        return None
+    headword = str(item.get("word_de") or "").strip()
+    if not headword:
+        headword = " ".join(str(word or "").split())
+    headword = re.sub(r"^(der|die|das)\s+", "", headword, flags=re.IGNORECASE).strip()
 
-    В момент запроса это не стоит ни денег, ни ожидания: дверь в сеть не ходит.
-    Мусор («Abschiebu») дверь не пропустит, а трижды не собравшееся слово уводит в
-    карантин уже существующий механизм.
+    translations: list[str] = []
+    for value in (item.get("translations") or []):
+        text = str((value or {}).get("value") if isinstance(value, dict) else value or "").strip()
+        if text and text not in translations:
+            translations.append(text)
+    for extra in (item.get("translation_ru"), (item.get("meanings") or {}).get("primary")):
+        text = str(extra.get("value") if isinstance(extra, dict) else extra or "").strip()
+        if text and text not in translations:
+            translations.append(text)
+    if not translations:
+        return None
+
+    examples: list[str] = []
+    for example in (item.get("usage_examples") or []):
+        if isinstance(example, dict):
+            text = str(example.get("source") or example.get("de") or "").strip()
+        else:
+            text = str(example or "").strip()
+        if text:
+            examples.append(text)
+
+    return {
+        "headword": headword,
+        "pos": str(item.get("part_of_speech") or "").strip(),
+        "translations": translations[:6],
+        "examples": examples[:2],
+    }
+
+
+def _word_diff_lookup_live(word: str, studied_lang: str, explain_lang: str) -> dict | None:
+    """Слова нет в наших источниках → разбираем его ПРЯМО СЕЙЧАС обычным путём словаря.
+
+    Это тот самый разбор, который человек получает, впервые набрав незнакомое слово в
+    поиске: род из справочника, значения, примеры. Заодно карточка ложится в общий пул
+    (`_store_dictionary_item_in_pool`), поэтому следующему человеку это слово достанется
+    от нас и бесплатно — источник достраивается здесь и сейчас, а не ночью.
+
+    Раньше на этом месте стояла постановка слова в ночную очередь, и человек получал
+    «приходите завтра». Для словаря это не ответ (владелец, 25.08.2026).
     """
     text = " ".join(str(word or "").split())
     if not text:
-        return False
+        return None
+    studied = str(studied_lang or "de").strip().lower()
+    explain = str(explain_lang or "ru").strip().lower()
+
+    # ДВЕРЬ СЛОВА — раньше разбора. Замер 25.08.2026: обрывок «Abschiebu» разобрался
+    # как «депортация», то есть модель достроила несуществующее слово и человек получил
+    # бы уверенный разбор выдумки. Дверь (справочник, без модели) такие написания знает.
+    if studied == "de":
+        try:
+            from backend.german_word_gate import check_word, NOT_A_WORD, REPAIRED
+            verdict = check_word(text, allow_network=True, allow_model=False)
+            status = str(verdict.get("status") or "")
+            if status == NOT_A_WORD:
+                logging.info("word_diff: %r — дверь слова признала не словом", text)
+                return None
+            if status == REPAIRED and str(verdict.get("text") or "").strip() != text:
+                # Написание чинится — разбирать кривую форму нельзя, человеку предложим
+                # исправление (см. _word_diff_spelling_suggestion).
+                return None
+        except Exception:
+            logging.exception("word_diff: дверь слова недоступна для %r", text)
+
     try:
-        from backend.lex_units import ensure_unit
-        return bool(ensure_unit(text, str(studied_lang or "de").strip().lower()))
+        core = _run_dictionary_core_lookup_sync(
+            word=text,
+            source_lang=explain,
+            target_lang=studied,
+            query_source_lang=studied,
+            query_target_lang=explain,
+            lookup_lang=studied,
+        )
     except Exception:
-        # Молчать нельзя: неудача здесь означает, что источник НЕ достраивается и
-        # человек будет получать «не нашли» бесконечно.
-        logging.exception("word_diff: не удалось поставить %r в очередь на карточку", text)
-        return False
+        logging.exception("word_diff: живой разбор слова %r не удался", text)
+        return None
+    item = core.get("item") if isinstance(core, dict) else None
+    entry = _word_diff_entry_from_card(text, item if isinstance(item, dict) else {})
+    if not entry:
+        return None
+    _store_dictionary_item_in_pool(
+        item, direction=str(core.get("direction") or ""),
+        source_lang=studied, target_lang=explain,
+    )
+    return {"word": text, "entries": [entry], "source": "dictionary_lookup"}
 
 
 def _word_diff_spelling_suggestion(word: str, studied_lang: str, explain_lang: str) -> str:
@@ -42184,6 +42261,17 @@ def _word_diff_spelling_suggestion(word: str, studied_lang: str, explain_lang: s
     text = " ".join(str(word or "").split())
     if not text:
         return ""
+    # Сначала спрашиваем дверь слова: её «исправлено» — это вердикт справочника,
+    # а не наша замена букв.
+    if str(studied_lang or "").strip().lower() == "de":
+        try:
+            from backend.german_word_gate import check_word, REPAIRED
+            verdict = check_word(text, allow_network=True, allow_model=False)
+            fixed = str(verdict.get("text") or "").strip()
+            if str(verdict.get("status") or "") == REPAIRED and fixed and fixed != text:
+                return fixed
+        except Exception:
+            logging.exception("word_diff: дверь слова недоступна для подсказки %r", text)
     candidates = []
     if "ß" in text:
         candidates.append(text.replace("ß", "ss"))
@@ -42332,20 +42420,35 @@ def get_webapp_dictionary_word_diff():
     explain_lang = str(source_lang or "ru").strip().lower()
 
     # 1. Источники. Слова, которых нет, останавливают разбор — модель не зовётся.
+    #
+    # Ищем ПАРАЛЛЕЛЬНО: незнакомое слово разбирается на месте (~7 c), и четыре таких
+    # подряд превратились бы в полминуты ожидания. Расход считается на того же
+    # человека — contextvar живёт в потоке, поэтому ставим его внутри задачи.
+    from concurrent.futures import ThreadPoolExecutor
+    from backend.openai_manager import set_llm_billing_user as _set_billing_user
+
+    def _lookup_one(one_word: str):
+        _set_billing_user(int(user_id))
+        try:
+            return _word_diff_lookup_sources(one_word, studied_lang, explain_lang)
+        finally:
+            _set_billing_user(None)
+
+    with ThreadPoolExecutor(max_workers=_WORD_DIFF_MAX_WORDS) as pool:
+        found_by_word = list(pool.map(_lookup_one, words))
+
     resolved: list[dict] = []
     missing: list[dict] = []
-    for word in words:
-        found = _word_diff_lookup_sources(word, studied_lang, explain_lang)
+    for word, found in zip(words, found_by_word):
         if found:
             resolved.append(found)
         else:
-            suggestion = _word_diff_spelling_suggestion(word, studied_lang, explain_lang)
+            # Сюда доходят только слова, которых нет НИГДЕ и которые не собрал живой
+            # разбор, — то есть опечатки и выдуманные композиты. Ждать тут нечего:
+            # завтра ответ не изменится, человеку надо поправить написание.
             missing.append({
                 "word": word,
-                "suggestion": suggestion,
-                # Похожее написание нашлось — значит человеку надо просто исправить, и
-                # заводить кривое написание в словарь незачем.
-                "queued": False if suggestion else _word_diff_queue_for_sources(word, studied_lang),
+                "suggestion": _word_diff_spelling_suggestion(word, studied_lang, explain_lang),
             })
     if missing:
         record_word_diff_miss(
