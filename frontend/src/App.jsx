@@ -16609,7 +16609,15 @@ function AppInner() {
     setFlashcardSessionActive(false);
     setFlashcardPreviewActive(false);
     setFlashcardExitSummary(false);
-    ensureSectionVisible('flashcards');
+    // Экран тренировки — ОДИН на экране, как и любой другой раздел.
+    // Здесь стояло ensureSectionVisible('flashcards'): оно ДОБАВЛЯЛО раздел
+    // к уже открытым, не закрывая их. Из словаря по кнопке «Пора повторить»
+    // словарь оставался раскрытым под тренировкой — сверху торчал обрезок
+    // заголовка «Словарь», а внизу висела его плавающая панель выборки
+    // (.vocab-selection-toolbar имеет position:fixed и живёт внутри секции
+    // словаря, поэтому не уезжала). Второй вызов этой функции (план на день)
+    // обходил изъян вручную, ставя new Set(['flashcards']) прямо перед вызовом.
+    setSelectedSections(new Set(['flashcards']));
     if (ref?.current) {
       setTimeout(() => {
         scrollToRef(ref, { center: true });
