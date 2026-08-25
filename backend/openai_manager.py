@@ -113,6 +113,13 @@ _DEFAULT_TASK_MODELS = {
     # dictionary_assistant_multilang, otherwise a card's fullness starts depending on which
     # path happened to fill it — the exact thing _rich_enrich_card_fields was built to end.
     "dictionary_card_enrichment": "gpt-4.1-mini",
+    # Разбор отличий между похожими словами. Полный gpt-4.1, а НЕ mini: здесь решается
+    # ровно то, на чём mini путается — тонкая разница значений («Провод» → Draht/Kabel
+    # был тем же классом ошибки, см. dictionary_assistant_multilang_core_fast). Цена
+    # ограничена устройством: пара разбирается ОДИН раз на всех и лежит в общем кеше
+    # bt_3_word_diff_cards, повторные открытия модель не зовут вовсе.
+    # Переопределяется через LLM_TASK_MODEL_WORD_DIFF_MULTILANG.
+    "word_diff_multilang": "gpt-4.1-2025-04-14",
 }
 _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
@@ -129,6 +136,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "dictionary_collocations_multilang",
     "feel_word",
     "feel_word_multilang",
+    "word_diff_multilang",
     "enrich_word",
     "enrich_word_multilang",
     "article_gender_hint",
@@ -1243,6 +1251,65 @@ Task:
 - Keep explanation practical and compact.
 - If you provide examples in target_language, add immediate source_language translation.
 - End with 1-2 concise "gut feeling" lines.
+""",
+"word_diff_multilang":"""
+Ты — лексикограф. Объясняешь, чем похожие слова отличаются друг от друга.
+
+На входе JSON:
+{
+  "explain_language": "ru",
+  "studied_language": "de",
+  "words": [
+    {
+      "word": "Anzahlung",
+      "entries": [ {"headword": "...", "pos": "...", "gender": "...",
+                    "translations": ["..."], "examples": ["..."], "source": "..."} ]
+    }
+  ]
+}
+
+ГЛАВНОЕ ПРАВИЛО: сравнивать разрешено ТОЛЬКО то, что есть в поданных статьях.
+Значения, сферы употребления и сочетания, которых в статьях нет, придумывать ЗАПРЕЩЕНО.
+Если данных на поле не хватает — оставь поле пустым (пустая строка или пустой список).
+Пустое поле — нормальный честный ответ. Выдуманное поле — брак.
+
+Не возвращай род, артикль, множественное число, падежи и уровень слова: эти данные
+берутся не у тебя, и твой вариант будет отброшен.
+
+Верни СТРОГО JSON без текста вокруг:
+{
+  "verdict": [ {"word": "...", "line": "..."} ],
+  "interchangeable": {"value": "no|sometimes|yes", "note": "..."},
+  "words": [
+    {"word": "...", "meaning": "...", "when": "...", "where": "...", "partners": ["..."]}
+  ],
+  "examples": [
+    {"word": "...", "correct": true, "de": "...", "translation": "...", "why": "..."}
+  ],
+  "chooser": [ {"situation": "...", "word": "..."} ],
+  "trap": "...",
+  "collocations": [ {"word": "...", "phrase": "...", "translation": "..."} ]
+}
+
+Правила по полям:
+- verdict: по одной строке на каждое поданное слово, 8-14 слов, простым языком,
+  без грамматических терминов. Это первое, что человек прочитает.
+- interchangeable.value: "no" — заменять нельзя; "sometimes" — можно в оговорённом
+  случае; "yes" — свободно. note объясняет условие одной фразой.
+- words: по записи на каждое слово. meaning — короткий перевод-значение;
+  when — в какой ситуации берут; where — где звучит (сфера, стиль);
+  partners — глаголы и предлоги из статей, с которыми слово стоит рядом.
+- examples: по ОДНОМУ верному примеру на каждое слово (correct: true) и РОВНО ОДИН
+  неверный (correct: false) — типичная подмена одного слова другим. У неверного
+  в why объясни, почему так не говорят. de — предложение на изучаемом языке,
+  translation — его перевод на explain_language.
+- chooser: по строке на слово, situation — короткое описание случая.
+- trap: на чём спотыкается человек, у которого родной язык explain_language,
+  и короткое правило, как не путать. Если такой ловушки нет — пустая строка.
+- collocations: до двух устойчивых сочетаний на слово, ТОЛЬКО из поданных статей.
+
+Все объяснения (line, note, meaning, when, where, why, situation, trap, translation)
+пиши на explain_language. Поля de и phrase — на studied_language.
 """,
 "quiz_followup_question": """
 You answer a learner's follow-up question about a studied word, phrase, or sentence.
@@ -6945,6 +7012,37 @@ async def run_feel_word_multilang(
         fast_delete=True,
     )
     return content.strip()
+
+
+async def run_word_diff_multilang(
+    words_with_entries: list[dict],
+    *,
+    studied_language: str,
+    explain_language: str,
+) -> dict:
+    """Чем похожие слова отличаются друг от друга — вкладка «Отличия».
+
+    ИСТОЧНИК ИСТИНЫ — не модель, а `words_with_entries`: словарные статьи, найденные
+    до вызова (слой единиц `bt_3_dictionary_entries` + Wiktionary). Модель получает
+    СТАТЬИ и раскладывает разницу между ними; слово, статьи которого нет, сюда не
+    доходит — вызывающая сторона обязана остановиться раньше и сказать человеку,
+    что слова не нашли. Род, формы и уровень у модели не спрашиваются вовсе.
+    """
+    task_name = "word_diff_multilang"
+    system_instruction_key = "word_diff_multilang"
+
+    payload = {
+        "explain_language": (explain_language or "").strip().lower(),
+        "studied_language": (studied_language or "").strip().lower(),
+        "words": words_with_entries,
+    }
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=2.0,
+    )
+    return parse_llm_json_object(content, context=task_name)
 
 
 async def run_enrich_word_multilang(

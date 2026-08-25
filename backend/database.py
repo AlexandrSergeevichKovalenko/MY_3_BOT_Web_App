@@ -12892,6 +12892,7 @@ def ensure_webapp_tables() -> None:
             free_skill_training_daily = Decimal(0) if _skill_raw.lower() in ("", "null") else Decimal(_skill_raw)
             free_translation_daily_sets = _env_decimal("FREE_TRANSLATION_DAILY_SETS_LIMIT", "1")
             free_numdict_practice_daily = _env_decimal("NUMDICT_PRACTICE_FREE_LIMIT", "3")
+            free_word_diff_daily = _env_decimal("WORD_DIFF_FREE_DAILY_LIMIT", "3")
             plan_limit_seed_rows: list[tuple] = []
             if free_translation_daily_sets is not None and free_translation_daily_sets >= 0:
                 plan_limit_seed_rows.append(
@@ -12899,6 +12900,16 @@ def ensure_webapp_tables() -> None:
                         "free",
                         "translation_daily_sets",
                         free_translation_daily_sets,
+                        "count",
+                        "day",
+                    )
+                )
+            if free_word_diff_daily is not None and free_word_diff_daily >= 0:
+                plan_limit_seed_rows.append(
+                    (
+                        "free",
+                        "word_diff_daily",
+                        free_word_diff_daily,
                         "count",
                         "day",
                     )
@@ -30422,6 +30433,279 @@ def save_shared_razbor(token: str, owner_user_id: int, record: dict) -> str:
     return str(token)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Вкладка «Отличия»: чем похожие слова отличаются друг от друга.
+#
+# Две таблицы, и они делят работу так же, как её делит остальной словарь:
+#   bt_3_word_diff_cards   — ОБЩИЙ разбор пары, один на всех. Пара разбирается моделью
+#                            один раз; второму человеку она достаётся из базы, бесплатно
+#                            для нас и мгновенно для него.
+#   bt_3_word_diff_history — ЛИЧНОЕ: кто какую пару открывал и когда. Отсюда список
+#                            «вы уже сравнивали» в той же вкладке.
+#
+# Ключ пары не зависит от порядка слов: «Anzahlung, Vorschuss» и «Vorschuss, Anzahlung» —
+# одно и то же сравнение, и второй записи в кеше они не создают (тест
+# backend/tests/test_word_diff_cache.py).
+# ─────────────────────────────────────────────────────────────────────────────
+
+_WORD_DIFF_SCHEMA_READY = False
+
+
+def ensure_word_diff_schema() -> None:
+    """Создать таблицы вкладки «Отличия». Идемпотентно, DDL идёт один раз на процесс."""
+    global _WORD_DIFF_SCHEMA_READY
+    if _WORD_DIFF_SCHEMA_READY:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_word_diff_cards (
+                    id           BIGSERIAL PRIMARY KEY,
+                    pair_key     TEXT NOT NULL UNIQUE,
+                    words        TEXT[] NOT NULL,
+                    studied_lang TEXT NOT NULL,
+                    explain_lang TEXT NOT NULL,
+                    payload      JSONB NOT NULL,
+                    sources      JSONB NOT NULL,
+                    model_task   TEXT,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    open_count   BIGINT NOT NULL DEFAULT 0
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_word_diff_history (
+                    id        BIGSERIAL PRIMARY KEY,
+                    user_id   BIGINT NOT NULL,
+                    pair_key  TEXT NOT NULL,
+                    words     TEXT[] NOT NULL,
+                    opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, pair_key)
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_word_diff_history_user "
+                "ON bt_3_word_diff_history (user_id, opened_at DESC);"
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_word_diff_misses (
+                    id         BIGSERIAL PRIMARY KEY,
+                    user_id    BIGINT,
+                    words      TEXT[] NOT NULL,
+                    reason     TEXT NOT NULL,
+                    detail     TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_word_diff_misses_time "
+                "ON bt_3_word_diff_misses (created_at DESC);"
+            )
+        conn.commit()
+    _WORD_DIFF_SCHEMA_READY = True
+
+
+def build_word_diff_pair_key(words, studied_lang: str, explain_lang: str) -> str:
+    """Ключ сравнения. Регистр и порядок слов на него не влияют.
+
+    Регистр складывается через casefold ТОЛЬКО для ключа — сами слова хранятся и
+    показываются как написаны («Anzahlung», а не «anzahlung»): в немецком заглавная
+    буква существительного не украшение, а часть написания.
+    """
+    cleaned = []
+    for raw in words or []:
+        text = " ".join(str(raw or "").split())
+        if text:
+            cleaned.append(text.casefold())
+    cleaned = sorted(set(cleaned))
+    langs = f"{str(studied_lang or '').strip().lower()}-{str(explain_lang or '').strip().lower()}"
+    return f"{langs}|" + "|".join(cleaned)
+
+
+def get_word_diff_card(pair_key: str, *, bump_open: bool = True) -> dict | None:
+    """Готовый разбор пары из общего кеша. None — «такой пары мы ещё не разбирали»."""
+    key = str(pair_key or "").strip()
+    if not key:
+        return None
+    ensure_word_diff_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT words, studied_lang, explain_lang, payload, sources, created_at
+                FROM bt_3_word_diff_cards
+                WHERE pair_key = %s;
+                """,
+                (key,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            if bump_open:
+                cursor.execute(
+                    "UPDATE bt_3_word_diff_cards SET open_count = open_count + 1 WHERE pair_key = %s;",
+                    (key,),
+                )
+                conn.commit()
+    payload = row[3]
+    sources = row[4]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if isinstance(sources, str):
+        sources = json.loads(sources)
+    return {
+        "pair_key": key,
+        "words": list(row[0] or []),
+        "studied_lang": row[1],
+        "explain_lang": row[2],
+        "payload": payload if isinstance(payload, dict) else {},
+        "sources": sources if isinstance(sources, dict) else {},
+        "created_at": row[5].isoformat() if row[5] else None,
+    }
+
+
+def save_word_diff_card(
+    *,
+    pair_key: str,
+    words: list,
+    studied_lang: str,
+    explain_lang: str,
+    payload: dict,
+    sources: dict,
+    model_task: str = "word_diff_multilang",
+) -> None:
+    """Положить разбор пары в общий кеш. Повторная запись той же пары ничего не портит."""
+    key = str(pair_key or "").strip()
+    if not key or not isinstance(payload, dict) or not payload:
+        return
+    ensure_word_diff_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_word_diff_cards
+                    (pair_key, words, studied_lang, explain_lang, payload, sources, model_task)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (pair_key) DO NOTHING;
+                """,
+                (
+                    key,
+                    [str(w) for w in (words or [])],
+                    str(studied_lang or "").strip().lower(),
+                    str(explain_lang or "").strip().lower(),
+                    Json(payload),
+                    Json(sources if isinstance(sources, dict) else {}),
+                    str(model_task or ""),
+                ),
+            )
+        conn.commit()
+
+
+def record_word_diff_open(user_id: int, pair_key: str, words: list) -> None:
+    """Отметить, что человек открывал это сравнение. Повтор поднимает дату, а не плодит строки."""
+    key = str(pair_key or "").strip()
+    if not key or not user_id:
+        return
+    ensure_word_diff_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_word_diff_history (user_id, pair_key, words)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, pair_key)
+                DO UPDATE SET opened_at = NOW(), words = EXCLUDED.words;
+                """,
+                (int(user_id), key, [str(w) for w in (words or [])]),
+            )
+        conn.commit()
+
+
+def record_word_diff_miss(user_id: int, words: list, reason: str, detail: str = "") -> None:
+    """Счётчик «не смогли». Пустой экран без счётчика неотличим от работающей функции.
+
+    reason:
+      not_found  — слова нет ни в слое единиц, ни в Wiktionary. Наряд на пополнение источника.
+      incomplete — модель вернула ответ без обязательного блока. Наряд на промпт.
+    Эти строки — то, что владелец увидит числом в недельном отчёте, а не догадкой.
+    """
+    if not words:
+        return
+    ensure_word_diff_schema()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_word_diff_misses (user_id, words, reason, detail)
+                    VALUES (%s, %s, %s, %s);
+                    """,
+                    (
+                        int(user_id or 0) or None,
+                        [str(w) for w in words],
+                        str(reason or "")[:40],
+                        str(detail or "")[:500],
+                    ),
+                )
+            conn.commit()
+    except Exception:
+        # Счётчик не имеет права уронить ответ человеку, но и молчать о своей поломке
+        # не должен: строка в логе — единственное, что отличает «промахов не было» от
+        # «счётчик сломан и промахи не считаются».
+        logging.exception("word_diff: не удалось записать промах %r", reason)
+
+
+def count_word_diff_misses(days: int = 7) -> dict:
+    """Сколько раз за N дней не смогли ответить, по причинам. Для недельного отчёта."""
+    ensure_word_diff_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT reason, COUNT(*)
+                FROM bt_3_word_diff_misses
+                WHERE created_at >= NOW() - (%s || ' days')::interval
+                GROUP BY reason;
+                """,
+                (str(max(1, int(days or 7))),),
+            )
+            rows = cursor.fetchall() or []
+    return {str(row[0]): int(row[1]) for row in rows}
+
+
+def list_word_diff_history(user_id: int, limit: int = 20) -> list[dict]:
+    """Список «вы уже сравнивали» — свежие сверху."""
+    if not user_id:
+        return []
+    ensure_word_diff_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT pair_key, words, opened_at
+                FROM bt_3_word_diff_history
+                WHERE user_id = %s
+                ORDER BY opened_at DESC
+                LIMIT %s;
+                """,
+                (int(user_id), max(1, min(int(limit or 20), 100))),
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "pair_key": row[0],
+            "words": list(row[1] or []),
+            "opened_at": row[2].isoformat() if row[2] else None,
+        }
+        for row in rows
+    ]
+
+
 def find_shared_razbor_token(
     owner_user_id: int, word: str, source_lang: str, target_lang: str
 ) -> str | None:
@@ -43306,6 +43590,14 @@ FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
     "numdict_practice_daily": {
         "title": "Числа на слух (тренажёр)",
         "free_limit": max(1, int((os.getenv("NUMDICT_PRACTICE_FREE_LIMIT") or "3").strip() or "3")),
+        "reset_policy": "daily_europe_vienna",
+    },
+    "word_diff_daily": {
+        "title": "Разбор отличий между словами",
+        # Free: 3 НОВЫЕ пары в день. Считается только разбор, которого ещё нет в общем
+        # кеше: открыть уже разобранную пару стоит нам ноль, и брать за это дневную
+        # единицу означало бы отказывать человеку в том, что у нас уже лежит.
+        "free_limit": max(1, int((os.getenv("WORD_DIFF_FREE_DAILY_LIMIT") or "3").strip() or "3")),
         "reset_policy": "daily_europe_vienna",
     },
     "reader_web_article_daily": {
