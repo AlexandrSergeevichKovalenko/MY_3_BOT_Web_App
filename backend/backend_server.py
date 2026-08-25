@@ -39928,6 +39928,71 @@ def _patch_quick_translate_article(cache_key, result, article, source, *, number
         if lemma:
             base["lemma_de"] = lemma
     _set_cached_quick_translate(cache_key, base)
+    # И В БАНК СЛОВ — иначе ответ живёт только в памяти ОДНОГО процесса.
+    _remember_article_in_word_bank(result, article, source, number=number)
+
+
+def _remember_article_in_word_bank(result, article, source, *, number=""):
+    """Найденный артикль ложится в наш банк слов, а не только в память процесса.
+
+    ЗАЧЕМ (решение владельца 25.08.2026, разбор вместе с сессией, ведущей экран).
+    `_QUICK_TRANSLATE_CACHE` — обычный словарь в памяти ОДНОГО процесса. Пока
+    WEB_CONCURRENCY=1, опрос с экрана попадает в тот же процесс и артикль доезжает.
+    Ломается это МОЛЧА и сразу в трёх случаях:
+
+      • процессов станет два — запрос попадёт в соседний, где артикля нет, и опрос
+        будет впустую ВСЕГДА, без единой ошибки в логе;
+      • gunicorn перезаписывает воркер каждые 2000 запросов — память стирается;
+      • деплой стирает её же, а он у нас по нескольку раз в день.
+
+    Владелец: «если это проблема на будущее — её нужно устранять, а не записывать».
+
+    Банк слов (`bt_3_lex_units.gender`) — то самое место, откуда артикль читает
+    МГНОВЕННЫЙ путь. Записав туда, получаем сразу четыре вещи: следующий поиск того же
+    слова мгновенный для ВСЕХ, ответ переживает перезапуск и деплой, число процессов
+    перестаёт что-либо значить, а опрос на экране становится не нужен вовсе.
+
+    ЧЕГО ЭТА ФУНКЦИЯ НЕ ДЕЛАЕТ:
+      • не пишет род ФОРМЫ множественного числа: у «Probleme» артикль «die» принадлежит
+        форме, а не лемме «das Problem». Записать его как род слова значит испортить банк;
+      • не перезаписывает уже известный род: наш банк выверялся с владельцем поимённо,
+        и фоновый добор не имеет права спорить с ним. Пишем только в пустое;
+      • не пишет ответ модели: `source == "llm"` — это догадка, а банк слов источник.
+        Правило ноль: в справочник кладём только то, что пришло ИЗ справочника.
+    """
+    word = str((result or {}).get("lemma_de") or "").strip() if number else ""
+    if not word:
+        word = str((result or {}).get("translation") or "").strip()
+    clean = str(article or "").strip().lower()
+    if number or clean not in ("der", "die", "das"):
+        return
+    origin = str(source or "").strip().lower()
+    if not origin or origin == "llm":
+        return
+    bare = re.sub(r"^(?:der|die|das)\s+", "", word).strip()
+    if not bare or " " in bare or not bare[:1].isupper():
+        return
+    try:
+        from backend.database import get_db_connection_context
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_lex_units "
+                    "   SET gender = %s, gender_source = %s, updated_at = NOW() "
+                    " WHERE lang = 'de' AND kind = 'word' AND lemma_key = %s "
+                    "   AND gender IS NULL",
+                    (clean, f"быстрый словарь ({source})", bare.casefold()),
+                )
+                written = cursor.rowcount
+            conn.commit()
+        if written:
+            logging.info("быстрый словарь: род «%s» для «%s» записан в банк слов",
+                         clean, bare)
+    except Exception:
+        # Не смогли записать — человек всё равно получил артикль из памяти. Молчать
+        # нельзя: без этой строки «банк не пополняется» неотличимо от «нечего писать».
+        logging.warning("быстрый словарь: род «%s» для «%s» в банк НЕ записан",
+                        clean, bare, exc_info=True)
 
 
 def _schedule_quick_translate_pool_store(*, text, result, source_lang, target_lang,
