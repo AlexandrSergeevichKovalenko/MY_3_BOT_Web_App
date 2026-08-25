@@ -42395,35 +42395,40 @@ def _word_diff_validate(raw: dict, words: list[str]) -> tuple[dict, str]:
     }, ""
 
 
-@app.route("/api/webapp/dictionary/diff", methods=["POST"])
-def get_webapp_dictionary_word_diff():
-    """Разбор отличий между двумя-четырьмя похожими словами."""
+def _word_diff_prepare(payload: dict) -> dict:
+    """Общий вход обоих путей — обычного и потокового.
+
+    Возвращает один из трёх исходов:
+      {"refuse": (тело, код)}  — отвечать нечем: не тот пользователь, мало слов,
+                                 слова не нашлись, дневной запас кончился;
+      {"cached": тело}         — пара уже разобрана, отдаём из общего кеша;
+      {"ctx": {...}}           — можно звать модель.
+
+    Держать это в одном месте обязательно: разойдись два пути в проверках — и один из
+    них начнёт списывать дневную единицу там, где второй отдаёт из кеша.
+    """
     from backend.database import (
         build_word_diff_pair_key,
         get_word_diff_card,
-        save_word_diff_card,
         record_word_diff_open,
         record_word_diff_miss,
     )
 
-    payload = request.get_json(silent=True) or {}
     user_id = _resolve_webapp_user_id(payload)
     if not user_id:
-        return jsonify({"error": "Не удалось определить пользователя"}), 401
+        return {"refuse": ({"error": "Не удалось определить пользователя"}, 401)}
 
     words = _word_diff_normalize_words(payload.get("words"))
     if len(words) < _WORD_DIFF_MIN_WORDS:
-        return jsonify({"error": "Впишите хотя бы два слова, которые хотите сравнить."}), 400
+        return {"refuse": ({"error": "Впишите хотя бы два слова, которые хотите сравнить."}, 400)}
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     studied_lang = str(target_lang or "de").strip().lower()
     explain_lang = str(source_lang or "ru").strip().lower()
 
-    # 1. Источники. Слова, которых нет, останавливают разбор — модель не зовётся.
-    #
-    # Ищем ПАРАЛЛЕЛЬНО: незнакомое слово разбирается на месте (~7 c), и четыре таких
-    # подряд превратились бы в полминуты ожидания. Расход считается на того же
-    # человека — contextvar живёт в потоке, поэтому ставим его внутри задачи.
+    # 1. Источники. Ищем ПАРАЛЛЕЛЬНО: незнакомое слово разбирается на месте (~7 c), и
+    # четыре таких подряд превратились бы в полминуты ожидания. Расход считается на
+    # того же человека — contextvar живёт в потоке, поэтому ставим его внутри задачи.
     from concurrent.futures import ThreadPoolExecutor
     from backend.openai_manager import set_llm_billing_user as _set_billing_user
 
@@ -42444,8 +42449,7 @@ def get_webapp_dictionary_word_diff():
             resolved.append(found)
         else:
             # Сюда доходят только слова, которых нет НИГДЕ и которые не собрал живой
-            # разбор, — то есть опечатки и выдуманные композиты. Ждать тут нечего:
-            # завтра ответ не изменится, человеку надо поправить написание.
+            # разбор, — то есть опечатки и выдуманные композиты. Ждать тут нечего.
             missing.append({
                 "word": word,
                 "suggestion": _word_diff_spelling_suggestion(word, studied_lang, explain_lang),
@@ -42455,15 +42459,15 @@ def get_webapp_dictionary_word_diff():
             int(user_id), [m["word"] for m in missing], "not_found",
             detail=f"{studied_lang}->{explain_lang}",
         )
-        return jsonify({"ok": False, "reason": "not_found", "missing": missing}), 200
+        return {"refuse": ({"ok": False, "reason": "not_found", "missing": missing}, 200)}
 
     pair_key = build_word_diff_pair_key(words, studied_lang, explain_lang)
 
-    # 2. Готовая пара — из общего кеша. Дневная единица за это не берётся.
+    # 2. Готовая пара — из общего кеша. Дневная единица за это НЕ берётся.
     cached = get_word_diff_card(pair_key)
     if cached:
         record_word_diff_open(int(user_id), pair_key, cached.get("words") or words)
-        return jsonify({
+        return {"cached": {
             "ok": True,
             "pair_key": pair_key,
             "words": cached.get("words") or words,
@@ -42471,7 +42475,7 @@ def get_webapp_dictionary_word_diff():
             "sources": cached.get("sources") or {},
             "from_cache": True,
             "created_at": cached.get("created_at"),
-        })
+        }}
 
     # 3. Настоящий промах кеша — только теперь платим и считаем.
     reservation = reserve_free_feature_usage(
@@ -42489,50 +42493,159 @@ def get_webapp_dictionary_word_diff():
             error_payload = build_free_limit_error(
                 "word_diff_daily", used=reservation.get("used") or 0, tz="Europe/Vienna"
             )
-        return jsonify(error_payload), 429
+        return {"refuse": (error_payload, 429)}
+
+    return {"ctx": {
+        "user_id": int(user_id),
+        "words": words,
+        "studied_lang": studied_lang,
+        "explain_lang": explain_lang,
+        "resolved": resolved,
+        "pair_key": pair_key,
+        "sources": {item["word"]: item.get("source") or "" for item in resolved},
+    }}
+
+
+def _word_diff_store(ctx: dict, diff: dict) -> None:
+    """Готовый разбор — в общий кеш и в личную историю."""
+    from backend.database import save_word_diff_card, record_word_diff_open
+    save_word_diff_card(
+        pair_key=ctx["pair_key"],
+        words=ctx["words"],
+        studied_lang=ctx["studied_lang"],
+        explain_lang=ctx["explain_lang"],
+        payload=diff,
+        sources=ctx["sources"],
+    )
+    record_word_diff_open(ctx["user_id"], ctx["pair_key"], ctx["words"])
+
+
+@app.route("/api/webapp/dictionary/diff", methods=["POST"])
+def get_webapp_dictionary_word_diff():
+    """Разбор отличий целиком, одним ответом. Потоковый близнец — /diff/stream."""
+    from backend.database import record_word_diff_miss
+
+    prepared = _word_diff_prepare(request.get_json(silent=True) or {})
+    if "refuse" in prepared:
+        body, status = prepared["refuse"]
+        return jsonify(body), status
+    if "cached" in prepared:
+        return jsonify(prepared["cached"])
+    ctx = prepared["ctx"]
 
     try:
         from backend.openai_manager import set_llm_billing_user
-        set_llm_billing_user(int(user_id))
+        set_llm_billing_user(ctx["user_id"])
         try:
             raw_result = asyncio.run(
                 run_word_diff_multilang(
-                    resolved,
-                    studied_language=studied_lang,
-                    explain_language=explain_lang,
+                    ctx["resolved"],
+                    studied_language=ctx["studied_lang"],
+                    explain_language=ctx["explain_lang"],
                 )
             )
         finally:
             set_llm_billing_user(None)
     except Exception as exc:
         logging.exception("word_diff: разбор не удался: %s", exc)
-        record_word_diff_miss(int(user_id), words, "model_error", detail=str(exc)[:300])
+        record_word_diff_miss(ctx["user_id"], ctx["words"], "model_error", detail=str(exc)[:300])
         return jsonify({"error": "Не удалось разобрать отличия. Попробуйте ещё раз."}), 502
 
-    diff, reject_reason = _word_diff_validate(raw_result, words)
+    diff, reject_reason = _word_diff_validate(raw_result, ctx["words"])
     if reject_reason:
-        record_word_diff_miss(int(user_id), words, "incomplete", detail=reject_reason)
+        record_word_diff_miss(ctx["user_id"], ctx["words"], "incomplete", detail=reject_reason)
         return jsonify({"error": "Не удалось разобрать отличия. Попробуйте ещё раз."}), 502
 
-    sources = {item["word"]: item.get("source") or "" for item in resolved}
-    save_word_diff_card(
-        pair_key=pair_key,
-        words=words,
-        studied_lang=studied_lang,
-        explain_lang=explain_lang,
-        payload=diff,
-        sources=sources,
-    )
-    record_word_diff_open(int(user_id), pair_key, words)
-
+    _word_diff_store(ctx, diff)
     return jsonify({
         "ok": True,
-        "pair_key": pair_key,
-        "words": words,
+        "pair_key": ctx["pair_key"],
+        "words": ctx["words"],
         "diff": diff,
-        "sources": sources,
+        "sources": ctx["sources"],
         "from_cache": False,
     })
+
+
+@app.route("/api/webapp/dictionary/diff/stream", methods=["POST"])
+def stream_webapp_dictionary_word_diff():
+    """Тот же разбор, но блоками по мере готовности.
+
+    Замер 25.08.2026: целиком пара разбиралась 9–18 секунд, и всё это время человек
+    смотрел в пустой экран. Работы для модели столько же и денег столько же — меняется
+    подача: «Главное» приходит первым, остальное дописывается на глазах.
+
+    Ответ — либо обычный JSON (кеш, отказ, слова не найдены: поток тут не нужен), либо
+    text/event-stream с событиями `section`, затем `done` с полным проверенным разбором.
+    В кеш и в историю пара попадает ТОЛЬКО после проверки целого ответа — половина
+    разбора не имеет права стать общей записью.
+    """
+    from backend.database import record_word_diff_miss
+    from backend.openai_manager import stream_word_diff_sections, set_llm_billing_user
+
+    prepared = _word_diff_prepare(request.get_json(silent=True) or {})
+    if "refuse" in prepared:
+        body, status = prepared["refuse"]
+        return jsonify(body), status
+    if "cached" in prepared:
+        return jsonify(prepared["cached"])
+    ctx = prepared["ctx"]
+
+    def _generate():
+        merged: dict = {}
+        sections_seen = 0
+        set_llm_billing_user(ctx["user_id"])
+        try:
+            for section in stream_word_diff_sections(
+                ctx["resolved"],
+                studied_language=ctx["studied_lang"],
+                explain_language=ctx["explain_lang"],
+            ):
+                if not isinstance(section, dict):
+                    continue
+                fields = {k: v for k, v in section.items() if k != "section"}
+                if not fields:
+                    continue
+                merged.update(fields)
+                sections_seen += 1
+                # На экран уходит уже проверенный кусок: чужие слова и мусор
+                # отсеиваются тем же правилом, что и в целом ответе.
+                partial, _reason = _word_diff_validate({**merged}, ctx["words"])
+                yield _sse_pack("section", {
+                    "name": str(section.get("section") or ""),
+                    "diff": partial or {k: v for k, v in merged.items()},
+                })
+
+            diff, reject_reason = _word_diff_validate(merged, ctx["words"])
+            if reject_reason or not sections_seen:
+                record_word_diff_miss(
+                    ctx["user_id"], ctx["words"], "incomplete",
+                    detail=reject_reason or "поток не дал ни одного блока",
+                )
+                yield _sse_pack("error", {"error": "Не удалось разобрать отличия. Попробуйте ещё раз."})
+                return
+
+            _word_diff_store(ctx, diff)
+            yield _sse_pack("done", {
+                "ok": True,
+                "pair_key": ctx["pair_key"],
+                "words": ctx["words"],
+                "diff": diff,
+                "sources": ctx["sources"],
+                "from_cache": False,
+            })
+        except Exception as exc:
+            logging.exception("word_diff: поток разбора оборвался: %s", exc)
+            record_word_diff_miss(ctx["user_id"], ctx["words"], "model_error", detail=str(exc)[:300])
+            yield _sse_pack("error", {"error": "Не удалось разобрать отличия. Попробуйте ещё раз."})
+        finally:
+            set_llm_billing_user(None)
+
+    return Response(
+        stream_with_context(_generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 @app.route("/api/webapp/dictionary/diff/share/link", methods=["POST"])
