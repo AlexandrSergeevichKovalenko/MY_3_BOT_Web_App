@@ -88,28 +88,64 @@ def article_from_declension_tables(word: str, tables: dict) -> tuple:
 
 
 def has_documented_plural(tables: dict) -> bool:
-    """Есть ли в таблице множественное число.
+    """Есть ли у слова множественное число — ПО ФЛАГУ ИСТОЧНИКА, а не по догадке.
 
-    Зачем это отдельно. Артикль в ЗАГОЛОВКЕ словаря уместен не у всякого слова, у
-    которого есть род. Замер 24.08.2026 на живых единицах:
+    В каждой таблице справочника напечатано прямо: `has_plural` и `has_singular`. Это
+    не наш вывод, а пустая клетка в самой статье Wiktionary. Флаги есть у 89 670 записей
+    из 89 709 (замер 25.08.2026); там, где их нет, смотрим на сами формы.
 
-        Athen       род n, множественного нет   — «das Athen» в заголовке неверно
-        Marokko     род n, множественного нет   — то же
-        Altwerden   род n, множественного нет   — субстантивированный глагол
-        Schnapsidee род f, множественное есть   — обычное существительное
+    ⚠ ЧЕГО ЭТА ФУНКЦИЯ БОЛЬШЕ НЕ ДЕЛАЕТ И ПОЧЕМУ.
+    До 25.08.2026 отсюда делался вывод «нет множественного — похоже на ИМЯ СОБСТВЕННОЕ»,
+    и по нему отсекался артикль. Вывод неверен, и цена ошибки измерена: без
+    множественного 12 050 слов, а не горстка. Среди них обычные существительные —
+    «Milch», «Plastikmüll», «Bürgertum», «Brachialgewalt», «Jünglingsalter»,
+    «Interkostalmuskulatur». Имён собственных среди них меньшинство.
 
-    Отсутствие множественного — признак имени собственного или субстантивированной формы,
-    и он взят ИЗ ИСТОЧНИКА, а не выведен нами из написания. Правило намеренно строгое:
-    оно заодно отсекает «Milch» и «Obst», у которых множественного тоже нет. Пропустить
-    хорошее слово дешевле, чем показать «das Athen».
+    «Нет множественного» значит ровно одно: у слова нет множественного. Про «Athen» это
+    верно, и про «Milch» тоже — но «die Milch» существует, а «das Athen» нет. Разницу
+    решает не число, а часть речи, и признак для неё отдельный: поимённая пометка
+    «имя собственное — артикль не ставится» в bt_3_field_checks (решение владельца
+    24.08.2026). Косвенный признак заменён прямым — соседняя сессия (agent/dver,
+    владелец таблиц склонения) назвала флаги и число 25.08.2026.
     """
     if not isinstance(tables, dict):
         return False
     for gender in tables:
         if gender not in _GENDER_TO_ARTICLE:
             continue
-        for row in (tables[gender] or {}).get("rows") or []:
+        block = tables[gender] or {}
+        flag = block.get("has_plural")
+        if isinstance(flag, bool):
+            if flag:
+                return True
+            continue
+        # Флага нет (39 записей из 89 709) — смотрим на сами формы.
+        for row in block.get("rows") or []:
             if str(row.get("plural") or "").strip():
+                return True
+    return False
+
+
+def has_documented_singular(tables: dict) -> bool:
+    """Есть ли у слова единственное число — по тому же флагу источника.
+
+    Нужен там, где важно не спутать слово с формой множественного: у plurale tantum
+    («Badesachen», «Eltern») единственного нет вовсе, и артикль у них всегда «die».
+    Замер 25.08.2026: таких 134 записи.
+    """
+    if not isinstance(tables, dict):
+        return False
+    for gender in tables:
+        if gender not in _GENDER_TO_ARTICLE:
+            continue
+        block = tables[gender] or {}
+        flag = block.get("has_singular")
+        if isinstance(flag, bool):
+            if flag:
+                return True
+            continue
+        for row in block.get("rows") or []:
+            if str(row.get("singular") or "").strip():
                 return True
     return False
 
