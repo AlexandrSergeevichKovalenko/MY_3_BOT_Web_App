@@ -9704,6 +9704,22 @@ def _run_provider_cost_truth_report_safe() -> None:
         logging.exception("provider cost truth report (bot scheduler) failed")
 
 
+def _dictionary_integrity_line() -> str:
+    """Вердикт о состоянии словаря одной строкой. Пусто, если проверка недоступна.
+
+    Пустая строка тут допустима и НЕ является заглушкой: отчёт о ночном доборе — не то
+    место, где падать. Сама проверка о своих сбоях говорит вслух собственным текстом
+    (см. `owner_line`), а сюда мы не дотянулись только если не импортировался модуль,
+    и это видно в логах.
+    """
+    try:
+        from backend.dictionary_integrity import owner_line
+        return "\n\n" + owner_line()
+    except Exception:
+        logging.warning("строка о целостности словаря не собралась", exc_info=True)
+        return ""
+
+
 def _synonym_backfill_lines(meta: dict) -> str:
     """Строка отчёта про добор синонимов.
 
@@ -9816,6 +9832,17 @@ def _send_pool_enrich_morning_report() -> None:
                 # Синонимы — отдельным блоком в конце: это другая работа той же ночи,
                 # и мешать её цифры с основным добором значит запутать обе.
                 + _synonym_backfill_lines(meta)
+                # ВЕРДИКТ О СОСТОЯНИИ СЛОВАРЯ — ОДНОЙ СТРОКОЙ, ПОСЛЕДНЕЙ.
+                #
+                # Проверка `backend/dictionary_integrity.py` (14 правил) написана
+                # 22.08.2026 и до 25.08.2026 её НЕ ВЫЗЫВАЛ НИКТО: ноль вызовов во всём
+                # репозитории. Владелец узнавал о дефектах единственным способом — от
+                # меня, россыпью по два-три слова в день. Отсюда и «бесконечный процесс».
+                #
+                # Здесь идёт ВЕРДИКТ, а не отчёт: «делать нечего» либо «нужен ты».
+                # Разбивка по правилам — по команде /admin_dict_integrity, в ежедневное
+                # сообщение она не лезет: число, на которое нельзя нажать, это не работа.
+                + _dictionary_integrity_line()
             )
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)

@@ -68,7 +68,19 @@ with get_db_connection_context() as conn:
                                        WHERE (l.from_unit=u.id OR l.to_unit=u.id) AND t.lang='ru' AND l.rank<900)""")
         # Считаем ДЕФЕКТ, а не очередь: перевод в разборе ЕСТЬ, а связи нет. Слово,
         # у которого разбор пока без переводов, ждёт ночного обогащения — это не брак.
-        cur.execute("""SELECT count(*) FROM bt_3_lex_units u WHERE u.lang='de'
+        #
+        # ┌─ ПРОВЕРЕНО 25.08.2026. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ────────────────────┐
+        # │ Сырое число было 67 и росло (утром 41). Разложилось так:                   │
+        # │   59 — СЛОВА, связи вправду не было. Причина: пакетного прохода по связям  │
+        # │        не существовало вовсе, `sync_unit_links_from_card` звался только    │
+        # │        поштучно на сохранении. Заведён `backfill_links_from_cards`,        │
+        # │        воткнут в ночную работу, накопленное разобрано: слов без связи 0.   │
+        # │    8 — ПРЕДЛОЖЕНИЯ и оборот («Ich habe Freude an meiner Arbeit»). У них    │
+        # │        нет «русского слова», перевод живёт внутри разбора. ДЕФЕКТА НЕТ,    │
+        # │        это была широта самой проверки. Поэтому здесь добавлен kind='word'. │
+        # │ Как перемерить: тот же запрос; вырастет — сломался ночной проход связей.   │
+        # └────────────────────────────────────────────────────────────────────────────┘
+        cur.execute("""SELECT count(*) FROM bt_3_lex_units u WHERE u.lang='de' AND u.kind='word'
                        AND jsonb_typeof(u.card->'translations')='array'
                        AND jsonb_array_length(u.card->'translations') > 0
                        AND NOT EXISTS (SELECT 1 FROM bt_3_lex_links l

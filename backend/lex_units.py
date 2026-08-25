@@ -1682,8 +1682,14 @@ _ADOPT_POS_GENDER_SQL = """
                                 THEN COALESCE(gender_source, 'card')
                                 ELSE gender_source END,
            updated_at = NOW()
-     WHERE id = %(id)s AND pos IS NULL AND kind = 'word'
-       AND (%(pos)s <> 'noun' OR lemma ~ '^[A-ZÄÖÜ]')
+     WHERE id = %(id)s AND (pos IS NULL OR gender IS NULL) AND kind = 'word'
+       -- Существительное обязано начинаться с заглавной. Но артикль, если он хранится
+       -- ВНУТРИ заголовка («der Simulator»), эту заглавную прячет, и условие отвергало
+       -- законные слова: замер 25.08.2026 — 4 слова висели с пустым родом с 23.08,
+       -- механизм их видел и каждый раз отказывался брать.
+       AND (%(pos)s <> 'noun'
+            OR lemma ~ '^[A-ZÄÖÜ]'
+            OR lemma ~* '^(der|die|das)[[:space:]]+[A-ZÄÖÜ]')
        AND NOT EXISTS (
            SELECT 1 FROM bt_3_lex_units o
             WHERE o.lang = bt_3_lex_units.lang
@@ -1918,6 +1924,80 @@ def fix_gender_conflicts_from_authority(*, limit: int = 400, lang: str = "de",
     return report
 
 
+def backfill_links_from_cards(*, limit: int = 300, lang: str = "de",
+                              native_lang: str = "ru", dry_run: bool = False) -> dict:
+    """Развесить связи «немецкое слово ↔ русское» тем словам, у кого их нет.
+
+    ЗАЧЕМ. `sync_unit_links_from_card` вызывается ПОШТУЧНО, в момент сохранения разбора.
+    Но разбор появляется и другими путями — ночным добором, переносом из пула, правкой
+    заголовка, — и на этих путях связи никто не развешивает. Слово получает переводы
+    внутри разбора и остаётся без связей навсегда.
+
+    Пакетного прохода не существовало вовсе. Поэтому такие слова копились: замер
+    25.08.2026 — 67 из 10 437, и число росло на глазах (утром было 41). Каждое из них
+    я потом «находил» руками по два-три и нёс владельцу. Отсюда и ощущение бесконечности:
+    выгребали ковшом кучу, которую никто не разгребает.
+
+    ЧТО ЛОМАЕТСЯ БЕЗ СВЯЗИ. Перевод человек видит — он лежит внутри разбора. Но поиск по
+    РУССКОЙ стороне слово не находит, и подбор пар для тренировок его не берёт.
+
+    Своих переводов НЕ ВЫДУМЫВАЕТ: берёт то, что уже написано в разборе, тем же кодом,
+    что и обычное сохранение. Слово без разбора не трогает вовсе.
+    """
+    report = {"candidates": 0, "linked": 0, "skipped": 0, "samples": []}
+    try:
+        with get_db_connection_context() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT u.id, u.display, u.card
+                      FROM bt_3_lex_units u
+                     WHERE u.lang = %s
+                       AND jsonb_typeof(u.card->'translations') = 'array'
+                       AND jsonb_array_length(u.card->'translations') > 0
+                       AND NOT EXISTS (
+                             SELECT 1 FROM bt_3_lex_links l
+                               JOIN bt_3_lex_units t
+                                 ON t.id = CASE WHEN l.from_unit = u.id
+                                                THEN l.to_unit ELSE l.from_unit END
+                              WHERE (l.from_unit = u.id OR l.to_unit = u.id)
+                                AND t.lang = %s AND l.rank < 900)
+                     ORDER BY u.updated_at DESC NULLS LAST
+                     LIMIT %s;
+                    """,
+                    (lang, native_lang, int(limit)),
+                )
+                строки = cur.fetchall() or []
+    except Exception:
+        logging.warning("добор связей: не прочитал список", exc_info=True)
+        return report
+
+    report["candidates"] = len(строки)
+    if dry_run:
+        report["samples"] = [str(d) for _i, d, _c in строки[:10]]
+        return report
+
+    for unit_id, display, card in строки:
+        if not isinstance(card, dict):
+            report["skipped"] += 1
+            continue
+        try:
+            итог = sync_unit_links_from_card(int(unit_id), card, native_lang=native_lang)
+        except Exception:
+            # Не глушим молча: слово остаётся без связей и попадёт в следующий проход.
+            logging.warning("добор связей: %r не развесил", display, exc_info=True)
+            report["skipped"] += 1
+            continue
+        if (итог or {}).get("links"):
+            report["linked"] += 1
+            if len(report["samples"]) < 10:
+                report["samples"].append(str(display))
+        else:
+            report["skipped"] += 1
+    return report
+
+
 def backfill_pos_gender_from_cards(*, limit: int = 500, lang: str = "de", dry_run: bool = False) -> dict:
     """Пройтись по словам, у которых часть речи не задана, а в разборе есть артикль.
 
@@ -1931,9 +2011,16 @@ def backfill_pos_gender_from_cards(*, limit: int = 500, lang: str = "de", dry_ru
                     """
                     SELECT id, display, card->>'article'
                       FROM bt_3_lex_units
-                     WHERE lang = %s AND kind = 'word' AND pos IS NULL
+                     WHERE lang = %s AND kind = 'word'
+                       AND (pos IS NULL OR gender IS NULL)
                        AND COALESCE(card->>'article', '') IN ('der', 'die', 'das')
-                       AND lemma ~ '^[A-ZÄÖÜ]'
+                       -- ⚠ АРТИКЛЬ БЫВАЕТ ВНУТРИ ЗАГОЛОВКА, и тогда слово начинается со
+                       -- СТРОЧНОЙ: «der Simulator», «die Airline», «das Cockpit». Условие
+                       -- «заголовок с заглавной» их не видело, и они висели с пустым родом
+                       -- с 23.08.2026 — механизм был, но проходил мимо (замер 25.08.2026:
+                       -- 4 слова). Хранение артикля в заголовке — устройство нашей базы,
+                       -- а не дефект: 655 записей отличаются от карточки только артиклем.
+                       AND (lemma ~ '^[A-ZÄÖÜ]' OR lemma ~* '^(der|die|das)[[:space:]]+[A-ZÄÖÜ]')
                      ORDER BY id
                      LIMIT %s;
                     """,
