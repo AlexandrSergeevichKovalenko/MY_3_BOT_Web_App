@@ -44,7 +44,12 @@ class _Cursor:
 
     def fetchall(self):
         if "FROM bt_3_word_check" in self._last:
-            return []               # ни одно слово не «настоящее» — защиты молчанием нет
+            return []
+        # Перед удалением читаются ТРИ графы — что именно уносим. Отдаём ровно их,
+        # а не всю строку: подставной курсор, отвечающий не по форме запроса,
+        # прячет ошибки распаковки вместо того, чтобы их показывать.
+        if self._last.startswith("SELECT id, word_de, COALESCE(translation_ru"):
+            return [(c[0], c[1], c[4]) for c in self.cards]
         if "FROM bt_3_webapp_dictionary_queries" in self._last:
             return list(self.cards)
         return []
@@ -206,15 +211,69 @@ class TranslationOnlyFixDoesNotDeleteTest(unittest.TestCase):
         self.assertFalse([s for s, _ in cur.statements if "response_json = NULL" in s])
 
 
-class SilenceStillDeletesTest(unittest.TestCase):
-    """Правка не должна была отменить главное правило экрана: молчание удаляет."""
+class SilenceNeverDeletesTest(unittest.TestCase):
+    """МОЛЧАНИЕ НЕ УДАЛЯЕТ. Решение владельца 25.08.2026.
 
-    def test_без_решения_строка_удаляется(self):
-        counts, cur = _run([{"word": "das Scheinwerfergla", "action": "", "text": "",
-                             "translation": ""}], cards=[СТЕКЛО], pool={})
-        self.assertEqual(counts["удалено"], 1)
-        self.assertTrue([s for s, _ in cur.statements
+    Отменяет его же правило от 19.08 («отмеченные остаются, остальные удаляются»).
+    Дословно: «нельзя удалять просто потому что кто-то не увидел, может просмотрел
+    случайно. Чтобы что-то удалить, человек должен САМ нажать удалить это слово».
+
+    Список бывает на сто слов, экран длинный, палец скользит: пропустить карточку —
+    норма поведения, а не решение. И цена ошибки несимметрична: лишнее сомнительное
+    слово придёт на проверку снова, стёртое нужное не вернуть ничем.
+    """
+
+    def setUp(self):
+        self.counts, self.cur = _run(
+            [{"word": "das Scheinwerfergla", "action": "", "text": "", "translation": ""}],
+            cards=[СТЕКЛО], pool=dict(ПУЛ))
+
+    def test_строка_словаря_не_тронута(self):
+        self.assertEqual(self.counts["удалено"], 0)
+        self.assertFalse([s for s, _ in self.cur.statements
+                          if s.startswith("DELETE FROM bt_3_webapp_dictionary_queries")])
+
+    def test_слово_вернётся_на_проверку(self):
+        """Строки в дневнике быть НЕ ДОЛЖНО: именно её отсутствие возвращает слово
+        в следующий список. Запишем «keep» — и человек больше никогда его не увидит,
+        хотя он его не смотрел."""
+        self.assertFalse([s for s, _ in self.cur.statements
+                          if "bt_3_word_confirm_digest" in s and s.startswith("INSERT")])
+
+    def test_настоящесть_слова_на_это_больше_не_влияет(self):
+        """Признак «модель подтвердила» защищал от удаления молчанием (21.08). Теперь
+        не удаляется никто, и спрашивать про это базу незачем."""
+        self.assertFalse([s for s, _ in self.cur.statements
+                          if "FROM bt_3_word_check" in s and s.startswith("SELECT")])
+
+
+class OnlyTheDeleteButtonDeletesTest(unittest.TestCase):
+    """Единственная дорога к удалению — явно нажатая кнопка «Удалить»."""
+
+    def setUp(self):
+        self.counts, self.cur = _run(
+            [{"word": "das Scheinwerfergla", "action": "drop", "text": "", "translation": ""}],
+            cards=[СТЕКЛО], pool=dict(ПУЛ))
+
+    def test_слово_удалено(self):
+        self.assertEqual(self.counts["удалено"], 1)
+        self.assertTrue([s for s, _ in self.cur.statements
                          if s.startswith("DELETE FROM bt_3_webapp_dictionary_queries")])
+
+    def test_перед_удалением_прочитали_что_уносим(self):
+        """Раньше строка исчезала бесшумно: сработай удаление — и сказать человеку,
+        ЧТО у него пропало, было бы нечем. Сначала читаем, потом удаляем."""
+        порядок = [s for s, _ in self.cur.statements
+                   if "bt_3_webapp_dictionary_queries" in s]
+        чтение = next(i for i, s in enumerate(порядок) if s.startswith("SELECT id, word_de"))
+        удаление = next(i for i, s in enumerate(порядок) if s.startswith("DELETE"))
+        self.assertLess(чтение, удаление, порядок)
+
+    def test_удаление_оставляет_след_в_дневнике(self):
+        записи = [p for s, p in self.cur.statements
+                  if s.startswith("INSERT INTO bt_3_word_confirm_digest")]
+        self.assertTrue(записи)
+        self.assertIn("drop", записи[0])
 
 
 if __name__ == "__main__":

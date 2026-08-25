@@ -7,6 +7,8 @@
     --keep:#4ade80; --keep-soft:rgba(74,222,128,.14);
     --fix:#fbbf24; --fix-soft:rgba(251,191,36,.14);
     --drop:#94a3b8; --drop-soft:rgba(148,163,184,.12);
+    /* Красный только у удаления: единственное необратимое действие на экране. */
+    --danger:#f87171; --danger-soft:rgba(248,113,113,.13);
     --radius:16px;
   }
   *{box-sizing:border-box}
@@ -51,6 +53,7 @@
   }
   .wa-tally b{display:block; font-size:1.15rem; color:var(--ink); font-variant-numeric:tabular-nums;}
   .wa-tally .wa-t-keep b{color:var(--keep)} .wa-tally .wa-t-fix b{color:var(--fix)}
+  .wa-tally .wa-t-drop b{color:var(--danger)}
 
   /* ── карточка слова ────────────────────────────────── */
   .wa-card{
@@ -59,7 +62,14 @@
     padding:14px 15px 12px; margin-bottom:10px; transition:border-color .18s, background .18s;
   }
   .wa-card[data-state="keep"]{border-left-color:var(--keep); background:linear-gradient(180deg,var(--keep-soft),transparent 60%),var(--surface)}
-  .wa-card[data-state="fix"]{border-left-color:var(--fix); background:linear-gradient(180deg,var(--fix-soft),transparent 60%),var(--surface)}
+  /* ┌─ ПОЧИНЕНО 25.08.2026. Здесь стояло data-state="fix", а код ставит "retrans" ─┐
+     │ и "manual" (frontend/src/dictionary/WordAudit.jsx). Из-за опечатки кнопка   │
+     │ «Перевод не тот» не подсвечивалась ВООБЩЕ: человек нажимал и не понимал,    │
+     │ нажалось ли. Имена состояний здесь и в JSX обязаны совпадать дословно.      │
+     └───────────────────────────────────────────────────────────────────────────┘ */
+  .wa-card[data-state="retrans"]{border-left-color:var(--fix); background:linear-gradient(180deg,var(--fix-soft),transparent 60%),var(--surface)}
+  .wa-card[data-state="manual"]{border-left-color:var(--primary); background:linear-gradient(180deg,var(--primary-soft),transparent 60%),var(--surface)}
+  .wa-card[data-state="drop"]{border-left-color:var(--danger); background:linear-gradient(180deg,var(--danger-soft),transparent 60%),var(--surface)}
 
   .wa-word-row{display:flex; align-items:baseline; gap:9px; flex-wrap:wrap;}
   .wa-word{font-size:1.22rem; font-weight:700; letter-spacing:-.01em;}
@@ -105,7 +115,11 @@
     font:inherit; font-weight:650; padding:10px 14px; border-radius:11px; cursor:pointer;
     border:none; background:var(--primary); color:#052330;
   }
+  /* «Удалить» отдельной строкой во всю ширину, а не третьей колонкой: необратимое
+     действие не должно стоять вплотную к безобидным и ловить промах пальца. */
   .wa-actions{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
+  .wa-act-drop{grid-column:1/-1; color:var(--muted)}
+  .wa-act-drop:hover{border-color:var(--danger); color:var(--danger)}
   .wa-act{
     font:inherit; font-size:.92rem; font-weight:600; cursor:pointer;
     padding:11px 10px; border-radius:12px; border:1px solid var(--line-strong);
@@ -115,7 +129,8 @@
   .wa-act:hover{border-color:var(--muted)}
   .wa-act:focus-visible{outline:2px solid var(--primary); outline-offset:2px}
   .wa-card[data-state="keep"] .wa-act-keep{background:var(--keep); border-color:var(--keep); color:#052e16}
-  .wa-card[data-state="fix"] .wa-act-retrans{background:var(--fix); border-color:var(--fix); color:#422006}
+  .wa-card[data-state="retrans"] .wa-act-retrans{background:var(--fix); border-color:var(--fix); color:#422006}
+  .wa-card[data-state="drop"] .wa-act-drop{background:var(--danger); border-color:var(--danger); color:#3f0a0a}
 
   /* ── нижняя панель ─────────────────────────────────── */
   .wa-bar{

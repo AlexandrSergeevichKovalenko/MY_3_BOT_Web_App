@@ -16,6 +16,18 @@ import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
  *
  * Правило экрана: НИКАКИХ РЕБУСОВ. У каждого слова написано, почему оно здесь, простыми
  * словами. Последствие решения видно до нажатия «Готово». До «Готово» не меняется ничего.
+ *
+ * ╔══════════════════════════════════════════════════════════════════════════════╗
+ * ║  МОЛЧАНИЕ НЕ УДАЛЯЕТ. УДАЛЯЕТ ТОЛЬКО КНОПКА «УДАЛИТЬ».                        ║
+ * ║  Решение владельца 25.08.2026, отменяет его же правило от 19.08 «отмеченные    ║
+ * ║  остаются, остальные удаляются». Дословно: «нельзя удалять просто потому что   ║
+ * ║  кто-то не увидел, может просмотрел случайно».                                 ║
+ * ║                                                                              ║
+ * ║  Список бывает на сто слов, экран длинный, палец скользит: пропустить          ║
+ * ║  карточку — это норма поведения, а не решение. Цена ошибки несимметрична —    ║
+ * ║  лишнее сомнительное слово придёт на проверку снова, стёртое нужное не         ║
+ * ║  вернуть. Поэтому не отмеченное ничем слово остаётся жить и приходит опять.    ║
+ * ╚══════════════════════════════════════════════════════════════════════════════╝
  */
 
 async function api(path, body = {}) {
@@ -38,6 +50,7 @@ const KEEP = 'keep';
 const FIXED = 'fixed';
 const MANUAL = 'manual';
 const RETRANS = 'retrans';
+const DROP = 'drop';
 
 export default function WordAudit() {
   const [items, setItems] = useState(null);
@@ -142,15 +155,11 @@ export default function WordAudit() {
     );
   }
 
-  // Слово, про которое известно, что оно настоящее, молчанием НЕ удаляется — решение
-  // владельца 21.08.2026. Справочники неполны: «Vergleichbarkeit», «Arbeitsumfeld»,
-  // «Sozialschmarotzer» — обычные слова, страниц у которых просто нет. Предлагать
-  // человеку стереть их за то, что он пролистал экран, — вред, а не проверка.
-  const willDrop = (it) => !it.safe && ![KEEP, FIXED, MANUAL, RETRANS].includes(state[it.word]);
-  const keep = items.filter((it) => [KEEP, FIXED, MANUAL].includes(state[it.word])
-                                    || (it.safe && !state[it.word])).length;
+  // Удаляется РОВНО то, у чего нажата кнопка «Удалить». Всё остальное — включая
+  // слова, которых человек вовсе не касался, — остаётся жить (см. рамку в шапке).
+  const drop = items.filter((it) => state[it.word] === DROP).length;
   const retrans = items.filter((it) => state[it.word] === RETRANS).length;
-  const drop = items.filter(willDrop).length;
+  const keep = items.length - drop - retrans;
 
   return (
     <div className="wa">
@@ -159,7 +168,8 @@ export default function WordAudit() {
         <h1>{items.length} {plural(items.length, 'слово', 'слова', 'слов')} ждут твоего решения</h1>
         <p className="wa-lede">
           Ты их сохранял, а мы не смогли подтвердить, что они есть в немецком языке.
-          Посмотри и реши, что с ними делать.
+          Посмотри и реши, что с ними делать. Ничего не удалится само — только то,
+          что ты сам отметишь кнопкой «Удалить».
         </p>
       </header>
 
@@ -174,17 +184,19 @@ export default function WordAudit() {
           готовая кнопка <b>«Да, это …»</b> — одно касание. <b>«Оставить как есть»</b> —
           слово верное, ничего не меняем. <b>«Перевод не тот»</b> — слово верное, а перевод
           плохой: соберём карточку заново этой ночью. <b>«Свой вариант»</b> — впиши слово
-          так, как надо, и, если нужно, свой перевод: мы сохраним именно их.</p>
-        <p><b>Если ничего не нажать.</b> Слово, про которое мы знаем, что оно настоящее,
-          останется — под ним так и написано. Остальные удалятся из словаря и из
-          тренировок. Ничего не произойдёт, пока не нажмёшь «Готово» внизу.</p>
+          так, как надо, и, если нужно, свой перевод: мы сохраним именно их.
+          <b>«Удалить»</b> — слово тебе не нужно, убираем его из словаря.</p>
+        <p><b>Ничего не удалится само.</b> Слово уходит из словаря, только если ты сам
+          нажал у него «Удалить». Всё, чего ты не тронул, остаётся на месте и просто
+          придёт на проверку в следующий раз. И даже отмеченное на удаление ничего не
+          теряет, пока ты не нажмёшь «Готово» внизу.</p>
         <p><b>Сколько делать.</b> Сколько хочешь. Непроверенные придут снова через несколько дней.</p>
       </details>
 
       <div className="wa-tally">
         <span className="wa-t-keep"><b>{keep}</b>оставим</span>
         <span className="wa-t-fix"><b>{retrans}</b>переделаем</span>
-        <span><b>{drop}</b>удалим</span>
+        <span className="wa-t-drop"><b>{drop}</b>удалим</span>
       </div>
 
       {items.map((it) => {
@@ -197,7 +209,7 @@ export default function WordAudit() {
             {it.translation ? <p className="wa-trans">{it.translation}</p> : null}
             <div className="wa-reason">{it.why}</div>
             {it.safe && !chosen ? (
-              <div className="wa-safe">Оставим его — трогать ничего не нужно.</div>
+              <div className="wa-safe">Слово настоящее — трогать ничего не нужно.</div>
             ) : null}
 
             {it.suggestion ? (
@@ -212,6 +224,14 @@ export default function WordAudit() {
                       onClick={() => pick(it.word, KEEP)}>Оставить как есть</button>
               <button type="button" className="wa-act wa-act-retrans"
                       onClick={() => pick(it.word, RETRANS)}>Перевод не тот</button>
+              {/* Отдельного «точно удалить?» нет намеренно: кнопка работает как все
+                  остальные — нажал, отметилось, нажал ещё раз, снялось. Ничего не
+                  происходит до «Готово», а внизу экрана всё это время видно число
+                  «удалим N». Переспрашивать на каждом слове в списке из ста — хуже. */}
+              <button type="button" className="wa-act wa-act-drop"
+                      onClick={() => pick(it.word, DROP)}>
+                {chosen === DROP ? '✓ ' : ''}Удалить
+              </button>
             </div>
 
             {editing[it.word] ? (
@@ -240,14 +260,15 @@ export default function WordAudit() {
       })}
 
       {error ? <div className="wa-error">{error}</div> : null}
-      <p className="wa-tail">Проверка приходит два раза в неделю. Подтверждённые слова больше не спросим.</p>
+      <p className="wa-tail">Проверка приходит два раза в неделю. Подтверждённые слова больше не спросим,
+        а те, что ты не тронул, придут снова.</p>
 
       <div className="wa-bar">
         <div className="wa-bar-inner">
           <p className="wa-bar-note">
             {drop === 0
               ? <>Ничего не удалим — оставим <b>{keep}</b>{retrans ? <> · переделаем <b>{retrans}</b></> : null}</>
-              : <>Оставим <b>{keep}</b> · переделаем <b>{retrans}</b> · удалим <b>{drop}</b></>}
+              : <>Оставим <b>{keep}</b> · переделаем <b>{retrans}</b> · удалим <b>{drop}</b> — по твоей кнопке</>}
           </p>
           <button type="button" className="wa-done" disabled={busy} onClick={submit}>
             {busy ? 'Сохраняю…' : 'Готово'}
