@@ -87,40 +87,6 @@ function resetClause(resetAt) {
   }
 }
 
-// The German side of a quick result when it's a lone noun (single capitalized token)
-// still lacking an article — mirrors the backend's noun-candidate check. When this is
-// non-empty the article is being filled in the background and we should poll for it.
-function germanNounAwaitingArticle(q) {
-  if (!q || String(q.article || '').trim()) return '';
-  // Слово нашлось в словаре статей — артикль там либо есть, либо его сознательно
-  // не печатают (род неизвестен или их два). Опрашивать фоновый добор незачем.
-  if (Array.isArray(q.entries) && q.entries.length) return '';
-  // ┌─ ЗАМЕРЕНО 25.08.2026. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ────────────────────────┐
-  // │ Часть речи приезжает ВМЕСТЕ с ответом, из нашего банка слов (сервер:          │
-  // │ _attach_quick_translate_pos). Если она не «существительное», артикля у слова  │
-  // │ нет и быть не может — опрашивать сервер до пяти раз ради «der Danke» значит   │
-  // │ гарантированно потратить пять обращений впустую, и так у каждого человека.    │
-  // │                                                                              │
-  // │ Замер на 299 РЕАЛЬНЫХ немецких однословных запросах из общего пула:           │
-  // │   230 (77%) — артикль отдаётся сразу, опроса нет вовсе;                       │
-  // │    69 (23%) — ответ без артикля, начинался опрос. Из этих 69:                 │
-  // │        29 — часть речи известна и это НЕ существительное (местоимение,        │
-  // │             междометие, предлог, наречие, прилагательное, глагол) → 42%       │
-  // │             всех опросов не могли закончиться успехом в принципе. Снято.      │
-  // │        26 — существительное без артикля → опрос осмыслен, оставлен;           │
-  // │        14 — пометы нет; среди них обрезки пула («Gro», «Erwe», «Sauerstoffk») │
-  // │             — это чужая задача (вычитка общего пула), не наша.                │
-  // │ Перемерить: scratchpad/measure_pos_in_answer.py, он зовёт серверный код.      │
-  // │ Правило берётся ИЗ ИСТОЧНИКА (наш банк слов), а не из написания слова.        │
-  // └──────────────────────────────────────────────────────────────────────────────┘
-  const pos = String(q.partOfSpeech || '').trim().toLowerCase();
-  if (pos && pos !== 'noun') return '';
-  let german = '';
-  if (q.targetLang === 'de') german = String(q.translation || '').trim();
-  else if (q.sourceLang === 'de') german = String(q.source || '').trim();
-  if (!german || /\s/.test(german) || german[0] !== german[0].toUpperCase()) return '';
-  return german;
-}
 
 // История поиска. Список общий с приложением — один ключ на оба словаря, поэтому
 // найденное здесь видно и во вкладке «История» внутри приложения.
@@ -520,35 +486,28 @@ export default function DictionaryOverlay({ onClose } = {}) {
       setPhase('done'); haptic('ok');
       pushRecent(text);   // пополняем историю, показывает её своя закладка
       setHistoryList(loadRecentsAll());
-      // A German noun whose article missed the instant Wiktionary lookup gets its
-      // der/die/das filled by a background LLM job that patches the cache. Poll for it
-      // so it appears on its own — never make the user press «Перевести» a second time.
-      if (germanNounAwaitingArticle(nextQuick)) {
-        (async () => {
-          for (const delay of [900, 1300, 1600, 2000, 2500]) {
-            await new Promise((r) => setTimeout(r, delay));
-            if (mySeq !== seqRef.current) return;
-            let art = '';
-            let num = '';
-            let lem = '';
-            try {
-              const a = await api('/api/translate/quick/article', {
-                text, source_lang: pair.source, target_lang: pair.target,
-              });
-              art = String(a?.article || '').trim();
-              num = String(a?.number || '').trim();
-              lem = String(a?.lemma || '').trim();
-            } catch (_e) { /* keep polling */ }
-            if (mySeq !== seqRef.current) return;
-            if (art) {
-              setQuick((prev) => (prev && !prev.article
-                ? { ...prev, article: art, number: num || prev.number, lemma: lem || prev.lemma }
-                : prev));
-              return;
-            }
-          }
-        })();
-      }
+      // ┌─ ЗАМЕРЕНО 25.08.2026. ОПРОС УБРАН. НЕ ВОЗВРАЩАТЬ БЕЗ НОВОГО ЗАМЕРА. ────────┐
+      // │ Здесь стоял опрос /api/translate/quick/article: пять попыток с паузами      │
+      // │ 0,9+1,3+1,6+2,0+2,5 = до 8,3 секунды ожидания, «вдруг фоновый добор уже     │
+      // │ нашёл артикль». Он не мог выиграть НИКОГДА.                                 │
+      // │                                                                            │
+      // │ Замер по секундомеру на 5 словах, что реально уходили в опрос               │
+      // │ (Sonntagszuschläge, Lösungsansätze, Kostenkategorien, Gleitsichtgläser,     │
+      // │ Kuddelmuddel): фоновый добор занимает 28–30 секунд И НЕ НАХОДИТ артикль     │
+      // │ ни у одного. 8,3 против 30 — разрыв не пограничный, подкручивать паузы      │
+      // │ бессмысленно. Скрипт замера: scratchpad/timing.py.                          │
+      // │                                                                            │
+      // │ Сам сервер и не рассчитывал на этот опрос: в комментарии                    │
+      // │ _schedule_quick_translate_article_fill сказано «so the NEXT identical       │
+      // │ lookup shows der/die/das» — добор делается для СЛЕДУЮЩЕГО поиска, а не      │
+      // │ для текущего экрана.                                                        │
+      // │                                                                            │
+      // │ Что осталось незакрытым и КЕМ (передано agent/gsurface 25.08.2026):         │
+      // │ добор кладёт найденный артикль в память процесса (_QUICK_TRANSLATE_CACHE).  │
+      // │ Сегодня WEB_CONCURRENCY=1, поэтому «следующий поиск» его видит; при двух    │
+      // │ процессах или после перезапуска воркера (каждые 2000 запросов) — уже нет.   │
+      // │ Лечение там же: класть артикль в банк слов, а не в память.                  │
+      // └────────────────────────────────────────────────────────────────────────────┘
     } catch (e) {
       if (mySeq !== seqRef.current) return;
       // The user blocked/deleted the bot → the dictionary is gated. Show the return screen
