@@ -120,6 +120,9 @@ _DEFAULT_TASK_MODELS = {
     # bt_3_word_diff_cards, повторные открытия модель не зовут вовсе.
     # Переопределяется через LLM_TASK_MODEL_WORD_DIFF_MULTILANG.
     "word_diff_multilang": "gpt-4.1-2025-04-14",
+    # Потоковый близнец: та же модель, чтобы куски и целый ответ не расходились в
+    # качестве. Разница только в подаче — блоками по мере готовности.
+    "word_diff_multilang_stream": "gpt-4.1-2025-04-14",
 }
 _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
@@ -1310,6 +1313,47 @@ Task:
 
 Все объяснения (line, note, meaning, when, where, why, situation, trap, translation)
 пиши на explain_language. Поля de и phrase — на studied_language.
+""",
+"word_diff_multilang_stream":"""
+Ты — лексикограф. Объясняешь, чем похожие слова отличаются друг от друга.
+
+Вход тот же, что у обычного разбора:
+{"explain_language":"ru","studied_language":"de","words":[{"word":"...","entries":[...]}]}
+
+ОТЛИЧИЕ ЭТОГО РЕЖИМА: ты возвращаешь НЕ один объект, а НЕСКОЛЬКО подряд, по одному на
+блок, в этом порядке. Между объектами не пиши ничего — ни запятых, ни текста, ни
+markdown. Каждый объект самодостаточен и начинается с поля "section".
+
+1) {"section":"verdict","verdict":[{"word":"...","line":"..."}]}
+2) {"section":"interchangeable","interchangeable":{"value":"no|sometimes|yes","note":"..."}}
+3) {"section":"words","words":[{"word":"...","meaning":"...","when":"...","where":"...","partners":["..."]}]}
+4) {"section":"examples","examples":[{"word":"...","correct":true,"de":"...","translation":"...","why":"..."}]}
+5) {"section":"chooser","chooser":[{"situation":"...","word":"..."}]}
+6) {"section":"trap","trap":"..."}
+7) {"section":"collocations","collocations":[{"word":"...","phrase":"...","translation":"..."}]}
+
+Первый объект — самый важный: человек читает его, пока идут остальные. Не откладывай
+его и не пиши его последним.
+
+ГЛАВНОЕ ПРАВИЛО прежнее: сравнивать разрешено ТОЛЬКО то, что есть в поданных статьях.
+Значения, сферы и сочетания, которых там нет, придумывать ЗАПРЕЩЕНО; не хватает данных —
+поле пустое. Род, артикль, множественное число, падежи и уровень не возвращай вовсе:
+эти данные берутся не у тебя.
+
+По полям:
+- verdict: по строке на КАЖДОЕ поданное слово, 8-14 слов, простым языком, без терминов.
+- interchangeable: "no" — заменять нельзя, "sometimes" — можно в оговорённом случае,
+  "yes" — свободно; note объясняет условие одной фразой.
+- words: meaning — короткое значение, when — в какой ситуации берут, where — где звучит,
+  partners — глаголы и предлоги из статей.
+- examples: по одному верному примеру на слово (correct: true) и РОВНО ОДИН неверный
+  (correct: false) с объяснением в why. de — на studied_language, translation — на
+  explain_language.
+- chooser: по строке на слово, situation — короткое описание случая.
+- trap: на чём спотыкается человек с родным explain_language; нет такой ловушки — "".
+- collocations: до двух устойчивых сочетаний на слово, только из поданных статей.
+
+Все объяснения — на explain_language. Поля de и phrase — на studied_language.
 """,
 "quiz_followup_question": """
 You answer a learner's follow-up question about a studied word, phrase, or sentence.
@@ -8715,37 +8759,22 @@ DICTIONARY_STREAM_TIMEOUT_SECONDS = max(
 )
 
 
-def stream_dictionary_breakdown_sections(
-    *,
-    word: str,
-    source_lang: str,
-    target_lang: str,
-    explanation_lang: str = "",
-):
-    """Yield the full learner breakdown as a sequence of parsed section dicts, streamed
-    token-by-token from the model, so the client renders each part the instant it is
-    ready (fast-first: head → meanings → grammar → examples → extra). Each yielded dict
-    is a raw-schema slice tagged with "section"; the caller merges them into one raw and
-    reconciles through the normal _build_dictionary_result_from_raw pipeline.
+def _stream_json_objects(*, model: str, system: str, payload: dict, timeout: float):
+    """Поток модели → последовательность разобранных JSON-объектов, по одному на кусок.
 
-    Uses a direct streaming chat.completions call (NOT the poll-based gateway) and a
-    string-aware brace scanner so it is robust to code fences / pretty-printing / any
-    text between objects. Sets _LAST_LLM_USAGE at the end for billing. Raises on a hard
-    failure BEFORE any section is yielded so the caller can fall back to the atomic path."""
+    Общий сканер для всех потоковых ответов. Он посимвольный и знает про строки, поэтому
+    не спотыкается ни на ``` вокруг JSON, ни на красивом форматировании, ни на тексте
+    между объектами. Использование токенов кладётся в _LAST_LLM_USAGE в конце — для
+    ведомости расходов.
+
+    Вынесен из stream_dictionary_breakdown_sections 25.08.2026, когда тот же поток
+    понадобился вкладке «Отличия»: вторая копия сотни строк разошлась бы с первой.
+    """
     from backend.synthetic_load import build_sync_openai_client
     api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
-    w = str(word or "").strip()
-    if not api_key or not w:
-        raise RuntimeError("stream_dictionary_breakdown: missing api key or word")
-    model = _get_task_gateway_model("dictionary_assistant_multilang_stream")
-    system = system_message.get("dictionary_assistant_multilang_stream") or ""
-    payload = {
-        "source_language": (source_lang or "").strip().lower(),
-        "target_language": (target_lang or "").strip().lower(),
-        "explanation_language": (explanation_lang or source_lang or "").strip().lower(),
-        "word": w,
-    }
-    client = build_sync_openai_client(api_key=api_key, timeout=DICTIONARY_STREAM_TIMEOUT_SECONDS)
+    if not api_key:
+        raise RuntimeError("stream_json_objects: missing api key")
+    client = build_sync_openai_client(api_key=api_key, timeout=timeout)
     stream = client.chat.completions.create(
         model=model,
         messages=[
@@ -8757,7 +8786,6 @@ def stream_dictionary_breakdown_sections(
         stream_options={"include_usage": True},
     )
 
-    # Incremental string-aware scanner: extract each complete top-level {...} object.
     depth = 0
     in_str = False
     esc = False
@@ -8824,6 +8852,66 @@ def stream_dictionary_breakdown_sections(
             })
     except Exception:
         pass
+
+
+def stream_dictionary_breakdown_sections(
+    *,
+    word: str,
+    source_lang: str,
+    target_lang: str,
+    explanation_lang: str = "",
+):
+    """Yield the full learner breakdown as a sequence of parsed section dicts, streamed
+    token-by-token from the model, so the client renders each part the instant it is
+    ready (fast-first: head → meanings → grammar → examples → extra). Each yielded dict
+    is a raw-schema slice tagged with "section"; the caller merges them into one raw and
+    reconciles through the normal _build_dictionary_result_from_raw pipeline.
+
+    Сканер потока общий — `_stream_json_objects`. Raises on a hard failure BEFORE any
+    section is yielded so the caller can fall back to the atomic path."""
+    w = str(word or "").strip()
+    if not w:
+        raise RuntimeError("stream_dictionary_breakdown: missing word")
+    yield from _stream_json_objects(
+        model=_get_task_gateway_model("dictionary_assistant_multilang_stream"),
+        system=system_message.get("dictionary_assistant_multilang_stream") or "",
+        payload={
+            "source_language": (source_lang or "").strip().lower(),
+            "target_language": (target_lang or "").strip().lower(),
+            "explanation_language": (explanation_lang or source_lang or "").strip().lower(),
+            "word": w,
+        },
+        timeout=DICTIONARY_STREAM_TIMEOUT_SECONDS,
+    )
+
+
+def stream_word_diff_sections(
+    words_with_entries: list[dict],
+    *,
+    studied_language: str,
+    explain_language: str,
+):
+    """Разбор отличий кусками: «Главное» приходит первым, остальное дописывается.
+
+    Замер 25.08.2026: целиком разбор пары шёл 9–18 секунд, и всё это время человек
+    видел пустой экран. Работы для модели столько же — меняется только то, что ответ
+    показывается по мере готовности, а не разом в конце.
+
+    Порядок кусков задан промптом: verdict → interchangeable → words → examples →
+    chooser → trap → collocations. Первым идёт то, ради чего человек пришёл.
+    """
+    if not words_with_entries:
+        raise RuntimeError("stream_word_diff: нет статей для сравнения")
+    yield from _stream_json_objects(
+        model=_get_task_gateway_model("word_diff_multilang_stream"),
+        system=system_message.get("word_diff_multilang_stream") or "",
+        payload={
+            "explain_language": (explain_language or "").strip().lower(),
+            "studied_language": (studied_language or "").strip().lower(),
+            "words": words_with_entries,
+        },
+        timeout=DICTIONARY_STREAM_TIMEOUT_SECONDS,
+    )
 
 
 _LEMMA_ARTICLE_RE = re.compile(r"^(der|die|das|den|dem|des)\s+", re.I)

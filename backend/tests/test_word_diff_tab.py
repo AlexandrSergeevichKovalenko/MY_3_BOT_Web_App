@@ -215,6 +215,57 @@ def test_incomplete_answer_is_not_shown_and_is_counted(client, monkeypatch):
     assert not saved, "неполный разбор не имеет права попасть в общий кеш"
 
 
+def test_stream_serves_cache_as_plain_json_without_touching_the_model(client, monkeypatch):
+    """Готовая пара обязана прийти сразу и без потока: поток тут не нужен и не бесплатен."""
+    cached = {"words": ["Miete", "Pacht"], "payload": FULL_ANSWER, "sources": {}, "created_at": None}
+    _patch_db(monkeypatch, get_word_diff_card=lambda *a, **k: cached)
+    monkeypatch.setattr(backend_server, "reserve_free_feature_usage", _forbid("резерв лимита"))
+    monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", lambda *a, **k: ENTRY)
+
+    resp = client.post(
+        "/api/webapp/dictionary/diff/stream",
+        json={"initData": "signed", "words": ["Miete", "Pacht"]},
+    )
+
+    assert resp.status_code == 200
+    assert "application/json" in resp.headers.get("Content-Type", "")
+    assert resp.get_json()["from_cache"] is True
+
+
+def test_stream_never_stores_half_an_answer(client, monkeypatch):
+    """Поток оборвался на середине → в общий кеш не попадает ничего, промах считается.
+
+    Половина разбора в общем кеше страшнее пустого экрана: она достанется ВСЕМ
+    следующим людям и будет выглядеть законченной.
+    """
+    saved, misses = [], []
+    _patch_db(
+        monkeypatch,
+        save_word_diff_card=lambda **k: saved.append(k),
+        record_word_diff_miss=lambda uid, words, reason, detail="": misses.append(reason),
+    )
+    monkeypatch.setattr(backend_server, "reserve_free_feature_usage", lambda **k: {"ok": True, "blocked": False})
+    monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", lambda *a, **k: ENTRY)
+
+    def _half_stream(*args, **kwargs):
+        # Пришло «Главное» только про одно слово из двух — и связь оборвалась.
+        yield {"section": "verdict", "verdict": [{"word": "Anzahlung", "line": "часть цены вперёд"}]}
+
+    import backend.openai_manager as om
+    monkeypatch.setattr(om, "stream_word_diff_sections", _half_stream)
+
+    resp = client.post(
+        "/api/webapp/dictionary/diff/stream",
+        json={"initData": "signed", "words": ["Anzahlung", "Vorschuss"]},
+    )
+    body = resp.get_data(as_text=True)
+
+    assert "event: error" in body, "человеку не сказали, что разбор не собрался"
+    assert "event: done" not in body, "оборванный разбор выдан за готовый"
+    assert not saved, "половина разбора попала в ОБЩИЙ кеш — её увидят все следующие"
+    assert misses == ["incomplete"]
+
+
 def test_pair_key_ignores_word_order_and_case():
     a = build_word_diff_pair_key(["Anzahlung", "Vorschuss"], "de", "ru")
     b = build_word_diff_pair_key(["vorschuss", "anzahlung"], "de", "ru")

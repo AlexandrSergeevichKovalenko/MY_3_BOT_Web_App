@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, haptic, SpeakButton } from './WordBreakdown';
+import { api, haptic, SpeakButton, getInitData, getDictToken } from './WordBreakdown';
 import { humanizeDictError } from './errors.js';
 import { saveLookedUpWord, savePhraseWithTranslation } from './saveUtils';
 
@@ -44,6 +44,7 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
   const [history, setHistory] = useState([]);
   const [saved, setSaved] = useState(() => new Set());
   const [sharing, setSharing] = useState(false);
+  const [streaming, setStreaming] = useState(false); // разбор ещё дописывается
 
   const filled = useMemo(() => normalizeCells(cells), [cells]);
   const canSubmit = filled.length >= MIN_WORDS && phase !== 'loading';
@@ -84,23 +85,96 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
     return () => { alive = false; };
   }, [sharedToken]);
 
+  // Разбор приходит ПОТОКОМ: «Главное» появляется через пару секунд, остальные блоки
+  // дописываются на глазах. Замер 25.08.2026: целиком пара собиралась 9–18 секунд, и
+  // всё это время человек смотрел в пустой экран. Готовая пара приходит обычным JSON —
+  // потока там нет и не нужно.
   const runDiff = useCallback(async (words) => {
     setPhase('loading');
     setError('');
     setLimitReached(false);
     setMissing([]);
     setSaved(new Set());
+    setStreaming(false);
     try {
-      const data = await api('/api/webapp/dictionary/diff', { words });
-      if (data && data.ok === false && data.reason === 'not_found') {
-        setMissing(Array.isArray(data.missing) ? data.missing : []);
-        setPhase('missing');
+      const token = getDictToken();
+      const headers = { 'Content-Type': 'application/json', 'X-Telegram-InitData': getInitData() };
+      if (token) headers['X-Dict-Token'] = token;
+      const resp = await fetch('/api/webapp/dictionary/diff/stream', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ initData: getInitData(), ...(token ? { dqt: token } : {}), words }),
+      });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        const err = new Error(body?.error || 'Fehler');
+        err.status = resp.status;
+        err.payload = body;
+        throw err;
+      }
+      // Кеш, отказ и «слова не нашли» приходят обычным JSON.
+      if ((resp.headers.get('Content-Type') || '').includes('application/json')) {
+        const data = await resp.json().catch(() => ({}));
+        if (data && data.ok === false && data.reason === 'not_found') {
+          setMissing(Array.isArray(data.missing) ? data.missing : []);
+          setPhase('missing');
+          return;
+        }
+        setResult(data);
+        setPhase('ready');
+        void loadHistory();
         return;
       }
-      setResult(data);
-      setPhase('ready');
-      void loadHistory();
+      if (!resp.body || typeof resp.body.getReader !== 'function') throw new Error('stream unsupported');
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let streamError = '';
+      setStreaming(true);
+
+      const handleFrame = (block) => {
+        let event = 'message';
+        const dataLines = [];
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        }
+        if (!dataLines.length) return;
+        let data;
+        try { data = JSON.parse(dataLines.join('\n')); } catch (_e) { return; }
+        if (event === 'section') {
+          setResult((prev) => ({ ...(prev || {}), words, diff: data.diff || {} }));
+          setPhase('ready');
+        } else if (event === 'done') {
+          setResult(data);
+          setPhase('ready');
+          setStreaming(false);
+          void loadHistory();
+        } else if (event === 'error') {
+          streamError = String(data?.error || 'Не удалось разобрать отличия.');
+        }
+      };
+
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+          handleFrame(buffer.slice(0, idx));
+          buffer = buffer.slice(idx + 2);
+        }
+      }
+      if (buffer.trim()) handleFrame(buffer);
+      setStreaming(false);
+      if (streamError) {
+        setError(streamError);
+        setPhase('error');
+      }
     } catch (e) {
+      setStreaming(false);
       if (e && e.status === 429) {
         setLimitReached(true);
         setError(humanizeDictError(e));
@@ -211,6 +285,8 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
             ← Назад к словам
           </button>
         )}
+
+        {streaming && <div className="wd-streaming">Дописываю разбор…</div>}
 
         <div className="wd-pair">
           {words.map((word, i) => (
