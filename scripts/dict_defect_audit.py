@@ -613,6 +613,91 @@ def audit_pool_headwords_without_article(cur, examples: int) -> None:
               % (head, units.get(head.lower(), (None, None, None))[2], confirmed.get(head)))
 
 
+
+# Ведущий артикль и хвостовая пунктуация — НЕ различие слов. Без их отсева сравнение
+# «написание против разбора» даёт 4297 «дефектов» вместо 127: разница в 34 раза,
+# и выглядит она убедительно (замер 25.08.2026). Нормализация пишется ПЕРВОЙ.
+HEADWORD_ARTICLE_RE = re.compile(r"^(der|die|das|ein|eine|einen|einem|einer|eines)\s+", re.I)
+HEADWORD_TAIL_RE = re.compile(r"[.,;:!?«»\"'\u2013\u2014-]+$")
+
+
+def headword_key(text) -> str:
+    """Слово без артикля, без хвостовой пунктуации, в нижнем регистре."""
+    value = SPACE_RE.sub(" ", str(text or "").strip())
+    value = HEADWORD_ARTICLE_RE.sub("", value)
+    value = HEADWORD_TAIL_RE.sub("", value).strip()
+    return value.casefold()
+
+
+def audit_card_describes_another_word(cur, examples: int) -> None:
+    """Написание слова и его разбор говорят о РАЗНЫХ словах.
+
+    ЗАЧЕМ ЭТОТ ПУНКТ ПОЯВИЛСЯ (владелец, 25.08.2026). Он открыл карточку «die Mies» —
+    «Паршивый» — со значениями про неудачников и примерами «Die Mies sind wieder nicht
+    erfolgreich». Всё выдумано: «mies» это прилагательное, но записанное с заглавной оно
+    стало для системы существительным, и модель сочинила под него разбор.
+
+    Я починил написание и стёр ТРИ поля из двадцати одного — отчитался «исправлено».
+    Владелец открыл ту же карточку и увидел ТО ЖЕ САМОЕ: выдумка сидела в остальных
+    восемнадцати полях (значения, примеры, формы, произношение), и так у ВСЕХ
+    одиннадцати слов, а не только у проверенного мной.
+
+    Владелец спросил прямо: «как сделать, чтобы ты и другие в следующий раз делали
+    правильно?» Инструкцию можно не прочесть. Число в отчёте — нельзя: оно растёт, если
+    кто-то починил слово наполовину, и растёт у всех на виду.
+
+    ПРАВИЛО ОТБОРА. Разбор помнит слово, под которое собирался (`word_de` внутри него).
+    Если оно расходится с тем, как запись называется СЕЙЧАС, — разбор от прежнего слова,
+    и он недействителен целиком: каждое значение и каждый пример про другое слово.
+
+    ЧТО ДЕЛАТЬ С НАЙДЕННЫМ: не править поля по одному, а стирать разбор ЦЕЛИКОМ
+    (`card = NULL`, `response_json = '{}'`). Ночной добор соберёт заново — но только для
+    одиночных слов: `lex_units.units_needing_card` берёт `kind='word' AND card IS NULL`,
+    фразы он не трогает вовсе, и у них пустой разбор останется навсегда (предупреждение
+    соседней сессии, проверено 25.08.2026).
+    """
+    cur.execute("""
+        SELECT id, lemma, card->>'word_de', kind
+        FROM bt_3_lex_units
+        WHERE lang = 'de' AND card IS NOT NULL
+          AND COALESCE(card->>'word_de', '') <> ''
+    """)
+    units = [(i, l, c, k) for i, l, c, k in cur.fetchall()
+             if headword_key(c) != headword_key(l)]
+
+    cur.execute("""
+        SELECT id, word_de, response_json->>'word_de'
+        FROM bt_3_webapp_dictionary_queries
+        WHERE COALESCE(response_json->>'word_de', '') <> ''
+          AND COALESCE(word_de, '') <> ''
+    """)
+    cards = [(i, w, c) for i, w, c in cur.fetchall()
+             if headword_key(c) != headword_key(w)]
+
+    total = len(units) + len(cards)
+    verdict = "ЧИСТО" if total == 0 else "ДЕФЕКТ"
+    say(verdict, "Разбор собран под ДРУГОЕ слово",
+        "%d (единиц %d, личных карточек %d)" % (total, len(units), len(cards)),
+        "127 единиц + 255 личных карточек", measured_at="25.08.2026")
+    if total == 0:
+        print("      Каждый разбор описывает то самое слово, над которым стоит.")
+        return
+    print("""      Человек видит значения и примеры ЧУЖОГО слова. Чинить надо не поля по
+      одному, а стирать разбор ЦЕЛИКОМ — он собран под другое слово, правильных полей
+      там нет. Ночной добор соберёт заново, но ТОЛЬКО одиночные слова: у фраз пустой
+      разбор останется навсегда.""")
+    phrases = [u for u in units if str(u[3] or "") != "word"]
+    if phrases:
+        print("      ⚠ из них ФРАЗ: %d — им ночной добор разбор не соберёт, стирать нельзя"
+              % len(phrases))
+    for unit_id, lemma, card_word, kind in units[:examples]:
+        print("      единица %-8s %-28s разбор про %s" % (
+            unit_id, str(lemma)[:28], str(card_word)[:28]))
+    for card_id, word, card_word in cards[:examples]:
+        print("      карточка %-8s %-28s разбор про %s" % (
+            card_id, str(word)[:28], str(card_word)[:28]))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--list", type=int, default=8, help="сколько примеров печатать на пункт")
@@ -632,6 +717,7 @@ def main() -> None:
             audit_german_capitals(cur, args.list)
             audit_separable_gap_tasks(cur, args.list)
             audit_pool_headwords_without_article(cur, args.list)
+            audit_card_describes_another_word(cur, args.list)
     print("\n" + "═" * 78)
     print("Скрипт ничего не менял. Все правила отбора — в этом файле, рядом с числом.")
     print("═" * 78)
