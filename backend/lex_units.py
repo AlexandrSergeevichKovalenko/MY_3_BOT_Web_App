@@ -728,7 +728,17 @@ def units_needing_card(limit: int, *, lang: str = "de", native_lang: str = "ru")
                         WHERE st.status <> 'suspended' AND q.lex_unit_id IS NOT NULL
                         GROUP BY q.lex_unit_id
                     ) d ON d.lex_unit_id = u.id
-                    WHERE u.lang = %s AND u.kind = 'word' AND u.card IS NULL
+                    -- СЛОВА И СЛОВОСОЧЕТАНИЯ. Предложения сюда НЕ входят намеренно.
+                    --
+                    -- Решение владельца 25.08.2026: «словосочетания греем, предложения
+                    -- не греем — там есть само предложение и перевод, этого достаточно».
+                    -- У словосочетания перевода мало: «Die Jagd auf» не объясняет ни
+                    -- падежа, ни того, как это употребить, — поэтому его разбор нужен.
+                    --
+                    -- Пока условие было `kind = 'word'`, словосочетания не попадали в
+                    -- очередь ВООБЩЕ и копились пустыми: замер 25.08.2026 — 1 793 штуки,
+                    -- на них подписаны живые люди.
+                    WHERE u.lang = %s AND u.kind IN ('word', 'collocation') AND u.card IS NULL
                     ORDER BY (d.due_at IS NULL), d.due_at, saved DESC, sources DESC, u.id
                     LIMIT %s;
                     """,
@@ -1310,8 +1320,11 @@ def count_units_needing_card(*, lang: str = "de") -> int:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
+                    # Считаем ТО ЖЕ, что и берёт очередь (units_needing_card): слова и
+                    # словосочетания. Иначе отчёт «осталось N» врал бы в меньшую сторону
+                    # и владелец не увидел бы 1 793 пустых словосочетания.
                     "SELECT COUNT(*) FROM bt_3_lex_units "
-                    "WHERE lang = %s AND kind = 'word' AND card IS NULL;",
+                    "WHERE lang = %s AND kind IN ('word', 'collocation') AND card IS NULL;",
                     (lang,),
                 )
                 return int(cur.fetchone()[0])
