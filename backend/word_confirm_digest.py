@@ -288,6 +288,107 @@ def _with_article(word: str) -> str:
     return f"{art} {text}" if art else text
 
 
+def _same_text(left: str | None, right: str | None) -> bool:
+    """Одно ли это написание. Артикль и регистр различием не считаем."""
+    return bare_word(str(left or "")).casefold() == bare_word(str(right or "")).casefold()
+
+
+def _rewrite_card_to_new_word(cur, *, user_id: int, old_bare: str, new_word_de: str,
+                              new_translation: str) -> dict[str, int]:
+    """Перевести карточки человека на исправленное слово — ЦЕЛИКОМ, а не заголовок.
+
+    ┌─ НАЙДЕНО И ПОЧИНЕНО 25.08.2026. «ПРАВКУ ДВУХ ГРАФ» НЕ ВОЗВРАЩАТЬ. ────────────┐
+    │ Правка меняла word_de и translation_ru — две графы из восьми. В той же строке │
+    │ оставались нетронутыми word_ru, translation_de, весь response_json и указатель │
+    │ на запись общего пула. Владелец исправил «das Scheinwerfergla» → «der          │
+    │ Scheinwerfer», а внутри карточки остался разбор про обрубок — и тренажёр берёт │
+    │ текст ИМЕННО оттуда (frontend/src/App.jsx, resolveFlashcardTexts: первым стоит │
+    │ responseJson.source_text). То есть человек исправлял слово и продолжал бы      │
+    │ учить старое. Замер: за всё время 3 такие правки (1 fixed + 2 manual), все три │
+    │ вычищены руками — scripts/word_audit_fix_stale_cards.py.                       │
+    └───────────────────────────────────────────────────────────────────────────────┘
+
+    ПОЧЕМУ РАЗБОР СТИРАЕТСЯ, А НЕ ПРАВИТСЯ ПОСТРОЧНО. Исправленное слово — ДРУГОЕ
+    слово: у «Scheinwerfergla» перевод «стекло фары», у «Scheinwerfer» — «фара».
+    Заменить в старом разборе одно написание на другое значит оставить человеку
+    значения, примеры и формы чужого слова под новым заголовком. Правило проекта:
+    неверное слово — весь разбор в мусор.
+
+    ПОЧЕМУ ПУСТО НЕ ОСТАНЕТСЯ, И ЭТО НЕ ЗАГЛУШКА. Разбор живёт не в карточке, а на
+    слове (`bt_3_lex_units`); читатели берут его по указателю `lex_unit_id`
+    (`attach_unit_content_to_cards`). Мы обнуляем указатель — и подбор
+    `lex_units.attach_missing_entries` ставит его на НОВОЕ слово, а ночной
+    `_run_units_night_enrichment` дособирает сам разбор. Тот же подбор зовётся и на
+    чтении (`_attach_missing_entries_quietly`), поэтому дырка живёт часы, а не сутки.
+    Ставить указатель прямо здесь нельзя: `ensure_unit` стучится в дверь слова и к
+    модели, а человек в этот момент ЖДЁТ ответа экрана.
+    """
+    report = {"карточек": 0, "снято из пула": 0, "чужих граф не тронуто": 0}
+    cur.execute(
+        "SELECT id, word_de, word_ru, translation_de, translation_ru, canonical_entry_id "
+        "FROM bt_3_webapp_dictionary_queries WHERE user_id=%s AND "
+        + _BARE.format(col="word_de") + "=%s;",
+        (int(user_id), old_bare))
+    rows = cur.fetchall() or []
+    pool_ids: set[int] = set()
+    for card_id, word_de, word_ru, translation_de, translation_ru, canonical_id in rows:
+        # Русская сторона: главная графа — translation_ru. Перевода человек мог и не
+        # вписать («да, это …») — тогда остаётся прежний, и это не подстановка
+        # значения, а «графу не трогаем».
+        new_ru = new_translation if new_translation else str(translation_ru or "")
+        # Зеркальные графы (translation_de у немецкой стороны, word_ru у русской)
+        # переписываем ТОЛЬКО если в них лежало ровно то же, что в главной. Лежит
+        # что-то другое — это текст человека, мы его не переписываем и не стираем,
+        # а СЧИТАЕМ: владелец увидит число в логе решения.
+        de_mirror = new_word_de if _same_text(translation_de, word_de) else None
+        ru_mirror = new_ru if _same_text(word_ru, translation_ru) else None
+        if de_mirror is None and str(translation_de or "").strip():
+            report["чужих граф не тронуто"] += 1
+        if ru_mirror is None and str(word_ru or "").strip():
+            report["чужих граф не тронуто"] += 1
+        # COALESCE ниже НЕ подставляет значение вместо ответа: None означает «графа не
+        # наша, оставить как есть» (см. зеркала выше). Комментарий держим в питоне, а не
+        # внутри SQL: «--» в схлопнутой в одну строку команде убил бы остаток запроса.
+        cur.execute(
+            """UPDATE bt_3_webapp_dictionary_queries
+                  SET word_de = %s,
+                      translation_ru = %s,
+                      translation_de = COALESCE(%s, translation_de),
+                      word_ru = COALESCE(%s, word_ru),
+                      response_json = NULL,
+                      canonical_entry_id = NULL,
+                      lex_unit_id = NULL,
+                      updated_at = NOW()
+                WHERE id = %s;""",
+            (new_word_de, new_ru, de_mirror, ru_mirror, int(card_id)))
+        report["карточек"] += 1
+        if canonical_id:
+            pool_ids.add(int(canonical_id))
+
+    # ОБЩИЙ ПУЛ — ЭТО КЕШ ПОИСКА, А НЕ ЧЬИ-ТО ДАННЫЕ (то же правило и в
+    # word_gate_apply.py). Запись пула, собранная вокруг обрубка, отвечает на поиск
+    # обрубком: «Депортация» → «die Abschiebu», и так — всем, кто это ищет. Снимаем:
+    # следующий поиск соберёт запись заново, уже по исправленному слову. Личные
+    # карточки других людей НЕ ТРОГАЕМ никогда — только указатель на снятую запись,
+    # он служит защите от дублей, а не выдаче.
+    for pool_id in sorted(pool_ids):
+        cur.execute("SELECT source_text, target_text, word_de, translation_de "
+                    "FROM bt_3_dictionary_entries WHERE id=%s;", (pool_id,))
+        row = cur.fetchone()
+        if not row or not any(_same_text(value, old_bare) for value in row):
+            continue  # запись пула про другое слово — не наше дело
+        cur.execute("UPDATE bt_3_webapp_dictionary_queries SET canonical_entry_id=NULL "
+                    "WHERE canonical_entry_id=%s;", (pool_id,))
+        cur.execute("DELETE FROM bt_3_dictionary_entries WHERE id=%s;", (pool_id,))
+        report["снято из пула"] += 1
+
+    # Кеш поиска по самому обрубку: он отвечает на набранное слово готовой карточкой,
+    # минуя и пул, и дверь. Оставить его значит оставить обрубку последнюю дверь наружу.
+    cur.execute("DELETE FROM bt_3_dictionary_lookup_cache WHERE lower(normalized_word)=lower(%s);",
+                (old_bare,))
+    return report
+
+
 def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, Any]:
     """Применить решения человека. Удаляем ТОЛЬКО то, что он не отметил.
 
@@ -333,21 +434,41 @@ def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, 
                     if not word:
                         continue
                     translation = _cleaned(item.get("translation") or "")
-                    if action == "manual" and translation:
-                        # «Свой вариант» — человек вписал и слово, и перевод. Перевод
-                        # его собственный, спорить с ним нечем: он видел исходный текст,
-                        # а мы нет.
-                        cur.execute(
-                            "UPDATE bt_3_webapp_dictionary_queries SET translation_ru=%s, "
-                            "updated_at=NOW() WHERE " + where_bare,
-                            (translation, int(user_id), word))
-                    if action in ("fixed", "manual") and text and text != word:
-                        cur.execute(
-                            "UPDATE bt_3_webapp_dictionary_queries SET word_de=%s, updated_at=NOW() "
-                            "WHERE " + where_bare, (_with_article(text), int(user_id), word))
-                        # Исправленное написание — снова через дверь, уже без спешки.
-                        cur.execute("DELETE FROM bt_3_word_check WHERE asked=%s", (text,))
-                        counts["исправлено"] += 1
+                    if action in ("fixed", "manual"):
+                        # ┌─ ПОЧИНЕНО 25.08.2026. ЭТА ВЕТКА НЕ ИМЕЕТ ПРАВА УДАЛЯТЬ. ──┐
+                        # │ Раньше «свой вариант» проверялся условием «слово изменилось»│
+                        # │ — и решение, где человек поправил ТОЛЬКО перевод, проваливалось│
+                        # │ мимо всех ветвей прямо в удаление строки. Дорога туда открыта│
+                        # │ экраном: поле слова предзаполнено самим словом, а поле перевода│
+                        # │ подписано «если и он не тот». Отмеченное человеком слово не  │
+                        # │ удаляется НИ ПРИ КАКОМ решении — удаляет только молчание.    │
+                        # └─────────────────────────────────────────────────────────────┘
+                        if text and text != word:
+                            # Слово изменилось — значит меняется ВСЯ карточка, а не
+                            # заголовок: старый разбор про другое слово и уходит целиком.
+                            # Подробности и история дефекта — в _rewrite_card_to_new_word.
+                            spread = _rewrite_card_to_new_word(
+                                cur, user_id=int(user_id), old_bare=word,
+                                new_word_de=_with_article(text), new_translation=translation)
+                            logging.info(
+                                "проверка слов: %s → %s (человек %s): карточек %d, "
+                                "снято из пула %d, чужих граф не тронуто %d",
+                                word, text, user_id, spread["карточек"],
+                                spread["снято из пула"], spread["чужих граф не тронуто"])
+                            # Исправленное написание — снова через дверь, уже без спешки.
+                            cur.execute("DELETE FROM bt_3_word_check WHERE asked=%s", (text,))
+                            counts["исправлено"] += 1
+                        elif translation:
+                            # Слово то же, поправлен только перевод: разбор про это же
+                            # слово, стирать его нечего. Перевод собственный, спорить с ним
+                            # нечем — человек видел исходный текст, а мы нет.
+                            cur.execute(
+                                "UPDATE bt_3_webapp_dictionary_queries SET translation_ru=%s, "
+                                "updated_at=NOW() WHERE " + where_bare,
+                                (translation, int(user_id), word))
+                            counts["исправлено"] += 1
+                        else:
+                            counts["оставлено"] += 1
                     elif action == "keep":
                         counts["оставлено"] += 1
                     elif action == "retrans":
