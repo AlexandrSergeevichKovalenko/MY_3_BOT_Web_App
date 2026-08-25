@@ -42403,6 +42403,69 @@ def get_webapp_dictionary_word_diff():
     })
 
 
+@app.route("/api/webapp/dictionary/diff/share/link", methods=["POST"])
+def create_webapp_word_diff_share_link():
+    """Ссылка на разбор отличий — как у «Полного разбора»: один короткий токен и deep-link.
+
+    Токен привязан к ПАРЕ, а не к человеку: разбор общий, второй раз его никто не
+    оплачивает. Гость открывает ссылку в Telegram и видит разбор только для чтения.
+    """
+    import secrets as _secrets
+    from backend.database import get_word_diff_card, set_word_diff_share_token
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+    if not TELEGRAM_BOT_USERNAME:
+        return jsonify({"error": "Поделиться пока нельзя: бот не настроен"}), 503
+
+    pair_key = str(payload.get("pair_key") or "").strip()
+    if not pair_key:
+        return jsonify({"error": "Сначала откройте разбор"}), 400
+    if not get_word_diff_card(pair_key, bump_open=False):
+        return jsonify({"error": "Разбор не найден. Откройте сравнение заново."}), 404
+
+    token = set_word_diff_share_token(pair_key, _secrets.token_urlsafe(9))
+    if not token:
+        return jsonify({"error": "Не удалось создать ссылку"}), 500
+    return jsonify({
+        "ok": True,
+        "share_token": token,
+        "deeplink": f"https://t.me/{TELEGRAM_BOT_USERNAME}?startapp=wdiff_{token}",
+    })
+
+
+@app.route("/api/webapp/dictionary/diff/shared", methods=["POST"])
+def get_webapp_word_diff_shared():
+    """Гостевой показ разбора по ссылке: любой человек с подписью Telegram, только чтение."""
+    from backend.database import get_word_diff_by_share_token
+
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    token = str(payload.get("share_token") or "").strip()
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not token:
+        return jsonify({"error": "share_token обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    record = get_word_diff_by_share_token(token)
+    if not record:
+        return jsonify({"error": "Разбор не найден или ссылка недействительна"}), 404
+    return jsonify({
+        "ok": True,
+        "pair_key": record.get("pair_key"),
+        "words": record.get("words") or [],
+        "diff": record.get("payload") or {},
+        "sources": record.get("sources") or {},
+        "is_guest": True,
+        "save_locked": True,
+        "created_at": record.get("created_at"),
+    })
+
+
 @app.route("/api/webapp/dictionary/diff/history", methods=["POST"])
 def get_webapp_dictionary_word_diff_history():
     """Список «вы уже сравнивали». Открытие оттуда идёт через /diff и берётся из кеша."""

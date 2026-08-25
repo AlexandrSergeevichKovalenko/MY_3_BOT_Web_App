@@ -30487,6 +30487,13 @@ def ensure_word_diff_schema() -> None:
                 """
             )
             cursor.execute(
+                "ALTER TABLE bt_3_word_diff_cards ADD COLUMN IF NOT EXISTS share_token TEXT;"
+            )
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_bt_3_word_diff_cards_share "
+                "ON bt_3_word_diff_cards (share_token) WHERE share_token IS NOT NULL;"
+            )
+            cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_bt_3_word_diff_history_user "
                 "ON bt_3_word_diff_history (user_id, opened_at DESC);"
             )
@@ -30624,6 +30631,64 @@ def record_word_diff_open(user_id: int, pair_key: str, words: list) -> None:
                 (int(user_id), key, [str(w) for w in (words or [])]),
             )
         conn.commit()
+
+
+def set_word_diff_share_token(pair_key: str, token: str) -> str | None:
+    """Ссылка на разбор пары. Токен один на пару: повторное «Поделиться» его переиспользует,
+    а не плодит новую строку на каждое нажатие (та же ошибка уже была у общего разбора)."""
+    key = str(pair_key or "").strip()
+    new_token = str(token or "").strip()
+    if not key or not new_token:
+        return None
+    ensure_word_diff_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_word_diff_cards
+                SET share_token = COALESCE(share_token, %s)
+                WHERE pair_key = %s
+                RETURNING share_token;
+                """,
+                (new_token, key),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return str(row[0]) if row and row[0] else None
+
+
+def get_word_diff_by_share_token(token: str) -> dict | None:
+    """Гостевой показ разбора по ссылке. Только чтение, без права на сохранение."""
+    value = str(token or "").strip()
+    if not value:
+        return None
+    ensure_word_diff_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT pair_key, words, payload, sources, created_at
+                FROM bt_3_word_diff_cards
+                WHERE share_token = %s;
+                """,
+                (value,),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    payload = row[2]
+    sources = row[3]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if isinstance(sources, str):
+        sources = json.loads(sources)
+    return {
+        "pair_key": row[0],
+        "words": list(row[1] or []),
+        "payload": payload if isinstance(payload, dict) else {},
+        "sources": sources if isinstance(sources, dict) else {},
+        "created_at": row[4].isoformat() if row[4] else None,
+    }
 
 
 def record_word_diff_miss(user_id: int, words: list, reason: str, detail: str = "") -> None:

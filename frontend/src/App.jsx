@@ -14,6 +14,7 @@ import StoryResultModal from './components/StoryResultModal';
 import ProFeatureModal from './components/ProFeatureModal';
 import NoticeModal from './components/NoticeModal';
 import LiveExamples from './dictionary/LiveExamples';
+import WordDiff from './dictionary/WordDiff';
 import WordHintModal, { collectHintExamples, hasHintBreakdown } from './components/WordHintModal';
 import FsrsHeadword from './answer/FsrsHeadword';
 import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
@@ -39003,7 +39004,7 @@ function AppInner() {
                         {/* Была «Библиотека» — звучало как чужая полка с чьими-то книгами.
                             Это личные сохранённые слова человека, и называться они должны
                             так, чтобы было понятно, чьи они. Список тот же, ничего не переехало. */}
-                        📚 {tr('Мои слова', 'Meine Wörter')}
+                        📚 {tr('Слова', 'Wörter')}
                         {vocabFoldersMeta?.total_count > 0 && (
                           // Пять цифр рядом с подписью не помещаются: «Мои слова 15070»
                           // выдавливало соседнюю закладку. Точное число человеку здесь
@@ -39024,7 +39025,22 @@ function AppInner() {
                           🕘 {tr('История', 'Verlauf')}
                         </button>
                       )}
+                      {/* Четвёртая закладка — та же, что в быстром словаре, и тот же
+                          компонент: два словаря обязаны выглядеть одинаково, а копия
+                          экрана рано или поздно разъезжается с оригиналом. */}
+                      <button
+                        type="button"
+                        className={`vocab-tab ${vocabTab === 'diff' ? 'is-active' : ''}`}
+                        onClick={() => setVocabTab('diff')}
+                      >
+                        ⚖️ {tr('Отличия', 'Unterschiede')}
+                      </button>
                     </div>
+
+                    {/* ─── ОТЛИЧИЯ ─── */}
+                    {vocabTab === 'diff' && (
+                      <WordDiff onNeedFullAccess={() => handleBillingUpgrade('pro')} />
+                    )}
 
                     {/* ─── ИСТОРИЯ ─── */}
                     {vocabTab === 'history' && (
