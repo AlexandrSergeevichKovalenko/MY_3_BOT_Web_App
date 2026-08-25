@@ -138,7 +138,35 @@ with get_db_connection_context() as conn:
                          AND b.id NOT IN (9943, 13, 7062, 7134, 10096, 7966)""")
         check("банк Artikel: множественное число словом", cur.fetchone()[0], 0)
 
-        # 11. решения владельца: то, что разобрано и оставлено намеренно
+        # 11. приговоры двери слова ДОЕХАЛИ до данных, а не осели в кеше (25.08.2026).
+        # Приговор ложится в bt_3_word_check ДО применения, и ночной проход после этого
+        # слово больше не берёт: сбой применения означал потерю правки навсегда и молча.
+        # Так зависли 47 приговоров. Отметка applied_at ставится только по факту.
+        cur.execute("""SELECT count(*) FROM bt_3_word_check w
+                       WHERE w.status = 'исправлено' AND w.applied_at IS NOT NULL
+                         AND lower(w.asked) <> lower(w.text)
+                         AND (EXISTS (SELECT 1 FROM bt_3_lex_units u
+                                       WHERE u.lang='de' AND lower(u.lemma)=lower(w.asked))
+                           OR EXISTS (SELECT 1 FROM bt_3_dictionary_entries e
+                                       WHERE lower(e.word_de)=lower(w.asked)
+                                          OR lower(e.translation_de)=lower(w.asked))
+                           OR EXISTS (SELECT 1 FROM bt_3_webapp_dictionary_queries q
+                                       WHERE lower(q.word_de)=lower(w.asked)
+                                          OR lower(q.translation_de)=lower(w.asked)))""")
+        check("приговор отмечен применённым, а старый текст лежит", cur.fetchone()[0], 0)
+
+        # Мусор, признанный «не словом», не остался в НАШИХ данных. Личные карточки
+        # человека сюда не входят — их не трогаем, они уходят владельцу с кнопками.
+        cur.execute("""SELECT count(*) FROM bt_3_word_check w
+                       WHERE w.status = 'не слово' AND w.applied_at IS NOT NULL
+                         AND (EXISTS (SELECT 1 FROM bt_3_lex_units u
+                                       WHERE u.lang='de' AND lower(u.lemma)=lower(w.asked))
+                           OR EXISTS (SELECT 1 FROM bt_3_dictionary_entries e
+                                       WHERE lower(e.word_de)=lower(w.asked)
+                                          OR lower(e.translation_de)=lower(w.asked)))""")
+        check("«не слово» снято, но осталось в наших данных", cur.fetchone()[0], 0)
+
+        # 12. решения владельца: то, что разобрано и оставлено намеренно
         cur.execute("SELECT count(*), count(DISTINCT defect_class) FROM bt_3_lex_review_decisions")
         n, classes = cur.fetchone()
         print("   %-52s %s" % ("решений владельца в реестре (классов: %d)" % classes, n))
