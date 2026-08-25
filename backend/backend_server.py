@@ -31868,13 +31868,14 @@ def answer_topic_videos():
     """Теория по теме тренажёра: ролики, которые админ отобрал руками (/addvideo).
 
     Кнопка «🎬 Посмотреть видео» под спринтами (Wo-Fragen · Артикли · Окончания
-    прилагательных) открывает этот экран. Источник — пул bt_3_video_recommendations,
-    и берутся из него ТОЛЬКО помеченные is_curated: в том же пуле лежат находки ночного
-    автопрогрева по запросу YouTube, среди которых бывают ролики не по теме (25.08.2026:
-    «GAST/TELC B1-Prüfung» в теме окончаний прилагательных). Ничего не подбирается на
-    лету и ничего не досыпается «чтобы было три»: сколько человек отобрал — столько и
-    показываем. Пусто — отвечаем честным пустым списком, а кнопка в боте для такой темы
-    не рисуется вовсе (см. _topic_video_button в bot_3.py).
+    прилагательных) открывает этот экран. Отдаём ВЕСЬ пул темы — решение владельца
+    25.08.2026: «пусть там будут все по данной теме, человек листает и выбирает». Свои,
+    отобранные через /addvideo, идут первыми.
+
+    За то, что в пуле нет чужого, отвечает не этот эндпоинт, а уборка и страж на входе:
+    ролик не по теме выключается (is_blocked), и автопрогрев не может его вернуть. Ничего
+    не подбирается на лету. Пусто — честный пустой список, а кнопка в боте для такой темы
+    не рисуется вовсе (см. _topic_video_button_row в bot_3.py).
     """
     user_id, _user_name, err = _answer_auth_user_id()
     if user_id is None:
@@ -31885,8 +31886,8 @@ def answer_topic_videos():
     topic = get_topic(topic_key)
     if not topic:
         return jsonify({"error": "Тема не найдена"}), 404
-    from backend.database import list_curated_topic_videos
-    videos = list_curated_topic_videos(skill_id=topic_key, limit=8)
+    from backend.database import list_topic_theory_videos
+    videos = list_topic_theory_videos(skill_id=topic_key)
     if not videos:
         # Не «тихо пусто»: это наряд на работу — в теме нет ни одного отобранного ролика.
         logging.warning("topic videos: curated pool empty topic=%s user=%s", topic_key, user_id)

@@ -12197,6 +12197,18 @@ def ensure_webapp_tables() -> None:
                 ALTER TABLE bt_3_video_recommendations
                 ADD COLUMN IF NOT EXISTS is_curated BOOLEAN NOT NULL DEFAULT FALSE;
             """)
+            # ── «Выключено разбором» ────────────────────────────────────────────────
+            # Без этого признака уборка пула НЕ ДЕРЖИТСЯ: upsert при повторной записи
+            # ставит is_active = TRUE, а ночной автопрогрев ходит по темам постоянно —
+            # значит выключенный ролик воскресал бы сам, и уборка была бы бессмысленной.
+            # Замер 25.08.2026: пять роликов-обзоров («Die komplette B2-Grammatik in 25
+            # Minuten», «GAST/TELC B1-Prüfung», «B1 Deutsch komplett erklärt»,
+            # «DOPPELKONNEKTOREN», «100 Passiv-Sätze») лежали в 177 темах сразу — ни одна
+            # из них не была их собственной темой.
+            cursor.execute("""
+                ALTER TABLE bt_3_video_recommendations
+                ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT FALSE;
+            """)
             # Разовый перенос накопленного: на 25.08.2026 ручными были ровно те строки, где
             # search_query пуст — автопрогрев всегда пишет туда свой запрос. Проверено
             # запросом по живой базе: 10 таких строк на темы fragen/artikel/adjektivdeklination,
@@ -39034,7 +39046,9 @@ def upsert_video_recommendation(
                     video_url = COALESCE(EXCLUDED.video_url, bt_3_video_recommendations.video_url),
                     video_title = COALESCE(EXCLUDED.video_title, bt_3_video_recommendations.video_title),
                     is_curated = bt_3_video_recommendations.is_curated OR EXCLUDED.is_curated,
-                    is_active = TRUE,
+                    -- Выключенное разбором остаётся выключенным: иначе ночной автопрогрев
+                    -- вернёт в тему ровно те ролики, которые из неё убрали как не по теме.
+                    is_active = NOT bt_3_video_recommendations.is_blocked,
                     last_selected_at = NOW(),
                     updated_at = NOW()
                 RETURNING
@@ -39157,25 +39171,29 @@ def list_active_video_recommendations_for_focus(
     return [_map_video_recommendation_row(row) for row in rows if row]
 
 
-def list_curated_topic_videos(
+def list_topic_theory_videos(
     *,
     source_lang: str = "ru",
     target_lang: str = "de",
     skill_id: str,
-    limit: int = 8,
+    limit: int = 24,
 ) -> list[dict]:
-    """Ролики темы, которые выбрал ЧЕЛОВЕК (/addvideo), — источник экрана «Посмотреть видео».
+    """Все ролики темы для экрана «🎬 Посмотреть видео» — человек листает и выбирает сам.
 
-    Почему отдельная функция, а не list_active_video_recommendations_for_focus: в том же
-    пуле лежат ролики ночного автопрогрева по запросу YouTube, и они бывают не по теме
-    (замер 25.08.2026: в теме adjektivdeklination из 8 активных 2 ролика — обзор экзамена
-    TELC и «вся грамматика B1», к окончаниям прилагательных отношения не имеют). Экран
-    обещает человеку «рекомендуем эти видео», поэтому показывает только отобранное руками.
+    Решение владельца 25.08.2026: «пусть там будут все по данной теме, человек просто
+    может листать их и выбрать то, которое ему нужно». Поэтому здесь нет отбора «три
+    лучших» — показывается весь пул темы.
 
-    Порядок — по возрастанию id: тот же, в каком админ их добавлял. Ни score, ни лайки
-    здесь не участвуют, чтобы порядок на экране не переставлялся сам по себе.
+    Отвечает за то, ЧТО в этом пуле лежит, не экран, а уборка: ролик не по теме
+    выключается (is_blocked) и на экран не попадает. Замер 25.08.2026: пять роликов-
+    обзоров стояли в 177 темах сразу, включая «GAST/TELC B1-Prüfung» в окончаниях
+    прилагательных.
+
+    Порядок: сначала отобранные человеком (/addvideo), потом найденные автопрогревом —
+    внутри каждой группы по возрастанию id, в том порядке, в каком их добавляли. Ни score,
+    ни лайки в сортировке не участвуют: порядок на экране не должен переставляться сам.
     """
-    resolved_limit = max(1, min(int(limit or 8), 20))
+    resolved_limit = max(1, min(int(limit or 24), 50))
     focus_key = _build_video_focus_key(
         source_lang=source_lang,
         target_lang=target_lang,
@@ -39191,8 +39209,7 @@ def list_curated_topic_videos(
                 FROM bt_3_video_recommendations
                 WHERE focus_key = %s
                   AND is_active = TRUE
-                  AND is_curated = TRUE
-                ORDER BY id
+                ORDER BY is_curated DESC, id
                 LIMIT %s;
                 """,
                 (focus_key, resolved_limit),
@@ -39207,6 +39224,32 @@ def list_curated_topic_videos(
         for r in rows
         if r and str(r[0] or "").strip()
     ]
+
+
+def count_active_topics_for_video(video_id: str) -> int:
+    """В скольких РАЗНЫХ темах этот ролик сейчас числится теорией.
+
+    Страж на входе в пул. Ролик-обзор («вся грамматика B1 за 25 минут») поисковая выдача
+    YouTube возвращает почти на любой запрос, и он оседает во всех темах подряд — замер
+    25.08.2026: 51, 49, 33, 24 и 20 тем у пяти таких роликов. У честно тематического
+    ролика этот счётчик другой: максимум 5 («ALLE Zeiten auf Deutsch» в пяти темах про
+    времена — там он вправду уместен). Разрыв между 5 и 20 и есть граница.
+    """
+    vid = str(video_id or "").strip()
+    if not vid:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT count(DISTINCT skill_id)
+                FROM bt_3_video_recommendations
+                WHERE video_id = %s AND is_active = TRUE AND skill_id IS NOT NULL;
+                """,
+                (vid,),
+            )
+            row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
 
 
 def get_user_video_cooldown_ids(

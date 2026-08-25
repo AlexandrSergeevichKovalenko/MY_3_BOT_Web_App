@@ -282,6 +282,7 @@ from backend.database import (
     mark_image_quiz_answer_feedback_sent,
     list_top_weak_topics,
     list_active_video_recommendations_for_focus,
+    count_active_topics_for_video,
     upsert_video_recommendation,
     get_user_video_cooldown_ids,
     record_video_send,
@@ -6235,13 +6236,17 @@ def get_webapp_deeplink(path: str = "review", bot_username: str | None = None) -
 # Владелец, 25.08.2026: «под этой кнопкой нужно открываться страничка, на которой будет
 # три видео… если хотите освежить память либо просто начать — рекомендуем пройти вот эти
 # видео». Экран открывается ссылкой ans_gv_<тема> и показывает ролики, отобранные руками
-# (/addvideo) — см. list_curated_topic_videos.
+# (/addvideo) — см. list_topic_theory_videos.
 #
 # Кнопка рисуется ТОЛЬКО когда в теме есть хоть один отобранный ролик: пустой экран с
 # обещанием «рекомендуем эти видео» — обман, а не «временно пусто». Проверка стоит денег
 # в один индексный запрос, поэтому ответ держится в памяти 10 минут: рассылка идёт по
 # тысячам людей одной и той же тройкой ссылок.
 TOPIC_VIDEO_BUTTON_TEXT = "🎬 Посмотреть видео"
+# Сколько РАЗНЫХ тем может числить один ролик своей теорией, прежде чем он признан обзором
+# и в новые темы не кладётся. Замер 25.08.2026 по живому пулу: у тематических роликов
+# максимум 5 тем, у роликов-обзоров — 20, 24, 33, 49 и 51. Граница проходит по разрыву.
+_GENERIC_VIDEO_TOPIC_LIMIT = 6
 _TOPIC_VIDEO_HAS_CACHE: dict[str, tuple[float, bool]] = {}
 _TOPIC_VIDEO_CACHE_TTL_SEC = 600
 
@@ -6258,8 +6263,8 @@ def _topic_has_curated_videos(topic_key: str) -> bool:
     if cached and (now - cached[0]) < _TOPIC_VIDEO_CACHE_TTL_SEC:
         return cached[1]
     try:
-        from backend.database import list_curated_topic_videos
-        has = bool(list_curated_topic_videos(skill_id=key, limit=1))
+        from backend.database import list_topic_theory_videos
+        has = bool(list_topic_theory_videos(skill_id=key, limit=1))
     except Exception:
         logging.exception("topic video button: pool check failed topic=%s", key)
         return False
@@ -25061,9 +25066,35 @@ async def warm_grammar_video_pool(context: CallbackContext = None, *, source_lan
             found = []
 
         stored = 0
+        skipped_generic = 0
         for video in found or []:
             vid = str((video or {}).get("video_id") or "").strip()
             if not vid:
+                continue
+            # ── Страж на входе: ролик-обзор не становится «теорией по теме» ──────────
+            # Поиск YouTube на почти любой грамматический запрос возвращает одни и те же
+            # популярные обзоры («вся грамматика B1 за 25 минут», «важные темы к экзамену
+            # TELC»), и они оседали во всех темах подряд. Замер 25.08.2026: пять таких
+            # роликов стояли в 51, 49, 33, 24 и 20 темах, и ни один — в своей собственной.
+            # У честно тематического ролика счётчик другой: больше пяти тем не набрал ни
+            # один («ALLE Zeiten auf Deutsch» в пяти темах про времена — там он уместен).
+            # Разрыв между 5 и 20 и есть граница; берём 6 как первое значение за ней.
+            try:
+                if count_active_topics_for_video(vid) >= _GENERIC_VIDEO_TOPIC_LIMIT:
+                    skipped_generic += 1
+                    logging.info(
+                        "grammar video warmer: ролик уже числится теорией в %d темах — "
+                        "в тему %s не кладём, это обзор, а не тема (video=%s)",
+                        count_active_topics_for_video(vid), topic_key, vid,
+                    )
+                    continue
+            except Exception:
+                # Не смогли проверить — не кладём. Пропущенный ролик стоит дешевле, чем
+                # обзор экзамена, выданный человеку как теория по его слабой теме.
+                logging.warning(
+                    "grammar video warmer: проверка «обзор или тема» не прошла topic=%s video=%s",
+                    topic_key, vid, exc_info=True,
+                )
                 continue
             try:
                 upsert_video_recommendation(
@@ -25087,6 +25118,11 @@ async def warm_grammar_video_pool(context: CallbackContext = None, *, source_lan
                 )
         if stored:
             warmed += 1
+        if skipped_generic:
+            logging.info(
+                "grammar video warmer: тема %s — отклонено обзоров: %d",
+                topic_key, skipped_generic,
+            )
         await asyncio.sleep(2)
 
     logging.info(

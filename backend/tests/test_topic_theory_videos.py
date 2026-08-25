@@ -1,27 +1,35 @@
-"""Экран «🎬 Посмотреть видео» под тренажёрами: что он показывает и когда его нет.
+"""Экран «🎬 Посмотреть видео» под тренажёрами: что он показывает и как туда не попадает чужое.
 
-Зачем эти тесты. Пул роликов темы (`bt_3_video_recommendations`) наполняют ДВА разных
-источника, и они не равноценны:
+Решение владельца 25.08.2026: на экране показываются ВСЕ ролики темы — «пусть человек
+листает и выберет то, которое ему нужно». Значит вся ответственность за качество лежит на
+том, что в пуле темы лежит, и её нельзя оставить на «покажем только избранное».
 
-  • администратор руками — /addvideo <тема> <ссылки>;
-  • ночной автопрогрев по запросу YouTube — warm_grammar_video_pool(), он добирает тему
-    до GRAMMAR_VIDEO_WARM_TARGET (по умолчанию 4).
+Что было в живой базе (замер 25.08.2026, 370 активных строк, 74 темы). Пул наполняют
+двое: администратор руками (/addvideo) и ночной автопрогрев поиском по YouTube. Поиск
+почти на любой грамматический запрос возвращает одни и те же популярные обзоры, и они
+осели во всех темах подряд:
 
-Замер по живой базе 25.08.2026, тема adjektivdeklination: 8 активных роликов, из них
-2 отобраны руками 16.07, остальные 6 нашёл автопрогрев 27.07 — и среди них
-«GAST/TELC B1-Prüfung» и «B1 Deutsch komplett erklärt»: обзор экзамена и обзор всей
-грамматики B1, к окончаниям прилагательных отношения не имеющие.
+    «Die komplette B2-Grammatik in 25 Minuten»  — 51 тема
+    «GAST / TELC - B1-Prüfung»                  — 49 тем
+    «B1 Deutsch komplett erklärt»               — 33 темы
+    «DOPPELKONNEKTOREN»                         — 24 темы
+    «100 Passiv-Sätze für B2 Deutsch»           — 20 тем
 
-Экран обещает человеку «рекомендуем посмотреть эти видео». Показать под этим обещанием
-машинную находку не по теме — тот же класс дефекта, что выдуманная грамматика: человек
-идёт учить не то. Поэтому:
+177 размещений, и ни одно — под собственной темой ролика. Человек, попросивший теорию по
+окончаниям прилагательных, получал обзор экзамена TELC. Для языкового приложения это тот
+же класс, что выдуманная грамматика: человек уходит учить не то.
 
-1. на экран попадают ТОЛЬКО отобранные человеком ролики (is_curated);
-2. пометка «отобрано человеком» не снимается, когда тот же ролик позже находит автопоиск;
-3. если отобранного нет ни одного — кнопки в сообщении бота нет вовсе: пустой экран с
-   обещанием «рекомендуем эти видео» это обман, а не «пока пусто».
+Что эти тесты не дают вернуть:
+
+1. Экран снова начинает что-то отбирать сам («три лучших») — тогда часть подходящих
+   роликов человек не увидит, а решение было обратное.
+2. Уборка перестаёт держаться: upsert снова ставит is_active = TRUE, и ночной автопрогрев
+   возвращает выключенные ролики в темы следующей же ночью.
+3. Страж на входе исчезает, и новый ролик-обзор снова расходится по полусотне тем.
+4. Кнопка появляется у темы, где показывать нечего: пустой экран под обещанием
+   «рекомендуем эти видео» — обман, а не «пока пусто».
+5. Сбой базы снова выглядит как «в пуле пусто».
 """
-
 import unittest
 from unittest import mock
 
@@ -38,12 +46,12 @@ class TopicVideoButtonTests(unittest.TestCase):
 
     def test_no_curated_videos_means_no_button(self):
         """Тема без отобранных роликов кнопку не получает."""
-        with mock.patch.object(database, "list_curated_topic_videos", return_value=[]):
+        with mock.patch.object(database, "list_topic_theory_videos", return_value=[]):
             self.assertEqual(bot_3._topic_video_button_row("adjektivdeklination"), [])
 
     def test_curated_videos_give_a_button_with_the_topic_deeplink(self):
         with mock.patch.object(
-            database, "list_curated_topic_videos",
+            database, "list_topic_theory_videos",
             return_value=[{"video_id": "VkyJbx5wr4Y", "video_url": "https://youtu.be/VkyJbx5wr4Y",
                            "video_title": "Adjektivdeklination"}],
         ):
@@ -56,7 +64,7 @@ class TopicVideoButtonTests(unittest.TestCase):
     def test_database_failure_does_not_look_like_an_empty_pool(self):
         """Сбой базы прячется в «кнопки нет», но обязан быть НАЗВАН в логе и не попасть
         в кэш — иначе десять минут все сообщения уходят без кнопки из-за одной осечки."""
-        with mock.patch.object(database, "list_curated_topic_videos", side_effect=RuntimeError("db down")):
+        with mock.patch.object(database, "list_topic_theory_videos", side_effect=RuntimeError("db down")):
             with self.assertLogs(level="ERROR"):
                 self.assertEqual(bot_3._topic_video_button_row("fragen"), [])
         self.assertNotIn("fragen", bot_3._TOPIC_VIDEO_HAS_CACHE)
@@ -66,18 +74,57 @@ class CuratedPoolQueryTests(unittest.TestCase):
     """Правила отбора живут в SQL, поэтому проверяем сам запрос: тест обязан покраснеть,
     если из него уберут условие is_curated или начнут сортировать по лайкам."""
 
-    def test_reader_asks_only_for_curated_active_rows(self):
+    def test_screen_shows_the_whole_topic_pool_own_picks_first(self):
+        """Решение владельца: показываем все по теме. Отбора «лучших» на экране нет,
+        свои (/addvideo) идут первыми."""
         import inspect
-        src = inspect.getsource(database.list_curated_topic_videos)
-        self.assertIn("is_curated = TRUE", src)
+        src = inspect.getsource(database.list_topic_theory_videos)
         self.assertIn("is_active = TRUE", src)
-        self.assertIn("ORDER BY id", src)
+        self.assertIn("ORDER BY is_curated DESC, id", src)
+        self.assertNotIn("is_curated = TRUE", src)   # отбора по «своим» на экране нет
 
     def test_upsert_never_demotes_a_hand_picked_video(self):
         import inspect
         src = inspect.getsource(database.upsert_video_recommendation)
         self.assertIn(
             "is_curated = bt_3_video_recommendations.is_curated OR EXCLUDED.is_curated", src)
+
+    def test_blocked_video_is_not_resurrected_by_the_nightly_warmer(self):
+        """Главная защита уборки. `is_active = TRUE` здесь стояло всегда, поэтому любой
+        выключенный ролик возвращался в тему следующей же ночью — уборка была бы
+        бессмысленной работой."""
+        import inspect
+        src = inspect.getsource(database.upsert_video_recommendation)
+        self.assertIn("is_active = NOT bt_3_video_recommendations.is_blocked", src)
+        self.assertNotIn("is_active = TRUE,", src)
+
+
+class GenericOverviewGuardTests(unittest.TestCase):
+    """Страж на входе: ролик-обзор не становится «теорией по теме»."""
+
+    def test_threshold_matches_the_measured_gap(self):
+        """5 тем — потолок честно тематического ролика в живых данных, 20 — начало обзоров.
+        Число меняется только вместе с новым замером, иначе граница едет на глаз."""
+        self.assertEqual(bot_3._GENERIC_VIDEO_TOPIC_LIMIT, 6)
+
+    def test_warmer_checks_before_it_stores(self):
+        import inspect
+        src = inspect.getsource(bot_3.warm_grammar_video_pool)
+        self.assertIn("count_active_topics_for_video", src)
+        self.assertIn("_GENERIC_VIDEO_TOPIC_LIMIT", src)
+        # Проверка стоит ДО записи в пул, а не после.
+        self.assertLess(src.index("count_active_topics_for_video"),
+                        src.index("upsert_video_recommendation("))
+
+    def test_cleanup_script_uses_the_same_threshold(self):
+        """Уборка накопленного и приёмка нового обязаны считать по одному правилу —
+        иначе ночью вернётся ровно то, что днём убрали."""
+        import io as _io
+        src = _io.open("scripts/video_pool_block_generic_overviews.py", encoding="utf-8").read()
+        self.assertIn("TOPIC_LIMIT = 6", src)
+        # Выключаем, а не удаляем: удалённая строка вернётся первой же находкой поиска.
+        self.assertIn("is_blocked = TRUE", src)
+        self.assertNotIn("DELETE FROM", src)
 
     def test_pool_read_failure_is_not_reported_as_empty(self):
         """`except Exception: return []` здесь стоял и делал сбой базы неотличимым от
