@@ -19,11 +19,23 @@ from backend import backend_server
 from backend.database import build_word_diff_pair_key
 
 
-ENTRY = {
-    "word": "Anzahlung",
-    "entries": [{"headword": "Anzahlung", "pos": "noun", "translations": ["задаток"], "examples": []}],
-    "source": "dictionary_units",
-}
+def _entry(word: str) -> dict:
+    """Статья в том виде, в каком её получает модель: значения, примеры, управление."""
+    return {
+        "word": word,
+        "headword": word,
+        "pos": "noun",
+        "senses": [{"meaning": "задаток", "context": "часть суммы вперёд"}],
+        "examples": [{"de": f"Eine {word} ist fällig.", "ru": "Нужен задаток."}],
+        "constructions": [{"pattern": f"{word} leisten", "case": "Akkusativ",
+                           "example_de": "", "example_ru": ""}],
+        "collocations": [f"eine {word} leisten"],
+        "register": "",
+        "source": "dictionary_units",
+    }
+
+
+ENTRY = _entry("Anzahlung")
 
 FULL_ANSWER = {
     "verdict": [
@@ -110,22 +122,35 @@ def test_unknown_word_is_looked_up_right_now_not_tomorrow(client, monkeypatch):
     _patch_db(monkeypatch)
     monkeypatch.setattr(backend_server, "reserve_free_feature_usage", lambda **k: {"ok": True, "blocked": False})
     monkeypatch.setattr(
-        backend_server, "_word_diff_lookup_live",
+        backend_server, "_word_diff_full_lookup",
         lambda word, studied, explain: looked_up.append(word) or {
-            "word": word,
-            "entries": [{"headword": word, "pos": "noun", "translations": ["предоплата"], "examples": []}],
-            "source": "dictionary_lookup",
+            "word_de": word, "part_of_speech": "noun",
+            "translations": [{"value": "предоплата", "context": ""}],
+            "usage_examples": [{"source": f"Die {word} ist fällig.", "target": "Предоплата к оплате."}],
+            "government_patterns": [], "common_collocations": [f"{word} leisten"],
         },
     )
     monkeypatch.setattr(backend_server, "_fetch_wiktionary_entry", lambda *a, **k: None)
+    monkeypatch.setattr(backend_server, "_word_diff_word_gate_blocks", lambda *a, **k: False)
 
+    # «Anzahlung» у нас есть, и статья полная — её трогать не нужно.
+    # «Vorauszahlung» нет вовсе: вот его и надо разобрать на месте.
     def _fake_entries(word, source_lang="", target_lang=""):
         return [] if word == "Vorauszahlung" else [
-            {"headword": word, "pos": "noun", "translations": ["задаток"], "examples": []}
+            {"headword": word, "pos": "noun", "unit_id": 7, "translations": ["задаток"], "examples": []}
         ]
 
     import backend.dictionary_entries as de
+    import backend.database as db
     monkeypatch.setattr(de, "entries_for_query", _fake_entries)
+    monkeypatch.setattr(db, "get_lex_unit_card", lambda unit_id: {
+        "word_de": "Anzahlung", "part_of_speech": "noun",
+        "translations": [{"value": "задаток", "context": "часть суммы"}],
+        "usage_examples": [{"source": "Eine Anzahlung ist fällig.", "target": "Нужен задаток."}],
+        "government_patterns": [{"pattern": "eine Anzahlung leisten", "case": "Akkusativ",
+                                 "example_source": "", "example_target": ""}],
+        "common_collocations": ["eine Anzahlung leisten"],
+    })
 
     async def _answer(*args, **kwargs):
         return {
@@ -155,9 +180,9 @@ def test_nothing_sends_the_person_to_wait_until_tomorrow():
     import inspect
     from pathlib import Path
 
-    handler = inspect.getsource(backend_server.get_webapp_dictionary_word_diff)
-    assert "ensure_unit" not in handler, "слово снова уходит в ночную очередь вместо разбора"
-    assert "_word_diff_lookup_live" in inspect.getsource(backend_server._word_diff_lookup_sources), (
+    prepare = inspect.getsource(backend_server._word_diff_prepare)
+    assert "ensure_unit" not in prepare, "слово снова уходит в ночную очередь вместо разбора"
+    assert "_word_diff_full_lookup" in inspect.getsource(backend_server._word_diff_lookup_sources), (
         "незнакомое слово больше не разбирается на месте"
     )
 
@@ -286,3 +311,88 @@ def test_validation_drops_words_nobody_asked_about():
     assert [row["word"] for row in diff["chooser"]] == ["Anzahlung"], (
         "в разбор просочилось слово, которого человек не вводил"
     )
+
+
+def test_thin_entry_is_enriched_before_the_comparison(monkeypatch):
+    """Бедная статья достраивается ДО сравнения, иначе модель честно сравнит мусор.
+
+    Замер владельца 25.08.2026: у «abschieben» в слое лежал один перевод «убраться»,
+    и на экран ушло сравнение «удостоверять» против «убраться».
+    """
+    enriched_calls = []
+    saved = []
+
+    import backend.dictionary_entries as de
+    import backend.database as db
+    monkeypatch.setattr(de, "entries_for_query", lambda word, source_lang="", target_lang="": [
+        {"headword": word, "pos": "verb", "unit_id": 42, "translations": ["убраться"], "examples": []}
+    ])
+    monkeypatch.setattr(db, "get_lex_unit_card", lambda unit_id: {
+        "word_de": "abschieben", "translation_ru": "убраться", "part_of_speech": "verb",
+    })
+    monkeypatch.setattr(
+        backend_server, "_word_diff_full_lookup",
+        lambda word, studied, explain: enriched_calls.append(word) or {
+            "word_de": "abschieben", "part_of_speech": "verb",
+            "translations": [{"value": "выдворять", "context": "принудительно из страны"}],
+            "usage_examples": [{"source": "Er wurde abgeschoben.", "target": "Его выдворили."}],
+            "government_patterns": [{"pattern": "jdn. abschieben", "case": "Akkusativ",
+                                     "example_source": "", "example_target": ""}],
+            "common_collocations": ["einen Migranten abschieben"],
+        },
+    )
+    import backend.lex_units as lex
+    monkeypatch.setattr(lex, "save_unit_card_if_richer",
+                        lambda unit_id, card, **k: saved.append(unit_id) or True)
+
+    payload = backend_server._word_diff_lookup_sources("abschieben", "de", "ru")
+
+    assert enriched_calls == ["abschieben"], "бедную статью не достроили"
+    assert saved == [42], "достроенная карточка не сохранена — починка не осталась всем"
+    assert [s["meaning"] for s in payload["senses"]] == ["выдворять"]
+    assert payload["constructions"][0]["pattern"] == "jdn. abschieben"
+
+
+def test_part_of_speech_and_construction_never_come_from_the_model():
+    """Часть речи и управление — данные справочника. Ответ модели по ним отбрасывается."""
+    sources = [dict(_entry("Anzahlung"), pos="noun"), dict(_entry("Vorschuss"), pos="noun")]
+    raw = {
+        "verdict": [{"word": "Anzahlung", "line": "часть суммы"}, {"word": "Vorschuss", "line": "деньги вперёд"}],
+        # Модель пытается сказать своё: и часть речи, и конструкцию.
+        "words": [{"word": "Anzahlung", "meaning": "задаток", "pos": "adverb",
+                   "constructions": [{"pattern": "выдумка"}]}],
+    }
+    diff, reason = backend_server._word_diff_validate(raw, ["Anzahlung", "Vorschuss"], sources)
+    assert reason == ""
+    card = diff["words"][0]
+    assert card["pos"] == "noun", "часть речи взята у модели"
+    assert card["constructions"][0]["pattern"] == "Anzahlung leisten", "управление взято у модели"
+
+
+def test_word_is_shown_as_the_dictionary_writes_it():
+    """На экране слово пишется по-словарному: глагол строчными, а не как ответила модель.
+
+    Скриншот владельца 25.08.2026: глагол стоял «Abschieben» с заглавной буквы.
+    """
+    sources = [dict(_entry("abschieben"), headword="abschieben", pos="verb")]
+    raw = {"verdict": [{"word": "Abschieben", "line": "выдворить из страны"}]}
+    diff, reason = backend_server._word_diff_validate(raw, ["abschieben"], sources)
+    assert reason == ""
+    assert diff["verdict"][0]["word"] == "abschieben"
+
+
+def test_missing_examples_or_collocations_for_a_word_are_counted():
+    """Слово без верного примера или без сочетаний — половина ответа, и это считается.
+
+    Владелец 25.08.2026: «примеры пишутся только для первого слова, для второго я не вижу,
+    как его использовать». Показывать такой разбор можно, молчать о нём — нет.
+    """
+    diff = {
+        "verdict": [{"word": "Anzahlung", "line": "..."}, {"word": "Vorschuss", "line": "..."}],
+        "examples": [{"word": "Anzahlung", "correct": True, "de": "...", "translation": "", "why": ""}],
+        "collocations": [{"word": "Anzahlung", "phrase": "eine Anzahlung leisten", "translation": ""}],
+    }
+    gaps = backend_server._word_diff_gaps(diff, ["Anzahlung", "Vorschuss"])
+    assert "нет верного примера: vorschuss" in gaps
+    assert "нет сочетаний: vorschuss" in gaps
+    assert not [g for g in gaps if "anzahlung" in g], "у первого слова всё есть, а его посчитали"

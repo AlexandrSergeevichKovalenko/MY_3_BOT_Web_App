@@ -1890,3 +1890,28 @@ html[data-scheme="light"] .dq-gt > summary,
   background: var(--dq-accent-wash); color: var(--dq-label);
   font-size: 12.5px; font-weight: 700;
 }
+
+/* Новые блоки сравнения: сопоставимость, пересечение смыслов, конструкция, группы. */
+.wd-compare-note {
+  padding: 10px 12px; border-radius: 12px;
+  font-size: 13.5px; line-height: 1.45;
+  background: var(--dq-chip); border: 1px solid var(--dmps-border, #334155);
+  color: var(--dmps-text-title, #f1f5f9);
+}
+.wd-compare-note.is-none { border-color: var(--dq-gen-f); background: rgba(192, 42, 68, 0.10); }
+.wd-compare-note.is-one_sense { border-color: var(--dq-warn); background: rgba(169, 116, 31, 0.10); }
+
+.wd-construction { display: block; }
+.wd-construction + .wd-construction { margin-top: 4px; }
+.wd-construction-ex { display: block; font-size: 12.5px; color: var(--dmps-text-muted, #94a3b8); }
+
+.wd-ex-group, .wd-colloc-group { display: flex; flex-direction: column; gap: 6px; }
+.wd-ex-group + .wd-ex-group, .wd-colloc-group + .wd-colloc-group { margin-top: 10px; }
+.wd-ex-group-title {
+  font-size: 14px; font-weight: 750;
+  color: var(--dmps-text-title, #f1f5f9);
+}
+
+.wd-colloc-chip { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }
+.wd-colloc-de { font-weight: 700; }
+.wd-colloc-ru { font-size: 11.5px; font-weight: 500; color: var(--dmps-text-muted, #94a3b8); }

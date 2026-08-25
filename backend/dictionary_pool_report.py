@@ -198,12 +198,18 @@ def build_dictionary_pool_report_text(stats: dict[str, Any]) -> str:
                 f"Не хватило источнику слов: <b>{not_found}</b> за неделю — "
                 "они уже поставлены в очередь на карточку, ночная работа их доберёт"
             )
+        gaps = int(misses.get("gaps") or 0)
+        if gaps:
+            lines.append(
+                f"Разборы с пробелами: <b>{gaps}</b> за неделю — слово осталось без "
+                "верного примера или без сочетаний"
+            )
         if incomplete:
             lines.append(
                 f"⚠️ Модель не собрала разбор: <b>{incomplete}</b> раз за неделю — "
                 "это задача на промпт, человек в эти разы остался без ответа"
             )
-        if not not_found and not incomplete:
+        if not not_found and not incomplete and not gaps:
             lines.append("Ни одного промаха за неделю")
     elif diff_stats is None and "word_diff" in stats:
         lines += ["", "⚠️ Состояние вкладки «Отличия» собрать не удалось — смотри лог."]

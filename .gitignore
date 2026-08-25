@@ -16,6 +16,8 @@ parsing.py
 compile_docker_comand.txt
 # Frontend
 frontend/node_modules/
+frontend/node_modules
+node_modules
 frontend/dist/
 frontend/.env*
 
