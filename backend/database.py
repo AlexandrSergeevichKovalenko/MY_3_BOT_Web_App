@@ -54421,6 +54421,17 @@ def ensure_article_sprint_schema() -> None:
                 "ALTER TABLE bt_3_article_sprint_nouns "
                 "ADD COLUMN IF NOT EXISTS retire_reason TEXT NOT NULL DEFAULT '';"
             )
+            # КОГДА У ВЛАДЕЛЬЦА СПРОСИЛИ ПРО РОД. Без этой пометки рассылка не помнила
+            # ничего: очередь собиралась одним запросом «первые N без подтверждённого
+            # рода», поэтому второе нажатие /artikel_review слало ТОТ ЖЕ комплект
+            # карточек заново (замер 25.08.2026 — владелец получил одни и те же слова
+            # дважды подряд). Подтверждение работало верно, ломалась именно повторная
+            # отправка. Теперь спрошенное уходит из очереди и возвращается только через
+            # ARTICLE_REVIEW_REASK_DAYS дней — молча потеряться слово не может.
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_nouns "
+                "ADD COLUMN IF NOT EXISTS review_asked_at TIMESTAMPTZ;"
+            )
             # Стоп-лист: слова, которые набор УЖЕ отверг. Раньше отказ жил только в
             # логе, поэтому каждую ночь модель предлагала тот же «der Föhnsturm», и мы
             # заново платили за вопрос «нужно ли это слово в быту». Теперь отказ
@@ -56389,28 +56400,63 @@ def update_article_sprint_article(row_id: int, new_article: str) -> None:
         conn.commit()
 
 
-def list_unverified_article_nouns(limit: int = 10) -> list[dict]:
+def list_unverified_article_nouns(limit: int = 10, *, reask_days: int = 7) -> list[dict]:
     """Слова, чей род не подтвердил ни Wiktionary, ни правило композита.
 
     Такие строки кладутся с verified=False (см. article_sprint_generator): в тренировку
     они не попадают, чтобы человек не заучил выдуманный моделью артикль. Здесь их
-    забирает разбор в личке — админ ставит род одним тапом, и слово входит в игру."""
+    забирает разбор в личке — админ ставит род одним тапом, и слово входит в игру.
+
+    СПРОШЕННОЕ СЮДА НЕ ПОПАДАЕТ. `review_asked_at` — пометка «карточка уже висит у
+    владельца в чате». Пока она свежая, слово из очереди исключено, иначе повторный
+    вызов /artikel_review шлёт те же карточки вторым комплектом (так и было 25.08.2026).
+    Через `reask_days` дней слово возвращается: неотвеченное не имеет права пропасть
+    навсегда — без рода оно не попадает в игру вообще (решение владельца 25.08.2026).
+    Порядок выдачи — сперва то, что ждёт дольше всех."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT id, theme_key, word, article, COALESCE(meaning_ru,''), COALESCE(source,'') "
+                "SELECT id, theme_key, word, article, COALESCE(meaning_ru,''), COALESCE(source,''), "
+                "       review_asked_at "
                 "FROM bt_3_article_sprint_nouns "
                 "WHERE NOT verified AND NOT retired "
-                "ORDER BY id LIMIT %s;",
-                (max(1, int(limit)),),
+                "  AND (review_asked_at IS NULL "
+                "       OR review_asked_at < NOW() - make_interval(days => %s)) "
+                "ORDER BY review_asked_at NULLS FIRST, id LIMIT %s;",
+                (max(1, int(reask_days)), max(1, int(limit))),
             )
             rows = cursor.fetchall() or []
     return [{"id": int(r[0]), "theme_key": str(r[1]), "word": str(r[2]),
              "draft_article": str(r[3] or ""), "meaning_ru": str(r[4]),
-             "source": str(r[5])} for r in rows]
+             "source": str(r[5]), "asked_at": r[6]} for r in rows]
+
+
+def mark_article_nouns_asked(row_ids) -> int:
+    """Пометить строки как «спрошено сейчас» — карточки ушли владельцу в личку.
+
+    Ставится ПОСЛЕ доставки, а не до неё: пометить недоставленное значит спрятать
+    слово из очереди, ничего не спросив. Возвращает число помеченных строк."""
+    ids = [int(x) for x in (row_ids or [])]
+    if not ids:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_sprint_nouns SET review_asked_at = NOW() "
+                "WHERE id = ANY(%s) AND NOT verified AND NOT retired;",
+                (ids,),
+            )
+            затронуто = int(cursor.rowcount or 0)
+        conn.commit()
+    return затронуто
 
 
 def count_unverified_article_nouns() -> int:
+    """Сколько слов ВСЕГО ждёт решения владельца — и спрошенные, и ещё не спрошенные.
+
+    Это число он видит в ответе на каждый тап («Осталось на подтверждение: N»), и оно
+    обязано означать «столько слов без рода», а не «столько я тебе ещё не показывал»:
+    иначе счётчик обнулялся бы, пока слова стоят вне игры."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -56462,7 +56508,14 @@ def confirm_article_noun(row_id: int, article: str, *, admin_id: int | None = No
 
 
 def skip_article_noun(row_id: int) -> dict | None:
-    """Админ решил, что слово в игре не нужно (двухродовое, мусор) — снимаем с показа."""
+    """Кнопка «🚫 не нужно в игре»: слово редкое или неупотребимое — снимаем с показа.
+
+    ЭТО НЕ НЕСОГЛАСИЕ С АРТИКЛЕМ (владелец, 25.08.2026): «я снял слово не потому, что
+    там некорректный артикль, а потому что оно мне не нужно в тренировке». Поэтому род
+    со строки НЕ стирается и продолжает работать источником для справочной службы —
+    см. развёрнутый вердикт в article_authority._load(). Несогласие с самим написанием
+    (форма множественного числа и прочее негодное) — это другая дверь,
+    retire_bad_word_forms, и она пишет причину в retire_reason."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(

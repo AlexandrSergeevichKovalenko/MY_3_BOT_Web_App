@@ -14305,6 +14305,15 @@ async def handle_artikel_review_command(update: Update, context: CallbackContext
         return
     if res.get("reason") == "nothing_to_review":
         await update.message.reply_text("Все слова с подтверждённым родом — разбирать нечего 🎉")
+    elif res.get("reason") == "already_asked":
+        # Повторное нажатие больше НЕ шлёт тот же комплект карточек заново: 25.08.2026
+        # владелец получил одни и те же слова дважды подряд именно так. Слова, которые
+        # уже спрошены, ждут ответа в тех карточках, что висят выше в этом же чате.
+        сколько = int(res.get("left") or 0)
+        await update.message.reply_text(
+            f"Новых слов нет. {сколько} уже отправлены и ждут твоего тапа — "
+            f"карточки с кнопками висят выше в этом чате.\n"
+            f"Если ответа не будет, слова вернутся напоминанием через неделю.")
     elif not res.get("ok"):
         await update.message.reply_text(f"Не отправилось: {res.get('error') or 'неизвестно'}")
 

@@ -27,6 +27,10 @@ _HTTP_TIMEOUT = 15
 BATCH = max(1, int((os.getenv("ARTICLE_REVIEW_BATCH") or "8").strip() or "8"))
 # Раз в сколько дней спрашивать. Слишком часто — раздражает, слишком редко — слова стоят.
 EVERY_DAYS = max(1, int((os.getenv("ARTICLE_REVIEW_EVERY_DAYS") or "3").strip() or "3"))
+# Через сколько дней вернуть в очередь слово, на которое владелец не ответил.
+# Решение владельца 25.08.2026: «напомнить через неделю». Ноль здесь недопустим —
+# неотвеченное слово без рода не попадает в игру вообще, и потеряться оно не имеет права.
+REASK_DAYS = max(1, int((os.getenv("ARTICLE_REVIEW_REASK_DAYS") or "7").strip() or "7"))
 
 
 def _tz_name() -> str:
@@ -58,6 +62,11 @@ def _word_text(item: dict, *, index: int, total: int, left: int) -> str:
     lines.append("Род не подтвердили ни Wiktionary, ни правило композита.")
     if draft:
         lines.append(f"Модель предполагала «{draft}» — но это только догадка.")
+    asked = item.get("asked_at")
+    if asked:
+        # Повтор виден словами: иначе залежавшееся слово неотличимо от нового, и
+        # владелец не понимает, почему одно и то же приходит снова (25.08.2026).
+        lines.append(f"⏳ Спрашиваю повторно — ждёт с {asked.strftime('%d.%m')}.")
     lines.append("")
     lines.append(f"<i>{index} из {total} · всего ждёт: {left}</i>")
     return "\n".join(lines)
@@ -69,6 +78,7 @@ def send_article_review_dm(*, force: bool = False) -> dict[str, Any]:
         get_admin_telegram_ids,
         list_unverified_article_nouns,
         count_unverified_article_nouns,
+        mark_article_nouns_asked,
         claim_scheduler_run_guard,
         finish_scheduler_run_guard,
     )
@@ -87,7 +97,19 @@ def send_article_review_dm(*, force: bool = False) -> dict[str, Any]:
             return {"ok": False, "error": "no_token_or_admins"}
 
         left = count_unverified_article_nouns()
-        items = list_unverified_article_nouns(limit=BATCH)
+        # Спрошенное в очередь не попадает: его карточки уже висят у владельца в чате.
+        items = list_unverified_article_nouns(limit=BATCH, reask_days=REASK_DAYS)
+        if not items and left:
+            # Слова есть, но все уже спрошены. Это НЕ «разбирать нечего»: молчать здесь
+            # значит соврать, что очередь пуста. Говорим числом, сколько висит.
+            # Захваченный run-guard закрываем ЗДЕСЬ ЖЕ, иначе он остался бы 'running'
+            # и следующий запуск в этом же окне не состоялся бы вовсе.
+            if not force:
+                finish_scheduler_run_guard(job_key=JOB_KEY, run_period=run_period,
+                                           target_scope="global", status="completed",
+                                           metadata={"sent": 0, "reason": "already_asked",
+                                                     "left": left})
+            return {"ok": True, "sent": 0, "reason": "already_asked", "left": left}
         if not items:
             if not force:
                 finish_scheduler_run_guard(job_key=JOB_KEY, run_period=run_period,
@@ -129,6 +151,11 @@ def send_article_review_dm(*, force: bool = False) -> dict[str, Any]:
                     sent += 1
             except Exception:
                 logging.warning("article review DM failed uid=%s", uid, exc_info=True)
+        if sent:
+            # Пометка ставится ПОСЛЕ доставки. Пометить недоставленное значило бы
+            # спрятать слово из очереди, ничего не спросив, — оно осталось бы без рода
+            # и вне игры навсегда, и никто бы этого не увидел.
+            mark_article_nouns_asked([int(i["id"]) for i in items])
         if not force:
             finish_scheduler_run_guard(job_key=JOB_KEY, run_period=run_period,
                                        target_scope="global", status="completed",
