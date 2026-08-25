@@ -32093,8 +32093,29 @@ def _attach_pool_articles(items: list) -> None:
         logging.warning("общий словарь: часть речи для заголовков не прочиталась",
                         exc_info=True)
         return
+    # Имена собственные: города и страны в немецком стоят БЕЗ артикля («Athen ist
+    # schön», не «das Athen»). Справочник склонений про них отвечает — у него есть
+    # таблица, — но вопрос к нему неверен. Разобранные с владельцем поимённо лежат
+    # отметкой в таблице сплошного прохода; читаем её, а не гадаем по признакам.
+    proper_nouns = set()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT lower(u.lemma) FROM bt_3_field_checks f "
+                    "JOIN bt_3_lex_units u ON u.id = f.unit_id "
+                    "WHERE f.field = 'gender' AND f.verdict = %s",
+                    ("имя собственное — артикль не ставится",),
+                )
+                proper_nouns = {row[0] for row in cursor.fetchall()}
+    except Exception:
+        logging.warning("общий словарь: список имён собственных не прочитался",
+                        exc_info=True)
+
     unresolved = 0
     for word, article in confirmed.items():
+        if word.casefold() in proper_nouns:
+            continue
         pos, pos_source, gender = known.get(word.casefold(), (None, None, None))
         if str(pos or "").strip().lower() not in _POOL_ARTICLE_ALLOWED_POS:
             continue
