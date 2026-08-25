@@ -30028,11 +30028,31 @@ def get_next_new_srs_candidate(
             "source_lang": row[7],
             "target_lang": row[8],
         }
+    def _with_unit_content(found: dict | None, cur=None) -> dict | None:
+        """Разбор берём С ЕДИНИЦЫ — на НОВОЙ карточке ровно так же, как на повторении.
+
+        ЗАЧЕМ. У повторения склейка стояла (см. get_next_due_srs_card), а у новой
+        карточки — нет, и человек на первом же показе учил слово по своей старой копии.
+        Замер 25.08.2026: из 544 слов, которым накануне переписали примеры, копия в
+        карточке владельца разошлась с единицей у 540. То есть в словаре он видел новый
+        пример, а на новой карточке — прежний, а иногда и русский текст в немецком поле.
+        Это не «две версии одного», а два разных ответа одному человеку на один вопрос.
+
+        Функция та же, что у остальных раздатчиков; её собственное описание прямо
+        говорит «одно место на всех — тренажёры, повторения, подсказка». Здесь её просто
+        забыли позвать. Своей копии правила не завожу: второе место разошлось бы с первым.
+
+        Курсор передаём дальше, если он есть: вызывающий уже держит транзакцию, и второе
+        соединение из пула здесь — известная ловушка проекта."""
+        if isinstance(found, dict) and isinstance(found.get("response_json"), dict):
+            attach_unit_content_to_cards([found], json_key="response_json", cursor=cur)
+        return found
+
     if cursor is not None:
-        return _fetch(cursor)
+        return _with_unit_content(_fetch(cursor), cursor)
     with get_db_connection_context() as conn:
         with conn.cursor() as own_cursor:
-            return _fetch(own_cursor)
+            return _with_unit_content(_fetch(own_cursor), own_cursor)
 
 
 # Загляд в подписку стоит ~63 мс (замер на проде), поэтому держим лучший кандидат в
