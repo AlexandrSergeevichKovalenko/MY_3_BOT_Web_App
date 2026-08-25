@@ -20,16 +20,20 @@ from backend.database import build_word_diff_pair_key
 
 
 def _entry(word: str) -> dict:
-    """Статья в том виде, в каком её получает модель: значения, примеры, управление."""
+    """Готовая статья: значения с НАШИМИ номерами, конструкции и сочетания с ярлыками."""
     return {
         "word": word,
         "headword": word,
         "pos": "noun",
-        "senses": [{"meaning": "задаток", "context": "часть суммы вперёд"}],
+        "senses": [{"id": "s1", "meaning": "задаток", "context": "часть суммы вперёд"}],
+        "reflexivity": {},
+        "constructions": [{"id": "c1", "pattern": f"{word} leisten", "case": "Akkusativ",
+                           "obligatory": True, "sense_id": "s1",
+                           "example_de": f"Eine {word} leisten.", "example_ru": "Внести задаток."}],
+        "collocations": [{"id": "l1", "phrase": f"eine {word} leisten",
+                          "translation": "внести задаток", "sense_id": "s1"}],
+        "word_family": [],
         "examples": [{"de": f"Eine {word} ist fällig.", "ru": "Нужен задаток."}],
-        "constructions": [{"pattern": f"{word} leisten", "case": "Akkusativ",
-                           "example_de": "", "example_ru": ""}],
-        "collocations": [f"eine {word} leisten"],
         "register": "",
         "source": "dictionary_units",
     }
@@ -60,6 +64,8 @@ def client(monkeypatch):
         backend_server, "_parse_telegram_init_data", lambda *a, **k: {"user": {"id": 777}}
     )
     monkeypatch.setattr(backend_server, "_get_user_language_pair", lambda uid: ("ru", "de", {}))
+    # Сбор «полноты слова» — это обращение к модели и к базе. В тестах он подменён всегда.
+    monkeypatch.setattr(backend_server, "_word_diff_usage", lambda *a, **k: {})
     return backend_server.app.test_client()
 
 
@@ -79,6 +85,9 @@ def _patch_db(monkeypatch, **overrides):
     """Подменяем работу с базой: тесты не имеют права ходить в боевую базу."""
     from backend import database
     defaults = {
+        "get_word_usage": lambda *a, **k: {},
+        "save_word_usage": lambda *a, **k: {},
+        "get_lex_unit_card": lambda *a, **k: None,
         "get_word_diff_card": lambda *a, **k: None,
         "save_word_diff_card": lambda *a, **k: None,
         "record_word_diff_open": lambda *a, **k: None,
@@ -251,10 +260,10 @@ def test_stream_serves_cache_as_plain_json_without_touching_the_model(client, mo
         "/api/webapp/dictionary/diff/stream",
         json={"initData": "signed", "words": ["Miete", "Pacht"]},
     )
+    body = resp.get_data(as_text=True)
 
     assert resp.status_code == 200
-    assert "application/json" in resp.headers.get("Content-Type", "")
-    assert resp.get_json()["from_cache"] is True
+    assert "event: done" in body and '"from_cache": true' in body.replace("True", "true")
 
 
 def test_stream_never_stores_half_an_answer(client, monkeypatch):
@@ -344,13 +353,15 @@ def test_thin_entry_is_enriched_before_the_comparison(monkeypatch):
     import backend.lex_units as lex
     monkeypatch.setattr(lex, "save_unit_card_if_richer",
                         lambda unit_id, card, **k: saved.append(unit_id) or True)
+    # Сбор «полноты слова» — отдельная работа с моделью и базой; здесь он не проверяется.
+    monkeypatch.setattr(backend_server, "_word_diff_usage", lambda *a, **k: {})
 
-    payload = backend_server._word_diff_lookup_sources("abschieben", "de", "ru")
+    article = backend_server._word_diff_lookup_sources("abschieben", "de", "ru")
 
     assert enriched_calls == ["abschieben"], "бедную статью не достроили"
     assert saved == [42], "достроенная карточка не сохранена — починка не осталась всем"
-    assert [s["meaning"] for s in payload["senses"]] == ["выдворять"]
-    assert payload["constructions"][0]["pattern"] == "jdn. abschieben"
+    assert [x["meaning"] for x in article["senses"]] == ["выдворять"]
+    assert article["constructions"][0]["pattern"] == "jdn. abschieben"
 
 
 def test_part_of_speech_and_construction_never_come_from_the_model():
@@ -358,15 +369,16 @@ def test_part_of_speech_and_construction_never_come_from_the_model():
     sources = [dict(_entry("Anzahlung"), pos="noun"), dict(_entry("Vorschuss"), pos="noun")]
     raw = {
         "verdict": [{"word": "Anzahlung", "line": "часть суммы"}, {"word": "Vorschuss", "line": "деньги вперёд"}],
-        # Модель пытается сказать своё: и часть речи, и конструкцию.
-        "words": [{"word": "Anzahlung", "meaning": "задаток", "pos": "adverb",
-                   "constructions": [{"pattern": "выдумка"}]}],
+        # Модель пытается сказать своё: и часть речи, и конструкцию, и ярлык чужой.
+        "words": [{"word": "Anzahlung", "meaning": "задаток", "pos": "adverb"}],
+        "highlight": {"constructions": ["Anzahlung:c999"]},
     }
     diff, reason = backend_server._word_diff_validate(raw, ["Anzahlung", "Vorschuss"], sources)
     assert reason == ""
-    card = diff["words"][0]
-    assert card["pos"] == "noun", "часть речи взята у модели"
-    assert card["constructions"][0]["pattern"] == "Anzahlung leisten", "управление взято у модели"
+    assert diff["words"][0]["pos"] == "noun", "часть речи взята у модели"
+    patterns = [c["pattern"] for c in diff["constructions"]]
+    assert "Anzahlung leisten" in patterns, "наша конструкция не показана"
+    assert all("выдумка" not in p for p in patterns), "в разбор просочилась конструкция от модели"
 
 
 def test_word_is_shown_as_the_dictionary_writes_it():
@@ -389,11 +401,12 @@ def test_missing_examples_or_collocations_for_a_word_are_counted():
     """
     diff = {
         "verdict": [{"word": "Anzahlung", "line": "..."}, {"word": "Vorschuss", "line": "..."}],
-        "examples": [{"word": "Anzahlung", "correct": True, "de": "...", "translation": "", "why": ""}],
+        "examples": [{"word": "Anzahlung", "de": "...", "translation": "..."}],
         "collocations": [{"word": "Anzahlung", "phrase": "eine Anzahlung leisten", "translation": ""}],
+        "constructions": [{"word": "Anzahlung", "pattern": "Anzahlung leisten"}],
     }
     gaps = backend_server._word_diff_gaps(diff, ["Anzahlung", "Vorschuss"])
-    assert "нет верного примера: vorschuss" in gaps
+    assert "нет примера: vorschuss" in gaps
     assert "нет сочетаний: vorschuss" in gaps
     assert not [g for g in gaps if "anzahlung" in g], "у первого слова всё есть, а его посчитали"
 
