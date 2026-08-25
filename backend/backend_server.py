@@ -21328,7 +21328,7 @@ def _get_or_create_voice_sample_url(tier: str, lang_short: str = "de") -> str | 
 
 def run_public_library_audio_pregen(
     *, target_lang: str = "de", max_pages: int | None = None, dry_run: bool = False,
-    trigger: str = "job",
+    trigger: str = "job", document_id: int | None = None,
 ) -> dict:
     """Pre-generate shared audio for the public-domain library in the Standard voice,
     spending only what the separate Standard free bucket allows (× the safety
@@ -21355,6 +21355,14 @@ def run_public_library_audio_pregen(
         stopped = "no_budget"
 
     docs = list_public_library_documents(target_lang=target_lang) if stopped is None else []
+    if document_id is not None:
+        # Прогрев ОДНОЙ книги (переозвучка после перезаливки). Нормализация текста,
+        # голос, темп и ключ кеша остаются те же самые — иначе прогретое не совпадёт
+        # с тем, что просит читалка. Пустой список здесь — не «нечего делать», а
+        # ошибка вызова: такой книги в публичной библиотеке нет.
+        docs = [d for d in docs if int(d["id"]) == int(document_id)]
+        if stopped is None and not docs:
+            raise ValueError(f"public library document {document_id} not found (target_lang={target_lang})")
     for doc in docs:
         if stopped:
             break
@@ -21437,6 +21445,7 @@ def run_public_library_audio_pregen(
     summary = {
         "ok": True,
         "target_lang": target_lang,
+        "document_id": int(document_id) if document_id is not None else None,
         "budget_chars": budget_chars,
         "spent_chars": spent_chars,
         "generated_pages": generated_pages,

@@ -37604,6 +37604,37 @@ _PUBLIC_LIBRARY_SELECT_COLS = """
 """
 
 
+def _purge_book_audio_objects_after_repagination(document_id: int, owner_id: int) -> int:
+    """Удаляет mp3 книги в R2 ПОСЛЕ того, как её строки озвучки стёрты пересборкой страниц.
+
+    Зачем: озвучка хранится по страницам, и ключ объекта содержит отпечаток текста
+    страницы (см. _reader_audio_page_text_and_hash). Перевёрстка меняет границы страниц,
+    поэтому старые mp3 не подойдут ни к одной новой странице. Строки из
+    bt_3_reader_audio_pages при этом удаляются — а файлы раньше оставались в R2 НАВСЕГДА:
+    недельная уборка их не видит (она удаляет файлы УДАЛЁННЫХ книг, а книга жива).
+    Замер 25.08.2026: у «Märchen» так накопилось 278 mp3 на 325.6 МБ.
+
+    Почему удалять безопасно: страницу читалка ищет ТОЛЬКО через строку в базе
+    (get_cached_reader_audio_page); прямого обращения к объекту по ключу в этом пути нет.
+    Нет строки — объект недостижим по определению, это мусор, а не кеш.
+
+    Вызывать ТОЛЬКО после commit удаления строк: иначе откат оставит строки, у которых
+    файла уже нет. Ошибку R2 не глушим в тишину — пишем WARNING с номером книги, чтобы
+    остаток было видно в логах, и возвращаем 0."""
+    from backend.r2_storage import r2_delete_prefix
+
+    prefix = f"reader-audio-pages/{int(owner_id)}/{int(document_id)}/"
+    try:
+        return int(r2_delete_prefix(prefix))
+    except Exception:
+        logging.warning(
+            "перезаливка книги id=%s: НЕ удалось убрать осиротевшую озвучку из R2 (%s) — "
+            "файлы остались мусором, строк озвучки в базе больше нет",
+            document_id, prefix, exc_info=True,
+        )
+        return 0
+
+
 def upsert_public_library_document(
     *,
     slug: str,
@@ -37688,10 +37719,18 @@ def upsert_public_library_document(
                         "DELETE FROM bt_3_reader_audio_pages WHERE document_id = %s;",
                         (int(existing[0]),),
                     )
+                    removed_rows = cursor.rowcount
+                    # Строки убраны — фиксируем ДО удаления файлов, чтобы откат
+                    # транзакции не оставил строку без её mp3.
+                    conn.commit()
+                    removed_objects = _purge_book_audio_objects_after_repagination(
+                        int(existing[0]), owner_id
+                    )
                     logging.info(
                         "public library: %s — текст прежний, страницы пересобраны (%s → %s), "
-                        "снято озвученных страниц: %s",
-                        resolved_slug, len(stored_pages), len(resolved_pages), cursor.rowcount,
+                        "снято озвученных страниц: %s, удалено осиротевших mp3 из R2: %s",
+                        resolved_slug, len(stored_pages), len(resolved_pages),
+                        removed_rows, removed_objects,
                     )
                 return _public_library_row_to_dict(refreshed_row)
             if existing:
@@ -37730,10 +37769,17 @@ def upsert_public_library_document(
                     "DELETE FROM bt_3_reader_audio_pages WHERE document_id = %s;",
                     (int(existing[0]),),
                 )
+                removed_rows = cursor.rowcount
+                # Строки убраны — фиксируем ДО удаления файлов (см. ветку «страницы
+                # пересобраны»): иначе откат оставит строку, у которой mp3 уже нет.
+                conn.commit()
+                removed_objects = _purge_book_audio_objects_after_repagination(
+                    int(existing[0]), owner_id
+                )
                 logging.info(
                     "public library: книга %s обновлена НА МЕСТЕ (id=%s), закладки сохранены, "
-                    "снято озвученных страниц: %s",
-                    resolved_slug, existing[0], cursor.rowcount,
+                    "снято озвученных страниц: %s, удалено осиротевших mp3 из R2: %s",
+                    resolved_slug, existing[0], removed_rows, removed_objects,
                 )
                 return _public_library_row_to_dict(updated_row)
             cursor.execute(
