@@ -30725,6 +30725,46 @@ def record_word_diff_miss(user_id: int, words: list, reason: str, detail: str = 
         logging.exception("word_diff: не удалось записать промах %r", reason)
 
 
+def word_diff_stats(days: int = 7) -> dict:
+    """Состояние вкладки «Отличия» одним запросом — строка в утреннем отчёте словаря.
+
+    Молчащий механизм неотличим от сломанного, поэтому число промахов владелец видит
+    сам, без команды: `not_found` — слов не хватило источнику (они уже поставлены в
+    очередь на карточку), `incomplete` — модель вернула ответ без обязательного блока.
+    """
+    ensure_word_diff_schema()
+    window = str(max(1, int(days or 7)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*),
+                       COALESCE(SUM(open_count), 0),
+                       COUNT(*) FILTER (WHERE created_at >= NOW() - (%s || ' days')::interval)
+                FROM bt_3_word_diff_cards;
+                """,
+                (window,),
+            )
+            row = cursor.fetchone() or (0, 0, 0)
+            cursor.execute(
+                """
+                SELECT reason, COUNT(*)
+                FROM bt_3_word_diff_misses
+                WHERE created_at >= NOW() - (%s || ' days')::interval
+                GROUP BY reason;
+                """,
+                (window,),
+            )
+            misses = {str(r[0]): int(r[1]) for r in (cursor.fetchall() or [])}
+    return {
+        "pairs_total": int(row[0] or 0),
+        "opens_total": int(row[1] or 0),
+        "pairs_new": int(row[2] or 0),
+        "misses": misses,
+        "days": int(window),
+    }
+
+
 def count_word_diff_misses(days: int = 7) -> dict:
     """Сколько раз за N дней не смогли ответить, по причинам. Для недельного отчёта."""
     ensure_word_diff_schema()
