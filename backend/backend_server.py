@@ -398,6 +398,7 @@ from backend.openai_manager import (
     run_audio_sentence_grammar_explain_multilang,
     run_feel_word,
     run_feel_word_multilang,
+    run_word_diff_multilang,
     run_enrich_word,
     run_enrich_word_multilang,
     run_theory_generation,
@@ -42064,6 +42065,450 @@ def get_webapp_dictionary_feel():
     )
 
     return jsonify({"ok": True, "feel_text": str(feel_text or "").strip()})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Вкладка «Отличия»: чем похожие слова отличаются друг от друга.
+#
+# Порядок жёсткий и менять его нельзя:
+#   1) КАЖДОЕ слово ищется в источниках (слой единиц → Wiktionary). Не нашли —
+#      останавливаемся и говорим человеку. Модель не зовётся, лимит не тикает.
+#   2) Готовый разбор пары отдаётся из общего кеша. Это бесплатно для нас и мгновенно
+#      для человека, поэтому дневную единицу за это НЕ берём.
+#   3) Только на настоящем промахе кеша резервируется дневная единица и зовётся модель,
+#      и модель получает НАЙДЕННЫЕ СТАТЬИ, а не голые слова.
+#   4) Ответ без обязательного блока не показывается и попадает в счётчик промахов
+#      (bt_3_word_diff_misses) — пустой экран без счётчика неотличим от рабочей функции.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_WORD_DIFF_MIN_WORDS = 2
+_WORD_DIFF_MAX_WORDS = 4
+
+
+def _word_diff_normalize_words(raw_words) -> list[str]:
+    """Слова из формы: чистим пробелы, снимаем повторы, держим порядок и потолок в 4."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in (raw_words if isinstance(raw_words, list) else []):
+        text = " ".join(str(raw or "").split())
+        if not text or len(text) > 64:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= _WORD_DIFF_MAX_WORDS:
+            break
+    return out
+
+
+def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -> dict | None:
+    """Словарные статьи слова. None — «этого слова мы не знаем», и это НЕ ошибка.
+
+    Порядок источников тот же, что во всём словаре: сначала наш слой единиц
+    (`bt_3_dictionary_entries` через entries_for_query), затем Wiktionary. Догадок здесь
+    нет ни одной: не нашли — значит не нашли.
+    """
+    text = " ".join(str(word or "").split())
+    if not text:
+        return None
+    try:
+        from backend.dictionary_entries import entries_for_query
+        entries = entries_for_query(text, source_lang=studied_lang, target_lang=explain_lang)
+    except Exception:
+        logging.exception("word_diff: слой единиц не ответил на %r", text)
+        entries = []
+    if entries:
+        packed = []
+        for entry in entries[:3]:
+            packed.append({
+                "headword": entry.get("headword") or text,
+                "pos": entry.get("pos") or "",
+                "translations": list(entry.get("translations") or [])[:6],
+                "examples": [
+                    ex.get("source") for ex in (entry.get("examples") or [])
+                    if isinstance(ex, dict) and ex.get("source")
+                ][:2],
+            })
+        return {"word": text, "entries": packed, "source": "dictionary_units"}
+
+    if str(studied_lang or "").strip().lower() == "de":
+        wiki = _fetch_wiktionary_entry(text)
+        if isinstance(wiki, dict) and (wiki.get("glosses_en") or []):
+            return {
+                "word": text,
+                "entries": [{
+                    "headword": text,
+                    "pos": wiki.get("pos") or "",
+                    "glosses_en": list(wiki.get("glosses_en") or [])[:6],
+                    "examples": list(wiki.get("examples_de") or [])[:3],
+                }],
+                "source": "wiktionary",
+            }
+    return None
+
+
+def _word_diff_queue_for_sources(word: str, studied_lang: str) -> bool:
+    """Слова нет в источниках → ставим его в общий слой, чтобы источник ДОСТРОИЛСЯ.
+
+    Пустой ответ «не нашли» — незакрытая задача, а не решение. Здесь она закрывается
+    сама: `ensure_unit` — та самая дверь единицы (с проверкой «это вообще слово» и
+    правкой регистра заголовка), а ночная работа в 03:10 достраивает карточку тем
+    единицам, у которых её нет. К следующему дню сравнение уже работает.
+
+    В момент запроса это не стоит ни денег, ни ожидания: дверь в сеть не ходит.
+    Мусор («Abschiebu») дверь не пропустит, а трижды не собравшееся слово уводит в
+    карантин уже существующий механизм.
+    """
+    text = " ".join(str(word or "").split())
+    if not text:
+        return False
+    try:
+        from backend.lex_units import ensure_unit
+        return bool(ensure_unit(text, str(studied_lang or "de").strip().lower()))
+    except Exception:
+        # Молчать нельзя: неудача здесь означает, что источник НЕ достраивается и
+        # человек будет получать «не нашли» бесконечно.
+        logging.exception("word_diff: не удалось поставить %r в очередь на карточку", text)
+        return False
+
+
+def _word_diff_spelling_suggestion(word: str, studied_lang: str, explain_lang: str) -> str:
+    """Подсказка написания, ПОДТВЕРЖДЁННАЯ источником, — иначе пустая строка.
+
+    Кандидат («Vorschuß» → «Vorschuss», дореформенное написание) не показывается сам по
+    себе: он сначала ищется в тех же источниках, и человек видит его, только если слово
+    там ЕСТЬ. Механической замены букв, выдаваемой за ответ, здесь нет.
+    """
+    text = " ".join(str(word or "").split())
+    if not text:
+        return ""
+    candidates = []
+    if "ß" in text:
+        candidates.append(text.replace("ß", "ss"))
+    if "ss" in text.casefold():
+        candidates.append(text.replace("ss", "ß").replace("SS", "ß"))
+    if text[:1].islower():
+        candidates.append(text[:1].upper() + text[1:])
+    for candidate in candidates:
+        if candidate == text:
+            continue
+        if _word_diff_lookup_sources(candidate, studied_lang, explain_lang):
+            return candidate
+    return ""
+
+
+def _word_diff_clean_text(value, limit: int = 400) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _word_diff_validate(raw: dict, words: list[str]) -> tuple[dict, str]:
+    """Ответ модели → то, что можно показать. Второе значение — причина отказа ('' если всё цело).
+
+    Обязателен ровно один блок — «Главное»: по строке на каждое слово. Без него экрана
+    нет вообще, и подставлять вместо него нечего. Остальные блоки необязательны: не
+    пришёл блок — блока на экране не будет, но выдумывать его мы не станем.
+    """
+    if not isinstance(raw, dict) or not raw:
+        return {}, "empty"
+
+    wanted = {w.casefold(): w for w in words}
+
+    verdict = []
+    seen_words = set()
+    for item in (raw.get("verdict") or []):
+        if not isinstance(item, dict):
+            continue
+        word_key = _word_diff_clean_text(item.get("word"), 64).casefold()
+        line = _word_diff_clean_text(item.get("line"), 240)
+        if word_key not in wanted or not line:
+            continue
+        if word_key in seen_words:
+            continue
+        seen_words.add(word_key)
+        verdict.append({"word": wanted[word_key], "line": line})
+    if len(seen_words) != len(wanted):
+        return {}, "incomplete"
+
+    interchangeable = {}
+    raw_inter = raw.get("interchangeable")
+    if isinstance(raw_inter, dict):
+        value = _word_diff_clean_text(raw_inter.get("value"), 16).lower()
+        if value in {"no", "sometimes", "yes"}:
+            interchangeable = {"value": value, "note": _word_diff_clean_text(raw_inter.get("note"), 240)}
+
+    word_cards = []
+    for item in (raw.get("words") or []):
+        if not isinstance(item, dict):
+            continue
+        word_key = _word_diff_clean_text(item.get("word"), 64).casefold()
+        if word_key not in wanted:
+            continue
+        word_cards.append({
+            "word": wanted[word_key],
+            "meaning": _word_diff_clean_text(item.get("meaning"), 160),
+            "when": _word_diff_clean_text(item.get("when"), 200),
+            "where": _word_diff_clean_text(item.get("where"), 200),
+            "partners": [
+                _word_diff_clean_text(x, 40) for x in (item.get("partners") or [])
+                if _word_diff_clean_text(x, 40)
+            ][:6],
+        })
+
+    examples = []
+    for item in (raw.get("examples") or []):
+        if not isinstance(item, dict):
+            continue
+        de = _word_diff_clean_text(item.get("de"), 240)
+        if not de:
+            continue
+        word_key = _word_diff_clean_text(item.get("word"), 64).casefold()
+        examples.append({
+            "word": wanted.get(word_key, ""),
+            "correct": bool(item.get("correct")),
+            "de": de,
+            "translation": _word_diff_clean_text(item.get("translation"), 240),
+            "why": _word_diff_clean_text(item.get("why"), 240),
+        })
+
+    chooser = []
+    for item in (raw.get("chooser") or []):
+        if not isinstance(item, dict):
+            continue
+        word_key = _word_diff_clean_text(item.get("word"), 64).casefold()
+        situation = _word_diff_clean_text(item.get("situation"), 160)
+        if word_key not in wanted or not situation:
+            continue
+        chooser.append({"situation": situation, "word": wanted[word_key]})
+
+    collocations = []
+    for item in (raw.get("collocations") or []):
+        if not isinstance(item, dict):
+            continue
+        phrase = _word_diff_clean_text(item.get("phrase"), 120)
+        if not phrase:
+            continue
+        word_key = _word_diff_clean_text(item.get("word"), 64).casefold()
+        collocations.append({
+            "word": wanted.get(word_key, ""),
+            "phrase": phrase,
+            "translation": _word_diff_clean_text(item.get("translation"), 160),
+        })
+
+    return {
+        "verdict": verdict,
+        "interchangeable": interchangeable,
+        "words": word_cards,
+        "examples": examples[:8],
+        "chooser": chooser,
+        "trap": _word_diff_clean_text(raw.get("trap"), 400),
+        "collocations": collocations[:8],
+    }, ""
+
+
+@app.route("/api/webapp/dictionary/diff", methods=["POST"])
+def get_webapp_dictionary_word_diff():
+    """Разбор отличий между двумя-четырьмя похожими словами."""
+    from backend.database import (
+        build_word_diff_pair_key,
+        get_word_diff_card,
+        save_word_diff_card,
+        record_word_diff_open,
+        record_word_diff_miss,
+    )
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+
+    words = _word_diff_normalize_words(payload.get("words"))
+    if len(words) < _WORD_DIFF_MIN_WORDS:
+        return jsonify({"error": "Впишите хотя бы два слова, которые хотите сравнить."}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    studied_lang = str(target_lang or "de").strip().lower()
+    explain_lang = str(source_lang or "ru").strip().lower()
+
+    # 1. Источники. Слова, которых нет, останавливают разбор — модель не зовётся.
+    resolved: list[dict] = []
+    missing: list[dict] = []
+    for word in words:
+        found = _word_diff_lookup_sources(word, studied_lang, explain_lang)
+        if found:
+            resolved.append(found)
+        else:
+            suggestion = _word_diff_spelling_suggestion(word, studied_lang, explain_lang)
+            missing.append({
+                "word": word,
+                "suggestion": suggestion,
+                # Похожее написание нашлось — значит человеку надо просто исправить, и
+                # заводить кривое написание в словарь незачем.
+                "queued": False if suggestion else _word_diff_queue_for_sources(word, studied_lang),
+            })
+    if missing:
+        record_word_diff_miss(
+            int(user_id), [m["word"] for m in missing], "not_found",
+            detail=f"{studied_lang}->{explain_lang}",
+        )
+        return jsonify({"ok": False, "reason": "not_found", "missing": missing}), 200
+
+    pair_key = build_word_diff_pair_key(words, studied_lang, explain_lang)
+
+    # 2. Готовая пара — из общего кеша. Дневная единица за это не берётся.
+    cached = get_word_diff_card(pair_key)
+    if cached:
+        record_word_diff_open(int(user_id), pair_key, cached.get("words") or words)
+        return jsonify({
+            "ok": True,
+            "pair_key": pair_key,
+            "words": cached.get("words") or words,
+            "diff": cached.get("payload") or {},
+            "sources": cached.get("sources") or {},
+            "from_cache": True,
+            "created_at": cached.get("created_at"),
+        })
+
+    # 3. Настоящий промах кеша — только теперь платим и считаем.
+    reservation = reserve_free_feature_usage(
+        user_id=int(user_id),
+        feature_key="word_diff_daily",
+        idempotency_key=f"worddiff:{int(user_id)}:{hashlib.sha1(pair_key.encode('utf-8')).hexdigest()[:24]}",
+        source_lang=explain_lang,
+        target_lang=studied_lang,
+        metadata={"origin": "webapp_word_diff", "words": words},
+        tz="Europe/Vienna",
+    )
+    if reservation.get("blocked"):
+        error_payload = reservation.get("error")
+        if not isinstance(error_payload, dict):
+            error_payload = build_free_limit_error(
+                "word_diff_daily", used=reservation.get("used") or 0, tz="Europe/Vienna"
+            )
+        return jsonify(error_payload), 429
+
+    try:
+        from backend.openai_manager import set_llm_billing_user
+        set_llm_billing_user(int(user_id))
+        try:
+            raw_result = asyncio.run(
+                run_word_diff_multilang(
+                    resolved,
+                    studied_language=studied_lang,
+                    explain_language=explain_lang,
+                )
+            )
+        finally:
+            set_llm_billing_user(None)
+    except Exception as exc:
+        logging.exception("word_diff: разбор не удался: %s", exc)
+        record_word_diff_miss(int(user_id), words, "model_error", detail=str(exc)[:300])
+        return jsonify({"error": "Не удалось разобрать отличия. Попробуйте ещё раз."}), 502
+
+    diff, reject_reason = _word_diff_validate(raw_result, words)
+    if reject_reason:
+        record_word_diff_miss(int(user_id), words, "incomplete", detail=reject_reason)
+        return jsonify({"error": "Не удалось разобрать отличия. Попробуйте ещё раз."}), 502
+
+    sources = {item["word"]: item.get("source") or "" for item in resolved}
+    save_word_diff_card(
+        pair_key=pair_key,
+        words=words,
+        studied_lang=studied_lang,
+        explain_lang=explain_lang,
+        payload=diff,
+        sources=sources,
+    )
+    record_word_diff_open(int(user_id), pair_key, words)
+
+    return jsonify({
+        "ok": True,
+        "pair_key": pair_key,
+        "words": words,
+        "diff": diff,
+        "sources": sources,
+        "from_cache": False,
+    })
+
+
+@app.route("/api/webapp/dictionary/diff/share/link", methods=["POST"])
+def create_webapp_word_diff_share_link():
+    """Ссылка на разбор отличий — как у «Полного разбора»: один короткий токен и deep-link.
+
+    Токен привязан к ПАРЕ, а не к человеку: разбор общий, второй раз его никто не
+    оплачивает. Гость открывает ссылку в Telegram и видит разбор только для чтения.
+    """
+    import secrets as _secrets
+    from backend.database import get_word_diff_card, set_word_diff_share_token
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+    if not TELEGRAM_BOT_USERNAME:
+        return jsonify({"error": "Поделиться пока нельзя: бот не настроен"}), 503
+
+    pair_key = str(payload.get("pair_key") or "").strip()
+    if not pair_key:
+        return jsonify({"error": "Сначала откройте разбор"}), 400
+    if not get_word_diff_card(pair_key, bump_open=False):
+        return jsonify({"error": "Разбор не найден. Откройте сравнение заново."}), 404
+
+    token = set_word_diff_share_token(pair_key, _secrets.token_urlsafe(9))
+    if not token:
+        return jsonify({"error": "Не удалось создать ссылку"}), 500
+    return jsonify({
+        "ok": True,
+        "share_token": token,
+        "deeplink": f"https://t.me/{TELEGRAM_BOT_USERNAME}?startapp=wdiff_{token}",
+    })
+
+
+@app.route("/api/webapp/dictionary/diff/shared", methods=["POST"])
+def get_webapp_word_diff_shared():
+    """Гостевой показ разбора по ссылке: любой человек с подписью Telegram, только чтение."""
+    from backend.database import get_word_diff_by_share_token
+
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    token = str(payload.get("share_token") or "").strip()
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not token:
+        return jsonify({"error": "share_token обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    record = get_word_diff_by_share_token(token)
+    if not record:
+        return jsonify({"error": "Разбор не найден или ссылка недействительна"}), 404
+    return jsonify({
+        "ok": True,
+        "pair_key": record.get("pair_key"),
+        "words": record.get("words") or [],
+        "diff": record.get("payload") or {},
+        "sources": record.get("sources") or {},
+        "is_guest": True,
+        "save_locked": True,
+        "created_at": record.get("created_at"),
+    })
+
+
+@app.route("/api/webapp/dictionary/diff/history", methods=["POST"])
+def get_webapp_dictionary_word_diff_history():
+    """Список «вы уже сравнивали». Открытие оттуда идёт через /diff и берётся из кеша."""
+    from backend.database import list_word_diff_history
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+    try:
+        limit = int(payload.get("limit") or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    return jsonify({"ok": True, "items": list_word_diff_history(int(user_id), limit=limit)})
 
 
 def _strip_html(html_text: str) -> str:

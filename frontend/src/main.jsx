@@ -470,14 +470,14 @@ class DictErrorBoundary extends React.Component {
   }
 }
 
-async function bootstrapDictionary() {
+async function bootstrapDictionary(sharedDiffToken = '') {
   tgReady();
   applyDictHomeScreenMeta();
   const { default: DictionaryOverlay } = await import('./dictionary/DictionaryOverlay.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <DictErrorBoundary>
-        <DictionaryOverlay />
+        <DictionaryOverlay sharedDiffToken={sharedDiffToken} />
       </DictErrorBoundary>
     </React.StrictMode>,
   );
@@ -833,6 +833,12 @@ async function bootstrapApp() {
   }
   if (/^dict$/i.test(answerStartParam)) {
     await bootstrapDictionary();
+    return;
+  }
+  // Ссылка «Поделиться» на разбор отличий: wdiff_<токен>. Открываем тот же словарь
+  // сразу на вкладке «Отличия» — гость видит разбор, но сохранять не может.
+  if (/^wdiff_/i.test(answerStartParam)) {
+    await bootstrapDictionary(answerStartParam.replace(/^wdiff_/i, ''));
     return;
   }
   if (/^settings$/i.test(answerStartParam)) {

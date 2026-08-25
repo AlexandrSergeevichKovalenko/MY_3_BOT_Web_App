@@ -221,3 +221,71 @@ export function buildDictionarySavePayload({ rich, sourceText, quick, origin }) 
     origin_process: origin,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Две канонические двери сохранения из словаря. Раньше их тела лежали внутри
+// DictionaryOverlay (saveChip / saveExample), и вкладка «Отличия» была бы третьей
+// копией — а копия рано или поздно расходится с оригиналом (так уже разошлось
+// правило языковой пары, см. langPair.js). Теперь тело одно, вызывают его двое.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// СЛОВО. Быстрый перевод и разбор идут ПАРАЛЛЕЛЬНО, и именно быстрый перевод даёт
+// надёжный перевод на язык человека: без него сохранялась голая немецкая карточка —
+// тот самый дефект, из-за которого нажатие на синоним клало слово без перевода.
+export async function saveLookedUpWord({ api, text, origin }) {
+  const t = String(text || '').trim();
+  if (!t) return null;
+  const pair = guessPair(t);
+  const [quickData, richData] = await Promise.all([
+    api('/api/translate/quick', { text: t, source_lang: pair.source, target_lang: pair.target }).catch(() => null),
+    api('/api/webapp/dictionary', { word: t, lookup_lang: pair.source }).catch(() => null),
+  ]);
+  const rich = richData?.item || null;
+  if (rich) {
+    rich.__direction = String(richData?.direction || rich.__direction || `${pair.source}-${pair.target}`).trim();
+    rich.__language_pair = richData?.language_pair || null;
+  }
+  const detected = String(quickData?.detected_source_lang || pair.source).toLowerCase();
+  const targetLang = detected === pair.target ? pair.source : pair.target;
+  const quick = quickData ? {
+    source: t,
+    translation: String(quickData?.translation || '').trim(),
+    sourceLang: detected,
+    targetLang,
+    direction: `${detected}-${targetLang}`,
+  } : null;
+  if (!rich && !(quick && quick.translation)) throw new Error('Не удалось перевести слово');
+  return api('/api/webapp/dictionary/save', buildDictionarySavePayload({
+    rich, sourceText: t, quick, origin,
+  }));
+}
+
+// ФРАЗА (пример, устойчивое сочетание). Разбор слова здесь не нужен — у нас уже есть
+// сама фраза и её перевод. Перевода нет — берём детерминированный быстрый перевод,
+// чтобы в словарь никогда не легло голое немецкое без значения.
+export async function savePhraseWithTranslation({
+  api, phrase, translation, origin, studiedLang = 'de', explainLang = 'ru',
+}) {
+  const src = String(phrase || '').trim();
+  if (!src) return null;
+  let gloss = String(translation || '').trim();
+  if (!gloss) {
+    const quick = await api('/api/translate/quick', {
+      text: src, source_lang: studiedLang, target_lang: explainLang,
+    }).catch(() => null);
+    gloss = String(quick?.translation || '').trim();
+  }
+  if (!gloss) throw new Error('Не удалось перевести сочетание');
+  return api('/api/webapp/dictionary/save', buildDictionarySavePayload({
+    rich: null,
+    sourceText: src,
+    quick: {
+      source: src,
+      translation: gloss,
+      sourceLang: studiedLang,
+      targetLang: explainLang,
+      direction: `${studiedLang}-${explainLang}`,
+    },
+    origin,
+  }));
+}

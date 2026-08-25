@@ -4,11 +4,12 @@ import './dict.css';
 import { WordBreakdown, useTts, SpeakButton, genderClass, resolveArticle, resolveNumber, resolveLemma, clean, cleanArticle as cleanArticleText, stripLeadingArticle, api, haptic, getInitData, getDictToken } from './WordBreakdown';
 import BreakdownSkeleton from './BreakdownSkeleton';
 import LiveExamples from './LiveExamples';
-import { guessPair, buildDictionarySavePayload } from './saveUtils';
+import { guessPair, buildDictionarySavePayload, saveLookedUpWord, savePhraseWithTranslation } from './saveUtils';
 import { languageName, resolvePair, parsePairCode, displayPair } from './langPair.js';
 import { humanizeDictError } from './errors.js';
 import ProFeatureModal from '../components/ProFeatureModal';
 import SaveWordHint from './SaveWordHint';
+import WordDiff from './WordDiff';
 
 /**
  * Lightweight "quick dictionary" overlay — a compact bottom-sheet translator
@@ -217,7 +218,7 @@ function DictBlockedGate({ botUsername }) {
   );
 }
 
-export default function DictionaryOverlay({ onClose } = {}) {
+export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}) {
   const [query, setQuery] = useState('');
   const [phase, setPhase] = useState('idle'); // idle|loading|done|error
   const [quick, setQuick] = useState(null);   // { source, target, translation, sourceLang, targetLang, direction }
@@ -252,7 +253,8 @@ export default function DictionaryOverlay({ onClose } = {}) {
   const [chipHint, setChipHint] = useState(false); // brief "tap a synonym to save it" toast
   const [blocked, setBlocked] = useState(null); // {botUsername} when the user left the bot → gate screen
   // Закладки быстрого словаря — те же, что во внутреннем.
-  const [tab, setTab] = useState('search');
+  // Пришли по ссылке «Поделиться» на разбор отличий — открываем сразу ту вкладку.
+  const [tab, setTab] = useState(sharedDiffToken ? 'diff' : 'search');
   const [historyList, setHistoryList] = useState(() => loadRecentsAll());
   const [mine, setMine] = useState([]);
   const [mineState, setMineState] = useState('idle'); // idle | loading | ready | error
@@ -1060,35 +1062,10 @@ export default function DictionaryOverlay({ onClose } = {}) {
     haptic('ok');
     (async () => {
       try {
-        // Run the SAME canonical pipeline as a typed word: a deterministic quick
-        // translate (reliable target-language gloss) IN PARALLEL with the GPT
-        // breakdown, so a tapped synonym/related word is stored as a proper card
-        // (article + translation + grammar) WITH its translation — never bare German
-        // text. Passing the quick result as `quick` is exactly what makes the typed
-        // path keep its translation; omitting it was why chips saved German-only cards.
-        const pair = guessPair(t);
-        const [quickData, richData] = await Promise.all([
-          api('/api/translate/quick', { text: t, source_lang: pair.source, target_lang: pair.target }).catch(() => null),
-          api('/api/webapp/dictionary', { word: t, lookup_lang: pair.source }).catch(() => null),
-        ]);
-        const rich = richData?.item || null;
-        if (rich) {
-          rich.__direction = String(richData?.direction || rich.__direction || `${pair.source}-${pair.target}`).trim();
-          rich.__language_pair = richData?.language_pair || null;
-        }
-        const detected = String(quickData?.detected_source_lang || pair.source).toLowerCase();
-        const chipTargetLang = detected === pair.target ? pair.source : pair.target;
-        const quick = quickData ? {
-          source: t,
-          translation: String(quickData?.translation || '').trim(),
-          sourceLang: detected,
-          targetLang: chipTargetLang,
-          direction: `${detected}-${chipTargetLang}`,
-        } : null;
-        if (!rich && !(quick && quick.translation)) throw new Error('Не удалось перевести слово');
-        await api('/api/webapp/dictionary/save', buildDictionarySavePayload({
-          rich, sourceText: t, quick, origin: 'webapp_quick_dictionary_related',
-        }));
+        // Тело сохранения живёт в saveUtils (saveLookedUpWord) — тем же путём сохраняет
+        // вкладка «Отличия». Одна дверь: быстрый перевод и разбор идут параллельно,
+        // и карточка всегда рождается с переводом, а не голым немецким словом.
+        await saveLookedUpWord({ api, text: t, origin: 'webapp_quick_dictionary_related' });
       } catch (e) {
         setSavedChips((prev) => { const n = new Set(prev); n.delete(t); return n; });
         reportSaveFailure(e);
@@ -1114,26 +1091,10 @@ export default function DictionaryOverlay({ onClose } = {}) {
     haptic('ok');
     (async () => {
       try {
-        let translation = String(ru || '').trim();
-        if (!translation) {
-          const q = await api('/api/translate/quick', {
-            text: src, source_lang: 'de', target_lang: 'ru',
-          }).catch(() => null);
-          translation = String(q?.translation || '').trim();
-        }
-        if (!translation) throw new Error('Не удалось перевести пример');
-        await api('/api/webapp/dictionary/save', buildDictionarySavePayload({
-          rich: null,
-          sourceText: src,
-          quick: {
-            source: src,
-            translation,
-            sourceLang: 'de',
-            targetLang: 'ru',
-            direction: 'de-ru',
-          },
-          origin: 'webapp_quick_dictionary_example',
-        }));
+        // Та же общая дверь для фраз, что и у сочетаний во вкладке «Отличия».
+        await savePhraseWithTranslation({
+          api, phrase: src, translation: ru, origin: 'webapp_quick_dictionary_example',
+        });
       } catch (e) {
         setSavedChips((prev) => { const n = new Set(prev); n.delete(src); return n; });
         reportSaveFailure(e);
@@ -1290,12 +1251,22 @@ export default function DictionaryOverlay({ onClose } = {}) {
           <button type="button" className={`vocab-tab ${tab === 'search' ? 'is-active' : ''}`}
                   onClick={() => setTab('search')}>🔍 Поиск</button>
           <button type="button" className={`vocab-tab ${tab === 'mine' ? 'is-active' : ''}`}
-                  onClick={() => { setTab('mine'); setMineCard(null); }}>📚 Мои слова</button>
+                  onClick={() => { setTab('mine'); setMineCard(null); }}>📚 Слова</button>
           {historyList.length > 0 && (
             <button type="button" className={`vocab-tab ${tab === 'history' ? 'is-active' : ''}`}
                     onClick={() => setTab('history')}>🕘 История</button>
           )}
+          <button type="button" className={`vocab-tab ${tab === 'diff' ? 'is-active' : ''}`}
+                  onClick={() => setTab('diff')}>⚖️ Отличия</button>
         </div>
+
+        {tab === 'diff' && (
+          <WordDiff
+            tts={tts}
+            sharedToken={sharedDiffToken}
+            onNeedFullAccess={() => openBotLink(DICT_BOT_USERNAME_FALLBACK, 'subscription')}
+          />
+        )}
 
         {tab === 'history' && (
           <div className="dict-history">

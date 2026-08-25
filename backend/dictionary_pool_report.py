@@ -82,6 +82,15 @@ def collect_dictionary_pool_report(*, window_start: datetime | None = None) -> d
     stats = get_dictionary_pool_report_stats(window_start=window_start)
     stats["window_start"] = window_start.isoformat() if hasattr(window_start, "isoformat") else str(window_start)
     stats["previous"] = (last or {}).get("payload") or {}
+    # Вкладка «Отличия»: сколько пар разобрано и сколько раз мы НЕ смогли ответить.
+    # Отдельным try — состояние соседней витрины не имеет права уронить весь отчёт,
+    # но и промолчать о своей поломке она не должна, поэтому здесь log, а не pass.
+    try:
+        from backend.database import word_diff_stats
+        stats["word_diff"] = word_diff_stats(days=7)
+    except Exception:
+        logging.exception("dictionary report: состояние вкладки «Отличия» не собралось")
+        stats["word_diff"] = None
     return stats
 
 
@@ -172,6 +181,33 @@ def build_dictionary_pool_report_text(stats: dict[str, Any]) -> str:
         f"Кеш запросов: {int(stats.get('cache_rows') or 0)} строк, "
         f"{int(stats.get('cache_hits_alltime') or 0)} переиспользований за всё время",
     ]
+    diff_stats = stats.get("word_diff")
+    if isinstance(diff_stats, dict):
+        misses = diff_stats.get("misses") or {}
+        not_found = int(misses.get("not_found") or 0)
+        incomplete = int(misses.get("incomplete") or 0) + int(misses.get("model_error") or 0)
+        lines += [
+            "",
+            "<b>Вкладка «Отличия»</b>",
+            f"Разобрано пар: <b>{int(diff_stats.get('pairs_total') or 0)}</b> "
+            f"(+{int(diff_stats.get('pairs_new') or 0)} за неделю), "
+            f"открытий: {int(diff_stats.get('opens_total') or 0)}",
+        ]
+        if not_found:
+            lines.append(
+                f"Не хватило источнику слов: <b>{not_found}</b> за неделю — "
+                "они уже поставлены в очередь на карточку, ночная работа их доберёт"
+            )
+        if incomplete:
+            lines.append(
+                f"⚠️ Модель не собрала разбор: <b>{incomplete}</b> раз за неделю — "
+                "это задача на промпт, человек в эти разы остался без ответа"
+            )
+        if not not_found and not incomplete:
+            lines.append("Ни одного промаха за неделю")
+    elif diff_stats is None and "word_diff" in stats:
+        lines += ["", "⚠️ Состояние вкладки «Отличия» собрать не удалось — смотри лог."]
+
     if asked == 0:
         lines += ["", "⚠️ За окно не было ни одного запроса перевода — проверь, жив ли путь словаря."]
     return "\n".join(lines)
