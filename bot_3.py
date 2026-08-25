@@ -4603,6 +4603,7 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⚡ Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))],
             [InlineKeyboardButton("📚 Учить окончания", url=get_webapp_deeplink("ans_adl_0"))],
+            *_topic_video_button_row("adjektivdeklination"),
         ])
         caption = ("🔠 *Adjektiv Sprint*\n\n15 ситуаций · по 5 секунд на каждую — выбери правильное "
                    "окончание прилагательного!\n🏆 В конце — разбор по каждому случаю с правилом.")
@@ -4627,6 +4628,7 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⚡ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
             [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
+            *_topic_video_button_row("fragen"),
         ])
         caption = ("❓ *Wo-Frage Sprint*\n\n10 вопросов · по 8 секунд — выбери правильное вопросительное "
                    "слово (Worauf? Womit? Woran?)!\n🏆 В конце — разбор с правилом «вещь vs человек».")
@@ -4646,6 +4648,7 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             return False
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📚 Учить артикли", url=get_webapp_deeplink("ans_al_0"))],
+            *_topic_video_button_row("artikel"),
             [InlineKeyboardButton("🎯 Своя тема на завтра (Premium)", url=get_webapp_deeplink("ans_alf_0"))],
         ])
         caption = ("📚 *Artikel Trainer*\n\nВыучи der/die/das на сегодня — в своём темпе, с подсказками. "
@@ -6226,6 +6229,52 @@ def get_webapp_deeplink(path: str = "review", bot_username: str | None = None) -
     if resolved_username:
         return f"https://t.me/{resolved_username}?startapp={path}"
     return f"{get_webapp_url()}/{path}"
+
+
+# ── Кнопка «Посмотреть видео» под тренажёрами ────────────────────────────────────
+# Владелец, 25.08.2026: «под этой кнопкой нужно открываться страничка, на которой будет
+# три видео… если хотите освежить память либо просто начать — рекомендуем пройти вот эти
+# видео». Экран открывается ссылкой ans_gv_<тема> и показывает ролики, отобранные руками
+# (/addvideo) — см. list_curated_topic_videos.
+#
+# Кнопка рисуется ТОЛЬКО когда в теме есть хоть один отобранный ролик: пустой экран с
+# обещанием «рекомендуем эти видео» — обман, а не «временно пусто». Проверка стоит денег
+# в один индексный запрос, поэтому ответ держится в памяти 10 минут: рассылка идёт по
+# тысячам людей одной и той же тройкой ссылок.
+TOPIC_VIDEO_BUTTON_TEXT = "🎬 Посмотреть видео"
+_TOPIC_VIDEO_HAS_CACHE: dict[str, tuple[float, bool]] = {}
+_TOPIC_VIDEO_CACHE_TTL_SEC = 600
+
+
+def _topic_has_curated_videos(topic_key: str) -> bool:
+    """Есть ли у темы отобранные человеком ролики. Ошибку базы НЕ прячем в «нет»:
+    она пишется в лог, и кнопка на этот раз не показывается — но это видно в логе,
+    а не выглядит как «админ ничего не добавил»."""
+    key = str(topic_key or "").strip().lower()
+    if not key:
+        return False
+    now = pytime.time()
+    cached = _TOPIC_VIDEO_HAS_CACHE.get(key)
+    if cached and (now - cached[0]) < _TOPIC_VIDEO_CACHE_TTL_SEC:
+        return cached[1]
+    try:
+        from backend.database import list_curated_topic_videos
+        has = bool(list_curated_topic_videos(skill_id=key, limit=1))
+    except Exception:
+        logging.exception("topic video button: pool check failed topic=%s", key)
+        return False
+    _TOPIC_VIDEO_HAS_CACHE[key] = (now, has)
+    return has
+
+
+def _topic_video_button_row(topic_key: str) -> list[list[InlineKeyboardButton]]:
+    """Готовая строка клавиатуры (или пусто) — чтобы вставлять её в раскладки одинаково:
+    `*_topic_video_button_row("fragen")`."""
+    if not _topic_has_curated_videos(topic_key):
+        return []
+    return [[InlineKeyboardButton(
+        TOPIC_VIDEO_BUTTON_TEXT,
+        url=get_webapp_deeplink(f"ans_gv_{str(topic_key).strip().lower()}"))]]
 
 
 async def _resolve_bot_username(context: CallbackContext) -> str:
@@ -10080,6 +10129,7 @@ async def add_video_command(update: Update, context: CallbackContext):
                     main_category=None, sub_category=None, search_query=None,
                     video_id=vid, video_url=f"https://youtu.be/{vid}",
                     video_title=real_title or str(topic.get("de") or topic_key),
+                    curated=True,   # отобрано человеком → попадает на экран «Посмотреть видео»
                 )
                 added.append(vid)
             except Exception:
@@ -10092,6 +10142,10 @@ async def add_video_command(update: Update, context: CallbackContext):
 
     if not out_lines:
         out_lines.append("Ничего не добавлено — проверь формат.")
+    # Кнопка «Посмотреть видео» рисуется по кэшу «есть ли у темы отобранные ролики».
+    # После ручного добавления кэш обязан забыться сразу, иначе админ 10 минут смотрит
+    # на сообщение без кнопки и думает, что команда не сработала.
+    _TOPIC_VIDEO_HAS_CACHE.clear()
     await update.effective_message.reply_text("\n".join(out_lines), parse_mode="HTML")
 
 
@@ -10115,6 +10169,7 @@ async def clear_videos_command(update: Update, context: CallbackContext):
         await update.effective_message.reply_text(f"❌ Неизвестная тема «{topic_key}».")
         return
     n = await asyncio.to_thread(delete_video_recommendations_for_focus, skill_id=topic_key)
+    _TOPIC_VIDEO_HAS_CACHE.clear()   # тема опустела — кнопка «Посмотреть видео» должна пропасть сразу
     await update.effective_message.reply_text(
         f"🗑 Тема «{topic_key}»: удалено {n} видео из пула. Теперь добавь заново через /addvideo {topic_key} <ссылки>.")
 
@@ -15044,6 +15099,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⚡ Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))],
             [InlineKeyboardButton("📚 Учить окончания", url=get_webapp_deeplink("ans_adl_0"))],
+            *_topic_video_button_row("adjektivdeklination"),
             [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
         ])
         await update.message.reply_text(
@@ -15053,6 +15109,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⚡ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
             [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
+            *_topic_video_button_row("fragen"),
             [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_wfbl_0"))],
         ])
         caption = (
@@ -32348,6 +32405,7 @@ async def admin_artikel_learn_command(update: Update, context: CallbackContext) 
         return
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📚 Учить артикли", url=get_webapp_deeplink("ans_al_0"))],
+        *_topic_video_button_row("artikel"),
     ])
     await message.reply_text(
         "📚 <b>Artikel Trainer</b> — учим der/die/das в своём темпе: смотри слово, "
@@ -38144,6 +38202,7 @@ async def _send_scheduled_adjektiv_sprint(context: CallbackContext) -> None:
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))],
         [InlineKeyboardButton("📚 Учить окончания", url=get_webapp_deeplink("ans_adl_0"))],
+        *_topic_video_button_row("adjektivdeklination"),
     ])
     caption = (
         "🔠 *Adjektiv Sprint*\n\n"
@@ -38494,6 +38553,7 @@ async def _send_scheduled_wofrage_sprint(context: CallbackContext) -> None:
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
         [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
+        *_topic_video_button_row("fragen"),
     ])
     caption = (
         "❓ *Wo-Frage Sprint*\n\n"
@@ -38582,6 +38642,7 @@ async def admin_wofrage_test_command(update: Update, context: CallbackContext) -
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
         [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
+        *_topic_video_button_row("fragen"),
     ])
     caption = (
         "🧪 *Wo-Frage Sprint — тест (только тебе)*\n\n"
@@ -39222,6 +39283,7 @@ async def _send_scheduled_artikel_learn(context: CallbackContext) -> None:
         return
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📚 Учить артикли", url=get_webapp_deeplink("ans_al_0"))],
+        *_topic_video_button_row("artikel"),
         [InlineKeyboardButton("🎯 Своя тема на завтра (Premium)", url=get_webapp_deeplink("ans_alf_0"))],
     ])
     caption = (
