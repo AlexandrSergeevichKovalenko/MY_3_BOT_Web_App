@@ -30450,6 +30450,17 @@ def save_shared_razbor(token: str, owner_user_id: int, record: dict) -> str:
 
 _WORD_DIFF_SCHEMA_READY = False
 
+# Версия разбора отличий. Поднимается КАЖДЫЙ раз, когда меняется промпт или состав
+# блоков. Записи прошлых версий из кеша не отдаются и переписываются свежим разбором —
+# иначе человек бесконечно видит старый ответ, а мы думаем, что починили.
+#
+# Владелец 25.08.2026 открыл ту же пару после переделки и получил один в один прежнюю
+# карточку: разбор изменился, а кеш об этом не знал.
+#   1 — первый выпуск (25.08.2026)
+#   2 — сравнимость слов, пересечение значений, часть речи и управление из справочника,
+#       симметричные примеры и сочетания на каждое слово
+WORD_DIFF_SCHEMA_VERSION = 2
+
 
 def ensure_word_diff_schema() -> None:
     """Создать таблицы вкладки «Отличия». Идемпотентно, DDL идёт один раз на процесс."""
@@ -30488,6 +30499,10 @@ def ensure_word_diff_schema() -> None:
             )
             cursor.execute(
                 "ALTER TABLE bt_3_word_diff_cards ADD COLUMN IF NOT EXISTS share_token TEXT;"
+            )
+            cursor.execute(
+                "ALTER TABLE bt_3_word_diff_cards "
+                "ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 1;"
             )
             cursor.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_bt_3_word_diff_cards_share "
@@ -30571,9 +30586,9 @@ def get_word_diff_card(pair_key: str, *, bump_open: bool = True) -> dict | None:
                 """
                 SELECT words, studied_lang, explain_lang, payload, sources, created_at
                 FROM bt_3_word_diff_cards
-                WHERE pair_key = %s;
+                WHERE pair_key = %s AND schema_version = %s;
                 """,
-                (key,),
+                (key, WORD_DIFF_SCHEMA_VERSION),
             )
             row = cursor.fetchone()
             if not row:
@@ -30621,9 +30636,17 @@ def save_word_diff_card(
             cursor.execute(
                 """
                 INSERT INTO bt_3_word_diff_cards
-                    (pair_key, words, studied_lang, explain_lang, payload, sources, model_task)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (pair_key) DO NOTHING;
+                    (pair_key, words, studied_lang, explain_lang, payload, sources,
+                     model_task, schema_version)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (pair_key) DO UPDATE SET
+                    words = EXCLUDED.words,
+                    payload = EXCLUDED.payload,
+                    sources = EXCLUDED.sources,
+                    model_task = EXCLUDED.model_task,
+                    schema_version = EXCLUDED.schema_version,
+                    created_at = NOW()
+                WHERE bt_3_word_diff_cards.schema_version < EXCLUDED.schema_version;
                 """,
                 (
                     key,
@@ -30633,6 +30656,7 @@ def save_word_diff_card(
                     Json(payload),
                     Json(sources if isinstance(sources, dict) else {}),
                     str(model_task or ""),
+                    WORD_DIFF_SCHEMA_VERSION,
                 ),
             )
         conn.commit()
@@ -30694,9 +30718,9 @@ def get_word_diff_by_share_token(token: str) -> dict | None:
                 """
                 SELECT pair_key, words, payload, sources, created_at
                 FROM bt_3_word_diff_cards
-                WHERE share_token = %s;
+                WHERE share_token = %s AND schema_version = %s;
                 """,
-                (value,),
+                (value, WORD_DIFF_SCHEMA_VERSION),
             )
             row = cursor.fetchone()
     if not row:

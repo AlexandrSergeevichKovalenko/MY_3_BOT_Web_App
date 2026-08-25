@@ -396,3 +396,24 @@ def test_missing_examples_or_collocations_for_a_word_are_counted():
     assert "нет верного примера: vorschuss" in gaps
     assert "нет сочетаний: vorschuss" in gaps
     assert not [g for g in gaps if "anzahlung" in g], "у первого слова всё есть, а его посчитали"
+
+
+def test_old_cached_answer_is_not_served_after_the_format_changes():
+    """Кеш обязан знать версию разбора, иначе починка не доходит до человека.
+
+    Владелец 25.08.2026 открыл ту же пару после переделки и увидел один в один прежнюю
+    карточку: запись лежала в кеше, а о том, что разбор изменился, кеш не знал.
+    """
+    import inspect
+    from backend import database
+
+    assert getattr(database, "WORD_DIFF_SCHEMA_VERSION", 0) >= 2, "версия разбора не заведена"
+
+    read_src = inspect.getsource(database.get_word_diff_card)
+    assert "schema_version = %s" in read_src, "из кеша отдаётся запись любой версии"
+
+    write_src = inspect.getsource(database.save_word_diff_card)
+    assert "DO UPDATE" in write_src, "устаревшая запись не переписывается новым разбором"
+    assert "schema_version < EXCLUDED.schema_version" in write_src, (
+        "новый разбор может затереть более свежий"
+    )
