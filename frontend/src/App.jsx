@@ -214,8 +214,9 @@ function LibraryWordDetail({ item }) {
     || (data.usage_examples || []).length || (data.government_patterns || []).length
   );
   const слово = String(item?.word_de || data?.word_de || '').trim();
-  // 'idle' — не начинали · 'собираем' — идёт поток · 'ночью' — нам отказали или не
-  // получилось, показываем прежнюю плашку · 'готово' — разбор на экране.
+  // 'idle' — не начинали · 'собираем' — идёт поток · 'ночью' — нам отказали по
+  // правилам (не платный, слова нет в слое) · 'сорвалось' — сборка началась и не
+  // доехала · 'готово' — разбор на экране.
   const [состояние, setСостояние] = useState('idle');
   const [собранное, setСобранное] = useState(null);
 
@@ -240,10 +241,12 @@ function LibraryWordDetail({ item }) {
           const ответ = await resp.json().catch(() => null);
           if (!живо) return;
           if (ответ?.ok && ответ.item) { setСобранное(ответ.item); setСостояние('готово'); }
-          else setСостояние('ночью');
+          // Отказ по правилам (не платный, слова нет в общем слое) — это НЕ срыв
+          // сборки: мы её и не начинали, и прежняя плашка про ночь тут верна.
+          else setСостояние(ответ?.reason ? 'ночью' : 'сорвалось');
           return;
         }
-        if (!resp.body || typeof resp.body.getReader !== 'function') { setСостояние('ночью'); return; }
+        if (!resp.body || typeof resp.body.getReader !== 'function') { setСостояние('сорвалось'); return; }
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
         let буфер = '';
@@ -283,9 +286,9 @@ function LibraryWordDetail({ item }) {
         if (!живо) return;
         // Половина разбора — не разбор. Не собралось до конца — возвращаем прежнюю
         // плашку, а не оставляем человека с обрывком, который выглядит как карточка.
-        if (сорвалось || !былиРазделы) { setСобранное(null); setСостояние('ночью'); }
+        if (сорвалось || !былиРазделы) { setСобранное(null); setСостояние('сорвалось'); }
       } catch (_e) {
-        if (живо) { setСобранное(null); setСостояние('ночью'); }
+        if (живо) { setСобранное(null); setСостояние('сорвалось'); }
       }
     })();
     return () => { живо = false; try { controller.abort(); } catch (_e) { /* ничего */ } };
@@ -306,6 +309,23 @@ function LibraryWordDetail({ item }) {
   }
   if (состояние === 'готово' && собранное) {
     return <EmbeddedWordCard item={собранное} hideMeanings />;
+  }
+  // ⚠ ДВЕ РАЗНЫЕ ПЛАШКИ, И ПУТАТЬ ИХ НЕЛЬЗЯ.
+  // Владелец 26.08.2026 увидел ровно это: строка «собираем разбор» шла у него на
+  // глазах, а потом молча вернулась надпись «загляните завтра». Человек смотрел на
+  // работу и получил сообщение, как будто работы не было. Сорвалась сборка — так и
+  // говорим; не начинали (бесплатный доступ, слова нет в общем слое) — прежний текст.
+  if (состояние === 'сорвалось') {
+    return (
+      <div className="vocab-word-card-pending">
+        <div className="vocab-word-card-pending-title">Сейчас собрать не получилось</div>
+        <p>Слово сохранено и никуда не денется.</p>
+        <p className="vocab-word-card-pending-next">
+          Что делать: попробуйте открыть слово ещё раз чуть позже. Если не выйдет и тогда —
+          разбор соберётся ночью сам.
+        </p>
+      </div>
+    );
   }
   return (
     <div className="vocab-word-card-pending">
