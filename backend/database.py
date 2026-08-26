@@ -23794,7 +23794,33 @@ def get_quarantined_pool_entries(limit: int = 1000) -> list[dict]:
 # может рассудить только язык. Поэтому фразы общего словаря проверяются ночью партиями,
 # и результат хранится здесь, чтобы одну и ту же фразу не спрашивать дважды.
 
+# ┌─ НАЙДЕНО И ПОЧИНЕНО 26.08.2026. НЕ ВОЗВРАЩАТЬ DDL В КАЖДЫЙ ВЫЗОВ. ────────────┐
+# │ Ночь зовёт третьего судью в шесть потоков, и каждый поток на каждый вопрос      │
+# │ выполнял здесь CREATE TABLE IF NOT EXISTS и ALTER TABLE ADD COLUMN IF NOT       │
+# │ EXISTS. Обе команды берут AccessExclusiveLock на таблицу даже когда менять      │
+# │ нечего — и два потока встали друг против друга: «deadlock detected, process     │
+# │ 12382 waits for AccessExclusiveLock … blocked by process 12383». Прогон на 142  │
+# │ вопросах оборвался на середине.                                                 │
+# │ Схема одна на процесс и не меняется в его жизни, поэтому DDL выполняется ОДИН   │
+# │ раз, под замком. Проверять «а вдруг таблицы нет» на каждом запросе не нужно     │
+# │ никому: приложение всё равно не работает без своей схемы.                       │
+# └─────────────────────────────────────────────────────────────────────────────────┘
+_PHRASE_CHECK_SCHEMA_READY = False
+_PHRASE_CHECK_SCHEMA_LOCK = threading.Lock()
+
+
 def _ensure_phrase_check_tables(cursor) -> None:
+    global _PHRASE_CHECK_SCHEMA_READY
+    if _PHRASE_CHECK_SCHEMA_READY:
+        return
+    with _PHRASE_CHECK_SCHEMA_LOCK:
+        if _PHRASE_CHECK_SCHEMA_READY:
+            return
+        _create_phrase_check_tables(cursor)
+        _PHRASE_CHECK_SCHEMA_READY = True
+
+
+def _create_phrase_check_tables(cursor) -> None:
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS bt_3_phrase_check (
