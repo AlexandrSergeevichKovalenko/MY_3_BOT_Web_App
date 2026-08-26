@@ -95,7 +95,22 @@ def ensure_word_confirm_schema() -> None:
 
 
 def words_for_user(user_id: int, limit: int = BATCH) -> list[tuple[str, str]]:
-    """[(слово, перевод)] — неподтверждённые слова ИМЕННО этого человека."""
+    """[(текст, перевод)] — то, в чём система усомнилась, у ИМЕННО ЭТОГО человека.
+
+    ДВА ИСТОЧНИКА СОМНЕНИЯ, и оба про его собственные сохранения:
+
+      СЛОВА — дверь слова (`bt_3_word_check`) не подтвердила написание справочником;
+      ФРАЗЫ — ночная проверка грамматики не смогла решить сама и отложила фразу
+              (`bt_3_phrase_review`, status='open').
+
+    ⚠ ЗАЧЕМ СЮДА ДОБАВЛЕНЫ ФРАЗЫ. Владелец 26.08.2026: «фраза сохранилась мгновенно,
+    ночью проверилась, если сомнение — оно уходит АВТОРУ в ту же недельную пачку, что и
+    слова». До этого сомнения по фразам уходили ТОЛЬКО администратору: обычный человек
+    про свою кривую фразу не узнавал вовсе, а на масштабе очередь до неё шла бы неделями.
+
+    Ничего нового не строим: та же пачка, те же кнопки, то же сообщение. Новый канал был
+    бы вторым местом, куда надо не забыть заглянуть.
+    """
     from backend.database import get_db_connection_context
     try:
         with get_db_connection_context() as conn:
@@ -115,7 +130,49 @@ def words_for_user(user_id: int, limit: int = BATCH) -> list[tuple[str, str]]:
                     """.format(bare=_BARE.format(col="q.word_de")),
                     (int(user_id), int(limit)),
                 )
-                return [(str(a), str(b)) for a, b in (cur.fetchall() or [])]
+                найдено = [(str(a), str(b)) for a, b in (cur.fetchall() or [])]
+                if len(найдено) >= int(limit):
+                    return найдено
+
+                # Фразы этого человека, отложенные ночной проверкой. Берём только те,
+                # где ОН автор карточки: чужую фразу человеку показывать незачем.
+                # ⚠ СПРАШИВАЕМ АВТОРА, А НЕ ВСЕХ ПОДПИСЧИКОВ. Слово в слое одно на всех,
+                # и связь «карточка → слово» есть у каждого, кто это слово учит. Первая
+                # версия запроса спрашивала любого подписчика — проверка 26.08.2026 на
+                # живой базе показала, как два разных человека получили ОДНИ И ТЕ ЖЕ три
+                # фразы, которых сами не сохраняли. Человека нельзя просить решать судьбу
+                # чужого текста: он не знает, откуда он взят и что имелось в виду.
+                #
+                # Автор — тот, чья карточка на это слово появилась ПЕРВОЙ.
+                # ⚠ АВТОР СЧИТАЕТСЯ ОДНИМ ПРОХОДОМ (DISTINCT ON), а не подзапросом на
+                # каждую строку: та версия не уложилась и в десять минут на живой базе,
+                # а этот запрос идёт в еженедельной рассылке по всем людям.
+                cur.execute(
+                    """
+                    WITH авторы AS (
+                      SELECT DISTINCT ON (lex_unit_id) lex_unit_id, user_id
+                        FROM bt_3_webapp_dictionary_queries
+                       WHERE lex_unit_id IS NOT NULL
+                       ORDER BY lex_unit_id, created_at, id
+                    )
+                    SELECT DISTINCT btrim(r.text), COALESCE(r.translation, '')
+                      FROM bt_3_phrase_review r
+                      JOIN авторы a ON a.lex_unit_id = r.unit_id
+                     WHERE r.status = 'open' AND a.user_id = %s
+                       AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
+                                        WHERE d.user_id = a.user_id
+                                          AND d.word = btrim(r.text)
+                                          AND d.closed_at IS NOT NULL)
+                     ORDER BY 1
+                     LIMIT %s;
+                    """,
+                    (int(user_id), int(limit) - len(найдено)),
+                )
+                уже = {слово for слово, _ in найдено}
+                for текст, перевод in (cur.fetchall() or []):
+                    if str(текст) not in уже:
+                        найдено.append((str(текст), str(перевод)))
+                return найдено
     except Exception:
         logging.warning("сводка слов: не прочитал список для %s", user_id, exc_info=True)
         return []
@@ -592,16 +649,37 @@ def send_word_audit_reminders(*, force: bool = False) -> dict[str, Any]:
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
+                # Получатели — те, у кого есть СВОИ сомнительные сохранения: слова, не
+                # подтверждённые дверью, и фразы, отложенные ночной проверкой. Оба
+                # источника в одном запросе, потому что письмо человеку одно.
                 cur.execute(
                     """
-                    SELECT q.user_id, COUNT(DISTINCT {bare})
-                      FROM bt_3_webapp_dictionary_queries q
-                      JOIN bt_3_word_check w ON w.asked = {bare}
-                     WHERE w.status IN ('не подтверждено', 'не слово')
-                       AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
-                                        WHERE d.user_id = q.user_id AND d.word = {bare}
-                                          AND d.closed_at IS NOT NULL)
-                     GROUP BY q.user_id HAVING COUNT(DISTINCT {bare}) > 0;
+                    SELECT user_id, SUM(сколько) FROM (
+                      SELECT q.user_id, COUNT(DISTINCT {bare}) AS сколько
+                        FROM bt_3_webapp_dictionary_queries q
+                        JOIN bt_3_word_check w ON w.asked = {bare}
+                       WHERE w.status IN ('не подтверждено', 'не слово')
+                         AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
+                                          WHERE d.user_id = q.user_id AND d.word = {bare}
+                                            AND d.closed_at IS NOT NULL)
+                       GROUP BY q.user_id
+                      UNION ALL
+                      -- только АВТОР фразы, а не каждый подписчик (см. words_for_user)
+                      SELECT a.user_id, COUNT(DISTINCT btrim(r.text)) AS сколько
+                        FROM bt_3_phrase_review r
+                        JOIN (SELECT DISTINCT ON (lex_unit_id) lex_unit_id, user_id
+                                FROM bt_3_webapp_dictionary_queries
+                               WHERE lex_unit_id IS NOT NULL
+                               ORDER BY lex_unit_id, created_at, id) a
+                          ON a.lex_unit_id = r.unit_id
+                       WHERE r.status = 'open'
+                         AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
+                                          WHERE d.user_id = a.user_id
+                                            AND d.word = btrim(r.text)
+                                            AND d.closed_at IS NOT NULL)
+                       GROUP BY a.user_id
+                    ) t
+                    GROUP BY user_id HAVING SUM(сколько) > 0;
                     """.format(bare=_BARE.format(col="q.word_de"))
                 )
                 targets = [(int(a), int(b)) for a, b in (cur.fetchall() or [])]
