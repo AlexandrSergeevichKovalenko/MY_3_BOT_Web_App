@@ -113,3 +113,42 @@ def test_personal_invitation_goes_to_everyone_weekly():
     assert "_send_my_words_review" in text, "рассылка своих слов пропала"
     assert "startapp=meinewoerter" in text, "кнопка ведёт не на экран своих слов"
     assert "users_with_word_issues" in text, "рассылка идёт не тем, у кого есть что править"
+
+
+def test_missing_translations_are_filled_at_night_in_one_batch():
+    """Перевод карточкам без перевода подбирается ночью ПАЧКОЙ и без участия человека.
+
+    Владелец 26.08.2026: «Если каждый будет отправлять по одному — это много денег и
+    нагрузка… Если это может быть сделано без меня, это делается без меня».
+    """
+    import io as _io
+    from pathlib import Path
+    bot = Path(backend_server.__file__).resolve().parents[1] / "bot_3.py"
+    text = _io.open(bot, encoding="utf-8").read()
+    assert "_fill_missing_translations_nightly" in text, "ночной перевод пропал"
+    assert "run_missing_translations_batch" in text, "перевод идёт не пачкой"
+
+    apply_src = inspect.getsource(database.apply_translation_proposals)
+    assert "UPDATE bt_3_webapp_dictionary_queries SET translation_ru" in apply_src, (
+        "найденный перевод не вписывается в карточку"
+    )
+    assert "status = 'failed'" in apply_src, "неудача не копится — слово потеряется"
+
+
+def test_unresolved_translations_reach_the_owner():
+    """Не смогли перевести — копится и приходит владельцу решением, а не пропадает."""
+    src = inspect.getsource(database.list_failed_translations)
+    assert "r.status = 'failed'" in src
+
+    list_src = inspect.getsource(backend_server.list_webapp_word_integrity)
+    assert "list_failed_translations" in list_src, "непереведённое не доходит до разбора"
+
+    apply_src = inspect.getsource(backend_server.apply_webapp_word_integrity)
+    assert "resolve_translation_request" in apply_src, "владелец не может вписать перевод"
+
+
+def test_manual_lookup_button_is_gone():
+    """Ручной поиск по одному слову убран: это делает ночь. Мёртвых ручек не держим."""
+    assert not hasattr(backend_server, "find_translation_for_my_word"), (
+        "остался ручной поиск перевода по одной карточке"
+    )

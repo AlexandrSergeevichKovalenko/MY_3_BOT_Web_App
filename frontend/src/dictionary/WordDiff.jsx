@@ -18,12 +18,6 @@ import { saveLookedUpWord, savePhraseWithTranslation } from './saveUtils';
 const MIN_WORDS = 2;
 const MAX_WORDS = 4;
 
-const HINTS = [
-  ['Anzahlung', 'Vorauszahlung'],
-  ['kennen', 'wissen'],
-  ['machen', 'tun'],
-];
-
 const CONTRAST_LABEL = {
   wrong: 'Так не говорят.',
   possible_but_different_meaning: 'Сказать можно, но смысл будет другим.',
@@ -301,11 +295,6 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
 
   const addCell = useCallback(() => {
     setCells((prev) => (prev.length >= MAX_WORDS ? prev : [...prev, '']));
-  }, []);
-
-  const applyHint = useCallback((pair) => {
-    setCells(pair.slice(0, MAX_WORDS));
-    haptic('light');
   }, []);
 
   const applySuggestion = useCallback((wrong, right) => {
@@ -809,17 +798,6 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
         <button type="button" className="wd-add" onClick={addCell}>＋ ещё слово</button>
       )}
 
-      {phase === 'idle' && filled.length === 0 && (
-        <div className="wd-hints">
-          {HINTS.map((pair) => (
-            <button type="button" className="wd-hint-chip" key={pair.join('-')}
-                    onClick={() => applyHint(pair)}>
-              {pair.join(' · ')}
-            </button>
-          ))}
-        </div>
-      )}
-
       {canCreate ? (
         <button
           type="button"
@@ -945,7 +923,8 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
             <span className="wd-fold-count">{history.length}</span>
             <span className="wd-fold-arrow" aria-hidden="true">▾</span>
           </button>
-          <div className="wd-history" hidden={!openLists.mine}>
+          {openLists.mine && (
+          <div className="wd-history">
             {history.map((row) => (
               <div className={`wd-swipe${swiped === row.pair_key ? ' is-open' : ''}`} key={row.pair_key}>
                 <button
@@ -971,6 +950,7 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
               </div>
             ))}
           </div>
+          )}
         </div>
       )}
 
@@ -988,7 +968,8 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
             <span className="wd-fold-count">{popular.length}</span>
             <span className="wd-fold-arrow" aria-hidden="true">▾</span>
           </button>
-          <div className="wd-history" hidden={!openLists.shelf}>
+          {openLists.shelf && (
+          <div className="wd-history">
             {popular.map((row) => (
               <div className={`wd-swipe${swiped === row.pair_key ? ' is-open' : ''}`} key={`p-${row.pair_key}`}>
                 <button
@@ -1014,6 +995,7 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
               </div>
             ))}
           </div>
+          )}
         </div>
       )}
     </div>

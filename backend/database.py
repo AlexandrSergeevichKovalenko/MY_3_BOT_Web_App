@@ -31184,6 +31184,247 @@ WORD_INTEGRITY_ISSUES = {
 }
 
 
+# ── Слова, которым не нашли перевод: уходят владельцу ────────────────────────
+# Владелец 26.08.2026: «Необязательно внешний источник — мы же можем это куда-то
+# отправить, у нас много списков, которые приходят мне». Правильно: карточка не должна
+# висеть мёртвой, а человек не должен оставаться с ней один на один. Не нашли перевод
+# ни в словаре, ни разбором — слово уходит владельцу, он вписывает перевод руками, и
+# карточка человека чинится.
+
+_TRANSLATION_REQUESTS_READY = False
+
+
+def ensure_translation_requests_schema() -> None:
+    global _TRANSLATION_REQUESTS_READY
+    if _TRANSLATION_REQUESTS_READY:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_translation_requests (
+                    id         BIGSERIAL PRIMARY KEY,
+                    user_id    BIGINT NOT NULL,
+                    entry_id   BIGINT NOT NULL UNIQUE,
+                    word       TEXT NOT NULL,
+                    proposed   TEXT,
+                    status     TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    decided_at TIMESTAMPTZ
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_translation_requests_pending "
+                "ON bt_3_translation_requests (status, created_at);"
+            )
+        conn.commit()
+    _TRANSLATION_REQUESTS_READY = True
+
+
+def add_translation_request(user_id: int, entry_id: int, word: str) -> None:
+    """Перевода не нашлось — слово ждёт владельца. Повторные нажатия не плодят строк."""
+    text = " ".join(str(word or "").split())
+    if not text or not entry_id:
+        return
+    ensure_translation_requests_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_translation_requests (user_id, entry_id, word)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (entry_id) DO NOTHING;
+                """,
+                (int(user_id), int(entry_id), text),
+            )
+        conn.commit()
+
+
+def take_translation_requests_without_proposal(limit: int = 60) -> list[dict]:
+    """Слова, которым ночь ещё не предложила перевод. Для пакетного прогона."""
+    ensure_translation_requests_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, word FROM bt_3_translation_requests
+                WHERE status = 'pending' AND COALESCE(proposed, '') = ''
+                ORDER BY created_at LIMIT %s;
+                """,
+                (max(1, min(int(limit or 60), 200)),),
+            )
+            return [{"id": int(r[0]), "text": r[1]} for r in (cursor.fetchall() or [])]
+
+
+def apply_translation_proposals(proposals: list) -> dict:
+    """Ночь перевела — вписываем в карточку человека САМИ, без чьего-либо решения.
+
+    Владелец 26.08.2026: «Если это может быть сделано без меня, это делается без меня.
+    Не городите лишний функционал». Решать тут и правда нечего: перевод либо есть, либо
+    его нет. Пустой перевод не записываем — это честное «не смогли», и такая карточка
+    остаётся в личном разборе человека, где он впишет свой или удалит.
+    """
+    ensure_translation_requests_schema()
+    filled = failed = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for item in (proposals or []):
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    request_id = int(item.get("id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                text = " ".join(str(item.get("translation") or "").split())
+                if not request_id:
+                    continue
+
+                cursor.execute(
+                    "SELECT user_id, entry_id FROM bt_3_translation_requests "
+                    "WHERE id = %s AND status = 'pending';",
+                    (request_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    continue
+                user_id, entry_id = int(row[0]), int(row[1])
+
+                if not text:
+                    # Не смогли — карточка остаётся у человека в разборе, он решит сам.
+                    cursor.execute(
+                        "UPDATE bt_3_translation_requests SET status = 'failed', decided_at = NOW() "
+                        "WHERE id = %s;",
+                        (request_id,),
+                    )
+                    failed += 1
+                    continue
+
+                cursor.execute(
+                    "UPDATE bt_3_webapp_dictionary_queries SET translation_ru = %s, updated_at = NOW() "
+                    "WHERE id = %s AND user_id = %s;",
+                    (text, entry_id, user_id),
+                )
+                cursor.execute(
+                    "UPDATE bt_3_translation_requests SET proposed = %s, status = 'filled', "
+                    "decided_at = NOW() WHERE id = %s;",
+                    (text, request_id),
+                )
+                # Карточка починена — из личного разбора она уходит сама.
+                cursor.execute(
+                    "UPDATE bt_3_user_word_review SET status = 'fixed', decided_at = NOW() "
+                    "WHERE entry_id = %s AND status = 'pending';",
+                    (entry_id,),
+                )
+                filled += 1
+        conn.commit()
+    return {"filled": filled, "failed": failed}
+
+
+def list_failed_translations(limit: int = 50) -> list[dict]:
+    """Слова, которые ночь перевести не смогла. Копятся и уходят владельцу решением.
+
+    Владелец 26.08.2026: «Если после обработки моделью возникли сложности — тогда оно
+    аккумулируется и отправляется мне». Здесь и накапливается.
+    """
+    ensure_translation_requests_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT r.id, r.user_id, r.entry_id, r.word
+                FROM bt_3_translation_requests r
+                JOIN bt_3_webapp_dictionary_queries q ON q.id = r.entry_id
+                WHERE r.status = 'failed'
+                ORDER BY r.decided_at NULLS LAST, r.id
+                LIMIT %s;
+                """,
+                (max(1, min(int(limit or 50), 200)),),
+            )
+            rows = cursor.fetchall() or []
+    return [{"id": int(r[0]), "user_id": int(r[1]), "entry_id": int(r[2]), "word": r[3]}
+            for r in rows]
+
+
+def count_failed_translations() -> int:
+    ensure_translation_requests_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_translation_requests r "
+                "JOIN bt_3_webapp_dictionary_queries q ON q.id = r.entry_id "
+                "WHERE r.status = 'failed';"
+            )
+            row = cursor.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def list_translation_requests(limit: int = 50) -> list[dict]:
+    ensure_translation_requests_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT r.id, r.user_id, r.entry_id, r.word, r.created_at, r.proposed
+                FROM bt_3_translation_requests r
+                JOIN bt_3_webapp_dictionary_queries q ON q.id = r.entry_id
+                WHERE r.status = 'pending'
+                ORDER BY r.created_at, r.id
+                LIMIT %s;
+                """,
+                (max(1, min(int(limit or 50), 200)),),
+            )
+            rows = cursor.fetchall() or []
+    return [{"id": int(r[0]), "user_id": int(r[1]), "entry_id": int(r[2]), "word": r[3],
+             "created_at": r[4].isoformat() if r[4] else None,
+             "proposed": r[5] or ""} for r in rows]
+
+
+def resolve_translation_request(request_id: int, translation: str = "", drop: bool = False) -> dict:
+    """Владелец вписал перевод — он встаёт в карточку человека. Или пометил мусором."""
+    ensure_translation_requests_schema()
+    text = " ".join(str(translation or "").split())
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, entry_id FROM bt_3_translation_requests "
+                "WHERE id = %s AND status = 'pending';",
+                (int(request_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {"ok": False}
+            user_id, entry_id = int(row[0]), int(row[1])
+
+            if drop:
+                cursor.execute(
+                    "DELETE FROM bt_3_webapp_dictionary_queries WHERE id = %s AND user_id = %s;",
+                    (entry_id, user_id),
+                )
+                status = "dropped"
+            elif text:
+                cursor.execute(
+                    "UPDATE bt_3_webapp_dictionary_queries SET translation_ru = %s, updated_at = NOW() "
+                    "WHERE id = %s AND user_id = %s;",
+                    (text, entry_id, user_id),
+                )
+                status = "filled"
+            else:
+                return {"ok": False}
+
+            cursor.execute(
+                "UPDATE bt_3_translation_requests SET status = %s, decided_at = NOW() WHERE id = %s;",
+                (status, int(request_id)),
+            )
+            cursor.execute(
+                "UPDATE bt_3_user_word_review SET status = 'fixed', decided_at = NOW() "
+                "WHERE entry_id = %s AND status = 'pending';",
+                (entry_id,),
+            )
+        conn.commit()
+    return {"ok": True, "status": status}
+
+
 def ensure_word_integrity_schema() -> None:
     """Очередь разбора. Идемпотентно, DDL один раз на процесс."""
     global _WORD_INTEGRITY_SCHEMA_READY
@@ -31520,6 +31761,29 @@ def scan_user_word_issues(limit: int = 2000) -> dict:
             added = cursor.rowcount or 0
         conn.commit()
     return {"added": int(added)}
+
+
+def queue_missing_translations(limit: int = 500) -> int:
+    """Карточки без перевода ставим в очередь на ночной перевод. Без участия человека."""
+    ensure_translation_requests_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_translation_requests (user_id, entry_id, word)
+                SELECT q.user_id, q.id, q.word_de
+                FROM bt_3_webapp_dictionary_queries q
+                WHERE COALESCE(q.word_de, '') <> ''
+                  AND COALESCE(TRIM(q.translation_ru), '') = ''
+                ORDER BY q.id
+                LIMIT %s
+                ON CONFLICT (entry_id) DO NOTHING;
+                """,
+                (max(1, min(int(limit or 500), 2000)),),
+            )
+            added = cursor.rowcount or 0
+        conn.commit()
+    return int(added)
 
 
 def list_user_word_issues(user_id: int, limit: int = 30) -> list[dict]:

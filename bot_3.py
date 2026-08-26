@@ -13144,6 +13144,39 @@ async def handle_quarantine_callback(update: Update, context: CallbackContext) -
             pass
 
 
+def _fill_missing_translations_nightly() -> None:
+    """Ночью — перевод карточкам, у которых его нет. ПАЧКОЙ и без участия человека.
+
+    Владелец 26.08.2026: «Если каждый будет отправлять по одному — это много денег и
+    нагрузка. Копим, потом пачкой через модель». И дальше: «Если это может быть сделано
+    без меня — делается без меня». Перевод либо есть, либо нет, решать нечего: есть —
+    вписываем сами. Не смогли — карточка копится и уходит владельцу решением.
+    """
+    try:
+        import asyncio as _asyncio
+        from backend.database import (
+            queue_missing_translations, take_translation_requests_without_proposal,
+            apply_translation_proposals, count_failed_translations,
+        )
+        from backend.openai_manager import run_missing_translations_batch
+
+        queued = queue_missing_translations(limit=500)
+        batch = take_translation_requests_without_proposal(limit=60)
+        if not batch:
+            logging.info("ночной перевод: переводить нечего (поставлено в очередь: %s)", queued)
+            return
+
+        answer = _asyncio.run(run_missing_translations_batch(batch, explain_language="ru"))
+        items = answer.get("items") if isinstance(answer, dict) else None
+        result = apply_translation_proposals(items if isinstance(items, list) else [])
+        logging.info(
+            "ночной перевод: поставлено %s, в пачке %s, вписано %s, не смогли %s (всего ждёт владельца: %s)",
+            queued, len(batch), result.get("filled"), result.get("failed"), count_failed_translations(),
+        )
+    except Exception:
+        logging.exception("ночной перевод: прогон не удался")
+
+
 def _send_my_words_review() -> None:
     """Каждому человеку — приглашение проверить СВОИ слова. Раз в неделю, если есть что.
 
@@ -13201,7 +13234,13 @@ def _send_word_integrity_review(reminder: bool = False) -> None:
         )
         scan_word_integrity(limit=300)
         pending = count_word_integrity_pending()
-        if not pending:
+        try:
+            from backend.database import count_failed_translations
+            unresolved_translations = count_failed_translations()
+        except Exception:
+            logging.exception("разбор словаря: счётчик непереведённых недоступен")
+            unresolved_translations = 0
+        if not pending and not unresolved_translations:
             logging.info("разбор словаря: противоречивых записей нет, не шлём")
             return
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
@@ -13215,12 +13254,15 @@ def _send_word_integrity_review(reminder: bool = False) -> None:
         tail = ("Список не разобран с прошлого раза — записи никуда не делись и ждут."
                 if reminder else
                 "Разобрать — минута: у каждой записи одно решение, применяются разом.")
-        text = (
-            f"{head}\n\n"
-            f"Записей, которые противоречат сами себе: <b>{pending}</b>.\n"
-            "Слово помечено существительным, а написано со строчной; или вместо слова обрывок.\n\n"
-            f"{tail}"
-        )
+        lines = [head, ""]
+        if pending:
+            lines.append(f"Записей, которые противоречат сами себе: <b>{pending}</b>.")
+            lines.append("Слово помечено существительным, а написано со строчной; или вместо слова обрывок.")
+        if unresolved_translations:
+            lines.append("")
+            lines.append(f"Слов, которым ночь не смогла подобрать перевод: <b>{unresolved_translations}</b>.")
+        lines += ["", tail]
+        text = "\n".join(lines)
         markup = {"inline_keyboard": [[{
             "text": "Открыть разбор →",
             "url": f"https://t.me/{bot_username}?startapp=slovarcheck",
@@ -45043,6 +45085,18 @@ def main():
             day_of_week=(os.getenv("WORD_INTEGRITY_REMINDER_DAYS") or "thu").strip() or "thu",
             hour=int((os.getenv("WORD_INTEGRITY_REMINDER_HOUR") or "18").strip() or "18"),
             minute=0,
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Каждую ночь 03:40: перевод карточкам, у которых его нет --
+        # Пачкой, один вызов на несколько десятков слов, без участия человека.
+        scheduler.add_job(
+            _fill_missing_translations_nightly,
+            "cron",
+            hour=int((os.getenv("MISSING_TRANSLATIONS_HOUR") or "3").strip() or "3"),
+            minute=int((os.getenv("MISSING_TRANSLATIONS_MINUTE") or "40").strip() or "40"),
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,

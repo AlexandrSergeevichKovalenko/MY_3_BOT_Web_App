@@ -128,6 +128,9 @@ _DEFAULT_TASK_MODELS = {
     # Полный gpt-4.1: от него зависит, спросим ли мы человека, — ошибка тут молча уводит
     # разбор не в ту сторону. Переопределяется LLM_TASK_MODEL_WORD_READINGS.
     "word_readings": "gpt-4.1-2025-04-14",
+    # Перевод карточкам, у которых его нет: список идёт ПАЧКОЙ, один вызов на десятки
+    # слов. Полная модель — это перевод, который человек будет заучивать.
+    "missing_translations_batch": "gpt-4.1-2025-04-14",
     # Потоковый близнец: та же модель, чтобы куски и целый ответ не расходились в
     # качестве. Разница только в подаче — блоками по мере готовности.
     "word_diff_multilang_stream": "gpt-4.1-2025-04-14",
@@ -150,6 +153,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "word_diff_multilang",
     "word_usage_enrichment",
     "word_readings",
+    "missing_translations_batch",
     "enrich_word",
     "enrich_word_multilang",
     "article_gender_hint",
@@ -1264,6 +1268,23 @@ Task:
 - Keep explanation practical and compact.
 - If you provide examples in target_language, add immediate source_language translation.
 - End with 1-2 concise "gut feeling" lines.
+""",
+"missing_translations_batch":"""
+Ты — переводчик немецкого. На входе СПИСОК немецких слов и фраз, у которых в словаре
+человека потерялся перевод. Верни перевод каждому.
+
+ВХОД: {"explain_language":"ru","items":[{"id":12,"text":"Räum den Tisch ab"}]}
+
+Правила:
+- Перевод короткий и естественный: так сказал бы человек, а не подстрочник.
+- Фраза переводится фразой, слово — словом. Не добавляй пояснений в скобках, если без
+  них смысл ясен.
+- Не уверен в переводе — не выдумывай: верни для этой записи пустую строку. Пустое
+  честнее неверного: человек заучит то, что мы напишем.
+- Ничего, кроме перевода: без грамматики, без примеров, без комментариев.
+
+Верни СТРОГО ОДИН JSON:
+{"items":[{"id":12,"translation":"убери со стола"}]}
 """,
 "word_readings":"""
 Ты — немецкий лексикограф. Отвечаешь на ОДИН вопрос: чем бывает это написание в немецком.
@@ -7236,6 +7257,26 @@ async def run_feel_word_multilang(
         fast_delete=True,
     )
     return content.strip()
+
+
+async def run_missing_translations_batch(items: list[dict], *, explain_language: str = "ru") -> dict:
+    """Перевод сразу списку карточек, у которых его нет. Один вызов на пачку.
+
+    Владелец 26.08.2026: «Необязательно по одному отправлять — это дурь, если каждый
+    будет отправлять. Копим, потом пачкой через модель, а потом мне на решение».
+    """
+    task_name = "missing_translations_batch"
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=task_name,
+        user_message=json.dumps(
+            {"explain_language": (explain_language or "ru").strip().lower(),
+             "items": items or []},
+            ensure_ascii=False,
+        ),
+        poll_interval_seconds=2.0,
+    )
+    return parse_llm_json_object(content, context=task_name)
 
 
 async def run_word_readings(spelling: str, *, explain_language: str = "ru") -> dict:

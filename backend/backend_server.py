@@ -43662,6 +43662,7 @@ def list_webapp_word_integrity():
     """
     from backend.database import (
         list_word_integrity_pending, count_word_integrity_pending, scan_word_integrity,
+        list_failed_translations,
     )
 
     payload = request.get_json(silent=True) or {}
@@ -43678,13 +43679,18 @@ def list_webapp_word_integrity():
         "ok": True,
         "items": list_word_integrity_pending(limit=50),
         "total": count_word_integrity_pending(),
+        # Слова, которым ночь не подобрала перевод: копятся и ждут вашего слова.
+        "translations": list_failed_translations(limit=50),
     })
 
 
 @app.route("/api/webapp/dictionary/integrity/apply", methods=["POST"])
 def apply_webapp_word_integrity():
     """Выполнить отмеченные решения разом: исправить, оставить, удалить."""
-    from backend.database import apply_word_integrity_decisions, count_word_integrity_pending
+    from backend.database import (
+        apply_word_integrity_decisions, count_word_integrity_pending,
+        resolve_translation_request,
+    )
 
     payload = request.get_json(silent=True) or {}
     user_id = _resolve_webapp_user_id(payload)
@@ -43694,10 +43700,33 @@ def apply_webapp_word_integrity():
         return jsonify({"error": "Разбор словаря открыт только владельцу"}), 403
 
     decisions = payload.get("decisions")
-    if not isinstance(decisions, list) or not decisions:
+    translations = payload.get("translations")
+    has_translations = isinstance(translations, list) and translations
+    if (not isinstance(decisions, list) or not decisions) and not has_translations:
         return jsonify({"error": "Нечего применять: ни одно решение не отмечено"}), 400
 
-    result = apply_word_integrity_decisions(decisions)
+    result = apply_word_integrity_decisions(decisions if isinstance(decisions, list) else [])
+
+    # Перевод, вписанный владельцем, встаёт в карточку человека сразу.
+    typed = dropped = 0
+    for item in (translations or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            request_id = int(item.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not request_id:
+            continue
+        if item.get("drop"):
+            if resolve_translation_request(request_id, drop=True).get("ok"):
+                dropped += 1
+        else:
+            text = " ".join(str(item.get("translation") or "").split())
+            if text and resolve_translation_request(request_id, translation=text).get("ok"):
+                typed += 1
+    result["translated"] = typed
+    result["dropped"] = dropped
     logging.info("word_integrity: владелец применил решения %s", result)
     result["left"] = count_word_integrity_pending()
     result["ok"] = True

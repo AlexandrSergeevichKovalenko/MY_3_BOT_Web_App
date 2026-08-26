@@ -2103,3 +2103,17 @@ html[data-scheme="light"] .dq-gt > summary,
 }
 .wd-fold.is-open .wd-fold-arrow { transform: rotate(0deg); }
 @media (prefers-reduced-motion: reduce) { .wd-fold-arrow { transition: none; } }
+.wi-lookup {
+  align-self: flex-start;
+  padding: 7px 12px; border-radius: 999px;
+  border: 1px dashed var(--dq-chip-strong); background: transparent;
+  color: var(--dq-label); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.wi-block { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: 1px solid var(--dmps-border, #334155); }
+.wi-input {
+  width: 100%; box-sizing: border-box;
+  padding: 10px 12px; border-radius: 12px;
+  border: 1px solid var(--dmps-border, #334155); background: var(--dq-chip);
+  color: var(--dmps-text-title, #f1f5f9); font: inherit; font-size: 15px;
+}
+.wi-input::placeholder { color: var(--dmps-text-muted, #94a3b8); }

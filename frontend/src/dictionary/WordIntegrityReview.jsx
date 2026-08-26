@@ -57,6 +57,8 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
   const [phase, setPhase] = useState('loading');
   const [error, setError] = useState('');
   const [done, setDone] = useState(null);
+  const [translations, setTranslations] = useState([]); // не смогли перевести — ждут владельца
+  const [typed, setTyped] = useState({});               // что владелец вписал
 
   const load = useCallback(async (rescan = false) => {
     setPhase('loading');
@@ -65,6 +67,7 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
       const data = await api(urls.list, { rescan });
       setItems(Array.isArray(data?.items) ? data.items : []);
       setTotal(Number(data?.total) || 0);
+      setTranslations(Array.isArray(data?.translations) ? data.translations : []);
       setPhase('ready');
     } catch (e) {
       setError(humanizeDictError(e));
@@ -96,11 +99,14 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
         ...(action === 'fix' && fix.to_translation ? { to_translation: fix.to_translation } : {}),
       };
     });
-    if (!list.length) return;
+    if (!list.length && !Object.keys(typed).length) return;
     setPhase('applying');
     haptic('ok');
     try {
-      const data = await api(urls.apply, { decisions: list });
+      const filled = Object.entries(typed)
+        .filter(([, text]) => String(text || '').trim())
+        .map(([id, text]) => ({ id: Number(id), translation: text }));
+      const data = await api(urls.apply, { decisions: list, translations: filled });
       setDone({
         fixed: Number(data?.fixed) || 0,
         kept: Number(data?.kept) || 0,
@@ -108,12 +114,13 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
         left: Number(data?.left) || 0,
       });
       setDecisions({});
+      setTyped({});
       await load(false);
     } catch (e) {
       setError(humanizeDictError(e));
       setPhase('ready');
     }
-  }, [decisions, items, urls, load]);
+  }, [decisions, items, typed, translations, urls, load]);
 
   const marked = Object.keys(decisions).length;
 
@@ -162,12 +169,15 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
                   <span className="to">{fix.to_display || fix.to_lemma || fix.to_word}</span>
                 </div>
               )}
-              {fix && fix.to_translation && (
+              {fix?.to_translation && (
                 <div className="wi-fix">
                   <span className="from">нет перевода</span>
                   <span>→</span>
                   <span className="to">{fix.to_translation}</span>
                 </div>
+              )}
+              {row.issue === 'no_translation' && !fix?.to_translation && (
+                <div className="wi-src">Перевод подберёт ночная работа — обычно к утру.</div>
               )}
               {fix && fix.to_pos && (
                 <div className="wi-fix">
@@ -201,7 +211,28 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
           );
         })}
 
-        {items.length > 0 && (
+        {scope === 'shared' && translations.length > 0 && (
+          <div className="wi-block">
+            <div className="wi-title">Не смогли перевести</div>
+            <div className="wi-sub">
+              Ночь перевода не нашла. Впишите свой — он встанет в карточку человека сразу.
+            </div>
+            {translations.map((row) => (
+              <div className="wi-row" key={`tr-${row.id}`}>
+                <div className="wi-word">{row.word}</div>
+                <input
+                  className="wi-input"
+                  type="text"
+                  placeholder="Перевод…"
+                  value={typed[row.id] || ''}
+                  onChange={(e) => setTyped((prev) => ({ ...prev, [row.id]: e.target.value }))}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {(items.length > 0 || translations.length > 0) && (
           <>
             <button
               type="button"
