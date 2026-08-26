@@ -453,25 +453,34 @@ def test_ready_pair_opens_for_everyone_including_free(client, monkeypatch):
     """Готовая пара приходит из базы и тарифа не спрашивает — она нам ничего не стоит."""
     cached = {"words": ["Miete", "Pacht"], "payload": FULL_ANSWER, "sources": {}, "created_at": None}
     _patch_db(monkeypatch, get_word_diff_card=lambda *a, **k: cached)
-    monkeypatch.setattr(backend_server, "_word_diff_can_create", _forbid("проверка тарифа"))
+    # Тариф спрашиваем — но только чтобы решить, годится ли УСТАРЕВШАЯ запись.
+    # На выдачу готовой пары он не влияет: она нам ничего не стоит.
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: False)
     monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
     monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", lambda *a, **k: ENTRY)
 
     resp = _post(client, ["Miete", "Pacht"])
 
     assert resp.status_code == 200
-    assert resp.get_json()["from_cache"] is True
+    assert resp.get_json()["from_cache"] is True, "бесплатному не отдали готовую пару"
 
 
-def test_shared_shelf_is_sorted_by_how_often_a_pair_is_opened():
-    """Общий список ранжируется частотой: случайная ерунда сама уходит вниз."""
+def test_shared_shelf_shows_every_pair_with_its_count():
+    """Полка ранжируется частотой и НЕ прячет пары старой версии.
+
+    Замер 26.08.2026: после подъёма версии разбора полка отфильтровала всё и стала
+    пустой — владелец открыл вкладку и не увидел ни чисел, ни возможности удалить.
+    Версия решает, отдавать ли готовый разбор, а не показывать ли строку.
+    """
     import inspect
     from backend import database
     src = inspect.getsource(database.list_word_diff_popular)
-    assert "ORDER BY open_count DESC" in src, "список не ранжирован по частоте"
-    assert "schema_version = %s" in src, (
-        "в общий список попадут устаревшие пары — их открытие потребует новой оплаты"
-    )
+    assert "ORDER BY open_count DESC" in src, "полка не ранжирована по частоте"
+    assert "WHERE schema_version" not in src, "полка снова прячет пары прошлых версий"
+    assert "open_count" in src, "на полке нет числа обращений"
+
+    history_src = inspect.getsource(database.list_word_diff_history)
+    assert "open_count" in history_src, "в личной истории нет числа обращений"
 
 
 def test_stream_prompt_spells_out_every_block_in_full():
@@ -599,4 +608,16 @@ def test_bare_nominative_is_named_in_human_words_not_dropped_blindly():
     assert row["bare"] is True and row["pattern"] == "laufen"
     assert row["case"] == "" and row["obligatory"] is False, (
         "«обязательна» осталась там, где предлога нет — это утверждение про подлежащее"
+    )
+
+
+def test_outdated_answer_still_serves_the_one_who_cannot_order_a_new_one(monkeypatch):
+    """Бесплатному отдаём старый разбор, а не отказ: старый ответ полезнее пустоты.
+
+    Тому, кто может заказать новый, устаревшая запись не отдаётся — он получит свежую.
+    """
+    import inspect
+    src = inspect.getsource(backend_server._word_diff_prepare)
+    assert "any_version=not can_create" in src, (
+        "устаревшая запись либо не отдаётся бесплатному, либо мешает платному пересобрать"
     )

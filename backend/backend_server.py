@@ -43062,8 +43062,9 @@ def _word_diff_prepare(payload: dict) -> dict:
 
     pair_key = build_word_diff_pair_key(words, studied_lang, explain_lang)
 
-    # 2. Готовая пара — из общего кеша. Дневная единица за это НЕ берётся.
-    cached = get_word_diff_card(pair_key)
+    # 2. Готовая пара — из общего кеша. Платить за это не надо никому.
+    can_create = _word_diff_can_create(int(user_id))
+    cached = get_word_diff_card(pair_key, any_version=not can_create)
     if cached:
         record_word_diff_open(int(user_id), pair_key, cached.get("words") or words)
         return {"cached": {
@@ -43083,7 +43084,7 @@ def _word_diff_prepare(payload: dict) -> dict:
     # НОВЫЙ разбор делает только полный доступ, а всё уже разобранное открывается всем и
     # бесплатно, из базы. Для бесплатного человека это витрина: он видит, что тут есть,
     # и решает, нужно ли ему это.
-    if not _word_diff_can_create(int(user_id)):
+    if not can_create:
         return {"refuse": ({
             "ok": False,
             "reason": "paid_only",

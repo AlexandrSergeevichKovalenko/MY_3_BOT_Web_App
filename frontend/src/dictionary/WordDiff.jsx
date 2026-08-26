@@ -322,7 +322,9 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
     // Убираем из списка сразу: подтверждение с сервера придёт следом, а если не придёт —
     // строка вернётся на место и человек увидит текст ошибки.
     const before = popular;
+    const beforeHistory = history;
     setPopular((prev) => prev.filter((row) => row.pair_key !== pairKey));
+    setHistory((prev) => prev.filter((row) => row.pair_key !== pairKey));
     setSwiped('');
     haptic('ok');
     try {
@@ -330,9 +332,10 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
       void loadHistory();
     } catch (e) {
       setPopular(before);
+      setHistory(beforeHistory);
       setError(humanizeDictError(e));
     }
-  }, [isAdmin, popular, loadHistory]);
+  }, [isAdmin, popular, history, loadHistory]);
 
   const startOver = useCallback(() => {
     setCells(['', '']);
@@ -871,14 +874,28 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           <div className="wd-label"><span className="wd-ic">🕘</span>Вы уже сравнивали</div>
           <div className="wd-history">
             {history.map((row) => (
-              <button
-                type="button"
-                className="wd-history-row"
-                key={row.pair_key}
-                onClick={() => openPair(row.words)}
-              >
-                <span className="wd-history-pair">{(row.words || []).join(' · ')}</span>
-              </button>
+              <div className={`wd-swipe${swiped === row.pair_key ? ' is-open' : ''}`} key={row.pair_key}>
+                <button
+                  type="button"
+                  className="wd-history-row"
+                  onPointerDown={(e) => onRowPointerDown(e, row.pair_key)}
+                  onPointerUp={(e) => onRowPointerUp(e, row.pair_key)}
+                  onClick={() => (swiped === row.pair_key ? setSwiped('') : openPair(row.words))}
+                >
+                  <span className="wd-history-pair">{(row.words || []).join(' · ')}</span>
+                  {row.opens > 0 && <span className="wd-history-count">{row.opens}</span>}
+                </button>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    className="wd-swipe-delete"
+                    aria-label="Убрать разбор с общей полки"
+                    onClick={() => removePair(row.pair_key)}
+                  >
+                    Удалить
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         </div>
