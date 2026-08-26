@@ -23974,8 +23974,19 @@ def _texts_owner_already_settled(cursor, unit_id: int) -> set[str]:
     return seen
 
 
+def phrase_review_settled_texts(unit_id: int) -> set[str]:
+    """Что владелец по этой фразе уже видел и по чему высказался — ключами сравнения.
+
+    Ночь спрашивает это ДО постановки вопроса, чтобы решить, есть ли смысл звать
+    решающий голос: если он предложит то, что владелец уже отклонял, вопрос не нужен."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            return _texts_owner_already_settled(cursor, int(unit_id))
+
+
 def queue_phrase_for_review(*, unit_id: int, text: str, translation: str,
-                            judges: list) -> bool:
+                            judges: list, force: bool = False) -> int:
     """Спорная фраза — владельцу на решение. Один открытый вопрос на фразу: повторная
     проверка не должна плодить дубли в утреннем отчёте.
 
@@ -23993,9 +24004,15 @@ def queue_phrase_for_review(*, unit_id: int, text: str, translation: str,
     ошибку), вопрос уходит к нему как обычно — и экран показывает тихой строкой, что
     эту фразу он уже правил (`phrase_review_owner_history`).
 
-    Возвращает True, если вопрос поставлен, и False, если это был круг. Ночь считает
-    отказы и печатает их числом в утреннем отчёте: молчащая защита неотличима от
-    сломанной.
+    ⚠ `force` — НЕ обход правила, а его вторая половина. Ночь, наткнувшись на повтор,
+    спрашивает решающий голос: нет ли верного текста, которого владелец НЕ видел? Если
+    есть — вопрос ставится с этим текстом, потому что это уже другой вопрос. Без этого
+    защита от круга однажды заморозила бы неверную фразу навсегда: «Der Bus fährt 100
+    Personen mit» владелец 26.08.2026 оставил «как есть», потому что верного варианта
+    на экране не было вообще, — и больше эту фразу никто бы не тронул.
+
+    Возвращает id поставленного вопроса или 0, если это был круг. Ночь считает отказы и
+    печатает их числом в утреннем отчёте: молчащая защита неотличима от сломанной.
     """
     proposals = [str(j.get(field) or "").strip()
                  for j in (judges or []) if isinstance(j, dict)
@@ -24003,12 +24020,12 @@ def queue_phrase_for_review(*, unit_id: int, text: str, translation: str,
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
-            settled = _texts_owner_already_settled(cursor, int(unit_id))
+            settled = set() if force else _texts_owner_already_settled(cursor, int(unit_id))
             if phrase_question_is_a_repeat(text, proposals, settled):
                 logging.info(
                     "спорные фразы: вопрос про %r не заведён — владелец это уже решал",
                     str(text or "")[:60])
-                return False
+                return 0
             cursor.execute(
                 """
                 INSERT INTO bt_3_phrase_review (unit_id, text, translation, judges)
@@ -24020,8 +24037,12 @@ def queue_phrase_for_review(*, unit_id: int, text: str, translation: str,
                 (int(unit_id), str(text or ""), str(translation or ""),
                  json.dumps(judges or [], ensure_ascii=False)),
             )
+            cursor.execute(
+                "SELECT id FROM bt_3_phrase_review WHERE unit_id = %s AND status = 'open';",
+                (int(unit_id),))
+            row = cursor.fetchone()
         conn.commit()
-    return True
+    return int(row[0]) if row else 0
 
 
 def list_open_phrase_reviews(limit: int = 200) -> list[dict]:

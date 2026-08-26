@@ -400,6 +400,54 @@ def settle_dispute(review_id: int) -> bool:
     return True
 
 
+def answer_beyond_what_the_owner_saw(*, unit_id: int, text: str, translation: str,
+                                    judges: list) -> bool:
+    """Повтор — молчать, ЕСЛИ ответить нечем. Иначе это уже другой вопрос.
+
+    ЗАЧЕМ. Защита от круга сама по себе опасна: она может заморозить неверную фразу
+    навсегда. Живой случай 26.08.2026: «Der Bus fährt 100 Personen mit» — по-немецки так
+    не говорят (`mitfahren` — про пассажира, автобус людей `mitnimmt`), но владелец
+    нажал «оставить как есть», потому что ВЕРНОГО варианта на экране не было вообще:
+    оба судьи предлагали одно и то же, и проверка их забраковала. С этого момента фраза
+    считалась решённой, и защита от круга больше не пустила бы к ней ни одного вопроса.
+
+    Поэтому, наткнувшись на повтор, ночь делает ещё одно движение: спрашивает решающий
+    голос, есть ли ВЕРНЫЙ текст, которого владелец не видел. Есть — вопрос ставится с
+    ним, и владелец наконец получает то, чего ему не дали в прошлый раз. Нет — молчим,
+    это настоящий круг. Случай редкий (повторы штучные), поэтому и денег стоит мало.
+    """
+    from backend.database import (
+        phrase_review_settled_texts, queue_phrase_for_review, set_phrase_review_arbiter,
+        _phrase_text_key,
+    )
+    from backend.openai_manager import run_phrase_dispute_verdict
+
+    proposals = _judge_proposals(judges)
+    if not proposals:
+        return False
+    seen = phrase_review_settled_texts(int(unit_id))
+    try:
+        verdict = run_phrase_dispute_verdict(
+            text=text, variants=proposals, translation=translation) or {}
+    except Exception as exc:
+        logging.warning("решающий голос по повтору не ответил: %s", exc)
+        return False
+    better = str(verdict.get("better") or "").strip()
+    if not better or _phrase_text_key(better) in seen:
+        return False                       # ответить нечем — это круг, молчим
+    check = _check_fix_twice(text, translation, better)
+    if not (check.get("checked") and check.get("grammar_ok") and check.get("meaning_kept")):
+        return False                       # свой же текст не прошёл проверку — не несём
+    verdict["better_check"] = check
+    rid = queue_phrase_for_review(unit_id=int(unit_id), text=text,
+                                  translation=translation, judges=judges, force=True)
+    if not rid:
+        return False
+    set_phrase_review_arbiter(int(rid), verdict)
+    logging.info("повтор превратился в новый вопрос: %r → %r", text[:50], better[:50])
+    return True
+
+
 def settle_open_disputes(limit: int | None = None) -> dict:
     """Разрешить накопившиеся споры — порцией за ночь.
 
@@ -464,7 +512,7 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
     report = {"cap": cap, "picked": 0, "checked": 0, "fixed": 0, "doubt": 0, "errors": 0,
               "noise": 0, "by_category": {}, "left": 0, "open_reviews": 0,
               # Повторные вопросы, которые владельцу НЕ задали: он это уже решал.
-              "circle_blocked": 0,
+              "circle_blocked": 0, "reopened_with_answer": 0,
               # Закрыто без него («оба судьи: ошибки нет») и разрешено третьим судьёй.
               "closed_all_ok": 0, "settled": {},
               "dry_run": bool(dry_run)}
@@ -524,8 +572,17 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
                         unit_id=row["unit_id"], text=row["text"],
                         translation=row["translation"], judges=judges,
                     ):
-                        report["circle_blocked"] += 1
-                        report["doubt"] -= 1
+                        # Владелец это уже решал. Прежде чем промолчать — проверяем,
+                        # нет ли верного ответа, которого он НЕ видел.
+                        if answer_beyond_what_the_owner_saw(
+                            unit_id=row["unit_id"], text=row["text"],
+                            translation=row["translation"] or "", judges=judges,
+                        ):
+                            report["reopened_with_answer"] = int(
+                                report.get("reopened_with_answer") or 0) + 1
+                        else:
+                            report["circle_blocked"] += 1
+                            report["doubt"] -= 1
                     mark_phrase_checked(row["unit_id"], row["text"], "doubt")
                 continue
             if not dry_run:
