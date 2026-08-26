@@ -42373,6 +42373,71 @@ def _word_diff_payload_from_card(
     }
 
 
+_CASE_SHORT = {
+    "nominativ": "Nominativ", "akkusativ": "Akkusativ",
+    "dativ": "Dativ", "genitiv": "Genitiv",
+}
+
+
+def _word_diff_construction_key(word: str, pattern: str, case: str, preposition: str) -> str:
+    """Ключ конструкции без учёта записи. «laufen zu + Dativ» и «laufen + zu + Dativ» —
+    одно и то же, и на экране они стояли двумя строками (замер владельца 26.08.2026)."""
+    parts = [
+        " ".join(str(word or "").split()).casefold(),
+        " ".join(str(preposition or "").split()).casefold(),
+        " ".join(str(case or "").split()).casefold(),
+    ]
+    if not parts[1]:
+        # Предлога нет — различаем по самому образцу, очищенному от плюсов и падежа.
+        body = re.sub(r"\+|\b(nominativ|akkusativ|dativ|genitiv)\b", " ",
+                      str(pattern or ""), flags=re.IGNORECASE)
+        parts[1] = " ".join(body.split()).casefold()
+    return "|".join(parts)
+
+
+def _word_diff_construction_text(word: str, pattern: str, case: str, preposition: str) -> str:
+    """Запись конструкции в одном виде: «слово + предлог + падеж».
+
+    Владелец 26.08.2026: «непонятно, что такое слово, а потом стоит · Nominativ».
+    Читается как формула, поэтому и собираем её формулой, а не двумя полями через точку.
+    """
+    head = " ".join(str(word or "").split())
+    prep = " ".join(str(preposition or "").split())
+    case_text = _CASE_SHORT.get(str(case or "").strip().casefold(), str(case or "").strip())
+    if not head:
+        return " ".join(str(pattern or "").split())
+    # Голову берём из образца, если она богаче самого слова: «sich ausweisen» и
+    # «jdn. ausweisen» — это и есть смысл, и терять их нельзя.
+    base = " ".join(str(pattern or "").split())
+    base = re.sub(r"\s*\+?\s*(nominativ|akkusativ|dativ|genitiv)\s*$", "", base, flags=re.IGNORECASE)
+    if prep:
+        base = re.sub(rf"\s*\+?\s*{re.escape(prep)}\s*$", "", base, flags=re.IGNORECASE)
+    base = base.strip(" +") or head
+
+    # Есть предлог — собираем формулу сами, как бы её ни записала модель. Иначе одна и
+    # та же конструкция приходит то «laufen zu + Dativ», то «laufen + zu + Dativ».
+    if prep:
+        return f"{base} + {prep} + {case_text}".strip(" +")
+    return f"{base} + {case_text}".strip(" +") if case_text else base
+
+
+def _word_diff_construction_is_bare(pattern: str, case: str, preposition: str) -> bool:
+    """Это «слово + Nominativ» — то есть употребление БЕЗ ДОПОЛНЕНИЯ.
+
+    Подписью «Nominativ, обязательна» такая строка не сообщает ничего: подлежащее в
+    именительном есть у любого глагола. А вот сам факт «здесь дополнения нет» —
+    настоящая информация для глагола, который бывает и с дополнением, и без:
+    «Der Motor läuft» — это laufen в значении «работать». Поэтому строку не выбрасываем,
+    а называем по-человечески (владелец 26.08.2026).
+    """
+    if str(preposition or "").strip():
+        return False
+    if str(case or "").strip().casefold() != "nominativ":
+        return False
+    body = re.sub(r"\+|\b(nominativ)\b", " ", str(pattern or ""), flags=re.IGNORECASE)
+    return len(" ".join(body.split()).split()) <= 1
+
+
 def _word_diff_build_article(payload: dict) -> dict:
     """Готовая статья для сравнения: значения с номерами, конструкции с ярлыками.
 
@@ -42399,21 +42464,34 @@ def _word_diff_build_article(payload: dict) -> dict:
         ]
 
     constructions = []
-    seen_patterns: set[str] = set()
+    seen_keys: set[str] = set()
     for source in ((usage.get("constructions") or []), (payload.get("constructions") or [])):
         for item in source:
             if not isinstance(item, dict):
                 continue
             pattern = str(item.get("pattern") or "").strip()
-            if not pattern or pattern.casefold() in seen_patterns:
+            case = str(item.get("case") or "").strip()
+            preposition = str(item.get("preposition") or "").strip()
+            if not pattern:
                 continue
-            seen_patterns.add(pattern.casefold())
+            bare = _word_diff_construction_is_bare(pattern, case, preposition)
+            # Без дополнения и без примера показывать нечего — там пусто по существу.
+            if bare and not str(item.get("example_de") or "").strip():
+                continue
+            key = _word_diff_construction_key(word, pattern, case, preposition)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
             constructions.append({
                 "id": f"c{len(constructions) + 1}",
-                "pattern": pattern,
-                "case": str(item.get("case") or ""),
-                "preposition": str(item.get("preposition") or "" ) or None,
-                "obligatory": bool(item.get("obligatory")),
+                "pattern": word if bare else _word_diff_construction_text(word, pattern, case, preposition),
+                # «Без дополнения» — человеческое имя для голого именительного.
+                "bare": bare,
+                "case": "" if bare else case,
+                "preposition": preposition or None,
+                # «Обязательна» имеет смысл только там, где есть предлог: без него это
+                # утверждение про подлежащее, а оно есть всегда.
+                "obligatory": bool(item.get("obligatory")) and bool(preposition),
                 "sense_id": str(item.get("sense_id") or ""),
                 "example_de": str(item.get("example_de") or ""),
                 "example_ru": str(item.get("example_ru") or ""),
@@ -42715,7 +42793,10 @@ def _word_diff_validate(
             "note": _word_diff_clean_text(item.get("note"), 240),
         })
 
-    word_cards = []
+    # ОДНА карточка на слово, значения внутри неё. Владелец 26.08.2026 увидел «laufen»
+    # дважды подряд — по карточке на значение — и справедливо сказал, что в одной будет
+    # компактнее и понятнее.
+    cards_by_word: dict[str, dict] = {}
     for item in (raw.get("words") or []):
         if not isinstance(item, dict):
             continue
@@ -42723,14 +42804,23 @@ def _word_diff_validate(
         if key not in wanted:
             continue
         source = by_word.get(key) or {}
-        word_cards.append({
+        card = cards_by_word.setdefault(key, {
             "word": wanted[key],
+            "pos": str(source.get("pos") or ""),
+            "senses": [],
+        })
+        sense = {
             "sense_id": _word_diff_clean_text(item.get("sense_id"), 16),
             "meaning": _word_diff_clean_text(item.get("meaning"), 200),
             "when": _word_diff_clean_text(item.get("when"), 200),
             "register": _word_diff_clean_text(item.get("register"), 80),
-            "pos": str(source.get("pos") or ""),
-        })
+        }
+        if not sense["meaning"] and not sense["when"]:
+            continue
+        if any(x["meaning"].casefold() == sense["meaning"].casefold() for x in card["senses"]):
+            continue
+        card["senses"].append(sense)
+    word_cards = [cards_by_word[w.casefold()] for w in words if w.casefold() in cards_by_word]
 
     # Не больше двух примеров на слово, и у каждого обязателен перевод: немецкая фраза
     # без перевода ученику бесполезна, а придумывать перевод мы не станем.

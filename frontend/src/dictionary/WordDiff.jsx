@@ -478,44 +478,80 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
             {cards.map((card) => {
               const isSaved = saved.has(`w:${card.word}`);
               const mine = constructions.filter((c) => c.word === card.word);
+              const senses = Array.isArray(card.senses) ? card.senses : [];
+              // Конструкции без привязки к значению показываем один раз внизу карточки —
+              // они относятся к слову целиком.
+              const loose = mine.filter((c) => !c.sense_id
+                || !senses.some((sense) => sense.sense_id === c.sense_id));
               return (
                 <div className="wd-card" key={card.word}>
                   <div className="wd-card-top">
                     <span className="wd-card-word">{card.word}</span>
                     {tts && <SpeakButton text={card.word} tts={tts} />}
+                    {card.pos && <span className="wd-pos">{POS_LABEL[card.pos] || card.pos}</span>}
                   </div>
-                  {card.meaning && <div className="wd-card-gloss">{card.meaning}</div>}
-                  <div className="wd-card-rows">
-                    {card.pos && (
-                      <div className="wd-card-row"><span className="k">Часть речи</span><span className="v">{POS_LABEL[card.pos] || card.pos}</span></div>
-                    )}
-                    {mine.length > 0 && (
-                      <div className="wd-card-row">
-                        <span className="k">Конструкция</span>
-                        <span className="v">
-                          {mine.map((c) => (
-                            <span className="wd-construction" key={c.id}>
-                              <b>{c.pattern}</b>
-                              {c.case ? ` · ${c.case}` : ''}
-                              {c.obligatory ? <span className="wd-oblig"> обязательна</span> : null}
-                              {c.example_de && (
-                                <span className="wd-construction-ex">
-                                  {c.example_de}
-                                  {c.example_ru && <span className="wd-construction-ru">{c.example_ru}</span>}
-                                </span>
-                              )}
-                            </span>
-                          ))}
-                        </span>
+
+                  {senses.map((sense, i) => {
+                    const senseConstructions = mine.filter((c) => c.sense_id && c.sense_id === sense.sense_id);
+                    return (
+                      <div className="wd-sense" key={sense.sense_id || `s-${i}`}>
+                        {senses.length > 1 && <span className="wd-sense-num">{i + 1}</span>}
+                        <div className="wd-sense-body">
+                          {sense.meaning && <div className="wd-card-gloss">{sense.meaning}</div>}
+                          {sense.when && (
+                            <div className="wd-card-row"><span className="k">Когда</span><span className="v">{emphasize(sense.when, words)}</span></div>
+                          )}
+                          {sense.register && (
+                            <div className="wd-card-row"><span className="k">Регистр</span><span className="v">{sense.register}</span></div>
+                          )}
+                          {senseConstructions.length > 0 && (
+                            <div className="wd-card-row">
+                              <span className="k">Конструкция</span>
+                              <span className="v">
+                                {senseConstructions.map((c) => (
+                                  <span className="wd-construction" key={c.id}>
+                                    <b>{c.pattern}</b>
+                                    {c.bare ? <span className="wd-bare"> — без дополнения</span> : null}
+                                    {!c.bare && c.case ? ` · ${c.case}` : ''}
+                                    {c.obligatory ? <span className="wd-oblig"> без предлога не употребляется</span> : null}
+                                    {c.example_de && (
+                                      <span className="wd-construction-ex">
+                                        {c.example_de}
+                                        {c.example_ru && <span className="wd-construction-ru">{c.example_ru}</span>}
+                                      </span>
+                                    )}
+                                  </span>
+                                ))}
+                              </span>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    )}
-                    {card.register && (
-                      <div className="wd-card-row"><span className="k">Регистр</span><span className="v">{card.register}</span></div>
-                    )}
-                    {card.when && (
-                      <div className="wd-card-row"><span className="k">Когда</span><span className="v">{emphasize(card.when, words)}</span></div>
-                    )}
-                  </div>
+                    );
+                  })}
+
+                  {loose.length > 0 && (
+                    <div className="wd-card-row">
+                      <span className="k">Конструкция</span>
+                      <span className="v">
+                        {loose.map((c) => (
+                          <span className="wd-construction" key={c.id}>
+                            <b>{c.pattern}</b>
+                            {c.bare ? <span className="wd-bare"> — без дополнения</span> : null}
+                            {!c.bare && c.case ? ` · ${c.case}` : ''}
+                            {c.obligatory ? <span className="wd-oblig"> без предлога не употребляется</span> : null}
+                            {c.example_de && (
+                              <span className="wd-construction-ex">
+                                {c.example_de}
+                                {c.example_ru && <span className="wd-construction-ru">{c.example_ru}</span>}
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                  )}
+
                   {!isGuest && (
                     <div className="wd-card-foot">
                       <button
