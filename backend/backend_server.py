@@ -400,6 +400,7 @@ from backend.openai_manager import (
     run_feel_word_multilang,
     run_word_diff_multilang,
     run_word_usage_enrichment,
+    run_word_readings,
     run_enrich_word,
     run_enrich_word_multilang,
     run_theory_generation,
@@ -42149,6 +42150,53 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str,
         logging.exception("word_diff: слой единиц не ответил на %r", text)
         entries = []
 
+    # Сначала спрашиваем ЯЗЫК, чем бывает это написание, и только потом смотрим свою базу.
+    # «das Gehen» существует, даже если записи у нас нет: человек должен получить вопрос,
+    # а не наш выбор (владелец 26.08.2026).
+    readings = _word_diff_readings(text, studied_lang, explain_lang)
+    # Наша база — тоже источник: если у нас есть законная запись с частью речи, которой
+    # в ответе источника нет, добавляем её. Замер 26.08.2026: на «gehen» источник вернул
+    # только «das Gehen» и потерял сам глагол.
+    for entry in _word_diff_legit_entries(text, entries, studied_lang):
+        pos = str(entry.get("pos") or "").strip().lower()
+        if not pos or any(r.get("pos") == pos for r in readings):
+            continue
+        # Показываем словарное написание из НАШЕЙ записи: глагол строчными.
+        head = str(entry.get("headword") or text).strip() or text
+        article = str(entry.get("gender") or "").strip().lower()
+        form = f"{article} {head}".strip() if pos == "noun" and article in {"der", "die", "das"} else head
+        readings.append({
+            "pos": pos, "form": form, "common": True,
+            "meaning": ", ".join([str(x) for x in (entry.get("translations") or [])][:2]),
+        })
+
+    ask = _word_diff_readings_to_ask(text, readings)
+    if ask and not pick:
+        return {
+            "needs_choice": True,
+            "word": text,
+            "options": [{
+                "key": f"pos:{reading['pos']}",
+                "pos": reading["pos"],
+                "label": reading["form"],
+                "pos_label": _POS_HUMAN.get(reading["pos"], reading["pos"]),
+                "hint": reading.get("meaning") or "",
+            } for reading in ask],
+        }
+
+    chosen_pos = pick[4:] if pick.startswith("pos:") else ""
+    if chosen_pos:
+        # Человек ответил. Работаем с его прочтением: если такой записи у нас нет —
+        # соберём её, а не подсунем соседнюю.
+        entries = [e for e in entries
+                   if str(e.get("pos") or "").strip().lower() == chosen_pos] or []
+        if not entries:
+            chosen_reading = next((r for r in readings if r.get("pos") == chosen_pos), None)
+            return _word_diff_article_for_reading(
+                text, chosen_reading or {"pos": chosen_pos, "form": text},
+                studied_lang, explain_lang,
+            )
+
     usable = _word_diff_legit_entries(text, entries, studied_lang)
     entry = _word_diff_pick_entry(text, entries, studied_lang, pick=pick)
     if not entry and len(usable) > 1:
@@ -42226,6 +42274,105 @@ def _word_diff_entry_key(entry: dict) -> str:
     """Ярлык прочтения: часть речи и единица. По нему возвращается выбор человека."""
     pos = str((entry or {}).get("pos") or "").strip().lower() or "other"
     return f"{pos}:{int((entry or {}).get('unit_id') or 0)}"
+
+
+def _word_diff_article_for_reading(word: str, reading: dict, studied_lang: str,
+                                   explain_lang: str) -> dict | None:
+    """Статья по выбранному человеком прочтению, когда своей записи у нас нет.
+
+    Собирается «Полнотой слова» для ИМЕННО ЭТОЙ части речи: выбрал существительное —
+    получит «das Gehen», а не соседний глагол.
+    """
+    text = " ".join(str(word or "").split())
+    pos = str((reading or {}).get("pos") or "").strip().lower()
+    if not text:
+        return None
+    usage = _word_diff_usage(text, {}, studied_lang, explain_lang, pos=pos)
+    if not usage or not usage.get("senses"):
+        return None
+    form = " ".join(str((reading or {}).get("form") or text).split())
+    headword = re.sub(r"^(der|die|das)\s+", "", form, flags=re.IGNORECASE).strip() or text
+    return _word_diff_build_article({
+        "word": text,
+        "headword": headword,
+        "entry_key": f"pos:{pos}",
+        "pos": pos,
+        "senses": [],
+        "examples": [],
+        "constructions": [],
+        "collocations": [],
+        "register": "",
+        "source": "word_readings",
+        "usage": usage,
+    })
+
+
+def _word_diff_readings(word: str, studied_lang: str, explain_lang: str) -> list[dict]:
+    """Чем это написание бывает В НЕМЕЦКОМ. Наша база тут ни при чём.
+
+    Владелец 26.08.2026: «Даже если у нас нет записи, но она существует в грамматике
+    немецкого языка, — мы обязаны спросить». Поэтому спрашиваем источник, а не смотрим
+    свой словарь: «das Gehen» существует независимо от того, завели мы её или нет.
+    Ответ сохраняется навсегда: один вопрос на слово, дальше бесплатно.
+    """
+    from backend.database import get_word_readings, save_word_readings
+    text = " ".join(str(word or "").split())
+    if not text or str(studied_lang or "").strip().lower() != "de":
+        return []
+    try:
+        stored = get_word_readings(text, lang=studied_lang, explain_lang=explain_lang)
+        if stored is not None:
+            return [r for r in stored if isinstance(r, dict)]
+    except Exception:
+        logging.exception("word_diff: не смогли прочитать прочтения %r", text)
+        return []
+    try:
+        fresh = asyncio.run(run_word_readings(text, explain_language=explain_lang))
+    except Exception:
+        logging.exception("word_diff: не смогли спросить прочтения %r", text)
+        return []
+    readings = fresh.get("readings") if isinstance(fresh, dict) else None
+    if not isinstance(readings, list):
+        return []
+    clean = []
+    for item in readings:
+        if not isinstance(item, dict):
+            continue
+        pos = str(item.get("pos") or "").strip().lower()
+        form = " ".join(str(item.get("form") or "").split())
+        if not pos or not form:
+            continue
+        clean.append({
+            "pos": pos,
+            "form": form,
+            "meaning": " ".join(str(item.get("meaning") or "").split())[:120],
+            "common": bool(item.get("common")),
+        })
+    try:
+        save_word_readings(text, clean, lang=studied_lang, explain_lang=explain_lang)
+    except Exception:
+        logging.exception("word_diff: не смогли сохранить прочтения %r", text)
+    return clean
+
+
+def _word_diff_readings_to_ask(word: str, readings: list) -> list[dict]:
+    """Какие прочтения показать человеку. Пусто — спрашивать не о чем.
+
+    Написал со строчной — существительные отпадают: в немецком существительное всегда
+    пишется с заглавной, и это решает грамматика, а не мы. Всё остальное, что реально
+    употребляется в языке, идёт в вопрос.
+    """
+    typed_lower = bool(word) and word[:1].islower()
+    usable = [r for r in (readings or []) if isinstance(r, dict) and r.get("common")]
+    if typed_lower:
+        usable = [r for r in usable if r.get("pos") != "noun"]
+    seen, out = set(), []
+    for reading in usable:
+        if reading["pos"] in seen:
+            continue
+        seen.add(reading["pos"])
+        out.append(reading)
+    return out[:4] if len(out) > 1 else []
 
 
 def _word_diff_legit_entries(text: str, entries: list, studied_lang: str) -> list:

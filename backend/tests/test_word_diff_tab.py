@@ -718,3 +718,34 @@ def test_broken_record_is_not_a_reading_and_never_becomes_a_question():
     usable = backend_server._word_diff_legit_entries("gehen", entries, "de")
     assert [e["pos"] for e in usable] == ["verb"]
     assert backend_server._word_diff_pick_entry("gehen", entries, "de")["pos"] == "verb"
+
+
+def test_question_comes_from_the_language_not_from_our_database(monkeypatch):
+    """Спрашиваем, если прочтения есть В НЕМЕЦКОМ — даже когда записи у нас нет.
+
+    Владелец 26.08.2026: «Даже если у нас нет записи, но она существует в грамматике
+    немецкого языка, — мы обязаны спросить». Раньше вопрос строился по нашей базе, и
+    «das Gehen» не спрашивалось только потому, что запись у нас была испорчена.
+    """
+    from backend import database
+    monkeypatch.setattr(database, "get_word_readings", lambda *a, **k: [
+        {"pos": "verb", "form": "gehen", "meaning": "идти", "common": True},
+        {"pos": "noun", "form": "das Gehen", "meaning": "ходьба", "common": True},
+    ])
+    monkeypatch.setattr(database, "save_word_readings", lambda *a, **k: None)
+
+    readings = backend_server._word_diff_readings("Gehen", "de", "ru")
+    ask = backend_server._word_diff_readings_to_ask("Gehen", readings)
+    assert [o["form"] for o in ask] == ["gehen", "das Gehen"], "вопрос не собрался"
+
+    # Написал со строчной — существительное отпадает по правилу орфографии, вопроса нет.
+    assert backend_server._word_diff_readings_to_ask("gehen", readings) == []
+
+
+def test_rare_reading_does_not_bother_the_person(monkeypatch):
+    """Редкое прочтение вопросом не становится: спрашиваем о том, что правда употребляется."""
+    readings = [
+        {"pos": "verb", "form": "ausweisen", "meaning": "выдворять", "common": True},
+        {"pos": "noun", "form": "das Ausweisen", "meaning": "выдворение", "common": False},
+    ]
+    assert backend_server._word_diff_readings_to_ask("Ausweisen", readings) == []
