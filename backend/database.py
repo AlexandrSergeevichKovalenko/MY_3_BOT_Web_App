@@ -24481,11 +24481,31 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
     ничего не меняет, а выглядит как решение — поэтому такие варианты сюда не попадают.
     Нумерация вариантов идёт ПОСЛЕ этого отсева, и она одна и та же везде: и на кнопках
     экрана, и при применении решения."""
-    from backend.phrase_night_check import fix_passed_check
+    from backend.phrase_night_check import _judge_proposals, fix_passed_check
 
     original = str(text or "").strip()
     out: list[dict] = []
     seen: set[str] = set()
+    # ┌─ РАЗБОР ИСТОЧНИКОВ 26.08.2026. НЕ УБИРАТЬ, НЕ РАЗОБРАВШИСЬ. ─────────────────┐
+    # │ «Anzeichen für einen Herzi» → оба судьи предложили «Herzinfarkt», и НАША     │
+    # │ проверка забраковала обоих: «изменено значение с признаков сердечного        │
+    # │ приступа на признаки инфаркта». Это одно и то же по-русски — ошиблась        │
+    # │ проверка. Третий судья, который видит и оба варианта, и сохранённый смысл,   │
+    # │ назвал их вариант верным. У владельца в итоге не осталось ни одной кнопки на │
+    # │ единственном правильном тексте.                                             │
+    # │ Голос третьего судьи СИЛЬНЕЕ приговора проверки — он информированнее (видит  │
+    # │ спор целиком) и идёт на более сильной модели. Но не молча: вариант приезжает │
+    # │ с пометкой, что проверка с ним не согласна, и владелец видит обе стороны.    │
+    # └─────────────────────────────────────────────────────────────────────────────┘
+    winner_text = ""
+    try:
+        winner = int((arbiter or {}).get("winner") or 0)
+    except (TypeError, ValueError):
+        winner = 0
+    if winner > 0:
+        proposals = _judge_proposals(judges or [])
+        if winner <= len(proposals):
+            winner_text = proposals[winner - 1]
     for n, j in enumerate(judges or [], 1):
         if not isinstance(j, dict):
             continue
@@ -24500,13 +24520,16 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
             # судьи она остаётся, но с приговором проверки, а не с кнопкой. Иначе мы
             # отдаём человеку на глаз ровно то, что обязана была отсеять система.
             # Разобрано 19.08.2026 на «in den Taschen» — неверный падеж и другое число.
-            if fix_passed_check(j, field) is False:
+            rejected = fix_passed_check(j, field) is False
+            if rejected and not _phrase_same_text(value, winner_text):
                 continue
             seen.add(value)
             out.append({"judge": n, "field": field, "text": value,
                         "ru": str(j.get(f"{field}_ru") or "").strip(),
                         # «Не проверено» — не то же самое, что «проверено и годится».
-                        "checked": fix_passed_check(j, field) is True})
+                        "checked": fix_passed_check(j, field) is True,
+                        # Проверка против, третий судья за. Владелец увидит обе стороны.
+                        "check_disputed_by_arbiter": bool(rejected)})
     # Третейский судья может предложить СВОЙ текст — когда правы оба наполовину. Он
     # идёт последним, чтобы номера уже показанных вариантов не сдвинулись под рукой у
     # владельца: он мог смотреть на экран до того, как спор разрешили.

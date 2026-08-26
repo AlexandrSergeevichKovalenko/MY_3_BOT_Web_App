@@ -31545,7 +31545,15 @@ def _phrase_review_payload(limit: int = 200) -> dict:
                  # смысл сохранённой фразы или молча подменил его
                  "ru": v.get("ru") or "",
                  "kind": {"corrected": "fix", "proposal": "complete"}.get(
-                     v["field"], v["field"])}
+                     v["field"], v["field"]),
+                 # Третий судья назвал этот вариант верным, а наша проверка была
+                 # против. Кнопка есть, но возражение проверки владелец видит рядом —
+                 # решает он, и решает зряче.
+                 "objection": (
+                     str(((judges[v["judge"] - 1] or {}).get(f"{v['field']}_check") or {})
+                         .get("why") or "")
+                     if v.get("check_disputed_by_arbiter")
+                     and 0 < v["judge"] <= len(judges) else "")}
                 for n, v in enumerate(variants)
             ],
             "judges": [

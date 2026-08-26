@@ -399,6 +399,13 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
                 <div className="frv-v-de">{v.text}</div>
                 {v.ru ? <div className="frv-v-ru">{v.ru}</div> : null}
                 {why ? <div className="frv-v-why"><b>Почему так:</b> {why}</div> : null}
+                {/* Наша проверка была против, а третий судья — за. Прятать её возражение
+                    нельзя: владелец решает сам и должен видеть обе стороны. */}
+                {v.objection ? (
+                  <div className="frv-v-why frv-objection">
+                    <b>Наша проверка не согласна:</b> {v.objection}
+                  </div>
+                ) : null}
                 <button className="frv-save" disabled={busy}
                   onClick={() => decide('accept', { variant: v.index })}>
                   Сохранить этот вариант

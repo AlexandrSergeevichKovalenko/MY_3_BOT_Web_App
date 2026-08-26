@@ -2490,6 +2490,8 @@ html[data-scheme="light"] .frrev-w {
 .frv-v-ru { font-size: 0.875rem; color: var(--dmps-text-secondary, #CBD5E1); }
 .frv-v-why { font-size: 0.8438rem; line-height: 1.45; color: var(--dmps-text-secondary, #CBD5E1); }
 .frv-v-why b { color: var(--dmps-text-primary, #F8FAFC); font-weight: 650; }
+.frv-objection { color: var(--frv-stop); }
+.frv-objection b { color: var(--frv-stop); }
 
 .frv-save {
   appearance: none; border: 0; font: inherit; cursor: pointer; width: 100%;
