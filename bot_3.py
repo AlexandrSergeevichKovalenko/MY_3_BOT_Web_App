@@ -9037,6 +9037,54 @@ async def allowed_users_command(update: Update, context: CallbackContext):
     await update.effective_message.reply_text("\n".join(lines))
 
 
+async def zhaloby_command(update: Update, context: CallbackContext):
+    """/zhaloby — разобрать жалобы на карточки ПРЯМО СЕЙЧАС и открыть экран решения.
+
+    Зачем команда, когда всё и так работает ночью. Владелец 26.08.2026: «как мне
+    проверить это в реальной ситуации?» Ночь судит в 3:25, а пачка приходит по порогу
+    (10 жалоб или неделя) — ждать этого, чтобы посмотреть на свой же механизм, глупо.
+    Команда делает то же самое, но сразу и без порога.
+
+    Ночную рассылку она НЕ заменяет и не отменяет: это её ручной дубль для проверки.
+    """
+    sender = update.effective_user
+    if not sender or not update.effective_message:
+        return
+    if not _is_admin_user(sender.id):
+        await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    from backend.card_complaints import (
+        JUDGE_NIGHT_CAP, count_open, ensure_card_complaint_schema, judge_new_complaints,
+    )
+    ensure_card_complaint_schema()
+    await update.effective_message.reply_text("Сужу жалобы… это может занять минуту.")
+    итог = await asyncio.to_thread(judge_new_complaints, JUDGE_NIGHT_CAP)
+    открытых = count_open()
+    bot_username = os.getenv("TELEGRAM_BOT_USERNAME") or ""
+    строки = [
+        "⚠️ <b>Жалобы на разбор карточек</b>",
+        "",
+        f"Взято на суд: <b>{итог['взято']}</b>",
+        f"Разобрано моделью: <b>{итог['разобрано']}</b>",
+        f"Поддержано (карточку надо менять): <b>{итог['правы']}</b>",
+        f"Модель не ответила: <b>{итог['не ответила']}</b> — придут на суд снова",
+        "",
+        (f"Всего ждёт твоего решения: <b>{открытых}</b>" if открытых >= 0
+         else "Сколько ждёт решения — <b>не смог посчитать</b>, смотри лог"),
+    ]
+    разметка = None
+    if bot_username and открытых:
+        разметка = {"inline_keyboard": [[{
+            "text": "Разобрать жалобы",
+            "url": f"https://t.me/{bot_username}?startapp=zhaloby",
+        }]]}
+    await update.effective_message.reply_text(
+        "\n".join(строки), parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+            "Разобрать жалобы",
+            url=f"https://t.me/{bot_username}?startapp=zhaloby")]]) if разметка else None)
+
+
 async def new_users_command(update: Update, context: CallbackContext):
     """/newusers [часы] — тот же дайджест подключений, что приходит утром, но по запросу."""
     sender = update.effective_user
@@ -44199,6 +44247,7 @@ def main():
     application.add_handler(CommandHandler("admin_subs", admin_subs_command))
     application.add_handler(CommandHandler("reader_audio_setlimit", _admin_reader_audio_setlimit_command))
     application.add_handler(CommandHandler("allowed", allowed_users_command))
+    application.add_handler(CommandHandler("zhaloby", zhaloby_command))
     application.add_handler(CommandHandler("newusers", new_users_command))
     application.add_handler(CommandHandler("pending", pending_requests_command))
     application.add_handler(CommandHandler("pending_purges", pending_purges_command))

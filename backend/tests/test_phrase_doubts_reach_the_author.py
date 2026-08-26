@@ -148,5 +148,43 @@ class ФразыДоходятДоАвтора(unittest.TestCase):
         self.assertEqual(сводка._phrase_counts_by_author(курсор), {})
 
 
+class ПоломкаНеПритворяетсяПустотой(unittest.TestCase):
+    """Пустой список УЖЕ значит «спрашивать нечего». Той же пустотой отвечать на сбой
+    нельзя: снаружи два разных мира становятся неотличимы.
+
+    ПОВОД. 26.08.2026 `except Exception: return []` живьём съел настоящую поломку —
+    правка стала падать на распаковке строки, а наружу ушёл «пустой список». Нашлась
+    она только по следу в логе, и то случайно.
+    """
+
+    def _с_поломкой(self):
+        return mock.patch("backend.database.get_db_connection_context",
+                          side_effect=RuntimeError("база молчит"))
+
+    def test_broken_list_is_not_an_empty_batch(self):
+        with self._с_поломкой(), self.assertRaises(RuntimeError):
+            сводка.words_for_user(777)
+
+    def test_broken_screen_is_not_an_empty_screen(self):
+        with self._с_поломкой(), self.assertRaises(RuntimeError):
+            сводка.audit_items(777)
+
+    def test_broken_save_is_not_a_silent_success(self):
+        """Человек нажал «Готово». Экран обязан сказать правду, а не нарисовать успех."""
+        with self._с_поломкой(), self.assertRaises(RuntimeError):
+            сводка.apply_decisions(777, [{"word": "Haus", "action": "keep"}])
+
+    def test_a_broken_mailing_is_marked_failed_not_completed(self):
+        """Сбой базы в момент рассылки выглядел как «сегодня никому не нужно писать»."""
+        with mock.patch.dict("os.environ", {"TELEGRAM_Deutsch_BOT_TOKEN": "т",
+                                            "TELEGRAM_BOT_USERNAME": "бот"}), \
+             mock.patch("backend.database.claim_scheduler_run_guard", return_value=True), \
+             mock.patch("backend.database.finish_scheduler_run_guard") as финиш, \
+             self._с_поломкой():
+            итог = сводка.send_word_audit_reminders()
+        self.assertFalse(итог["ok"])
+        self.assertEqual(финиш.call_args.kwargs["status"], "failed")
+
+
 if __name__ == "__main__":
     unittest.main()
