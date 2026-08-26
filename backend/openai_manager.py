@@ -9408,11 +9408,22 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence",
         "into Russian in `corrected_ru` / `proposal_ru`. The reader must be able to see "
         "whether your fix still means what the learner saved, or whether you quietly "
         "changed the meaning.\n"
+        # ⛔ ЯЗЫК ОБЪЯСНЕНИЯ — ОТДЕЛЬНЫМ ПРАВИЛОМ, А НЕ ПОДПИСЬЮ В СХЕМЕ.
+        # Пометки «<one short sentence in RUSSIAN>» внутри схемы модели не хватало:
+        # замер 26.08.2026 — 29 открытых вопросов из 232 приехали к владельцу с
+        # немецким «Das Verb 'fahren' wird hier transitiv verwendet», а переспрос по
+        # одному разу вернул немецкий ещё в 18 случаях. Читает это человек, который
+        # по-немецки только учится; объяснение на разбираемом языке — тот же молчащий
+        # экран, только с текстом. Правило вынесено наверх и названо прямо.
+        "- `why` MUST be written in RUSSIAN, in Cyrillic letters. German or English "
+        "there is INVALID even when the sentence you judge is German: the reader is a "
+        "Russian speaker deciding whether to keep the entry. German words may appear "
+        "only as quoted examples inside the Russian sentence.\n"
         "Answer STRICT JSON only: {\"verdict\":\"ok|error|context|style\","
         "\"category\":\"rechtschreibung|kongruenz|kasus|praeposition|wortstellung|stil|\","
         "\"corrected\":\"<fixed text or empty>\",\"corrected_ru\":\"<RUSSIAN or empty>\","
         "\"proposal\":\"<complete German text or empty>\",\"proposal_ru\":\"<RUSSIAN or empty>\","
-        "\"why\":\"<one short sentence in RUSSIAN>\"}"
+        "\"why\":\"<one short sentence in RUSSIAN, Cyrillic>\"}"
     )
     try:
         client = build_sync_openai_client(api_key=api_key, timeout=15)
