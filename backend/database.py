@@ -31074,6 +31074,257 @@ def apply_word_integrity_decisions(decisions: list) -> dict:
     return {"fixed": fixed, "kept": kept, "deleted": deleted}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Проверка ЛИЧНЫХ слов человека.
+#
+# Владелец 26.08.2026: «Логично, чтобы пользователь проверял качество своих слов и мог
+# исправить. Мы ведь пользуемся словами других пользователей — перед походом в модель
+# смотрим, нет ли такого слова у кого-то ещё. Поэтому важно, чтобы слова были в порядке.»
+#
+# Это НЕ карантин: карантин — про слова, которые модель не смогла собрать. Здесь —
+# про карточки, записанные неверно, и главное действие тут другое: исправить.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_USER_WORD_REVIEW_SCHEMA_READY = False
+
+USER_WORD_ISSUES = {
+    "no_translation": "Нет перевода — учить нечем",
+    "garbage": "В слове символы, которых в слове не бывает",
+    "translation_equals_word": "Перевод повторяет само слово",
+    "pos_mismatch": "Помечено существительным, но написано со строчной буквы",
+}
+
+
+def ensure_user_word_review_schema() -> None:
+    global _USER_WORD_REVIEW_SCHEMA_READY
+    if _USER_WORD_REVIEW_SCHEMA_READY:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_user_word_review (
+                    id         BIGSERIAL PRIMARY KEY,
+                    user_id    BIGINT NOT NULL,
+                    entry_id   BIGINT NOT NULL UNIQUE,
+                    issue      TEXT NOT NULL,
+                    status     TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    decided_at TIMESTAMPTZ
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_user_word_review_pending "
+                "ON bt_3_user_word_review (user_id, status);"
+            )
+        conn.commit()
+    _USER_WORD_REVIEW_SCHEMA_READY = True
+
+
+def scan_user_word_issues(limit: int = 2000) -> dict:
+    """Найти неверные личные карточки и положить их в очередь. Ничего не меняет.
+
+    Проверяются ТОЛЬКО одиночные слова: во фразе («absolute Kontraindikation») строчная
+    буква в начале — норма, и замер 26.08.2026 показал, что иначе 238 нормальных фраз
+    выглядят браком.
+    """
+    ensure_user_word_review_schema()
+    added = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_user_word_review (user_id, entry_id, issue)
+                SELECT q.user_id, q.id,
+                       CASE
+                         WHEN COALESCE(TRIM(q.translation_ru), '') = '' THEN 'no_translation'
+                         WHEN q.word_de ~ '[=<>{}@#$%%^*_~`]' AND q.word_de !~ ' ' THEN 'garbage'
+                         WHEN LOWER(TRIM(q.word_de)) = LOWER(TRIM(q.translation_ru))
+                              THEN 'translation_equals_word'
+                         ELSE 'pos_mismatch'
+                       END
+                FROM bt_3_webapp_dictionary_queries q
+                WHERE COALESCE(q.word_de, '') <> ''
+                  AND (
+                        COALESCE(TRIM(q.translation_ru), '') = ''
+                     OR (q.word_de ~ '[=<>{}@#$%%^*_~`]' AND q.word_de !~ ' ')
+                     OR LOWER(TRIM(q.word_de)) = LOWER(TRIM(q.translation_ru))
+                     OR (q.response_json->>'part_of_speech' = 'noun'
+                         AND q.word_de ~ '^[a-zäöüß]' AND q.word_de !~ ' ')
+                  )
+                ORDER BY q.id
+                LIMIT %s
+                ON CONFLICT (entry_id) DO NOTHING;
+                """,
+                (max(1, min(int(limit or 2000), 5000)),),
+            )
+            added = cursor.rowcount or 0
+        conn.commit()
+    return {"added": int(added)}
+
+
+def list_user_word_issues(user_id: int, limit: int = 30) -> list[dict]:
+    """Карточки этого человека, которые ждут его решения. Чужих здесь не бывает."""
+    ensure_user_word_review_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT r.id, r.entry_id, r.issue, q.word_de, q.translation_ru,
+                       q.response_json->>'part_of_speech'
+                FROM bt_3_user_word_review r
+                JOIN bt_3_webapp_dictionary_queries q ON q.id = r.entry_id
+                WHERE r.user_id = %s AND r.status = 'pending' AND q.user_id = %s
+                ORDER BY r.created_at, r.id
+                LIMIT %s;
+                """,
+                (int(user_id), int(user_id), max(1, min(int(limit or 30), 100))),
+            )
+            rows = cursor.fetchall() or []
+
+    out = []
+    for row in rows:
+        issue = row[2]
+        word = str(row[3] or "")
+        suggestion = None
+        # Правку предлагаем только там, где её подтверждает справочник: «hammer» → «Hammer».
+        # Для «нет перевода» и мусора правки нет — там решает человек.
+        if issue == "pos_mismatch" and word and " " not in word:
+            try:
+                from backend.german_word_gate import check_word, CONFIRMED, REPAIRED
+                verdict = check_word(word, allow_network=True, allow_model=False)
+                status = str(verdict.get("status") or "")
+                fixed = str(verdict.get("text") or "").strip()
+                true_pos = str(verdict.get("pos") or "").strip().lower()
+                if status in {CONFIRMED, REPAIRED} and fixed and fixed != word:
+                    suggestion = {"to_word": fixed, "why": "Написание подтверждено справочником"}
+                elif status == CONFIRMED and true_pos and true_pos != "noun":
+                    # Слово написано верно, а помечено не тем: справочник знает, чем оно
+                    # является на самом деле («begreifen» — глагол, «jahrelang» —
+                    # прилагательное). Это и предлагаем исправить.
+                    suggestion = {
+                        "to_pos": true_pos,
+                        "why": "Часть речи — из справочника",
+                    }
+            except Exception:
+                logging.exception("user_word_review: дверь слова недоступна для %r", word)
+        out.append({
+            "id": int(row[0]),
+            "entry_id": int(row[1]),
+            "issue": issue,
+            "issue_text": USER_WORD_ISSUES.get(issue, issue),
+            "word": word,
+            "translation": str(row[4] or ""),
+            "pos": str(row[5] or ""),
+            "suggestion": suggestion,
+        })
+    return out
+
+
+def count_user_word_issues(user_id: int) -> int:
+    ensure_user_word_review_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_user_word_review WHERE user_id = %s AND status = 'pending';",
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def users_with_word_issues(limit: int = 500) -> list[tuple]:
+    """Кому есть что разобрать: (user_id, сколько). Для недельной рассылки."""
+    ensure_user_word_review_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, COUNT(*) FROM bt_3_user_word_review
+                WHERE status = 'pending'
+                GROUP BY user_id ORDER BY COUNT(*) DESC LIMIT %s;
+                """,
+                (max(1, min(int(limit or 500), 5000)),),
+            )
+            return [(int(r[0]), int(r[1])) for r in (cursor.fetchall() or [])]
+
+
+def apply_user_word_decisions(user_id: int, decisions: list) -> dict:
+    """Решения человека по СВОИМ карточкам. Чужую карточку тронуть нельзя.
+
+    Три действия, по одному на карточку: исправить написание (только подтверждённое),
+    оставить как есть, удалить из своего словаря.
+    """
+    ensure_user_word_review_schema()
+    fixed = kept = deleted = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for item in (decisions or []):
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    review_id = int(item.get("id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                action = str(item.get("action") or "").strip().lower()
+                if not review_id or action not in {"fix", "keep", "delete"}:
+                    continue
+                new_word = " ".join(str(item.get("to_word") or "").split())
+
+                cursor.execute(
+                    "SELECT entry_id FROM bt_3_user_word_review "
+                    "WHERE id = %s AND user_id = %s AND status = 'pending';",
+                    (review_id, int(user_id)),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    continue
+                entry_id = int(row[0])
+
+                new_pos = str(item.get("to_pos") or "").strip().lower()
+                if action == "fix":
+                    if new_word:
+                        cursor.execute(
+                            "UPDATE bt_3_webapp_dictionary_queries SET word_de = %s, updated_at = NOW() "
+                            "WHERE id = %s AND user_id = %s;",
+                            (new_word, entry_id, int(user_id)),
+                        )
+                    elif new_pos:
+                        cursor.execute(
+                            """
+                            UPDATE bt_3_webapp_dictionary_queries
+                            SET response_json = jsonb_set(
+                                    COALESCE(response_json, '{}'::jsonb),
+                                    '{part_of_speech}', to_jsonb(%s::text), true),
+                                updated_at = NOW()
+                            WHERE id = %s AND user_id = %s;
+                            """,
+                            (new_pos, entry_id, int(user_id)),
+                        )
+                    else:
+                        continue
+                    fixed += 1
+                    status = "fixed"
+                elif action == "delete":
+                    cursor.execute(
+                        "DELETE FROM bt_3_webapp_dictionary_queries WHERE id = %s AND user_id = %s;",
+                        (entry_id, int(user_id)),
+                    )
+                    deleted += 1
+                    status = "deleted"
+                else:
+                    kept += 1
+                    status = "kept"
+
+                cursor.execute(
+                    "UPDATE bt_3_user_word_review SET status = %s, decided_at = NOW() WHERE id = %s;",
+                    (status, review_id),
+                )
+        conn.commit()
+    return {"fixed": fixed, "kept": kept, "deleted": deleted}
+
+
 def get_lex_unit_card(unit_id: int) -> dict | None:
     """Разбор, лежащий НА САМОЙ единице словаря.
 
