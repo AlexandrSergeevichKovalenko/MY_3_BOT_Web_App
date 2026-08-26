@@ -101,19 +101,41 @@ def review_new_card(*, headword: str, card: dict[str, Any], kind: str = "word") 
         # пустой список примеров ловит отдельная планка «тонкой карточки».
         return {"checked": True, "ok": True, "fields": [], "why": ""}
 
+    # ┌─ ПОЧИНЕНО 26.08.2026. ЗДЕСЬ БЫЛА БИБЛИОТЕКА `google-genai`, И В ПРОДЕ ЕЁ НЕТ. ─┐
+    # │ В requirements.txt её никто не добавил, а локально она стояла — поэтому все   │
+    # │ мои прогоны проходили, а на сервере каждый вызов падал с                      │
+    # │ «cannot import name 'genai' from 'google' (unknown location)»: пакет `google` │
+    # │ там namespace-пакет от google-cloud-*, и подпакета genai в нём нет.           │
+    # │                                                                              │
+    # │ ЧЕМ ЭТО БЫЛО ОПАСНО. Второй голос стоит ДВЕРЬЮ: не ответил — не записываем.   │
+    # │ Значит в проде молча отклонялась КАЖДАЯ запись разбора, собранного моделью:   │
+    # │ ночное обогащение, пересбор, добор синонимов, дозаполнение при открытии.      │
+    # │ Снаружи это выглядело как «разбор ещё готовится» — вечно.                     │
+    # │                                                                              │
+    # │ Теперь запрос идёт прямым HTTP через `requests` (он и так в зависимостях):    │
+    # │ ни библиотеки, ни конфликта пространств имён, и локально с продом одинаково.  │
+    # └──────────────────────────────────────────────────────────────────────────────┘
+    import requests
+
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}"
+           f":generateContent")
+    тело = {
+        "system_instruction": {"parts": [{"text": SYSTEM}]},
+        "contents": [{"role": "user",
+                      "parts": [{"text": _payload(headword, kind, card)}]}],
+        "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+    }
     try:
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=api_key)
-        answer = client.models.generate_content(
-            model=MODEL,
-            contents=_payload(headword, kind, card),
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM, temperature=0,
-                response_mime_type="application/json",
-                http_options=types.HttpOptions(timeout=TIMEOUT_MS)),
-        )
-        defects = json.loads(answer.text or "{}").get("defects") or []
+        ответ = requests.post(url, params={"key": api_key}, json=тело,
+                              timeout=TIMEOUT_MS / 1000.0)
+        if ответ.status_code != 200:
+            logging.warning("второй голос не ответил: HTTP %s %s",
+                            ответ.status_code, ответ.text[:200])
+            return {"checked": False, "ok": False, "why": f"HTTP {ответ.status_code}"}
+        данные = ответ.json()
+        куски = (данные.get("candidates") or [{}])[0].get("content", {}).get("parts") or []
+        текст = "".join(str(к.get("text") or "") for к in куски)
+        defects = json.loads(текст or "{}").get("defects") or []
     except Exception as exc:                       # noqa: BLE001 — причину называем наверх
         logging.warning("второй голос не ответил: %s", exc)
         return {"checked": False, "ok": False, "why": f"{type(exc).__name__}"}
