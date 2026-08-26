@@ -31498,23 +31498,42 @@ def _phrase_review_payload(limit: int = 200) -> dict:
 
     Варианты нумеруются ЗДЕСЬ, на сервере, и тот же номер уходит обратно в решении —
     иначе фронт и бэкенд могли бы разойтись в том, что значит «принять второй»."""
-    from backend.database import list_open_phrase_reviews, phrase_review_variants
+    from backend.database import (
+        list_open_phrase_reviews, phrase_review_is_panel, phrase_review_owner_history,
+        phrase_review_panel_examples, phrase_review_variants,
+    )
     items = []
     for it in list_open_phrase_reviews(int(limit)):
         judges = it.get("judges") or []
         arbiter = it.get("arbiter") if isinstance(it.get("arbiter"), dict) else None
         variants = phrase_review_variants(judges, it.get("text") or "", arbiter)
         slot_of = {v["text"]: n for n, v in enumerate(variants)}
+        # ДВА РАЗНЫХ ВОПРОСА В ОДНОЙ ОЧЕРЕДИ, и путать их нельзя.
+        # "grammar" — судьи разошлись о грамматике фразы: решение = выбрать текст.
+        # "panel"   — три голоса разошлись о КАРТОЧКЕ (примеры и перевод): выбирать
+        #             нечего, там другие кнопки и на экран нужны сами примеры.
+        panel = phrase_review_is_panel(judges)
         items.append({
             "id": it["id"],
+            "kind": "panel" if panel else "grammar",
             "text": it.get("text") or "",
             "translation": it.get("translation") or "",
+            # Примеры — предмет спора панельного вопроса. У грамматического их не
+            # запрашиваем: лишний поход в базу на каждую из двух сотен строк.
+            "examples": phrase_review_panel_examples(it["unit_id"]) if panel else [],
+            # «Эту фразу ты уже правил». Приходит только когда решения были: ночь
+            # больше не задаёт повторный вопрос, но ДРУГУЮ ошибку в той же фразе
+            # найти может — и тогда владелец должен видеть, что здесь уже было.
+            "history": phrase_review_owner_history(it["unit_id"]),
             "all_ok": bool(judges) and all(
                 str(j.get("verdict") or "") == "ok" for j in judges),
             # Вердикт третейского: победивший вариант отдаём НОМЕРОМ той же нумерации,
             # что у кнопок, — иначе «прав второй» и кнопка «Принять 2» разъедутся.
             "arbiter": ({
                 "why": str(arbiter.get("why") or ""),
+                # Текст третьего судьи проходит ту же проверку, что правки первых двух.
+                # Забракован — кнопки у него нет, но причина отказа на экране есть.
+                "better_check": _phrase_fix_check_ru(arbiter, "better"),
                 "winner_index": (int(arbiter.get("winner")) - 1
                                  if 1 <= int(arbiter.get("winner") or 0) <= len(variants) else None),
                 "better": str(arbiter.get("better") or ""),
@@ -31605,7 +31624,7 @@ def answer_phrase_review_decide():
     except (TypeError, ValueError):
         return jsonify({"error": "нет фразы"}), 400
     decision = str(payload.get("decision") or "").strip().lower()
-    if decision not in ("accept", "keep", "delete", "replace", "skip"):
+    if decision not in ("accept", "keep", "delete", "replace", "skip", "rewrite"):
         return jsonify({"error": "неизвестное решение"}), 400
     own_text = str(payload.get("text") or "").strip()
     if decision == "replace" and not own_text:
@@ -31616,6 +31635,18 @@ def answer_phrase_review_decide():
         variant = 0
 
     from backend.database import apply_phrase_review_decision
+    if decision == "rewrite":
+        # Панельная карточка: спор не о фразе, а о её примерах и переводе. Владелец
+        # отправляет её ночному переписчику — тот берёт другой моделью, проверяет
+        # вторым голосом и, если не выйдет и с третьего раза, вернёт её сюда же.
+        from backend.database import send_panel_card_to_rewrite
+        res = send_panel_card_to_rewrite(review_id)
+        note = ("Отправил примеры на переписывание — вернётся к тебе, только если "
+                "и ночью не выйдет." if res.get("queued") else
+                "Не удалось поставить в очередь переписывания: карточка не числится "
+                "спорной. Вопрос оставлен открытым.")
+        return jsonify({"ok": True, "result": "rewrite", "note": note,
+                        **_phrase_review_payload()})
     if decision == "skip":
         # «Отложить» ничего не решает и не закрывает строку — фраза просто уезжает в
         # конец списка на этом экране. Никакой записи в базу.
