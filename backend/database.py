@@ -30941,6 +30941,93 @@ def ensure_word_usage_schema() -> None:
     _WORD_USAGE_SCHEMA_READY = True
 
 
+# ── Чем бывает это написание в немецком ──────────────────────────────────────
+# Смотрим НА ЯЗЫК, а не на свою базу: «das Gehen» существует независимо от того, завели
+# мы такую запись или нет. Ответ спрашивается один раз на слово и живёт вечно.
+
+_WORD_READINGS_SCHEMA_READY = False
+#   2 — требование не терять основное прочтение (на «gehen» приходил только «das Gehen»)
+WORD_READINGS_SCHEMA_VERSION = 2
+
+
+def ensure_word_readings_schema() -> None:
+    global _WORD_READINGS_SCHEMA_READY
+    if _WORD_READINGS_SCHEMA_READY:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_word_readings (
+                    id             BIGSERIAL PRIMARY KEY,
+                    lang           TEXT NOT NULL,
+                    explain_lang   TEXT NOT NULL,
+                    spelling_key   TEXT NOT NULL,
+                    spelling       TEXT NOT NULL,
+                    payload        JSONB NOT NULL,
+                    schema_version INTEGER NOT NULL DEFAULT 1,
+                    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (lang, explain_lang, spelling_key)
+                );
+                """
+            )
+        conn.commit()
+    _WORD_READINGS_SCHEMA_READY = True
+
+
+def get_word_readings(spelling: str, *, lang: str = "de", explain_lang: str = "ru") -> list | None:
+    """Прочтения написания. None — ещё не спрашивали."""
+    key = " ".join(str(spelling or "").split()).casefold()
+    if not key:
+        return None
+    ensure_word_readings_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT payload FROM bt_3_word_readings
+                WHERE lang = %s AND explain_lang = %s AND spelling_key = %s
+                  AND schema_version = %s;
+                """,
+                (str(lang).lower(), str(explain_lang).lower(), key, WORD_READINGS_SCHEMA_VERSION),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    payload = row[0]
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (ValueError, TypeError):
+            return None
+    readings = payload.get("readings") if isinstance(payload, dict) else None
+    return readings if isinstance(readings, list) else None
+
+
+def save_word_readings(spelling: str, readings: list, *, lang: str = "de",
+                       explain_lang: str = "ru") -> None:
+    key = " ".join(str(spelling or "").split()).casefold()
+    if not key or not isinstance(readings, list):
+        return
+    ensure_word_readings_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_word_readings
+                    (lang, explain_lang, spelling_key, spelling, payload, schema_version)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (lang, explain_lang, spelling_key) DO UPDATE SET
+                    payload = EXCLUDED.payload,
+                    schema_version = EXCLUDED.schema_version;
+                """,
+                (str(lang).lower(), str(explain_lang).lower(), key,
+                 " ".join(str(spelling or "").split()),
+                 Json({"readings": readings}), WORD_READINGS_SCHEMA_VERSION),
+            )
+        conn.commit()
+
+
 def _word_usage_key(word: str, pos: str = "") -> str:
     """Ключ картины употребления. Часть речи входит в него: «gehen» как глагол и
     «das Gehen» как существительное — разные слова с разным управлением, и общей

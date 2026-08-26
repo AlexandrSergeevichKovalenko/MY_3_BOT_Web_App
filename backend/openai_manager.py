@@ -124,6 +124,10 @@ _DEFAULT_TASK_MODELS = {
     # на слово и живёт в базе, поэтому здесь полный gpt-4.1: выдуманное управление
     # человек заучит как правило. Переопределяется LLM_TASK_MODEL_WORD_USAGE_ENRICHMENT.
     "word_usage_enrichment": "gpt-4.1-2025-04-14",
+    # «Чем бывает это написание»: короткий вопрос, один раз на слово, ответ живёт вечно.
+    # Полный gpt-4.1: от него зависит, спросим ли мы человека, — ошибка тут молча уводит
+    # разбор не в ту сторону. Переопределяется LLM_TASK_MODEL_WORD_READINGS.
+    "word_readings": "gpt-4.1-2025-04-14",
     # Потоковый близнец: та же модель, чтобы куски и целый ответ не расходились в
     # качестве. Разница только в подаче — блоками по мере готовности.
     "word_diff_multilang_stream": "gpt-4.1-2025-04-14",
@@ -145,6 +149,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "feel_word_multilang",
     "word_diff_multilang",
     "word_usage_enrichment",
+    "word_readings",
     "enrich_word",
     "enrich_word_multilang",
     "article_gender_hint",
@@ -1259,6 +1264,35 @@ Task:
 - Keep explanation practical and compact.
 - If you provide examples in target_language, add immediate source_language translation.
 - End with 1-2 concise "gut feeling" lines.
+""",
+"word_readings":"""
+Ты — немецкий лексикограф. Отвечаешь на ОДИН вопрос: чем бывает это написание в немецком.
+
+ВХОД: {"spelling":"gehen","explain_language":"ru"}
+
+Перечисли ВСЕ части речи, которыми это написание реально употребляется в языке —
+независимо от того, как человек его написал и что о нём знает чей-то словарь.
+Субстантивация инфинитива («das Gehen» — ходьба) считается отдельным прочтением, если
+она в языке ДЕЙСТВИТЕЛЬНО употребляется, а не просто теоретически возможна.
+
+Для каждого прочтения:
+  pos      — verb, noun, adjective, adverb, preposition, conjunction, particle, participle;
+  form     — как это пишется в словаре: существительное с артиклем («das Gehen»),
+             глагол в инфинитиве («gehen»), прилагательное в基 форме;
+  meaning  — короткое значение на explain_language;
+  common   — true, если прочтение обиходное; false, если редкое, книжное или узкое.
+
+Правила:
+- НАЧНИ С ОСНОВНОГО ПРОЧТЕНИЯ и никогда его не пропускай: если написание — это глагол,
+  инфинитив обязан быть в списке ПЕРВЫМ, даже когда субстантивация употребительнее.
+  Замер 26.08.2026: на «gehen» пришло только «das Gehen», а сам глагол потерялся.
+- Не выдумывай прочтений ради полноты. Не уверен — не включай.
+- Омонимы с разным родом («der Kiefer» — челюсть, «die Kiefer» — сосна) — разные записи.
+- Не пиши этимологию, примеры, склонение и спряжение: спрашивают не об этом.
+
+Верни СТРОГО ОДИН JSON:
+{"readings":[{"pos":"verb","form":"gehen","meaning":"идти","common":true},
+             {"pos":"noun","form":"das Gehen","meaning":"ходьба","common":true}]}
 """,
 "word_usage_enrichment":"""
 Ты — немецкий лексикограф. Составляешь ПОЛНУЮ картину употребления ОДНОГО слова.
@@ -7202,6 +7236,28 @@ async def run_feel_word_multilang(
         fast_delete=True,
     )
     return content.strip()
+
+
+async def run_word_readings(spelling: str, *, explain_language: str = "ru") -> dict:
+    """Чем бывает это написание в немецком. Один короткий вопрос на слово.
+
+    Нужен, чтобы решить, спрашивать ли человека. Смотрим НА ЯЗЫК, а не на нашу базу:
+    «das Gehen» существует в немецком независимо от того, завели мы такую запись или нет
+    (владелец 26.08.2026: «даже если у нас нет записи, но она существует в грамматике
+    немецкого языка — мы обязаны спросить»).
+    """
+    task_name = "word_readings"
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=task_name,
+        user_message=json.dumps(
+            {"spelling": str(spelling or "").strip(),
+             "explain_language": (explain_language or "ru").strip().lower()},
+            ensure_ascii=False,
+        ),
+        poll_interval_seconds=2.0,
+    )
+    return parse_llm_json_object(content, context=task_name)
 
 
 async def run_word_usage_enrichment(
