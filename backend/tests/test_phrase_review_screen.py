@@ -226,9 +226,15 @@ class ScreenFitsOneScreenTests(unittest.TestCase):
                                 "решения снова занимают по строке каждое")
 
     def test_review_block_takes_the_free_height(self):
+        """Разбор забирает свободную высоту, кнопки ужимаются.
+
+        Класс переехал `.frrev-scroll` → `.frv-scroll` 26.08.2026 вместе с переделкой
+        экрана; проверка та же, требование то же."""
         css = self._src("answer.css")
-        self.assertIn(".frrev-w .frrev-scroll { flex: 1 1 auto; }", css)
-        self.assertIn(".frrev-w .ans-btn ", css, "кнопки не ужаты — высоту забирают они")
+        self.assertIn(".frv-scroll {", css)
+        block = css[css.index(".frv-scroll {"):]
+        self.assertIn("flex: 1 1 auto;", block[:200], "разбор больше не забирает высоту")
+        self.assertIn(".frrev-w .ans-btn-ghost", css, "кнопки не ужаты — высоту забирают они")
 
     def test_sweep_button_is_offered_when_the_queue_holds_empty_complaints(self):
         src = self._src("PhraseReviewScreen.jsx")
@@ -307,12 +313,21 @@ class ActionsAreAlwaysReachableTests(unittest.TestCase):
         return (pathlib.Path(__file__).resolve().parents[2]
                 / "frontend/src/answer/PhraseReviewScreen.jsx").read_text(encoding="utf-8")
 
-    def test_rejudge_is_not_hidden_behind_a_condition(self):
+    def test_rejudge_is_hidden_only_for_the_dictionary_card_question(self):
+        """«Пересудить» прячется РОВНО ОДИН раз — на карточке словаря.
+
+        Прежнее правило было «не прятать никогда»: кнопка исчезала, стоило судьям хоть
+        что-то предложить, а именно такие вердикты и надо пересуживать. С 26.08.2026 в
+        очереди живут два разных вопроса, и на панельной карточке (спор о примерах и
+        переводе) грамматическому судье делать нечего — там своя кнопка «переписать».
+        Любое ДРУГОЕ условие вокруг «Пересудить» — возврат старого дефекта."""
         src = self._screen()
         i = src.index("onClick={rejudge}")
-        line_start = src.rindex("\n", 0, i)
-        block = src[line_start:i]
-        self.assertNotIn("?", block, "«Пересудить» снова спрятана за условием")
+        head = src[src.rindex("\n", 0, src.rindex("\n", 0, i)):i]
+        conditions = [line for line in head.split("\n") if "?" in line]
+        for line in conditions:
+            self.assertIn("isPanel", line,
+                          "«Пересудить» спрятана за условием, которое не про вид вопроса")
 
     def test_arbiter_is_offered_with_a_single_variant_too(self):
         src = self._screen()

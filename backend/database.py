@@ -23794,7 +23794,33 @@ def get_quarantined_pool_entries(limit: int = 1000) -> list[dict]:
 # может рассудить только язык. Поэтому фразы общего словаря проверяются ночью партиями,
 # и результат хранится здесь, чтобы одну и ту же фразу не спрашивать дважды.
 
+# ┌─ НАЙДЕНО И ПОЧИНЕНО 26.08.2026. НЕ ВОЗВРАЩАТЬ DDL В КАЖДЫЙ ВЫЗОВ. ────────────┐
+# │ Ночь зовёт третьего судью в шесть потоков, и каждый поток на каждый вопрос      │
+# │ выполнял здесь CREATE TABLE IF NOT EXISTS и ALTER TABLE ADD COLUMN IF NOT       │
+# │ EXISTS. Обе команды берут AccessExclusiveLock на таблицу даже когда менять      │
+# │ нечего — и два потока встали друг против друга: «deadlock detected, process     │
+# │ 12382 waits for AccessExclusiveLock … blocked by process 12383». Прогон на 142  │
+# │ вопросах оборвался на середине.                                                 │
+# │ Схема одна на процесс и не меняется в его жизни, поэтому DDL выполняется ОДИН   │
+# │ раз, под замком. Проверять «а вдруг таблицы нет» на каждом запросе не нужно     │
+# │ никому: приложение всё равно не работает без своей схемы.                       │
+# └─────────────────────────────────────────────────────────────────────────────────┘
+_PHRASE_CHECK_SCHEMA_READY = False
+_PHRASE_CHECK_SCHEMA_LOCK = threading.Lock()
+
+
 def _ensure_phrase_check_tables(cursor) -> None:
+    global _PHRASE_CHECK_SCHEMA_READY
+    if _PHRASE_CHECK_SCHEMA_READY:
+        return
+    with _PHRASE_CHECK_SCHEMA_LOCK:
+        if _PHRASE_CHECK_SCHEMA_READY:
+            return
+        _create_phrase_check_tables(cursor)
+        _PHRASE_CHECK_SCHEMA_READY = True
+
+
+def _create_phrase_check_tables(cursor) -> None:
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS bt_3_phrase_check (
@@ -23937,12 +23963,95 @@ def mark_phrase_checked(unit_id: int, text: str, verdict: str) -> None:
         conn.commit()
 
 
-def queue_phrase_for_review(*, unit_id: int, text: str, translation: str, judges: list) -> None:
-    """Спорная фраза — владельцу на решение. Один открытый вопрос на фразу: повторная
-    проверка не должна плодить дубли в утреннем отчёте."""
+def phrase_question_is_a_repeat(text: str, proposals: list, settled: set) -> bool:
+    """Тот же самый вопрос, который владелец уже закрывал? Тогда его не задают снова.
+
+    Правило целиком: повтор — это когда владелец УЖЕ высказался по этому самому тексту
+    И ни один предложенный судьями вариант не является для него новым. Достаточно одного
+    нового варианта — и вопрос уходит к нему как обычно: значит, ночь нашла в фразе
+    ДРУГУЮ ошибку, а не ту, которую он решал.
+
+    Отдельной чистой функцией — чтобы правило можно было проверить тестом без базы:
+    именно это правило разрывает круг «auf der → auf die → auf der», в котором сгорело
+    три решения владельца за 13 дней (unit 5146, замер 26.08.2026)."""
+    if not settled:
+        return False
+    if _phrase_text_key(text) not in settled:
+        return False
+    return not any(_phrase_text_key(p) not in settled for p in (proposals or []) if p)
+
+
+def _texts_owner_already_settled(cursor, unit_id: int) -> set[str]:
+    """Всё, что владелец по этой фразе уже видел и по чему уже высказался.
+
+    Считаем И текст, который стоял на экране, И текст, который он выбрал: круг ходит
+    именно между ними («auf der» → «auf die» → «auf der»)."""
+    cursor.execute(
+        """SELECT text, decided_text FROM bt_3_phrase_review
+            WHERE unit_id = %s AND status <> 'open';""",
+        (int(unit_id),),
+    )
+    seen: set[str] = set()
+    for text, decided_text in cursor.fetchall() or []:
+        for value in (text, decided_text):
+            key = _phrase_text_key(value)
+            if key:
+                seen.add(key)
+    return seen
+
+
+def phrase_review_settled_texts(unit_id: int) -> set[str]:
+    """Что владелец по этой фразе уже видел и по чему высказался — ключами сравнения.
+
+    Ночь спрашивает это ДО постановки вопроса, чтобы решить, есть ли смысл звать
+    решающий голос: если он предложит то, что владелец уже отклонял, вопрос не нужен."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
+            return _texts_owner_already_settled(cursor, int(unit_id))
+
+
+def queue_phrase_for_review(*, unit_id: int, text: str, translation: str,
+                            judges: list, force: bool = False) -> int:
+    """Спорная фраза — владельцу на решение. Один открытый вопрос на фразу: повторная
+    проверка не должна плодить дубли в утреннем отчёте.
+
+    ⛔ КРУГ. Владелец, 26.08.2026: «зачем фраза ходит по кругу?» — и он прав, она ходила.
+    Живой случай, unit 5146: 13.08 он решил «auf der» → «auf die», 20.08 у него спросили
+    снова и он вернул «auf der», 26.08 спросили в ТРЕТИЙ раз. Три решения — ноль
+    движения, и один заход увёл фразу в неверную форму его же руками. Причина простая:
+    после решения владельца строка проверки удаляется (`apply_phrase_review_decision`),
+    фраза считается непроверенной, ночь берёт её как новую, судьи снова находят
+    «ошибку» — и вопрос едет обратно.
+
+    Правило: НИЧЕГО НОВОГО — НЕ СПРАШИВАЕМ. Вопрос не заводится, когда владелец уже
+    высказался по этому самому тексту И каждый предложенный судьями вариант он уже
+    видел раньше. Если же судьи предложили то, чего он не видел (ночь нашла ДРУГУЮ
+    ошибку), вопрос уходит к нему как обычно — и экран показывает тихой строкой, что
+    эту фразу он уже правил (`phrase_review_owner_history`).
+
+    ⚠ `force` — НЕ обход правила, а его вторая половина. Ночь, наткнувшись на повтор,
+    спрашивает решающий голос: нет ли верного текста, которого владелец НЕ видел? Если
+    есть — вопрос ставится с этим текстом, потому что это уже другой вопрос. Без этого
+    защита от круга однажды заморозила бы неверную фразу навсегда: «Der Bus fährt 100
+    Personen mit» владелец 26.08.2026 оставил «как есть», потому что верного варианта
+    на экране не было вообще, — и больше эту фразу никто бы не тронул.
+
+    Возвращает id поставленного вопроса или 0, если это был круг. Ночь считает отказы и
+    печатает их числом в утреннем отчёте: молчащая защита неотличима от сломанной.
+    """
+    proposals = [str(j.get(field) or "").strip()
+                 for j in (judges or []) if isinstance(j, dict)
+                 for field in ("corrected", "proposal")]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            settled = set() if force else _texts_owner_already_settled(cursor, int(unit_id))
+            if phrase_question_is_a_repeat(text, proposals, settled):
+                logging.info(
+                    "спорные фразы: вопрос про %r не заведён — владелец это уже решал",
+                    str(text or "")[:60])
+                return 0
             cursor.execute(
                 """
                 INSERT INTO bt_3_phrase_review (unit_id, text, translation, judges)
@@ -23954,23 +24063,45 @@ def queue_phrase_for_review(*, unit_id: int, text: str, translation: str, judges
                 (int(unit_id), str(text or ""), str(translation or ""),
                  json.dumps(judges or [], ensure_ascii=False)),
             )
+            cursor.execute(
+                "SELECT id FROM bt_3_phrase_review WHERE unit_id = %s AND status = 'open';",
+                (int(unit_id),))
+            row = cursor.fetchone()
         conn.commit()
+    return int(row[0]) if row else 0
 
 
 def list_open_phrase_reviews(limit: int = 200) -> list[dict]:
+    """Открытые вопросы для экрана — ОДНИМ запросом вместе со всем, что экран покажет.
+
+    Карточка нужна для примеров (панельный вопрос спорит именно о них), история решений —
+    для тихой строки «эту фразу ты уже правил». Тянуть их отдельными запросами нельзя:
+    экран грузит до 200 строк разом, и это были бы 400 походов в базу на одно открытие.
+    """
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
             cursor.execute(
-                """SELECT id, unit_id, text, translation, judges, arbiter
-                   FROM bt_3_phrase_review
-                   WHERE status = 'open' ORDER BY id LIMIT %s;""",
+                """SELECT r.id, r.unit_id, r.text, r.translation, r.judges, r.arbiter,
+                          u.card,
+                          COALESCE((SELECT json_agg(json_build_object(
+                                        'status', h.status, 'text', h.text,
+                                        'decided_text', h.decided_text,
+                                        'decided_at', h.decided_at) ORDER BY h.id)
+                                      FROM bt_3_phrase_review h
+                                     WHERE h.unit_id = r.unit_id AND h.status <> 'open'),
+                                   '[]'::json) AS history
+                     FROM bt_3_phrase_review r
+                     LEFT JOIN bt_3_lex_units u ON u.id = r.unit_id
+                    WHERE r.status = 'open' ORDER BY r.id LIMIT %s;""",
                 (int(limit),),
             )
             rows = cursor.fetchall()
     return [{"id": int(r[0]), "unit_id": int(r[1]), "text": r[2],
              "translation": r[3] or "", "judges": r[4] if isinstance(r[4], list) else [],
-             "arbiter": r[5] if isinstance(r[5], dict) else None}
+             "arbiter": r[5] if isinstance(r[5], dict) else None,
+             "card": r[6] if isinstance(r[6], dict) else None,
+             "history": r[7] if isinstance(r[7], list) else []}
             for r in rows]
 
 
@@ -24043,9 +24174,50 @@ def list_open_phrase_reviews_judged_blind(limit: int = 200) -> list[int]:
                 "SELECT id, judges FROM bt_3_phrase_review WHERE status = 'open' ORDER BY id;"
             )
             rows = cursor.fetchall() or []
+    # ⛔ ПАНЕЛЬНЫЕ КАРТОЧКИ СЮДА НЕ ПОПАДАЮТ. Признак «судили вслепую» — отсутствие
+    # ключа `corrected_ru` в ответе судьи, а у панельных его нет и не было НИКОГДА:
+    # их писал не судья грамматики, а разбор панели о примерах. Замер 26.08.2026: обе
+    # величины совпадали ровно, 79 и 79, то есть кнопка «пересудить со смыслом»
+    # отправила бы к грамматическому судье 79 вопросов не про грамматику — деньги за
+    # ответ на не тот вопрос и мусор обратно на экран.
     out = [int(rid) for rid, judges in rows
-           if phrase_review_was_judged_blind(judges if isinstance(judges, list) else [])]
+           if not phrase_review_is_panel(judges if isinstance(judges, list) else [])
+           and phrase_review_was_judged_blind(judges if isinstance(judges, list) else [])]
     return out[:int(limit)]
+
+
+def count_panel_reviews_decided_since(days: int = 7) -> int:
+    """Сколько карточек словаря владелец разобрал за последние дни.
+
+    Число едет в его же сообщение: работа, которой не видно, выглядит бесполезной —
+    это уже проверено на счётчике «осталось», который не двигался (24.08.2026)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                """SELECT judges FROM bt_3_phrase_review
+                    WHERE status <> 'open' AND decided_at > NOW() - make_interval(days => %s);""",
+                (int(days),))
+            rows = cursor.fetchall() or []
+    return sum(1 for (judges,) in rows
+               if phrase_review_is_panel(judges if isinstance(judges, list) else []))
+
+
+def count_open_phrase_reviews_by_kind() -> dict:
+    """Сколько открытых вопросов каждого вида: грамматика фразы и карточка словаря.
+
+    Владельцу они приходят РАЗНЫМИ сообщениями и разбираются разными кнопками, поэтому
+    и считаются отдельно: «осталось 232» на общий экран, «карточек 79» — в своё."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute("SELECT judges FROM bt_3_phrase_review WHERE status = 'open';")
+            rows = cursor.fetchall() or []
+    out = {"panel": 0, "grammar": 0}
+    for (judges,) in rows:
+        out["panel" if phrase_review_is_panel(
+            judges if isinstance(judges, list) else []) else "grammar"] += 1
+    return out
 
 
 def count_noise_phrase_reviews() -> int:
@@ -24056,6 +24228,155 @@ def count_noise_phrase_reviews() -> int:
             rows = cursor.fetchall() or []
     return sum(1 for text, judges in rows
                if phrase_review_is_noise(judges if isinstance(judges, list) else [], text))
+
+
+PANEL_REVIEW_CATEGORY = "панель из трёх голосов"
+
+
+def phrase_review_is_panel(judges: list) -> bool:
+    """Вопрос не про грамматику фразы, а про её карточку — примеры и перевод.
+
+    Такие 79 записей положил в очередь разбор панели из трёх голосов 23.08.2026
+    (`scripts/dict_panel_disputes_to_owner.py`). У них один «судья», вердикт `doubt` и
+    НИКОГДА нет исправленного текста — исправлять там нечего, там другой вопрос.
+    На экране владельца 26.08.2026 они выглядели пустой карточкой без кнопок: он смотрел
+    на них и искал, что решить. Отличаем по категории, которую ставит тот же скрипт."""
+    for j in (judges or []):
+        if isinstance(j, dict) and str(j.get("category") or "") == PANEL_REVIEW_CATEGORY:
+            return True
+    return False
+
+
+def list_open_phrase_reviews_needing_arbiter(limit: int = 60) -> list[int]:
+    """Открытые грамматические споры, по которым третий судья ещё не высказывался.
+
+    Панельные карточки сюда не попадают: там нет ни одного предложенного текста, спорить
+    третьему не о чем, а gpt-4.1 стоит денег."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                """SELECT id, judges FROM bt_3_phrase_review
+                    WHERE status = 'open' AND arbiter IS NULL
+                    ORDER BY id;"""
+            )
+            rows = cursor.fetchall() or []
+    out = []
+    for rid, judges in rows:
+        judges = judges if isinstance(judges, list) else []
+        if phrase_review_is_panel(judges):
+            continue
+        if not any(str((j or {}).get(f) or "").strip()
+                   for j in judges if isinstance(j, dict)
+                   for f in ("corrected", "proposal")):
+            continue
+        out.append(int(rid))
+    return out[:int(limit)]
+
+
+def close_all_ok_phrase_reviews() -> int:
+    """Закрыть вопросы, где ОБА судьи сказали «ошибки нет».
+
+    Это не вопрос к человеку: спорить не о чем, менять нечего, а тап он всё равно
+    тратит. Замер 26.08.2026 — 9 таких из 232. Владелец: «зачем мне то, что не нужно
+    корректировать и где не нужно решения? Оно должно тихо само лечь в базу».
+    Фраза остаётся как есть и помечается проверенной, чтобы не вернулась ночью."""
+    closed = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "SELECT id, unit_id, text, judges FROM bt_3_phrase_review WHERE status = 'open';"
+            )
+            rows = cursor.fetchall() or []
+            for rid, unit_id, text, judges in rows:
+                judges = judges if isinstance(judges, list) else []
+                if not judges or phrase_review_is_panel(judges):
+                    continue
+                if not all(str((j or {}).get("verdict") or "") == "ok"
+                           for j in judges if isinstance(j, dict)):
+                    continue
+                cursor.execute(
+                    "UPDATE bt_3_phrase_review SET status = 'kept', decided_at = NOW(), "
+                    "decided_text = %s WHERE id = %s;", (text, int(rid)))
+                cursor.execute(
+                    """INSERT INTO bt_3_phrase_check (unit_id, text_hash, verdict, checked_at)
+                       VALUES (%s, %s, 'ok', NOW())
+                       ON CONFLICT (unit_id) DO UPDATE
+                         SET text_hash = EXCLUDED.text_hash, verdict = 'ok', checked_at = NOW();""",
+                    (int(unit_id), phrase_check_text_hash(text)))
+                closed += 1
+        conn.commit()
+    if closed:
+        logging.info("спорные фразы: закрыто без владельца (оба судьи «ошибки нет») — %s", closed)
+    return closed
+
+
+def phrase_review_card_examples(card: dict | None) -> list[dict]:
+    """Примеры из карточки — то, о чём идёт спор в панельном вопросе.
+
+    Владелец 26.08.2026 смотрел на панельную карточку и не понимал, что решать: на
+    экране была фраза, «Судья 1» и ни одной кнопки. Предмет спора — ПРИМЕРЫ — на экран
+    не выводился вовсе. Теперь выводится.
+
+    Стороны не переставляем вслепую: у части карточек `source` — русский (запись
+    собиралась со стороны «русский → немецкий»). Смотрим на буквы, а не на имя поля.
+    Функция чистая: карточка уже принесена запросом экрана."""
+    if not isinstance(card, dict):
+        return []
+    out = []
+    for item in (card.get("usage_examples") or []):
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "").strip()
+        target = str(item.get("target") or "").strip()
+        if not source and not target:
+            continue
+        if _has_cyrillic_letters(source) and not _has_cyrillic_letters(target):
+            source, target = target, source
+        out.append({"de": source, "ru": target})
+    return out
+
+
+def _has_cyrillic_letters(value: str) -> bool:
+    return any("\u0400" <= ch <= "\u04ff" for ch in str(value or ""))
+
+
+def send_panel_card_to_rewrite(review_id: int) -> dict:
+    """«Переписать примеры и перевод заново» — решение владельца по панельной карточке.
+
+    Что происходит под капотом: карточка возвращается ночному переписчику примеров
+    (`backend/example_retry.py`) — вердикт снова «дефект», счётчик попыток обнуляется.
+    Ночью он берёт её другой моделью и с ненулевой температурой, а результат проходит
+    второй голос. Не выйдет и с третьего раза — карточка вернётся сюда же, к владельцу,
+    и это не круг, а честная передача: машина исчерпала себя.
+
+    Вопрос при этом закрывается: висеть в очереди, пока идёт переписывание, ему незачем.
+    """
+    out = {"unit_id": 0, "queued": False}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "SELECT unit_id, text FROM bt_3_phrase_review WHERE id = %s AND status = 'open';",
+                (int(review_id),))
+            row = cursor.fetchone()
+            if not row:
+                return out
+            unit_id, text = int(row[0]), row[1]
+            out["unit_id"] = unit_id
+            cursor.execute(
+                """UPDATE bt_3_field_checks
+                      SET verdict = 'дефект', attempts = 0,
+                          source = 'владелец: переписать заново', checked_at = NOW()
+                    WHERE unit_id = %s AND field = 'phrase_panel';""",
+                (unit_id,))
+            out["queued"] = bool(cursor.rowcount)
+            cursor.execute(
+                "UPDATE bt_3_phrase_review SET status = 'rewrite', decided_at = NOW(), "
+                "decided_text = %s WHERE id = %s;", (text, int(review_id)))
+        conn.commit()
+    return out
 
 
 def set_phrase_review_arbiter(review_id: int, verdict: dict) -> None:
@@ -24131,9 +24452,17 @@ def _phrase_same_text(a: str, b: str) -> bool:
     плюс точку в конце. Кнопка «Принять» на такую правку не меняет ничего, но выглядит
     как решение, и владелец справедливо назвал это издевательством. Точка на конце —
     не грамматика падежа, поэтому такие «правки» считаем совпадением с исходным."""
-    def norm(v: str) -> str:
-        return " ".join(str(v or "").split()).strip(" .!?…,;:")
-    return norm(a) == norm(b)
+    return _phrase_text_key(a) == _phrase_text_key(b)
+
+
+def _phrase_text_key(value: str) -> str:
+    """Ключ сравнения текстов фраз: без лишних пробелов и без знака на конце.
+
+    Вынесен из `_phrase_same_text`, чтобы одним и тем же правилом пользовались и
+    сравнение двух строк, и память о решениях владельца (см. `queue_phrase_for_review`):
+    разъедься эти два правила — и защита от круга начнёт пропускать «ту же фразу с
+    точкой» как новую."""
+    return " ".join(str(value or "").split()).strip(" .!?…,;:")
 
 
 def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = None) -> list[dict]:
@@ -24152,11 +24481,31 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
     ничего не меняет, а выглядит как решение — поэтому такие варианты сюда не попадают.
     Нумерация вариантов идёт ПОСЛЕ этого отсева, и она одна и та же везде: и на кнопках
     экрана, и при применении решения."""
-    from backend.phrase_night_check import fix_passed_check
+    from backend.phrase_night_check import _judge_proposals, fix_passed_check
 
     original = str(text or "").strip()
     out: list[dict] = []
     seen: set[str] = set()
+    # ┌─ РАЗБОР ИСТОЧНИКОВ 26.08.2026. НЕ УБИРАТЬ, НЕ РАЗОБРАВШИСЬ. ─────────────────┐
+    # │ «Anzeichen für einen Herzi» → оба судьи предложили «Herzinfarkt», и НАША     │
+    # │ проверка забраковала обоих: «изменено значение с признаков сердечного        │
+    # │ приступа на признаки инфаркта». Это одно и то же по-русски — ошиблась        │
+    # │ проверка. Третий судья, который видит и оба варианта, и сохранённый смысл,   │
+    # │ назвал их вариант верным. У владельца в итоге не осталось ни одной кнопки на │
+    # │ единственном правильном тексте.                                             │
+    # │ Голос третьего судьи СИЛЬНЕЕ приговора проверки — он информированнее (видит  │
+    # │ спор целиком) и идёт на более сильной модели. Но не молча: вариант приезжает │
+    # │ с пометкой, что проверка с ним не согласна, и владелец видит обе стороны.    │
+    # └─────────────────────────────────────────────────────────────────────────────┘
+    winner_text = ""
+    try:
+        winner = int((arbiter or {}).get("winner") or 0)
+    except (TypeError, ValueError):
+        winner = 0
+    if winner > 0:
+        proposals = _judge_proposals(judges or [])
+        if winner <= len(proposals):
+            winner_text = proposals[winner - 1]
     for n, j in enumerate(judges or [], 1):
         if not isinstance(j, dict):
             continue
@@ -24171,18 +24520,27 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
             # судьи она остаётся, но с приговором проверки, а не с кнопкой. Иначе мы
             # отдаём человеку на глаз ровно то, что обязана была отсеять система.
             # Разобрано 19.08.2026 на «in den Taschen» — неверный падеж и другое число.
-            if fix_passed_check(j, field) is False:
+            rejected = fix_passed_check(j, field) is False
+            if rejected and not _phrase_same_text(value, winner_text):
                 continue
             seen.add(value)
             out.append({"judge": n, "field": field, "text": value,
                         "ru": str(j.get(f"{field}_ru") or "").strip(),
                         # «Не проверено» — не то же самое, что «проверено и годится».
-                        "checked": fix_passed_check(j, field) is True})
+                        "checked": fix_passed_check(j, field) is True,
+                        # Проверка против, третий судья за. Владелец увидит обе стороны.
+                        "check_disputed_by_arbiter": bool(rejected)})
     # Третейский судья может предложить СВОЙ текст — когда правы оба наполовину. Он
     # идёт последним, чтобы номера уже показанных вариантов не сдвинулись под рукой у
     # владельца: он мог смотреть на экран до того, как спор разрешили.
     better = str((arbiter or {}).get("better") or "").strip()
-    if (better and not _phrase_same_text(better, original)
+    # Третий судья — ТАКАЯ ЖЕ МОДЕЛЬ, и его текст проходит ту же проверку, что правки
+    # первых двух (`phrase_night_check.settle_dispute` кладёт итог в `better_check`).
+    # Не прошёл — кнопки «сохранить» у него нет, как и у забракованных правок судей;
+    # с экрана он при этом не исчезает, владелец видит текст и причину отказа.
+    better_ok = fix_passed_check({"better_check": (arbiter or {}).get("better_check")},
+                                 "better") is not False
+    if (better and better_ok and not _phrase_same_text(better, original)
             and not any(_phrase_same_text(better, prev) for prev in seen)):
         out.append({"judge": 0, "field": "arbiter", "text": better,
                     "ru": str((arbiter or {}).get("better_ru") or "").strip()})
@@ -30451,10 +30809,22 @@ _WORD_DIFF_SCHEMA_READY = False
 #   3 — обязательный перевод у каждого примера
 #   4 — работа разрезана надвое: «Полнота слова» собирает факты о слове, сравнение только
 #       сравнивает готовое; заменяемость попарная, номера значений наши, контраст типизован
-WORD_DIFF_SCHEMA_VERSION = 4
+#   5 — одна карточка на слово (значения внутри), конструкции привязаны к значению,
+#       управление приведено к единому виду «слово + предлог + падеж», дубли схлопнуты
+#
+# ⚠️ ПОДНИМАТЬ ВЕРСИЮ ОБЯЗАТЕЛЬНО при любой правке промпта, состава блоков ИЛИ того, как
+# собирается payload. Забыл поднять — человек продолжает видеть старую карточку и думает,
+# что починки не было (ровно это случилось 26.08.2026 с «laufen»).
+#   6 — статья выбирается по написанию: «существительное» со строчным заголовком —
+#       испорченная запись, и на «gehen» больше не приходит «Gehen — существительное»
+#   7 — написание в заголовке берётся из нашей статьи, а не из ответа модели
+WORD_DIFF_SCHEMA_VERSION = 7
 
 # Версия задания «Полнота слова». Меняется промпт — устаревают все собранные им статьи.
-WORD_USAGE_SCHEMA_VERSION = 1
+#   1 — первый выпуск
+#   2 — картина хранится ОТДЕЛЬНО для каждого прочтения слова: «gehen» как глагол и
+#       «das Gehen» как существительное — разные слова, и общей записи у них быть не может
+WORD_USAGE_SCHEMA_VERSION = 2
 
 
 def ensure_word_diff_schema() -> None:
@@ -30571,8 +30941,101 @@ def ensure_word_usage_schema() -> None:
     _WORD_USAGE_SCHEMA_READY = True
 
 
-def _word_usage_key(word: str) -> str:
-    return " ".join(str(word or "").split()).casefold()
+# ── Чем бывает это написание в немецком ──────────────────────────────────────
+# Смотрим НА ЯЗЫК, а не на свою базу: «das Gehen» существует независимо от того, завели
+# мы такую запись или нет. Ответ спрашивается один раз на слово и живёт вечно.
+
+_WORD_READINGS_SCHEMA_READY = False
+#   2 — требование не терять основное прочтение (на «gehen» приходил только «das Gehen»)
+WORD_READINGS_SCHEMA_VERSION = 2
+
+
+def ensure_word_readings_schema() -> None:
+    global _WORD_READINGS_SCHEMA_READY
+    if _WORD_READINGS_SCHEMA_READY:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_word_readings (
+                    id             BIGSERIAL PRIMARY KEY,
+                    lang           TEXT NOT NULL,
+                    explain_lang   TEXT NOT NULL,
+                    spelling_key   TEXT NOT NULL,
+                    spelling       TEXT NOT NULL,
+                    payload        JSONB NOT NULL,
+                    schema_version INTEGER NOT NULL DEFAULT 1,
+                    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (lang, explain_lang, spelling_key)
+                );
+                """
+            )
+        conn.commit()
+    _WORD_READINGS_SCHEMA_READY = True
+
+
+def get_word_readings(spelling: str, *, lang: str = "de", explain_lang: str = "ru") -> list | None:
+    """Прочтения написания. None — ещё не спрашивали."""
+    key = " ".join(str(spelling or "").split()).casefold()
+    if not key:
+        return None
+    ensure_word_readings_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT payload FROM bt_3_word_readings
+                WHERE lang = %s AND explain_lang = %s AND spelling_key = %s
+                  AND schema_version = %s;
+                """,
+                (str(lang).lower(), str(explain_lang).lower(), key, WORD_READINGS_SCHEMA_VERSION),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    payload = row[0]
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (ValueError, TypeError):
+            return None
+    readings = payload.get("readings") if isinstance(payload, dict) else None
+    return readings if isinstance(readings, list) else None
+
+
+def save_word_readings(spelling: str, readings: list, *, lang: str = "de",
+                       explain_lang: str = "ru") -> None:
+    key = " ".join(str(spelling or "").split()).casefold()
+    if not key or not isinstance(readings, list):
+        return
+    ensure_word_readings_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_word_readings
+                    (lang, explain_lang, spelling_key, spelling, payload, schema_version)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (lang, explain_lang, spelling_key) DO UPDATE SET
+                    payload = EXCLUDED.payload,
+                    schema_version = EXCLUDED.schema_version;
+                """,
+                (str(lang).lower(), str(explain_lang).lower(), key,
+                 " ".join(str(spelling or "").split()),
+                 Json({"readings": readings}), WORD_READINGS_SCHEMA_VERSION),
+            )
+        conn.commit()
+
+
+def _word_usage_key(word: str, pos: str = "") -> str:
+    """Ключ картины употребления. Часть речи входит в него: «gehen» как глагол и
+    «das Gehen» как существительное — разные слова с разным управлением, и общей
+    записи у них быть не должно (замер 26.08.2026: глагол получал картину
+    существительного и приходил на экран как «существительное»)."""
+    base = " ".join(str(word or "").split()).casefold()
+    kind = str(pos or "").strip().lower()
+    return f"{base}#{kind}" if kind else base
 
 
 def assign_sense_ids(new_senses: list, previous: dict | None = None) -> list:
@@ -30616,9 +31079,10 @@ def assign_sense_ids(new_senses: list, previous: dict | None = None) -> list:
     return out
 
 
-def get_word_usage(word: str, *, lang: str = "de", explain_lang: str = "ru") -> dict | None:
+def get_word_usage(word: str, *, lang: str = "de", explain_lang: str = "ru",
+                   pos: str = "") -> dict | None:
     """Готовая картина употребления слова. None — «ещё не собирали»."""
-    key = _word_usage_key(word)
+    key = _word_usage_key(word, pos)
     if not key:
         return None
     ensure_word_usage_schema()
@@ -30644,13 +31108,14 @@ def get_word_usage(word: str, *, lang: str = "de", explain_lang: str = "ru") -> 
     return payload if isinstance(payload, dict) else None
 
 
-def save_word_usage(word: str, payload: dict, *, lang: str = "de", explain_lang: str = "ru") -> dict:
+def save_word_usage(word: str, payload: dict, *, lang: str = "de", explain_lang: str = "ru",
+                    pos: str = "") -> dict:
     """Сохранить картину употребления, проставив НАШИ номера значений. Возвращает сохранённое."""
-    key = _word_usage_key(word)
+    key = _word_usage_key(word, pos)
     if not key or not isinstance(payload, dict) or not payload:
         return {}
     ensure_word_usage_schema()
-    previous = get_word_usage(word, lang=lang, explain_lang=explain_lang)
+    previous = get_word_usage(word, lang=lang, explain_lang=explain_lang, pos=pos)
     stored = dict(payload)
     stored["senses"] = assign_sense_ids(payload.get("senses") or [], previous)
     # Модель ссылается на значение ТЕКСТОМ — переводим ссылки в наши номера.
@@ -30698,6 +31163,813 @@ def save_word_usage(word: str, payload: dict, *, lang: str = "de", explain_lang:
     return stored
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Разбор противоречивых записей словаря.
+#
+# Записи, которые противоречат сами себе: «существительное», а написано со строчной
+# буквы; вместо слова обрывок разметки. Мусор, попавший до того, как на входе появилась
+# дверь проверки.
+#
+# Владелец 26.08.2026 решил: очередь КОПИТСЯ и ничего не удаляется само. Разобранное
+# уходит, неразобранное переезжает на следующую неделю и приходит снова. Правка
+# предлагается ТОЛЬКО из источников: заглавная буква — правило немецкой орфографии,
+# артикль — из справочника рода. Источник молчит — правки не предлагаем вовсе.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_WORD_INTEGRITY_SCHEMA_READY = False
+
+WORD_INTEGRITY_ISSUES = {
+    "noun_lowercase": "Существительное, а написано со строчной буквы",
+    "garbage_lemma": "Это не слово — обрывок или разметка",
+}
+
+
+# ── Слова, которым не нашли перевод: уходят владельцу ────────────────────────
+# Владелец 26.08.2026: «Необязательно внешний источник — мы же можем это куда-то
+# отправить, у нас много списков, которые приходят мне». Правильно: карточка не должна
+# висеть мёртвой, а человек не должен оставаться с ней один на один. Не нашли перевод
+# ни в словаре, ни разбором — слово уходит владельцу, он вписывает перевод руками, и
+# карточка человека чинится.
+
+_TRANSLATION_REQUESTS_READY = False
+
+
+def ensure_translation_requests_schema() -> None:
+    global _TRANSLATION_REQUESTS_READY
+    if _TRANSLATION_REQUESTS_READY:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_translation_requests (
+                    id         BIGSERIAL PRIMARY KEY,
+                    user_id    BIGINT NOT NULL,
+                    entry_id   BIGINT NOT NULL UNIQUE,
+                    word       TEXT NOT NULL,
+                    proposed   TEXT,
+                    status     TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    decided_at TIMESTAMPTZ
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_translation_requests_pending "
+                "ON bt_3_translation_requests (status, created_at);"
+            )
+        conn.commit()
+    _TRANSLATION_REQUESTS_READY = True
+
+
+def add_translation_request(user_id: int, entry_id: int, word: str) -> None:
+    """Перевода не нашлось — слово ждёт владельца. Повторные нажатия не плодят строк."""
+    text = " ".join(str(word or "").split())
+    if not text or not entry_id:
+        return
+    ensure_translation_requests_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_translation_requests (user_id, entry_id, word)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (entry_id) DO NOTHING;
+                """,
+                (int(user_id), int(entry_id), text),
+            )
+        conn.commit()
+
+
+def take_translation_requests_without_proposal(limit: int = 60) -> list[dict]:
+    """Слова, которым ночь ещё не предложила перевод. Для пакетного прогона."""
+    ensure_translation_requests_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, word FROM bt_3_translation_requests
+                WHERE status = 'pending' AND COALESCE(proposed, '') = ''
+                ORDER BY created_at LIMIT %s;
+                """,
+                (max(1, min(int(limit or 60), 200)),),
+            )
+            return [{"id": int(r[0]), "text": r[1]} for r in (cursor.fetchall() or [])]
+
+
+def apply_translation_proposals(proposals: list) -> dict:
+    """Ночь перевела — вписываем в карточку человека САМИ, без чьего-либо решения.
+
+    Владелец 26.08.2026: «Если это может быть сделано без меня, это делается без меня.
+    Не городите лишний функционал». Решать тут и правда нечего: перевод либо есть, либо
+    его нет. Пустой перевод не записываем — это честное «не смогли», и такая карточка
+    остаётся в личном разборе человека, где он впишет свой или удалит.
+    """
+    ensure_translation_requests_schema()
+    filled = failed = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for item in (proposals or []):
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    request_id = int(item.get("id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                text = " ".join(str(item.get("translation") or "").split())
+                if not request_id:
+                    continue
+
+                cursor.execute(
+                    "SELECT user_id, entry_id FROM bt_3_translation_requests "
+                    "WHERE id = %s AND status = 'pending';",
+                    (request_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    continue
+                user_id, entry_id = int(row[0]), int(row[1])
+
+                if not text:
+                    # Не смогли — карточка остаётся у человека в разборе, он решит сам.
+                    cursor.execute(
+                        "UPDATE bt_3_translation_requests SET status = 'failed', decided_at = NOW() "
+                        "WHERE id = %s;",
+                        (request_id,),
+                    )
+                    failed += 1
+                    continue
+
+                cursor.execute(
+                    "UPDATE bt_3_webapp_dictionary_queries SET translation_ru = %s, updated_at = NOW() "
+                    "WHERE id = %s AND user_id = %s;",
+                    (text, entry_id, user_id),
+                )
+                cursor.execute(
+                    "UPDATE bt_3_translation_requests SET proposed = %s, status = 'filled', "
+                    "decided_at = NOW() WHERE id = %s;",
+                    (text, request_id),
+                )
+                # Карточка починена — из личного разбора она уходит сама.
+                cursor.execute(
+                    "UPDATE bt_3_user_word_review SET status = 'fixed', decided_at = NOW() "
+                    "WHERE entry_id = %s AND status = 'pending';",
+                    (entry_id,),
+                )
+                filled += 1
+        conn.commit()
+    return {"filled": filled, "failed": failed}
+
+
+def list_failed_translations(limit: int = 50) -> list[dict]:
+    """Слова, которые ночь перевести не смогла. Копятся и уходят владельцу решением.
+
+    Владелец 26.08.2026: «Если после обработки моделью возникли сложности — тогда оно
+    аккумулируется и отправляется мне». Здесь и накапливается.
+    """
+    ensure_translation_requests_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT r.id, r.user_id, r.entry_id, r.word
+                FROM bt_3_translation_requests r
+                JOIN bt_3_webapp_dictionary_queries q ON q.id = r.entry_id
+                WHERE r.status = 'failed'
+                ORDER BY r.decided_at NULLS LAST, r.id
+                LIMIT %s;
+                """,
+                (max(1, min(int(limit or 50), 200)),),
+            )
+            rows = cursor.fetchall() or []
+    return [{"id": int(r[0]), "user_id": int(r[1]), "entry_id": int(r[2]), "word": r[3]}
+            for r in rows]
+
+
+def count_failed_translations() -> int:
+    ensure_translation_requests_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_translation_requests r "
+                "JOIN bt_3_webapp_dictionary_queries q ON q.id = r.entry_id "
+                "WHERE r.status = 'failed';"
+            )
+            row = cursor.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def list_translation_requests(limit: int = 50) -> list[dict]:
+    ensure_translation_requests_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT r.id, r.user_id, r.entry_id, r.word, r.created_at, r.proposed
+                FROM bt_3_translation_requests r
+                JOIN bt_3_webapp_dictionary_queries q ON q.id = r.entry_id
+                WHERE r.status = 'pending'
+                ORDER BY r.created_at, r.id
+                LIMIT %s;
+                """,
+                (max(1, min(int(limit or 50), 200)),),
+            )
+            rows = cursor.fetchall() or []
+    return [{"id": int(r[0]), "user_id": int(r[1]), "entry_id": int(r[2]), "word": r[3],
+             "created_at": r[4].isoformat() if r[4] else None,
+             "proposed": r[5] or ""} for r in rows]
+
+
+def resolve_translation_request(request_id: int, translation: str = "", drop: bool = False) -> dict:
+    """Владелец вписал перевод — он встаёт в карточку человека. Или пометил мусором."""
+    ensure_translation_requests_schema()
+    text = " ".join(str(translation or "").split())
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, entry_id FROM bt_3_translation_requests "
+                "WHERE id = %s AND status = 'pending';",
+                (int(request_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {"ok": False}
+            user_id, entry_id = int(row[0]), int(row[1])
+
+            if drop:
+                cursor.execute(
+                    "DELETE FROM bt_3_webapp_dictionary_queries WHERE id = %s AND user_id = %s;",
+                    (entry_id, user_id),
+                )
+                status = "dropped"
+            elif text:
+                cursor.execute(
+                    "UPDATE bt_3_webapp_dictionary_queries SET translation_ru = %s, updated_at = NOW() "
+                    "WHERE id = %s AND user_id = %s;",
+                    (text, entry_id, user_id),
+                )
+                status = "filled"
+            else:
+                return {"ok": False}
+
+            cursor.execute(
+                "UPDATE bt_3_translation_requests SET status = %s, decided_at = NOW() WHERE id = %s;",
+                (status, int(request_id)),
+            )
+            cursor.execute(
+                "UPDATE bt_3_user_word_review SET status = 'fixed', decided_at = NOW() "
+                "WHERE entry_id = %s AND status = 'pending';",
+                (entry_id,),
+            )
+        conn.commit()
+    return {"ok": True, "status": status}
+
+
+def ensure_word_integrity_schema() -> None:
+    """Очередь разбора. Идемпотентно, DDL один раз на процесс."""
+    global _WORD_INTEGRITY_SCHEMA_READY
+    if _WORD_INTEGRITY_SCHEMA_READY:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_word_integrity_review (
+                    id          BIGSERIAL PRIMARY KEY,
+                    unit_id     BIGINT NOT NULL UNIQUE,
+                    lemma       TEXT NOT NULL,
+                    display     TEXT NOT NULL,
+                    pos         TEXT,
+                    gender      TEXT,
+                    issue       TEXT NOT NULL,
+                    suggestion  JSONB,
+                    status      TEXT NOT NULL DEFAULT 'pending',
+                    decided_at  TIMESTAMPTZ,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_word_integrity_pending "
+                "ON bt_3_word_integrity_review (status, created_at);"
+            )
+        conn.commit()
+    _WORD_INTEGRITY_SCHEMA_READY = True
+
+
+_GARBAGE_LEMMA_RE = re.compile(r"[=<>{}\[\]|\\/@#$%^*_~`]|\d{2,}")
+
+
+def _word_integrity_suggestion(lemma: str, display: str, pos: str, gender: str) -> dict | None:
+    """Что предложить исправить. None — источник молчит, и кнопки «Исправить» не будет.
+
+    Заглавная буква у существительного — правило немецкой орфографии, а не догадка.
+    Артикль берётся из рода, который уже лежит в записи; рода нет — предлагаем только
+    заглавную букву, артикль не выдумываем.
+    """
+    text = " ".join(str(lemma or "").split())
+    if not text or " " in text:
+        return None
+    if str(pos or "").strip().lower() != "noun":
+        return None
+    if not text[:1].islower():
+        return None
+    fixed = text[:1].upper() + text[1:]
+
+    # Заглавная буква — правило орфографии, но она не делает слово словом: «inkelgasse»
+    # так и останется обрывком, а «degeneriert» — причастием. Поэтому предложенную форму
+    # ПРОВЕРЯЕМ по справочнику (дверь слова, без модели). Не подтвердилась — правки не
+    # предлагаем вовсе, и в разборе у записи останутся только «оставить» и «удалить».
+    try:
+        from backend.german_word_gate import check_word, CONFIRMED, REPAIRED
+        verdict = check_word(fixed, allow_network=True, allow_model=False)
+        status = str(verdict.get("status") or "")
+        if status not in {CONFIRMED, REPAIRED}:
+            return None
+        confirmed = str(verdict.get("text") or "").strip() or fixed
+        if confirmed != fixed:
+            # Справочник знает другое написание — предлагаем ЕГО, а не наше. Но если он
+            # вернул слово со строчной, значит это вообще не существительное: «degeneriert»
+            # он чинит в глагол «degenerieren», и приклеивать к нему артикль нельзя.
+            if not confirmed[:1].isupper():
+                return None
+            fixed = confirmed
+    except Exception:
+        logging.exception("word_integrity: дверь слова недоступна для %r", fixed)
+        return None
+
+    article = str(gender or "").strip().lower()
+    article = article if article in {"der", "die", "das"} else ""
+    return {
+        "action": "fix_case",
+        "to_lemma": fixed,
+        "to_display": f"{article} {fixed}".strip(),
+        "why": "Написание подтверждено справочником"
+               + ("; артикль — из рода записи" if article else "; род у записи не указан"),
+    }
+
+
+def scan_word_integrity(limit: int = 200) -> dict:
+    """Найти противоречивые записи и положить их в очередь разбора.
+
+    Ничего не правит и не удаляет — только собирает. Уже лежащие в очереди строки не
+    трогаются: решение по ним принимает владелец, и до этого они ждут сколько угодно.
+    """
+    ensure_word_integrity_schema()
+    found, added = 0, 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT u.id, u.lemma, u.display, u.pos, u.gender
+                FROM bt_3_lex_units u
+                WHERE u.lang = 'de' AND u.kind = 'word'
+                  AND (
+                        (u.pos = 'noun' AND u.lemma ~ '^[a-zäöüß]' AND u.lemma !~ '^(der|die|das) ')
+                     OR u.lemma ~ '[=<>{}\\[\\]|@#$%%^*_~`]'
+                  )
+                ORDER BY u.id
+                LIMIT %s;
+                """,
+                (max(1, min(int(limit or 200), 1000)),),
+            )
+            rows = cursor.fetchall() or []
+            for unit_id, lemma, display, pos, gender in rows:
+                found += 1
+                issue = ("garbage_lemma" if _GARBAGE_LEMMA_RE.search(str(lemma or ""))
+                         else "noun_lowercase")
+                suggestion = (None if issue == "garbage_lemma"
+                              else _word_integrity_suggestion(lemma, display, pos, gender))
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_word_integrity_review
+                        (unit_id, lemma, display, pos, gender, issue, suggestion)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (unit_id) DO NOTHING;
+                    """,
+                    (int(unit_id), str(lemma or ""), str(display or ""), str(pos or ""),
+                     str(gender or ""), issue, Json(suggestion) if suggestion else None),
+                )
+                added += cursor.rowcount or 0
+        conn.commit()
+    return {"found": found, "added": added}
+
+
+def list_word_integrity_pending(limit: int = 50) -> list[dict]:
+    """Что ждёт решения владельца. Разобранное сюда не попадает."""
+    ensure_word_integrity_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, unit_id, lemma, display, pos, gender, issue, suggestion, created_at
+                FROM bt_3_word_integrity_review
+                WHERE status = 'pending'
+                ORDER BY created_at, id
+                LIMIT %s;
+                """,
+                (max(1, min(int(limit or 50), 200)),),
+            )
+            rows = cursor.fetchall() or []
+    out = []
+    for row in rows:
+        suggestion = row[7]
+        if isinstance(suggestion, str):
+            try:
+                suggestion = json.loads(suggestion)
+            except (ValueError, TypeError):
+                suggestion = None
+        out.append({
+            "id": int(row[0]),
+            "unit_id": int(row[1]),
+            "lemma": row[2],
+            "display": row[3],
+            "pos": row[4] or "",
+            "gender": row[5] or "",
+            "issue": row[6],
+            "issue_text": WORD_INTEGRITY_ISSUES.get(row[6], row[6]),
+            "suggestion": suggestion if isinstance(suggestion, dict) else None,
+            "created_at": row[8].isoformat() if row[8] else None,
+        })
+    return out
+
+
+def count_word_integrity_pending() -> int:
+    ensure_word_integrity_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_word_integrity_review WHERE status = 'pending';"
+            )
+            row = cursor.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def apply_word_integrity_decisions(decisions: list) -> dict:
+    """Выполнить решения владельца: исправить, оставить, удалить.
+
+    Одно решение на запись. «Применить» в интерфейсе выполняет их разом — это один
+    заход по списку, а не два действия над одним словом (владелец 26.08.2026 просил
+    объяснить это прямо, потому что прежняя формулировка сбивала с толку).
+    """
+    ensure_word_integrity_schema()
+    fixed = kept = deleted = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for item in (decisions or []):
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    review_id = int(item.get("id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                action = str(item.get("action") or "").strip().lower()
+                if not review_id or action not in {"fix", "keep", "delete"}:
+                    continue
+
+                cursor.execute(
+                    "SELECT unit_id, suggestion FROM bt_3_word_integrity_review "
+                    "WHERE id = %s AND status = 'pending';",
+                    (review_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    continue
+                unit_id, suggestion = int(row[0]), row[1]
+                if isinstance(suggestion, str):
+                    try:
+                        suggestion = json.loads(suggestion)
+                    except (ValueError, TypeError):
+                        suggestion = None
+
+                if action == "fix":
+                    if not isinstance(suggestion, dict) or not suggestion.get("to_lemma"):
+                        continue  # правки нет — молча «исправить» нечего
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_lex_units
+                        SET lemma = %s, display = %s, updated_at = NOW()
+                        WHERE id = %s;
+                        """,
+                        (suggestion["to_lemma"], suggestion.get("to_display") or suggestion["to_lemma"],
+                         unit_id),
+                    )
+                    fixed += 1
+                    status = "fixed"
+                elif action == "delete":
+                    cursor.execute("DELETE FROM bt_3_lex_units WHERE id = %s;", (unit_id,))
+                    deleted += 1
+                    status = "deleted"
+                else:
+                    kept += 1
+                    status = "kept"
+
+                cursor.execute(
+                    "UPDATE bt_3_word_integrity_review SET status = %s, decided_at = NOW() "
+                    "WHERE id = %s;",
+                    (status, review_id),
+                )
+        conn.commit()
+    return {"fixed": fixed, "kept": kept, "deleted": deleted}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Проверка ЛИЧНЫХ слов человека.
+#
+# Владелец 26.08.2026: «Логично, чтобы пользователь проверял качество своих слов и мог
+# исправить. Мы ведь пользуемся словами других пользователей — перед походом в модель
+# смотрим, нет ли такого слова у кого-то ещё. Поэтому важно, чтобы слова были в порядке.»
+#
+# Это НЕ карантин: карантин — про слова, которые модель не смогла собрать. Здесь —
+# про карточки, записанные неверно, и главное действие тут другое: исправить.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_USER_WORD_REVIEW_SCHEMA_READY = False
+
+USER_WORD_ISSUES = {
+    "no_translation": "Нет перевода — учить нечем",
+    "garbage": "В слове символы, которых в слове не бывает",
+    "translation_equals_word": "Перевод повторяет само слово",
+    "pos_mismatch": "Помечено существительным, но написано со строчной буквы",
+}
+
+
+def ensure_user_word_review_schema() -> None:
+    global _USER_WORD_REVIEW_SCHEMA_READY
+    if _USER_WORD_REVIEW_SCHEMA_READY:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_user_word_review (
+                    id         BIGSERIAL PRIMARY KEY,
+                    user_id    BIGINT NOT NULL,
+                    entry_id   BIGINT NOT NULL UNIQUE,
+                    issue      TEXT NOT NULL,
+                    status     TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    decided_at TIMESTAMPTZ
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_user_word_review_pending "
+                "ON bt_3_user_word_review (user_id, status);"
+            )
+        conn.commit()
+    _USER_WORD_REVIEW_SCHEMA_READY = True
+
+
+def scan_user_word_issues(limit: int = 2000) -> dict:
+    """Найти неверные личные карточки и положить их в очередь. Ничего не меняет.
+
+    Проверяются ТОЛЬКО одиночные слова: во фразе («absolute Kontraindikation») строчная
+    буква в начале — норма, и замер 26.08.2026 показал, что иначе 238 нормальных фраз
+    выглядят браком.
+    """
+    ensure_user_word_review_schema()
+    added = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_user_word_review (user_id, entry_id, issue)
+                SELECT q.user_id, q.id,
+                       CASE
+                         WHEN COALESCE(TRIM(q.translation_ru), '') = '' THEN 'no_translation'
+                         WHEN q.word_de ~ '[=<>{}@#$%%^*_~`]' AND q.word_de !~ ' ' THEN 'garbage'
+                         WHEN LOWER(TRIM(q.word_de)) = LOWER(TRIM(q.translation_ru))
+                              THEN 'translation_equals_word'
+                         ELSE 'pos_mismatch'
+                       END
+                FROM bt_3_webapp_dictionary_queries q
+                WHERE COALESCE(q.word_de, '') <> ''
+                  AND (
+                        COALESCE(TRIM(q.translation_ru), '') = ''
+                     OR (q.word_de ~ '[=<>{}@#$%%^*_~`]' AND q.word_de !~ ' ')
+                     OR LOWER(TRIM(q.word_de)) = LOWER(TRIM(q.translation_ru))
+                     OR (q.response_json->>'part_of_speech' = 'noun'
+                         AND q.word_de ~ '^[a-zäöüß]' AND q.word_de !~ ' ')
+                  )
+                ORDER BY q.id
+                LIMIT %s
+                ON CONFLICT (entry_id) DO NOTHING;
+                """,
+                (max(1, min(int(limit or 2000), 5000)),),
+            )
+            added = cursor.rowcount or 0
+        conn.commit()
+    return {"added": int(added)}
+
+
+def queue_missing_translations(limit: int = 500) -> int:
+    """Карточки без перевода ставим в очередь на ночной перевод. Без участия человека."""
+    ensure_translation_requests_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_translation_requests (user_id, entry_id, word)
+                SELECT q.user_id, q.id, q.word_de
+                FROM bt_3_webapp_dictionary_queries q
+                WHERE COALESCE(q.word_de, '') <> ''
+                  AND COALESCE(TRIM(q.translation_ru), '') = ''
+                ORDER BY q.id
+                LIMIT %s
+                ON CONFLICT (entry_id) DO NOTHING;
+                """,
+                (max(1, min(int(limit or 500), 2000)),),
+            )
+            added = cursor.rowcount or 0
+        conn.commit()
+    return int(added)
+
+
+def list_user_word_issues(user_id: int, limit: int = 30) -> list[dict]:
+    """Карточки этого человека, которые ждут его решения. Чужих здесь не бывает."""
+    ensure_user_word_review_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT r.id, r.entry_id, r.issue, q.word_de, q.translation_ru,
+                       q.response_json->>'part_of_speech'
+                FROM bt_3_user_word_review r
+                JOIN bt_3_webapp_dictionary_queries q ON q.id = r.entry_id
+                WHERE r.user_id = %s AND r.status = 'pending' AND q.user_id = %s
+                ORDER BY r.created_at, r.id
+                LIMIT %s;
+                """,
+                (int(user_id), int(user_id), max(1, min(int(limit or 30), 100))),
+            )
+            rows = cursor.fetchall() or []
+
+    out = []
+    for row in rows:
+        issue = row[2]
+        word = str(row[3] or "")
+        suggestion = None
+        # Нет перевода — не повод оставлять карточку мёртвой. Если слово есть в нашем
+        # словаре, перевод оттуда и предлагаем: это наш источник, а не выдумка.
+        # Владелец 26.08.2026: «А если глюк и перевод не записался? Чего ж их не исправить?»
+        if issue == "no_translation" and word:
+            try:
+                from backend.dictionary_entries import entries_for_query
+                found = entries_for_query(word, source_lang="de", target_lang="ru")
+                translations = [t for e in found for t in (e.get("translations") or [])]
+                if translations:
+                    suggestion = {
+                        "to_translation": ", ".join(translations[:2]),
+                        "why": "Перевод из нашего словаря",
+                    }
+            except Exception:
+                logging.exception("user_word_review: словарь не ответил на %r", word)
+
+        # Правку предлагаем только там, где её подтверждает справочник: «hammer» → «Hammer».
+        if issue == "pos_mismatch" and word and " " not in word:
+            try:
+                from backend.german_word_gate import check_word, CONFIRMED, REPAIRED
+                verdict = check_word(word, allow_network=True, allow_model=False)
+                status = str(verdict.get("status") or "")
+                fixed = str(verdict.get("text") or "").strip()
+                true_pos = str(verdict.get("pos") or "").strip().lower()
+                if status in {CONFIRMED, REPAIRED} and fixed and fixed != word:
+                    suggestion = {"to_word": fixed, "why": "Написание подтверждено справочником"}
+                elif status == CONFIRMED and true_pos and true_pos != "noun":
+                    # Слово написано верно, а помечено не тем: справочник знает, чем оно
+                    # является на самом деле («begreifen» — глагол, «jahrelang» —
+                    # прилагательное). Это и предлагаем исправить.
+                    suggestion = {
+                        "to_pos": true_pos,
+                        "why": "Часть речи — из справочника",
+                    }
+            except Exception:
+                logging.exception("user_word_review: дверь слова недоступна для %r", word)
+        out.append({
+            "id": int(row[0]),
+            "entry_id": int(row[1]),
+            "issue": issue,
+            "issue_text": USER_WORD_ISSUES.get(issue, issue),
+            "word": word,
+            "translation": str(row[4] or ""),
+            "pos": str(row[5] or ""),
+            "suggestion": suggestion,
+        })
+    return out
+
+
+def count_user_word_issues(user_id: int) -> int:
+    ensure_user_word_review_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_user_word_review WHERE user_id = %s AND status = 'pending';",
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def users_with_word_issues(limit: int = 500) -> list[tuple]:
+    """Кому есть что разобрать: (user_id, сколько). Для недельной рассылки."""
+    ensure_user_word_review_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, COUNT(*) FROM bt_3_user_word_review
+                WHERE status = 'pending'
+                GROUP BY user_id ORDER BY COUNT(*) DESC LIMIT %s;
+                """,
+                (max(1, min(int(limit or 500), 5000)),),
+            )
+            return [(int(r[0]), int(r[1])) for r in (cursor.fetchall() or [])]
+
+
+def apply_user_word_decisions(user_id: int, decisions: list) -> dict:
+    """Решения человека по СВОИМ карточкам. Чужую карточку тронуть нельзя.
+
+    Три действия, по одному на карточку: исправить написание (только подтверждённое),
+    оставить как есть, удалить из своего словаря.
+    """
+    ensure_user_word_review_schema()
+    fixed = kept = deleted = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for item in (decisions or []):
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    review_id = int(item.get("id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                action = str(item.get("action") or "").strip().lower()
+                if not review_id or action not in {"fix", "keep", "delete"}:
+                    continue
+                new_word = " ".join(str(item.get("to_word") or "").split())
+
+                cursor.execute(
+                    "SELECT entry_id FROM bt_3_user_word_review "
+                    "WHERE id = %s AND user_id = %s AND status = 'pending';",
+                    (review_id, int(user_id)),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    continue
+                entry_id = int(row[0])
+
+                new_pos = str(item.get("to_pos") or "").strip().lower()
+                new_translation = " ".join(str(item.get("to_translation") or "").split())
+                if action == "fix":
+                    if new_translation:
+                        cursor.execute(
+                            "UPDATE bt_3_webapp_dictionary_queries "
+                            "SET translation_ru = %s, updated_at = NOW() "
+                            "WHERE id = %s AND user_id = %s;",
+                            (new_translation, entry_id, int(user_id)),
+                        )
+                    elif new_word:
+                        cursor.execute(
+                            "UPDATE bt_3_webapp_dictionary_queries SET word_de = %s, updated_at = NOW() "
+                            "WHERE id = %s AND user_id = %s;",
+                            (new_word, entry_id, int(user_id)),
+                        )
+                    elif new_pos:
+                        cursor.execute(
+                            """
+                            UPDATE bt_3_webapp_dictionary_queries
+                            SET response_json = jsonb_set(
+                                    COALESCE(response_json, '{}'::jsonb),
+                                    '{part_of_speech}', to_jsonb(%s::text), true),
+                                updated_at = NOW()
+                            WHERE id = %s AND user_id = %s;
+                            """,
+                            (new_pos, entry_id, int(user_id)),
+                        )
+                    else:
+                        continue
+                    fixed += 1
+                    status = "fixed"
+                elif action == "delete":
+                    cursor.execute(
+                        "DELETE FROM bt_3_webapp_dictionary_queries WHERE id = %s AND user_id = %s;",
+                        (entry_id, int(user_id)),
+                    )
+                    deleted += 1
+                    status = "deleted"
+                else:
+                    kept += 1
+                    status = "kept"
+
+                cursor.execute(
+                    "UPDATE bt_3_user_word_review SET status = %s, decided_at = NOW() WHERE id = %s;",
+                    (status, review_id),
+                )
+        conn.commit()
+    return {"fixed": fixed, "kept": kept, "deleted": deleted}
+
+
 def get_lex_unit_card(unit_id: int) -> dict | None:
     """Разбор, лежащий НА САМОЙ единице словаря.
 
@@ -30740,8 +32012,14 @@ def build_word_diff_pair_key(words, studied_lang: str, explain_lang: str) -> str
     return f"{langs}|" + "|".join(cleaned)
 
 
-def get_word_diff_card(pair_key: str, *, bump_open: bool = True) -> dict | None:
-    """Готовый разбор пары из общего кеша. None — «такой пары мы ещё не разбирали»."""
+def get_word_diff_card(pair_key: str, *, bump_open: bool = True,
+                       any_version: bool = False) -> dict | None:
+    """Готовый разбор пары из общего кеша. None — «такой пары мы ещё не разбирали».
+
+    По умолчанию отдаём только текущую версию: старая собрана по другим правилам и на
+    новом экране выглядит неправильно. Но если человек не может заказать новый разбор
+    (бесплатный тариф), старый ответ лучше отказа — тогда зовут с any_version=True.
+    """
     key = str(pair_key or "").strip()
     if not key:
         return None
@@ -30750,11 +32028,12 @@ def get_word_diff_card(pair_key: str, *, bump_open: bool = True) -> dict | None:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT words, studied_lang, explain_lang, payload, sources, created_at
+                SELECT words, studied_lang, explain_lang, payload, sources, created_at,
+                       schema_version
                 FROM bt_3_word_diff_cards
-                WHERE pair_key = %s AND schema_version = %s;
+                WHERE pair_key = %s AND (%s OR schema_version = %s);
                 """,
-                (key, WORD_DIFF_SCHEMA_VERSION),
+                (key, bool(any_version), WORD_DIFF_SCHEMA_VERSION),
             )
             row = cursor.fetchone()
             if not row:
@@ -30779,6 +32058,7 @@ def get_word_diff_card(pair_key: str, *, bump_open: bool = True) -> dict | None:
         "payload": payload if isinstance(payload, dict) else {},
         "sources": sources if isinstance(sources, dict) else {},
         "created_at": row[5].isoformat() if row[5] else None,
+        "fresh": int(row[6] or 0) >= WORD_DIFF_SCHEMA_VERSION,
     }
 
 
@@ -30803,8 +32083,8 @@ def save_word_diff_card(
                 """
                 INSERT INTO bt_3_word_diff_cards
                     (pair_key, words, studied_lang, explain_lang, payload, sources,
-                     model_task, schema_version)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                     model_task, schema_version, open_count)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
                 ON CONFLICT (pair_key) DO UPDATE SET
                     words = EXCLUDED.words,
                     payload = EXCLUDED.payload,
@@ -31032,17 +32312,21 @@ def list_word_diff_popular(limit: int = 40) -> list[dict]:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT pair_key, words, open_count
+                SELECT pair_key, words, open_count, schema_version
                 FROM bt_3_word_diff_cards
-                WHERE schema_version = %s
                 ORDER BY open_count DESC, created_at DESC
                 LIMIT %s;
                 """,
-                (WORD_DIFF_SCHEMA_VERSION, max(1, min(int(limit or 40), 100))),
+                (max(1, min(int(limit or 40), 100)),),
             )
             rows = cursor.fetchall() or []
     return [
-        {"pair_key": row[0], "words": list(row[1] or []), "opens": int(row[2] or 0)}
+        {
+            "pair_key": row[0],
+            "words": list(row[1] or []),
+            "opens": int(row[2] or 0),
+            "fresh": int(row[3] or 0) >= WORD_DIFF_SCHEMA_VERSION,
+        }
         for row in rows
     ]
 
@@ -31056,10 +32340,11 @@ def list_word_diff_history(user_id: int, limit: int = 20) -> list[dict]:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT pair_key, words, opened_at
-                FROM bt_3_word_diff_history
-                WHERE user_id = %s
-                ORDER BY opened_at DESC
+                SELECT h.pair_key, h.words, h.opened_at, COALESCE(c.open_count, 0)
+                FROM bt_3_word_diff_history h
+                LEFT JOIN bt_3_word_diff_cards c ON c.pair_key = h.pair_key
+                WHERE h.user_id = %s
+                ORDER BY h.opened_at DESC
                 LIMIT %s;
                 """,
                 (int(user_id), max(1, min(int(limit or 20), 100))),
@@ -31070,6 +32355,7 @@ def list_word_diff_history(user_id: int, limit: int = 20) -> list[dict]:
             "pair_key": row[0],
             "words": list(row[1] or []),
             "opened_at": row[2].isoformat() if row[2] else None,
+            "opens": int(row[3] or 0),
         }
         for row in rows
     ]

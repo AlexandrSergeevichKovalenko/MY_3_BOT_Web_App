@@ -124,6 +124,13 @@ _DEFAULT_TASK_MODELS = {
     # на слово и живёт в базе, поэтому здесь полный gpt-4.1: выдуманное управление
     # человек заучит как правило. Переопределяется LLM_TASK_MODEL_WORD_USAGE_ENRICHMENT.
     "word_usage_enrichment": "gpt-4.1-2025-04-14",
+    # «Чем бывает это написание»: короткий вопрос, один раз на слово, ответ живёт вечно.
+    # Полный gpt-4.1: от него зависит, спросим ли мы человека, — ошибка тут молча уводит
+    # разбор не в ту сторону. Переопределяется LLM_TASK_MODEL_WORD_READINGS.
+    "word_readings": "gpt-4.1-2025-04-14",
+    # Перевод карточкам, у которых его нет: список идёт ПАЧКОЙ, один вызов на десятки
+    # слов. Полная модель — это перевод, который человек будет заучивать.
+    "missing_translations_batch": "gpt-4.1-2025-04-14",
     # Потоковый близнец: та же модель, чтобы куски и целый ответ не расходились в
     # качестве. Разница только в подаче — блоками по мере готовности.
     "word_diff_multilang_stream": "gpt-4.1-2025-04-14",
@@ -145,6 +152,8 @@ _DEFAULT_RESPONSES_TASKS = {
     "feel_word_multilang",
     "word_diff_multilang",
     "word_usage_enrichment",
+    "word_readings",
+    "missing_translations_batch",
     "enrich_word",
     "enrich_word_multilang",
     "article_gender_hint",
@@ -1259,6 +1268,52 @@ Task:
 - Keep explanation practical and compact.
 - If you provide examples in target_language, add immediate source_language translation.
 - End with 1-2 concise "gut feeling" lines.
+""",
+"missing_translations_batch":"""
+Ты — переводчик немецкого. На входе СПИСОК немецких слов и фраз, у которых в словаре
+человека потерялся перевод. Верни перевод каждому.
+
+ВХОД: {"explain_language":"ru","items":[{"id":12,"text":"Räum den Tisch ab"}]}
+
+Правила:
+- Перевод короткий и естественный: так сказал бы человек, а не подстрочник.
+- Фраза переводится фразой, слово — словом. Не добавляй пояснений в скобках, если без
+  них смысл ясен.
+- Не уверен в переводе — не выдумывай: верни для этой записи пустую строку. Пустое
+  честнее неверного: человек заучит то, что мы напишем.
+- Ничего, кроме перевода: без грамматики, без примеров, без комментариев.
+
+Верни СТРОГО ОДИН JSON:
+{"items":[{"id":12,"translation":"убери со стола"}]}
+""",
+"word_readings":"""
+Ты — немецкий лексикограф. Отвечаешь на ОДИН вопрос: чем бывает это написание в немецком.
+
+ВХОД: {"spelling":"gehen","explain_language":"ru"}
+
+Перечисли ВСЕ части речи, которыми это написание реально употребляется в языке —
+независимо от того, как человек его написал и что о нём знает чей-то словарь.
+Субстантивация инфинитива («das Gehen» — ходьба) считается отдельным прочтением, если
+она в языке ДЕЙСТВИТЕЛЬНО употребляется, а не просто теоретически возможна.
+
+Для каждого прочтения:
+  pos      — verb, noun, adjective, adverb, preposition, conjunction, particle, participle;
+  form     — как это пишется в словаре: существительное с артиклем («das Gehen»),
+             глагол в инфинитиве («gehen»), прилагательное в基 форме;
+  meaning  — короткое значение на explain_language;
+  common   — true, если прочтение обиходное; false, если редкое, книжное или узкое.
+
+Правила:
+- НАЧНИ С ОСНОВНОГО ПРОЧТЕНИЯ и никогда его не пропускай: если написание — это глагол,
+  инфинитив обязан быть в списке ПЕРВЫМ, даже когда субстантивация употребительнее.
+  Замер 26.08.2026: на «gehen» пришло только «das Gehen», а сам глагол потерялся.
+- Не выдумывай прочтений ради полноты. Не уверен — не включай.
+- Омонимы с разным родом («der Kiefer» — челюсть, «die Kiefer» — сосна) — разные записи.
+- Не пиши этимологию, примеры, склонение и спряжение: спрашивают не об этом.
+
+Верни СТРОГО ОДИН JSON:
+{"readings":[{"pos":"verb","form":"gehen","meaning":"идти","common":true},
+             {"pos":"noun","form":"das Gehen","meaning":"ходьба","common":true}]}
 """,
 "word_usage_enrichment":"""
 Ты — немецкий лексикограф. Составляешь ПОЛНУЮ картину употребления ОДНОГО слова.
@@ -7204,6 +7259,48 @@ async def run_feel_word_multilang(
     return content.strip()
 
 
+async def run_missing_translations_batch(items: list[dict], *, explain_language: str = "ru") -> dict:
+    """Перевод сразу списку карточек, у которых его нет. Один вызов на пачку.
+
+    Владелец 26.08.2026: «Необязательно по одному отправлять — это дурь, если каждый
+    будет отправлять. Копим, потом пачкой через модель, а потом мне на решение».
+    """
+    task_name = "missing_translations_batch"
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=task_name,
+        user_message=json.dumps(
+            {"explain_language": (explain_language or "ru").strip().lower(),
+             "items": items or []},
+            ensure_ascii=False,
+        ),
+        poll_interval_seconds=2.0,
+    )
+    return parse_llm_json_object(content, context=task_name)
+
+
+async def run_word_readings(spelling: str, *, explain_language: str = "ru") -> dict:
+    """Чем бывает это написание в немецком. Один короткий вопрос на слово.
+
+    Нужен, чтобы решить, спрашивать ли человека. Смотрим НА ЯЗЫК, а не на нашу базу:
+    «das Gehen» существует в немецком независимо от того, завели мы такую запись или нет
+    (владелец 26.08.2026: «даже если у нас нет записи, но она существует в грамматике
+    немецкого языка — мы обязаны спросить»).
+    """
+    task_name = "word_readings"
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=task_name,
+        user_message=json.dumps(
+            {"spelling": str(spelling or "").strip(),
+             "explain_language": (explain_language or "ru").strip().lower()},
+            ensure_ascii=False,
+        ),
+        poll_interval_seconds=2.0,
+    )
+    return parse_llm_json_object(content, context=task_name)
+
+
 async def run_word_usage_enrichment(
     word: str,
     known: dict,
@@ -9408,11 +9505,22 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence",
         "into Russian in `corrected_ru` / `proposal_ru`. The reader must be able to see "
         "whether your fix still means what the learner saved, or whether you quietly "
         "changed the meaning.\n"
+        # ⛔ ЯЗЫК ОБЪЯСНЕНИЯ — ОТДЕЛЬНЫМ ПРАВИЛОМ, А НЕ ПОДПИСЬЮ В СХЕМЕ.
+        # Пометки «<one short sentence in RUSSIAN>» внутри схемы модели не хватало:
+        # замер 26.08.2026 — 29 открытых вопросов из 232 приехали к владельцу с
+        # немецким «Das Verb 'fahren' wird hier transitiv verwendet», а переспрос по
+        # одному разу вернул немецкий ещё в 18 случаях. Читает это человек, который
+        # по-немецки только учится; объяснение на разбираемом языке — тот же молчащий
+        # экран, только с текстом. Правило вынесено наверх и названо прямо.
+        "- `why` MUST be written in RUSSIAN, in Cyrillic letters. German or English "
+        "there is INVALID even when the sentence you judge is German: the reader is a "
+        "Russian speaker deciding whether to keep the entry. German words may appear "
+        "only as quoted examples inside the Russian sentence.\n"
         "Answer STRICT JSON only: {\"verdict\":\"ok|error|context|style\","
         "\"category\":\"rechtschreibung|kongruenz|kasus|praeposition|wortstellung|stil|\","
         "\"corrected\":\"<fixed text or empty>\",\"corrected_ru\":\"<RUSSIAN or empty>\","
         "\"proposal\":\"<complete German text or empty>\",\"proposal_ru\":\"<RUSSIAN or empty>\","
-        "\"why\":\"<one short sentence in RUSSIAN>\"}"
+        "\"why\":\"<one short sentence in RUSSIAN, Cyrillic>\"}"
     )
     try:
         client = build_sync_openai_client(api_key=api_key, timeout=15)

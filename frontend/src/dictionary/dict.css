@@ -1991,3 +1991,129 @@ html[data-scheme="light"] .dq-gt > summary,
 /* Немецкая фраза в примере — чуть плотнее, перевод тише: глаз идёт сверху вниз. */
 .wd-ex-de { letter-spacing: -0.005em; }
 .wd-ex-de .wd-em { color: var(--dq-accent); }
+.wd-bare { font-size: 12.5px; font-weight: 600; color: var(--dmps-text-muted, #94a3b8); }
+
+/* Значения внутри одной карточки: номер слева, содержимое справа. Так слово остаётся
+   одно, а его значения читаются подряд и не выглядят двумя одинаковыми карточками. */
+.wd-sense { display: flex; gap: 8px; }
+.wd-sense + .wd-sense { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--dmps-border, #334155); }
+.wd-sense-num {
+  flex: 0 0 auto; width: 18px; height: 18px; margin-top: 2px;
+  border-radius: 50%; background: var(--dq-chip-strong);
+  color: var(--dmps-text-secondary, #cbd5e1);
+  font-size: 11px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+}
+.wd-sense-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.wd-pos {
+  margin-left: auto;
+  padding: 2px 8px; border-radius: 999px;
+  background: var(--dq-chip); border: 1px solid var(--dmps-border, #334155);
+  font-size: 11.5px; font-weight: 700; color: var(--dmps-text-muted, #94a3b8);
+}
+
+/* Вопрос «что вы имеете в виду»: слово читается по-разному, и решает человек, а не мы. */
+.wd-choose {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 14px; border-radius: 16px;
+  background: var(--dq-accent-wash);
+  border: 1px solid var(--dq-accent);
+}
+.wd-choose-title { font-size: 16px; font-weight: 750; color: var(--dmps-text-title, #f1f5f9); }
+.wd-choose-word { display: flex; flex-direction: column; gap: 6px; }
+.wd-choose-word-name { font-size: 13px; font-weight: 700; color: var(--dq-label); }
+.wd-choose-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.wd-choose-option {
+  flex: 1 1 46%;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 12px; border-radius: 14px;
+  border: 1px solid var(--dmps-border, #334155);
+  background: var(--dq-chip);
+  text-align: left; cursor: pointer; font: inherit;
+}
+.wd-choose-option:active { transform: scale(0.985); }
+.wd-choose-label { font-size: 15px; font-weight: 750; color: var(--dmps-text-title, #f1f5f9); }
+.wd-choose-pos { font-size: 12px; font-weight: 700; color: var(--dq-label); }
+.wd-choose-hint { font-size: 12.5px; color: var(--dmps-text-muted, #94a3b8); }
+.wd-choose-foot { font-size: 12.5px; color: var(--dmps-text-secondary, #cbd5e1); }
+
+/* ── Разбор противоречивых записей словаря (экран владельца) ───────────────── */
+.wi-root { display: flex; flex-direction: column; gap: 12px; }
+.wi-head { display: flex; align-items: center; justify-content: space-between; }
+.wi-title { font-size: 18px; font-weight: 750; color: var(--dmps-text-title, #f1f5f9); }
+.wi-sub { font-size: 13.5px; color: var(--dmps-text-secondary, #cbd5e1); }
+.wi-empty { padding: 20px 12px; text-align: center; font-size: 14px; color: var(--dmps-text-muted, #94a3b8); }
+.wi-error { font-size: 13.5px; color: var(--dq-gen-f); }
+.wi-done {
+  padding: 12px; border-radius: 14px;
+  background: rgba(28, 122, 68, 0.10); border: 1px solid rgba(28, 122, 68, 0.35);
+  font-size: 14px; color: var(--dmps-text-title, #f1f5f9);
+}
+
+.wi-row {
+  border: 1px solid var(--dmps-border, #334155); border-radius: 16px;
+  padding: 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.wi-row.is-fix { border-color: var(--dq-accent); background: var(--dq-accent-wash); }
+.wi-row.is-keep { border-color: var(--dq-good); background: rgba(28, 122, 68, 0.08); }
+.wi-row.is-delete { border-color: var(--dq-gen-f); background: rgba(192, 42, 68, 0.08); }
+.wi-word { font-size: 17px; font-weight: 750; color: var(--dmps-text-title, #f1f5f9); }
+.wi-what { font-size: 13.5px; color: var(--dmps-text-secondary, #cbd5e1); }
+.wi-fix { display: flex; align-items: center; gap: 8px; font-size: 14.5px; flex-wrap: wrap; }
+.wi-fix .from { color: var(--dmps-text-muted, #94a3b8); text-decoration: line-through; }
+.wi-fix .to { font-weight: 750; color: var(--dq-good); }
+.wi-src { font-size: 12px; color: var(--dmps-text-muted, #94a3b8); }
+
+.wi-acts { display: flex; gap: 6px; }
+.wi-act {
+  flex: 1 1 0; padding: 9px 6px; border-radius: 11px;
+  border: 1px solid var(--dmps-border, #334155); background: var(--dq-chip);
+  color: var(--dmps-text-secondary, #cbd5e1);
+  font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.wi-act.is-on.fix { background: var(--dq-accent); border-color: transparent; color: var(--dq-accent-ink); }
+.wi-act.is-on.keep { background: var(--dq-good); border-color: transparent; color: #fff; }
+.wi-act.is-on.delete { background: var(--dq-gen-f); border-color: transparent; color: #fff; }
+
+.wi-apply {
+  padding: 14px; border-radius: 14px; border: none; cursor: pointer;
+  background: linear-gradient(180deg, var(--dq-accent-soft), var(--dq-accent));
+  color: var(--dq-accent-ink); font: inherit; font-size: 15px; font-weight: 700;
+}
+.wi-apply.off { background: var(--dq-chip-strong); opacity: 0.7; cursor: default; }
+.wi-hint { font-size: 12.5px; color: var(--dmps-text-muted, #94a3b8); text-align: center; }
+
+/* Сворачиваемые списки: они растут, а поле ввода должно оставаться на виду.
+   Стрелка поворачивается — сразу видно, что блок открывается и закрывается. */
+.wd-fold {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 0; border: none; background: none; cursor: pointer; font: inherit;
+  text-align: left;
+}
+.wd-fold .wd-label { flex: 1 1 auto; min-width: 0; }
+.wd-fold-count {
+  flex: 0 0 auto; padding: 1px 8px; border-radius: 999px;
+  background: var(--dq-chip); border: 1px solid var(--dmps-border, #334155);
+  font-size: 11.5px; font-weight: 700; color: var(--dmps-text-muted, #94a3b8);
+  font-variant-numeric: tabular-nums;
+}
+.wd-fold-arrow {
+  flex: 0 0 auto; font-size: 13px; color: var(--dq-label);
+  transition: transform 0.18s ease; transform: rotate(-90deg);
+}
+.wd-fold.is-open .wd-fold-arrow { transform: rotate(0deg); }
+@media (prefers-reduced-motion: reduce) { .wd-fold-arrow { transition: none; } }
+.wi-lookup {
+  align-self: flex-start;
+  padding: 7px 12px; border-radius: 999px;
+  border: 1px dashed var(--dq-chip-strong); background: transparent;
+  color: var(--dq-label); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.wi-block { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: 1px solid var(--dmps-border, #334155); }
+.wi-input {
+  width: 100%; box-sizing: border-box;
+  padding: 10px 12px; border-radius: 12px;
+  border: 1px solid var(--dmps-border, #334155); background: var(--dq-chip);
+  color: var(--dmps-text-title, #f1f5f9); font: inherit; font-size: 15px;
+}
+.wi-input::placeholder { color: var(--dmps-text-muted, #94a3b8); }

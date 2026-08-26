@@ -400,6 +400,7 @@ from backend.openai_manager import (
     run_feel_word_multilang,
     run_word_diff_multilang,
     run_word_usage_enrichment,
+    run_word_readings,
     run_enrich_word,
     run_enrich_word_multilang,
     run_theory_generation,
@@ -31498,23 +31499,42 @@ def _phrase_review_payload(limit: int = 200) -> dict:
 
     Варианты нумеруются ЗДЕСЬ, на сервере, и тот же номер уходит обратно в решении —
     иначе фронт и бэкенд могли бы разойтись в том, что значит «принять второй»."""
-    from backend.database import list_open_phrase_reviews, phrase_review_variants
+    from backend.database import (
+        list_open_phrase_reviews, phrase_review_card_examples, phrase_review_is_panel,
+        phrase_review_variants,
+    )
     items = []
     for it in list_open_phrase_reviews(int(limit)):
         judges = it.get("judges") or []
         arbiter = it.get("arbiter") if isinstance(it.get("arbiter"), dict) else None
         variants = phrase_review_variants(judges, it.get("text") or "", arbiter)
         slot_of = {v["text"]: n for n, v in enumerate(variants)}
+        # ДВА РАЗНЫХ ВОПРОСА В ОДНОЙ ОЧЕРЕДИ, и путать их нельзя.
+        # "grammar" — судьи разошлись о грамматике фразы: решение = выбрать текст.
+        # "panel"   — три голоса разошлись о КАРТОЧКЕ (примеры и перевод): выбирать
+        #             нечего, там другие кнопки и на экран нужны сами примеры.
+        panel = phrase_review_is_panel(judges)
         items.append({
             "id": it["id"],
+            "kind": "panel" if panel else "grammar",
             "text": it.get("text") or "",
             "translation": it.get("translation") or "",
+            # Примеры — предмет спора панельного вопроса. У грамматического их не
+            # запрашиваем: лишний поход в базу на каждую из двух сотен строк.
+            "examples": phrase_review_card_examples(it.get("card")) if panel else [],
+            # «Эту фразу ты уже правил». Приходит только когда решения были: ночь
+            # больше не задаёт повторный вопрос, но ДРУГУЮ ошибку в той же фразе
+            # найти может — и тогда владелец должен видеть, что здесь уже было.
+            "history": it.get("history") or [],
             "all_ok": bool(judges) and all(
                 str(j.get("verdict") or "") == "ok" for j in judges),
             # Вердикт третейского: победивший вариант отдаём НОМЕРОМ той же нумерации,
             # что у кнопок, — иначе «прав второй» и кнопка «Принять 2» разъедутся.
             "arbiter": ({
                 "why": str(arbiter.get("why") or ""),
+                # Текст третьего судьи проходит ту же проверку, что правки первых двух.
+                # Забракован — кнопки у него нет, но причина отказа на экране есть.
+                "better_check": _phrase_fix_check_ru(arbiter, "better"),
                 "winner_index": (int(arbiter.get("winner")) - 1
                                  if 1 <= int(arbiter.get("winner") or 0) <= len(variants) else None),
                 "better": str(arbiter.get("better") or ""),
@@ -31526,7 +31546,15 @@ def _phrase_review_payload(limit: int = 200) -> dict:
                  # смысл сохранённой фразы или молча подменил его
                  "ru": v.get("ru") or "",
                  "kind": {"corrected": "fix", "proposal": "complete"}.get(
-                     v["field"], v["field"])}
+                     v["field"], v["field"]),
+                 # Третий судья назвал этот вариант верным, а наша проверка была
+                 # против. Кнопка есть, но возражение проверки владелец видит рядом —
+                 # решает он, и решает зряче.
+                 "objection": (
+                     str(((judges[v["judge"] - 1] or {}).get(f"{v['field']}_check") or {})
+                         .get("why") or "")
+                     if v.get("check_disputed_by_arbiter")
+                     and 0 < v["judge"] <= len(judges) else "")}
                 for n, v in enumerate(variants)
             ],
             "judges": [
@@ -31577,8 +31605,14 @@ def _phrase_review_payload(limit: int = 200) -> dict:
     except Exception:
         logging.debug("phrasereview: total count failed", exc_info=True)
         total = len(items)          # честнее показать окно, чем соврать нулём
+    from backend.database import count_open_phrase_reviews_by_kind
+    try:
+        by_kind = count_open_phrase_reviews_by_kind()
+    except Exception:
+        logging.debug("phrasereview: kind counts failed", exc_info=True)
+        by_kind = {}
     return {"items": items, "total": total, "loaded": len(items),
-            "noise": noise, "blind": blind}
+            "noise": noise, "blind": blind, "by_kind": by_kind}
 
 
 @app.route("/api/answer/phrasereview/list", methods=["POST"])
@@ -31605,7 +31639,7 @@ def answer_phrase_review_decide():
     except (TypeError, ValueError):
         return jsonify({"error": "нет фразы"}), 400
     decision = str(payload.get("decision") or "").strip().lower()
-    if decision not in ("accept", "keep", "delete", "replace", "skip"):
+    if decision not in ("accept", "keep", "delete", "replace", "skip", "rewrite"):
         return jsonify({"error": "неизвестное решение"}), 400
     own_text = str(payload.get("text") or "").strip()
     if decision == "replace" and not own_text:
@@ -31616,6 +31650,18 @@ def answer_phrase_review_decide():
         variant = 0
 
     from backend.database import apply_phrase_review_decision
+    if decision == "rewrite":
+        # Панельная карточка: спор не о фразе, а о её примерах и переводе. Владелец
+        # отправляет её ночному переписчику — тот берёт другой моделью, проверяет
+        # вторым голосом и, если не выйдет и с третьего раза, вернёт её сюда же.
+        from backend.database import send_panel_card_to_rewrite
+        res = send_panel_card_to_rewrite(review_id)
+        note = ("Отправил примеры на переписывание — вернётся к тебе, только если "
+                "и ночью не выйдет." if res.get("queued") else
+                "Не удалось поставить в очередь переписывания: карточка не числится "
+                "спорной. Вопрос оставлен открытым.")
+        return jsonify({"ok": True, "result": "rewrite", "note": note,
+                        **_phrase_review_payload()})
     if decision == "skip":
         # «Отложить» ничего не решает и не закрывает строку — фраза просто уезжает в
         # конец списка на этом экране. Никакой записи в базу.
@@ -42439,7 +42485,8 @@ def _word_diff_normalize_words(raw_words) -> list[str]:
     return out
 
 
-def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -> dict | None:
+def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str,
+                              pick: str = "") -> dict | None:
     """Всё, что мы знаем о слове, — в форме, готовой для сравнения. None — «не знаем».
 
     Порядок и его цена:
@@ -42464,8 +42511,60 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
         logging.exception("word_diff: слой единиц не ответил на %r", text)
         entries = []
 
-    if entries:
-        entry = entries[0]
+    # Сначала спрашиваем ЯЗЫК, чем бывает это написание, и только потом смотрим свою базу.
+    # «das Gehen» существует, даже если записи у нас нет: человек должен получить вопрос,
+    # а не наш выбор (владелец 26.08.2026).
+    readings = _word_diff_readings(text, studied_lang, explain_lang)
+    # Наша база — тоже источник: если у нас есть законная запись с частью речи, которой
+    # в ответе источника нет, добавляем её. Замер 26.08.2026: на «gehen» источник вернул
+    # только «das Gehen» и потерял сам глагол.
+    for entry in _word_diff_legit_entries(text, entries, studied_lang):
+        pos = str(entry.get("pos") or "").strip().lower()
+        if not pos or any(r.get("pos") == pos for r in readings):
+            continue
+        # Показываем словарное написание из НАШЕЙ записи: глагол строчными.
+        head = str(entry.get("headword") or text).strip() or text
+        article = str(entry.get("gender") or "").strip().lower()
+        form = f"{article} {head}".strip() if pos == "noun" and article in {"der", "die", "das"} else head
+        readings.append({
+            "pos": pos, "form": form, "common": True,
+            "meaning": ", ".join([str(x) for x in (entry.get("translations") or [])][:2]),
+        })
+
+    ask = _word_diff_readings_to_ask(text, readings)
+    if ask and not pick:
+        return {
+            "needs_choice": True,
+            "word": text,
+            "options": [{
+                "key": f"pos:{reading['pos']}",
+                "pos": reading["pos"],
+                "label": reading["form"],
+                "pos_label": _POS_HUMAN.get(reading["pos"], reading["pos"]),
+                "hint": reading.get("meaning") or "",
+            } for reading in ask],
+        }
+
+    chosen_pos = pick[4:] if pick.startswith("pos:") else ""
+    if chosen_pos:
+        # Человек ответил. Работаем с его прочтением: если такой записи у нас нет —
+        # соберём её, а не подсунем соседнюю.
+        entries = [e for e in entries
+                   if str(e.get("pos") or "").strip().lower() == chosen_pos] or []
+        if not entries:
+            chosen_reading = next((r for r in readings if r.get("pos") == chosen_pos), None)
+            return _word_diff_article_for_reading(
+                text, chosen_reading or {"pos": chosen_pos, "form": text},
+                studied_lang, explain_lang,
+            )
+
+    usable = _word_diff_legit_entries(text, entries, studied_lang)
+    entry = _word_diff_pick_entry(text, entries, studied_lang, pick=pick)
+    if not entry and len(usable) > 1:
+        # Прочтений несколько — молча выбирать нельзя. Возвращаем вопрос.
+        return {"needs_choice": True, "word": text,
+                "options": _word_diff_choice_options(text, usable)}
+    if entry:
         unit_id = int(entry.get("unit_id") or 0)
         card = get_lex_unit_card(unit_id) if unit_id else None
         if _word_diff_card_is_thin(card):
@@ -42487,7 +42586,16 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
             source="dictionary_units",
         )
         if payload:
-            payload["usage"] = _word_diff_usage(text, card or {}, studied_lang, explain_lang)
+            payload["entry_key"] = _word_diff_entry_key(entry)
+            # Написание берём из НАШЕЙ статьи: разбор модели возвращает «Gehen» с
+            # заглавной, потому что так набрал человек, и глагол начинает выглядеть
+            # существительным прямо в заголовке (замер 26.08.2026).
+            our_head = str(entry.get("headword") or "").strip()
+            if our_head:
+                payload["headword"] = our_head
+            payload["usage"] = _word_diff_usage(
+                text, card or {}, studied_lang, explain_lang, pos=str(entry.get("pos") or ""),
+            )
             return _word_diff_build_article(payload)
 
     if str(studied_lang or "").strip().lower() == "de":
@@ -42517,8 +42625,187 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
     payload = _word_diff_payload_from_card(text, fresh, source="dictionary_lookup")
     if not payload:
         return None
-    payload["usage"] = _word_diff_usage(text, fresh, studied_lang, explain_lang)
+    payload["usage"] = _word_diff_usage(
+        text, fresh, studied_lang, explain_lang, pos=str(fresh.get("part_of_speech") or ""),
+    )
     return _word_diff_build_article(payload)
+
+
+def _word_diff_entry_key(entry: dict) -> str:
+    """Ярлык прочтения: часть речи и единица. По нему возвращается выбор человека."""
+    pos = str((entry or {}).get("pos") or "").strip().lower() or "other"
+    return f"{pos}:{int((entry or {}).get('unit_id') or 0)}"
+
+
+def _word_diff_article_for_reading(word: str, reading: dict, studied_lang: str,
+                                   explain_lang: str) -> dict | None:
+    """Статья по выбранному человеком прочтению, когда своей записи у нас нет.
+
+    Собирается «Полнотой слова» для ИМЕННО ЭТОЙ части речи: выбрал существительное —
+    получит «das Gehen», а не соседний глагол.
+    """
+    text = " ".join(str(word or "").split())
+    pos = str((reading or {}).get("pos") or "").strip().lower()
+    if not text:
+        return None
+    usage = _word_diff_usage(text, {}, studied_lang, explain_lang, pos=pos)
+    if not usage or not usage.get("senses"):
+        return None
+    # У существительного оставляем артикль в заголовке: «das Gehen» и «gehen» — разные
+    # сравнения, и в списках они должны отличаться на вид, а не выглядеть дублями
+    # (владелец 26.08.2026 увидел две одинаковые строки «gehen · laufen»).
+    form = " ".join(str((reading or {}).get("form") or text).split())
+    headword = form or text
+    return _word_diff_build_article({
+        "word": text,
+        "headword": headword,
+        "entry_key": f"pos:{pos}",
+        "pos": pos,
+        "senses": [],
+        "examples": [],
+        "constructions": [],
+        "collocations": [],
+        "register": "",
+        "source": "word_readings",
+        "usage": usage,
+    })
+
+
+def _word_diff_readings(word: str, studied_lang: str, explain_lang: str) -> list[dict]:
+    """Чем это написание бывает В НЕМЕЦКОМ. Наша база тут ни при чём.
+
+    Владелец 26.08.2026: «Даже если у нас нет записи, но она существует в грамматике
+    немецкого языка, — мы обязаны спросить». Поэтому спрашиваем источник, а не смотрим
+    свой словарь: «das Gehen» существует независимо от того, завели мы её или нет.
+    Ответ сохраняется навсегда: один вопрос на слово, дальше бесплатно.
+    """
+    from backend.database import get_word_readings, save_word_readings
+    text = " ".join(str(word or "").split())
+    if not text or str(studied_lang or "").strip().lower() != "de":
+        return []
+    try:
+        stored = get_word_readings(text, lang=studied_lang, explain_lang=explain_lang)
+        if stored is not None:
+            return [r for r in stored if isinstance(r, dict)]
+    except Exception:
+        logging.exception("word_diff: не смогли прочитать прочтения %r", text)
+        return []
+    try:
+        fresh = asyncio.run(run_word_readings(text, explain_language=explain_lang))
+    except Exception:
+        logging.exception("word_diff: не смогли спросить прочтения %r", text)
+        return []
+    readings = fresh.get("readings") if isinstance(fresh, dict) else None
+    if not isinstance(readings, list):
+        return []
+    clean = []
+    for item in readings:
+        if not isinstance(item, dict):
+            continue
+        pos = str(item.get("pos") or "").strip().lower()
+        form = " ".join(str(item.get("form") or "").split())
+        if not pos or not form:
+            continue
+        clean.append({
+            "pos": pos,
+            "form": form,
+            "meaning": " ".join(str(item.get("meaning") or "").split())[:120],
+            "common": bool(item.get("common")),
+        })
+    try:
+        save_word_readings(text, clean, lang=studied_lang, explain_lang=explain_lang)
+    except Exception:
+        logging.exception("word_diff: не смогли сохранить прочтения %r", text)
+    return clean
+
+
+def _word_diff_readings_to_ask(word: str, readings: list) -> list[dict]:
+    """Какие прочтения показать человеку. Пусто — спрашивать не о чем.
+
+    Написал со строчной — существительные отпадают: в немецком существительное всегда
+    пишется с заглавной, и это решает грамматика, а не мы. Всё остальное, что реально
+    употребляется в языке, идёт в вопрос.
+    """
+    typed_lower = bool(word) and word[:1].islower()
+    usable = [r for r in (readings or []) if isinstance(r, dict) and r.get("common")]
+    if typed_lower:
+        usable = [r for r in usable if r.get("pos") != "noun"]
+    seen, out = set(), []
+    for reading in usable:
+        if reading["pos"] in seen:
+            continue
+        seen.add(reading["pos"])
+        out.append(reading)
+    return out[:4] if len(out) > 1 else []
+
+
+def _word_diff_legit_entries(text: str, entries: list, studied_lang: str) -> list:
+    """Законные прочтения слова. Брак отбрасываем молча, выбор — за человеком.
+
+    Что отбрасывается без вопросов (это не прочтение, а испорченная запись):
+      • «существительное», у которого в НАШИХ данных заголовок со строчной буквы —
+        в немецком существительное так не пишется никогда;
+      • существительное, когда человек написал слово со строчной, а есть другое чтение.
+
+    Всё остальное остаётся. Если осталось больше одного — спрашиваем человека
+    (правило владельца 26.08.2026: не решаем за него и не выбираем «по числу переводов»).
+    """
+    rows = [e for e in (entries or []) if isinstance(e, dict)]
+    if not rows or str(studied_lang or "").strip().lower() != "de":
+        return rows
+
+    def _is_noun(entry) -> bool:
+        return str(entry.get("pos") or "").strip().lower() == "noun"
+
+    def _head_capitalized(entry) -> bool:
+        head = str(entry.get("headword") or "").strip()
+        return bool(head) and head[:1].isupper()
+
+    usable = [e for e in rows if not (_is_noun(e) and not _head_capitalized(e))]
+    if text[:1].islower():
+        without_nouns = [e for e in usable if not _is_noun(e)]
+        if without_nouns:
+            usable = without_nouns
+    return usable or rows
+
+
+_POS_HUMAN = {
+    "noun": "существительное", "verb": "глагол", "adjective": "прилагательное",
+    "adverb": "наречие", "pronoun": "местоимение", "preposition": "предлог",
+    "conjunction": "союз", "participle": "причастие", "phrase": "выражение",
+}
+
+
+def _word_diff_choice_options(text: str, entries: list) -> list[dict]:
+    """Варианты для вопроса человеку: что именно он имел в виду."""
+    options = []
+    for entry in entries:
+        pos = str(entry.get("pos") or "").strip().lower()
+        article = str(entry.get("gender") or "").strip().lower()
+        head = str(entry.get("headword") or text).strip()
+        title = f"{article} {head}".strip() if pos == "noun" and article else head
+        options.append({
+            "key": _word_diff_entry_key(entry),
+            "pos": pos,
+            "label": title,
+            "pos_label": _POS_HUMAN.get(pos, pos or "другое"),
+            "hint": ", ".join([str(x) for x in (entry.get("translations") or [])][:3]),
+        })
+    return options
+
+
+def _word_diff_pick_entry(text: str, entries: list, studied_lang: str, pick: str = "") -> dict | None:
+    """Выбранное прочтение. None — прочтений несколько и надо спросить человека."""
+    usable = _word_diff_legit_entries(text, entries, studied_lang)
+    if not usable:
+        return None
+    if pick:
+        for entry in usable:
+            if _word_diff_entry_key(entry) == pick:
+                return entry
+    if len(usable) == 1:
+        return usable[0]
+    return None
 
 
 def _word_diff_card_is_thin(card) -> bool:
@@ -42633,7 +42920,10 @@ def _word_diff_payload_from_card(
         # Как слово пишется в словаре: глагол строчными, существительное с заглавной.
         # Показываем именно это, а не то, что вернула модель.
         "headword": headword or text,
-        "pos": str(card.get("part_of_speech") or pos_hint or "").strip(),
+        # Часть речи — из НАШЕЙ статьи (выбранного прочтения), и только если её нет —
+        # из разобранной карточки. Обратный порядок давал «gehen — существительное»:
+        # разбор смотрел на написание с заглавной и решал по-своему (замер 26.08.2026).
+        "pos": str(pos_hint or card.get("part_of_speech") or "").strip(),
         "senses": senses,
         "examples": examples,
         "constructions": constructions,
@@ -42641,6 +42931,71 @@ def _word_diff_payload_from_card(
         "register": str(card.get("register_note") or "").strip(),
         "source": source,
     }
+
+
+_CASE_SHORT = {
+    "nominativ": "Nominativ", "akkusativ": "Akkusativ",
+    "dativ": "Dativ", "genitiv": "Genitiv",
+}
+
+
+def _word_diff_construction_key(word: str, pattern: str, case: str, preposition: str) -> str:
+    """Ключ конструкции без учёта записи. «laufen zu + Dativ» и «laufen + zu + Dativ» —
+    одно и то же, и на экране они стояли двумя строками (замер владельца 26.08.2026)."""
+    parts = [
+        " ".join(str(word or "").split()).casefold(),
+        " ".join(str(preposition or "").split()).casefold(),
+        " ".join(str(case or "").split()).casefold(),
+    ]
+    if not parts[1]:
+        # Предлога нет — различаем по самому образцу, очищенному от плюсов и падежа.
+        body = re.sub(r"\+|\b(nominativ|akkusativ|dativ|genitiv)\b", " ",
+                      str(pattern or ""), flags=re.IGNORECASE)
+        parts[1] = " ".join(body.split()).casefold()
+    return "|".join(parts)
+
+
+def _word_diff_construction_text(word: str, pattern: str, case: str, preposition: str) -> str:
+    """Запись конструкции в одном виде: «слово + предлог + падеж».
+
+    Владелец 26.08.2026: «непонятно, что такое слово, а потом стоит · Nominativ».
+    Читается как формула, поэтому и собираем её формулой, а не двумя полями через точку.
+    """
+    head = " ".join(str(word or "").split())
+    prep = " ".join(str(preposition or "").split())
+    case_text = _CASE_SHORT.get(str(case or "").strip().casefold(), str(case or "").strip())
+    if not head:
+        return " ".join(str(pattern or "").split())
+    # Голову берём из образца, если она богаче самого слова: «sich ausweisen» и
+    # «jdn. ausweisen» — это и есть смысл, и терять их нельзя.
+    base = " ".join(str(pattern or "").split())
+    base = re.sub(r"\s*\+?\s*(nominativ|akkusativ|dativ|genitiv)\s*$", "", base, flags=re.IGNORECASE)
+    if prep:
+        base = re.sub(rf"\s*\+?\s*{re.escape(prep)}\s*$", "", base, flags=re.IGNORECASE)
+    base = base.strip(" +") or head
+
+    # Есть предлог — собираем формулу сами, как бы её ни записала модель. Иначе одна и
+    # та же конструкция приходит то «laufen zu + Dativ», то «laufen + zu + Dativ».
+    if prep:
+        return f"{base} + {prep} + {case_text}".strip(" +")
+    return f"{base} + {case_text}".strip(" +") if case_text else base
+
+
+def _word_diff_construction_is_bare(pattern: str, case: str, preposition: str) -> bool:
+    """Это «слово + Nominativ» — то есть употребление БЕЗ ДОПОЛНЕНИЯ.
+
+    Подписью «Nominativ, обязательна» такая строка не сообщает ничего: подлежащее в
+    именительном есть у любого глагола. А вот сам факт «здесь дополнения нет» —
+    настоящая информация для глагола, который бывает и с дополнением, и без:
+    «Der Motor läuft» — это laufen в значении «работать». Поэтому строку не выбрасываем,
+    а называем по-человечески (владелец 26.08.2026).
+    """
+    if str(preposition or "").strip():
+        return False
+    if str(case or "").strip().casefold() != "nominativ":
+        return False
+    body = re.sub(r"\+|\b(nominativ)\b", " ", str(pattern or ""), flags=re.IGNORECASE)
+    return len(" ".join(body.split()).split()) <= 1
 
 
 def _word_diff_build_article(payload: dict) -> dict:
@@ -42669,21 +43024,34 @@ def _word_diff_build_article(payload: dict) -> dict:
         ]
 
     constructions = []
-    seen_patterns: set[str] = set()
+    seen_keys: set[str] = set()
     for source in ((usage.get("constructions") or []), (payload.get("constructions") or [])):
         for item in source:
             if not isinstance(item, dict):
                 continue
             pattern = str(item.get("pattern") or "").strip()
-            if not pattern or pattern.casefold() in seen_patterns:
+            case = str(item.get("case") or "").strip()
+            preposition = str(item.get("preposition") or "").strip()
+            if not pattern:
                 continue
-            seen_patterns.add(pattern.casefold())
+            bare = _word_diff_construction_is_bare(pattern, case, preposition)
+            # Без дополнения и без примера показывать нечего — там пусто по существу.
+            if bare and not str(item.get("example_de") or "").strip():
+                continue
+            key = _word_diff_construction_key(word, pattern, case, preposition)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
             constructions.append({
                 "id": f"c{len(constructions) + 1}",
-                "pattern": pattern,
-                "case": str(item.get("case") or ""),
-                "preposition": str(item.get("preposition") or "" ) or None,
-                "obligatory": bool(item.get("obligatory")),
+                "pattern": word if bare else _word_diff_construction_text(word, pattern, case, preposition),
+                # «Без дополнения» — человеческое имя для голого именительного.
+                "bare": bare,
+                "case": "" if bare else case,
+                "preposition": preposition or None,
+                # «Обязательна» имеет смысл только там, где есть предлог: без него это
+                # утверждение про подлежащее, а оно есть всегда.
+                "obligatory": bool(item.get("obligatory")) and bool(preposition),
                 "sense_id": str(item.get("sense_id") or ""),
                 "example_de": str(item.get("example_de") or ""),
                 "example_ru": str(item.get("example_ru") or ""),
@@ -42713,7 +43081,8 @@ def _word_diff_build_article(payload: dict) -> dict:
     return {
         "word": word,
         "headword": str(payload.get("headword") or word),
-        "pos": str(usage.get("pos") or payload.get("pos") or ""),
+        "entry_key": str(payload.get("entry_key") or ""),
+        "pos": str(payload.get("pos") or usage.get("pos") or ""),
         "senses": senses[:6],
         "reflexivity": usage.get("reflexivity") if isinstance(usage.get("reflexivity"), dict) else {},
         "constructions": constructions,
@@ -42725,7 +43094,8 @@ def _word_diff_build_article(payload: dict) -> dict:
     }
 
 
-def _word_diff_usage(word: str, card: dict, studied_lang: str, explain_lang: str) -> dict:
+def _word_diff_usage(word: str, card: dict, studied_lang: str, explain_lang: str,
+                     pos: str = "") -> dict:
     """Картина употребления слова: возвратность, управление, предлоги, сочетания, родня.
 
     Берётся из базы; нет — собирается ЗДЕСЬ И СЕЙЧАС для этого самого слова и остаётся
@@ -42740,7 +43110,7 @@ def _word_diff_usage(word: str, card: dict, studied_lang: str, explain_lang: str
     if not text:
         return {}
     try:
-        stored = get_word_usage(text, lang=studied_lang, explain_lang=explain_lang)
+        stored = get_word_usage(text, lang=studied_lang, explain_lang=explain_lang, pos=pos)
         if stored:
             return stored
     except Exception:
@@ -42748,7 +43118,9 @@ def _word_diff_usage(word: str, card: dict, studied_lang: str, explain_lang: str
         return {}
 
     known = {
-        "pos": str((card or {}).get("part_of_speech") or ""),
+        # Часть речи — из выбранного прочтения, а не из карточки: карточка могла
+        # прийти от соседнего прочтения того же написания.
+        "pos": pos or str((card or {}).get("part_of_speech") or ""),
         "senses": [
             str((item or {}).get("value") if isinstance(item, dict) else item or "").strip()
             for item in ((card or {}).get("translations") or [])
@@ -42777,7 +43149,7 @@ def _word_diff_usage(word: str, card: dict, studied_lang: str, explain_lang: str
     if not isinstance(fresh, dict) or not fresh.get("senses"):
         return {}
     try:
-        return save_word_usage(text, fresh, lang=studied_lang, explain_lang=explain_lang)
+        return save_word_usage(text, fresh, lang=studied_lang, explain_lang=explain_lang, pos=pos)
     except Exception:
         logging.exception("word_usage: не смогли сохранить картину употребления %r", text)
         return fresh
@@ -42985,7 +43357,10 @@ def _word_diff_validate(
             "note": _word_diff_clean_text(item.get("note"), 240),
         })
 
-    word_cards = []
+    # ОДНА карточка на слово, значения внутри неё. Владелец 26.08.2026 увидел «laufen»
+    # дважды подряд — по карточке на значение — и справедливо сказал, что в одной будет
+    # компактнее и понятнее.
+    cards_by_word: dict[str, dict] = {}
     for item in (raw.get("words") or []):
         if not isinstance(item, dict):
             continue
@@ -42993,14 +43368,23 @@ def _word_diff_validate(
         if key not in wanted:
             continue
         source = by_word.get(key) or {}
-        word_cards.append({
+        card = cards_by_word.setdefault(key, {
             "word": wanted[key],
+            "pos": str(source.get("pos") or ""),
+            "senses": [],
+        })
+        sense = {
             "sense_id": _word_diff_clean_text(item.get("sense_id"), 16),
             "meaning": _word_diff_clean_text(item.get("meaning"), 200),
             "when": _word_diff_clean_text(item.get("when"), 200),
             "register": _word_diff_clean_text(item.get("register"), 80),
-            "pos": str(source.get("pos") or ""),
-        })
+        }
+        if not sense["meaning"] and not sense["when"]:
+            continue
+        if any(x["meaning"].casefold() == sense["meaning"].casefold() for x in card["senses"]):
+            continue
+        card["senses"].append(sense)
+    word_cards = [cards_by_word[w.casefold()] for w in words if w.casefold() in cards_by_word]
 
     # Не больше двух примеров на слово, и у каждого обязателен перевод: немецкая фраза
     # без перевода ученику бесполезна, а придумывать перевод мы не станем.
@@ -43211,10 +43595,16 @@ def _word_diff_prepare(payload: dict) -> dict:
     from concurrent.futures import ThreadPoolExecutor
     from backend.openai_manager import set_llm_billing_user as _set_billing_user
 
+    # Выбор человека, если он уже ответил на вопрос «что вы имели в виду».
+    raw_picks = payload.get("picks") if isinstance(payload.get("picks"), dict) else {}
+    picks = {str(k).casefold(): str(v or "") for k, v in raw_picks.items()}
+
     def _lookup_one(one_word: str):
         _set_billing_user(int(user_id))
         try:
-            return _word_diff_lookup_sources(one_word, studied_lang, explain_lang)
+            return _word_diff_lookup_sources(
+                one_word, studied_lang, explain_lang, pick=picks.get(one_word.casefold(), ""),
+            )
         finally:
             _set_billing_user(None)
 
@@ -43223,8 +43613,13 @@ def _word_diff_prepare(payload: dict) -> dict:
 
     resolved: list[dict] = []
     missing: list[dict] = []
+    choices: list[dict] = []
     for word, found in zip(words, found_by_word):
-        if found:
+        if isinstance(found, dict) and found.get("needs_choice"):
+            # Слово читается по-разному — спрашиваем человека, а не выбираем сами
+            # (правило владельца 26.08.2026: не решаем за пользователя).
+            choices.append({"word": word, "options": found.get("options") or []})
+        elif found:
             resolved.append(found)
         else:
             # Сюда доходят только слова, которых нет НИГДЕ и которые не собрал живой
@@ -43233,6 +43628,9 @@ def _word_diff_prepare(payload: dict) -> dict:
                 "word": word,
                 "suggestion": _word_diff_spelling_suggestion(word, studied_lang, explain_lang),
             })
+    if choices:
+        return {"refuse": ({"ok": False, "reason": "choose_sense", "choices": choices}, 200)}
+
     if missing:
         record_word_diff_miss(
             int(user_id), [m["word"] for m in missing], "not_found",
@@ -43240,10 +43638,17 @@ def _word_diff_prepare(payload: dict) -> dict:
         )
         return {"refuse": ({"ok": False, "reason": "not_found", "missing": missing}, 200)}
 
+    chosen_marks = [f"{item['word'].casefold()}={item.get('entry_key') or ''}"
+                    for item in resolved if item.get("entry_key")]
     pair_key = build_word_diff_pair_key(words, studied_lang, explain_lang)
+    if picks:
+        # Выбор прочтения — часть вопроса: «gehen как глагол» и «das Gehen» это разные
+        # сравнения, и общей записи в кеше у них быть не должно.
+        pair_key = f"{pair_key}#" + "|".join(sorted(chosen_marks))
 
-    # 2. Готовая пара — из общего кеша. Дневная единица за это НЕ берётся.
-    cached = get_word_diff_card(pair_key)
+    # 2. Готовая пара — из общего кеша. Платить за это не надо никому.
+    can_create = _word_diff_can_create(int(user_id))
+    cached = get_word_diff_card(pair_key, any_version=not can_create)
     if cached:
         record_word_diff_open(int(user_id), pair_key, cached.get("words") or words)
         return {"cached": {
@@ -43263,7 +43668,7 @@ def _word_diff_prepare(payload: dict) -> dict:
     # НОВЫЙ разбор делает только полный доступ, а всё уже разобранное открывается всем и
     # бесплатно, из базы. Для бесплатного человека это витрина: он видит, что тут есть,
     # и решает, нужно ли ему это.
-    if not _word_diff_can_create(int(user_id)):
+    if not can_create:
         return {"refuse": ({
             "ok": False,
             "reason": "paid_only",
@@ -43469,6 +43874,133 @@ def delete_webapp_dictionary_word_diff():
     removed = delete_word_diff_card(pair_key)
     logging.info("word_diff: владелец убрал разбор %r (записей: %s)", pair_key, removed)
     return jsonify({"ok": True, "removed": int(removed)})
+
+
+@app.route("/api/webapp/dictionary/mywords/review", methods=["POST"])
+def list_webapp_my_word_issues():
+    """Проверка СВОИХ слов: что у человека записано неверно.
+
+    Владелец 26.08.2026: мы берём слова друг у друга — перед походом в модель смотрим,
+    нет ли такого слова у кого-то ещё. Значит чужая ошибка становится общей, и каждый
+    должен уметь поправить свой список. Видно человеку только своё.
+    """
+    from backend.database import (
+        list_user_word_issues, count_user_word_issues, scan_user_word_issues,
+    )
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+
+    if payload.get("rescan"):
+        scan_user_word_issues(limit=2000)
+
+    return jsonify({
+        "ok": True,
+        "items": list_user_word_issues(int(user_id), limit=30),
+        "total": count_user_word_issues(int(user_id)),
+    })
+
+
+@app.route("/api/webapp/dictionary/mywords/apply", methods=["POST"])
+def apply_webapp_my_word_issues():
+    """Решения человека по СВОИМ карточкам. Чужую тронуть нельзя — проверка по user_id."""
+    from backend.database import apply_user_word_decisions, count_user_word_issues
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+
+    decisions = payload.get("decisions")
+    if not isinstance(decisions, list) or not decisions:
+        return jsonify({"error": "Нечего применять: ни одно решение не отмечено"}), 400
+
+    result = apply_user_word_decisions(int(user_id), decisions)
+    result["left"] = count_user_word_issues(int(user_id))
+    result["ok"] = True
+    return jsonify(result)
+
+
+@app.route("/api/webapp/dictionary/integrity/list", methods=["POST"])
+def list_webapp_word_integrity():
+    """Разбор противоречивых записей словаря. Только владелец.
+
+    Очередь копится и сама ничего не удаляет: неразобранное ждёт сколько угодно и
+    приходит снова (решение владельца 26.08.2026).
+    """
+    from backend.database import (
+        list_word_integrity_pending, count_word_integrity_pending, scan_word_integrity,
+        list_failed_translations,
+    )
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+    if not _word_diff_is_admin(int(user_id)):
+        return jsonify({"error": "Разбор словаря открыт только владельцу"}), 403
+
+    if payload.get("rescan"):
+        scan_word_integrity(limit=300)
+
+    return jsonify({
+        "ok": True,
+        "items": list_word_integrity_pending(limit=50),
+        "total": count_word_integrity_pending(),
+        # Слова, которым ночь не подобрала перевод: копятся и ждут вашего слова.
+        "translations": list_failed_translations(limit=50),
+    })
+
+
+@app.route("/api/webapp/dictionary/integrity/apply", methods=["POST"])
+def apply_webapp_word_integrity():
+    """Выполнить отмеченные решения разом: исправить, оставить, удалить."""
+    from backend.database import (
+        apply_word_integrity_decisions, count_word_integrity_pending,
+        resolve_translation_request,
+    )
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+    if not _word_diff_is_admin(int(user_id)):
+        return jsonify({"error": "Разбор словаря открыт только владельцу"}), 403
+
+    decisions = payload.get("decisions")
+    translations = payload.get("translations")
+    has_translations = isinstance(translations, list) and translations
+    if (not isinstance(decisions, list) or not decisions) and not has_translations:
+        return jsonify({"error": "Нечего применять: ни одно решение не отмечено"}), 400
+
+    result = apply_word_integrity_decisions(decisions if isinstance(decisions, list) else [])
+
+    # Перевод, вписанный владельцем, встаёт в карточку человека сразу.
+    typed = dropped = 0
+    for item in (translations or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            request_id = int(item.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not request_id:
+            continue
+        if item.get("drop"):
+            if resolve_translation_request(request_id, drop=True).get("ok"):
+                dropped += 1
+        else:
+            text = " ".join(str(item.get("translation") or "").split())
+            if text and resolve_translation_request(request_id, translation=text).get("ok"):
+                typed += 1
+    result["translated"] = typed
+    result["dropped"] = dropped
+    logging.info("word_integrity: владелец применил решения %s", result)
+    result["left"] = count_word_integrity_pending()
+    result["ok"] = True
+    return jsonify(result)
 
 
 @app.route("/api/webapp/dictionary/diff/share/link", methods=["POST"])

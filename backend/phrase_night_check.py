@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 from backend.database import (
@@ -175,6 +176,42 @@ def _check_fix_twice(text: str, translation: str, fix: str) -> dict:
     return out
 
 
+_CYRILLIC = re.compile(r"[а-яёА-ЯЁ]")
+
+
+def _in_russian(value: str) -> bool:
+    """Написано ли объяснение по-русски. Кириллица — единственный надёжный признак."""
+    return bool(_CYRILLIC.search(str(value or "")))
+
+
+def _russian_why_or_retry(text: str, kind: str, translation: str, verdict: dict) -> dict:
+    """Объяснение судьи ОБЯЗАНО быть по-русски. Не по-русски — спрашиваем ещё раз.
+
+    Промпт требует «one short sentence in RUSSIAN» (openai_manager.run_phrase_grammar_verdict),
+    но модель это нарушает: замер 26.08.2026 — 29 открытых вопросов из 232 приехали к
+    владельцу с немецким объяснением вида «Das Verb 'fahren' wird hier transitiv
+    verwendet». Владелец читает по-русски; экран, объясняющий решение на языке, который
+    он разбирает, — это тот же молчащий экран, только с текстом.
+
+    Переспрашиваем ОДИН раз и только когда правило нарушено, поэтому расход почти нулевой.
+    Второй ответ тоже не по-русски — берём его как есть: прятать разбор нельзя, но
+    показываем его тогда во второй очереди, под «как рассуждали судьи».
+    """
+    from backend.openai_manager import run_phrase_grammar_verdict
+
+    why = str((verdict or {}).get("why") or "").strip()
+    if not why or _in_russian(why):
+        return verdict
+    try:
+        again = run_phrase_grammar_verdict(text=text, kind=kind, translation=translation) or {}
+    except Exception as exc:
+        logging.debug("переспрос судьи из-за языка объяснения не удался: %s", exc)
+        return verdict
+    if _in_russian(str(again.get("why") or "")):
+        return again
+    return verdict
+
+
 def _judge_twice(text: str, kind: str, translation: str = "") -> list[dict]:
     """Спросить судью дважды, независимо. Перевод передаём ОБОИМ: предлог и падеж в
     немецком выбираются по смыслу, и судья без перевода судит вслепую — на «Wappnen mit»
@@ -193,6 +230,8 @@ def _judge_twice(text: str, kind: str, translation: str = "") -> list[dict]:
         except Exception as exc:
             logging.debug("судья фраз не ответил: %s", exc)
             verdict = {}
+        if verdict:
+            verdict = _russian_why_or_retry(text, kind, translation, verdict)
         out.append(_check_own_fixes(verdict, text, translation) if verdict else verdict)
     return out
 
@@ -285,6 +324,150 @@ def rejudge_open_phrase_reviews(limit: int = 60) -> dict:
     return out
 
 
+# ── ТРЕТИЙ СУДЬЯ ЗОВЁТСЯ НОЧЬЮ, А НЕ КНОПКОЙ ────────────────────────────────────
+ARBITER_CAP = int(os.getenv("PHRASE_ARBITER_CAP", "60") or "60")
+
+
+def _judge_proposals(judges: list) -> list[str]:
+    """Все тексты, которые предложили судьи, — включая забракованные проверкой.
+
+    Третьему судье показывают именно ПРЕДМЕТ СПОРА, поэтому отсев здесь не тот, что на
+    кнопках владельца: там прячется то, что нельзя нажимать, а здесь нужно всё, о чём
+    спорили. Пустое и совпавшее с самой фразой не в счёт — спорить не о чем."""
+    out: list[str] = []
+    for j in judges or []:
+        if not isinstance(j, dict):
+            continue
+        for field in ("corrected", "proposal"):
+            value = str(j.get(field) or "").strip()
+            if value and value not in out:
+                out.append(value)
+    return out
+
+
+def settle_dispute(review_id: int) -> bool:
+    """Позвать третьего судью по одной открытой фразе и положить его вердикт на неё.
+
+    ЗАЧЕМ. Владелец, 26.08.2026, глядя на экран: «какое решение я могу принять?» —
+    и он прав. Двое судей объявили ошибку, обе их правки забракованы нашей же
+    проверкой, кнопки нет ни одной, правильного немецкого на экране нет вообще.
+    Замер того же дня: 106 открытых вопросов из 232 — ровно такие.
+
+    Третий судья уже был написан (`openai_manager.run_phrase_dispute_verdict`) и умеет
+    главное: видя оба предложения, дать СВОЙ текст, когда оба мимо. Но звала его только
+    кнопка «Пересудить» в мини-аппе — поэтому на 232 открытых вопроса в живой базе не
+    было НИ ОДНОГО сохранённого вердикта. Теперь его зовёт ночь, до того как владелец
+    откроет экран.
+
+    ЕГО ТЕКСТ ПРОХОДИТ ТУ ЖЕ ПРОВЕРКУ, что и правки судей: он такая же модель и
+    ошибается так же. Не прошёл — остаётся на экране с приговором, но без кнопки
+    «сохранить» (`database.phrase_review_variants` смотрит на `better_check`).
+    """
+    from backend.database import get_open_phrase_review, set_phrase_review_arbiter
+    from backend.openai_manager import run_phrase_dispute_verdict
+
+    row = get_open_phrase_review(int(review_id))
+    if not row:
+        return False
+    judges = row.get("judges") if isinstance(row.get("judges"), list) else []
+    proposals = _judge_proposals(judges)
+    if not proposals:
+        # Спорить не о чем: судьи не предложили ни одного текста. Это не грамматический
+        # спор, а вопрос другого рода (карточка панели) — третьему судье там делать
+        # нечего, и деньги за него платить не за что.
+        return False
+    text = str(row.get("text") or "")
+    translation = str(row.get("translation") or "")
+    try:
+        verdict = run_phrase_dispute_verdict(
+            text=text, variants=proposals, translation=translation,
+            kind=str(row.get("kind") or "collocation")) or {}
+    except Exception as exc:
+        logging.warning("третий судья не ответил по #%s: %s", review_id, exc)
+        return False
+    if not verdict:
+        return False
+    better = str(verdict.get("better") or "").strip()
+    if better:
+        # Свой текст третьего судьи — такая же правка, как у первых двух, и проверяется
+        # тем же способом. Итог кладём рядом, в `better_check`.
+        try:
+            verdict["better_check"] = _check_fix_twice(text, translation, better)
+        except Exception as exc:
+            logging.debug("проверка текста третьего судьи не прошла: %s", exc)
+            verdict["better_check"] = {"checked": False}
+    set_phrase_review_arbiter(int(review_id), verdict)
+    return True
+
+
+def answer_beyond_what_the_owner_saw(*, unit_id: int, text: str, translation: str,
+                                    judges: list) -> bool:
+    """Повтор — молчать, ЕСЛИ ответить нечем. Иначе это уже другой вопрос.
+
+    ЗАЧЕМ. Защита от круга сама по себе опасна: она может заморозить неверную фразу
+    навсегда. Живой случай 26.08.2026: «Der Bus fährt 100 Personen mit» — по-немецки так
+    не говорят (`mitfahren` — про пассажира, автобус людей `mitnimmt`), но владелец
+    нажал «оставить как есть», потому что ВЕРНОГО варианта на экране не было вообще:
+    оба судьи предлагали одно и то же, и проверка их забраковала. С этого момента фраза
+    считалась решённой, и защита от круга больше не пустила бы к ней ни одного вопроса.
+
+    Поэтому, наткнувшись на повтор, ночь делает ещё одно движение: спрашивает решающий
+    голос, есть ли ВЕРНЫЙ текст, которого владелец не видел. Есть — вопрос ставится с
+    ним, и владелец наконец получает то, чего ему не дали в прошлый раз. Нет — молчим,
+    это настоящий круг. Случай редкий (повторы штучные), поэтому и денег стоит мало.
+    """
+    from backend.database import (
+        phrase_review_settled_texts, queue_phrase_for_review, set_phrase_review_arbiter,
+        _phrase_text_key,
+    )
+    from backend.openai_manager import run_phrase_dispute_verdict
+
+    proposals = _judge_proposals(judges)
+    if not proposals:
+        return False
+    seen = phrase_review_settled_texts(int(unit_id))
+    try:
+        verdict = run_phrase_dispute_verdict(
+            text=text, variants=proposals, translation=translation) or {}
+    except Exception as exc:
+        logging.warning("решающий голос по повтору не ответил: %s", exc)
+        return False
+    better = str(verdict.get("better") or "").strip()
+    if not better or _phrase_text_key(better) in seen:
+        return False                       # ответить нечем — это круг, молчим
+    check = _check_fix_twice(text, translation, better)
+    if not (check.get("checked") and check.get("grammar_ok") and check.get("meaning_kept")):
+        return False                       # свой же текст не прошёл проверку — не несём
+    verdict["better_check"] = check
+    rid = queue_phrase_for_review(unit_id=int(unit_id), text=text,
+                                  translation=translation, judges=judges, force=True)
+    if not rid:
+        return False
+    set_phrase_review_arbiter(int(rid), verdict)
+    logging.info("повтор превратился в новый вопрос: %r → %r", text[:50], better[:50])
+    return True
+
+
+def settle_open_disputes(limit: int | None = None) -> dict:
+    """Разрешить накопившиеся споры — порцией за ночь.
+
+    Потолок обязателен: третий судья идёт на gpt-4.1, это дороже судей. 106 накопленных
+    разойдутся за две ночи, а дальше поток — единицы в сутки, столько же, сколько
+    попадает к владельцу."""
+    from backend.database import list_open_phrase_reviews_needing_arbiter
+
+    cap = int(limit if limit is not None else ARBITER_CAP)
+    ids = list_open_phrase_reviews_needing_arbiter(cap)
+    out = {"взято": len(ids), "решено": 0, "не вышло": 0}
+    if not ids:
+        return out
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        for ok in pool.map(settle_dispute, ids):
+            out["решено" if ok else "не вышло"] += 1
+    logging.info("третий судья за ночь: %s", out)
+    return out
+
+
 def _apply_silent_fix(unit_id: int, corrected: str) -> bool:
     """Записать исправленную фразу в слой слов. Ключ поиска пересобираем, старое
     написание оставляем рядом: по нему уже могли сохраниться карточки.
@@ -328,6 +511,10 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
     cap = int(limit if limit is not None else NIGHT_CAP)
     report = {"cap": cap, "picked": 0, "checked": 0, "fixed": 0, "doubt": 0, "errors": 0,
               "noise": 0, "by_category": {}, "left": 0, "open_reviews": 0,
+              # Повторные вопросы, которые владельцу НЕ задали: он это уже решал.
+              "circle_blocked": 0, "reopened_with_answer": 0,
+              # Закрыто без него («оба судьи: ошибки нет») и разрешено третьим судьёй.
+              "closed_all_ok": 0, "settled": {},
               "dry_run": bool(dry_run)}
     rows = pick_phrases_for_grammar_check(cap)
     report["picked"] = len(rows)
@@ -379,14 +566,41 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
             if any(str(j.get("verdict") or "") == "error" for j in judges):
                 report["doubt"] += 1
                 if not dry_run:
-                    queue_phrase_for_review(
+                    # False означает «владелец это уже решал» — вопрос не заводим,
+                    # но и не молчим: число уезжает в утренний отчёт.
+                    if not queue_phrase_for_review(
                         unit_id=row["unit_id"], text=row["text"],
                         translation=row["translation"], judges=judges,
-                    )
+                    ):
+                        # Владелец это уже решал. Прежде чем промолчать — проверяем,
+                        # нет ли верного ответа, которого он НЕ видел.
+                        if answer_beyond_what_the_owner_saw(
+                            unit_id=row["unit_id"], text=row["text"],
+                            translation=row["translation"] or "", judges=judges,
+                        ):
+                            report["reopened_with_answer"] = int(
+                                report.get("reopened_with_answer") or 0) + 1
+                        else:
+                            report["circle_blocked"] += 1
+                            report["doubt"] -= 1
                     mark_phrase_checked(row["unit_id"], row["text"], "doubt")
                 continue
             if not dry_run:
                 mark_phrase_checked(row["unit_id"], row["text"], "ok")
+
+    if not dry_run:
+        # Что не вопрос — до владельца не доходит.
+        try:
+            from backend.database import close_all_ok_phrase_reviews
+            report["closed_all_ok"] = close_all_ok_phrase_reviews()
+        except Exception as exc:
+            logging.warning("не удалось закрыть бесспорные вопросы: %s", exc)
+        # …а по тому, что вопрос, ответ должен быть готов ДО того, как владелец
+        # откроет экран. Спор двух судей — не его работа.
+        try:
+            report["settled"] = settle_open_disputes()
+        except Exception as exc:
+            logging.warning("третий судья за ночь не отработал: %s", exc)
 
     report["left"] = count_phrases_left_for_grammar_check()
     report["open_reviews"] = count_open_phrase_reviews()

@@ -18,12 +18,6 @@ import { saveLookedUpWord, savePhraseWithTranslation } from './saveUtils';
 const MIN_WORDS = 2;
 const MAX_WORDS = 4;
 
-const HINTS = [
-  ['Anzahlung', 'Vorauszahlung'],
-  ['kennen', 'wissen'],
-  ['machen', 'tun'],
-];
-
 const CONTRAST_LABEL = {
   wrong: 'Так не говорят.',
   possible_but_different_meaning: 'Сказать можно, но смысл будет другим.',
@@ -93,6 +87,11 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
   const [canCreate, setCanCreate] = useState(true); // новый разбор — по полному доступу
   const [isAdmin, setIsAdmin] = useState(false);    // хозяин общей полки
   const [swiped, setSwiped] = useState('');         // строка, смахнутая влево
+  // Списки сворачиваются: они растут, а рабочая часть экрана должна остаться видимой.
+  // Свои сравнения открыты (их немного и они свои), общая полка свёрнута.
+  const [openLists, setOpenLists] = useState({ mine: true, shelf: false });
+  const [choices, setChoices] = useState([]);       // что имел в виду человек
+  const [picks, setPicks] = useState({});           // его ответы: слово → прочтение
   const swipeRef = useRef({ key: '', x: 0 });
   const [saved, setSaved] = useState(() => new Set());
   const [sharing, setSharing] = useState(false);
@@ -146,6 +145,10 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
   // дописываются на глазах. Замер 25.08.2026: целиком пара собиралась 9–18 секунд, и
   // всё это время человек смотрел в пустой экран. Готовая пара приходит обычным JSON —
   // потока там нет и не нужно.
+  // Выбор человека нужен внутри уже запущенного запроса, поэтому держим его в ссылке:
+  // состояние обновится позже, а тело запроса собирается сейчас.
+  const picksRef = useRef({});
+
   const runDiff = useCallback(async (words) => {
     setPhase('loading');
     setError('');
@@ -161,7 +164,9 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
       const resp = await fetch('/api/webapp/dictionary/diff/stream', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ initData: getInitData(), ...(token ? { dqt: token } : {}), words }),
+        body: JSON.stringify({
+          initData: getInitData(), ...(token ? { dqt: token } : {}), words, picks: picksRef.current,
+        }),
       });
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
@@ -176,6 +181,11 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
         if (data && data.ok === false && data.reason === 'not_found') {
           setMissing(Array.isArray(data.missing) ? data.missing : []);
           setPhase('missing');
+          return;
+        }
+        if (data && data.ok === false && data.reason === 'choose_sense') {
+          setChoices(Array.isArray(data.choices) ? data.choices : []);
+          setPhase('choose');
           return;
         }
         if (data && data.ok === false && data.reason === 'paid_only') {
@@ -215,6 +225,9 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           if (data && data.reason === 'not_found') {
             setMissing(Array.isArray(data.missing) ? data.missing : []);
             setPhase('missing');
+          } else if (data && data.reason === 'choose_sense') {
+            setChoices(Array.isArray(data.choices) ? data.choices : []);
+            setPhase('choose');
           } else if (data && data.reason === 'paid_only') {
             setLimitReached(true);
             setCanCreate(false);
@@ -284,11 +297,6 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
     setCells((prev) => (prev.length >= MAX_WORDS ? prev : [...prev, '']));
   }, []);
 
-  const applyHint = useCallback((pair) => {
-    setCells(pair.slice(0, MAX_WORDS));
-    haptic('light');
-  }, []);
-
   const applySuggestion = useCallback((wrong, right) => {
     setCells((prev) => prev.map((t) => (String(t || '').trim() === wrong ? right : t)));
     setMissing([]);
@@ -322,7 +330,9 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
     // Убираем из списка сразу: подтверждение с сервера придёт следом, а если не придёт —
     // строка вернётся на место и человек увидит текст ошибки.
     const before = popular;
+    const beforeHistory = history;
     setPopular((prev) => prev.filter((row) => row.pair_key !== pairKey));
+    setHistory((prev) => prev.filter((row) => row.pair_key !== pairKey));
     setSwiped('');
     haptic('ok');
     try {
@@ -330,9 +340,25 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
       void loadHistory();
     } catch (e) {
       setPopular(before);
+      setHistory(beforeHistory);
       setError(humanizeDictError(e));
     }
-  }, [isAdmin, popular, loadHistory]);
+  }, [isAdmin, popular, history, loadHistory]);
+
+  const answerChoice = useCallback((word, key) => {
+    const next = { ...picksRef.current, [word]: key };
+    picksRef.current = next;
+    setPicks(next);
+    haptic('light');
+    const pending = choices.filter((row) => !next[row.word]);
+    if (pending.length) {
+      setChoices(pending);
+      return;
+    }
+    setChoices([]);
+    const words = normalizeCells(cells);
+    if (words.length >= MIN_WORDS) void runDiff(words.slice(0, MAX_WORDS));
+  }, [choices, cells, runDiff]);
 
   const startOver = useCallback(() => {
     setCells(['', '']);
@@ -340,6 +366,9 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
     setMissing([]);
     setError('');
     setSaved(new Set());
+    setChoices([]);
+    setPicks({});
+    picksRef.current = {};
     setPhase('idle');
   }, []);
 
@@ -478,44 +507,80 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
             {cards.map((card) => {
               const isSaved = saved.has(`w:${card.word}`);
               const mine = constructions.filter((c) => c.word === card.word);
+              const senses = Array.isArray(card.senses) ? card.senses : [];
+              // Конструкции без привязки к значению показываем один раз внизу карточки —
+              // они относятся к слову целиком.
+              const loose = mine.filter((c) => !c.sense_id
+                || !senses.some((sense) => sense.sense_id === c.sense_id));
               return (
                 <div className="wd-card" key={card.word}>
                   <div className="wd-card-top">
                     <span className="wd-card-word">{card.word}</span>
                     {tts && <SpeakButton text={card.word} tts={tts} />}
+                    {card.pos && <span className="wd-pos">{POS_LABEL[card.pos] || card.pos}</span>}
                   </div>
-                  {card.meaning && <div className="wd-card-gloss">{card.meaning}</div>}
-                  <div className="wd-card-rows">
-                    {card.pos && (
-                      <div className="wd-card-row"><span className="k">Часть речи</span><span className="v">{POS_LABEL[card.pos] || card.pos}</span></div>
-                    )}
-                    {mine.length > 0 && (
-                      <div className="wd-card-row">
-                        <span className="k">Конструкция</span>
-                        <span className="v">
-                          {mine.map((c) => (
-                            <span className="wd-construction" key={c.id}>
-                              <b>{c.pattern}</b>
-                              {c.case ? ` · ${c.case}` : ''}
-                              {c.obligatory ? <span className="wd-oblig"> обязательна</span> : null}
-                              {c.example_de && (
-                                <span className="wd-construction-ex">
-                                  {c.example_de}
-                                  {c.example_ru && <span className="wd-construction-ru">{c.example_ru}</span>}
-                                </span>
-                              )}
-                            </span>
-                          ))}
-                        </span>
+
+                  {senses.map((sense, i) => {
+                    const senseConstructions = mine.filter((c) => c.sense_id && c.sense_id === sense.sense_id);
+                    return (
+                      <div className="wd-sense" key={sense.sense_id || `s-${i}`}>
+                        {senses.length > 1 && <span className="wd-sense-num">{i + 1}</span>}
+                        <div className="wd-sense-body">
+                          {sense.meaning && <div className="wd-card-gloss">{sense.meaning}</div>}
+                          {sense.when && (
+                            <div className="wd-card-row"><span className="k">Когда</span><span className="v">{emphasize(sense.when, words)}</span></div>
+                          )}
+                          {sense.register && (
+                            <div className="wd-card-row"><span className="k">Регистр</span><span className="v">{sense.register}</span></div>
+                          )}
+                          {senseConstructions.length > 0 && (
+                            <div className="wd-card-row">
+                              <span className="k">Конструкция</span>
+                              <span className="v">
+                                {senseConstructions.map((c) => (
+                                  <span className="wd-construction" key={c.id}>
+                                    <b>{c.pattern}</b>
+                                    {c.bare ? <span className="wd-bare"> — без дополнения</span> : null}
+                                    {!c.bare && c.case ? ` · ${c.case}` : ''}
+                                    {c.obligatory ? <span className="wd-oblig"> без предлога не употребляется</span> : null}
+                                    {c.example_de && (
+                                      <span className="wd-construction-ex">
+                                        {c.example_de}
+                                        {c.example_ru && <span className="wd-construction-ru">{c.example_ru}</span>}
+                                      </span>
+                                    )}
+                                  </span>
+                                ))}
+                              </span>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    )}
-                    {card.register && (
-                      <div className="wd-card-row"><span className="k">Регистр</span><span className="v">{card.register}</span></div>
-                    )}
-                    {card.when && (
-                      <div className="wd-card-row"><span className="k">Когда</span><span className="v">{emphasize(card.when, words)}</span></div>
-                    )}
-                  </div>
+                    );
+                  })}
+
+                  {loose.length > 0 && (
+                    <div className="wd-card-row">
+                      <span className="k">Конструкция</span>
+                      <span className="v">
+                        {loose.map((c) => (
+                          <span className="wd-construction" key={c.id}>
+                            <b>{c.pattern}</b>
+                            {c.bare ? <span className="wd-bare"> — без дополнения</span> : null}
+                            {!c.bare && c.case ? ` · ${c.case}` : ''}
+                            {c.obligatory ? <span className="wd-oblig"> без предлога не употребляется</span> : null}
+                            {c.example_de && (
+                              <span className="wd-construction-ex">
+                                {c.example_de}
+                                {c.example_ru && <span className="wd-construction-ru">{c.example_ru}</span>}
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                  )}
+
                   {!isGuest && (
                     <div className="wd-card-foot">
                       <button
@@ -733,17 +798,6 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
         <button type="button" className="wd-add" onClick={addCell}>＋ ещё слово</button>
       )}
 
-      {phase === 'idle' && filled.length === 0 && (
-        <div className="wd-hints">
-          {HINTS.map((pair) => (
-            <button type="button" className="wd-hint-chip" key={pair.join('-')}
-                    onClick={() => applyHint(pair)}>
-              {pair.join(' · ')}
-            </button>
-          ))}
-        </div>
-      )}
-
       {canCreate ? (
         <button
           type="button"
@@ -778,6 +832,34 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           <div className="wd-step is-wait">
             <span className="m">·</span>
             Незнакомое слово разбираем целиком — это дольше, но один раз
+          </div>
+        </div>
+      )}
+
+      {phase === 'choose' && choices.length > 0 && (
+        <div className="wd-choose">
+          <div className="wd-choose-title">Что вы имеете в виду?</div>
+          {choices.map((row) => (
+            <div className="wd-choose-word" key={`choose-${row.word}`}>
+              <div className="wd-choose-word-name">{row.word}</div>
+              <div className="wd-choose-options">
+                {(row.options || []).map((option) => (
+                  <button
+                    type="button"
+                    className="wd-choose-option"
+                    key={option.key}
+                    onClick={() => answerChoice(row.word, option.key)}
+                  >
+                    <span className="wd-choose-label">{option.label}</span>
+                    <span className="wd-choose-pos">{option.pos_label}</span>
+                    {option.hint && <span className="wd-choose-hint">{option.hint}</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className="wd-choose-foot">
+            Слово читается по-разному, и решать за вас мы не станем — скажите, что имели в виду.
           </div>
         </div>
       )}
@@ -832,19 +914,43 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
 
       {!isGuest && history.length > 0 && (
         <div className="wd-block">
-          <div className="wd-label"><span className="wd-ic">🕘</span>Вы уже сравнивали</div>
+          <button
+            type="button"
+            className={`wd-fold${openLists.mine ? ' is-open' : ''}`}
+            onClick={() => setOpenLists((prev) => ({ ...prev, mine: !prev.mine }))}
+          >
+            <span className="wd-label"><span className="wd-ic">🕘</span>Вы уже сравнивали</span>
+            <span className="wd-fold-count">{history.length}</span>
+            <span className="wd-fold-arrow" aria-hidden="true">▾</span>
+          </button>
+          {openLists.mine && (
           <div className="wd-history">
             {history.map((row) => (
-              <button
-                type="button"
-                className="wd-history-row"
-                key={row.pair_key}
-                onClick={() => openPair(row.words)}
-              >
-                <span className="wd-history-pair">{(row.words || []).join(' · ')}</span>
-              </button>
+              <div className={`wd-swipe${swiped === row.pair_key ? ' is-open' : ''}`} key={row.pair_key}>
+                <button
+                  type="button"
+                  className="wd-history-row"
+                  onPointerDown={(e) => onRowPointerDown(e, row.pair_key)}
+                  onPointerUp={(e) => onRowPointerUp(e, row.pair_key)}
+                  onClick={() => (swiped === row.pair_key ? setSwiped('') : openPair(row.words))}
+                >
+                  <span className="wd-history-pair">{(row.words || []).join(' · ')}</span>
+                  {row.opens > 0 && <span className="wd-history-count">{row.opens}</span>}
+                </button>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    className="wd-swipe-delete"
+                    aria-label="Убрать разбор с общей полки"
+                    onClick={() => removePair(row.pair_key)}
+                  >
+                    Удалить
+                  </button>
+                )}
+              </div>
             ))}
           </div>
+          )}
         </div>
       )}
 
@@ -853,7 +959,16 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           случайную ерунду никто не открывает второй раз, и она уходит вниз. */}
       {!isGuest && popular.length > 0 && (
         <div className="wd-block">
-          <div className="wd-label"><span className="wd-ic">📚</span>Уже разобрано — открывается бесплатно</div>
+          <button
+            type="button"
+            className={`wd-fold${openLists.shelf ? ' is-open' : ''}`}
+            onClick={() => setOpenLists((prev) => ({ ...prev, shelf: !prev.shelf }))}
+          >
+            <span className="wd-label"><span className="wd-ic">📚</span>Уже разобрано — открывается бесплатно</span>
+            <span className="wd-fold-count">{popular.length}</span>
+            <span className="wd-fold-arrow" aria-hidden="true">▾</span>
+          </button>
+          {openLists.shelf && (
           <div className="wd-history">
             {popular.map((row) => (
               <div className={`wd-swipe${swiped === row.pair_key ? ' is-open' : ''}`} key={`p-${row.pair_key}`}>
@@ -880,6 +995,7 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
               </div>
             ))}
           </div>
+          )}
         </div>
       )}
     </div>

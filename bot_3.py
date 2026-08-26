@@ -9979,6 +9979,58 @@ def _examples_retry_line() -> str:
             f"\nНочью разбирается порция; что не вышло трижды — уходит в спорные.")
 
 
+def _send_panel_cards_reminder() -> None:
+    """Карточки словаря — владельцу по вторникам и пятницам в 10:00 Вены.
+
+    ЗАЧЕМ ОТДЕЛЬНОЕ СООБЩЕНИЕ. В очереди спорных фраз лежат два РАЗНЫХ вопроса.
+    Грамматический — «судьи разошлись, какой текст сохраняем» — приходит каждое утро
+    вместе с отчётом о ночной проверке. Панельный — «годятся ли примеры и перевод в
+    карточке» — не приходил НИКАК: 79 таких вопросов положил в очередь разовый скрипт
+    23.08.2026 и ушёл, а владелец наткнулся на них случайно 26.08 и не понял, что от
+    него хотят: на экране была фраза, «Судья 1» и ни одной кнопки.
+
+    Владелец, 26.08.2026: «это другая совершенно работа, и тоже должно быть сообщение
+    мне в личку с кнопкой, по которой я могу перейти на этот экран». Дни выбрал он же —
+    вторник и пятница, чтобы 79 накопленных разошлись быстрее.
+
+    МОЛЧИТ, КОГДА ОЧЕРЕДЬ ПУСТА. Не «ждут решения: 0», а просто не приходит.
+    """
+    try:
+        from backend.database import (
+            count_open_phrase_reviews_by_kind, count_panel_reviews_decided_since,
+            get_admin_telegram_ids,
+        )
+        waiting = int((count_open_phrase_reviews_by_kind() or {}).get("panel") or 0)
+        if waiting <= 0:
+            _record_sched_heartbeat("panel_cards_reminder", "completed",
+                                    {"waiting": 0, "sent": 0, "why": "очередь пуста"})
+            return
+        done = count_panel_reviews_decided_since(7)
+        text = (
+            "📗 <b>Карточки словаря: примеры и перевод</b>\n\n"
+            "Три голоса разошлись о том, годятся ли примеры и перевод в карточке. "
+            "Грамматика самой фразы тут ни при чём — это отдельная работа.\n\n"
+            f"Ждут решения: <b>{waiting}</b>\n"
+            + (f"Разобрано за неделю: <b>{done}</b>\n" if done else "")
+        )
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
+        if not token or not admin_ids:
+            return
+        markup = {"inline_keyboard": [[{"text": f"📗 Разобрать карточки ({waiting})",
+                                       "url": get_webapp_deeplink("ans_frvp_0")}]]}
+        delivered, failures = send_telegram_message_to_all(
+            admin_ids, text=text, token=token, reply_markup=markup,
+            disable_web_page_preview=True, timeout=15,
+            what="карточки словаря на разбор")
+        _record_sched_heartbeat("panel_cards_reminder", "completed",
+                                {"waiting": waiting, "done_week": done,
+                                 "sent": delivered, "failed": failures})
+    except Exception as exc:
+        logging.exception("напоминание о карточках словаря не ушло")
+        _record_sched_heartbeat("panel_cards_reminder", "failed", {"error": str(exc)[:300]})
+
+
 def _send_phrase_check_morning_report() -> None:
     """Утренний отчёт о ночной проверке фраз. Формат согласован с владельцем 06.08.2026:
     только цифры, без списка молча исправленного — список нужен лишь по спорным, и он
@@ -10004,6 +10056,10 @@ def _send_phrase_check_morning_report() -> None:
             errors = int(meta.get("errors") or 0)
             left = int(meta.get("left") or 0)
             open_reviews = int(meta.get("open_reviews") or 0)
+            closed_all_ok = int(meta.get("closed_all_ok") or 0)
+            circle_blocked = int(meta.get("circle_blocked") or 0)
+            reopened = int(meta.get("reopened_with_answer") or 0)
+            settled_ok = int((meta.get("settled") or {}).get("решено") or 0)
             cap = int(meta.get("cap") or 0) or 1
             nights = (left + cap - 1) // cap
             names = {"rechtschreibung": "опечатка", "kongruenz": "согласование",
@@ -10022,6 +10078,14 @@ def _send_phrase_check_morning_report() -> None:
                 + f"\nПод сомнением: <b>{doubt}</b>"
                 + (f" (всего ждут решения: {open_reviews})" if open_reviews else "")
                 + "\n"
+                # Всё, что ночь сделала ВМЕСТО владельца, обязано быть видно числом:
+                # молчащий механизм неотличим от сломанного (правило владельца 19.08.2026).
+                + (f"Закрыто без тебя (оба судьи «ошибки нет»): <b>{closed_all_ok}</b>\n"
+                   if closed_all_ok else "")
+                + (f"Не спросили повторно (ты это уже решал): <b>{circle_blocked}</b>\n"
+                   if circle_blocked else "")
+                + (f"Вернули с новым ответом: <b>{reopened}</b>\n" if reopened else "")
+                + (f"Спор разрешил третий судья: <b>{settled_ok}</b>\n" if settled_ok else "")
                 + (f"Осталось проверить: <b>{left}</b> (≈{nights} ноч"
                    f"{'ь' if nights == 1 else 'и' if nights < 5 else 'ей'} по {cap})\n"
                    if left else "✅ Все фразы проверены.\n")
@@ -10577,6 +10641,8 @@ _SCHEDULER_HEALTH_CATALOG = [
     # anti-spam trim of the 18:00 nag branch.
     ("today_evening_reminders_auto", "Вечерние напоминания (18:00)", 30, False, "guard"),
     ("daily_audio_auto", "Аудио с ошибками в личку (06:35 Вена)", 30, True, "guard"),
+    # Вторник и пятница: между запусками максимум 4 суток, поэтому порог 120 часов.
+    ("panel_cards_reminder", "Карточки словаря на разбор (вт и пт, 10:00 Вена)", 120, True, "guard"),
     ("private_analytics_auto", "Личная аналитика в личку (19:30)", 30, True, "guard"),
     ("daily_group_summary_auto", "Итоги дня в группе (22:30)", 30, True, "guard"),
     ("weekly_group_summary_auto", "Недельные итоги группы (Вс)", 192, True, "guard"),
@@ -13076,6 +13142,139 @@ async def handle_quarantine_callback(update: Update, context: CallbackContext) -
             await query.answer("Ошибка, попробуй заново.", show_alert=True)
         except Exception:
             pass
+
+
+def _fill_missing_translations_nightly() -> None:
+    """Ночью — перевод карточкам, у которых его нет. ПАЧКОЙ и без участия человека.
+
+    Владелец 26.08.2026: «Если каждый будет отправлять по одному — это много денег и
+    нагрузка. Копим, потом пачкой через модель». И дальше: «Если это может быть сделано
+    без меня — делается без меня». Перевод либо есть, либо нет, решать нечего: есть —
+    вписываем сами. Не смогли — карточка копится и уходит владельцу решением.
+    """
+    try:
+        import asyncio as _asyncio
+        from backend.database import (
+            queue_missing_translations, take_translation_requests_without_proposal,
+            apply_translation_proposals, count_failed_translations,
+        )
+        from backend.openai_manager import run_missing_translations_batch
+
+        queued = queue_missing_translations(limit=500)
+        batch = take_translation_requests_without_proposal(limit=60)
+        if not batch:
+            logging.info("ночной перевод: переводить нечего (поставлено в очередь: %s)", queued)
+            return
+
+        answer = _asyncio.run(run_missing_translations_batch(batch, explain_language="ru"))
+        items = answer.get("items") if isinstance(answer, dict) else None
+        result = apply_translation_proposals(items if isinstance(items, list) else [])
+        logging.info(
+            "ночной перевод: поставлено %s, в пачке %s, вписано %s, не смогли %s (всего ждёт владельца: %s)",
+            queued, len(batch), result.get("filled"), result.get("failed"), count_failed_translations(),
+        )
+    except Exception:
+        logging.exception("ночной перевод: прогон не удался")
+
+
+def _send_my_words_review() -> None:
+    """Каждому человеку — приглашение проверить СВОИ слова. Раз в неделю, если есть что.
+
+    Владелец 26.08.2026: «Мы ведь пользуемся словами других пользователей: перед походом
+    в модель смотрим, нет ли такого слова у кого-то ещё. Поэтому важно, чтобы слова были
+    в порядке». Значит проверка нужна не только владельцу, а каждому — и только по своим
+    карточкам: чужие человек не видит и тронуть не может.
+    """
+    try:
+        from backend.database import scan_user_word_issues, users_with_word_issues
+        scan_user_word_issues(limit=3000)
+        rows = users_with_word_issues(limit=500)
+        if not rows:
+            logging.info("мои слова: разбирать некому")
+            return
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        bot_username = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+        if not token or not bot_username:
+            return
+        markup = {"inline_keyboard": [[{
+            "text": "Проверить мои слова →",
+            "url": f"https://t.me/{bot_username}?startapp=meinewoerter",
+        }]]}
+        for uid, count in rows:
+            try:
+                text = (
+                    "📚 <b>Проверьте свои слова</b>\n\n"
+                    f"В вашем словаре <b>{count}</b> "
+                    f"{'карточка требует' if count == 1 else 'карточек требуют'} внимания: "
+                    "где-то нет перевода, где-то слово записано неверно.\n\n"
+                    "Это ваш личный список — что исправить, что оставить, что удалить, "
+                    "решаете только вы."
+                )
+                send_telegram_message(chat_id=uid, text=text, token=token,
+                                      reply_markup=markup, what="проверка своих слов")
+            except Exception:
+                logging.exception("мои слова: не ушло человеку %s", uid)
+    except Exception:
+        logging.exception("мои слова: рассылка не удалась")
+
+
+def _send_word_integrity_review(reminder: bool = False) -> None:
+    """Приглашение на разбор противоречивых записей словаря: Пн и Вс 09:00.
+
+    В личку уходит короткое сообщение с числом и кнопкой; сам разбор открывается в
+    мини-приложении, потому что там видно «было → станет» (решение владельца 26.08.2026).
+
+    Очередь копится: неразобранное не пропадает и приходит снова. Отдельное напоминание
+    среди недели (reminder=True) уходит только если очередь не разобрана, чтобы владелец
+    обратил внимание, а не получал одинаковые письма.
+    """
+    try:
+        from backend.database import (
+            get_admin_telegram_ids, scan_word_integrity, count_word_integrity_pending,
+        )
+        scan_word_integrity(limit=300)
+        pending = count_word_integrity_pending()
+        try:
+            from backend.database import count_failed_translations
+            unresolved_translations = count_failed_translations()
+        except Exception:
+            logging.exception("разбор словаря: счётчик непереведённых недоступен")
+            unresolved_translations = 0
+        if not pending and not unresolved_translations:
+            logging.info("разбор словаря: противоречивых записей нет, не шлём")
+            return
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        bot_username = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+        admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
+        if not token or not admin_ids or not bot_username:
+            return
+
+        head = ("🔔 <b>Разбор словаря ждёт вас</b>" if reminder
+                else "🧹 <b>Разбор словаря</b>")
+        tail = ("Список не разобран с прошлого раза — записи никуда не делись и ждут."
+                if reminder else
+                "Разобрать — минута: у каждой записи одно решение, применяются разом.")
+        lines = [head, ""]
+        if pending:
+            lines.append(f"Записей, которые противоречат сами себе: <b>{pending}</b>.")
+            lines.append("Слово помечено существительным, а написано со строчной; или вместо слова обрывок.")
+        if unresolved_translations:
+            lines.append("")
+            lines.append(f"Слов, которым ночь не смогла подобрать перевод: <b>{unresolved_translations}</b>.")
+        lines += ["", tail]
+        text = "\n".join(lines)
+        markup = {"inline_keyboard": [[{
+            "text": "Открыть разбор →",
+            "url": f"https://t.me/{bot_username}?startapp=slovarcheck",
+        }]]}
+        for uid in admin_ids:
+            try:
+                send_telegram_message(chat_id=uid, text=text, token=token,
+                                      reply_markup=markup, what="разбор словаря")
+            except Exception:
+                logging.exception("разбор словаря: не ушло админу %s", uid)
+    except Exception:
+        logging.exception("разбор словаря: рассылка не удалась")
 
 
 def _send_quarantine_review_weekly() -> None:
@@ -44809,6 +45008,20 @@ def main():
             max_instances=1,
             misfire_grace_time=3600,
         )
+        # -- Карточки словаря на разбор: вторник и пятница, 10:00 Вена --
+        # Дни выбрал владелец 26.08.2026. Отдельно от утреннего отчёта о грамматике:
+        # это другая работа и другие кнопки. Молчит, когда очередь пуста.
+        scheduler.add_job(
+            _send_panel_cards_reminder,
+            "cron",
+            day_of_week=str(os.getenv("PANEL_CARDS_REMINDER_DAYS") or "tue,fri").strip(),
+            hour=int((os.getenv("PANEL_CARDS_REMINDER_HOUR") or "10").strip() or "10"),
+            minute=int((os.getenv("PANEL_CARDS_REMINDER_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
         # -- Ежедневно 09:15 Europe/Vienna: «Словарь за сутки» владельцу в личку --
         # Сколько обслужил свой словарь, сколько ушло в GPT, во что обошлось. Это те
         # самые числа, по которым решается судьба старого пути поиска.
@@ -44844,6 +45057,60 @@ def main():
             day_of_week=(os.getenv("POOL_QUARANTINE_REVIEW_DAYS") or "sun").strip() or "sun",
             hour=int((os.getenv("POOL_QUARANTINE_REVIEW_HOUR") or "9").strip() or "9"),
             minute=int((os.getenv("POOL_QUARANTINE_REVIEW_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Пн и Вс, 09:00 Europe/Vienna: разбор противоречивых записей словаря --
+        # Владелец 26.08.2026 выбрал два дня: понедельник и воскресенье. Очередь копится,
+        # неразобранное переезжает дальше и приходит снова.
+        scheduler.add_job(
+            _send_word_integrity_review,
+            "cron",
+            day_of_week=(os.getenv("WORD_INTEGRITY_REVIEW_DAYS") or "mon,sun").strip() or "mon,sun",
+            hour=int((os.getenv("WORD_INTEGRITY_REVIEW_HOUR") or "9").strip() or "9"),
+            minute=int((os.getenv("WORD_INTEGRITY_REVIEW_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Чт, 18:00: отдельное напоминание, если список так и не разобран --
+        # Владелец просил дополнительный сигнал среди недели, чтобы обратить внимание.
+        scheduler.add_job(
+            _send_word_integrity_review,
+            "cron",
+            kwargs={"reminder": True},
+            day_of_week=(os.getenv("WORD_INTEGRITY_REMINDER_DAYS") or "thu").strip() or "thu",
+            hour=int((os.getenv("WORD_INTEGRITY_REMINDER_HOUR") or "18").strip() or "18"),
+            minute=0,
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Каждую ночь 03:40: перевод карточкам, у которых его нет --
+        # Пачкой, один вызов на несколько десятков слов, без участия человека.
+        scheduler.add_job(
+            _fill_missing_translations_nightly,
+            "cron",
+            hour=int((os.getenv("MISSING_TRANSLATIONS_HOUR") or "3").strip() or "3"),
+            minute=int((os.getenv("MISSING_TRANSLATIONS_MINUTE") or "40").strip() or "40"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Вс, 10:00 Europe/Vienna: каждому — проверка СВОИХ слов --
+        # Не только владельцу: мы берём слова друг у друга, и чужая ошибка становится
+        # общей. Человек видит и правит ТОЛЬКО свои карточки.
+        scheduler.add_job(
+            _send_my_words_review,
+            "cron",
+            day_of_week=(os.getenv("MY_WORDS_REVIEW_DAYS") or "sun").strip() or "sun",
+            hour=int((os.getenv("MY_WORDS_REVIEW_HOUR") or "10").strip() or "10"),
+            minute=0,
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,

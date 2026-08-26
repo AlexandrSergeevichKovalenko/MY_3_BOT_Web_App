@@ -105,7 +105,7 @@ def test_unknown_word_stops_before_the_model_and_before_the_limit(client, monkey
     monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
     monkeypatch.setattr(
         backend_server, "_word_diff_lookup_sources",
-        lambda word, studied, explain: ENTRY if word == "Anzahlung" else None,
+        lambda word, studied, explain, pick="": ENTRY if word == "Anzahlung" else None,
     )
     monkeypatch.setattr(backend_server, "_word_diff_spelling_suggestion", lambda *a, **k: "Vorschuss")
 
@@ -358,7 +358,7 @@ def test_thin_entry_is_enriched_before_the_comparison(monkeypatch):
     assert enriched_calls == ["abschieben"], "бедную статью не достроили"
     assert saved == [42], "достроенная карточка не сохранена — починка не осталась всем"
     assert [x["meaning"] for x in article["senses"]] == ["выдворять"]
-    assert article["constructions"][0]["pattern"] == "jdn. abschieben"
+    assert article["constructions"][0]["pattern"] == "jdn. abschieben + Akkusativ"
 
 
 def test_part_of_speech_and_construction_never_come_from_the_model():
@@ -373,6 +373,7 @@ def test_part_of_speech_and_construction_never_come_from_the_model():
     diff, reason = backend_server._word_diff_validate(raw, ["Anzahlung", "Vorschuss"], sources)
     assert reason == ""
     assert diff["words"][0]["pos"] == "noun", "часть речи взята у модели"
+    assert len(diff["words"]) == 1, "на слово должна быть одна карточка"
     patterns = [c["pattern"] for c in diff["constructions"]]
     assert "Anzahlung leisten" in patterns, "наша конструкция не показана"
     assert all("выдумка" not in p for p in patterns), "в разбор просочилась конструкция от модели"
@@ -452,25 +453,34 @@ def test_ready_pair_opens_for_everyone_including_free(client, monkeypatch):
     """Готовая пара приходит из базы и тарифа не спрашивает — она нам ничего не стоит."""
     cached = {"words": ["Miete", "Pacht"], "payload": FULL_ANSWER, "sources": {}, "created_at": None}
     _patch_db(monkeypatch, get_word_diff_card=lambda *a, **k: cached)
-    monkeypatch.setattr(backend_server, "_word_diff_can_create", _forbid("проверка тарифа"))
+    # Тариф спрашиваем — но только чтобы решить, годится ли УСТАРЕВШАЯ запись.
+    # На выдачу готовой пары он не влияет: она нам ничего не стоит.
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: False)
     monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
     monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", lambda *a, **k: ENTRY)
 
     resp = _post(client, ["Miete", "Pacht"])
 
     assert resp.status_code == 200
-    assert resp.get_json()["from_cache"] is True
+    assert resp.get_json()["from_cache"] is True, "бесплатному не отдали готовую пару"
 
 
-def test_shared_shelf_is_sorted_by_how_often_a_pair_is_opened():
-    """Общий список ранжируется частотой: случайная ерунда сама уходит вниз."""
+def test_shared_shelf_shows_every_pair_with_its_count():
+    """Полка ранжируется частотой и НЕ прячет пары старой версии.
+
+    Замер 26.08.2026: после подъёма версии разбора полка отфильтровала всё и стала
+    пустой — владелец открыл вкладку и не увидел ни чисел, ни возможности удалить.
+    Версия решает, отдавать ли готовый разбор, а не показывать ли строку.
+    """
     import inspect
     from backend import database
     src = inspect.getsource(database.list_word_diff_popular)
-    assert "ORDER BY open_count DESC" in src, "список не ранжирован по частоте"
-    assert "schema_version = %s" in src, (
-        "в общий список попадут устаревшие пары — их открытие потребует новой оплаты"
-    )
+    assert "ORDER BY open_count DESC" in src, "полка не ранжирована по частоте"
+    assert "WHERE schema_version" not in src, "полка снова прячет пары прошлых версий"
+    assert "open_count" in src, "на полке нет числа обращений"
+
+    history_src = inspect.getsource(database.list_word_diff_history)
+    assert "open_count" in history_src, "в личной истории нет числа обращений"
 
 
 def test_stream_prompt_spells_out_every_block_in_full():
@@ -529,7 +539,7 @@ def test_pair_is_shown_the_way_the_dictionary_writes_it(client, monkeypatch):
     monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
     monkeypatch.setattr(
         backend_server, "_word_diff_lookup_sources",
-        lambda word, studied, explain: dict(_entry(word), headword=word.lower()),
+        lambda word, studied, explain, pick="": dict(_entry(word), headword=word.lower()),
     )
 
     async def _answer(*args, **kwargs):
@@ -543,3 +553,199 @@ def test_pair_is_shown_the_way_the_dictionary_writes_it(client, monkeypatch):
     assert resp.status_code == 200, resp.get_data(as_text=True)
     assert resp.get_json()["words"] == ["ausweisen", "abschieben"], "заголовок не по-словарному"
     assert saved.get("words") == ["ausweisen", "abschieben"], "в общую полку легло не то написание"
+
+
+def test_one_card_per_word_with_senses_inside():
+    """Два значения одного слова — одна карточка с двумя значениями, а не две карточки.
+
+    Владелец 26.08.2026 увидел «laufen» дважды подряд и сказал, что в одной будет
+    компактнее и понятнее.
+    """
+    sources = [dict(_entry("laufen"), headword="laufen", pos="verb")]
+    raw = {
+        "verdict": [{"word": "laufen", "line": "бежать или ходить пешком"}],
+        "words": [
+            {"word": "laufen", "sense_id": "s1", "meaning": "бежать", "when": "о беге"},
+            {"word": "laufen", "sense_id": "s2", "meaning": "ходить пешком", "when": "не на транспорте"},
+        ],
+    }
+    diff, reason = backend_server._word_diff_validate(raw, ["laufen"], sources)
+    assert reason == ""
+    assert len(diff["words"]) == 1, "слово показано двумя карточками"
+    assert [x["meaning"] for x in diff["words"][0]["senses"]] == ["бежать", "ходить пешком"]
+
+
+def test_same_construction_written_two_ways_is_shown_once():
+    """«laufen zu + Dativ» и «laufen + zu + Dativ» — одна конструкция, а не две строки."""
+    article = backend_server._word_diff_build_article({
+        "word": "laufen", "headword": "laufen", "pos": "verb",
+        "senses": [{"meaning": "идти"}],
+        "usage": {"constructions": [
+            {"pattern": "laufen zu + Dativ", "case": "Dativ", "preposition": "zu",
+             "example_de": "Sie läuft zu ihrer Freundin.", "example_ru": "Она идёт к подруге."},
+            {"pattern": "laufen + zu + Dativ", "case": "Dativ", "preposition": "zu",
+             "example_de": "Sie läuft zur Schule.", "example_ru": "Она идёт в школу."},
+        ]},
+    })
+    patterns = [c["pattern"] for c in article["constructions"]]
+    assert patterns == ["laufen + zu + Dativ"], f"дубль не схлопнулся: {patterns}"
+
+
+def test_bare_nominative_is_named_in_human_words_not_dropped_blindly():
+    """«laufen · Nominativ обязательна» ничего не значило. Теперь это «без дополнения»,
+    и строка живёт, только если у неё есть пример: «Der Motor läuft»."""
+    article = backend_server._word_diff_build_article({
+        "word": "laufen", "headword": "laufen", "pos": "verb",
+        "senses": [{"meaning": "работать"}],
+        "usage": {"constructions": [
+            {"pattern": "laufen", "case": "Nominativ", "preposition": None,
+             "obligatory": True, "example_de": "Der Motor läuft.", "example_ru": "Двигатель работает."},
+            {"pattern": "laufen", "case": "Nominativ", "preposition": None, "obligatory": True},
+        ]},
+    })
+    assert len(article["constructions"]) == 1, "строка без примера должна была отпасть"
+    row = article["constructions"][0]
+    assert row["bare"] is True and row["pattern"] == "laufen"
+    assert row["case"] == "" and row["obligatory"] is False, (
+        "«обязательна» осталась там, где предлога нет — это утверждение про подлежащее"
+    )
+
+
+def test_outdated_answer_still_serves_the_one_who_cannot_order_a_new_one(monkeypatch):
+    """Бесплатному отдаём старый разбор, а не отказ: старый ответ полезнее пустоты.
+
+    Тому, кто может заказать новый, устаревшая запись не отдаётся — он получит свежую.
+    """
+    import inspect
+    src = inspect.getsource(backend_server._word_diff_prepare)
+    assert "any_version=not can_create" in src, (
+        "устаревшая запись либо не отдаётся бесплатному, либо мешает платному пересобрать"
+    )
+
+
+def test_lowercase_word_is_never_treated_as_a_noun():
+    """«gehen» — глагол. Существительное в немецком всегда пишется с заглавной.
+
+    Замер 26.08.2026: слой отдавал на «gehen» две статьи, первой шла испорченная
+    («существительное das gehen — идти», заголовок со строчной), и человек читал
+    «Gehen — это существительное», даже написав слово со строчной буквы.
+    """
+    entries = [
+        {"headword": "gehen", "pos": "noun", "gender": "das", "translations": ["идти"], "rank": 106},
+        {"headword": "gehen", "pos": "verb", "gender": "", "translations": ["идти", "уходить", "бродить"], "rank": 106},
+    ]
+    picked = backend_server._word_diff_pick_entry("gehen", entries, "de")
+    assert picked["pos"] == "verb", "слово со строчной снова разобрано как существительное"
+
+    # И даже когда человек написал с заглавной: запись «существительное» со строчным
+    # заголовком — испорченная, брать её нельзя.
+    picked_upper = backend_server._word_diff_pick_entry("Gehen", entries, "de")
+    assert picked_upper["pos"] == "verb", "испорченная запись всё ещё выигрывает"
+
+
+def test_real_noun_is_still_chosen():
+    """Настоящее существительное не должно пострадать от правила."""
+    entries = [
+        {"headword": "Anzahlung", "pos": "noun", "gender": "die", "translations": ["задаток", "аванс"], "rank": 5},
+    ]
+    picked = backend_server._word_diff_pick_entry("Anzahlung", entries, "de")
+    assert picked["pos"] == "noun"
+
+
+def test_two_legit_readings_ask_the_person_instead_of_guessing(client, monkeypatch):
+    """Слово читается по-разному → спрашиваем, а не выбираем «по числу переводов».
+
+    Владелец 26.08.2026: «Зачем мы будем думать за пользователя? Если знаем, что gehen —
+    и глагол, и существительное, пусть человек подтвердит, и в работу идёт его выбор».
+    """
+    _patch_db(monkeypatch)
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
+    monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
+
+    two_readings = [
+        {"headword": "Gehen", "pos": "noun", "gender": "das", "unit_id": 15708,
+         "translations": ["ходьба"], "rank": 106},
+        {"headword": "gehen", "pos": "verb", "gender": "", "unit_id": 900,
+         "translations": ["идти", "уходить"], "rank": 106},
+    ]
+
+    import backend.dictionary_entries as de
+    monkeypatch.setattr(de, "entries_for_query",
+                        lambda word, source_lang="", target_lang="":
+                        two_readings if word.casefold() == "gehen" else [])
+    monkeypatch.setattr(backend_server, "_word_diff_usage", lambda *a, **k: {})
+    monkeypatch.setattr(backend_server, "_word_diff_full_lookup", lambda *a, **k: None)
+    monkeypatch.setattr(backend_server, "_fetch_wiktionary_entry", lambda *a, **k: None)
+    monkeypatch.setattr(backend_server, "_word_diff_word_gate_blocks", lambda *a, **k: False)
+
+    resp = client.post("/api/webapp/dictionary/diff",
+                       json={"initData": "signed", "words": ["Gehen", "Laufen"]})
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["reason"] == "choose_sense", "программа снова решила за человека"
+    options = body["choices"][0]["options"]
+    assert {o["pos"] for o in options} == {"noun", "verb"}
+    assert any(o["label"] == "das Gehen" for o in options), "в вопросе нет артикля у существительного"
+
+
+def test_the_persons_choice_is_what_goes_to_work(monkeypatch):
+    """Ответил «глагол» — работаем с глаголом, даже если написал слово с заглавной."""
+    two_readings = [
+        {"headword": "Gehen", "pos": "noun", "gender": "das", "unit_id": 15708,
+         "translations": ["ходьба"], "rank": 106},
+        {"headword": "gehen", "pos": "verb", "gender": "", "unit_id": 900,
+         "translations": ["идти", "уходить"], "rank": 106},
+    ]
+    picked = backend_server._word_diff_pick_entry("Gehen", two_readings, "de", pick="verb:900")
+    assert picked["pos"] == "verb"
+    picked_noun = backend_server._word_diff_pick_entry("Gehen", two_readings, "de", pick="noun:15708")
+    assert picked_noun["pos"] == "noun"
+    # Без ответа не выбираем вовсе.
+    assert backend_server._word_diff_pick_entry("Gehen", two_readings, "de") is None
+
+
+def test_broken_record_is_not_a_reading_and_never_becomes_a_question():
+    """«Существительное» со строчным заголовком — брак, а не второе прочтение.
+
+    Вопрос человеку из-за испорченной записи задавать нельзя: выбирать ему не из чего.
+    """
+    entries = [
+        {"headword": "gehen", "pos": "noun", "gender": "das", "unit_id": 15708, "translations": ["идти"]},
+        {"headword": "gehen", "pos": "verb", "gender": "", "unit_id": 0,
+         "translations": ["идти", "уходить", "бродить"]},
+    ]
+    usable = backend_server._word_diff_legit_entries("gehen", entries, "de")
+    assert [e["pos"] for e in usable] == ["verb"]
+    assert backend_server._word_diff_pick_entry("gehen", entries, "de")["pos"] == "verb"
+
+
+def test_question_comes_from_the_language_not_from_our_database(monkeypatch):
+    """Спрашиваем, если прочтения есть В НЕМЕЦКОМ — даже когда записи у нас нет.
+
+    Владелец 26.08.2026: «Даже если у нас нет записи, но она существует в грамматике
+    немецкого языка, — мы обязаны спросить». Раньше вопрос строился по нашей базе, и
+    «das Gehen» не спрашивалось только потому, что запись у нас была испорчена.
+    """
+    from backend import database
+    monkeypatch.setattr(database, "get_word_readings", lambda *a, **k: [
+        {"pos": "verb", "form": "gehen", "meaning": "идти", "common": True},
+        {"pos": "noun", "form": "das Gehen", "meaning": "ходьба", "common": True},
+    ])
+    monkeypatch.setattr(database, "save_word_readings", lambda *a, **k: None)
+
+    readings = backend_server._word_diff_readings("Gehen", "de", "ru")
+    ask = backend_server._word_diff_readings_to_ask("Gehen", readings)
+    assert [o["form"] for o in ask] == ["gehen", "das Gehen"], "вопрос не собрался"
+
+    # Написал со строчной — существительное отпадает по правилу орфографии, вопроса нет.
+    assert backend_server._word_diff_readings_to_ask("gehen", readings) == []
+
+
+def test_rare_reading_does_not_bother_the_person(monkeypatch):
+    """Редкое прочтение вопросом не становится: спрашиваем о том, что правда употребляется."""
+    readings = [
+        {"pos": "verb", "form": "ausweisen", "meaning": "выдворять", "common": True},
+        {"pos": "noun", "form": "das Ausweisen", "meaning": "выдворение", "common": False},
+    ]
+    assert backend_server._word_diff_readings_to_ask("Ausweisen", readings) == []
