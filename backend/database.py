@@ -30717,6 +30717,275 @@ def save_word_usage(word: str, payload: dict, *, lang: str = "de", explain_lang:
     return stored
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Разбор противоречивых записей словаря.
+#
+# Записи, которые противоречат сами себе: «существительное», а написано со строчной
+# буквы; вместо слова обрывок разметки. Мусор, попавший до того, как на входе появилась
+# дверь проверки.
+#
+# Владелец 26.08.2026 решил: очередь КОПИТСЯ и ничего не удаляется само. Разобранное
+# уходит, неразобранное переезжает на следующую неделю и приходит снова. Правка
+# предлагается ТОЛЬКО из источников: заглавная буква — правило немецкой орфографии,
+# артикль — из справочника рода. Источник молчит — правки не предлагаем вовсе.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_WORD_INTEGRITY_SCHEMA_READY = False
+
+WORD_INTEGRITY_ISSUES = {
+    "noun_lowercase": "Существительное, а написано со строчной буквы",
+    "garbage_lemma": "Это не слово — обрывок или разметка",
+}
+
+
+def ensure_word_integrity_schema() -> None:
+    """Очередь разбора. Идемпотентно, DDL один раз на процесс."""
+    global _WORD_INTEGRITY_SCHEMA_READY
+    if _WORD_INTEGRITY_SCHEMA_READY:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_word_integrity_review (
+                    id          BIGSERIAL PRIMARY KEY,
+                    unit_id     BIGINT NOT NULL UNIQUE,
+                    lemma       TEXT NOT NULL,
+                    display     TEXT NOT NULL,
+                    pos         TEXT,
+                    gender      TEXT,
+                    issue       TEXT NOT NULL,
+                    suggestion  JSONB,
+                    status      TEXT NOT NULL DEFAULT 'pending',
+                    decided_at  TIMESTAMPTZ,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_word_integrity_pending "
+                "ON bt_3_word_integrity_review (status, created_at);"
+            )
+        conn.commit()
+    _WORD_INTEGRITY_SCHEMA_READY = True
+
+
+_GARBAGE_LEMMA_RE = re.compile(r"[=<>{}\[\]|\\/@#$%^*_~`]|\d{2,}")
+
+
+def _word_integrity_suggestion(lemma: str, display: str, pos: str, gender: str) -> dict | None:
+    """Что предложить исправить. None — источник молчит, и кнопки «Исправить» не будет.
+
+    Заглавная буква у существительного — правило немецкой орфографии, а не догадка.
+    Артикль берётся из рода, который уже лежит в записи; рода нет — предлагаем только
+    заглавную букву, артикль не выдумываем.
+    """
+    text = " ".join(str(lemma or "").split())
+    if not text or " " in text:
+        return None
+    if str(pos or "").strip().lower() != "noun":
+        return None
+    if not text[:1].islower():
+        return None
+    fixed = text[:1].upper() + text[1:]
+
+    # Заглавная буква — правило орфографии, но она не делает слово словом: «inkelgasse»
+    # так и останется обрывком, а «degeneriert» — причастием. Поэтому предложенную форму
+    # ПРОВЕРЯЕМ по справочнику (дверь слова, без модели). Не подтвердилась — правки не
+    # предлагаем вовсе, и в разборе у записи останутся только «оставить» и «удалить».
+    try:
+        from backend.german_word_gate import check_word, CONFIRMED, REPAIRED
+        verdict = check_word(fixed, allow_network=True, allow_model=False)
+        status = str(verdict.get("status") or "")
+        if status not in {CONFIRMED, REPAIRED}:
+            return None
+        confirmed = str(verdict.get("text") or "").strip() or fixed
+        if confirmed != fixed:
+            # Справочник знает другое написание — предлагаем ЕГО, а не наше. Но если он
+            # вернул слово со строчной, значит это вообще не существительное: «degeneriert»
+            # он чинит в глагол «degenerieren», и приклеивать к нему артикль нельзя.
+            if not confirmed[:1].isupper():
+                return None
+            fixed = confirmed
+    except Exception:
+        logging.exception("word_integrity: дверь слова недоступна для %r", fixed)
+        return None
+
+    article = str(gender or "").strip().lower()
+    article = article if article in {"der", "die", "das"} else ""
+    return {
+        "action": "fix_case",
+        "to_lemma": fixed,
+        "to_display": f"{article} {fixed}".strip(),
+        "why": "Написание подтверждено справочником"
+               + ("; артикль — из рода записи" if article else "; род у записи не указан"),
+    }
+
+
+def scan_word_integrity(limit: int = 200) -> dict:
+    """Найти противоречивые записи и положить их в очередь разбора.
+
+    Ничего не правит и не удаляет — только собирает. Уже лежащие в очереди строки не
+    трогаются: решение по ним принимает владелец, и до этого они ждут сколько угодно.
+    """
+    ensure_word_integrity_schema()
+    found, added = 0, 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT u.id, u.lemma, u.display, u.pos, u.gender
+                FROM bt_3_lex_units u
+                WHERE u.lang = 'de' AND u.kind = 'word'
+                  AND (
+                        (u.pos = 'noun' AND u.lemma ~ '^[a-zäöüß]' AND u.lemma !~ '^(der|die|das) ')
+                     OR u.lemma ~ '[=<>{}\\[\\]|@#$%%^*_~`]'
+                  )
+                ORDER BY u.id
+                LIMIT %s;
+                """,
+                (max(1, min(int(limit or 200), 1000)),),
+            )
+            rows = cursor.fetchall() or []
+            for unit_id, lemma, display, pos, gender in rows:
+                found += 1
+                issue = ("garbage_lemma" if _GARBAGE_LEMMA_RE.search(str(lemma or ""))
+                         else "noun_lowercase")
+                suggestion = (None if issue == "garbage_lemma"
+                              else _word_integrity_suggestion(lemma, display, pos, gender))
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_word_integrity_review
+                        (unit_id, lemma, display, pos, gender, issue, suggestion)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (unit_id) DO NOTHING;
+                    """,
+                    (int(unit_id), str(lemma or ""), str(display or ""), str(pos or ""),
+                     str(gender or ""), issue, Json(suggestion) if suggestion else None),
+                )
+                added += cursor.rowcount or 0
+        conn.commit()
+    return {"found": found, "added": added}
+
+
+def list_word_integrity_pending(limit: int = 50) -> list[dict]:
+    """Что ждёт решения владельца. Разобранное сюда не попадает."""
+    ensure_word_integrity_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, unit_id, lemma, display, pos, gender, issue, suggestion, created_at
+                FROM bt_3_word_integrity_review
+                WHERE status = 'pending'
+                ORDER BY created_at, id
+                LIMIT %s;
+                """,
+                (max(1, min(int(limit or 50), 200)),),
+            )
+            rows = cursor.fetchall() or []
+    out = []
+    for row in rows:
+        suggestion = row[7]
+        if isinstance(suggestion, str):
+            try:
+                suggestion = json.loads(suggestion)
+            except (ValueError, TypeError):
+                suggestion = None
+        out.append({
+            "id": int(row[0]),
+            "unit_id": int(row[1]),
+            "lemma": row[2],
+            "display": row[3],
+            "pos": row[4] or "",
+            "gender": row[5] or "",
+            "issue": row[6],
+            "issue_text": WORD_INTEGRITY_ISSUES.get(row[6], row[6]),
+            "suggestion": suggestion if isinstance(suggestion, dict) else None,
+            "created_at": row[8].isoformat() if row[8] else None,
+        })
+    return out
+
+
+def count_word_integrity_pending() -> int:
+    ensure_word_integrity_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_word_integrity_review WHERE status = 'pending';"
+            )
+            row = cursor.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def apply_word_integrity_decisions(decisions: list) -> dict:
+    """Выполнить решения владельца: исправить, оставить, удалить.
+
+    Одно решение на запись. «Применить» в интерфейсе выполняет их разом — это один
+    заход по списку, а не два действия над одним словом (владелец 26.08.2026 просил
+    объяснить это прямо, потому что прежняя формулировка сбивала с толку).
+    """
+    ensure_word_integrity_schema()
+    fixed = kept = deleted = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for item in (decisions or []):
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    review_id = int(item.get("id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                action = str(item.get("action") or "").strip().lower()
+                if not review_id or action not in {"fix", "keep", "delete"}:
+                    continue
+
+                cursor.execute(
+                    "SELECT unit_id, suggestion FROM bt_3_word_integrity_review "
+                    "WHERE id = %s AND status = 'pending';",
+                    (review_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    continue
+                unit_id, suggestion = int(row[0]), row[1]
+                if isinstance(suggestion, str):
+                    try:
+                        suggestion = json.loads(suggestion)
+                    except (ValueError, TypeError):
+                        suggestion = None
+
+                if action == "fix":
+                    if not isinstance(suggestion, dict) or not suggestion.get("to_lemma"):
+                        continue  # правки нет — молча «исправить» нечего
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_lex_units
+                        SET lemma = %s, display = %s, updated_at = NOW()
+                        WHERE id = %s;
+                        """,
+                        (suggestion["to_lemma"], suggestion.get("to_display") or suggestion["to_lemma"],
+                         unit_id),
+                    )
+                    fixed += 1
+                    status = "fixed"
+                elif action == "delete":
+                    cursor.execute("DELETE FROM bt_3_lex_units WHERE id = %s;", (unit_id,))
+                    deleted += 1
+                    status = "deleted"
+                else:
+                    kept += 1
+                    status = "kept"
+
+                cursor.execute(
+                    "UPDATE bt_3_word_integrity_review SET status = %s, decided_at = NOW() "
+                    "WHERE id = %s;",
+                    (status, review_id),
+                )
+        conn.commit()
+    return {"fixed": fixed, "kept": kept, "deleted": deleted}
+
+
 def get_lex_unit_card(unit_id: int) -> dict | None:
     """Разбор, лежащий НА САМОЙ единице словаря.
 

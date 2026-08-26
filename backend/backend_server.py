@@ -43405,6 +43405,57 @@ def delete_webapp_dictionary_word_diff():
     return jsonify({"ok": True, "removed": int(removed)})
 
 
+@app.route("/api/webapp/dictionary/integrity/list", methods=["POST"])
+def list_webapp_word_integrity():
+    """Разбор противоречивых записей словаря. Только владелец.
+
+    Очередь копится и сама ничего не удаляет: неразобранное ждёт сколько угодно и
+    приходит снова (решение владельца 26.08.2026).
+    """
+    from backend.database import (
+        list_word_integrity_pending, count_word_integrity_pending, scan_word_integrity,
+    )
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+    if not _word_diff_is_admin(int(user_id)):
+        return jsonify({"error": "Разбор словаря открыт только владельцу"}), 403
+
+    if payload.get("rescan"):
+        scan_word_integrity(limit=300)
+
+    return jsonify({
+        "ok": True,
+        "items": list_word_integrity_pending(limit=50),
+        "total": count_word_integrity_pending(),
+    })
+
+
+@app.route("/api/webapp/dictionary/integrity/apply", methods=["POST"])
+def apply_webapp_word_integrity():
+    """Выполнить отмеченные решения разом: исправить, оставить, удалить."""
+    from backend.database import apply_word_integrity_decisions, count_word_integrity_pending
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+    if not _word_diff_is_admin(int(user_id)):
+        return jsonify({"error": "Разбор словаря открыт только владельцу"}), 403
+
+    decisions = payload.get("decisions")
+    if not isinstance(decisions, list) or not decisions:
+        return jsonify({"error": "Нечего применять: ни одно решение не отмечено"}), 400
+
+    result = apply_word_integrity_decisions(decisions)
+    logging.info("word_integrity: владелец применил решения %s", result)
+    result["left"] = count_word_integrity_pending()
+    result["ok"] = True
+    return jsonify(result)
+
+
 @app.route("/api/webapp/dictionary/diff/share/link", methods=["POST"])
 def create_webapp_word_diff_share_link():
     """Ссылка на разбор отличий — как у «Полного разбора»: один короткий токен и deep-link.
