@@ -13078,6 +13078,56 @@ async def handle_quarantine_callback(update: Update, context: CallbackContext) -
             pass
 
 
+def _send_word_integrity_review(reminder: bool = False) -> None:
+    """Приглашение на разбор противоречивых записей словаря: Пн и Вс 09:00.
+
+    В личку уходит короткое сообщение с числом и кнопкой; сам разбор открывается в
+    мини-приложении, потому что там видно «было → станет» (решение владельца 26.08.2026).
+
+    Очередь копится: неразобранное не пропадает и приходит снова. Отдельное напоминание
+    среди недели (reminder=True) уходит только если очередь не разобрана, чтобы владелец
+    обратил внимание, а не получал одинаковые письма.
+    """
+    try:
+        from backend.database import (
+            get_admin_telegram_ids, scan_word_integrity, count_word_integrity_pending,
+        )
+        scan_word_integrity(limit=300)
+        pending = count_word_integrity_pending()
+        if not pending:
+            logging.info("разбор словаря: противоречивых записей нет, не шлём")
+            return
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        bot_username = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+        admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
+        if not token or not admin_ids or not bot_username:
+            return
+
+        head = ("🔔 <b>Разбор словаря ждёт вас</b>" if reminder
+                else "🧹 <b>Разбор словаря</b>")
+        tail = ("Список не разобран с прошлого раза — записи никуда не делись и ждут."
+                if reminder else
+                "Разобрать — минута: у каждой записи одно решение, применяются разом.")
+        text = (
+            f"{head}\n\n"
+            f"Записей, которые противоречат сами себе: <b>{pending}</b>.\n"
+            "Слово помечено существительным, а написано со строчной; или вместо слова обрывок.\n\n"
+            f"{tail}"
+        )
+        markup = {"inline_keyboard": [[{
+            "text": "Открыть разбор →",
+            "url": f"https://t.me/{bot_username}?startapp=slovarcheck",
+        }]]}
+        for uid in admin_ids:
+            try:
+                send_telegram_message(chat_id=uid, text=text, token=token,
+                                      reply_markup=markup, what="разбор словаря")
+            except Exception:
+                logging.exception("разбор словаря: не ушло админу %s", uid)
+    except Exception:
+        logging.exception("разбор словаря: рассылка не удалась")
+
+
 def _send_quarantine_review_weekly() -> None:
     """Воскресный DM: интерактивный разбор карантина каждому админу (только если он непуст).
     Крутится в потоке BackgroundScheduler → синхронно; шлём сырым HTTP с inline-клавиатурой,
@@ -44844,6 +44894,34 @@ def main():
             day_of_week=(os.getenv("POOL_QUARANTINE_REVIEW_DAYS") or "sun").strip() or "sun",
             hour=int((os.getenv("POOL_QUARANTINE_REVIEW_HOUR") or "9").strip() or "9"),
             minute=int((os.getenv("POOL_QUARANTINE_REVIEW_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Пн и Вс, 09:00 Europe/Vienna: разбор противоречивых записей словаря --
+        # Владелец 26.08.2026 выбрал два дня: понедельник и воскресенье. Очередь копится,
+        # неразобранное переезжает дальше и приходит снова.
+        scheduler.add_job(
+            _send_word_integrity_review,
+            "cron",
+            day_of_week=(os.getenv("WORD_INTEGRITY_REVIEW_DAYS") or "mon,sun").strip() or "mon,sun",
+            hour=int((os.getenv("WORD_INTEGRITY_REVIEW_HOUR") or "9").strip() or "9"),
+            minute=int((os.getenv("WORD_INTEGRITY_REVIEW_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Чт, 18:00: отдельное напоминание, если список так и не разобран --
+        # Владелец просил дополнительный сигнал среди недели, чтобы обратить внимание.
+        scheduler.add_job(
+            _send_word_integrity_review,
+            "cron",
+            kwargs={"reminder": True},
+            day_of_week=(os.getenv("WORD_INTEGRITY_REMINDER_DAYS") or "thu").strip() or "thu",
+            hour=int((os.getenv("WORD_INTEGRITY_REMINDER_HOUR") or "18").strip() or "18"),
+            minute=0,
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
