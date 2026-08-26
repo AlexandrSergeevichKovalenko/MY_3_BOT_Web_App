@@ -42194,8 +42194,8 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
         logging.exception("word_diff: слой единиц не ответил на %r", text)
         entries = []
 
-    if entries:
-        entry = entries[0]
+    entry = _word_diff_pick_entry(text, entries, studied_lang)
+    if entry:
         unit_id = int(entry.get("unit_id") or 0)
         card = get_lex_unit_card(unit_id) if unit_id else None
         if _word_diff_card_is_thin(card):
@@ -42249,6 +42249,51 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
         return None
     payload["usage"] = _word_diff_usage(text, fresh, studied_lang, explain_lang)
     return _word_diff_build_article(payload)
+
+
+def _word_diff_pick_entry(text: str, entries: list, studied_lang: str) -> dict | None:
+    """Какую из найденных статей сравнивать. Решает НАПИСАНИЕ, а не порядок в списке.
+
+    Замер 26.08.2026: на «gehen» слой отдаёт две статьи — испорченную «существительное
+    das gehen — идти» (заголовок со строчной!) и правильную глагольную. Первой шла
+    испорченная, и на экран уходило «Gehen — это существительное», даже когда человек
+    писал слово со строчной буквы.
+
+    Правило орфографическое, а не догадка: в немецком существительное ВСЕГДА пишется с
+    заглавной. Отсюда два следствия —
+      • статья «существительное», у которой в НАШИХ данных заголовок со строчной, —
+        испорченная запись, и брать её нельзя;
+      • человек написал слово со строчной — значит это не существительное.
+    Из оставшихся берём ту, где больше переводов: она полнее.
+    """
+    rows = [e for e in (entries or []) if isinstance(e, dict)]
+    if not rows:
+        return None
+    if str(studied_lang or "").strip().lower() != "de":
+        return rows[0]
+
+    typed_lower = text[:1].islower() if text else False
+
+    def _is_noun(entry) -> bool:
+        return str(entry.get("pos") or "").strip().lower() == "noun"
+
+    def _headword_capitalized(entry) -> bool:
+        head = str(entry.get("headword") or "").strip()
+        return bool(head) and head[:1].isupper()
+
+    usable = [e for e in rows if not (_is_noun(e) and not _headword_capitalized(e))]
+    if typed_lower:
+        without_nouns = [e for e in usable if not _is_noun(e)]
+        if without_nouns:
+            usable = without_nouns
+    if not usable:
+        usable = rows
+
+    usable.sort(key=lambda e: (
+        -len(e.get("translations") or []),
+        e.get("rank") if e.get("rank") is not None else 10 ** 9,
+    ))
+    return usable[0]
 
 
 def _word_diff_card_is_thin(card) -> bool:
