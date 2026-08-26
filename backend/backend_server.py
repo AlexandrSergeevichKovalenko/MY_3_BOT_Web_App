@@ -43603,6 +43603,53 @@ def delete_webapp_dictionary_word_diff():
     return jsonify({"ok": True, "removed": int(removed)})
 
 
+@app.route("/api/webapp/dictionary/mywords/review", methods=["POST"])
+def list_webapp_my_word_issues():
+    """Проверка СВОИХ слов: что у человека записано неверно.
+
+    Владелец 26.08.2026: мы берём слова друг у друга — перед походом в модель смотрим,
+    нет ли такого слова у кого-то ещё. Значит чужая ошибка становится общей, и каждый
+    должен уметь поправить свой список. Видно человеку только своё.
+    """
+    from backend.database import (
+        list_user_word_issues, count_user_word_issues, scan_user_word_issues,
+    )
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+
+    if payload.get("rescan"):
+        scan_user_word_issues(limit=2000)
+
+    return jsonify({
+        "ok": True,
+        "items": list_user_word_issues(int(user_id), limit=30),
+        "total": count_user_word_issues(int(user_id)),
+    })
+
+
+@app.route("/api/webapp/dictionary/mywords/apply", methods=["POST"])
+def apply_webapp_my_word_issues():
+    """Решения человека по СВОИМ карточкам. Чужую тронуть нельзя — проверка по user_id."""
+    from backend.database import apply_user_word_decisions, count_user_word_issues
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+
+    decisions = payload.get("decisions")
+    if not isinstance(decisions, list) or not decisions:
+        return jsonify({"error": "Нечего применять: ни одно решение не отмечено"}), 400
+
+    result = apply_user_word_decisions(int(user_id), decisions)
+    result["left"] = count_user_word_issues(int(user_id))
+    result["ok"] = True
+    return jsonify(result)
+
+
 @app.route("/api/webapp/dictionary/integrity/list", methods=["POST"])
 def list_webapp_word_integrity():
     """Разбор противоречивых записей словаря. Только владелец.

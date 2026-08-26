@@ -22,7 +22,35 @@ import { humanizeDictError } from './errors.js';
 
 const ACTION_LABEL = { fix: 'Исправить', keep: 'Оставить', delete: 'Удалить' };
 
-export default function WordIntegrityReview() {
+const POS_RU = {
+  noun: 'существительное', verb: 'глагол', adjective: 'прилагательное',
+  adverb: 'наречие', preposition: 'предлог', conjunction: 'союз',
+  participle: 'причастие', particle: 'частица', pronoun: 'местоимение',
+};
+
+// scope: 'shared' — общий словарь (только владелец), 'mine' — свои слова (каждому).
+// Экран один: и там, и там человек решает судьбу записи тремя кнопками.
+const ENDPOINTS = {
+  shared: { list: '/api/webapp/dictionary/integrity/list', apply: '/api/webapp/dictionary/integrity/apply' },
+  mine: { list: '/api/webapp/dictionary/mywords/review', apply: '/api/webapp/dictionary/mywords/apply' },
+};
+
+const TITLES = {
+  shared: {
+    badge: '🧹 Разбор словаря',
+    title: 'Записи, которые противоречат себе',
+    empty: 'Противоречивых записей нет — словарь чист.',
+  },
+  mine: {
+    badge: '📚 Мои слова',
+    title: 'Слова, которые стоит поправить',
+    empty: 'Всё в порядке — ваши слова записаны верно.',
+  },
+};
+
+export default function WordIntegrityReview({ scope = 'shared' }) {
+  const urls = ENDPOINTS[scope] || ENDPOINTS.shared;
+  const copy = TITLES[scope] || TITLES.shared;
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [decisions, setDecisions] = useState({});
@@ -34,7 +62,7 @@ export default function WordIntegrityReview() {
     setPhase('loading');
     setError('');
     try {
-      const data = await api('/api/webapp/dictionary/integrity/list', { rescan });
+      const data = await api(urls.list, { rescan });
       setItems(Array.isArray(data?.items) ? data.items : []);
       setTotal(Number(data?.total) || 0);
       setPhase('ready');
@@ -42,7 +70,7 @@ export default function WordIntegrityReview() {
       setError(humanizeDictError(e));
       setPhase('error');
     }
-  }, []);
+  }, [urls]);
 
   useEffect(() => { void load(true); }, [load]);
 
@@ -57,12 +85,21 @@ export default function WordIntegrityReview() {
   }, []);
 
   const apply = useCallback(async () => {
-    const list = Object.entries(decisions).map(([id, action]) => ({ id: Number(id), action }));
+    const list = Object.entries(decisions).map(([id, action]) => {
+      const row = items.find((x) => String(x.id) === String(id));
+      const fix = row?.suggestion || {};
+      return {
+        id: Number(id),
+        action,
+        ...(action === 'fix' && fix.to_word ? { to_word: fix.to_word } : {}),
+        ...(action === 'fix' && fix.to_pos ? { to_pos: fix.to_pos } : {}),
+      };
+    });
     if (!list.length) return;
     setPhase('applying');
     haptic('ok');
     try {
-      const data = await api('/api/webapp/dictionary/integrity/apply', { decisions: list });
+      const data = await api(urls.apply, { decisions: list });
       setDone({
         fixed: Number(data?.fixed) || 0,
         kept: Number(data?.kept) || 0,
@@ -75,7 +112,7 @@ export default function WordIntegrityReview() {
       setError(humanizeDictError(e));
       setPhase('ready');
     }
-  }, [decisions, load]);
+  }, [decisions, items, urls, load]);
 
   const marked = Object.keys(decisions).length;
 
@@ -83,11 +120,11 @@ export default function WordIntegrityReview() {
     <div className="ans-root">
       <div className="ans-card wi-root">
         <div className="wi-head">
-          <span className="badge">🧹 Разбор словаря</span>
+          <span className="badge">{copy.badge}</span>
           <span className="badge">{total}</span>
         </div>
 
-        <div className="wi-title">Записи, которые противоречат себе</div>
+        <div className="wi-title">{copy.title}</div>
         <div className="wi-sub">
           Отметьте решение у каждой. Применится всё разом — по одному действию на запись.
           Неотмеченное останется и придёт снова.
@@ -105,7 +142,7 @@ export default function WordIntegrityReview() {
         {phase === 'error' && error && <div className="wi-error">{error}</div>}
 
         {phase !== 'loading' && !items.length && (
-          <div className="wi-empty">Противоречивых записей нет — словарь чист.</div>
+          <div className="wi-empty">{copy.empty}</div>
         )}
 
         {items.map((row) => {
@@ -113,20 +150,30 @@ export default function WordIntegrityReview() {
           const fix = row.suggestion;
           return (
             <div className={`wi-row${picked ? ` is-${picked}` : ''}`} key={row.id}>
-              <div className="wi-word">{row.display || row.lemma}</div>
+              <div className="wi-word">{row.display || row.lemma || row.word}</div>
+              {row.translation && <div className="wi-what">{row.translation}</div>}
               <div className="wi-what">{row.issue_text}</div>
 
-              {fix && (
+              {fix && (fix.to_display || fix.to_lemma || fix.to_word) && (
                 <div className="wi-fix">
-                  <span className="from">{row.lemma}</span>
+                  <span className="from">{row.lemma || row.word}</span>
                   <span>→</span>
-                  <span className="to">{fix.to_display || fix.to_lemma}</span>
+                  <span className="to">{fix.to_display || fix.to_lemma || fix.to_word}</span>
+                </div>
+              )}
+              {fix && fix.to_pos && (
+                <div className="wi-fix">
+                  <span className="from">{POS_RU[row.pos] || row.pos || 'часть речи'}</span>
+                  <span>→</span>
+                  <span className="to">{POS_RU[fix.to_pos] || fix.to_pos}</span>
                 </div>
               )}
               {fix?.why && <div className="wi-src">{fix.why}</div>}
               {!fix && (
                 <div className="wi-src">
-                  Правку не предлагаем: справочник эту форму не подтвердил.
+                  {row.issue === 'no_translation'
+                    ? 'Перевод придумывать не станем — впишите его в словаре или удалите карточку.'
+                    : 'Правку не предлагаем: справочник эту форму не подтвердил.'}
                 </div>
               )}
 

@@ -13144,6 +13144,47 @@ async def handle_quarantine_callback(update: Update, context: CallbackContext) -
             pass
 
 
+def _send_my_words_review() -> None:
+    """Каждому человеку — приглашение проверить СВОИ слова. Раз в неделю, если есть что.
+
+    Владелец 26.08.2026: «Мы ведь пользуемся словами других пользователей: перед походом
+    в модель смотрим, нет ли такого слова у кого-то ещё. Поэтому важно, чтобы слова были
+    в порядке». Значит проверка нужна не только владельцу, а каждому — и только по своим
+    карточкам: чужие человек не видит и тронуть не может.
+    """
+    try:
+        from backend.database import scan_user_word_issues, users_with_word_issues
+        scan_user_word_issues(limit=3000)
+        rows = users_with_word_issues(limit=500)
+        if not rows:
+            logging.info("мои слова: разбирать некому")
+            return
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        bot_username = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+        if not token or not bot_username:
+            return
+        markup = {"inline_keyboard": [[{
+            "text": "Проверить мои слова →",
+            "url": f"https://t.me/{bot_username}?startapp=meinewoerter",
+        }]]}
+        for uid, count in rows:
+            try:
+                text = (
+                    "📚 <b>Проверьте свои слова</b>\n\n"
+                    f"В вашем словаре <b>{count}</b> "
+                    f"{'карточка требует' if count == 1 else 'карточек требуют'} внимания: "
+                    "где-то нет перевода, где-то слово записано неверно.\n\n"
+                    "Это ваш личный список — что исправить, что оставить, что удалить, "
+                    "решаете только вы."
+                )
+                send_telegram_message(chat_id=uid, text=text, token=token,
+                                      reply_markup=markup, what="проверка своих слов")
+            except Exception:
+                logging.exception("мои слова: не ушло человеку %s", uid)
+    except Exception:
+        logging.exception("мои слова: рассылка не удалась")
+
+
 def _send_word_integrity_review(reminder: bool = False) -> None:
     """Приглашение на разбор противоречивых записей словаря: Пн и Вс 09:00.
 
@@ -45001,6 +45042,20 @@ def main():
             kwargs={"reminder": True},
             day_of_week=(os.getenv("WORD_INTEGRITY_REMINDER_DAYS") or "thu").strip() or "thu",
             hour=int((os.getenv("WORD_INTEGRITY_REMINDER_HOUR") or "18").strip() or "18"),
+            minute=0,
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Вс, 10:00 Europe/Vienna: каждому — проверка СВОИХ слов --
+        # Не только владельцу: мы берём слова друг у друга, и чужая ошибка становится
+        # общей. Человек видит и правит ТОЛЬКО свои карточки.
+        scheduler.add_job(
+            _send_my_words_review,
+            "cron",
+            day_of_week=(os.getenv("MY_WORDS_REVIEW_DAYS") or "sun").strip() or "sun",
+            hour=int((os.getenv("MY_WORDS_REVIEW_HOUR") or "10").strip() or "10"),
             minute=0,
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,

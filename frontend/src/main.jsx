@@ -472,13 +472,13 @@ class DictErrorBoundary extends React.Component {
 
 // Разбор противоречивых записей словаря — экран владельца, приходит ссылкой из лички
 // по понедельникам и воскресеньям.
-async function bootstrapWordIntegrity() {
+async function bootstrapWordIntegrity(scope = 'shared') {
   tgReady();
   const { default: WordIntegrityReview } = await import('./dictionary/WordIntegrityReview.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <DictErrorBoundary>
-        <WordIntegrityReview />
+        <WordIntegrityReview scope={scope} />
       </DictErrorBoundary>
     </React.StrictMode>,
   );
@@ -853,7 +853,12 @@ async function bootstrapApp() {
   // Ссылка «Поделиться» на разбор отличий: wdiff_<токен>. Открываем тот же словарь
   // сразу на вкладке «Отличия» — гость видит разбор, но сохранять не может.
   if (/^slovarcheck$/i.test(answerStartParam)) {
-    await bootstrapWordIntegrity();
+    await bootstrapWordIntegrity('shared');
+    return;
+  }
+  // Проверка СВОИХ слов — приходит каждому человеку, не только владельцу.
+  if (/^meinewoerter$/i.test(answerStartParam)) {
+    await bootstrapWordIntegrity('mine');
     return;
   }
   if (/^wdiff_/i.test(answerStartParam)) {

@@ -70,3 +70,46 @@ def test_invitation_goes_monday_and_sunday_and_reminds_midweek():
     assert '"mon,sun"' in text, "приглашение больше не приходит в понедельник и воскресенье"
     assert "WORD_INTEGRITY_REMINDER_DAYS" in text, "напоминание среди недели пропало"
     assert "startapp=slovarcheck" in text, "кнопка ведёт не на экран разбора"
+
+
+def test_personal_review_shows_only_your_own_cards():
+    """Человек видит и правит ТОЛЬКО свои карточки — чужие ему недоступны."""
+    list_src = inspect.getsource(database.list_user_word_issues)
+    assert "r.user_id = %s AND r.status = 'pending' AND q.user_id = %s" in list_src, (
+        "в список могут попасть чужие карточки"
+    )
+    apply_src = inspect.getsource(database.apply_user_word_decisions)
+    assert "WHERE id = %s AND user_id = %s AND status = 'pending'" in apply_src, (
+        "решение можно применить к чужой карточке"
+    )
+    for stmt in ("WHERE id = %s AND user_id = %s;",):
+        assert stmt in apply_src, "правка или удаление не ограничены владельцем карточки"
+
+
+def test_personal_check_ignores_phrases_and_sentences():
+    """Во фразе строчная буква и знак процента — норма, а не брак.
+
+    Замер 26.08.2026: без этого 238 нормальных фраз («absolute Kontraindikation») и
+    предложения со знаком процента («Rabatt von 3%») выглядели ошибками.
+    """
+    src = inspect.getsource(database.scan_user_word_issues)
+    assert "q.word_de !~ ' '" in src, "проверка снова придирается к фразам"
+
+
+def test_personal_fix_is_offered_only_from_the_reference(monkeypatch):
+    """Часть речи в правке — из справочника, а не наша догадка."""
+    src = inspect.getsource(database.list_user_word_issues)
+    assert "check_word" in src and "allow_model=False" in src, (
+        "правка перестала опираться на справочник"
+    )
+    assert '"to_pos": true_pos' in src, "исправление части речи пропало"
+
+
+def test_personal_invitation_goes_to_everyone_weekly():
+    import io as _io
+    from pathlib import Path
+    bot = Path(backend_server.__file__).resolve().parents[1] / "bot_3.py"
+    text = _io.open(bot, encoding="utf-8").read()
+    assert "_send_my_words_review" in text, "рассылка своих слов пропала"
+    assert "startapp=meinewoerter" in text, "кнопка ведёт не на экран своих слов"
+    assert "users_with_word_issues" in text, "рассылка идёт не тем, у кого есть что править"
