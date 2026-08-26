@@ -93,6 +93,8 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
   const [canCreate, setCanCreate] = useState(true); // новый разбор — по полному доступу
   const [isAdmin, setIsAdmin] = useState(false);    // хозяин общей полки
   const [swiped, setSwiped] = useState('');         // строка, смахнутая влево
+  const [choices, setChoices] = useState([]);       // что имел в виду человек
+  const [picks, setPicks] = useState({});           // его ответы: слово → прочтение
   const swipeRef = useRef({ key: '', x: 0 });
   const [saved, setSaved] = useState(() => new Set());
   const [sharing, setSharing] = useState(false);
@@ -146,6 +148,10 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
   // дописываются на глазах. Замер 25.08.2026: целиком пара собиралась 9–18 секунд, и
   // всё это время человек смотрел в пустой экран. Готовая пара приходит обычным JSON —
   // потока там нет и не нужно.
+  // Выбор человека нужен внутри уже запущенного запроса, поэтому держим его в ссылке:
+  // состояние обновится позже, а тело запроса собирается сейчас.
+  const picksRef = useRef({});
+
   const runDiff = useCallback(async (words) => {
     setPhase('loading');
     setError('');
@@ -161,7 +167,9 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
       const resp = await fetch('/api/webapp/dictionary/diff/stream', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ initData: getInitData(), ...(token ? { dqt: token } : {}), words }),
+        body: JSON.stringify({
+          initData: getInitData(), ...(token ? { dqt: token } : {}), words, picks: picksRef.current,
+        }),
       });
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
@@ -176,6 +184,11 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
         if (data && data.ok === false && data.reason === 'not_found') {
           setMissing(Array.isArray(data.missing) ? data.missing : []);
           setPhase('missing');
+          return;
+        }
+        if (data && data.ok === false && data.reason === 'choose_sense') {
+          setChoices(Array.isArray(data.choices) ? data.choices : []);
+          setPhase('choose');
           return;
         }
         if (data && data.ok === false && data.reason === 'paid_only') {
@@ -215,6 +228,9 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           if (data && data.reason === 'not_found') {
             setMissing(Array.isArray(data.missing) ? data.missing : []);
             setPhase('missing');
+          } else if (data && data.reason === 'choose_sense') {
+            setChoices(Array.isArray(data.choices) ? data.choices : []);
+            setPhase('choose');
           } else if (data && data.reason === 'paid_only') {
             setLimitReached(true);
             setCanCreate(false);
@@ -337,12 +353,30 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
     }
   }, [isAdmin, popular, history, loadHistory]);
 
+  const answerChoice = useCallback((word, key) => {
+    const next = { ...picksRef.current, [word]: key };
+    picksRef.current = next;
+    setPicks(next);
+    haptic('light');
+    const pending = choices.filter((row) => !next[row.word]);
+    if (pending.length) {
+      setChoices(pending);
+      return;
+    }
+    setChoices([]);
+    const words = normalizeCells(cells);
+    if (words.length >= MIN_WORDS) void runDiff(words.slice(0, MAX_WORDS));
+  }, [choices, cells, runDiff]);
+
   const startOver = useCallback(() => {
     setCells(['', '']);
     setResult(null);
     setMissing([]);
     setError('');
     setSaved(new Set());
+    setChoices([]);
+    setPicks({});
+    picksRef.current = {};
     setPhase('idle');
   }, []);
 
@@ -817,6 +851,34 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           <div className="wd-step is-wait">
             <span className="m">·</span>
             Незнакомое слово разбираем целиком — это дольше, но один раз
+          </div>
+        </div>
+      )}
+
+      {phase === 'choose' && choices.length > 0 && (
+        <div className="wd-choose">
+          <div className="wd-choose-title">Что вы имеете в виду?</div>
+          {choices.map((row) => (
+            <div className="wd-choose-word" key={`choose-${row.word}`}>
+              <div className="wd-choose-word-name">{row.word}</div>
+              <div className="wd-choose-options">
+                {(row.options || []).map((option) => (
+                  <button
+                    type="button"
+                    className="wd-choose-option"
+                    key={option.key}
+                    onClick={() => answerChoice(row.word, option.key)}
+                  >
+                    <span className="wd-choose-label">{option.label}</span>
+                    <span className="wd-choose-pos">{option.pos_label}</span>
+                    {option.hint && <span className="wd-choose-hint">{option.hint}</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className="wd-choose-foot">
+            Слово читается по-разному, и решать за вас мы не станем — скажите, что имели в виду.
           </div>
         </div>
       )}

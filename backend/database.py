@@ -30462,7 +30462,10 @@ _WORD_DIFF_SCHEMA_READY = False
 WORD_DIFF_SCHEMA_VERSION = 6
 
 # Версия задания «Полнота слова». Меняется промпт — устаревают все собранные им статьи.
-WORD_USAGE_SCHEMA_VERSION = 1
+#   1 — первый выпуск
+#   2 — картина хранится ОТДЕЛЬНО для каждого прочтения слова: «gehen» как глагол и
+#       «das Gehen» как существительное — разные слова, и общей записи у них быть не может
+WORD_USAGE_SCHEMA_VERSION = 2
 
 
 def ensure_word_diff_schema() -> None:
@@ -30579,8 +30582,14 @@ def ensure_word_usage_schema() -> None:
     _WORD_USAGE_SCHEMA_READY = True
 
 
-def _word_usage_key(word: str) -> str:
-    return " ".join(str(word or "").split()).casefold()
+def _word_usage_key(word: str, pos: str = "") -> str:
+    """Ключ картины употребления. Часть речи входит в него: «gehen» как глагол и
+    «das Gehen» как существительное — разные слова с разным управлением, и общей
+    записи у них быть не должно (замер 26.08.2026: глагол получал картину
+    существительного и приходил на экран как «существительное»)."""
+    base = " ".join(str(word or "").split()).casefold()
+    kind = str(pos or "").strip().lower()
+    return f"{base}#{kind}" if kind else base
 
 
 def assign_sense_ids(new_senses: list, previous: dict | None = None) -> list:
@@ -30624,9 +30633,10 @@ def assign_sense_ids(new_senses: list, previous: dict | None = None) -> list:
     return out
 
 
-def get_word_usage(word: str, *, lang: str = "de", explain_lang: str = "ru") -> dict | None:
+def get_word_usage(word: str, *, lang: str = "de", explain_lang: str = "ru",
+                   pos: str = "") -> dict | None:
     """Готовая картина употребления слова. None — «ещё не собирали»."""
-    key = _word_usage_key(word)
+    key = _word_usage_key(word, pos)
     if not key:
         return None
     ensure_word_usage_schema()
@@ -30652,13 +30662,14 @@ def get_word_usage(word: str, *, lang: str = "de", explain_lang: str = "ru") -> 
     return payload if isinstance(payload, dict) else None
 
 
-def save_word_usage(word: str, payload: dict, *, lang: str = "de", explain_lang: str = "ru") -> dict:
+def save_word_usage(word: str, payload: dict, *, lang: str = "de", explain_lang: str = "ru",
+                    pos: str = "") -> dict:
     """Сохранить картину употребления, проставив НАШИ номера значений. Возвращает сохранённое."""
-    key = _word_usage_key(word)
+    key = _word_usage_key(word, pos)
     if not key or not isinstance(payload, dict) or not payload:
         return {}
     ensure_word_usage_schema()
-    previous = get_word_usage(word, lang=lang, explain_lang=explain_lang)
+    previous = get_word_usage(word, lang=lang, explain_lang=explain_lang, pos=pos)
     stored = dict(payload)
     stored["senses"] = assign_sense_ids(payload.get("senses") or [], previous)
     # Модель ссылается на значение ТЕКСТОМ — переводим ссылки в наши номера.

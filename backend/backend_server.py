@@ -42169,7 +42169,8 @@ def _word_diff_normalize_words(raw_words) -> list[str]:
     return out
 
 
-def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -> dict | None:
+def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str,
+                              pick: str = "") -> dict | None:
     """Всё, что мы знаем о слове, — в форме, готовой для сравнения. None — «не знаем».
 
     Порядок и его цена:
@@ -42194,7 +42195,12 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
         logging.exception("word_diff: слой единиц не ответил на %r", text)
         entries = []
 
-    entry = _word_diff_pick_entry(text, entries, studied_lang)
+    usable = _word_diff_legit_entries(text, entries, studied_lang)
+    entry = _word_diff_pick_entry(text, entries, studied_lang, pick=pick)
+    if not entry and len(usable) > 1:
+        # Прочтений несколько — молча выбирать нельзя. Возвращаем вопрос.
+        return {"needs_choice": True, "word": text,
+                "options": _word_diff_choice_options(text, usable)}
     if entry:
         unit_id = int(entry.get("unit_id") or 0)
         card = get_lex_unit_card(unit_id) if unit_id else None
@@ -42217,7 +42223,10 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
             source="dictionary_units",
         )
         if payload:
-            payload["usage"] = _word_diff_usage(text, card or {}, studied_lang, explain_lang)
+            payload["entry_key"] = _word_diff_entry_key(entry)
+            payload["usage"] = _word_diff_usage(
+                text, card or {}, studied_lang, explain_lang, pos=str(entry.get("pos") or ""),
+            )
             return _word_diff_build_article(payload)
 
     if str(studied_lang or "").strip().lower() == "de":
@@ -42247,53 +42256,85 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str) -
     payload = _word_diff_payload_from_card(text, fresh, source="dictionary_lookup")
     if not payload:
         return None
-    payload["usage"] = _word_diff_usage(text, fresh, studied_lang, explain_lang)
+    payload["usage"] = _word_diff_usage(
+        text, fresh, studied_lang, explain_lang, pos=str(fresh.get("part_of_speech") or ""),
+    )
     return _word_diff_build_article(payload)
 
 
-def _word_diff_pick_entry(text: str, entries: list, studied_lang: str) -> dict | None:
-    """Какую из найденных статей сравнивать. Решает НАПИСАНИЕ, а не порядок в списке.
+def _word_diff_entry_key(entry: dict) -> str:
+    """Ярлык прочтения: часть речи и единица. По нему возвращается выбор человека."""
+    pos = str((entry or {}).get("pos") or "").strip().lower() or "other"
+    return f"{pos}:{int((entry or {}).get('unit_id') or 0)}"
 
-    Замер 26.08.2026: на «gehen» слой отдаёт две статьи — испорченную «существительное
-    das gehen — идти» (заголовок со строчной!) и правильную глагольную. Первой шла
-    испорченная, и на экран уходило «Gehen — это существительное», даже когда человек
-    писал слово со строчной буквы.
 
-    Правило орфографическое, а не догадка: в немецком существительное ВСЕГДА пишется с
-    заглавной. Отсюда два следствия —
-      • статья «существительное», у которой в НАШИХ данных заголовок со строчной, —
-        испорченная запись, и брать её нельзя;
-      • человек написал слово со строчной — значит это не существительное.
-    Из оставшихся берём ту, где больше переводов: она полнее.
+def _word_diff_legit_entries(text: str, entries: list, studied_lang: str) -> list:
+    """Законные прочтения слова. Брак отбрасываем молча, выбор — за человеком.
+
+    Что отбрасывается без вопросов (это не прочтение, а испорченная запись):
+      • «существительное», у которого в НАШИХ данных заголовок со строчной буквы —
+        в немецком существительное так не пишется никогда;
+      • существительное, когда человек написал слово со строчной, а есть другое чтение.
+
+    Всё остальное остаётся. Если осталось больше одного — спрашиваем человека
+    (правило владельца 26.08.2026: не решаем за него и не выбираем «по числу переводов»).
     """
     rows = [e for e in (entries or []) if isinstance(e, dict)]
-    if not rows:
-        return None
-    if str(studied_lang or "").strip().lower() != "de":
-        return rows[0]
-
-    typed_lower = text[:1].islower() if text else False
+    if not rows or str(studied_lang or "").strip().lower() != "de":
+        return rows
 
     def _is_noun(entry) -> bool:
         return str(entry.get("pos") or "").strip().lower() == "noun"
 
-    def _headword_capitalized(entry) -> bool:
+    def _head_capitalized(entry) -> bool:
         head = str(entry.get("headword") or "").strip()
         return bool(head) and head[:1].isupper()
 
-    usable = [e for e in rows if not (_is_noun(e) and not _headword_capitalized(e))]
-    if typed_lower:
+    usable = [e for e in rows if not (_is_noun(e) and not _head_capitalized(e))]
+    if text[:1].islower():
         without_nouns = [e for e in usable if not _is_noun(e)]
         if without_nouns:
             usable = without_nouns
-    if not usable:
-        usable = rows
+    return usable or rows
 
-    usable.sort(key=lambda e: (
-        -len(e.get("translations") or []),
-        e.get("rank") if e.get("rank") is not None else 10 ** 9,
-    ))
-    return usable[0]
+
+_POS_HUMAN = {
+    "noun": "существительное", "verb": "глагол", "adjective": "прилагательное",
+    "adverb": "наречие", "pronoun": "местоимение", "preposition": "предлог",
+    "conjunction": "союз", "participle": "причастие", "phrase": "выражение",
+}
+
+
+def _word_diff_choice_options(text: str, entries: list) -> list[dict]:
+    """Варианты для вопроса человеку: что именно он имел в виду."""
+    options = []
+    for entry in entries:
+        pos = str(entry.get("pos") or "").strip().lower()
+        article = str(entry.get("gender") or "").strip().lower()
+        head = str(entry.get("headword") or text).strip()
+        title = f"{article} {head}".strip() if pos == "noun" and article else head
+        options.append({
+            "key": _word_diff_entry_key(entry),
+            "pos": pos,
+            "label": title,
+            "pos_label": _POS_HUMAN.get(pos, pos or "другое"),
+            "hint": ", ".join([str(x) for x in (entry.get("translations") or [])][:3]),
+        })
+    return options
+
+
+def _word_diff_pick_entry(text: str, entries: list, studied_lang: str, pick: str = "") -> dict | None:
+    """Выбранное прочтение. None — прочтений несколько и надо спросить человека."""
+    usable = _word_diff_legit_entries(text, entries, studied_lang)
+    if not usable:
+        return None
+    if pick:
+        for entry in usable:
+            if _word_diff_entry_key(entry) == pick:
+                return entry
+    if len(usable) == 1:
+        return usable[0]
+    return None
 
 
 def _word_diff_card_is_thin(card) -> bool:
@@ -42408,7 +42449,10 @@ def _word_diff_payload_from_card(
         # Как слово пишется в словаре: глагол строчными, существительное с заглавной.
         # Показываем именно это, а не то, что вернула модель.
         "headword": headword or text,
-        "pos": str(card.get("part_of_speech") or pos_hint or "").strip(),
+        # Часть речи — из НАШЕЙ статьи (выбранного прочтения), и только если её нет —
+        # из разобранной карточки. Обратный порядок давал «gehen — существительное»:
+        # разбор смотрел на написание с заглавной и решал по-своему (замер 26.08.2026).
+        "pos": str(pos_hint or card.get("part_of_speech") or "").strip(),
         "senses": senses,
         "examples": examples,
         "constructions": constructions,
@@ -42566,7 +42610,8 @@ def _word_diff_build_article(payload: dict) -> dict:
     return {
         "word": word,
         "headword": str(payload.get("headword") or word),
-        "pos": str(usage.get("pos") or payload.get("pos") or ""),
+        "entry_key": str(payload.get("entry_key") or ""),
+        "pos": str(payload.get("pos") or usage.get("pos") or ""),
         "senses": senses[:6],
         "reflexivity": usage.get("reflexivity") if isinstance(usage.get("reflexivity"), dict) else {},
         "constructions": constructions,
@@ -42578,7 +42623,8 @@ def _word_diff_build_article(payload: dict) -> dict:
     }
 
 
-def _word_diff_usage(word: str, card: dict, studied_lang: str, explain_lang: str) -> dict:
+def _word_diff_usage(word: str, card: dict, studied_lang: str, explain_lang: str,
+                     pos: str = "") -> dict:
     """Картина употребления слова: возвратность, управление, предлоги, сочетания, родня.
 
     Берётся из базы; нет — собирается ЗДЕСЬ И СЕЙЧАС для этого самого слова и остаётся
@@ -42593,7 +42639,7 @@ def _word_diff_usage(word: str, card: dict, studied_lang: str, explain_lang: str
     if not text:
         return {}
     try:
-        stored = get_word_usage(text, lang=studied_lang, explain_lang=explain_lang)
+        stored = get_word_usage(text, lang=studied_lang, explain_lang=explain_lang, pos=pos)
         if stored:
             return stored
     except Exception:
@@ -42601,7 +42647,9 @@ def _word_diff_usage(word: str, card: dict, studied_lang: str, explain_lang: str
         return {}
 
     known = {
-        "pos": str((card or {}).get("part_of_speech") or ""),
+        # Часть речи — из выбранного прочтения, а не из карточки: карточка могла
+        # прийти от соседнего прочтения того же написания.
+        "pos": pos or str((card or {}).get("part_of_speech") or ""),
         "senses": [
             str((item or {}).get("value") if isinstance(item, dict) else item or "").strip()
             for item in ((card or {}).get("translations") or [])
@@ -42630,7 +42678,7 @@ def _word_diff_usage(word: str, card: dict, studied_lang: str, explain_lang: str
     if not isinstance(fresh, dict) or not fresh.get("senses"):
         return {}
     try:
-        return save_word_usage(text, fresh, lang=studied_lang, explain_lang=explain_lang)
+        return save_word_usage(text, fresh, lang=studied_lang, explain_lang=explain_lang, pos=pos)
     except Exception:
         logging.exception("word_usage: не смогли сохранить картину употребления %r", text)
         return fresh
@@ -43076,10 +43124,16 @@ def _word_diff_prepare(payload: dict) -> dict:
     from concurrent.futures import ThreadPoolExecutor
     from backend.openai_manager import set_llm_billing_user as _set_billing_user
 
+    # Выбор человека, если он уже ответил на вопрос «что вы имели в виду».
+    raw_picks = payload.get("picks") if isinstance(payload.get("picks"), dict) else {}
+    picks = {str(k).casefold(): str(v or "") for k, v in raw_picks.items()}
+
     def _lookup_one(one_word: str):
         _set_billing_user(int(user_id))
         try:
-            return _word_diff_lookup_sources(one_word, studied_lang, explain_lang)
+            return _word_diff_lookup_sources(
+                one_word, studied_lang, explain_lang, pick=picks.get(one_word.casefold(), ""),
+            )
         finally:
             _set_billing_user(None)
 
@@ -43088,8 +43142,13 @@ def _word_diff_prepare(payload: dict) -> dict:
 
     resolved: list[dict] = []
     missing: list[dict] = []
+    choices: list[dict] = []
     for word, found in zip(words, found_by_word):
-        if found:
+        if isinstance(found, dict) and found.get("needs_choice"):
+            # Слово читается по-разному — спрашиваем человека, а не выбираем сами
+            # (правило владельца 26.08.2026: не решаем за пользователя).
+            choices.append({"word": word, "options": found.get("options") or []})
+        elif found:
             resolved.append(found)
         else:
             # Сюда доходят только слова, которых нет НИГДЕ и которые не собрал живой
@@ -43098,6 +43157,9 @@ def _word_diff_prepare(payload: dict) -> dict:
                 "word": word,
                 "suggestion": _word_diff_spelling_suggestion(word, studied_lang, explain_lang),
             })
+    if choices:
+        return {"refuse": ({"ok": False, "reason": "choose_sense", "choices": choices}, 200)}
+
     if missing:
         record_word_diff_miss(
             int(user_id), [m["word"] for m in missing], "not_found",
@@ -43105,7 +43167,13 @@ def _word_diff_prepare(payload: dict) -> dict:
         )
         return {"refuse": ({"ok": False, "reason": "not_found", "missing": missing}, 200)}
 
+    chosen_marks = [f"{item['word'].casefold()}={item.get('entry_key') or ''}"
+                    for item in resolved if item.get("entry_key")]
     pair_key = build_word_diff_pair_key(words, studied_lang, explain_lang)
+    if picks:
+        # Выбор прочтения — часть вопроса: «gehen как глагол» и «das Gehen» это разные
+        # сравнения, и общей записи в кеше у них быть не должно.
+        pair_key = f"{pair_key}#" + "|".join(sorted(chosen_marks))
 
     # 2. Готовая пара — из общего кеша. Платить за это не надо никому.
     can_create = _word_diff_can_create(int(user_id))

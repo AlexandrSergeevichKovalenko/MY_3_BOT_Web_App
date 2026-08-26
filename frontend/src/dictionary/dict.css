@@ -2011,3 +2011,28 @@ html[data-scheme="light"] .dq-gt > summary,
   background: var(--dq-chip); border: 1px solid var(--dmps-border, #334155);
   font-size: 11.5px; font-weight: 700; color: var(--dmps-text-muted, #94a3b8);
 }
+
+/* Вопрос «что вы имеете в виду»: слово читается по-разному, и решает человек, а не мы. */
+.wd-choose {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 14px; border-radius: 16px;
+  background: var(--dq-accent-wash);
+  border: 1px solid var(--dq-accent);
+}
+.wd-choose-title { font-size: 16px; font-weight: 750; color: var(--dmps-text-title, #f1f5f9); }
+.wd-choose-word { display: flex; flex-direction: column; gap: 6px; }
+.wd-choose-word-name { font-size: 13px; font-weight: 700; color: var(--dq-label); }
+.wd-choose-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.wd-choose-option {
+  flex: 1 1 46%;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 12px; border-radius: 14px;
+  border: 1px solid var(--dmps-border, #334155);
+  background: var(--dq-chip);
+  text-align: left; cursor: pointer; font: inherit;
+}
+.wd-choose-option:active { transform: scale(0.985); }
+.wd-choose-label { font-size: 15px; font-weight: 750; color: var(--dmps-text-title, #f1f5f9); }
+.wd-choose-pos { font-size: 12px; font-weight: 700; color: var(--dq-label); }
+.wd-choose-hint { font-size: 12.5px; color: var(--dmps-text-muted, #94a3b8); }
+.wd-choose-foot { font-size: 12.5px; color: var(--dmps-text-secondary, #cbd5e1); }
