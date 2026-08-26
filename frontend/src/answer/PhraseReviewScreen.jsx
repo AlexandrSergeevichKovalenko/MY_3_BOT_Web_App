@@ -13,48 +13,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
  * фраза сюда и попала. Одна кнопка «Принять» брала бы вариант первого судьи молча, и по
  * ней нельзя понять, что принимаешь. Номер на кнопке — тот же, что у варианта в разборе.
  */
-const KIND_LABEL = {
-  fix: 'правка',
-  complete: 'дописано',
-};
+/* Компонент FixCheck и словарь KIND_LABEL убраны 26.08.2026 вместе с перечёркнутым
+   текстом: забракованные проверкой правки больше не рисуются зачёркнутой строкой рядом
+   с мнением судьи, а собраны в раскрывашку «мы проверили и не советуем», где у каждой
+   написано, что именно с ней не так (см. `rejected` в теле экрана). */
 
-/**
- * Приговор проверке правки судьи.
- *
- * Судья — модель, и ошибается он как модель: 19.08.2026 на «Steck das Portemonnaie in
- * die Tasche» ОБА судьи предложили «in den Taschen» — это и неверный падеж, и другое
- * число («в карманы» вместо «в карман»). Кнопки «Принять» у такой правки больше нет,
- * но с экрана она не исчезает: владелец должен видеть, что судья предложил и почему
- * это отклонено. Молчащий экран неотличим от сломанного.
- */
-function FixCheck({ check, text, ru, onOverride, busy }) {
-  if (!check) return null;
-  if (check.state === 'bad') {
-    return (
-      <>
-        <em className="frrev-fix-bad">
-          ⛔ Судья ошибся{check.what ? `: ${check.what}` : ''}.{check.why ? ` ${check.why}` : ''}
-        </em>
-        {/* Последнее слово за владельцем, а не за проверкой. Проверка — тоже модель, и
-            на трудном месте ошибается: «losgeworden» она забраковала, хотя написание
-            верное. Поэтому забракованный вариант не пропадает и не заставляет
-            перепечатывать его руками — вот кнопка, тихая и отдельная от главных.
-            Вместе с текстом уезжает и перевод судьи, чтобы русский не выдумывала
-            модель. [[feedback_no_product_decisions_two_gender_stays]] */}
-        <button type="button" className="frrev-fix-anyway" disabled={busy}
-          onClick={() => onOverride(text, ru)}>
-          Всё равно принять — проверка ошиблась
-        </button>
-      </>
-    );
-  }
-  if (check.state === 'unknown') {
-    return <em className="frrev-fix-unknown">Проверить эту правку не удалось — решай сам.</em>;
-  }
-  return null;
-}
-
-export default function PhraseReviewScreen({ api, haptic, onClose }) {
+export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) {
   const [items, setItems] = useState(null);
   const [idx, setIdx] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -68,6 +32,9 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   // Сколько в очереди пустых придирок: заявлена ошибка, а исправить нечего.
   const [noise, setNoise] = useState(0);
   const [total, setTotal] = useState(0);      // вся очередь, а не загруженное окно
+  // Сколько всего вопросов каждого вида. На отдельной двери шапка обязана показывать
+  // число СВОЕГО вида, иначе «осталось 232» на экране с 79 карточками — это враньё.
+  const [byKind, setByKind] = useState(null);
   // Сколько вердиктов вынесено ДО того, как судья стал видеть перевод. Такие слепые:
   // предлог и падеж выбираются по смыслу, а смысла судья не видел.
   const [blind, setBlind] = useState(0);
@@ -95,6 +62,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
       setTotal(Number(r.total) || (r.items || []).length);
       setNoise(Number(r.noise) || 0);
       setBlind(Number(r.blind) || 0);
+      setByKind(r.by_kind || null);
       if (loud) setNote(`🔄 Проверил: спорных фраз — ${Number(r.total) || (r.items || []).length}.`);
     } catch (e) {
       console.warn('[phrasereview] load', e);
@@ -110,10 +78,15 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   useEffect(() => { load(false); }, [load]);
 
   // Отложенные — в конец, порядок остальных не трогаем.
+  // `only` приходит с отдельной двери (startapp=ans_frvp_0): по вторникам и пятницам
+  // владельцу шлётся сообщение про карточки словаря, и кнопка в нём обязана открывать
+  // ТОЛЬКО их. Смешать два вопроса в одном списке — значит вернуть тот экран, на
+  // котором нельзя было понять, что решаешь.
   const queue = useMemo(() => {
-    const list = items || [];
+    const all = items || [];
+    const list = only ? all.filter((it) => (it.kind || 'grammar') === only) : all;
     return [...list.filter((it) => !skipped.has(it.id)), ...list.filter((it) => skipped.has(it.id))];
-  }, [items, skipped]);
+  }, [items, skipped, only]);
 
   const card = queue[Math.min(idx, Math.max(0, queue.length - 1))] || null;
 
@@ -133,6 +106,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
     setTotal(Number(r.total) || (r.items || []).length);
     setNoise(Number(r.noise) || 0);
     setBlind(Number(r.blind) || 0);
+    setByKind(r.by_kind || null);
     setNote('');
     setOwn('');
     setOwnRu('');
@@ -260,7 +234,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
     return (
       <div className="pinw">
         <div className="pinw-top">
-          <div className="pinw-title">📝 Спорные фразы</div>
+          <div className="pinw-title">{only === 'panel' ? '📗 Карточки словаря' : '📝 Спорные фразы'}</div>
           <div className="pinw-sub">Всё разобрано</div>
         </div>
         <div className="pinw-body">
@@ -282,22 +256,66 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
   }
 
   const variants = card.variants || [];
-
   const arbiter = card.arbiter || null;
+  // Два РАЗНЫХ вопроса в одной очереди. Грамматический: судьи разошлись о самой фразе,
+  // решение = выбрать текст. Панельный: три голоса разошлись о КАРТОЧКЕ — примеры и
+  // перевод, — и выбирать там нечего, там своя кнопка и на экран нужны сами примеры.
+  const isPanel = card.kind === 'panel';
+  const examples = card.examples || [];
+  const history = card.history || [];
+  const judges = card.judges || [];
 
-  // Сколько правок судей забраковала проверка. Нужно, чтобы отличить «судьи ничего не
-  // предложили» от «предложили, но это не прошло проверку» — это разные сообщения.
-  const rejectedCount = (card.judges || []).reduce((sum, j) => (
-    sum + (j.corrected_check?.state === 'bad' ? 1 : 0)
-        + (j.proposal_check?.state === 'bad' ? 1 : 0)
-  ), 0);
+  // Рекомендация третьего судьи: либо он назвал победителя, либо дал свой текст.
+  // Ни того ни другого — главного варианта нет, и выделять наугад мы не будем.
+  const bestIndex = Number.isInteger(arbiter?.winner_index)
+    ? arbiter.winner_index
+    : variants.findIndex((v) => v.kind === 'arbiter');
+
+  const whyOfJudge = (no) => String(judges[no - 1]?.why || '').trim();
+
+  // ЗАБРАКОВАННЫЕ ПРАВКИ НЕ ПЕРЕЧЁРКИВАЮТСЯ.
+  //
+  // Владелец 26.08.2026: «мне приходит перечёркнутый текст — и что это значит?» Черта
+  // лежала на немецкой строке и читалась как «фразу удаляют», хотя означала «эту правку
+  // судьи забраковала наша проверка». Ни одного слова об этом на экране не было, а
+  // рядом стояла кнопка «Всё равно принять» — экран сам себе противоречил. Теперь такие
+  // варианты собраны в одну раскрывашку, названную словами, и у каждого написано, ЧТО
+  // с ним не так.
+  const rejected = [];
+  judges.forEach((j) => {
+    ['corrected', 'proposal'].forEach((field) => {
+      const text = String(j[field] || '').trim();
+      const check = j[`${field}_check`];
+      if (text && check?.state === 'bad') {
+        rejected.push({
+          key: `${j.no}-${field}`, who: `Судья ${j.no}`, text,
+          ru: String(j[`${field}_ru`] || ''), what: check.what || '', why: check.why || '',
+        });
+      }
+    });
+  });
+  if (arbiter?.better && arbiter?.better_check?.state === 'bad') {
+    rejected.push({
+      key: 'arbiter', who: 'Третий судья', text: arbiter.better,
+      ru: arbiter.better_ru || '', what: arbiter.better_check.what || '',
+      why: arbiter.better_check.why || '',
+    });
+  }
+
+  const kindTitle = isPanel ? 'Спор о карточке, а не о фразе' : 'Судьи разошлись о грамматике';
+  const kindText = isPanel
+    ? 'Три голоса разошлись о том, годятся ли примеры и перевод. Сама фраза тут ни при чём.'
+    : (variants.length
+      ? 'Ниже — тексты, которые прошли проверку. Нажми тот, который сохраняем.'
+      : 'Готового варианта, прошедшего проверку, пока нет. Спроси судей заново или впиши свой.');
 
   return (
     <div className={`pinw frrev-w${typing ? ' typing' : ''}`}>
       <div className="pinw-top pinw-top-row">
-        <span className="pinw-title">📝 Спорные фразы</span>
+        <span className="pinw-title">{only === 'panel' ? '📗 Карточки словаря' : '📝 Спорные фразы'}</span>
         <span className="pinw-count">
-          осталось {Math.max(total || queue.length, 0)}
+          осталось {Math.max(
+            (only && byKind ? Number(byKind[only]) : total) || queue.length, 0)}
         </span>
       </div>
 
@@ -319,81 +337,142 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
         </button>
       ) : null}
 
-      <div className="frrev-scroll">
-        <div className="frrev-phrase">{card.text}</div>
-        {card.translation ? <div className="frrev-translation">{card.translation}</div> : null}
+      <div className="frv-scroll">
 
-        <div className="frrev-judges">
-          {(card.judges || []).map((j) => (
-            <div className="frrev-judge" key={j.no}>
-              <div className="frrev-judge-head">
-                Судья {j.no}
-                {j.verdict === 'error' && j.category ? ` · ${j.category}` : ''}
-                {j.verdict === 'context' ? ' · зависит от контекста' : ''}
-                {j.verdict === 'style' ? ' · вопрос вкуса' : ''}
-                {j.verdict === 'ok' ? ' · ошибки нет' : ''}
-              </div>
-              {j.why ? <div className="frrev-judge-why">{j.why}</div> : null}
-              {j.corrected ? (
-                <div className={`frrev-judge-fix${j.corrected_check?.state === 'bad' ? ' is-rejected' : ''}`}>
-                  {j.corrected_slot != null ? <b>Вариант {j.corrected_slot + 1}</b> : null}
-                  <code>{j.corrected}</code>
-                  {/* Перевод замены — единственный способ увидеть, что судья сохранил
-                      смысл, а не подменил его другим управлением глагола. */}
-                  {j.corrected_ru ? <em>— {j.corrected_ru}</em> : null}
-                  <FixCheck check={j.corrected_check} text={j.corrected}
-                    ru={j.corrected_ru} onOverride={acceptAnyway} busy={busy} />
-                </div>
-              ) : null}
-              {j.proposal ? (
-                <div className={`frrev-judge-fix${j.proposal_check?.state === 'bad' ? ' is-rejected' : ''}`}>
-                  {j.proposal_slot != null ? <b>Вариант {j.proposal_slot + 1}</b> : null}
-                  <code>{j.proposal}</code>
-                  {j.proposal_ru ? <em>— {j.proposal_ru}</em> : null}
-                  <em>дописано недостающее</em>
-                  <FixCheck check={j.proposal_check} text={j.proposal}
-                    ru={j.proposal_ru} onOverride={acceptAnyway} busy={busy} />
-                </div>
-              ) : null}
-            </div>
-          ))}
+        <div className={`frv-kind${isPanel ? ' is-panel' : ''}`}>
+          <span className="frv-kind-ic">{isPanel ? '📗' : '⚖️'}</span>
+          <span className="frv-kind-tx"><b>{kindTitle}</b>{kindText}</span>
         </div>
 
-        {arbiter ? (
-          <div className="frrev-arbiter">
-            <div className="frrev-arbiter-head">
-              ⚖️ Третейский судья
-              {arbiter.winner_index != null ? ` · прав вариант ${arbiter.winner_index + 1}` : ''}
-              {arbiter.winner_index == null && arbiter.better ? ' · оба мимо' : ''}
-            </div>
-            {arbiter.why ? <div className="frrev-arbiter-why">{arbiter.why}</div> : null}
+        {/* Эту фразу владелец уже правил. Ночь повторный вопрос больше не заводит, но
+            ДРУГУЮ ошибку в той же фразе найти может — и тогда он должен видеть, что
+            здесь уже было, а не вспоминать. */}
+        {history.length ? (
+          <div className="frv-hist">
+            <div className="frv-hist-h">Эту фразу ты уже правил</div>
+            {history.map((h, n) => (
+              <div className="frv-hist-row" key={n}>
+                <span className="frv-hist-d">
+                  {h.decided_at ? h.decided_at.slice(8, 10) + '.' + h.decided_at.slice(5, 7) : 'раньше'}
+                </span>
+                <span className="frv-hist-t">{h.decided_text || h.text}</span>
+              </div>
+            ))}
           </div>
         ) : null}
 
-        {!variants.length && card.all_ok ? (
-          <div className="frrev-allok">
+        <div className="frv-subject">
+          <div className="frv-de">{card.text}</div>
+          {card.translation
+            ? <div className="frv-ru">{card.translation}</div>
+            : <div className="frv-ru is-missing">Перевода нет</div>}
+        </div>
+
+        {isPanel && examples.length ? (
+          <>
+            <div className="frv-label">Примеры в карточке сейчас</div>
+            <div className="frv-ex">
+              {examples.map((e, n) => (
+                <div className="frv-ex-row" key={n}>
+                  <div className="frv-ex-de">{e.de}</div>
+                  <div className="frv-ex-ru">{e.ru}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : null}
+
+        {variants.length ? <div className="frv-label">Что можно сохранить</div> : null}
+
+        <div className="frv-variants">
+          {variants.map((v) => {
+            const best = v.index === bestIndex;
+            const why = v.kind === 'arbiter' ? String(arbiter?.why || '') : whyOfJudge(v.judge);
+            return (
+              <div className={`frv-v${best ? ' is-best' : ''}`} key={v.index}>
+                <div className="frv-v-top">
+                  <span className="frv-who">
+                    {v.kind === 'arbiter' ? 'Третий судья · решающий голос' : `Судья ${v.judge}`}
+                  </span>
+                  {best ? <span className="frv-chip ok">✓ рекомендует третий</span> : null}
+                </div>
+                <div className="frv-v-de">{v.text}</div>
+                {v.ru ? <div className="frv-v-ru">{v.ru}</div> : null}
+                {why ? <div className="frv-v-why"><b>Почему так:</b> {why}</div> : null}
+                <button className="frv-save" disabled={busy}
+                  onClick={() => decide('accept', { variant: v.index })}>
+                  Сохранить этот вариант
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {rejected.length ? (
+          <details className="frv-fold">
+            <summary>
+              {rejected.length === 1
+                ? 'Один вариант мы проверили и не советуем'
+                : `Эти варианты мы проверили и не советуем: ${rejected.length}`}
+            </summary>
+            <div className="frv-fold-body">
+              <div className="frv-note">
+                Это не значит, что фраза плохая. Это значит: <b>саму правку мы прогнали
+                через проверку, и она не прошла</b>. Сохранить всё равно можно — кнопкой ниже.
+              </div>
+              {rejected.map((r) => (
+                <div className="frv-v is-rejected" key={r.key}>
+                  <div className="frv-v-top">
+                    <span className="frv-who">{r.who}</span>
+                    <span className="frv-chip no">не советуем</span>
+                  </div>
+                  <div className="frv-v-de">{r.text}</div>
+                  {r.ru ? <div className="frv-v-ru">{r.ru}</div> : null}
+                  <div className="frv-v-why">
+                    <b>Что не так:</b> {r.what}{r.what && r.why ? '. ' : ''}{r.why}
+                  </div>
+                  <button className="frv-save is-quiet" disabled={busy}
+                    onClick={() => acceptAnyway(r.text, r.ru)}>
+                    Всё равно сохранить этот вариант
+                  </button>
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
+
+        {judges.some((j) => j.why) ? (
+          <details className="frv-fold">
+            <summary>Как рассуждали судьи</summary>
+            <div className="frv-fold-body">
+              {judges.map((j) => (
+                j.why ? (
+                  <div className="frv-judge" key={j.no}>
+                    <div className="frv-judge-h">
+                      {isPanel ? `Голос ${j.no}` : `Судья ${j.no}`}
+                      {j.verdict === 'error' && j.category ? ` · ${j.category}` : ''}
+                      {j.verdict === 'context' ? ' · зависит от контекста' : ''}
+                      {j.verdict === 'style' ? ' · вопрос вкуса' : ''}
+                      {j.verdict === 'ok' ? ' · ошибки нет' : ''}
+                    </div>
+                    <div className="frv-judge-w">{j.why}</div>
+                  </div>
+                ) : null
+              ))}
+              {arbiter?.why ? (
+                <div className="frv-judge">
+                  <div className="frv-judge-h">Третий судья · решение</div>
+                  <div className="frv-judge-w">{arbiter.why}</div>
+                </div>
+              ) : null}
+            </div>
+          </details>
+        ) : null}
+
+        {!variants.length && !isPanel && card.all_ok ? (
+          <div className="frv-note">
             Оба судьи говорят: ошибки нет. Править нечего — оставь фразу как есть,
             и она больше не вернётся в этот разбор.
-          </div>
-        ) : null}
-        {/* Кнопок нет по двум РАЗНЫМ причинам, и путать их нельзя: либо судьи вообще
-            ничего не предложили, либо предложили — и проверка это забраковала. Во
-            втором случае «варианта не дали» было бы враньём: варианты выше на экране,
-            перечёркнутые, с причиной. */}
-        {!variants.length && !card.all_ok ? (
-          <div className="frrev-nofix">
-            {rejectedCount > 0 ? (
-              <>
-                Оба варианта судей проверку не прошли — принимать нечего. Посмотри
-                перечёркнутые выше: там написано, что с ними не так. Дальше — оставить
-                фразу как есть, вписать свой вариант или спросить заново.
-              </>
-            ) : (
-              <>
-                Готового варианта судьи не дали. Нажми «Пересудить» — сейчас судья обязан
-                показывать исправленный текст, а эта фраза разбиралась по старым правилам.
-              </>
-            )}
           </div>
         ) : null}
 
@@ -424,92 +503,67 @@ export default function PhraseReviewScreen({ api, haptic, onClose }) {
       </div>
 
       <div className="pinw-bar">
-        {variants.map((v) => {
-          const picked = arbiter && arbiter.winner_index === v.index;
-          return (
-            <button key={v.index}
-              className={`ans-btn frrev-accept${picked ? ' frrev-accept-picked' : ''}`}
-              disabled={busy} onClick={() => decide('accept', { variant: v.index })}>
-              <span className="frrev-accept-no">
-                ✅ Принять {v.index + 1}{picked ? ' · рекомендую' : ''}
-              </span>
-              <span className="frrev-accept-text">{v.text}</span>
-              {v.ru ? <span className="frrev-accept-ru">{v.ru}</span> : null}
-              <span className="frrev-accept-kind">
-                {v.kind === 'arbiter'
-                  ? 'третейский судья · свой вариант'
-                  : `судья ${v.judge} · ${KIND_LABEL[v.kind]}`}
-              </span>
-            </button>
-          );
-        })}
+        {/* Панельная карточка: выбирать нечего, главное действие одно — отправить
+            примеры и перевод на переписывание ночному переписчику. */}
+        {isPanel ? (
+          <button className="frv-save frv-main" disabled={busy} onClick={() => decide('rewrite')}>
+            📗 Переписать примеры и перевод заново
+          </button>
+        ) : null}
 
-        {/* Решения в два столбца: место на экране нужно разбору судей, а не кнопкам.
-            Спор двух разрешает третий — владелец не обязан знать, пишется ли
-            «hochbekommen» слитно, две кнопки без объяснения это та же загадка. */}
-        <div className="frrev-row">
-          {/* «Кто прав?» доступно и когда вариант ОДИН: спор бывает не между двумя
-              правками, а между судьями и самой фразой — «Wappnen mit» оба судьи
-              потребовали переписать, и оба ошиблись. Третейский умеет сказать
-              «оба мимо, исходная фраза верна». */}
-          {variants.length > 0 && !arbiter ? (
-            <button className="ans-btn-ghost" disabled={busy} onClick={settle}>⚖️ Кто прав?</button>
+        <div className="frv-own">
+          <input
+            className="pinrev-word" value={own} disabled={busy}
+            onChange={(e) => setOwn(e.target.value)}
+            onFocus={() => setTyping(true)}
+            onBlur={() => setTyping(false)}
+            placeholder={isPanel ? 'или впиши свой перевод фразы' : 'или впиши свой вариант'}
+            enterKeyHint="next"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && own.trim()) { e.target.blur(); saveOwn(); }
+            }}
+          />
+          {own.trim() ? (
+            <input
+              className="pinrev-word frrev-own-ru" value={ownRu} disabled={busy}
+              onChange={(e) => setOwnRu(e.target.value)}
+              onFocus={() => setTyping(true)}
+              onBlur={() => setTyping(false)}
+              placeholder="перевод по-русски (можно не писать)"
+              enterKeyHint="send"
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.target.blur(); saveOwn(); } }}
+            />
           ) : null}
-          {/* «Пересудить» — ВСЕГДА. Пряталась, когда судьи хоть что-то предложили, и
-              именно тогда она нужнее всего: спросить их заново, уже со смыслом. */}
-          <button className="ans-btn-ghost" disabled={busy} onClick={rejudge}>🔁 Пересудить</button>
+          {own.trim() ? (
+            <button className="frv-save" disabled={busy} onClick={saveOwn}>
+              Сохранить свой вариант
+            </button>
+          ) : null}
+        </div>
+
+        <div className="frrev-row">
+          <button className={variants.length || isPanel ? 'ans-btn-ghost' : 'ans-btn frrev-keep'}
+            disabled={busy} onClick={() => decide('keep')}>
+            👍 Оставить как есть
+          </button>
           {!asking ? (
             <button className="ans-btn-ghost" disabled={busy}
               onClick={() => { setAsking(true); setAnswer(''); }}>❓ Спросить</button>
           ) : null}
-          {/* «Оставить как есть» есть всегда: даже когда варианты предложены, владелец
-              вправе не согласиться с судьями. Когда исправлять нечего — это единственное
-              осмысленное решение, поэтому оно становится главным. */}
-          <button className={variants.length ? 'ans-btn-ghost' : 'ans-btn frrev-keep'}
-            disabled={busy} onClick={() => decide('keep')}>
-            👍 Оставить как есть
-          </button>
+          {/* «Пересудить» только у грамматики: панельную карточку судят три голоса о
+              примерах, и пересуживать её этим судьёй бессмысленно. */}
+          {!isPanel ? (
+            <button className="ans-btn-ghost" disabled={busy} onClick={rejudge}>🔁 Пересудить</button>
+          ) : null}
+          {!isPanel && variants.length > 0 && !arbiter ? (
+            <button className="ans-btn-ghost" disabled={busy} onClick={settle}>⚖️ Кто прав?</button>
+          ) : null}
         </div>
-
-        <input
-          className="pinrev-word" value={own} disabled={busy}
-          onChange={(e) => setOwn(e.target.value)}
-          onFocus={() => setTyping(true)}
-          onBlur={() => setTyping(false)}
-          placeholder="или впиши свой вариант"
-          enterKeyHint="next"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && own.trim()) {
-              e.target.blur();
-              saveOwn();
-            }
-          }}
-        />
-        {/* Русский к своему тексту. Пустое поле — не беда: перевод тогда соберёт
-            модель, как и раньше. Но если владелец его вписал, главным встаёт он. */}
-        {own.trim() ? (
-          <input
-            className="pinrev-word frrev-own-ru" value={ownRu} disabled={busy}
-            onChange={(e) => setOwnRu(e.target.value)}
-            onFocus={() => setTyping(true)}
-            onBlur={() => setTyping(false)}
-            placeholder="перевод по-русски (можно не писать)"
-            enterKeyHint="send"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') { e.target.blur(); saveOwn(); }
-            }}
-          />
-        ) : null}
-        {own.trim() ? (
-          <button className="ans-btn" disabled={busy} onClick={saveOwn}>
-            ✏️ Записать мой вариант
-          </button>
-        ) : null}
 
         <div className="frrev-row">
           <button className="ans-btn-ghost" disabled={busy} onClick={skip}>↷ Отложить</button>
           <button className="ans-btn-ghost pinrev-skip" disabled={busy}
-            onClick={() => decide('delete')}>🗑 Удалить</button>
+            onClick={() => decide('delete')}>🗑 Удалить фразу</button>
           <button className="ans-btn-ghost frrev-closebtn" onClick={onClose}>✕ Закрыть</button>
         </div>
         <div className="frrev-hint">

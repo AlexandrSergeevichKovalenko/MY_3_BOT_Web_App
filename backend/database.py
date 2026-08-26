@@ -23937,38 +23937,22 @@ def mark_phrase_checked(unit_id: int, text: str, verdict: str) -> None:
         conn.commit()
 
 
-def phrase_review_owner_history(unit_id: int) -> list[dict]:
-    """Что владелец уже решал по этой фразе: когда и на каком тексте остановился.
+def phrase_question_is_a_repeat(text: str, proposals: list, settled: set) -> bool:
+    """Тот же самый вопрос, который владелец уже закрывал? Тогда его не задают снова.
 
-    Нужно в двух местах, и оба появились 26.08.2026 из разговора с владельцем:
-      • защита от круга ниже — не спрашивать повторно то, что он уже решил;
-      • тихая строка на экране «эту фразу ты правил 20.08», когда ночь нашла в ней
-        ДРУГУЮ ошибку и вопрос пришёл по делу.
-    """
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            _ensure_phrase_check_tables(cursor)
-            cursor.execute(
-                # `decided_at` появился только 20.08.2026 — у решений старше него даты
-                # нет. Это не повод считать, что решения не было: порядок берём по id,
-                # а дату на экране заменяет слово «раньше».
-                """SELECT status, text, decided_text, decided_at
-                     FROM bt_3_phrase_review
-                    WHERE unit_id = %s AND status <> 'open'
-                    ORDER BY id;""",
-                (int(unit_id),),
-            )
-            rows = cursor.fetchall() or []
-    out = []
-    for status, text, decided_text, decided_at in rows:
-        out.append({
-            "status": str(status or ""),
-            "text": str(text or ""),
-            # На «оставить как есть» решением был сам текст, он и записан в decided_text.
-            "decided_text": str(decided_text or text or ""),
-            "decided_at": decided_at.isoformat() if decided_at else "",
-        })
-    return out
+    Правило целиком: повтор — это когда владелец УЖЕ высказался по этому самому тексту
+    И ни один предложенный судьями вариант не является для него новым. Достаточно одного
+    нового варианта — и вопрос уходит к нему как обычно: значит, ночь нашла в фразе
+    ДРУГУЮ ошибку, а не ту, которую он решал.
+
+    Отдельной чистой функцией — чтобы правило можно было проверить тестом без базы:
+    именно это правило разрывает круг «auf der → auf die → auf der», в котором сгорело
+    три решения владельца за 13 дней (unit 5146, замер 26.08.2026)."""
+    if not settled:
+        return False
+    if _phrase_text_key(text) not in settled:
+        return False
+    return not any(_phrase_text_key(p) not in settled for p in (proposals or []) if p)
 
 
 def _texts_owner_already_settled(cursor, unit_id: int) -> set[str]:
@@ -24020,14 +24004,11 @@ def queue_phrase_for_review(*, unit_id: int, text: str, translation: str,
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
             settled = _texts_owner_already_settled(cursor, int(unit_id))
-            if settled and _phrase_text_key(text) in settled:
-                fresh = [p for p in proposals
-                         if p and _phrase_text_key(p) not in settled]
-                if not fresh:
-                    logging.info(
-                        "спорные фразы: вопрос про %r не заведён — владелец это уже решал",
-                        str(text or "")[:60])
-                    return False
+            if phrase_question_is_a_repeat(text, proposals, settled):
+                logging.info(
+                    "спорные фразы: вопрос про %r не заведён — владелец это уже решал",
+                    str(text or "")[:60])
+                return False
             cursor.execute(
                 """
                 INSERT INTO bt_3_phrase_review (unit_id, text, translation, judges)
@@ -24044,19 +24025,36 @@ def queue_phrase_for_review(*, unit_id: int, text: str, translation: str,
 
 
 def list_open_phrase_reviews(limit: int = 200) -> list[dict]:
+    """Открытые вопросы для экрана — ОДНИМ запросом вместе со всем, что экран покажет.
+
+    Карточка нужна для примеров (панельный вопрос спорит именно о них), история решений —
+    для тихой строки «эту фразу ты уже правил». Тянуть их отдельными запросами нельзя:
+    экран грузит до 200 строк разом, и это были бы 400 походов в базу на одно открытие.
+    """
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
             cursor.execute(
-                """SELECT id, unit_id, text, translation, judges, arbiter
-                   FROM bt_3_phrase_review
-                   WHERE status = 'open' ORDER BY id LIMIT %s;""",
+                """SELECT r.id, r.unit_id, r.text, r.translation, r.judges, r.arbiter,
+                          u.card,
+                          COALESCE((SELECT json_agg(json_build_object(
+                                        'status', h.status, 'text', h.text,
+                                        'decided_text', h.decided_text,
+                                        'decided_at', h.decided_at) ORDER BY h.id)
+                                      FROM bt_3_phrase_review h
+                                     WHERE h.unit_id = r.unit_id AND h.status <> 'open'),
+                                   '[]'::json) AS history
+                     FROM bt_3_phrase_review r
+                     LEFT JOIN bt_3_lex_units u ON u.id = r.unit_id
+                    WHERE r.status = 'open' ORDER BY r.id LIMIT %s;""",
                 (int(limit),),
             )
             rows = cursor.fetchall()
     return [{"id": int(r[0]), "unit_id": int(r[1]), "text": r[2],
              "translation": r[3] or "", "judges": r[4] if isinstance(r[4], list) else [],
-             "arbiter": r[5] if isinstance(r[5], dict) else None}
+             "arbiter": r[5] if isinstance(r[5], dict) else None,
+             "card": r[6] if isinstance(r[6], dict) else None,
+             "history": r[7] if isinstance(r[7], list) else []}
             for r in rows]
 
 
@@ -24129,9 +24127,50 @@ def list_open_phrase_reviews_judged_blind(limit: int = 200) -> list[int]:
                 "SELECT id, judges FROM bt_3_phrase_review WHERE status = 'open' ORDER BY id;"
             )
             rows = cursor.fetchall() or []
+    # ⛔ ПАНЕЛЬНЫЕ КАРТОЧКИ СЮДА НЕ ПОПАДАЮТ. Признак «судили вслепую» — отсутствие
+    # ключа `corrected_ru` в ответе судьи, а у панельных его нет и не было НИКОГДА:
+    # их писал не судья грамматики, а разбор панели о примерах. Замер 26.08.2026: обе
+    # величины совпадали ровно, 79 и 79, то есть кнопка «пересудить со смыслом»
+    # отправила бы к грамматическому судье 79 вопросов не про грамматику — деньги за
+    # ответ на не тот вопрос и мусор обратно на экран.
     out = [int(rid) for rid, judges in rows
-           if phrase_review_was_judged_blind(judges if isinstance(judges, list) else [])]
+           if not phrase_review_is_panel(judges if isinstance(judges, list) else [])
+           and phrase_review_was_judged_blind(judges if isinstance(judges, list) else [])]
     return out[:int(limit)]
+
+
+def count_panel_reviews_decided_since(days: int = 7) -> int:
+    """Сколько карточек словаря владелец разобрал за последние дни.
+
+    Число едет в его же сообщение: работа, которой не видно, выглядит бесполезной —
+    это уже проверено на счётчике «осталось», который не двигался (24.08.2026)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                """SELECT judges FROM bt_3_phrase_review
+                    WHERE status <> 'open' AND decided_at > NOW() - make_interval(days => %s);""",
+                (int(days),))
+            rows = cursor.fetchall() or []
+    return sum(1 for (judges,) in rows
+               if phrase_review_is_panel(judges if isinstance(judges, list) else []))
+
+
+def count_open_phrase_reviews_by_kind() -> dict:
+    """Сколько открытых вопросов каждого вида: грамматика фразы и карточка словаря.
+
+    Владельцу они приходят РАЗНЫМИ сообщениями и разбираются разными кнопками, поэтому
+    и считаются отдельно: «осталось 232» на общий экран, «карточек 79» — в своё."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute("SELECT judges FROM bt_3_phrase_review WHERE status = 'open';")
+            rows = cursor.fetchall() or []
+    out = {"panel": 0, "grammar": 0}
+    for (judges,) in rows:
+        out["panel" if phrase_review_is_panel(
+            judges if isinstance(judges, list) else []) else "grammar"] += 1
+    return out
 
 
 def count_noise_phrase_reviews() -> int:
@@ -24226,7 +24265,7 @@ def close_all_ok_phrase_reviews() -> int:
     return closed
 
 
-def phrase_review_panel_examples(unit_id: int) -> list[dict]:
+def phrase_review_card_examples(card: dict | None) -> list[dict]:
     """Примеры из карточки — то, о чём идёт спор в панельном вопросе.
 
     Владелец 26.08.2026 смотрел на панельную карточку и не понимал, что решать: на
@@ -24234,12 +24273,8 @@ def phrase_review_panel_examples(unit_id: int) -> list[dict]:
     не выводился вовсе. Теперь выводится.
 
     Стороны не переставляем вслепую: у части карточек `source` — русский (запись
-    собиралась со стороны «русский → немецкий»). Смотрим на буквы, а не на имя поля."""
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT card FROM bt_3_lex_units WHERE id = %s;", (int(unit_id),))
-            row = cursor.fetchone()
-    card = (row or [None])[0]
+    собиралась со стороны «русский → немецкий»). Смотрим на буквы, а не на имя поля.
+    Функция чистая: карточка уже принесена запросом экрана."""
     if not isinstance(card, dict):
         return []
     out = []

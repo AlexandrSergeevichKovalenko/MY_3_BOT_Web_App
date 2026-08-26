@@ -31499,8 +31499,8 @@ def _phrase_review_payload(limit: int = 200) -> dict:
     Варианты нумеруются ЗДЕСЬ, на сервере, и тот же номер уходит обратно в решении —
     иначе фронт и бэкенд могли бы разойтись в том, что значит «принять второй»."""
     from backend.database import (
-        list_open_phrase_reviews, phrase_review_is_panel, phrase_review_owner_history,
-        phrase_review_panel_examples, phrase_review_variants,
+        list_open_phrase_reviews, phrase_review_card_examples, phrase_review_is_panel,
+        phrase_review_variants,
     )
     items = []
     for it in list_open_phrase_reviews(int(limit)):
@@ -31520,11 +31520,11 @@ def _phrase_review_payload(limit: int = 200) -> dict:
             "translation": it.get("translation") or "",
             # Примеры — предмет спора панельного вопроса. У грамматического их не
             # запрашиваем: лишний поход в базу на каждую из двух сотен строк.
-            "examples": phrase_review_panel_examples(it["unit_id"]) if panel else [],
+            "examples": phrase_review_card_examples(it.get("card")) if panel else [],
             # «Эту фразу ты уже правил». Приходит только когда решения были: ночь
             # больше не задаёт повторный вопрос, но ДРУГУЮ ошибку в той же фразе
             # найти может — и тогда владелец должен видеть, что здесь уже было.
-            "history": phrase_review_owner_history(it["unit_id"]),
+            "history": it.get("history") or [],
             "all_ok": bool(judges) and all(
                 str(j.get("verdict") or "") == "ok" for j in judges),
             # Вердикт третейского: победивший вариант отдаём НОМЕРОМ той же нумерации,
@@ -31596,8 +31596,14 @@ def _phrase_review_payload(limit: int = 200) -> dict:
     except Exception:
         logging.debug("phrasereview: total count failed", exc_info=True)
         total = len(items)          # честнее показать окно, чем соврать нулём
+    from backend.database import count_open_phrase_reviews_by_kind
+    try:
+        by_kind = count_open_phrase_reviews_by_kind()
+    except Exception:
+        logging.debug("phrasereview: kind counts failed", exc_info=True)
+        by_kind = {}
     return {"items": items, "total": total, "loaded": len(items),
-            "noise": noise, "blind": blind}
+            "noise": noise, "blind": blind, "by_kind": by_kind}
 
 
 @app.route("/api/answer/phrasereview/list", methods=["POST"])
