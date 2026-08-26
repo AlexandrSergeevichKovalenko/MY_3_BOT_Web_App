@@ -1991,3 +1991,23 @@ html[data-scheme="light"] .dq-gt > summary,
 /* Немецкая фраза в примере — чуть плотнее, перевод тише: глаз идёт сверху вниз. */
 .wd-ex-de { letter-spacing: -0.005em; }
 .wd-ex-de .wd-em { color: var(--dq-accent); }
+.wd-bare { font-size: 12.5px; font-weight: 600; color: var(--dmps-text-muted, #94a3b8); }
+
+/* Значения внутри одной карточки: номер слева, содержимое справа. Так слово остаётся
+   одно, а его значения читаются подряд и не выглядят двумя одинаковыми карточками. */
+.wd-sense { display: flex; gap: 8px; }
+.wd-sense + .wd-sense { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--dmps-border, #334155); }
+.wd-sense-num {
+  flex: 0 0 auto; width: 18px; height: 18px; margin-top: 2px;
+  border-radius: 50%; background: var(--dq-chip-strong);
+  color: var(--dmps-text-secondary, #cbd5e1);
+  font-size: 11px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+}
+.wd-sense-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.wd-pos {
+  margin-left: auto;
+  padding: 2px 8px; border-radius: 999px;
+  background: var(--dq-chip); border: 1px solid var(--dmps-border, #334155);
+  font-size: 11.5px; font-weight: 700; color: var(--dmps-text-muted, #94a3b8);
+}

@@ -358,7 +358,7 @@ def test_thin_entry_is_enriched_before_the_comparison(monkeypatch):
     assert enriched_calls == ["abschieben"], "бедную статью не достроили"
     assert saved == [42], "достроенная карточка не сохранена — починка не осталась всем"
     assert [x["meaning"] for x in article["senses"]] == ["выдворять"]
-    assert article["constructions"][0]["pattern"] == "jdn. abschieben"
+    assert article["constructions"][0]["pattern"] == "jdn. abschieben + Akkusativ"
 
 
 def test_part_of_speech_and_construction_never_come_from_the_model():
@@ -373,6 +373,7 @@ def test_part_of_speech_and_construction_never_come_from_the_model():
     diff, reason = backend_server._word_diff_validate(raw, ["Anzahlung", "Vorschuss"], sources)
     assert reason == ""
     assert diff["words"][0]["pos"] == "noun", "часть речи взята у модели"
+    assert len(diff["words"]) == 1, "на слово должна быть одна карточка"
     patterns = [c["pattern"] for c in diff["constructions"]]
     assert "Anzahlung leisten" in patterns, "наша конструкция не показана"
     assert all("выдумка" not in p for p in patterns), "в разбор просочилась конструкция от модели"
@@ -543,3 +544,59 @@ def test_pair_is_shown_the_way_the_dictionary_writes_it(client, monkeypatch):
     assert resp.status_code == 200, resp.get_data(as_text=True)
     assert resp.get_json()["words"] == ["ausweisen", "abschieben"], "заголовок не по-словарному"
     assert saved.get("words") == ["ausweisen", "abschieben"], "в общую полку легло не то написание"
+
+
+def test_one_card_per_word_with_senses_inside():
+    """Два значения одного слова — одна карточка с двумя значениями, а не две карточки.
+
+    Владелец 26.08.2026 увидел «laufen» дважды подряд и сказал, что в одной будет
+    компактнее и понятнее.
+    """
+    sources = [dict(_entry("laufen"), headword="laufen", pos="verb")]
+    raw = {
+        "verdict": [{"word": "laufen", "line": "бежать или ходить пешком"}],
+        "words": [
+            {"word": "laufen", "sense_id": "s1", "meaning": "бежать", "when": "о беге"},
+            {"word": "laufen", "sense_id": "s2", "meaning": "ходить пешком", "when": "не на транспорте"},
+        ],
+    }
+    diff, reason = backend_server._word_diff_validate(raw, ["laufen"], sources)
+    assert reason == ""
+    assert len(diff["words"]) == 1, "слово показано двумя карточками"
+    assert [x["meaning"] for x in diff["words"][0]["senses"]] == ["бежать", "ходить пешком"]
+
+
+def test_same_construction_written_two_ways_is_shown_once():
+    """«laufen zu + Dativ» и «laufen + zu + Dativ» — одна конструкция, а не две строки."""
+    article = backend_server._word_diff_build_article({
+        "word": "laufen", "headword": "laufen", "pos": "verb",
+        "senses": [{"meaning": "идти"}],
+        "usage": {"constructions": [
+            {"pattern": "laufen zu + Dativ", "case": "Dativ", "preposition": "zu",
+             "example_de": "Sie läuft zu ihrer Freundin.", "example_ru": "Она идёт к подруге."},
+            {"pattern": "laufen + zu + Dativ", "case": "Dativ", "preposition": "zu",
+             "example_de": "Sie läuft zur Schule.", "example_ru": "Она идёт в школу."},
+        ]},
+    })
+    patterns = [c["pattern"] for c in article["constructions"]]
+    assert patterns == ["laufen + zu + Dativ"], f"дубль не схлопнулся: {patterns}"
+
+
+def test_bare_nominative_is_named_in_human_words_not_dropped_blindly():
+    """«laufen · Nominativ обязательна» ничего не значило. Теперь это «без дополнения»,
+    и строка живёт, только если у неё есть пример: «Der Motor läuft»."""
+    article = backend_server._word_diff_build_article({
+        "word": "laufen", "headword": "laufen", "pos": "verb",
+        "senses": [{"meaning": "работать"}],
+        "usage": {"constructions": [
+            {"pattern": "laufen", "case": "Nominativ", "preposition": None,
+             "obligatory": True, "example_de": "Der Motor läuft.", "example_ru": "Двигатель работает."},
+            {"pattern": "laufen", "case": "Nominativ", "preposition": None, "obligatory": True},
+        ]},
+    })
+    assert len(article["constructions"]) == 1, "строка без примера должна была отпасть"
+    row = article["constructions"][0]
+    assert row["bare"] is True and row["pattern"] == "laufen"
+    assert row["case"] == "" and row["obligatory"] is False, (
+        "«обязательна» осталась там, где предлога нет — это утверждение про подлежащее"
+    )
