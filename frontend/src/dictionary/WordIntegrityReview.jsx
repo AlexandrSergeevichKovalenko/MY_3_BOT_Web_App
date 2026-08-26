@@ -93,6 +93,7 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
         action,
         ...(action === 'fix' && fix.to_word ? { to_word: fix.to_word } : {}),
         ...(action === 'fix' && fix.to_pos ? { to_pos: fix.to_pos } : {}),
+        ...(action === 'fix' && fix.to_translation ? { to_translation: fix.to_translation } : {}),
       };
     });
     if (!list.length) return;
@@ -159,6 +160,13 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
                   <span className="from">{row.lemma || row.word}</span>
                   <span>→</span>
                   <span className="to">{fix.to_display || fix.to_lemma || fix.to_word}</span>
+                </div>
+              )}
+              {fix && fix.to_translation && (
+                <div className="wi-fix">
+                  <span className="from">нет перевода</span>
+                  <span>→</span>
+                  <span className="to">{fix.to_translation}</span>
                 </div>
               )}
               {fix && fix.to_pos && (
