@@ -508,3 +508,38 @@ def test_both_prompts_ask_for_the_same_thing():
         "possible_but_different_meaning",
     ):
         assert rule in plain and rule in stream, f"задания разошлись: {rule!r}"
+
+
+def test_internal_sense_numbers_never_reach_the_screen():
+    """Наши номера значений (ausweisen:s2) — служебные. Человеку они не показываются.
+
+    Владелец 26.08.2026 увидел на экране: «Сравниваем значение „выдворять"
+    (ausweisen:s2 и abschieben:s1)» — и справедливо спросил, зачем это ему.
+    """
+    clean = backend_server._word_diff_clean_text
+    assert clean("Сравниваем «выдворять» (ausweisen:s2 и abschieben:s1)") == "Сравниваем «выдворять»"
+    assert clean("значение выдворять ausweisen:s2") == "значение выдворять"
+    assert clean("Обычный текст без номеров") == "Обычный текст без номеров"
+
+
+def test_pair_is_shown_the_way_the_dictionary_writes_it(client, monkeypatch):
+    """В заголовке и в списках — словарное написание, а не то, как набрал человек."""
+    saved = {}
+    _patch_db(monkeypatch, save_word_diff_card=lambda **k: saved.update(k))
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
+    monkeypatch.setattr(
+        backend_server, "_word_diff_lookup_sources",
+        lambda word, studied, explain: dict(_entry(word), headword=word.lower()),
+    )
+
+    async def _answer(*args, **kwargs):
+        return {"verdict": [{"word": "Ausweisen", "line": "решение о выдворении"},
+                            {"word": "Abschieben", "line": "исполнение выдворения"}]}
+
+    monkeypatch.setattr(backend_server, "run_word_diff_multilang", _answer)
+
+    resp = _post(client, ["Ausweisen", "Abschieben"])
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert resp.get_json()["words"] == ["ausweisen", "abschieben"], "заголовок не по-словарному"
+    assert saved.get("words") == ["ausweisen", "abschieben"], "в общую полку легло не то написание"

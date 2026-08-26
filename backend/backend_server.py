@@ -42560,8 +42560,17 @@ def _word_diff_spelling_suggestion(word: str, studied_lang: str, explain_lang: s
     return ""
 
 
+# Наши номера значений (ausweisen:s2) — внутренняя нумерация. Человеку они ничего не
+# говорят, а модель охотно вставляет их в объяснение: владелец 26.08.2026 увидел на
+# экране «Сравниваем значение „выдворять" (ausweisen:s2 и abschieben:s1)».
+_SENSE_ID_RE = re.compile(r"\s*\(?\s*[\w\u00c4\u00d6\u00dc\u00e4\u00f6\u00fc\u00df-]+:s\d+"
+                          r"(?:\s*(?:и|,|and|und)\s*[\w\u00c4\u00d6\u00dc\u00e4\u00f6\u00fc\u00df-]+:s\d+)*\s*\)?")
+
+
 def _word_diff_clean_text(value, limit: int = 400) -> str:
-    return " ".join(str(value or "").split())[:limit]
+    text = " ".join(str(value or "").split())
+    text = _SENSE_ID_RE.sub("", text)
+    return " ".join(text.split()).strip(" ,;—-")[:limit]
 
 
 def _word_diff_validate(
@@ -42949,6 +42958,9 @@ def _word_diff_prepare(payload: dict) -> dict:
     return {"ctx": {
         "user_id": int(user_id),
         "words": words,
+        # Заголовок и списки показывают словарное написание, а не то, как набрал человек:
+        # «abschieben» — глагол, и с заглавной буквы он выглядит существительным.
+        "display_words": [str(item.get("headword") or item.get("word")) for item in resolved],
         "studied_lang": studied_lang,
         "explain_lang": explain_lang,
         "resolved": resolved,
@@ -42962,13 +42974,13 @@ def _word_diff_store(ctx: dict, diff: dict) -> None:
     from backend.database import save_word_diff_card, record_word_diff_open
     save_word_diff_card(
         pair_key=ctx["pair_key"],
-        words=ctx["words"],
+        words=ctx.get("display_words") or ctx["words"],
         studied_lang=ctx["studied_lang"],
         explain_lang=ctx["explain_lang"],
         payload=diff,
         sources=ctx["sources"],
     )
-    record_word_diff_open(ctx["user_id"], ctx["pair_key"], ctx["words"])
+    record_word_diff_open(ctx["user_id"], ctx["pair_key"], ctx.get("display_words") or ctx["words"])
 
 
 @app.route("/api/webapp/dictionary/diff", methods=["POST"])
@@ -43017,7 +43029,7 @@ def get_webapp_dictionary_word_diff():
     return jsonify({
         "ok": True,
         "pair_key": ctx["pair_key"],
-        "words": ctx["words"],
+        "words": ctx.get("display_words") or ctx["words"],
         "diff": diff,
         "sources": ctx["sources"],
         "from_cache": False,

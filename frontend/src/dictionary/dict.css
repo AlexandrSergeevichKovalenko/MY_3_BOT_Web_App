@@ -1968,3 +1968,26 @@ html[data-scheme="light"] .dq-gt > summary,
 @media (prefers-reduced-motion: reduce) {
   .wd-swipe .wd-history-row, .wd-swipe-delete { transition: none; }
 }
+
+/* ── Оформление разбора: подчеркнуть суть, но не пестрить ────────────────────
+   Правило простое: цветом и жирным выделяется ТОЛЬКО то, что несёт смысл —
+   сравниваемые слова внутри объяснения, заголовки блоков, предупреждение. */
+.wd-em { font-weight: 750; color: var(--dq-label); }
+.wd-ic { margin-right: 6px; font-size: 12px; opacity: 0.9; filter: saturate(0.85); }
+.wd-label { display: flex; align-items: center; }
+
+/* «Главное» — первый блок, ему чуть больше воздуха и веса. */
+.wd-verdict-row { font-size: 15px; line-height: 1.45; }
+.wd-verdict-row .wd-em { color: var(--dmps-text-title, #f1f5f9); }
+
+/* Ловушка — единственное место с предупреждающим цветом: там человек ошибается. */
+.wd-trap.is-warn {
+  padding: 10px 12px;
+  border-left: 3px solid var(--dq-warn);
+  border-radius: 0 12px 12px 0;
+  background: rgba(169, 116, 31, 0.08);
+}
+
+/* Немецкая фраза в примере — чуть плотнее, перевод тише: глаз идёт сверху вниз. */
+.wd-ex-de { letter-spacing: -0.005em; }
+.wd-ex-de .wd-em { color: var(--dq-accent); }
