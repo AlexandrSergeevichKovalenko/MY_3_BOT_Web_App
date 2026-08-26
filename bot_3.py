@@ -10056,6 +10056,10 @@ def _send_phrase_check_morning_report() -> None:
             errors = int(meta.get("errors") or 0)
             left = int(meta.get("left") or 0)
             open_reviews = int(meta.get("open_reviews") or 0)
+            closed_all_ok = int(meta.get("closed_all_ok") or 0)
+            circle_blocked = int(meta.get("circle_blocked") or 0)
+            reopened = int(meta.get("reopened_with_answer") or 0)
+            settled_ok = int((meta.get("settled") or {}).get("решено") or 0)
             cap = int(meta.get("cap") or 0) or 1
             nights = (left + cap - 1) // cap
             names = {"rechtschreibung": "опечатка", "kongruenz": "согласование",
@@ -10074,6 +10078,14 @@ def _send_phrase_check_morning_report() -> None:
                 + f"\nПод сомнением: <b>{doubt}</b>"
                 + (f" (всего ждут решения: {open_reviews})" if open_reviews else "")
                 + "\n"
+                # Всё, что ночь сделала ВМЕСТО владельца, обязано быть видно числом:
+                # молчащий механизм неотличим от сломанного (правило владельца 19.08.2026).
+                + (f"Закрыто без тебя (оба судьи «ошибки нет»): <b>{closed_all_ok}</b>\n"
+                   if closed_all_ok else "")
+                + (f"Не спросили повторно (ты это уже решал): <b>{circle_blocked}</b>\n"
+                   if circle_blocked else "")
+                + (f"Вернули с новым ответом: <b>{reopened}</b>\n" if reopened else "")
+                + (f"Спор разрешил третий судья: <b>{settled_ok}</b>\n" if settled_ok else "")
                 + (f"Осталось проверить: <b>{left}</b> (≈{nights} ноч"
                    f"{'ь' if nights == 1 else 'и' if nights < 5 else 'ей'} по {cap})\n"
                    if left else "✅ Все фразы проверены.\n")
