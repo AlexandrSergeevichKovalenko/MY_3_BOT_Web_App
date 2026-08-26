@@ -93,6 +93,7 @@ from backend.background_jobs import (  # noqa: E402
     run_article_review_dm_actor,
     run_reference_forms_review_dm_actor,
     run_word_review_dm_actor,
+    run_card_complaints_actor,
     run_word_audit_reminder_actor,
     run_reference_forms_warm_actor,
     run_retire_review_dm_actor,
@@ -456,6 +457,10 @@ def _dispatch_reference_forms_warm() -> None:
 
 def _dispatch_word_audit_reminder() -> None:
     run_word_audit_reminder_actor.send()
+
+
+def _dispatch_card_complaints() -> None:
+    run_card_complaints_actor.send()
 
 
 def _dispatch_word_review_dm() -> None:
@@ -922,6 +927,22 @@ def _build_scheduler():
             hour=_int_env("WORD_AUDIT_REMINDER_HOUR", 18),
             minute=_int_env("WORD_AUDIT_REMINDER_MINUTE", 30),
             timezone=_tz(os.getenv("WORD_AUDIT_REMINDER_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
+    # Жалобы людей на разбор карточек: судим КАЖДУЮ ночь, а зовём владельца, только
+    # когда накопилось 10 или жалоба залежалась неделю (решение владельца 26.08.2026).
+    # Суд каждую ночь, а не раз в неделю, нарочно: к моменту, когда владелец откроет
+    # экран, материал по всем жалобам уже готов и ждать модель ему не придётся.
+    if _enabled("CARD_COMPLAINTS_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_card_complaints,
+            "cron",
+            hour=_int_env("CARD_COMPLAINTS_HOUR", 3),
+            minute=_int_env("CARD_COMPLAINTS_MINUTE", 25),
+            timezone=_tz(os.getenv("CARD_COMPLAINTS_TZ") or "Europe/Vienna"),
             max_instances=1,
             coalesce=True,
             misfire_grace_time=3600,

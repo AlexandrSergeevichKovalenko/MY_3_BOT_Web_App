@@ -1,0 +1,276 @@
+# -*- coding: utf-8 -*-
+"""Жалоба на разбор: человек жалуется, ночь судит, решает владелец, человек узнаёт ответ.
+
+ПОВОД. Кнопка «Перевод не тот» писала строку, которую никто не читал, и закрывала слово
+навсегда: нажал → пообещали → ничего → слово ушло из очереди с плохим переводом.
+Проверено grep'ом 26.08.2026, нажатий за всё время — ноль.
+
+Схема, которую задал владелец 26.08.2026: жалоба ничего не меняет → ночью модель судит и
+ДАЁТ ПРЕДЛОЖЕНИЕ → пачка владельцу → решает он → человеку уходит ответ.
+
+⚠ ЧТО ЗДЕСЬ ГЛАВНОЕ:
+  · модель НИЧЕГО не применяет сама — разбор общий, правка меняет карточку всем;
+  · «модель не ответила» не превращается в «человек неправ»;
+  · отметка «человеку сказали» ставится только ПОСЛЕ успешной отправки.
+"""
+import os
+import unittest
+from unittest import mock
+
+os.environ.setdefault("SKIP_STARTUP_SCHEMA_BOOTSTRAP", "1")
+os.environ.setdefault("SECOND_VOICE_CHECK_DISABLED", "1")
+
+from backend import card_complaints as жалобы  # noqa: E402
+from backend import word_confirm_digest as сводка  # noqa: E402
+
+ВЕРДИКТ = {"card_is_wrong": True, "chto_ne_tak": "Перевод не соответствует немецкому слову.",
+           "pole": "translation", "predlozhenie": {"translation_ru": "депортировать"},
+           "predlozhenie_slovami": "поставить «депортировать» вместо «убраться»",
+           "uverennost": "высокая"}
+
+
+class ПоддельныйКурсор:
+    def __init__(self, ответы=None):
+        self._ответы = list(ответы or [])
+        self.запросы = []
+        self.rowcount = 1
+
+    def execute(self, sql, params=None):
+        self.запросы.append((sql, params))
+
+    def fetchall(self):
+        return self._ответы.pop(0) if self._ответы else []
+
+    def fetchone(self):
+        строки = self._ответы.pop(0) if self._ответы else []
+        return строки[0] if строки else None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+class ПоддельноеСоединение:
+    def __init__(self, курсор):
+        self._курсор = курсор
+
+    def cursor(self, *a, **k):
+        return self._курсор
+
+    def commit(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+def _с_базой(курсор):
+    return mock.patch("backend.database.get_db_connection_context",
+                      return_value=ПоддельноеСоединение(курсор))
+
+
+class НочнойСудья(unittest.TestCase):
+    def _судить(self, ответ_модели):
+        курсор = ПоддельныйКурсор([[(7, "abschieben", "перевод неверный", {"x": 1})]])
+        with _с_базой(курсор), \
+             mock.patch.object(жалобы, "ensure_card_complaint_schema"), \
+             mock.patch("backend.openai_manager.run_card_complaint_verdict",
+                        return_value=ответ_модели) as судья:
+            итог = жалобы.judge_new_complaints(10)
+        return итог, курсор, судья
+
+    def test_verdict_is_stored_and_nothing_is_applied(self):
+        итог, курсор, _ = self._судить(dict(ВЕРДИКТ))
+        self.assertEqual(итог["разобрано"], 1)
+        self.assertEqual(итог["правы"], 1)
+        запросы = " ".join(str(q[0]) for q in курсор.запросы)
+        self.assertIn("UPDATE bt_3_card_complaints", запросы)
+        # Ни одного обращения к слою слов: ночь готовит материал, а не правит карточки.
+        self.assertNotIn("bt_3_lex_units SET", запросы)
+
+    def test_silent_model_is_not_a_verdict(self):
+        """«Не ответила» — не «человек неправ». Жалоба остаётся новой."""
+        итог, курсор, _ = self._судить(None)
+        self.assertEqual(итог["не ответила"], 1)
+        self.assertEqual(итог["разобрано"], 0)
+        self.assertNotIn("UPDATE", " ".join(str(q[0]) for q in курсор.запросы))
+
+    def test_the_card_is_shown_to_the_judge(self):
+        _, _, судья = self._судить(dict(ВЕРДИКТ))
+        self.assertEqual(судья.call_args.kwargs["word"], "abschieben")
+        self.assertEqual(судья.call_args.kwargs["card"], {"x": 1})
+
+
+class ВердиктСверяетсяСамСобой(unittest.TestCase):
+    """Живой прогон 26.08.2026 на «Alle meine Kollegen»: модель ответила «карточку надо
+    менять» и тут же написала «перевод полностью соответствует, ошибки нет». Владельцу
+    это пришло бы противоречием прямо в заголовке. Жалоба, поддержанная БЕЗ единой
+    правки, — пустая жалоба."""
+
+    def _ответ(self, тело):
+        ответ = mock.Mock()
+        ответ.choices = [mock.Mock(message=mock.Mock(content=тело))]
+        ответ.usage = None
+        клиент = mock.Mock()
+        клиент.chat.completions.create.return_value = ответ
+        return клиент
+
+    def _спросить(self, тело):
+        from backend import openai_manager
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "тест"}), \
+             mock.patch("backend.synthetic_load.build_sync_openai_client",
+                        return_value=self._ответ(тело)):
+            return openai_manager.run_card_complaint_verdict(
+                word="Alle meine Kollegen", note="перевод не тот", card={"a": 1})
+
+    def test_supported_without_a_fix_is_not_supported(self):
+        итог = self._спросить(
+            '{"card_is_wrong": true, "chto_ne_tak": "ошибки нет", "predlozhenie": {}}')
+        self.assertFalse(итог["card_is_wrong"])
+
+    def test_a_real_fix_survives(self):
+        итог = self._спросить(
+            '{"card_is_wrong": true, "chto_ne_tak": "перевод неверен",'
+            ' "predlozhenie": {"translation_ru": "депортировать"}}')
+        self.assertTrue(итог["card_is_wrong"])
+
+    def test_garbage_is_not_a_verdict(self):
+        """Не разобрали ответ — значит не судили. Пустого «всё хорошо» здесь нет."""
+        self.assertIsNone(self._спросить("не json вовсе"))
+        self.assertIsNone(self._спросить('{"что-то": "другое"}'))
+
+
+class ПачкаВладельцу(unittest.TestCase):
+    def test_ten_is_enough(self):
+        курсор = ПоддельныйКурсор([[(10, False)]])
+        with _с_базой(курсор):
+            пора, сколько = жалобы.due_for_owner()
+        self.assertTrue(пора)
+        self.assertEqual(сколько, 10)
+
+    def test_a_lone_complaint_does_not_wait_forever(self):
+        """Одна жалоба, но залежалась неделю — шлём: порог ИЛИ срок, что раньше."""
+        курсор = ПоддельныйКурсор([[(1, True)]])
+        with _с_базой(курсор):
+            пора, _ = жалобы.due_for_owner()
+        self.assertTrue(пора)
+
+    def test_three_fresh_complaints_wait(self):
+        курсор = ПоддельныйКурсор([[(3, False)]])
+        with _с_базой(курсор):
+            пора, сколько = жалобы.due_for_owner()
+        self.assertFalse(пора)
+        self.assertEqual(сколько, 3)
+
+    def test_unknown_count_is_not_zero(self):
+        """База не ответила — это «не знаю», а не «жалоб нет»."""
+        with mock.patch("backend.database.get_db_connection_context",
+                        side_effect=RuntimeError("база молчит")):
+            пора, сколько = жалобы.due_for_owner()
+        self.assertFalse(пора)
+        self.assertEqual(сколько, -1)
+
+
+class РешениеВладельца(unittest.TestCase):
+    def test_unknown_decision_changes_nothing(self):
+        итог = жалобы.apply_owner_decision(1, "что-нибудь")
+        self.assertFalse(итог["ok"])
+        self.assertEqual(итог["reason"], "unknown_decision")
+
+    def test_accept_goes_through_the_same_door_as_the_night(self):
+        курсор = ПоддельныйКурсор([
+            [(4242, 99, 117649764, "abschieben", dict(ВЕРДИКТ))],   # сама жалоба
+            [({"translation_ru": "убраться"},)],                     # нынешний разбор
+        ])
+        with _с_базой(курсор), \
+             mock.patch("backend.lex_units.save_unit_card", return_value=True) as дверь:
+            итог = жалобы.apply_owner_decision(1, "принять")
+        self.assertTrue(итог["ok"])
+        self.assertEqual(итог["result"], "исправлено")
+        разбор = дверь.call_args[0][1]
+        self.assertEqual(разбор["translation_ru"], "депортировать")
+
+    def test_a_refused_write_is_not_reported_as_done(self):
+        """Второй голос забраковал — жалоба НЕ закрывается."""
+        курсор = ПоддельныйКурсор([
+            [(4242, 99, 117649764, "abschieben", dict(ВЕРДИКТ))],
+            [({"translation_ru": "убраться"},)],
+        ])
+        with _с_базой(курсор), \
+             mock.patch("backend.lex_units.save_unit_card", return_value=False):
+            итог = жалобы.apply_owner_decision(1, "принять")
+        self.assertFalse(итог["ok"])
+        self.assertEqual(итог["reason"], "not_saved")
+
+    def test_rebuild_uses_the_owners_existing_mechanism(self):
+        курсор = ПоддельныйКурсор([[(4242, 99, 117649764, "abschieben", {})]])
+        with _с_базой(курсор), \
+             mock.patch("backend.database.reset_dictionary_card_for_rebuild",
+                        return_value={"ok": True}) as сброс:
+            итог = жалобы.apply_owner_decision(1, "пересобрать")
+        сброс.assert_called_once()
+        self.assertEqual(итог["result"], "поставлено на пересборку")
+
+    def test_accepting_without_a_proposal_is_refused(self):
+        пустой = dict(ВЕРДИКТ, predlozhenie={})
+        курсор = ПоддельныйКурсор([[(4242, 99, 117649764, "abschieben", пустой)]])
+        with _с_базой(курсор):
+            итог = жалобы.apply_owner_decision(1, "принять")
+        self.assertEqual(итог["reason"], "no_proposal")
+
+
+class ОтветЧеловеку(unittest.TestCase):
+    def test_the_answer_leads_the_letter(self):
+        текст = сводка._reminder_text(0, 0, [{"id": 1, "word": "abschieben",
+                                              "result": "исправлено"}])
+        self.assertIn("Разобрали, на что ты жаловался", текст)
+        self.assertIn("abschieben", текст)
+        self.assertIn("исправлено", текст)
+
+    def test_the_answer_does_not_replace_the_check_list(self):
+        текст = сводка._reminder_text(3, 0, [{"id": 1, "word": "abschieben",
+                                              "result": "исправлено"}])
+        self.assertIn("Разобрали, на что ты жаловался", текст)
+        self.assertIn("3 слова", текст)
+
+    def test_nothing_to_say_means_the_usual_letter(self):
+        текст = сводка._reminder_text(3, 0, [])
+        self.assertNotIn("жаловался", текст)
+
+    def test_told_is_marked_only_after_the_letter_left(self):
+        """Пометить до отправки значит потерять ответ навсегда, если Telegram откажет."""
+        курсор = ПоддельныйКурсор([[(1, 117649764, "abschieben", "исправлено")]])
+        with _с_базой(курсор):
+            карта = жалобы.answers_by_user()
+        self.assertEqual(карта[117649764][0]["word"], "abschieben")
+        self.assertNotIn("told_at=NOW()", " ".join(str(q[0]) for q in курсор.запросы))
+
+
+class СтараяКнопкаБольшеНеЗаглушка(unittest.TestCase):
+    def test_retrans_now_files_a_complaint(self):
+        курсор = ПоддельныйКурсор()
+        with _с_базой(курсор), \
+             mock.patch.object(жалобы, "add_complaint",
+                               return_value={"ok": True, "id": 1}) as жалоба:
+            счёт = сводка.apply_decisions(117649764, [
+                {"word": "abschieben", "action": "retrans"}])
+        жалоба.assert_called_once()
+        self.assertEqual(счёт["на пересборку"], 1)
+
+    def test_retrans_no_longer_closes_the_word_forever(self):
+        """Слово закроет решение владельца по жалобе, а не сам факт нажатия."""
+        курсор = ПоддельныйКурсор()
+        with _с_базой(курсор), \
+             mock.patch.object(жалобы, "add_complaint", return_value={"ok": True, "id": 1}):
+            сводка.apply_decisions(117649764, [{"word": "abschieben", "action": "retrans"}])
+        запросы = " ".join(str(q[0]) for q in курсор.запросы)
+        self.assertNotIn("bt_3_word_confirm_digest", запросы)
+
+
+if __name__ == "__main__":
+    unittest.main()

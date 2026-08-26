@@ -7259,6 +7259,14 @@ function AppInner() {
   const [vocabIsAdmin, setVocabIsAdmin] = useState(false);
   const [vocabRebuildId, setVocabRebuildId] = useState(null);
   const [vocabRebuildDone, setVocabRebuildDone] = useState(null);
+  // «Пожаловаться на разбор» — то же место, но у обычного человека. Открывает окошко с
+  // необязательной строкой «что не так»: требовать её нельзя (отсечёт большую часть
+  // жалоб), а модели она резко помогает судить.
+  const [vocabComplainItem, setVocabComplainItem] = useState(null);
+  const [vocabComplainNote, setVocabComplainNote] = useState('');
+  const [vocabComplainId, setVocabComplainId] = useState(null);
+  const [vocabComplainDone, setVocabComplainDone] = useState(null);
+  const [vocabComplainError, setVocabComplainError] = useState('');
 
   // Folder management state
   const [folderContextMenu, setFolderContextMenu] = useState(null);
@@ -11470,6 +11478,41 @@ function AppInner() {
   // заново для этого НЕ годится: слово теперь отдаётся из общего словаря без обращения
   // к модели, поэтому вернулась бы та же самая карточка. Здесь разбор снимается во всех
   // хранилищах сразу, и ночью слово собирается заново — для всех, у кого оно есть.
+  // Жалоба на разбор: уходит владельцу, в базе НИЧЕГО не меняет. Человеку сразу
+  // говорим, что будет дальше, — иначе кнопка неотличима от «нажал в пустоту».
+  const sendCardComplaint = useCallback(async () => {
+    const item = vocabComplainItem;
+    if (!item || !initData || vocabComplainId) return;
+    setVocabComplainId(item.id);
+    setVocabComplainError('');
+    try {
+      const response = await fetchWithTimeout('/api/webapp/dictionary/card/complain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          entry_id: item.id,
+          word: item.word_de || item.translation_de || '',
+          note: vocabComplainNote.trim(),
+        }),
+      }, 15000);
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.ok) {
+        setVocabComplainError(data?.message
+          || tr('Не получилось отправить. Попробуй ещё раз.', 'Senden fehlgeschlagen.'));
+        return;
+      }
+      setVocabComplainDone(item.id);
+      setVocabComplainItem(null);
+      setVocabComplainNote('');
+    } catch (_err) {
+      setVocabComplainError(tr('Не получилось отправить. Попробуй ещё раз.',
+                               'Senden fehlgeschlagen.'));
+    } finally {
+      setVocabComplainId(null);
+    }
+  }, [vocabComplainItem, vocabComplainNote, vocabComplainId, initData, tr]);
+
   const rebuildVocabEntryCard = useCallback(async (item) => {
     if (!item || !initData || vocabRebuildId) return;
     setVocabRebuildId(item.id);
@@ -35761,6 +35804,20 @@ function AppInner() {
                     ? tr('✓ Соберётся ночью', '✓ Wird nachts neu gebaut')
                     : `♻️ ${tr('Пересобрать разбор', 'Analyse neu aufbauen')}`}
               </button>)}
+              {/* На том же месте у обычного человека — жалоба. Он не пересобирает сам:
+                  разбор общий, и правка меняет карточку всем, кто это слово учит.
+                  Жалоба идёт ночью на суд модели, а решает владелец (решение 26.08.2026,
+                  backend/card_complaints.py). */}
+              {!isPoolEntry && !vocabIsAdmin && (<button
+                type="button"
+                className="vocab-action-btn vocab-action-complain"
+                disabled={vocabComplainId === item.id}
+                onClick={() => setVocabComplainItem(item)}
+              >
+                {vocabComplainDone === item.id
+                  ? tr('✓ Спасибо, разберём', '✓ Danke, wir prüfen das')
+                  : `⚠️ ${tr('Пожаловаться на разбор', 'Analyse melden')}`}
+              </button>)}
             </div>
           </div>
         </div>
@@ -40550,6 +40607,50 @@ function AppInner() {
                               onClick={() => void deleteVocabEntry()}
                             >
                               {vocabDeleteLoading ? '…' : tr('Удалить', 'Löschen')}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Жалоба на разбор. Строка «что не так» НЕОБЯЗАТЕЛЬНА: требовать её
+                        нельзя — отсечёт большую часть жалоб, а модели она помогает
+                        судить. Поэтому «Отправить» работает и с пустым полем. */}
+                    {vocabComplainItem && (
+                      <div className="vocab-delete-overlay" onClick={(e) => { if (e.target.classList.contains('vocab-delete-overlay')) { setVocabComplainItem(null); setVocabComplainNote(''); } }}>
+                        <div className="vocab-delete-card">
+                          <div className="vocab-delete-icon">⚠️</div>
+                          <div className="vocab-delete-title">{tr('Что не так с разбором?', 'Was stimmt hier nicht?')}</div>
+                          <div className="vocab-delete-word">
+                            {vocabComplainItem.display_word || vocabComplainItem.word_de || vocabComplainItem.word_ru}
+                          </div>
+                          <div className="vocab-delete-sub">
+                            {tr('Напиши парой слов, если знаешь, — так мы разберёмся быстрее. Можно и не писать: просто отправь.',
+                                'Schreib kurz, was falsch ist — oder schick es einfach ab.')}
+                          </div>
+                          <textarea
+                            className="vocab-complain-note"
+                            rows={3}
+                            maxLength={500}
+                            value={vocabComplainNote}
+                            aria-label={tr('что не так', 'was falsch ist')}
+                            placeholder={tr('например: перевод не тот', 'z. B. die Übersetzung stimmt nicht')}
+                            onChange={(e) => setVocabComplainNote(e.target.value)}
+                          />
+                          {vocabComplainError ? (
+                            <div className="vocab-complain-error">{vocabComplainError}</div>
+                          ) : null}
+                          <div className="vocab-delete-actions">
+                            <button type="button" className="vocab-del-cancel" onClick={() => { setVocabComplainItem(null); setVocabComplainNote(''); }}>
+                              {tr('Отмена', 'Abbrechen')}
+                            </button>
+                            <button
+                              type="button"
+                              className="vocab-del-confirm vocab-complain-send"
+                              disabled={vocabComplainId === vocabComplainItem.id}
+                              onClick={() => void sendCardComplaint()}
+                            >
+                              {vocabComplainId === vocabComplainItem.id ? '…' : tr('Отправить', 'Senden')}
                             </button>
                           </div>
                         </div>

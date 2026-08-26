@@ -295,6 +295,7 @@ function getAnswerStartParam() {
   if (path === '/interactive') return 'interactive';
   if (path === '/battles') return 'battles';
   if (path === '/woerter') return 'woerter';
+  if (path === '/zhaloby') return 'zhaloby';
   // Public shareable tour: /tour (or /onboarding) opens the onboarding wizard as a
   // presentation — works in a plain browser for people who don't have the bot yet.
   if (path === '/tour' || path === '/onboarding') return 'onboarding';
@@ -516,6 +517,19 @@ async function bootstrapWordAudit() {
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <WordAudit />
+    </React.StrictMode>,
+  );
+}
+
+// Разбор жалоб на карточки — экран владельца (startapp=zhaloby). Отдельная страница по
+// той же причине, что и проверка слов: приходят по ссылке из сообщения и занимаются
+// только этим.
+async function bootstrapComplaintReview() {
+  tgReady();
+  const { default: ComplaintReview } = await import('./dictionary/ComplaintReview.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <ComplaintReview />
     </React.StrictMode>,
   );
 }
@@ -855,6 +869,10 @@ async function bootstrapApp() {
   }
   if (/^woerter$/i.test(answerStartParam)) {
     await bootstrapWordAudit();
+    return;
+  }
+  if (/^zhaloby$/i.test(answerStartParam)) {
+    await bootstrapComplaintReview();
     return;
   }
   if (/^lb/i.test(answerStartParam)) {

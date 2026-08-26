@@ -1,0 +1,52 @@
+/* Разбор жалоб — экран владельца. Живёт на тех же переменных, что и экран проверки
+   слов (wordAudit.css): это тот же жанр «список, где по каждой строке принимают
+   решение», и разводить два разных вида было бы враньём про их родство.
+
+   Отличие одно и оно содержательное: здесь в карточке ТРИ блока — что сейчас, на что
+   жалуются, что говорит модель. Их надо отличать глазом, не читая заголовков. */
+
+.cr-card { border-left-color: var(--fix); }
+
+.cr-tag {
+  font-size: .68rem;
+  padding: 3px 8px;
+  border-radius: 99px;
+  font-weight: 650;
+  background: var(--drop-soft);
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+/* Вердикт модели — не украшение, а то, с чего владелец начинает читать карточку. */
+.cr-tag-yes { background: var(--fix-soft); color: var(--fix); border-color: transparent; }
+.cr-tag-no { background: var(--keep-soft); color: var(--keep); border-color: transparent; }
+
+.cr-block {
+  margin: 11px 0 0;
+  padding: 9px 11px;
+  border-radius: 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.cr-block-title {
+  font-size: .68rem;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+  margin-bottom: 5px;
+}
+.cr-line { margin: 3px 0 0; font-size: .9rem; color: var(--ink-2); overflow-wrap: anywhere; }
+.cr-line:first-of-type { margin-top: 0; }
+.cr-dim { color: var(--muted); font-size: .84rem; }
+/* Предложение модели — единственное место, куда владелец смотрит перед нажатием. */
+.cr-fix { color: var(--primary); font-weight: 600; }
+
+.cr-card .wa-actions { margin-top: 12px; grid-template-columns: 1fr 1fr; }
+.cr-act-accept { grid-column: 1 / -1; }
+.cr-card[data-state="принять"] { border-left-color: var(--primary); }
+.cr-card[data-state="пересобрать"] { border-left-color: var(--fix); }
+.cr-card[data-state="отклонить"] { border-left-color: var(--keep); }
+.cr-card[data-state="своё"] { border-left-color: var(--primary); }
+.cr-card[data-state="принять"] .cr-act-accept {
+  background: var(--primary); border-color: var(--primary); color: #052330;
+}

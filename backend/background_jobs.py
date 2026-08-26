@@ -2645,6 +2645,64 @@ def run_word_audit_reminder_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_card_complaints_actor() -> None:
+    """Ночь разбирает жалобы на карточки и, если пора, зовёт владельца.
+
+    Две части, и вторая НЕ зависит от первой: даже если модель сегодня не ответила ни
+    по одной жалобе, ранее разобранные всё равно должны дойти до владельца. Иначе один
+    сбой сети прячет очередь на неделю.
+    """
+    from backend.card_complaints import (
+        BATCH, JUDGE_NIGHT_CAP, count_open, due_for_owner, ensure_card_complaint_schema,
+        judge_new_complaints,
+    )
+    ensure_card_complaint_schema()
+    logging.info("жалобы на разбор: суд — %s", judge_new_complaints(JUDGE_NIGHT_CAP))
+
+    пора, сколько = due_for_owner()
+    if сколько < 0:
+        logging.warning("жалобы на разбор: не смог понять, пора ли звать владельца")
+        return
+    if not пора:
+        logging.info("жалобы на разбор: ждём (разобранных %s, порог %s), всего открытых %s",
+                     сколько, BATCH, count_open())
+        return
+    _зови_владельца_на_жалобы(сколько)
+
+
+def _зови_владельца_на_жалобы(сколько: int) -> None:
+    """Сообщение владельцу с кнопкой на экран разбора жалоб."""
+    import os as _os
+    from backend.database import get_admin_telegram_ids
+    from backend.telegram_delivery import send_telegram_message
+
+    token = _os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+    bot_username = _os.getenv("TELEGRAM_BOT_USERNAME") or ""
+    if not token or not bot_username:
+        logging.warning("жалобы на разбор: некому слать — нет токена или имени бота")
+        return
+    слово = "жалоба" if сколько % 10 == 1 and сколько % 100 != 11 else (
+        "жалобы" if 2 <= сколько % 10 <= 4 and not 12 <= сколько % 100 <= 14 else "жалоб")
+    текст = (
+        f"⚠️ <b>{сколько} {слово} на разбор карточек ждут решения</b>\n\n"
+        "Люди нажали «Пожаловаться на разбор» в своих карточках. Ночью модель посмотрела "
+        "каждую: права ли жалоба, что именно не так и что поставить взамен.\n\n"
+        "Сама она не изменила ничего — разбор лежит на общем слове, и правка меняет "
+        "карточку всем, кто это слово учит. Решаешь ты.\n\n"
+        "На экране по каждой жалобе: что сейчас в карточке, на что жалуются, вердикт "
+        "модели и её вариант. Кнопки: принять вариант, пересобрать разбор, отклонить "
+        "или вписать свой перевод."
+    )
+    ссылка = f"https://t.me/{bot_username}?startapp=zhaloby"
+    for admin_id in get_admin_telegram_ids():
+        ok, why = send_telegram_message(
+            chat_id=int(admin_id), text=текст, token=token,
+            reply_markup={"inline_keyboard": [[{"text": "Разобрать жалобы", "url": ссылка}]]},
+            what="жалобы на разбор карточек")
+        logging.info("жалобы на разбор: владельцу %s — %s", admin_id, "ушло" if ok else why)
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_word_review_dm_actor() -> None:
     """Личка со словами, которых не подтвердил ни один справочник.
 

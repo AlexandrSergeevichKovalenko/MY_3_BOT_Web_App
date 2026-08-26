@@ -9470,6 +9470,100 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence",
     return out
 
 
+def run_card_complaint_verdict(*, word: str, note: str, card: dict) -> dict | None:
+    """Разобрать ЖАЛОБУ человека на карточку: прав ли он и что предложить взамен.
+
+    Материал для владельца, а не правка: применять вердикт автоматически нельзя —
+    разбор лежит на общем слове и правка меняет карточку всем (решение владельца
+    26.08.2026, см. backend/card_complaints.py).
+
+    ⚠ ВОЗВРАЩАЕТ None, А НЕ «ВСЁ ХОРОШО». Соседние судьи в этом файле при сбое сети
+    отвечают дефолтом «ok» — здесь так нельзя: «модель не ответила» превратилось бы в
+    «человек неправ», жалоба закрылась бы сама собой и никто бы этого не заметил.
+    None означает «не судили», и ночь возьмёт жалобу заново.
+    """
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    слово = str(word or "").strip()
+    if not api_key or not слово:
+        return None
+    from backend.synthetic_load import build_sync_openai_client
+
+    system = (
+        "You are an editor of a German-Russian learner's dictionary. A learner "
+        "complained about one entry. Decide whether the learner is RIGHT and propose a "
+        "concrete fix for the human editor who will make the final call.\n"
+        "- Answer the question about the CARD, not about the person: `card_is_wrong` is "
+        "true ONLY when the card must be changed, and false when the card is correct and "
+        "the complaint is unfounded. Never set it to true while writing that the card is "
+        "fine - the two must agree.\n"
+        "- Never invent forms, genders or meanings. If you are not sure, say so in "
+        "`chto_ne_tak` and answer \"uverennost\":\"низкая\".\n"
+        "- The Russian translation must match the GERMAN headword, not the other way round.\n"
+        "- `predlozhenie` holds ONLY the fields that must change, with their new values, "
+        "using the SAME field names as the card. Leave it empty when the card is fine.\n"
+        "- `chto_ne_tak` and `predlozhenie_slovami` are read by a human: one short "
+        "sentence each, in RUSSIAN, no jargon.\n"
+        "Answer STRICT JSON only: {\"card_is_wrong\":true|false,\"chto_ne_tak\":\"<RUSSIAN>\","
+        "\"pole\":\"translation|meanings|usage_examples|forms|grammar|other\","
+        "\"predlozhenie\":{},\"predlozhenie_slovami\":\"<RUSSIAN>\","
+        "\"uverennost\":\"высокая|средняя|низкая\"}"
+    )
+    полезное = {
+        "word": слово,
+        "complaint": str(note or "").strip() or "(the learner did not say what exactly)",
+        "card": card if isinstance(card, dict) else {},
+    }
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=60)
+        resp = client.chat.completions.create(
+            model="gpt-4.1",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(полезное, ensure_ascii=False)[:12000]},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        logging.warning("разбор жалобы: модель не ответила по слову %s", слово[:64],
+                        exc_info=True)
+        return None
+    try:
+        u = getattr(resp, "usage", None)
+        if u:
+            _LAST_LLM_USAGE.set({
+                "model": "gpt-4.1",
+                "prompt_tokens": int(getattr(u, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(u, "total_tokens", 0) or 0),
+            })
+    except Exception:
+        logging.debug("разбор жалобы: расход не записан", exc_info=True)
+    try:
+        данные = json.loads(resp.choices[0].message.content or "{}") or {}
+    except Exception:
+        logging.warning("разбор жалобы: ответ не разобран как JSON (%s)", слово[:64])
+        return None
+    if not isinstance(данные, dict) or "card_is_wrong" not in данные:
+        return None
+    предложение = данные.get("predlozhenie")
+    предложение = предложение if isinstance(предложение, dict) else {}
+    # ⚠ СВЕРКА С САМОЙ СОБОЙ. Живой прогон 26.08.2026 на «Alle meine Kollegen»: модель
+    # ответила card_is_wrong=true и тут же написала «перевод полностью соответствует,
+    # ошибки нет». Владельцу это пришло бы противоречием прямо в заголовке карточки.
+    # Жалоба, поддержанная БЕЗ единой правки, — пустая жалоба, как и придирка судьи,
+    # который «исправил» фразу в саму себя (см. database.phrase_review_is_noise).
+    неверна = bool(данные.get("card_is_wrong")) and bool(предложение)
+    return {
+        "card_is_wrong": неверна,
+        "chto_ne_tak": str(данные.get("chto_ne_tak") or "").strip(),
+        "pole": str(данные.get("pole") or "other").strip().lower(),
+        "predlozhenie": предложение,
+        "predlozhenie_slovami": str(данные.get("predlozhenie_slovami") or "").strip(),
+        "uverennost": str(данные.get("uverennost") or "средняя").strip().lower(),
+    }
+
+
 def run_phrase_fix_check(*, original: str, meaning_ru: str, fix: str) -> dict:
     """Проверить ПРАВКУ САМОГО СУДЬИ, прежде чем показать её владельцу кнопкой.
 

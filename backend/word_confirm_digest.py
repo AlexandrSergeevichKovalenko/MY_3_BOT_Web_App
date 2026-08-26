@@ -702,6 +702,9 @@ def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, 
     counts = {"оставлено": 0, "исправлено": 0, "на пересборку": 0, "удалено": 0}
     if not decisions:
         return counts
+    # «Перевод не тот» заводит жалобу, а она пишется своим соединением — после
+    # транзакции слов, чтобы не вкладывать одну в другую.
+    отложить_жалобу: list[str] = []
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
@@ -771,13 +774,18 @@ def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, 
                     elif action == "keep":
                         counts["оставлено"] += 1
                     elif action == "retrans":
-                        cur.execute(
-                            """INSERT INTO bt_3_word_confirm_digest
-                                      (user_id, word, decision, closed_at)
-                               VALUES (%s, %s, 'retrans', NOW())
-                               ON CONFLICT (user_id, word) DO UPDATE
-                                  SET decision='retrans', closed_at=NOW();""",
-                            (int(user_id), word))
+                        # ┌─ ПОЧИНЕНО 26.08.2026. ЭТА КНОПКА БЫЛА ЗАГЛУШКОЙ. ────────────┐
+                        # │ Она писала строку с decision='retrans' и closed_at=NOW() и    │
+                        # │ обещала человеку «карточку соберём этой ночью». Строку НЕ     │
+                        # │ ЧИТАЛ НИКТО (проверено grep'ом по backend/ и scripts/), а     │
+                        # │ closed_at закрывал слово навсегда: нажал → пообещали →        │
+                        # │ ничего не сделали → слово ушло из очереди с плохим переводом. │
+                        # │ Нажатий за всё время было ноль, чинить накопленное не         │
+                        # │ пришлось. Теперь нажатие заводит ЖАЛОБУ: ночью её судит       │
+                        # │ модель, пачка уходит владельцу, решает он, а человеку         │
+                        # │ приходит ответ. Решение владельца 26.08.2026.                 │
+                        # └──────────────────────────────────────────────────────────────┘
+                        отложить_жалобу.append(word)
                         counts["на пересборку"] += 1
                     elif action == "drop":
                         # ЕДИНСТВЕННОЕ МЕСТО, ГДЕ СЛОВО ЧЕЛОВЕКА УДАЛЯЕТСЯ.
@@ -810,6 +818,17 @@ def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, 
     except Exception:
         logging.warning("экран проверки: решения не применены для %s", user_id, exc_info=True)
 
+    # «Перевод не тот» → жалоба. Слово при этом НЕ закрывается: закроет его решение
+    # владельца по жалобе, а не сам факт нажатия.
+    if отложить_жалобу:
+        from backend.card_complaints import add_complaint
+        for слово in отложить_жалобу:
+            try:
+                add_complaint(user_id=int(user_id), word=слово,
+                              note="человек отметил на проверке слов: перевод не тот")
+            except Exception:
+                logging.warning("проверка слов: жалоба на %r не заведена", слово, exc_info=True)
+
     # Фразы — после слов и по одной. Сорвалась одна, остальные обязаны примениться:
     # человек нажал кнопки на всём экране, и терять его работу целиком из-за одной
     # строки нельзя. Каждый срыв виден в логе поимённо, а не растворяется в общем
@@ -837,7 +856,8 @@ def _склонение(count: int, one: str, few: str, many: str) -> str:
     return many
 
 
-def _reminder_text(count: int, phrases: int = 0) -> str:
+def _reminder_text(count: int, phrases: int = 0,
+                   answers: list[dict[str, Any]] | None = None) -> str:
     """Текст без ребусов: что, откуда, зачем, что будет, как делать, сколько.
 
     Владелец 20.08.2026: «в сообщении всё очень детально и без ребусов описать: что это
@@ -847,7 +867,23 @@ def _reminder_text(count: int, phrases: int = 0) -> str:
     ⚠ ЗАГОЛОВОК ОБЯЗАН НАЗЫВАТЬ ТО, ЧТО ЧЕЛОВЕК УВИДИТ. Письмо «5 слов ждут проверки»
     над экраном, где лежат пять ФРАЗ, — тот же обман, что и письмо над пустым экраном.
     """
+    # Ответ на жалобу — первое, что человек должен прочитать: он его ЖДЁТ. Если ответ
+    # есть, а спрашивать больше не о чем, письмо состоит только из ответа.
+    ответы = [о for о in (answers or []) if isinstance(о, dict)]
+    блок_ответов = ""
+    if ответы:
+        строки = "\n".join(
+            f"• <b>{о.get('word', '')}</b> — {о.get('result') or 'разобрали'}"
+            for о in ответы[:20])
+        блок_ответов = (
+            "🦊 <b>Разобрали, на что ты жаловался</b>\n\n" + строки +
+            "\n\n<i>Спасибо: это чинит карточку не только тебе, а всем, кто учит "
+            "это слово.</i>"
+        )
     всего = int(count) + int(phrases)
+    if not всего and блок_ответов:
+        return блок_ответов
+    предисловие = (блок_ответов + "\n\n———\n\n") if блок_ответов else ""
     if phrases and count:
         шапка = f"{всего} {_склонение(всего, 'запись', 'записи', 'записей')} в твоём словаре ждут проверки"
     elif phrases:
@@ -861,7 +897,7 @@ def _reminder_text(count: int, phrases: int = 0) -> str:
         "вариантом, если он есть. Молча за тебя мы ничего не переписываем."
     ) if phrases else ""
     return (
-        f"🦊 <b>{шапка}</b>\n\n"
+        f"{предисловие}🦊 <b>{шапка}</b>\n\n"
         "<b>Что это за слова.</b> Это слова, которые ты сам сохранил. Каждое сохранённое "
         f"слово мы сверяем с немецкими справочниками — эти не нашлись.{про_фразы}\n\n"
         "<b>Почему так вышло.</b> Причины бывают разные: слово редкое и его нет в "
@@ -937,16 +973,31 @@ def send_word_audit_reminders(*, force: bool = False) -> dict[str, Any]:
         logging.warning("напоминание о словах: не собрал получателей", exc_info=True)
         targets = []
 
+    # Ответы на жалобы едут в том же письме — нового канала не строим. Человек с одним
+    # только ответом тоже получает письмо: он нажал кнопку и ждёт, чем кончилось.
+    from backend.card_complaints import answers_by_user, mark_told
+    try:
+        ответы = answers_by_user()
+    except Exception:
+        logging.warning("напоминание о словах: ответы на жалобы не прочитаны", exc_info=True)
+        ответы = {}
+    известные = {uid for uid, _w, _p in targets}
+    targets += [(uid, 0, 0) for uid in sorted(ответы) if uid not in известные]
+
     link = f"https://t.me/{bot_username}?startapp=woerter"
     delivered = 0
     failures: list[tuple[int, str]] = []
     for user_id, слов_у_него, фраз_у_него in targets:
+        мои_ответы = ответы.get(user_id) or []
         ok, reason = send_telegram_message(
-            chat_id=user_id, text=_reminder_text(слов_у_него, фраз_у_него), token=token,
+            chat_id=user_id,
+            text=_reminder_text(слов_у_него, фраз_у_него, мои_ответы), token=token,
             reply_markup={"inline_keyboard": [[{"text": "Открыть проверку", "url": link}]]},
             what="напоминание о проверке слов")
         if ok:
             delivered += 1
+            # Отметка «сказали» — только после того, как письмо вправду ушло.
+            mark_told([о["id"] for о in мои_ответы])
         else:
             failures.append((user_id, reason))
 

@@ -41871,6 +41871,114 @@ def fill_saved_dictionary_card():
     )
 
 
+@app.route("/api/webapp/dictionary/card/complain", methods=["POST"])
+def complain_about_card():
+    """«Пожаловаться на разбор» — кнопка человека на месте админской «Пересобрать».
+
+    Решение владельца 26.08.2026: жалоба НИЧЕГО не меняет. Ночью её судит модель,
+    пачка вердиктов с готовыми предложениями уходит владельцу, и решает он.
+    Подробности и история — backend/card_complaints.py.
+    """
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"ok": False, "message": "Нужно открыть словарь заново."}), 401
+    word = str(payload.get("word") or "").strip()
+    if not word:
+        return jsonify({"ok": False, "message": "Не понял, на какое слово жалоба."}), 400
+    note = str(payload.get("note") or "").strip()
+    entry_id = payload.get("entry_id")
+
+    # Слово и его единицу берём из карточки САМОГО человека — тем же запросом, что и
+    # дозаполнение: номер из браузера подменяется, а жалоба на чужую карточку нам не
+    # нужна ни в очереди, ни в глазах владельца.
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT q.id, q.lex_unit_id FROM bt_3_webapp_dictionary_queries q
+                        WHERE q.user_id = %s AND lower(btrim(q.word_de)) = lower(btrim(%s))
+                        ORDER BY q.id LIMIT 1;""",
+                    (int(user_id), word),
+                )
+                строка = cur.fetchone()
+    except Exception:
+        logging.warning("жалоба на разбор: карточка не найдена", exc_info=True)
+        return jsonify({"ok": False, "message": "Не получилось отправить. Попробуй ещё раз."}), 200
+    if not строка:
+        return jsonify({"ok": False, "message": "Это слово не из твоего словаря."}), 200
+
+    from backend.card_complaints import add_complaint
+    итог = add_complaint(user_id=int(user_id), word=word, note=note,
+                         unit_id=int(строка[1]) if строка[1] else None,
+                         entry_id=int(строка[0]) if строка[0] else (
+                             int(entry_id) if str(entry_id or "").isdigit() else None))
+    if not итог.get("ok"):
+        return jsonify({"ok": False, "message": "Не получилось отправить. Попробуй ещё раз."}), 200
+    return jsonify({"ok": True,
+                    "message": "Спасибо. Разберём и напишем, чем кончилось."}), 200
+
+
+@app.route("/api/webapp/admin/complaints/list", methods=["POST"])
+def admin_complaints_list():
+    """Экран владельца: жалобы с вердиктом модели и её предложением."""
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"ok": False, "message": "Нужно открыть приложение заново."}), 401
+    try:
+        админ = int(user_id) in {int(a) for a in get_admin_telegram_ids()}
+    except Exception:
+        админ = False
+    if not админ:
+        return jsonify({"ok": False, "message": "Недоступно"}), 403
+    from backend.card_complaints import owner_items
+    return jsonify({"ok": True, "items": owner_items()}), 200
+
+
+@app.route("/api/webapp/admin/complaints/apply", methods=["POST"])
+def admin_complaints_apply():
+    """Решения владельца по жалобам. По одной, чтобы срыв одной не терял остальные."""
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"ok": False, "message": "Нужно открыть приложение заново."}), 401
+    try:
+        админ = int(user_id) in {int(a) for a in get_admin_telegram_ids()}
+    except Exception:
+        админ = False
+    if not админ:
+        return jsonify({"ok": False, "message": "Недоступно"}), 403
+    решения = payload.get("decisions")
+    if not isinstance(решения, list):
+        return jsonify({"ok": False, "message": "Пустой список решений."}), 200
+
+    from backend.card_complaints import apply_owner_decision
+    счёт = {"исправлено": 0, "на пересборку": 0, "отклонено": 0, "не вышло": 0}
+    for решение in решения:
+        if not isinstance(решение, dict):
+            continue
+        try:
+            итог = apply_owner_decision(int(решение.get("id") or 0),
+                                        str(решение.get("action") or ""),
+                                        own_text=str(решение.get("text") or ""))
+        except Exception:
+            logging.warning("жалобы: решение по %s не применилось", решение.get("id"),
+                            exc_info=True)
+            счёт["не вышло"] += 1
+            continue
+        если_что = str(итог.get("result") or "")
+        if not итог.get("ok"):
+            счёт["не вышло"] += 1
+        elif если_что == "исправлено":
+            счёт["исправлено"] += 1
+        elif если_что == "поставлено на пересборку":
+            счёт["на пересборку"] += 1
+        else:
+            счёт["отклонено"] += 1
+    return jsonify({"ok": True, "counts": счёт}), 200
+
+
 @app.route("/api/webapp/dictionary/status", methods=["POST"])
 def get_webapp_dictionary_lookup_status():
     started_perf = time.perf_counter()

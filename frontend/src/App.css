@@ -8764,6 +8764,30 @@ body:has(.webapp-page.is-theme-light),
   border: 1px solid rgba(148,163,184,0.26);
 }
 .vocab-action-rebuild:disabled { opacity: 0.6; cursor: default; }
+/* «Пожаловаться на разбор» стоит на месте пересборки и ведёт себя так же скромно:
+   это не действие со словом, а сообщение нам. Янтарь, а не красный — человек не
+   ломает ничего, он показывает на ошибку. */
+.vocab-action-complain {
+  background: rgba(224,168,62,0.13);
+  color: #E8C88A;
+  border: 1px solid rgba(224,168,62,0.3);
+}
+.vocab-action-complain:disabled { opacity: 0.6; cursor: default; }
+.vocab-complain-note {
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: rgba(15,23,42,0.55);
+  border: 1px solid rgba(148,163,184,0.3);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+.vocab-complain-note:focus { outline: 2px solid rgba(224,168,62,0.5); outline-offset: 1px; }
+.vocab-complain-error { margin-top: 8px; font-size: 13px; color: #F0A868; }
+.vocab-complain-send { background: #E0A83E; color: #2a1e05; }
 
 /* Список значений в окне подтверждения: сразу видно, что останется здесь,
    а что станет новыми карточками. */
