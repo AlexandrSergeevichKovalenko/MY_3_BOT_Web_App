@@ -55,6 +55,7 @@ const DROP = 'drop';
 export default function WordAudit() {
   const [items, setItems] = useState(null);
   const [state, setState] = useState({});       // слово → решение
+  const [variant, setVariant] = useState({});   // фраза → какой вариант правки принят
   const [typed, setTyped] = useState({});       // слово → написание, вписанное руками
   const [typedTrans, setTypedTrans] = useState({}); // слово → перевод, вписанный руками
   const [editing, setEditing] = useState({});   // слово → открыто ли поле правки
@@ -100,6 +101,12 @@ export default function WordAudit() {
       // Свой перевод уходит только вместе со своим вариантом — в остальных
       // решениях перевод человек не трогал, и переписывать его нечем.
       translation: state[it.word] === MANUAL ? (typedTrans[it.word] || '').trim() : '',
+      // Фраза правится тем же механизмом, что и на экране владельца, и ему нужен
+      // номер строки проверки и номер принятого варианта. Сервер всё равно сверяет
+      // их заново по базе — присланному номеру он не верит.
+      kind: it.kind || 'word',
+      review_id: it.review_id || 0,
+      variant: variant[it.word] || 0,
     }));
     try {
       const data = await api('/api/webapp/word-audit/apply', { decisions });
@@ -148,12 +155,22 @@ export default function WordAudit() {
       <div className="wa">
         <div className="wa-empty">
           <div className="wa-final-emoji">✅</div>
-          <h2>Все слова в порядке</h2>
-          <p>Мы сверили твой словарь со справочниками — проверять нечего.</p>
+          <h2>В словаре всё в порядке</h2>
+          <p>Мы сверили твои слова со справочниками, а фразы прочитали ночью — проверять нечего.</p>
         </div>
       </div>
     );
   }
+
+  // Фразы и слова живут на одном экране, но спрашивают о разном, поэтому и
+  // заголовок честно называет то, что внизу лежит.
+  const phrases = items.filter((it) => it.kind === 'phrase').length;
+  const words = items.length - phrases;
+  const heading = phrases && words
+    ? `${items.length} ${plural(items.length, 'запись', 'записи', 'записей')} ждут твоего решения`
+    : phrases
+      ? `${phrases} ${plural(phrases, 'фраза', 'фразы', 'фраз')} ${plural(phrases, 'ждёт', 'ждут', 'ждут')} твоего решения`
+      : `${words} ${plural(words, 'слово', 'слова', 'слов')} ${plural(words, 'ждёт', 'ждут', 'ждут')} твоего решения`;
 
   // Удаляется РОВНО то, у чего нажата кнопка «Удалить». Всё остальное — включая
   // слова, которых человек вовсе не касался, — остаётся жить (см. рамку в шапке).
@@ -164,20 +181,25 @@ export default function WordAudit() {
   return (
     <div className="wa">
       <header className="wa-head">
-        <div className="wa-kicker">🦊 Проверка слов</div>
-        <h1>{items.length} {plural(items.length, 'слово', 'слова', 'слов')} ждут твоего решения</h1>
+        <div className="wa-kicker">🦊 {phrases ? 'Проверка слов и фраз' : 'Проверка слов'}</div>
+        <h1>{heading}</h1>
         <p className="wa-lede">
-          Ты их сохранял, а мы не смогли подтвердить, что они есть в немецком языке.
+          Ты их сохранял, а мы не смогли подтвердить, что они написаны правильно.
           Посмотри и реши, что с ними делать. Ничего не удалится само — только то,
           что ты сам отметишь кнопкой «Удалить».
         </p>
       </header>
 
       <details className="wa-why">
-        <summary>Откуда взялись эти слова и что будет дальше</summary>
+        <summary>Откуда это взялось и что будет дальше</summary>
         <p><b>Откуда.</b> Мы сверяем каждое сохранённое слово с немецкими справочниками.
           Эти не нашлись: возможно, слово редкое, возможно — из другого языка, а возможно,
           при сохранении потерялась буква.</p>
+        {phrases ? (
+          <p><b>Про фразы.</b> Сохранённые фразы ночью читают два проверяющих. Если они
+            нашли ошибку или разошлись во мнении, фраза приходит сюда — с готовым
+            вариантом, если он есть. Мы ничего не исправляем за тебя молча.</p>
+        ) : null}
         <p><b>Зачем проверять.</b> Если слово с ошибкой останется, ты будешь учить его
           в таком виде — и запомнишь неправильно.</p>
         <p><b>Что делать.</b> Если мы догадались, как слово пишется правильно, вверху будет
@@ -201,8 +223,11 @@ export default function WordAudit() {
 
       {items.map((it) => {
         const chosen = state[it.word] || '';
+        const isPhrase = it.kind === 'phrase';
+        const variants = Array.isArray(it.variants) ? it.variants : [];
         return (
-          <div className="wa-card" data-state={chosen} key={it.word}>
+          <div className={isPhrase ? 'wa-card wa-card-phrase' : 'wa-card'}
+               data-state={chosen} key={it.word}>
             <div className="wa-word-row">
               <span className="wa-word">{state[it.word] === MANUAL ? typed[it.word] : it.word}</span>
             </div>
@@ -212,7 +237,25 @@ export default function WordAudit() {
               <div className="wa-safe">Слово настоящее — трогать ничего не нужно.</div>
             ) : null}
 
-            {it.suggestion ? (
+            {/* У фразы готовых вариантов бывает несколько, а бывает ни одного:
+                проверяющие не всегда сходятся, и придумывать за них мы не станем.
+                Каждый вариант — своя кнопка, чтобы по нажатию было видно, что
+                именно принимаешь: ровно то же правило, что на экране владельца. */}
+            {isPhrase ? variants.map((v, idx) => (
+              <button type="button" className="wa-suggest wa-suggest-phrase" key={v.text}
+                      onClick={() => {
+                        setVariant((p) => ({ ...p, [it.word]: idx }));
+                        pick(it.word, FIXED);
+                      }}>
+                <span className="wa-suggest-de">
+                  {chosen === FIXED && (variant[it.word] || 0) === idx ? '✓ ' : ''}
+                  Да, правильно так: {v.text}
+                </span>
+                {v.ru ? <span className="wa-suggest-ru">{v.ru}</span> : null}
+              </button>
+            )) : null}
+
+            {!isPhrase && it.suggestion ? (
               <button type="button" className="wa-suggest"
                       onClick={() => pick(it.word, FIXED)}>
                 {chosen === FIXED ? '✓ ' : ''}Да, это «{it.suggestion}»
@@ -222,8 +265,13 @@ export default function WordAudit() {
             <div className="wa-actions">
               <button type="button" className="wa-act wa-act-keep"
                       onClick={() => pick(it.word, KEEP)}>Оставить как есть</button>
+              {/* «Перевод не тот» у фразы нет намеренно: за словом стоит ночная
+                  пересборка карточки, а за фразой — нет, и кнопка, которая ничего
+                  не делает, хуже отсутствующей. */}
+              {isPhrase ? null : (
               <button type="button" className="wa-act wa-act-retrans"
                       onClick={() => pick(it.word, RETRANS)}>Перевод не тот</button>
+              )}
               {/* Отдельного «точно удалить?» нет намеренно: кнопка работает как все
                   остальные — нажал, отметилось, нажал ещё раз, снялось. Ничего не
                   происходит до «Готово», а внизу экрана всё это время видно число
@@ -236,7 +284,7 @@ export default function WordAudit() {
 
             {editing[it.word] ? (
               <div className="wa-edit">
-                <label>Слово по-немецки
+                <label>{isPhrase ? 'Фраза по-немецки' : 'Слово по-немецки'}
                   <input value={typed[it.word] ?? (it.suggestion || it.word)}
                          aria-label="правильное написание"
                          onChange={(e) => setTyped((p) => ({ ...p, [it.word]: e.target.value }))} />
@@ -252,7 +300,7 @@ export default function WordAudit() {
             ) : (
               <button type="button" className="wa-manual"
                       onClick={() => setEditing((p) => ({ ...p, [it.word]: true }))}>
-                свой вариант — вписать слово и перевод
+                свой вариант — вписать {isPhrase ? 'фразу' : 'слово'} и перевод
               </button>
             )}
           </div>

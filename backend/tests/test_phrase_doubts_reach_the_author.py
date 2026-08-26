@@ -69,7 +69,13 @@ def _спросить(ответы, user_id=777, limit=12):
     return строки, курсор
 
 
-ФРАЗА = [("Ich überhaupt kein Talent", "у меня совсем нет таланта")]
+ПРОВЕРКА_ПРОШЛА = {"checked": True, "grammar_ok": True, "meaning_kept": True}
+# Строка проверки фразы как её отдаёт база: (id, текст, перевод, судьи, арбитр, слово).
+ФРАЗА = [(77, "Ich überhaupt kein Talent", "у меня совсем нет таланта",
+          [{"verdict": "error", "category": "wortstellung",
+            "corrected": "Ich habe überhaupt kein Talent",
+            "corrected_ru": "у меня совсем нет таланта",
+            "corrected_check": dict(ПРОВЕРКА_ПРОШЛА)}], None, 4242)]
 СЛОВО = [("Regenschirm", "зонт")]
 
 
@@ -119,18 +125,27 @@ class ФразыДоходятДоАвтора(unittest.TestCase):
         self.assertEqual(len(курсор.запросы), 1, "лишний запрос в базу на каждой рассылке")
 
     def test_same_text_is_not_asked_twice(self):
-        строки, _ = _спросить([[("Alles Banane", "всё нормально")],
-                               [("Alles Banane", "всё нормально")]])
+        та_же = [(77, "Alles Banane", "всё нормально",
+                  [{"verdict": "ok", "category": ""}], None, 5)]
+        строки, _ = _спросить([[("Alles Banane", "всё нормально")], та_же])
         self.assertEqual(len(строки), 1)
 
     def test_reminder_recipients_are_authors_too(self):
         """Тот же закон в списке получателей: иначе пачка обещает чужие фразы."""
-        источник = сводка.send_word_audit_reminders.__code__.co_consts
+        источник = сводка._phrase_counts_by_author.__code__.co_consts
         тексты = [c for c in источник if isinstance(c, str) and "bt_3_phrase_review" in c]
-        self.assertTrue(тексты, "запрос получателей больше не спрашивает про фразы")
+        self.assertTrue(тексты, "счёт получателей больше не спрашивает про фразы")
         плоский = re.sub(r"\s+", " ", тексты[0])
         self.assertIn("DISTINCT ON (lex_unit_id)", плоский)
         self.assertIn("a.user_id", плоский)
+
+    def test_the_letter_promises_exactly_what_the_screen_shows(self):
+        """Письмо и экран считают ОДНИМ правилом — иначе обещание снова разойдётся с делом."""
+        курсор = ПоддельныйКурсор([[(7, "Ich überhaupt kein Talent",
+                                     [{"verdict": "error", "category": "wortstellung"}])]])
+        # Пустая придирка («ошибка есть, а исправить нечего») на экран не попадает —
+        # значит и в число письма входить не должна.
+        self.assertEqual(сводка._phrase_counts_by_author(курсор), {})
 
 
 if __name__ == "__main__":

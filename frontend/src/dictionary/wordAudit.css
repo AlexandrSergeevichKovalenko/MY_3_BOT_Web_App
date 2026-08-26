@@ -169,6 +169,23 @@
   color:#fde68a; font-size:.9rem; text-align:center;
 }
 
+/* ── карточка ФРАЗЫ ─────────────────────────────────────────────────────────
+   Фраза длиннее слова: заголовок в одну строку не помещается и не обязан —
+   поэтому меньший кегль, перенос и полоса другого цвета, чтобы в общем списке
+   было видно, где спрашивают про слово, а где про целое предложение. */
+.wa-card-phrase{border-left-color:var(--fix)}
+.wa-card-phrase .wa-word{
+  font-size:1.02rem; line-height:1.34; display:block; overflow-wrap:anywhere;
+}
+/* Вариант правки — это ДВЕ строки: немецкий и его перевод. Вторая строка тише
+   первой: человек выбирает по немецкому, а русский подтверждает, что смысл тот. */
+.wa-suggest-phrase{
+  flex-direction:column; align-items:flex-start; gap:3px;
+  text-align:left; line-height:1.35;
+}
+.wa-suggest-de{overflow-wrap:anywhere}
+.wa-suggest-ru{font-weight:400; font-size:.82rem; color:var(--ink-2);}
+
 /* Слово настоящее — молчание его не удаляет. Спокойная строка, а не тревожная:
    человеку тут ничего делать не нужно, и экран обязан сказать это прямо. */
 .wa-safe{

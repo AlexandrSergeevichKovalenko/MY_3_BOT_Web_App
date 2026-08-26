@@ -134,44 +134,14 @@ def words_for_user(user_id: int, limit: int = BATCH) -> list[tuple[str, str]]:
                 if len(найдено) >= int(limit):
                     return найдено
 
-                # Фразы этого человека, отложенные ночной проверкой. Берём только те,
-                # где ОН автор карточки: чужую фразу человеку показывать незачем.
-                # ⚠ СПРАШИВАЕМ АВТОРА, А НЕ ВСЕХ ПОДПИСЧИКОВ. Слово в слое одно на всех,
-                # и связь «карточка → слово» есть у каждого, кто это слово учит. Первая
-                # версия запроса спрашивала любого подписчика — проверка 26.08.2026 на
-                # живой базе показала, как два разных человека получили ОДНИ И ТЕ ЖЕ три
-                # фразы, которых сами не сохраняли. Человека нельзя просить решать судьбу
-                # чужого текста: он не знает, откуда он взят и что имелось в виду.
-                #
-                # Автор — тот, чья карточка на это слово появилась ПЕРВОЙ.
-                # ⚠ АВТОР СЧИТАЕТСЯ ОДНИМ ПРОХОДОМ (DISTINCT ON), а не подзапросом на
-                # каждую строку: та версия не уложилась и в десять минут на живой базе,
-                # а этот запрос идёт в еженедельной рассылке по всем людям.
-                cur.execute(
-                    """
-                    WITH авторы AS (
-                      SELECT DISTINCT ON (lex_unit_id) lex_unit_id, user_id
-                        FROM bt_3_webapp_dictionary_queries
-                       WHERE lex_unit_id IS NOT NULL
-                       ORDER BY lex_unit_id, created_at, id
-                    )
-                    SELECT DISTINCT btrim(r.text), COALESCE(r.translation, '')
-                      FROM bt_3_phrase_review r
-                      JOIN авторы a ON a.lex_unit_id = r.unit_id
-                     WHERE r.status = 'open' AND a.user_id = %s
-                       AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
-                                        WHERE d.user_id = a.user_id
-                                          AND d.word = btrim(r.text)
-                                          AND d.closed_at IS NOT NULL)
-                     ORDER BY 1
-                     LIMIT %s;
-                    """,
-                    (int(user_id), int(limit) - len(найдено)),
-                )
+                # Фразы этого человека, отложенные ночной проверкой. Список берётся
+                # ОДНОЙ функцией с экраном проверки (`_phrase_items`): письмо, которое
+                # обещает не то, что покажет экран, — это то же обещание без
+                # содержания, из-за которого и затевалась правка 26.08.2026.
                 уже = {слово for слово, _ in найдено}
-                for текст, перевод in (cur.fetchall() or []):
-                    if str(текст) not in уже:
-                        найдено.append((str(текст), str(перевод)))
+                for карточка in _phrase_items(cur, int(user_id), int(limit) - len(найдено)):
+                    if карточка["word"] not in уже:
+                        найдено.append((карточка["word"], карточка["translation"]))
                 return найдено
     except Exception:
         logging.warning("сводка слов: не прочитал список для %s", user_id, exc_info=True)
@@ -233,6 +203,101 @@ def preview(user_id: int, words: list[tuple[str, str]] | None = None) -> str:
     return "\n".join(out)
 
 
+# ── Фразы на том же экране ───────────────────────────────────────────────────
+# Причина по-русски берётся ИЗ КАТЕГОРИИ, которую назвал проверяющий, и ниоткуда
+# больше. Своих грамматических выводов здесь нет: мы не решаем, что не так с фразой,
+# мы переводим на человеческий язык то, что уже сказал источник.
+#
+# Список составлен по живым данным 26.08.2026 — 232 открытые фразы:
+#   wortstellung 85 · kasus 32 · praeposition 30 · rechtschreibung 25 · kongruenz 12
+#   stil 2 · sprachmischung 1 · без категории 9
+# («панель из трёх голосов» — наша служебная пометка, а не разряд ошибки, и в
+# человеческую причину не превращается.)
+ФРАЗА_ПРИЧИНЫ = {
+    "wortstellung": "Похоже, слова стоят не в том порядке.",
+    "kasus": "Похоже, слово стоит не в том падеже.",
+    "praeposition": "Похоже, здесь нужен другой предлог.",
+    "rechtschreibung": "Похоже, в написании ошибка.",
+    "kongruenz": "Похоже, окончание не согласовано с другим словом.",
+    "stil": "Так по-немецки почти не говорят.",
+    "sprachmischung": "В немецкую фразу попало слово из другого языка.",
+}
+
+
+def _phrase_reason(judges: Any) -> str:
+    """Причина человеческим языком. Не знаем разряд — говорим это прямо."""
+    названо: list[str] = []
+    for судья in (judges if isinstance(judges, list) else []):
+        if not isinstance(судья, dict):
+            continue
+        for кусок in str(судья.get("category") or "").split("|"):
+            строка = ФРАЗА_ПРИЧИНЫ.get(кусок.strip().lower())
+            if строка and строка not in названо:
+                названо.append(строка)
+    if not названо:
+        # Ни один проверяющий не назвал разряд. Выдумывать причину нельзя, молчать
+        # тоже: человек должен понимать, за что его спрашивают.
+        return "Проверяющие разошлись во мнении об этой фразе — реши ты."
+    return " ".join(названо[:2])
+
+
+def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
+    """Отложенные ночью фразы ЭТОГО человека — карточками того же экрана.
+
+    ⚠ СПРАШИВАЕМ АВТОРА, А НЕ ВСЕХ ПОДПИСЧИКОВ — то же правило и та же история
+    дефекта, что в `words_for_user`. Автор — тот, чья карточка появилась первой.
+    """
+    from backend.database import phrase_review_is_noise, phrase_review_variants
+
+    cur.execute(
+        """
+        WITH авторы AS (
+          SELECT DISTINCT ON (lex_unit_id) lex_unit_id, user_id
+            FROM bt_3_webapp_dictionary_queries
+           WHERE lex_unit_id IS NOT NULL
+           ORDER BY lex_unit_id, created_at, id
+        )
+        SELECT r.id, btrim(r.text), COALESCE(r.translation, ''), r.judges, r.arbiter,
+               r.unit_id
+          FROM bt_3_phrase_review r
+          JOIN авторы a ON a.lex_unit_id = r.unit_id
+         WHERE r.status = 'open' AND a.user_id = %s
+           AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
+                            WHERE d.user_id = a.user_id AND d.word = btrim(r.text)
+                              AND d.closed_at IS NOT NULL)
+         ORDER BY r.id
+         LIMIT %s;
+        """,
+        (int(user_id), int(limit)),
+    )
+    items: list[dict[str, Any]] = []
+    for review_id, текст, перевод, судьи, арбитр, unit_id in (cur.fetchall() or []):
+        судьи = судьи if isinstance(судьи, list) else []
+        # Шум — это записи, где проверяющий «исправил» фразу в саму себя. На экране
+        # владельца они уже отсеиваются; человеку тем более показывать нечего.
+        if phrase_review_is_noise(судьи, str(текст)):
+            continue
+        варианты = phrase_review_variants(
+            судьи, str(текст), арбитр if isinstance(арбитр, dict) else None)
+        items.append({
+            "word": str(текст),
+            "translation": str(перевод),
+            "status": "фраза",
+            "why": _phrase_reason(судьи),
+            # Готовых вариантов может не быть вовсе: на живых данных 26.08.2026 таких
+            # 88 из 232. Тогда карточка честно предлагает только оставить, вписать
+            # своё или удалить — придумывать за проверяющих мы не будем.
+            "variants": [{"text": str(v.get("text") or ""), "ru": str(v.get("ru") or "")}
+                         for v in варианты[:2]],
+            "suggestion": "",
+            "safe": False,
+            "kind": "phrase",
+            "review_id": int(review_id),
+            "unit_id": int(unit_id),
+        })
+    return items
+
+
 # ── Что показывает экран проверки ────────────────────────────────────────────
 def audit_items(user_id: int, limit: int = 200) -> list[dict[str, Any]]:
     """Слова этого человека, которые дверь не подтвердила, с причиной и подсказкой.
@@ -263,16 +328,24 @@ def audit_items(user_id: int, limit: int = 200) -> list[dict[str, Any]]:
                     (int(user_id), int(limit)),
                 )
                 rows = cur.fetchall() or []
+                # ⚠ ФРАЗЫ ЖИВУТ НА ТОМ ЖЕ ЭКРАНЕ. До 26.08.2026 письмо считало и слова,
+                # и фразы, а экран показывал ТОЛЬКО слова — списки берутся из разных
+                # таблиц. Замер того же дня: у трёх авторов 195 отложенных фраз и НОЛЬ
+                # слов, то есть письмо «слова ждут проверки» вело на экран «проверять
+                # нечего». Обещание без содержания хуже молчания, поэтому источник
+                # списка и источник письма обязаны совпадать.
+                фразы = _phrase_items(cur, int(user_id), max(0, int(limit) - len(rows)))
     except Exception:
         logging.warning("экран проверки: не прочитал список для %s", user_id, exc_info=True)
         return []
-    return [{"word": str(a), "translation": str(b), "status": str(c),
+    слова = [{"word": str(a), "translation": str(b), "status": str(c),
              "why": _human_reason(str(c), str(d)), "suggestion": str(e),
              # Слово, существование которого подтвердила модель, молчанием НЕ удаляется:
              # решение владельца 21.08.2026. Справочники неполны, и предлагать человеку
              # стереть настоящее слово только потому, что страницы нет, — вред.
-             "safe": _model_confirmed(str(d))}
+             "safe": _model_confirmed(str(d)), "kind": "word"}
             for a, b, c, d, e in rows]
+    return слова + фразы
 
 
 def _model_confirmed(source: str) -> bool:
@@ -446,6 +519,153 @@ def _rewrite_card_to_new_word(cur, *, user_id: int, old_bare: str, new_word_de: 
     return report
 
 
+def _phrase_counts_by_author(cur) -> dict[int, int]:
+    """Сколько фраз ждёт КАЖДОГО автора — ровно столько же, сколько покажет экран.
+
+    ⚠ ОДИН ЗАПРОС НА ВСЕХ, А НЕ ПО ЗАПРОСУ НА ЧЕЛОВЕКА. Поиск автора — это проход по
+    всем карточкам словаря; сделать его для тысячи получателей по разу значит тысячу
+    проходов дважды в неделю. Здесь он делается однажды, а разбор по людям — в памяти.
+
+    Пустые придирки («ошибка есть, а исправить нечего») отсеиваются тем же правилом,
+    что и на экране. Иначе письмо обещает 186 фраз, а человек находит 98.
+    """
+    from backend.database import phrase_review_is_noise
+
+    cur.execute(
+        """
+        WITH авторы AS (
+          SELECT DISTINCT ON (lex_unit_id) lex_unit_id, user_id
+            FROM bt_3_webapp_dictionary_queries
+           WHERE lex_unit_id IS NOT NULL
+           ORDER BY lex_unit_id, created_at, id
+        )
+        SELECT a.user_id, btrim(r.text), r.judges
+          FROM bt_3_phrase_review r
+          JOIN авторы a ON a.lex_unit_id = r.unit_id
+         WHERE r.status = 'open'
+           AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
+                            WHERE d.user_id = a.user_id AND d.word = btrim(r.text)
+                              AND d.closed_at IS NOT NULL);
+        """
+    )
+    счёт: dict[int, int] = {}
+    for user_id, текст, судьи in (cur.fetchall() or []):
+        if phrase_review_is_noise(судьи if isinstance(судьи, list) else [], str(текст)):
+            continue
+        счёт[int(user_id)] = счёт.get(int(user_id), 0) + 1
+    return счёт
+
+
+def _phrase_owner(review_id: int) -> tuple[int, str, int]:
+    """(номер слова, текст, автор) для открытой фразы. Автор — чья карточка первая."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT r.unit_id, btrim(r.text),
+                          (SELECT q.user_id FROM bt_3_webapp_dictionary_queries q
+                            WHERE q.lex_unit_id = r.unit_id
+                            ORDER BY q.created_at, q.id LIMIT 1)
+                     FROM bt_3_phrase_review r
+                    WHERE r.id = %s AND r.status = 'open';""",
+                (int(review_id),),
+            )
+            строка = cur.fetchone()
+    if not строка or строка[2] is None:
+        return 0, "", 0
+    return int(строка[0]), str(строка[1]), int(строка[2])
+
+
+def _apply_phrase_decision(user_id: int, item: dict[str, Any]) -> str:
+    """Решение человека по СВОЕЙ фразе. Возвращает имя счётчика или пустую строку.
+
+    ⚠ ВТОРОГО МЕХАНИЗМА ЗДЕСЬ НЕТ. Правку применяет ровно та же функция, что и на
+    экране владельца (`database.apply_phrase_review_decision`): она умеет переписать
+    заголовок, разнести правку по всем местам и снять метку проверки, чтобы ночь
+    посмотрела фразу заново. Своя копия этой логики означала бы, что через полгода
+    два пути разойдутся и один из них станет неверным.
+
+    РАЗЛИЧИЕ ОДНО, И ОНО ПРО «УДАЛИТЬ». У владельца «удалить» уносит фразу из общего
+    словаря вместе с подписными карточками — это решение обо ВСЕХ. Обычный человек
+    решает только о себе: его «удалить» убирает фразу из ЕГО словаря. Общее слово
+    сносится, лишь если больше ни у кого его нет; иначе фраза остаётся в очереди
+    владельца, а этому человеку больше не показывается.
+    """
+    from backend.database import apply_phrase_review_decision, get_db_connection_context
+
+    try:
+        review_id = int(item.get("review_id") or 0)
+    except (TypeError, ValueError):
+        return ""
+    action = str(item.get("action") or "").strip()
+    if not review_id or not action:
+        return ""
+
+    # ⚠ НОМЕР ФРАЗЫ ПРИШЁЛ ИЗ БРАУЗЕРА — ЕМУ ВЕРИТЬ НЕЛЬЗЯ. Экран отдаёт человеку
+    # review_id и unit_id, и подменить их в запросе может кто угодно. Без этой
+    # проверки чужой номер удалил бы чужую фразу из общего словаря. Автора и номер
+    # слова берём ЗАНОВО из базы и сверяем с тем, кто пришёл с ключом.
+    unit_id, текст, автор = _phrase_owner(review_id)
+    if not unit_id or автор != int(user_id):
+        logging.warning("проверка фраз: человек %s прислал решение по чужой фразе %s",
+                        user_id, review_id)
+        return ""
+
+    if action == "keep":
+        apply_phrase_review_decision(review_id, "keep")
+        return "оставлено"
+
+    if action == "fixed":
+        try:
+            variant = max(0, int(item.get("variant") or 0))
+        except (TypeError, ValueError):
+            variant = 0
+        # Перевод к варианту берётся из самого варианта — человек читал его на кнопке.
+        итог = apply_phrase_review_decision(review_id, "accept", "", variant, "")
+        return "исправлено" if itog_text(итог) else "оставлено"
+
+    if action == "manual":
+        свой = _cleaned(item.get("text") or "")
+        if not свой:
+            return ""
+        итог = apply_phrase_review_decision(
+            review_id, "replace", свой, 0, _cleaned(item.get("translation") or ""))
+        return "исправлено" if itog_text(итог) else "оставлено"
+
+    if action == "drop":
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries "
+                            "WHERE lex_unit_id=%s AND user_id<>%s;", (unit_id, int(user_id)))
+                чужих = int((cur.fetchone() or [0])[0])
+                cur.execute("DELETE FROM bt_3_webapp_dictionary_queries "
+                            "WHERE lex_unit_id=%s AND user_id=%s;", (unit_id, int(user_id)))
+                убрано = cur.rowcount or 0
+                if чужих:
+                    # Слово нужно ещё кому-то — общее не трогаем, а этому человеку
+                    # фразу больше не показываем: строка дневника и есть его «нет».
+                    cur.execute(
+                        """INSERT INTO bt_3_word_confirm_digest
+                                  (user_id, word, decision, closed_at)
+                           VALUES (%s, %s, 'drop', NOW())
+                           ON CONFLICT (user_id, word) DO UPDATE
+                              SET decision='drop', closed_at=NOW();""",
+                        (int(user_id), текст))
+            conn.commit()
+        logging.info("проверка фраз: человек %s удалил у себя «%s» (карточек %d, "
+                     "осталось у других %d)", user_id, текст, убрано, чужих)
+        if not чужих:
+            apply_phrase_review_decision(review_id, "delete")
+        return "удалено"
+
+    return ""
+
+
+def itog_text(итог: dict[str, Any]) -> str:
+    """Текст, который в самом деле записан. Пустой — значит правка не применилась."""
+    return str((итог or {}).get("text") or "")
+
+
 def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, Any]:
     """Применить решения человека.
 
@@ -497,6 +717,12 @@ def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, 
                 # │ экране, что слово настоящее (см. audit_items → "safe").          │
                 # └─────────────────────────────────────────────────────────────────┘
                 for item in decisions:
+                    # Фразы применяются ОТДЕЛЬНО и после — своей функцией, со своим
+                    # соединением. Внутрь чужой транзакции её звать нельзя: она сама
+                    # открывает соединение и коммитит, и вложение двух транзакций по
+                    # одним и тем же таблицам кончается взаимной блокировкой.
+                    if str(item.get("kind") or "") == "phrase":
+                        continue
                     word = bare_word(item.get("word") or "")
                     action = str(item.get("action") or "").strip()
                     # Вписанное человеком идёт через ТУ ЖЕ чистку, что и все остальные
@@ -583,23 +809,61 @@ def apply_decisions(user_id: int, decisions: list[dict[str, Any]]) -> dict[str, 
             conn.commit()
     except Exception:
         logging.warning("экран проверки: решения не применены для %s", user_id, exc_info=True)
+
+    # Фразы — после слов и по одной. Сорвалась одна, остальные обязаны примениться:
+    # человек нажал кнопки на всём экране, и терять его работу целиком из-за одной
+    # строки нельзя. Каждый срыв виден в логе поимённо, а не растворяется в общем
+    # «не применилось».
+    for item in decisions:
+        if str(item.get("kind") or "") != "phrase":
+            continue
+        try:
+            счётчик = _apply_phrase_decision(int(user_id), item)
+        except Exception:
+            logging.warning("проверка фраз: решение не применено (человек %s, фраза %s)",
+                            user_id, item.get("word"), exc_info=True)
+            continue
+        if счётчик:
+            counts[счётчик] = counts.get(счётчик, 0) + 1
     return counts
 
 
 # ── Напоминание в личку: два раза в неделю ──────────────────────────────────
-def _reminder_text(count: int) -> str:
+def _склонение(count: int, one: str, few: str, many: str) -> str:
+    if count % 10 == 1 and count % 100 != 11:
+        return one
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return few
+    return many
+
+
+def _reminder_text(count: int, phrases: int = 0) -> str:
     """Текст без ребусов: что, откуда, зачем, что будет, как делать, сколько.
 
     Владелец 20.08.2026: «в сообщении всё очень детально и без ребусов описать: что это
     за слова, откуда они появились, зачем мы просим их проверить, что будет, если не
     проверить, механику проверки, сколько делать, что потом происходит».
+
+    ⚠ ЗАГОЛОВОК ОБЯЗАН НАЗЫВАТЬ ТО, ЧТО ЧЕЛОВЕК УВИДИТ. Письмо «5 слов ждут проверки»
+    над экраном, где лежат пять ФРАЗ, — тот же обман, что и письмо над пустым экраном.
     """
-    word = "слово" if count % 10 == 1 and count % 100 != 11 else (
-        "слова" if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14 else "слов")
+    всего = int(count) + int(phrases)
+    if phrases and count:
+        шапка = f"{всего} {_склонение(всего, 'запись', 'записи', 'записей')} в твоём словаре ждут проверки"
+    elif phrases:
+        шапка = (f"{phrases} {_склонение(phrases, 'фраза', 'фразы', 'фраз')} "
+                 f"в твоём словаре {_склонение(phrases, 'ждёт', 'ждут', 'ждут')} проверки")
+    else:
+        шапка = f"{count} {_склонение(count, 'слово', 'слова', 'слов')} в твоём словаре ждут проверки"
+    про_фразы = (
+        "\n\n<b>Про фразы.</b> Сохранённые фразы ночью читают два проверяющих. Если они "
+        "нашли ошибку или разошлись во мнении — фраза приходит на этот же экран, с готовым "
+        "вариантом, если он есть. Молча за тебя мы ничего не переписываем."
+    ) if phrases else ""
     return (
-        f"🦊 <b>{count} {word} в твоём словаре ждут проверки</b>\n\n"
+        f"🦊 <b>{шапка}</b>\n\n"
         "<b>Что это за слова.</b> Это слова, которые ты сам сохранил. Каждое сохранённое "
-        "слово мы сверяем с немецкими справочниками — эти не нашлись.\n\n"
+        f"слово мы сверяем с немецкими справочниками — эти не нашлись.{про_фразы}\n\n"
         "<b>Почему так вышло.</b> Причины бывают разные: слово редкое и его нет в "
         "справочнике; слово из другого языка; при сохранении потерялась буква — так "
         "бывает, когда текст распознаётся с картинки.\n\n"
@@ -650,39 +914,25 @@ def send_word_audit_reminders(*, force: bool = False) -> dict[str, Any]:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 # Получатели — те, у кого есть СВОИ сомнительные сохранения: слова, не
-                # подтверждённые дверью, и фразы, отложенные ночной проверкой. Оба
-                # источника в одном запросе, потому что письмо человеку одно.
+                # подтверждённые дверью, и фразы, отложенные ночной проверкой.
                 cur.execute(
                     """
-                    SELECT user_id, SUM(сколько) FROM (
-                      SELECT q.user_id, COUNT(DISTINCT {bare}) AS сколько
-                        FROM bt_3_webapp_dictionary_queries q
-                        JOIN bt_3_word_check w ON w.asked = {bare}
-                       WHERE w.status IN ('не подтверждено', 'не слово')
-                         AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
-                                          WHERE d.user_id = q.user_id AND d.word = {bare}
-                                            AND d.closed_at IS NOT NULL)
-                       GROUP BY q.user_id
-                      UNION ALL
-                      -- только АВТОР фразы, а не каждый подписчик (см. words_for_user)
-                      SELECT a.user_id, COUNT(DISTINCT btrim(r.text)) AS сколько
-                        FROM bt_3_phrase_review r
-                        JOIN (SELECT DISTINCT ON (lex_unit_id) lex_unit_id, user_id
-                                FROM bt_3_webapp_dictionary_queries
-                               WHERE lex_unit_id IS NOT NULL
-                               ORDER BY lex_unit_id, created_at, id) a
-                          ON a.lex_unit_id = r.unit_id
-                       WHERE r.status = 'open'
-                         AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
-                                          WHERE d.user_id = a.user_id
-                                            AND d.word = btrim(r.text)
-                                            AND d.closed_at IS NOT NULL)
-                       GROUP BY a.user_id
-                    ) t
-                    GROUP BY user_id HAVING SUM(сколько) > 0;
+                    SELECT q.user_id, COUNT(DISTINCT {bare})
+                      FROM bt_3_webapp_dictionary_queries q
+                      JOIN bt_3_word_check w ON w.asked = {bare}
+                     WHERE w.status IN ('не подтверждено', 'не слово')
+                       AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
+                                        WHERE d.user_id = q.user_id AND d.word = {bare}
+                                          AND d.closed_at IS NOT NULL)
+                     GROUP BY q.user_id;
                     """.format(bare=_BARE.format(col="q.word_de"))
                 )
-                targets = [(int(a), int(b)) for a, b in (cur.fetchall() or [])]
+                слов: dict[int, int] = {int(a): int(b) for a, b in (cur.fetchall() or [])}
+                # Фразы — тем же счётом, что и на экране (см. _phrase_counts_by_author).
+                фраз: dict[int, int] = _phrase_counts_by_author(cur)
+                targets = [(uid, слов.get(uid, 0), фраз.get(uid, 0))
+                           for uid in sorted(set(слов) | set(фраз))
+                           if слов.get(uid, 0) + фраз.get(uid, 0) > 0]
     except Exception:
         logging.warning("напоминание о словах: не собрал получателей", exc_info=True)
         targets = []
@@ -690,9 +940,9 @@ def send_word_audit_reminders(*, force: bool = False) -> dict[str, Any]:
     link = f"https://t.me/{bot_username}?startapp=woerter"
     delivered = 0
     failures: list[tuple[int, str]] = []
-    for user_id, count in targets:
+    for user_id, слов_у_него, фраз_у_него in targets:
         ok, reason = send_telegram_message(
-            chat_id=user_id, text=_reminder_text(count), token=token,
+            chat_id=user_id, text=_reminder_text(слов_у_него, фраз_у_него), token=token,
             reply_markup={"inline_keyboard": [[{"text": "Открыть проверку", "url": link}]]},
             what="напоминание о проверке слов")
         if ok:
