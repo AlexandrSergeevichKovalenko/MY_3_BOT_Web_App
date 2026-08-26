@@ -30746,8 +30746,14 @@ def build_word_diff_pair_key(words, studied_lang: str, explain_lang: str) -> str
     return f"{langs}|" + "|".join(cleaned)
 
 
-def get_word_diff_card(pair_key: str, *, bump_open: bool = True) -> dict | None:
-    """Готовый разбор пары из общего кеша. None — «такой пары мы ещё не разбирали»."""
+def get_word_diff_card(pair_key: str, *, bump_open: bool = True,
+                       any_version: bool = False) -> dict | None:
+    """Готовый разбор пары из общего кеша. None — «такой пары мы ещё не разбирали».
+
+    По умолчанию отдаём только текущую версию: старая собрана по другим правилам и на
+    новом экране выглядит неправильно. Но если человек не может заказать новый разбор
+    (бесплатный тариф), старый ответ лучше отказа — тогда зовут с any_version=True.
+    """
     key = str(pair_key or "").strip()
     if not key:
         return None
@@ -30756,11 +30762,12 @@ def get_word_diff_card(pair_key: str, *, bump_open: bool = True) -> dict | None:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT words, studied_lang, explain_lang, payload, sources, created_at
+                SELECT words, studied_lang, explain_lang, payload, sources, created_at,
+                       schema_version
                 FROM bt_3_word_diff_cards
-                WHERE pair_key = %s AND schema_version = %s;
+                WHERE pair_key = %s AND (%s OR schema_version = %s);
                 """,
-                (key, WORD_DIFF_SCHEMA_VERSION),
+                (key, bool(any_version), WORD_DIFF_SCHEMA_VERSION),
             )
             row = cursor.fetchone()
             if not row:
@@ -30785,6 +30792,7 @@ def get_word_diff_card(pair_key: str, *, bump_open: bool = True) -> dict | None:
         "payload": payload if isinstance(payload, dict) else {},
         "sources": sources if isinstance(sources, dict) else {},
         "created_at": row[5].isoformat() if row[5] else None,
+        "fresh": int(row[6] or 0) >= WORD_DIFF_SCHEMA_VERSION,
     }
 
 
@@ -31038,17 +31046,21 @@ def list_word_diff_popular(limit: int = 40) -> list[dict]:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT pair_key, words, open_count
+                SELECT pair_key, words, open_count, schema_version
                 FROM bt_3_word_diff_cards
-                WHERE schema_version = %s
                 ORDER BY open_count DESC, created_at DESC
                 LIMIT %s;
                 """,
-                (WORD_DIFF_SCHEMA_VERSION, max(1, min(int(limit or 40), 100))),
+                (max(1, min(int(limit or 40), 100)),),
             )
             rows = cursor.fetchall() or []
     return [
-        {"pair_key": row[0], "words": list(row[1] or []), "opens": int(row[2] or 0)}
+        {
+            "pair_key": row[0],
+            "words": list(row[1] or []),
+            "opens": int(row[2] or 0),
+            "fresh": int(row[3] or 0) >= WORD_DIFF_SCHEMA_VERSION,
+        }
         for row in rows
     ]
 
@@ -31062,10 +31074,11 @@ def list_word_diff_history(user_id: int, limit: int = 20) -> list[dict]:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT pair_key, words, opened_at
-                FROM bt_3_word_diff_history
-                WHERE user_id = %s
-                ORDER BY opened_at DESC
+                SELECT h.pair_key, h.words, h.opened_at, COALESCE(c.open_count, 0)
+                FROM bt_3_word_diff_history h
+                LEFT JOIN bt_3_word_diff_cards c ON c.pair_key = h.pair_key
+                WHERE h.user_id = %s
+                ORDER BY h.opened_at DESC
                 LIMIT %s;
                 """,
                 (int(user_id), max(1, min(int(limit or 20), 100))),
@@ -31076,6 +31089,7 @@ def list_word_diff_history(user_id: int, limit: int = 20) -> list[dict]:
             "pair_key": row[0],
             "words": list(row[1] or []),
             "opened_at": row[2].isoformat() if row[2] else None,
+            "opens": int(row[3] or 0),
         }
         for row in rows
     ]
