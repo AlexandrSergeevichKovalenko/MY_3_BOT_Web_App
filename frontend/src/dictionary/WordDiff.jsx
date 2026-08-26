@@ -93,6 +93,9 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
   const [canCreate, setCanCreate] = useState(true); // новый разбор — по полному доступу
   const [isAdmin, setIsAdmin] = useState(false);    // хозяин общей полки
   const [swiped, setSwiped] = useState('');         // строка, смахнутая влево
+  // Списки сворачиваются: они растут, а рабочая часть экрана должна остаться видимой.
+  // Свои сравнения открыты (их немного и они свои), общая полка свёрнута.
+  const [openLists, setOpenLists] = useState({ mine: true, shelf: false });
   const [choices, setChoices] = useState([]);       // что имел в виду человек
   const [picks, setPicks] = useState({});           // его ответы: слово → прочтение
   const swipeRef = useRef({ key: '', x: 0 });
@@ -933,8 +936,16 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
 
       {!isGuest && history.length > 0 && (
         <div className="wd-block">
-          <div className="wd-label"><span className="wd-ic">🕘</span>Вы уже сравнивали</div>
-          <div className="wd-history">
+          <button
+            type="button"
+            className={`wd-fold${openLists.mine ? ' is-open' : ''}`}
+            onClick={() => setOpenLists((prev) => ({ ...prev, mine: !prev.mine }))}
+          >
+            <span className="wd-label"><span className="wd-ic">🕘</span>Вы уже сравнивали</span>
+            <span className="wd-fold-count">{history.length}</span>
+            <span className="wd-fold-arrow" aria-hidden="true">▾</span>
+          </button>
+          <div className="wd-history" hidden={!openLists.mine}>
             {history.map((row) => (
               <div className={`wd-swipe${swiped === row.pair_key ? ' is-open' : ''}`} key={row.pair_key}>
                 <button
@@ -968,8 +979,16 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           случайную ерунду никто не открывает второй раз, и она уходит вниз. */}
       {!isGuest && popular.length > 0 && (
         <div className="wd-block">
-          <div className="wd-label"><span className="wd-ic">📚</span>Уже разобрано — открывается бесплатно</div>
-          <div className="wd-history">
+          <button
+            type="button"
+            className={`wd-fold${openLists.shelf ? ' is-open' : ''}`}
+            onClick={() => setOpenLists((prev) => ({ ...prev, shelf: !prev.shelf }))}
+          >
+            <span className="wd-label"><span className="wd-ic">📚</span>Уже разобрано — открывается бесплатно</span>
+            <span className="wd-fold-count">{popular.length}</span>
+            <span className="wd-fold-arrow" aria-hidden="true">▾</span>
+          </button>
+          <div className="wd-history" hidden={!openLists.shelf}>
             {popular.map((row) => (
               <div className={`wd-swipe${swiped === row.pair_key ? ' is-open' : ''}`} key={`p-${row.pair_key}`}>
                 <button

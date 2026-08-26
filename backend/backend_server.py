@@ -42290,8 +42290,11 @@ def _word_diff_article_for_reading(word: str, reading: dict, studied_lang: str,
     usage = _word_diff_usage(text, {}, studied_lang, explain_lang, pos=pos)
     if not usage or not usage.get("senses"):
         return None
+    # У существительного оставляем артикль в заголовке: «das Gehen» и «gehen» — разные
+    # сравнения, и в списках они должны отличаться на вид, а не выглядеть дублями
+    # (владелец 26.08.2026 увидел две одинаковые строки «gehen · laufen»).
     form = " ".join(str((reading or {}).get("form") or text).split())
-    headword = re.sub(r"^(der|die|das)\s+", "", form, flags=re.IGNORECASE).strip() or text
+    headword = form or text
     return _word_diff_build_article({
         "word": text,
         "headword": headword,

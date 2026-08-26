@@ -31188,8 +31188,23 @@ def list_user_word_issues(user_id: int, limit: int = 30) -> list[dict]:
         issue = row[2]
         word = str(row[3] or "")
         suggestion = None
+        # Нет перевода — не повод оставлять карточку мёртвой. Если слово есть в нашем
+        # словаре, перевод оттуда и предлагаем: это наш источник, а не выдумка.
+        # Владелец 26.08.2026: «А если глюк и перевод не записался? Чего ж их не исправить?»
+        if issue == "no_translation" and word:
+            try:
+                from backend.dictionary_entries import entries_for_query
+                found = entries_for_query(word, source_lang="de", target_lang="ru")
+                translations = [t for e in found for t in (e.get("translations") or [])]
+                if translations:
+                    suggestion = {
+                        "to_translation": ", ".join(translations[:2]),
+                        "why": "Перевод из нашего словаря",
+                    }
+            except Exception:
+                logging.exception("user_word_review: словарь не ответил на %r", word)
+
         # Правку предлагаем только там, где её подтверждает справочник: «hammer» → «Hammer».
-        # Для «нет перевода» и мусора правки нет — там решает человек.
         if issue == "pos_mismatch" and word and " " not in word:
             try:
                 from backend.german_word_gate import check_word, CONFIRMED, REPAIRED
@@ -31283,8 +31298,16 @@ def apply_user_word_decisions(user_id: int, decisions: list) -> dict:
                 entry_id = int(row[0])
 
                 new_pos = str(item.get("to_pos") or "").strip().lower()
+                new_translation = " ".join(str(item.get("to_translation") or "").split())
                 if action == "fix":
-                    if new_word:
+                    if new_translation:
+                        cursor.execute(
+                            "UPDATE bt_3_webapp_dictionary_queries "
+                            "SET translation_ru = %s, updated_at = NOW() "
+                            "WHERE id = %s AND user_id = %s;",
+                            (new_translation, entry_id, int(user_id)),
+                        )
+                    elif new_word:
                         cursor.execute(
                             "UPDATE bt_3_webapp_dictionary_queries SET word_de = %s, updated_at = NOW() "
                             "WHERE id = %s AND user_id = %s;",
@@ -31438,8 +31461,8 @@ def save_word_diff_card(
                 """
                 INSERT INTO bt_3_word_diff_cards
                     (pair_key, words, studied_lang, explain_lang, payload, sources,
-                     model_task, schema_version)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                     model_task, schema_version, open_count)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
                 ON CONFLICT (pair_key) DO UPDATE SET
                     words = EXCLUDED.words,
                     payload = EXCLUDED.payload,
