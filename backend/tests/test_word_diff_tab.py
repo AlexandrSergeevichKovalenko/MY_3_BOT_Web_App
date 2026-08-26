@@ -105,7 +105,7 @@ def test_unknown_word_stops_before_the_model_and_before_the_limit(client, monkey
     monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
     monkeypatch.setattr(
         backend_server, "_word_diff_lookup_sources",
-        lambda word, studied, explain: ENTRY if word == "Anzahlung" else None,
+        lambda word, studied, explain, pick="": ENTRY if word == "Anzahlung" else None,
     )
     monkeypatch.setattr(backend_server, "_word_diff_spelling_suggestion", lambda *a, **k: "Vorschuss")
 
@@ -539,7 +539,7 @@ def test_pair_is_shown_the_way_the_dictionary_writes_it(client, monkeypatch):
     monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
     monkeypatch.setattr(
         backend_server, "_word_diff_lookup_sources",
-        lambda word, studied, explain: dict(_entry(word), headword=word.lower()),
+        lambda word, studied, explain, pick="": dict(_entry(word), headword=word.lower()),
     )
 
     async def _answer(*args, **kwargs):
@@ -650,3 +650,71 @@ def test_real_noun_is_still_chosen():
     ]
     picked = backend_server._word_diff_pick_entry("Anzahlung", entries, "de")
     assert picked["pos"] == "noun"
+
+
+def test_two_legit_readings_ask_the_person_instead_of_guessing(client, monkeypatch):
+    """Слово читается по-разному → спрашиваем, а не выбираем «по числу переводов».
+
+    Владелец 26.08.2026: «Зачем мы будем думать за пользователя? Если знаем, что gehen —
+    и глагол, и существительное, пусть человек подтвердит, и в работу идёт его выбор».
+    """
+    _patch_db(monkeypatch)
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
+    monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
+
+    two_readings = [
+        {"headword": "Gehen", "pos": "noun", "gender": "das", "unit_id": 15708,
+         "translations": ["ходьба"], "rank": 106},
+        {"headword": "gehen", "pos": "verb", "gender": "", "unit_id": 900,
+         "translations": ["идти", "уходить"], "rank": 106},
+    ]
+
+    import backend.dictionary_entries as de
+    monkeypatch.setattr(de, "entries_for_query",
+                        lambda word, source_lang="", target_lang="":
+                        two_readings if word.casefold() == "gehen" else [])
+    monkeypatch.setattr(backend_server, "_word_diff_usage", lambda *a, **k: {})
+    monkeypatch.setattr(backend_server, "_word_diff_full_lookup", lambda *a, **k: None)
+    monkeypatch.setattr(backend_server, "_fetch_wiktionary_entry", lambda *a, **k: None)
+    monkeypatch.setattr(backend_server, "_word_diff_word_gate_blocks", lambda *a, **k: False)
+
+    resp = client.post("/api/webapp/dictionary/diff",
+                       json={"initData": "signed", "words": ["Gehen", "Laufen"]})
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["reason"] == "choose_sense", "программа снова решила за человека"
+    options = body["choices"][0]["options"]
+    assert {o["pos"] for o in options} == {"noun", "verb"}
+    assert any(o["label"] == "das Gehen" for o in options), "в вопросе нет артикля у существительного"
+
+
+def test_the_persons_choice_is_what_goes_to_work(monkeypatch):
+    """Ответил «глагол» — работаем с глаголом, даже если написал слово с заглавной."""
+    two_readings = [
+        {"headword": "Gehen", "pos": "noun", "gender": "das", "unit_id": 15708,
+         "translations": ["ходьба"], "rank": 106},
+        {"headword": "gehen", "pos": "verb", "gender": "", "unit_id": 900,
+         "translations": ["идти", "уходить"], "rank": 106},
+    ]
+    picked = backend_server._word_diff_pick_entry("Gehen", two_readings, "de", pick="verb:900")
+    assert picked["pos"] == "verb"
+    picked_noun = backend_server._word_diff_pick_entry("Gehen", two_readings, "de", pick="noun:15708")
+    assert picked_noun["pos"] == "noun"
+    # Без ответа не выбираем вовсе.
+    assert backend_server._word_diff_pick_entry("Gehen", two_readings, "de") is None
+
+
+def test_broken_record_is_not_a_reading_and_never_becomes_a_question():
+    """«Существительное» со строчным заголовком — брак, а не второе прочтение.
+
+    Вопрос человеку из-за испорченной записи задавать нельзя: выбирать ему не из чего.
+    """
+    entries = [
+        {"headword": "gehen", "pos": "noun", "gender": "das", "unit_id": 15708, "translations": ["идти"]},
+        {"headword": "gehen", "pos": "verb", "gender": "", "unit_id": 0,
+         "translations": ["идти", "уходить", "бродить"]},
+    ]
+    usable = backend_server._word_diff_legit_entries("gehen", entries, "de")
+    assert [e["pos"] for e in usable] == ["verb"]
+    assert backend_server._word_diff_pick_entry("gehen", entries, "de")["pos"] == "verb"
