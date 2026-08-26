@@ -621,3 +621,32 @@ def test_outdated_answer_still_serves_the_one_who_cannot_order_a_new_one(monkeyp
     assert "any_version=not can_create" in src, (
         "устаревшая запись либо не отдаётся бесплатному, либо мешает платному пересобрать"
     )
+
+
+def test_lowercase_word_is_never_treated_as_a_noun():
+    """«gehen» — глагол. Существительное в немецком всегда пишется с заглавной.
+
+    Замер 26.08.2026: слой отдавал на «gehen» две статьи, первой шла испорченная
+    («существительное das gehen — идти», заголовок со строчной), и человек читал
+    «Gehen — это существительное», даже написав слово со строчной буквы.
+    """
+    entries = [
+        {"headword": "gehen", "pos": "noun", "gender": "das", "translations": ["идти"], "rank": 106},
+        {"headword": "gehen", "pos": "verb", "gender": "", "translations": ["идти", "уходить", "бродить"], "rank": 106},
+    ]
+    picked = backend_server._word_diff_pick_entry("gehen", entries, "de")
+    assert picked["pos"] == "verb", "слово со строчной снова разобрано как существительное"
+
+    # И даже когда человек написал с заглавной: запись «существительное» со строчным
+    # заголовком — испорченная, брать её нельзя.
+    picked_upper = backend_server._word_diff_pick_entry("Gehen", entries, "de")
+    assert picked_upper["pos"] == "verb", "испорченная запись всё ещё выигрывает"
+
+
+def test_real_noun_is_still_chosen():
+    """Настоящее существительное не должно пострадать от правила."""
+    entries = [
+        {"headword": "Anzahlung", "pos": "noun", "gender": "die", "translations": ["задаток", "аванс"], "rank": 5},
+    ]
+    picked = backend_server._word_diff_pick_entry("Anzahlung", entries, "de")
+    assert picked["pos"] == "noun"
