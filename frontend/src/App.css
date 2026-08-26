@@ -8937,6 +8937,36 @@ body:has(.webapp-page.is-theme-light),
   line-height: 1.5;
 }
 .vocab-word-card-pending p { margin: 6px 0 0; }
+/* Разбор собирается прямо сейчас — спокойная строка ожидания, а не тревога.
+   Сдержаннее янтарной плашки: там человеку сказали «приходи завтра», здесь работа
+   идёт у него на глазах и вот-вот кончится. */
+.vocab-word-card-filling {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 10px 0 4px;
+  padding: 11px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(93, 220, 255, 0.28);
+  background: rgba(93, 220, 255, 0.09);
+  color: #BFE7F5;
+  font-size: 14px;
+}
+.vocab-word-card-filling-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #5DDCFF;
+  animation: vocab-filling-pulse 1.1s ease-in-out infinite;
+}
+@keyframes vocab-filling-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vocab-word-card-filling-dot { animation: none; opacity: 0.9; }
+}
+.webapp-page.is-theme-light .vocab-word-card-filling { color: #1d5c74; }
 .vocab-word-card-pending-title { font-size: 15px; font-weight: 700; color: #F0C368; }
 .vocab-word-card-pending-next { color: #CDBFA6; }
 .webapp-page.is-theme-light .vocab-word-card-pending { color: #6b5a3e; }

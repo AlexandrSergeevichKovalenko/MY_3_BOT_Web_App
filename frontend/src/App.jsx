@@ -24,7 +24,7 @@ import StarsInfoModal from './components/StarsInfoModal';
 import BonusProDaysModal from './components/BonusProDaysModal';
 import VocabSearchOverlay from './components/VocabSearchOverlay';
 import CardOwnNotes from './components/CardOwnNotes';
-import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass, splitLeadingArticle } from './dictionary/WordBreakdown';
+import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass, splitLeadingArticle, getInitData as getDictInitData, getDictToken } from './dictionary/WordBreakdown';
 import { splitTranslationSenses } from './dictionary/senses';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
@@ -187,10 +187,23 @@ function EmbeddedWordCard({ item, hideMeanings }) {
 
 // Сохранённое слово несёт ту карточку, с которой его сохранили. Часть путей сохранения
 // (личка бота, стартовый словарь, быстрые сохранения из игр) кладут только слово и
-// перевод. Раньше открытие такого слова тут же шло к модели — человек ждал и тратил свой
-// дневной запас на то, что и так соберётся ночью и достанется всем даром. Теперь открытие
-// ничего не собирает: разбор приходит ночью и сам расходится по карточкам, а здесь мы
-// говорим об этом прямо, вместо пустого листа.
+// перевод.
+//
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║  ОТКРЫТИЕ ПУСТОЙ КАРТОЧКИ СОБИРАЕТ РАЗБОР ПРЯМО СЕЙЧАС — для платного.        ║
+// ║  Решение владельца 26.08.2026. Оно отменяет прежнее «открытие ничего не       ║
+// ║  собирает, разбор придёт ночью».                                             ║
+// ║                                                                              ║
+// ║  ПОЧЕМУ ПРЕЖНЕЕ БЫЛО НЕВЕРНО. Ночь берёт 500 слов за раз, но новые приходят   ║
+// ║  каждый день: человек сохранил слово утром, открыл вечером — и снова упёрся   ║
+// ║  в плашку «загляните завтра». Замер 26.08.2026: 1 780 слов без разбора,       ║
+// ║  3 260 личных карточек у 12 человек открывались пустыми.                     ║
+// ║                                                                              ║
+// ║  ЧЕГО ЭТО НЕ ОТМЕНЯЕТ. Тратить чужой дневной запас впустую по-прежнему        ║
+// ║  нельзя: разбор ложится на ОБЩЕЕ слово, и второму человеку он достаётся       ║
+// ║  даром. Бесплатному экран не меняется — та же честная плашка про ночь.        ║
+// ║  Кто платный, решает СЕРВЕР: браузеру этот вопрос не задают.                  ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
 function LibraryWordDetail({ item }) {
   const data = (item && typeof item.response_json === 'object' && item.response_json) ? item.response_json : null;
   const hasCard = !!data && !!(
@@ -200,19 +213,109 @@ function LibraryWordDetail({ item }) {
     || (data.related_words || []).length || (data.common_collocations || []).length
     || (data.usage_examples || []).length || (data.government_patterns || []).length
   );
+  const слово = String(item?.word_de || data?.word_de || '').trim();
+  // 'idle' — не начинали · 'собираем' — идёт поток · 'ночью' — нам отказали или не
+  // получилось, показываем прежнюю плашку · 'готово' — разбор на экране.
+  const [состояние, setСостояние] = useState('idle');
+  const [собранное, setСобранное] = useState(null);
 
-  if (!hasCard) {
+  useEffect(() => {
+    if (hasCard || !слово) return undefined;
+    let живо = true;
+    const controller = new AbortController();
+    (async () => {
+      setСостояние('собираем');
+      try {
+        const token = getDictToken();
+        const headers = { 'Content-Type': 'application/json', 'X-Telegram-InitData': getDictInitData() };
+        if (token) headers['X-Dict-Token'] = token;
+        const resp = await fetch('/api/webapp/dictionary/card/fill', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ initData: getDictInitData(), ...(token ? { dqt: token } : {}), word: слово }),
+          signal: controller.signal,
+        });
+        // Отказ и готовый ответ приходят обычным JSON, поток — событиями.
+        if (!resp.ok || (resp.headers.get('Content-Type') || '').includes('application/json')) {
+          const ответ = await resp.json().catch(() => null);
+          if (!живо) return;
+          if (ответ?.ok && ответ.item) { setСобранное(ответ.item); setСостояние('готово'); }
+          else setСостояние('ночью');
+          return;
+        }
+        if (!resp.body || typeof resp.body.getReader !== 'function') { setСостояние('ночью'); return; }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let буфер = '';
+        let былиРазделы = false;
+        let сорвалось = false;
+        const кадр = (блок) => {
+          let событие = 'message';
+          const строки = [];
+          for (const line of блок.split('\n')) {
+            if (line.startsWith('event:')) событие = line.slice(6).trim();
+            else if (line.startsWith('data:')) строки.push(line.slice(5).trim());
+          }
+          if (!строки.length) return;
+          let полезное;
+          try { полезное = JSON.parse(строки.join('\n')); } catch (_e) { return; }
+          if (событие === 'section') {
+            былиРазделы = true;
+            if (живо) setСобранное((было) => ({ ...(было || {}), ...(полезное.fields || {}) }));
+          } else if (событие === 'done' && полезное?.item) {
+            if (живо) { setСобранное(полезное.item); setСостояние('готово'); }
+          } else if (событие === 'error') {
+            сорвалось = true;
+          }
+        };
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done || !живо) break;
+          буфер += decoder.decode(value, { stream: true });
+          let край;
+          while ((край = буфер.indexOf('\n\n')) >= 0) {
+            кадр(буфер.slice(0, край));
+            буфер = буфер.slice(край + 2);
+          }
+        }
+        if (буфер.trim()) кадр(буфер);
+        if (!живо) return;
+        // Половина разбора — не разбор. Не собралось до конца — возвращаем прежнюю
+        // плашку, а не оставляем человека с обрывком, который выглядит как карточка.
+        if (сорвалось || !былиРазделы) { setСобранное(null); setСостояние('ночью'); }
+      } catch (_e) {
+        if (живо) { setСобранное(null); setСостояние('ночью'); }
+      }
+    })();
+    return () => { живо = false; try { controller.abort(); } catch (_e) { /* ничего */ } };
+  }, [слово, hasCard]);
+
+  if (hasCard) return <EmbeddedWordCard item={data} hideMeanings />;
+
+  if (состояние === 'собираем') {
     return (
-      <div className="vocab-word-card-pending">
-        <div className="vocab-word-card-pending-title">Разбор этого слова ещё готовится</div>
-        <p>Слово сохранено и никуда не денется.</p>
-        <p className="vocab-word-card-pending-next">
-          Что делать: загляните завтра — примеры, формы и подсказка «как запомнить» откроются здесь сами.
-        </p>
-      </div>
+      <>
+        <div className="vocab-word-card-filling">
+          <span className="vocab-word-card-filling-dot" />
+          Собираем разбор — это несколько секунд
+        </div>
+        {собранное ? <EmbeddedWordCard item={собранное} hideMeanings /> : null}
+      </>
     );
   }
-  return <EmbeddedWordCard item={data} hideMeanings />;
+  if (состояние === 'готово' && собранное) {
+    return <EmbeddedWordCard item={собранное} hideMeanings />;
+  }
+  return (
+    <div className="vocab-word-card-pending">
+      <div className="vocab-word-card-pending-title">Разбор этого слова ещё готовится</div>
+      <p>Слово сохранено и никуда не денется.</p>
+      <p className="vocab-word-card-pending-next">
+        Что делать: загляните завтра — примеры, формы и подсказка «как запомнить» откроются здесь сами.
+      </p>
+    </div>
+  );
 }
 
 // URL вашего сервера LiveKit

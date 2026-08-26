@@ -41709,6 +41709,168 @@ def stream_webapp_dictionary():
     )
 
 
+@app.route("/api/webapp/dictionary/card/fill", methods=["POST"])
+def fill_saved_dictionary_card():
+    """Человек открыл СВОЮ карточку, у которой ещё нет разбора — собираем сейчас.
+
+    ЗАЧЕМ. До 26.08.2026 открытие ничего не собирало: разбор ждал ночи, а человек
+    видел плашку «загляните завтра». Замер 26.08.2026: 1 780 слов и оборотов в общем
+    слое без разбора, 3 260 личных карточек у 12 человек открывались пустыми. Ночь
+    берёт 500 за раз, но новые слова приходят каждый день — и человек, сохранивший
+    слово утром, вечером всё равно упирался в пустую карточку.
+
+    КОМУ. Только платному — решение владельца 26.08.2026. Бесплатный видит прежнюю
+    честную плашку: слово сохранено, разбор придёт ночью.
+
+    ЧТО ПИШЕТСЯ. Разбор ложится на ОБЩЕЕ слово (`lex_units.save_unit_card`), а не в
+    личную карточку: второй человек, открывший то же слово, получит его мгновенно и
+    даром. На живых данных это не редкость — «Einen Eid ablegen» лежит пустым сразу
+    у 11 человек.
+
+    ЧЕГО ЗДЕСЬ НЕТ. Обхода двери: запись идёт тем же `save_unit_card` со вторым
+    голосом и стражем тонкой карточки, что и ночью. Не собралось — человеку честное
+    «не получилось», а не пустая карточка, выданная за разбор.
+    """
+    payload = request.get_json(silent=True) or {}
+    word = str(payload.get("word") or "").strip()
+    if not word:
+        return jsonify({"ok": False, "message": "Не понял, какое слово собирать."}), 400
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"ok": False, "message": "Нужно открыть словарь заново."}), 401
+    user_id = int(user_id)
+
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id)
+
+    from backend import lex_units
+    # ⚠ ЕДИНИЦУ БЕРЁМ ИЗ КАРТОЧКИ ЧЕЛОВЕКА, А НЕ ПОИСКОМ ПО СЛОВУ.
+    # `lex_units.lookup` для этого не годится: он возвращает НИЧЕГО, если у слова нет
+    # связей-переводов, — а у неразобранного слова их как раз обычно и нет. Прогон
+    # 26.08.2026 на «Einen Eid ablegen» (слово 18792, лежит в слое) вернул «no_unit»,
+    # и дозаполнение молча не делало ничего. Один запрос по карточке решает сразу две
+    # задачи: находит слово и доказывает, что карточка ЕГО.
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT q.lex_unit_id, u.card IS NOT NULL, u.card
+                         FROM bt_3_webapp_dictionary_queries q
+                         JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
+                        WHERE q.user_id = %s AND lower(btrim(q.word_de)) = lower(btrim(%s))
+                        ORDER BY q.id LIMIT 1;""",
+                    (user_id, word),
+                )
+                строка = cur.fetchone()
+    except Exception:
+        logging.warning("дозаполнение: не нашёл слово по карточке", exc_info=True)
+        return jsonify({"ok": False, "message": "Не получилось собрать разбор. Попробуй ещё раз."}), 200
+    if not строка:
+        # Либо слова нет в общем слое, либо карточка не его. И то и другое означает
+        # одно: собирать нечего и не за чей счёт. Прежняя плашка остаётся.
+        return jsonify({"ok": False, "reason": "no_unit"}), 200
+    unit_id, есть_разбор, разбор = int(строка[0]), bool(строка[1]), строка[2]
+
+    # Разбор уже собран (например, его собрал другой человек минуту назад) — отдаём
+    # даром и без единого обращения к модели.
+    if есть_разбор and isinstance(разбор, dict):
+        return jsonify({"ok": True, "item": _serve_dictionary_item(разбор),
+                        "source": "already"}), 200
+
+    # Платный доступ. Проверяет СЕРВЕР по своим источникам, а не браузер: экран знает
+    # только то, что ему сказали, и подменяется.
+    try:
+        права = resolve_entitlement(user_id=user_id, tz="Europe/Vienna")
+        платный = str(права.get("effective_mode") or "free").strip().lower() != "free"
+    except Exception:
+        # Не смогли выяснить права — НЕ раздаём платное молча. Человек увидит прежнюю
+        # плашку про ночь, а мы увидим строку в логе.
+        logging.warning("дозаполнение: права не выяснены, отказываю", exc_info=True)
+        return jsonify({"ok": False, "reason": "paid_required"}), 200
+    if not платный:
+        return jsonify({"ok": False, "reason": "paid_required"}), 200
+
+    try:
+        cap_error = enforce_daily_cost_cap(
+            user_id=user_id, now_ts_utc=datetime.now(timezone.utc), tz="Europe/Vienna")
+    except Exception:
+        logging.warning("дозаполнение: потолок расхода не проверился", exc_info=True)
+        cap_error = None
+    if cap_error:
+        return jsonify(cap_error), 429
+
+    query_source_lang, query_target_lang = _resolve_dictionary_query_languages(
+        word=word, source_lang=source_lang, target_lang=target_lang, lookup_lang=source_lang,
+    )
+
+    def _generate():
+        from backend.openai_manager import set_llm_billing_user
+        set_llm_billing_user(user_id)
+        merged_raw: dict[str, Any] = {}
+        разделов = 0
+        try:
+            try:
+                for section in stream_dictionary_breakdown_sections(
+                    word=word, source_lang=query_source_lang, target_lang=query_target_lang,
+                    explanation_lang=source_lang,
+                ):
+                    if not isinstance(section, dict):
+                        continue
+                    кусок = {k: v for k, v in section.items() if k != "section"}
+                    merged_raw.update(кусок)
+                    разделов += 1
+                    yield _sse_pack("section", {"name": str(section.get("section") or ""),
+                                                "fields": кусок})
+            except Exception:
+                logging.warning("дозаполнение: поток разбора оборвался", exc_info=True)
+
+            if not разделов or not merged_raw:
+                yield _sse_pack("error", {"error": "Разбор не собрался. Попробуй ещё раз."})
+                return
+
+            item, direction, _d, _s, _t = _build_dictionary_result_from_raw(
+                raw=merged_raw, query_word=word, source_lang=source_lang, target_lang=target_lang,
+                query_source_lang=query_source_lang, query_target_lang=query_target_lang,
+                lookup_lang=source_lang,
+            )
+            # Та же планка, что и ночью: тонкую карточку не сохраняем. Пусть слово
+            # останется кандидатом на ночной разбор, чем притворится разобранным.
+            if _dictionary_payload_needs_enrichment(item):
+                logging.info("дозаполнение: разбор слова %r вышел тонким, не сохраняю", word)
+                yield _sse_pack("error", {"error": "Разбор вышел неполным. Соберём ночью."})
+                return
+
+            записан = lex_units.save_unit_card(unit_id, item, source="дозаполнение при открытии")
+            if not записан:
+                # Второй голос забраковал или дверь не пустила. Показывать разбор,
+                # который мы сами отказались хранить, нельзя.
+                yield _sse_pack("error", {"error": "Разбор не прошёл проверку. Соберём ночью."})
+                return
+            try:
+                lex_units.adopt_pos_gender_from_card(unit_id, item)
+                lex_units.sync_unit_links_from_card(unit_id, item, native_lang=target_lang)
+            except Exception:
+                logging.warning("дозаполнение: часть речи и связи не обновились", exc_info=True)
+            _store_dictionary_item_in_pool(item, direction=direction,
+                                           source_lang=query_source_lang,
+                                           target_lang=query_target_lang)
+            _billing_log_openai_usage(
+                user_id=user_id, action_type="dictionary_lookup",
+                source_lang=source_lang, target_lang=target_lang,
+                usage=get_last_llm_usage(reset=True),
+                seed=f"card_fill_tokens:{user_id}:{word}:{time.time_ns()}",
+                metadata={"word": word, "lookup_status": "card_fill"},
+            )
+            yield _sse_pack("done", {"ok": True, "item": _serve_dictionary_item(item)})
+        finally:
+            set_llm_billing_user(None)
+
+    return Response(
+        stream_with_context(_generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
 @app.route("/api/webapp/dictionary/status", methods=["POST"])
 def get_webapp_dictionary_lookup_status():
     started_perf = time.perf_counter()
