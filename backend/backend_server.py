@@ -42224,6 +42224,12 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str,
         )
         if payload:
             payload["entry_key"] = _word_diff_entry_key(entry)
+            # Написание берём из НАШЕЙ статьи: разбор модели возвращает «Gehen» с
+            # заглавной, потому что так набрал человек, и глагол начинает выглядеть
+            # существительным прямо в заголовке (замер 26.08.2026).
+            our_head = str(entry.get("headword") or "").strip()
+            if our_head:
+                payload["headword"] = our_head
             payload["usage"] = _word_diff_usage(
                 text, card or {}, studied_lang, explain_lang, pos=str(entry.get("pos") or ""),
             )
