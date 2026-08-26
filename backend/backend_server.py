@@ -7411,6 +7411,52 @@ def _cached_card_is_about(payload, word: str, lookup_lang: str) -> bool:
     return got.casefold() == _LEADING_GERMAN_ARTICLE_RE.sub("", asked).strip().casefold()
 
 
+def _with_fresh_unit_content(payload: dict, word: str, lookup_lang: str) -> dict:
+    """Отдать из кеша ответ, но с содержимым СВЕЖЕГО общего слова.
+
+    ЗАЧЕМ. Кеш быстрого словаря живёт десять лет (DICTIONARY_PERSISTENT_CACHE_TTL_SEC =
+    315 360 000 секунд): ответ, записанный в марте, отдаётся до сих пор. Замер
+    26.08.2026: в кеше 2 882 записи, и у 2 121 из них слово чинили УЖЕ ПОСЛЕ того, как
+    ответ туда лёг. То есть мы правим слово, оно верное в словаре и в тренировке, а
+    человек ищет его в быстром словаре и получает мартовский снимок со старой ошибкой.
+
+    Это последнее место, где жило старое: список словаря и обе ветки тренировки закрыты
+    раньше. Правило склейки то же самое, что и там, — своё писать нельзя, разойдётся.
+
+    ⚠ КЕШ ПРИ ЭТОМ ПРОДОЛЖАЕТ ЭКОНОМИТЬ. Мы не выбрасываем записи и не идём к модели:
+    берём готовый ответ и подмешиваем в него то, что с тех пор появилось на слове.
+
+    ⚠ И НЕ ЛОМАЕМ ОТВЕТ, ЕСЛИ СЛОВА В СЛОЕ НЕТ. Не нашли единицу — отдаём кеш как есть:
+    лучше прежний ответ, чем пустой экран.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("item"), dict):
+        return payload
+    if str(lookup_lang or "").strip().lower() != "de" or not str(word or "").strip():
+        return payload
+    try:
+        from backend import lex_units
+        from backend.database import merge_unit_card_for_serve
+        # ⚠ lookup отдаёт САМ РАЗБОР, а не обёртку с полем «card». Первая версия этой
+        # функции искала `единица["card"]`, всегда получала None и молча возвращала кеш
+        # как есть — склейка «работала», не делая ничего. Поймано проверкой на живых
+        # словах «geschützt» и «kreieren» 26.08.2026.
+        единица = lex_units.lookup(word, source_lang="de", target_lang="ru")
+        if not isinstance(единица, dict) or not единица.get("__lex_has_card"):
+            return payload
+        разбор = {k: v for k, v in единица.items() if not k.startswith("__lex_")}
+        if not разбор:
+            return payload
+        свежий = dict(payload)
+        свежий["item"] = merge_unit_card_for_serve(dict(payload["item"]), разбор, None)
+        return свежий
+    except Exception:
+        # Склейка — улучшение, а не условие ответа. Не вышло — отдаём кеш как есть,
+        # но говорим об этом в лог: молча деградировать нельзя.
+        logging.warning("кеш словаря: не удалось подмешать свежее слово для %r",
+                        str(word)[:60], exc_info=True)
+        return payload
+
+
 def _get_cached_dictionary_lookup_with_tier(
     cache_key: str, *, expected_word: str = "", lookup_lang: str = "",
 ) -> tuple[dict | None, str]:
@@ -7430,7 +7476,7 @@ def _get_cached_dictionary_lookup_with_tier(
 
     cached = _get_cached_dictionary_lookup(cache_key)
     if cached and _usable(cached):
-        return cached, "memory"
+        return _with_fresh_unit_content(cached, expected_word, lookup_lang), "memory"
     if not DICTIONARY_PERSISTENT_CACHE_ENABLED:
         return None, "none"
     persistent = get_dictionary_lookup_cache(
@@ -7439,7 +7485,7 @@ def _get_cached_dictionary_lookup_with_tier(
     )
     if isinstance(persistent, dict) and _usable(persistent):
         _set_cached_dictionary_lookup(cache_key, persistent)
-        return persistent, "db"
+        return _with_fresh_unit_content(persistent, expected_word, lookup_lang), "db"
     return None, "none"
 
 
