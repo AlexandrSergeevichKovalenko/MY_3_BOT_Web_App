@@ -471,3 +471,40 @@ def test_shared_shelf_is_sorted_by_how_often_a_pair_is_opened():
     assert "schema_version = %s" in src, (
         "в общий список попадут устаревшие пары — их открытие потребует новой оплаты"
     )
+
+
+def test_stream_prompt_spells_out_every_block_in_full():
+    """Потоковое задание обязано описывать форму КАЖДОГО блока целиком.
+
+    Замер 26.08.2026: в потоке блоки были показаны сокращённо («verdict»:[...]), и модель
+    выдумывала форму — «comparable» приходило строкой, «verdict» списком строк без слова.
+    Проверка такой ответ отвергала, и человек получал «не удалось разобрать» на ЛЮБОЙ паре.
+    """
+    from backend.openai_manager import system_message
+
+    prompt = system_message["word_diff_multilang_stream"]
+    for shape in (
+        '"comparable":{"value":"broad|partial|none"',
+        '"verdict":[{"word":"ausweisen","line":"..."}]',
+        '"roles":[{"word":"ausweisen","role":"..."}]',
+        '"interchangeable":[{"a":"ausweisen","b":"abschieben"',
+        '"words":[{"word":"ausweisen","sense_id"',
+        '"examples":[{"word":"ausweisen","de":"..."',
+        '"chooser":[{"situation":"...","word":"ausweisen"}]',
+    ):
+        assert shape in prompt, f"в потоковом задании нет полной формы блока: {shape}"
+
+
+def test_both_prompts_ask_for_the_same_thing():
+    """Обычное и потоковое задания не имеют права разойтись по смыслу."""
+    from backend.openai_manager import system_message
+
+    plain = system_message["word_diff_multilang"]
+    stream = system_message["word_diff_multilang_stream"]
+    for rule in (
+        "Ты НЕ источник словарных фактов",
+        "СНАЧАЛА РЕШИ, СРАВНИМЫ ЛИ СЛОВА",
+        "НЕ БОЛЬШЕ ДВУХ на слово",
+        "possible_but_different_meaning",
+    ):
+        assert rule in plain and rule in stream, f"задания разошлись: {rule!r}"

@@ -42809,6 +42809,14 @@ def _word_diff_gaps(diff: dict, words: list[str]) -> list[str]:
     return gaps
 
 
+def _word_diff_is_admin(user_id: int) -> bool:
+    """Хозяин общей полки разборов. Он же владелец приложения."""
+    try:
+        return int(user_id) == ECONOMICS_ADMIN_TELEGRAM_ID
+    except (TypeError, ValueError):
+        return False
+
+
 def _word_diff_can_create(user_id: int) -> bool:
     """Может ли человек заказать НОВЫЙ разбор пары. Готовые открывают все и бесплатно."""
     try:
@@ -43114,6 +43122,27 @@ def stream_webapp_dictionary_word_diff():
     )
 
 
+@app.route("/api/webapp/dictionary/diff/delete", methods=["POST"])
+def delete_webapp_dictionary_word_diff():
+    """Убрать разбор с общей полки. Только владелец, и убирается сразу у всех."""
+    from backend.database import delete_word_diff_card
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+    if not _word_diff_is_admin(int(user_id)):
+        return jsonify({"error": "Убирать разборы с общей полки может только владелец"}), 403
+
+    pair_key = str(payload.get("pair_key") or "").strip()
+    if not pair_key:
+        return jsonify({"error": "Не сказано, какой разбор убрать"}), 400
+
+    removed = delete_word_diff_card(pair_key)
+    logging.info("word_diff: владелец убрал разбор %r (записей: %s)", pair_key, removed)
+    return jsonify({"ok": True, "removed": int(removed)})
+
+
 @app.route("/api/webapp/dictionary/diff/share/link", methods=["POST"])
 def create_webapp_word_diff_share_link():
     """Ссылка на разбор отличий — как у «Полного разбора»: один короткий токен и deep-link.
@@ -43200,6 +43229,7 @@ def get_webapp_dictionary_word_diff_history():
         "items": list_word_diff_history(int(user_id), limit=limit),
         "popular": list_word_diff_popular(limit=40),
         "can_create": _word_diff_can_create(int(user_id)),
+        "is_admin": _word_diff_is_admin(int(user_id)),
     })
 
 

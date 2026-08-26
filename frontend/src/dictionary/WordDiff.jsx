@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, haptic, SpeakButton, getInitData, getDictToken } from './WordBreakdown';
 import { humanizeDictError } from './errors.js';
 import { saveLookedUpWord, savePhraseWithTranslation } from './saveUtils';
@@ -72,6 +72,9 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
   const [history, setHistory] = useState([]);   // свои сравнения
   const [popular, setPopular] = useState([]);   // всё, что разбирали все, по частоте
   const [canCreate, setCanCreate] = useState(true); // новый разбор — по полному доступу
+  const [isAdmin, setIsAdmin] = useState(false);    // хозяин общей полки
+  const [swiped, setSwiped] = useState('');         // строка, смахнутая влево
+  const swipeRef = useRef({ key: '', x: 0 });
   const [saved, setSaved] = useState(() => new Set());
   const [sharing, setSharing] = useState(false);
   const [streaming, setStreaming] = useState(false); // разбор ещё дописывается
@@ -87,6 +90,7 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
       setHistory(Array.isArray(data?.items) ? data.items : []);
       setPopular(Array.isArray(data?.popular) ? data.popular : []);
       setCanCreate(data?.can_create !== false);
+      setIsAdmin(data?.is_admin === true);
     } catch (_e) {
       // Списки — витрина, а не ответ на вопрос человека. Их отсутствие не должно мешать
       // сравнивать слова, поэтому здесь тихо. Ошибка самого разбора — громкая.
@@ -278,6 +282,38 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
     setCells(list);
     void runDiff(list);
   }, [runDiff]);
+
+  // Смахнуть строку влево, как в почте на телефоне: показывается «Удалить».
+  // Работает и пальцем, и мышью — обработчики указателя одни на оба случая.
+  const onRowPointerDown = useCallback((event, key) => {
+    if (!isAdmin) return;
+    swipeRef.current = { key, x: event.clientX };
+  }, [isAdmin]);
+
+  const onRowPointerUp = useCallback((event, key) => {
+    if (!isAdmin || swipeRef.current.key !== key) return;
+    const shift = event.clientX - swipeRef.current.x;
+    swipeRef.current = { key: '', x: 0 };
+    if (shift < -50) setSwiped(key);
+    else if (shift > 30) setSwiped('');
+  }, [isAdmin]);
+
+  const removePair = useCallback(async (pairKey) => {
+    if (!isAdmin || !pairKey) return;
+    // Убираем из списка сразу: подтверждение с сервера придёт следом, а если не придёт —
+    // строка вернётся на место и человек увидит текст ошибки.
+    const before = popular;
+    setPopular((prev) => prev.filter((row) => row.pair_key !== pairKey));
+    setSwiped('');
+    haptic('ok');
+    try {
+      await api('/api/webapp/dictionary/diff/delete', { pair_key: pairKey });
+      void loadHistory();
+    } catch (e) {
+      setPopular(before);
+      setError(humanizeDictError(e));
+    }
+  }, [isAdmin, popular, loadHistory]);
 
   const startOver = useCallback(() => {
     setCells(['', '']);
@@ -801,15 +837,28 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           <div className="wd-label">Уже разобрано — открывается бесплатно</div>
           <div className="wd-history">
             {popular.map((row) => (
-              <button
-                type="button"
-                className="wd-history-row"
-                key={`p-${row.pair_key}`}
-                onClick={() => openPair(row.words)}
-              >
-                <span className="wd-history-pair">{(row.words || []).join(' · ')}</span>
-                <span className="wd-history-count">{row.opens}</span>
-              </button>
+              <div className={`wd-swipe${swiped === row.pair_key ? ' is-open' : ''}`} key={`p-${row.pair_key}`}>
+                <button
+                  type="button"
+                  className="wd-history-row"
+                  onPointerDown={(e) => onRowPointerDown(e, row.pair_key)}
+                  onPointerUp={(e) => onRowPointerUp(e, row.pair_key)}
+                  onClick={() => (swiped === row.pair_key ? setSwiped('') : openPair(row.words))}
+                >
+                  <span className="wd-history-pair">{(row.words || []).join(' · ')}</span>
+                  <span className="wd-history-count">{row.opens}</span>
+                </button>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    className="wd-swipe-delete"
+                    aria-label="Убрать разбор с общей полки"
+                    onClick={() => removePair(row.pair_key)}
+                  >
+                    Удалить
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         </div>

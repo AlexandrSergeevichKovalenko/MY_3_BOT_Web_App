@@ -30998,6 +30998,25 @@ def count_word_diff_misses(days: int = 7) -> dict:
     return {str(row[0]): int(row[1]) for row in rows}
 
 
+def delete_word_diff_card(pair_key: str) -> int:
+    """Убрать разбор пары у ВСЕХ. Возвращает число удалённых записей.
+
+    Полка общая, поэтому и удаление общее: владелец увидел мусор — он исчезает у всех
+    сразу. Заодно чистим личные истории: строка, ведущая в никуда, хуже её отсутствия.
+    """
+    key = str(pair_key or "").strip()
+    if not key:
+        return 0
+    ensure_word_diff_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM bt_3_word_diff_cards WHERE pair_key = %s;", (key,))
+            removed = cursor.rowcount or 0
+            cursor.execute("DELETE FROM bt_3_word_diff_history WHERE pair_key = %s;", (key,))
+        conn.commit()
+    return int(removed)
+
+
 def list_word_diff_popular(limit: int = 40) -> list[dict]:
     """Всё, что кто-либо уже сравнивал, по убыванию частоты обращений.
 

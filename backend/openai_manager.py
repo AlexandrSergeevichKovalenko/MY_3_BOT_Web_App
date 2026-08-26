@@ -1472,15 +1472,28 @@ explain_language. Немецкие фразы (de, phrase) — на studied_lang
 ОТЛИЧИЕ ЭТОГО РЕЖИМА: возвращай НЕ один объект, а НЕСКОЛЬКО подряд, по одному на блок, в
 этом порядке. Между объектами не пиши ничего — ни запятых, ни текста, ни markdown.
 
-1) {"section":"comparable","comparable":{...},"compared_senses":[...]}
-2) {"section":"verdict","verdict":[...]}
-3) {"section":"overlap","overlap":{...}}
-4) {"section":"interchangeable","interchangeable":[...]}
-5) {"section":"words","words":[...]}
-6) {"section":"examples","examples":[...]}
-7) {"section":"chooser","chooser":[...]}
+Форма КАЖДОГО объекта задана полностью — соблюдай её буквально, поля не переименовывай,
+строку вместо объекта не подставляй. Порядок такой:
+
+1) {"section":"comparable",
+    "comparable":{"value":"broad|partial|none","note":"какое значение сравниваем"},
+    "compared_senses":[{"word":"ausweisen","sense_id":"s2"}]}
+2) {"section":"verdict","verdict":[{"word":"ausweisen","line":"..."}]}
+3) {"section":"overlap","overlap":{"note":"...","roles":[{"word":"ausweisen","role":"..."}]}}
+4) {"section":"interchangeable",
+    "interchangeable":[{"a":"ausweisen","b":"abschieben","value":"no|sometimes|yes","note":"..."}]}
+5) {"section":"words",
+    "words":[{"word":"ausweisen","sense_id":"s2","meaning":"...","when":"...","register":""}]}
+6) {"section":"examples",
+    "examples":[{"word":"ausweisen","de":"...","translation":"...",
+                 "contrast":{"type":"wrong","de":"...","translation":"...","why":"..."}}]}
+7) {"section":"chooser","chooser":[{"situation":"...","word":"ausweisen"}]}
 8) {"section":"trap","trap":"..."}
-9) {"section":"highlight","highlight":{...}}
+9) {"section":"highlight","highlight":{"constructions":["ausweisen:c1"],"collocations":["ausweisen:l1"]}}
+
+В verdict, words, examples и chooser поле "word" обязательно: без него мы не знаем, о
+каком слове речь, и блок не попадёт на экран. В overlap роли — СПИСОК записей со словом,
+а не объект «слово: роль».
 
 Первые два объекта — самые важные: человек читает их, пока идут остальные.
 """,
