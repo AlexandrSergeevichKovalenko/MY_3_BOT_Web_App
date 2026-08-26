@@ -9979,6 +9979,58 @@ def _examples_retry_line() -> str:
             f"\nНочью разбирается порция; что не вышло трижды — уходит в спорные.")
 
 
+def _send_panel_cards_reminder() -> None:
+    """Карточки словаря — владельцу по вторникам и пятницам в 10:00 Вены.
+
+    ЗАЧЕМ ОТДЕЛЬНОЕ СООБЩЕНИЕ. В очереди спорных фраз лежат два РАЗНЫХ вопроса.
+    Грамматический — «судьи разошлись, какой текст сохраняем» — приходит каждое утро
+    вместе с отчётом о ночной проверке. Панельный — «годятся ли примеры и перевод в
+    карточке» — не приходил НИКАК: 79 таких вопросов положил в очередь разовый скрипт
+    23.08.2026 и ушёл, а владелец наткнулся на них случайно 26.08 и не понял, что от
+    него хотят: на экране была фраза, «Судья 1» и ни одной кнопки.
+
+    Владелец, 26.08.2026: «это другая совершенно работа, и тоже должно быть сообщение
+    мне в личку с кнопкой, по которой я могу перейти на этот экран». Дни выбрал он же —
+    вторник и пятница, чтобы 79 накопленных разошлись быстрее.
+
+    МОЛЧИТ, КОГДА ОЧЕРЕДЬ ПУСТА. Не «ждут решения: 0», а просто не приходит.
+    """
+    try:
+        from backend.database import (
+            count_open_phrase_reviews_by_kind, count_panel_reviews_decided_since,
+            get_admin_telegram_ids,
+        )
+        waiting = int((count_open_phrase_reviews_by_kind() or {}).get("panel") or 0)
+        if waiting <= 0:
+            _record_sched_heartbeat("panel_cards_reminder", "completed",
+                                    {"waiting": 0, "sent": 0, "why": "очередь пуста"})
+            return
+        done = count_panel_reviews_decided_since(7)
+        text = (
+            "📗 <b>Карточки словаря: примеры и перевод</b>\n\n"
+            "Три голоса разошлись о том, годятся ли примеры и перевод в карточке. "
+            "Грамматика самой фразы тут ни при чём — это отдельная работа.\n\n"
+            f"Ждут решения: <b>{waiting}</b>\n"
+            + (f"Разобрано за неделю: <b>{done}</b>\n" if done else "")
+        )
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
+        if not token or not admin_ids:
+            return
+        markup = {"inline_keyboard": [[{"text": f"📗 Разобрать карточки ({waiting})",
+                                       "url": get_webapp_deeplink("ans_frvp_0")}]]}
+        delivered, failures = send_telegram_message_to_all(
+            admin_ids, text=text, token=token, reply_markup=markup,
+            disable_web_page_preview=True, timeout=15,
+            what="карточки словаря на разбор")
+        _record_sched_heartbeat("panel_cards_reminder", "completed",
+                                {"waiting": waiting, "done_week": done,
+                                 "sent": delivered, "failed": failures})
+    except Exception as exc:
+        logging.exception("напоминание о карточках словаря не ушло")
+        _record_sched_heartbeat("panel_cards_reminder", "failed", {"error": str(exc)[:300]})
+
+
 def _send_phrase_check_morning_report() -> None:
     """Утренний отчёт о ночной проверке фраз. Формат согласован с владельцем 06.08.2026:
     только цифры, без списка молча исправленного — список нужен лишь по спорным, и он
@@ -10004,6 +10056,10 @@ def _send_phrase_check_morning_report() -> None:
             errors = int(meta.get("errors") or 0)
             left = int(meta.get("left") or 0)
             open_reviews = int(meta.get("open_reviews") or 0)
+            closed_all_ok = int(meta.get("closed_all_ok") or 0)
+            circle_blocked = int(meta.get("circle_blocked") or 0)
+            reopened = int(meta.get("reopened_with_answer") or 0)
+            settled_ok = int((meta.get("settled") or {}).get("решено") or 0)
             cap = int(meta.get("cap") or 0) or 1
             nights = (left + cap - 1) // cap
             names = {"rechtschreibung": "опечатка", "kongruenz": "согласование",
@@ -10022,6 +10078,14 @@ def _send_phrase_check_morning_report() -> None:
                 + f"\nПод сомнением: <b>{doubt}</b>"
                 + (f" (всего ждут решения: {open_reviews})" if open_reviews else "")
                 + "\n"
+                # Всё, что ночь сделала ВМЕСТО владельца, обязано быть видно числом:
+                # молчащий механизм неотличим от сломанного (правило владельца 19.08.2026).
+                + (f"Закрыто без тебя (оба судьи «ошибки нет»): <b>{closed_all_ok}</b>\n"
+                   if closed_all_ok else "")
+                + (f"Не спросили повторно (ты это уже решал): <b>{circle_blocked}</b>\n"
+                   if circle_blocked else "")
+                + (f"Вернули с новым ответом: <b>{reopened}</b>\n" if reopened else "")
+                + (f"Спор разрешил третий судья: <b>{settled_ok}</b>\n" if settled_ok else "")
                 + (f"Осталось проверить: <b>{left}</b> (≈{nights} ноч"
                    f"{'ь' if nights == 1 else 'и' if nights < 5 else 'ей'} по {cap})\n"
                    if left else "✅ Все фразы проверены.\n")
@@ -10577,6 +10641,8 @@ _SCHEDULER_HEALTH_CATALOG = [
     # anti-spam trim of the 18:00 nag branch.
     ("today_evening_reminders_auto", "Вечерние напоминания (18:00)", 30, False, "guard"),
     ("daily_audio_auto", "Аудио с ошибками в личку (06:35 Вена)", 30, True, "guard"),
+    # Вторник и пятница: между запусками максимум 4 суток, поэтому порог 120 часов.
+    ("panel_cards_reminder", "Карточки словаря на разбор (вт и пт, 10:00 Вена)", 120, True, "guard"),
     ("private_analytics_auto", "Личная аналитика в личку (19:30)", 30, True, "guard"),
     ("daily_group_summary_auto", "Итоги дня в группе (22:30)", 30, True, "guard"),
     ("weekly_group_summary_auto", "Недельные итоги группы (Вс)", 192, True, "guard"),
@@ -44854,6 +44920,20 @@ def main():
             "cron",
             hour=int((os.getenv("PHRASE_CHECK_REPORT_HOUR") or "7").strip() or "7"),
             minute=int((os.getenv("PHRASE_CHECK_REPORT_MINUTE") or "5").strip() or "5"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Карточки словаря на разбор: вторник и пятница, 10:00 Вена --
+        # Дни выбрал владелец 26.08.2026. Отдельно от утреннего отчёта о грамматике:
+        # это другая работа и другие кнопки. Молчит, когда очередь пуста.
+        scheduler.add_job(
+            _send_panel_cards_reminder,
+            "cron",
+            day_of_week=str(os.getenv("PANEL_CARDS_REMINDER_DAYS") or "tue,fri").strip(),
+            hour=int((os.getenv("PANEL_CARDS_REMINDER_HOUR") or "10").strip() or "10"),
+            minute=int((os.getenv("PANEL_CARDS_REMINDER_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,

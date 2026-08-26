@@ -988,6 +988,13 @@ export default function AnswerOverlay({ startParam }) {
   if (kind === 'frv') {
     return <PhraseReviewScreen api={api} haptic={haptic} onClose={close} />;
   }
+  // Тот же экран, но только карточки словаря (примеры и перевод). Отдельная дверь,
+  // потому что это отдельная работа и приходит она отдельным сообщением по вторникам
+  // и пятницам: смешивать её с грамматикой в одной очереди — значит заставить владельца
+  // переключаться между двумя разными вопросами на каждой карточке.
+  if (kind === 'frvp') {
+    return <PhraseReviewScreen only="panel" api={api} haptic={haptic} onClose={close} />;
+  }
   if (kind === 'al') {
     return <ArtikelLearnGame api={api} haptic={haptic} onClose={close} />;
   }

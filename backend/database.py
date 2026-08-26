@@ -23794,7 +23794,33 @@ def get_quarantined_pool_entries(limit: int = 1000) -> list[dict]:
 # может рассудить только язык. Поэтому фразы общего словаря проверяются ночью партиями,
 # и результат хранится здесь, чтобы одну и ту же фразу не спрашивать дважды.
 
+# ┌─ НАЙДЕНО И ПОЧИНЕНО 26.08.2026. НЕ ВОЗВРАЩАТЬ DDL В КАЖДЫЙ ВЫЗОВ. ────────────┐
+# │ Ночь зовёт третьего судью в шесть потоков, и каждый поток на каждый вопрос      │
+# │ выполнял здесь CREATE TABLE IF NOT EXISTS и ALTER TABLE ADD COLUMN IF NOT       │
+# │ EXISTS. Обе команды берут AccessExclusiveLock на таблицу даже когда менять      │
+# │ нечего — и два потока встали друг против друга: «deadlock detected, process     │
+# │ 12382 waits for AccessExclusiveLock … blocked by process 12383». Прогон на 142  │
+# │ вопросах оборвался на середине.                                                 │
+# │ Схема одна на процесс и не меняется в его жизни, поэтому DDL выполняется ОДИН   │
+# │ раз, под замком. Проверять «а вдруг таблицы нет» на каждом запросе не нужно     │
+# │ никому: приложение всё равно не работает без своей схемы.                       │
+# └─────────────────────────────────────────────────────────────────────────────────┘
+_PHRASE_CHECK_SCHEMA_READY = False
+_PHRASE_CHECK_SCHEMA_LOCK = threading.Lock()
+
+
 def _ensure_phrase_check_tables(cursor) -> None:
+    global _PHRASE_CHECK_SCHEMA_READY
+    if _PHRASE_CHECK_SCHEMA_READY:
+        return
+    with _PHRASE_CHECK_SCHEMA_LOCK:
+        if _PHRASE_CHECK_SCHEMA_READY:
+            return
+        _create_phrase_check_tables(cursor)
+        _PHRASE_CHECK_SCHEMA_READY = True
+
+
+def _create_phrase_check_tables(cursor) -> None:
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS bt_3_phrase_check (
@@ -23937,12 +23963,95 @@ def mark_phrase_checked(unit_id: int, text: str, verdict: str) -> None:
         conn.commit()
 
 
-def queue_phrase_for_review(*, unit_id: int, text: str, translation: str, judges: list) -> None:
-    """Спорная фраза — владельцу на решение. Один открытый вопрос на фразу: повторная
-    проверка не должна плодить дубли в утреннем отчёте."""
+def phrase_question_is_a_repeat(text: str, proposals: list, settled: set) -> bool:
+    """Тот же самый вопрос, который владелец уже закрывал? Тогда его не задают снова.
+
+    Правило целиком: повтор — это когда владелец УЖЕ высказался по этому самому тексту
+    И ни один предложенный судьями вариант не является для него новым. Достаточно одного
+    нового варианта — и вопрос уходит к нему как обычно: значит, ночь нашла в фразе
+    ДРУГУЮ ошибку, а не ту, которую он решал.
+
+    Отдельной чистой функцией — чтобы правило можно было проверить тестом без базы:
+    именно это правило разрывает круг «auf der → auf die → auf der», в котором сгорело
+    три решения владельца за 13 дней (unit 5146, замер 26.08.2026)."""
+    if not settled:
+        return False
+    if _phrase_text_key(text) not in settled:
+        return False
+    return not any(_phrase_text_key(p) not in settled for p in (proposals or []) if p)
+
+
+def _texts_owner_already_settled(cursor, unit_id: int) -> set[str]:
+    """Всё, что владелец по этой фразе уже видел и по чему уже высказался.
+
+    Считаем И текст, который стоял на экране, И текст, который он выбрал: круг ходит
+    именно между ними («auf der» → «auf die» → «auf der»)."""
+    cursor.execute(
+        """SELECT text, decided_text FROM bt_3_phrase_review
+            WHERE unit_id = %s AND status <> 'open';""",
+        (int(unit_id),),
+    )
+    seen: set[str] = set()
+    for text, decided_text in cursor.fetchall() or []:
+        for value in (text, decided_text):
+            key = _phrase_text_key(value)
+            if key:
+                seen.add(key)
+    return seen
+
+
+def phrase_review_settled_texts(unit_id: int) -> set[str]:
+    """Что владелец по этой фразе уже видел и по чему высказался — ключами сравнения.
+
+    Ночь спрашивает это ДО постановки вопроса, чтобы решить, есть ли смысл звать
+    решающий голос: если он предложит то, что владелец уже отклонял, вопрос не нужен."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
+            return _texts_owner_already_settled(cursor, int(unit_id))
+
+
+def queue_phrase_for_review(*, unit_id: int, text: str, translation: str,
+                            judges: list, force: bool = False) -> int:
+    """Спорная фраза — владельцу на решение. Один открытый вопрос на фразу: повторная
+    проверка не должна плодить дубли в утреннем отчёте.
+
+    ⛔ КРУГ. Владелец, 26.08.2026: «зачем фраза ходит по кругу?» — и он прав, она ходила.
+    Живой случай, unit 5146: 13.08 он решил «auf der» → «auf die», 20.08 у него спросили
+    снова и он вернул «auf der», 26.08 спросили в ТРЕТИЙ раз. Три решения — ноль
+    движения, и один заход увёл фразу в неверную форму его же руками. Причина простая:
+    после решения владельца строка проверки удаляется (`apply_phrase_review_decision`),
+    фраза считается непроверенной, ночь берёт её как новую, судьи снова находят
+    «ошибку» — и вопрос едет обратно.
+
+    Правило: НИЧЕГО НОВОГО — НЕ СПРАШИВАЕМ. Вопрос не заводится, когда владелец уже
+    высказался по этому самому тексту И каждый предложенный судьями вариант он уже
+    видел раньше. Если же судьи предложили то, чего он не видел (ночь нашла ДРУГУЮ
+    ошибку), вопрос уходит к нему как обычно — и экран показывает тихой строкой, что
+    эту фразу он уже правил (`phrase_review_owner_history`).
+
+    ⚠ `force` — НЕ обход правила, а его вторая половина. Ночь, наткнувшись на повтор,
+    спрашивает решающий голос: нет ли верного текста, которого владелец НЕ видел? Если
+    есть — вопрос ставится с этим текстом, потому что это уже другой вопрос. Без этого
+    защита от круга однажды заморозила бы неверную фразу навсегда: «Der Bus fährt 100
+    Personen mit» владелец 26.08.2026 оставил «как есть», потому что верного варианта
+    на экране не было вообще, — и больше эту фразу никто бы не тронул.
+
+    Возвращает id поставленного вопроса или 0, если это был круг. Ночь считает отказы и
+    печатает их числом в утреннем отчёте: молчащая защита неотличима от сломанной.
+    """
+    proposals = [str(j.get(field) or "").strip()
+                 for j in (judges or []) if isinstance(j, dict)
+                 for field in ("corrected", "proposal")]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            settled = set() if force else _texts_owner_already_settled(cursor, int(unit_id))
+            if phrase_question_is_a_repeat(text, proposals, settled):
+                logging.info(
+                    "спорные фразы: вопрос про %r не заведён — владелец это уже решал",
+                    str(text or "")[:60])
+                return 0
             cursor.execute(
                 """
                 INSERT INTO bt_3_phrase_review (unit_id, text, translation, judges)
@@ -23954,23 +24063,45 @@ def queue_phrase_for_review(*, unit_id: int, text: str, translation: str, judges
                 (int(unit_id), str(text or ""), str(translation or ""),
                  json.dumps(judges or [], ensure_ascii=False)),
             )
+            cursor.execute(
+                "SELECT id FROM bt_3_phrase_review WHERE unit_id = %s AND status = 'open';",
+                (int(unit_id),))
+            row = cursor.fetchone()
         conn.commit()
+    return int(row[0]) if row else 0
 
 
 def list_open_phrase_reviews(limit: int = 200) -> list[dict]:
+    """Открытые вопросы для экрана — ОДНИМ запросом вместе со всем, что экран покажет.
+
+    Карточка нужна для примеров (панельный вопрос спорит именно о них), история решений —
+    для тихой строки «эту фразу ты уже правил». Тянуть их отдельными запросами нельзя:
+    экран грузит до 200 строк разом, и это были бы 400 походов в базу на одно открытие.
+    """
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
             cursor.execute(
-                """SELECT id, unit_id, text, translation, judges, arbiter
-                   FROM bt_3_phrase_review
-                   WHERE status = 'open' ORDER BY id LIMIT %s;""",
+                """SELECT r.id, r.unit_id, r.text, r.translation, r.judges, r.arbiter,
+                          u.card,
+                          COALESCE((SELECT json_agg(json_build_object(
+                                        'status', h.status, 'text', h.text,
+                                        'decided_text', h.decided_text,
+                                        'decided_at', h.decided_at) ORDER BY h.id)
+                                      FROM bt_3_phrase_review h
+                                     WHERE h.unit_id = r.unit_id AND h.status <> 'open'),
+                                   '[]'::json) AS history
+                     FROM bt_3_phrase_review r
+                     LEFT JOIN bt_3_lex_units u ON u.id = r.unit_id
+                    WHERE r.status = 'open' ORDER BY r.id LIMIT %s;""",
                 (int(limit),),
             )
             rows = cursor.fetchall()
     return [{"id": int(r[0]), "unit_id": int(r[1]), "text": r[2],
              "translation": r[3] or "", "judges": r[4] if isinstance(r[4], list) else [],
-             "arbiter": r[5] if isinstance(r[5], dict) else None}
+             "arbiter": r[5] if isinstance(r[5], dict) else None,
+             "card": r[6] if isinstance(r[6], dict) else None,
+             "history": r[7] if isinstance(r[7], list) else []}
             for r in rows]
 
 
@@ -24043,9 +24174,50 @@ def list_open_phrase_reviews_judged_blind(limit: int = 200) -> list[int]:
                 "SELECT id, judges FROM bt_3_phrase_review WHERE status = 'open' ORDER BY id;"
             )
             rows = cursor.fetchall() or []
+    # ⛔ ПАНЕЛЬНЫЕ КАРТОЧКИ СЮДА НЕ ПОПАДАЮТ. Признак «судили вслепую» — отсутствие
+    # ключа `corrected_ru` в ответе судьи, а у панельных его нет и не было НИКОГДА:
+    # их писал не судья грамматики, а разбор панели о примерах. Замер 26.08.2026: обе
+    # величины совпадали ровно, 79 и 79, то есть кнопка «пересудить со смыслом»
+    # отправила бы к грамматическому судье 79 вопросов не про грамматику — деньги за
+    # ответ на не тот вопрос и мусор обратно на экран.
     out = [int(rid) for rid, judges in rows
-           if phrase_review_was_judged_blind(judges if isinstance(judges, list) else [])]
+           if not phrase_review_is_panel(judges if isinstance(judges, list) else [])
+           and phrase_review_was_judged_blind(judges if isinstance(judges, list) else [])]
     return out[:int(limit)]
+
+
+def count_panel_reviews_decided_since(days: int = 7) -> int:
+    """Сколько карточек словаря владелец разобрал за последние дни.
+
+    Число едет в его же сообщение: работа, которой не видно, выглядит бесполезной —
+    это уже проверено на счётчике «осталось», который не двигался (24.08.2026)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                """SELECT judges FROM bt_3_phrase_review
+                    WHERE status <> 'open' AND decided_at > NOW() - make_interval(days => %s);""",
+                (int(days),))
+            rows = cursor.fetchall() or []
+    return sum(1 for (judges,) in rows
+               if phrase_review_is_panel(judges if isinstance(judges, list) else []))
+
+
+def count_open_phrase_reviews_by_kind() -> dict:
+    """Сколько открытых вопросов каждого вида: грамматика фразы и карточка словаря.
+
+    Владельцу они приходят РАЗНЫМИ сообщениями и разбираются разными кнопками, поэтому
+    и считаются отдельно: «осталось 232» на общий экран, «карточек 79» — в своё."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute("SELECT judges FROM bt_3_phrase_review WHERE status = 'open';")
+            rows = cursor.fetchall() or []
+    out = {"panel": 0, "grammar": 0}
+    for (judges,) in rows:
+        out["panel" if phrase_review_is_panel(
+            judges if isinstance(judges, list) else []) else "grammar"] += 1
+    return out
 
 
 def count_noise_phrase_reviews() -> int:
@@ -24056,6 +24228,155 @@ def count_noise_phrase_reviews() -> int:
             rows = cursor.fetchall() or []
     return sum(1 for text, judges in rows
                if phrase_review_is_noise(judges if isinstance(judges, list) else [], text))
+
+
+PANEL_REVIEW_CATEGORY = "панель из трёх голосов"
+
+
+def phrase_review_is_panel(judges: list) -> bool:
+    """Вопрос не про грамматику фразы, а про её карточку — примеры и перевод.
+
+    Такие 79 записей положил в очередь разбор панели из трёх голосов 23.08.2026
+    (`scripts/dict_panel_disputes_to_owner.py`). У них один «судья», вердикт `doubt` и
+    НИКОГДА нет исправленного текста — исправлять там нечего, там другой вопрос.
+    На экране владельца 26.08.2026 они выглядели пустой карточкой без кнопок: он смотрел
+    на них и искал, что решить. Отличаем по категории, которую ставит тот же скрипт."""
+    for j in (judges or []):
+        if isinstance(j, dict) and str(j.get("category") or "") == PANEL_REVIEW_CATEGORY:
+            return True
+    return False
+
+
+def list_open_phrase_reviews_needing_arbiter(limit: int = 60) -> list[int]:
+    """Открытые грамматические споры, по которым третий судья ещё не высказывался.
+
+    Панельные карточки сюда не попадают: там нет ни одного предложенного текста, спорить
+    третьему не о чем, а gpt-4.1 стоит денег."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                """SELECT id, judges FROM bt_3_phrase_review
+                    WHERE status = 'open' AND arbiter IS NULL
+                    ORDER BY id;"""
+            )
+            rows = cursor.fetchall() or []
+    out = []
+    for rid, judges in rows:
+        judges = judges if isinstance(judges, list) else []
+        if phrase_review_is_panel(judges):
+            continue
+        if not any(str((j or {}).get(f) or "").strip()
+                   for j in judges if isinstance(j, dict)
+                   for f in ("corrected", "proposal")):
+            continue
+        out.append(int(rid))
+    return out[:int(limit)]
+
+
+def close_all_ok_phrase_reviews() -> int:
+    """Закрыть вопросы, где ОБА судьи сказали «ошибки нет».
+
+    Это не вопрос к человеку: спорить не о чем, менять нечего, а тап он всё равно
+    тратит. Замер 26.08.2026 — 9 таких из 232. Владелец: «зачем мне то, что не нужно
+    корректировать и где не нужно решения? Оно должно тихо само лечь в базу».
+    Фраза остаётся как есть и помечается проверенной, чтобы не вернулась ночью."""
+    closed = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "SELECT id, unit_id, text, judges FROM bt_3_phrase_review WHERE status = 'open';"
+            )
+            rows = cursor.fetchall() or []
+            for rid, unit_id, text, judges in rows:
+                judges = judges if isinstance(judges, list) else []
+                if not judges or phrase_review_is_panel(judges):
+                    continue
+                if not all(str((j or {}).get("verdict") or "") == "ok"
+                           for j in judges if isinstance(j, dict)):
+                    continue
+                cursor.execute(
+                    "UPDATE bt_3_phrase_review SET status = 'kept', decided_at = NOW(), "
+                    "decided_text = %s WHERE id = %s;", (text, int(rid)))
+                cursor.execute(
+                    """INSERT INTO bt_3_phrase_check (unit_id, text_hash, verdict, checked_at)
+                       VALUES (%s, %s, 'ok', NOW())
+                       ON CONFLICT (unit_id) DO UPDATE
+                         SET text_hash = EXCLUDED.text_hash, verdict = 'ok', checked_at = NOW();""",
+                    (int(unit_id), phrase_check_text_hash(text)))
+                closed += 1
+        conn.commit()
+    if closed:
+        logging.info("спорные фразы: закрыто без владельца (оба судьи «ошибки нет») — %s", closed)
+    return closed
+
+
+def phrase_review_card_examples(card: dict | None) -> list[dict]:
+    """Примеры из карточки — то, о чём идёт спор в панельном вопросе.
+
+    Владелец 26.08.2026 смотрел на панельную карточку и не понимал, что решать: на
+    экране была фраза, «Судья 1» и ни одной кнопки. Предмет спора — ПРИМЕРЫ — на экран
+    не выводился вовсе. Теперь выводится.
+
+    Стороны не переставляем вслепую: у части карточек `source` — русский (запись
+    собиралась со стороны «русский → немецкий»). Смотрим на буквы, а не на имя поля.
+    Функция чистая: карточка уже принесена запросом экрана."""
+    if not isinstance(card, dict):
+        return []
+    out = []
+    for item in (card.get("usage_examples") or []):
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "").strip()
+        target = str(item.get("target") or "").strip()
+        if not source and not target:
+            continue
+        if _has_cyrillic_letters(source) and not _has_cyrillic_letters(target):
+            source, target = target, source
+        out.append({"de": source, "ru": target})
+    return out
+
+
+def _has_cyrillic_letters(value: str) -> bool:
+    return any("\u0400" <= ch <= "\u04ff" for ch in str(value or ""))
+
+
+def send_panel_card_to_rewrite(review_id: int) -> dict:
+    """«Переписать примеры и перевод заново» — решение владельца по панельной карточке.
+
+    Что происходит под капотом: карточка возвращается ночному переписчику примеров
+    (`backend/example_retry.py`) — вердикт снова «дефект», счётчик попыток обнуляется.
+    Ночью он берёт её другой моделью и с ненулевой температурой, а результат проходит
+    второй голос. Не выйдет и с третьего раза — карточка вернётся сюда же, к владельцу,
+    и это не круг, а честная передача: машина исчерпала себя.
+
+    Вопрос при этом закрывается: висеть в очереди, пока идёт переписывание, ему незачем.
+    """
+    out = {"unit_id": 0, "queued": False}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "SELECT unit_id, text FROM bt_3_phrase_review WHERE id = %s AND status = 'open';",
+                (int(review_id),))
+            row = cursor.fetchone()
+            if not row:
+                return out
+            unit_id, text = int(row[0]), row[1]
+            out["unit_id"] = unit_id
+            cursor.execute(
+                """UPDATE bt_3_field_checks
+                      SET verdict = 'дефект', attempts = 0,
+                          source = 'владелец: переписать заново', checked_at = NOW()
+                    WHERE unit_id = %s AND field = 'phrase_panel';""",
+                (unit_id,))
+            out["queued"] = bool(cursor.rowcount)
+            cursor.execute(
+                "UPDATE bt_3_phrase_review SET status = 'rewrite', decided_at = NOW(), "
+                "decided_text = %s WHERE id = %s;", (text, int(review_id)))
+        conn.commit()
+    return out
 
 
 def set_phrase_review_arbiter(review_id: int, verdict: dict) -> None:
@@ -24131,9 +24452,17 @@ def _phrase_same_text(a: str, b: str) -> bool:
     плюс точку в конце. Кнопка «Принять» на такую правку не меняет ничего, но выглядит
     как решение, и владелец справедливо назвал это издевательством. Точка на конце —
     не грамматика падежа, поэтому такие «правки» считаем совпадением с исходным."""
-    def norm(v: str) -> str:
-        return " ".join(str(v or "").split()).strip(" .!?…,;:")
-    return norm(a) == norm(b)
+    return _phrase_text_key(a) == _phrase_text_key(b)
+
+
+def _phrase_text_key(value: str) -> str:
+    """Ключ сравнения текстов фраз: без лишних пробелов и без знака на конце.
+
+    Вынесен из `_phrase_same_text`, чтобы одним и тем же правилом пользовались и
+    сравнение двух строк, и память о решениях владельца (см. `queue_phrase_for_review`):
+    разъедься эти два правила — и защита от круга начнёт пропускать «ту же фразу с
+    точкой» как новую."""
+    return " ".join(str(value or "").split()).strip(" .!?…,;:")
 
 
 def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = None) -> list[dict]:
@@ -24152,11 +24481,31 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
     ничего не меняет, а выглядит как решение — поэтому такие варианты сюда не попадают.
     Нумерация вариантов идёт ПОСЛЕ этого отсева, и она одна и та же везде: и на кнопках
     экрана, и при применении решения."""
-    from backend.phrase_night_check import fix_passed_check
+    from backend.phrase_night_check import _judge_proposals, fix_passed_check
 
     original = str(text or "").strip()
     out: list[dict] = []
     seen: set[str] = set()
+    # ┌─ РАЗБОР ИСТОЧНИКОВ 26.08.2026. НЕ УБИРАТЬ, НЕ РАЗОБРАВШИСЬ. ─────────────────┐
+    # │ «Anzeichen für einen Herzi» → оба судьи предложили «Herzinfarkt», и НАША     │
+    # │ проверка забраковала обоих: «изменено значение с признаков сердечного        │
+    # │ приступа на признаки инфаркта». Это одно и то же по-русски — ошиблась        │
+    # │ проверка. Третий судья, который видит и оба варианта, и сохранённый смысл,   │
+    # │ назвал их вариант верным. У владельца в итоге не осталось ни одной кнопки на │
+    # │ единственном правильном тексте.                                             │
+    # │ Голос третьего судьи СИЛЬНЕЕ приговора проверки — он информированнее (видит  │
+    # │ спор целиком) и идёт на более сильной модели. Но не молча: вариант приезжает │
+    # │ с пометкой, что проверка с ним не согласна, и владелец видит обе стороны.    │
+    # └─────────────────────────────────────────────────────────────────────────────┘
+    winner_text = ""
+    try:
+        winner = int((arbiter or {}).get("winner") or 0)
+    except (TypeError, ValueError):
+        winner = 0
+    if winner > 0:
+        proposals = _judge_proposals(judges or [])
+        if winner <= len(proposals):
+            winner_text = proposals[winner - 1]
     for n, j in enumerate(judges or [], 1):
         if not isinstance(j, dict):
             continue
@@ -24171,18 +24520,27 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
             # судьи она остаётся, но с приговором проверки, а не с кнопкой. Иначе мы
             # отдаём человеку на глаз ровно то, что обязана была отсеять система.
             # Разобрано 19.08.2026 на «in den Taschen» — неверный падеж и другое число.
-            if fix_passed_check(j, field) is False:
+            rejected = fix_passed_check(j, field) is False
+            if rejected and not _phrase_same_text(value, winner_text):
                 continue
             seen.add(value)
             out.append({"judge": n, "field": field, "text": value,
                         "ru": str(j.get(f"{field}_ru") or "").strip(),
                         # «Не проверено» — не то же самое, что «проверено и годится».
-                        "checked": fix_passed_check(j, field) is True})
+                        "checked": fix_passed_check(j, field) is True,
+                        # Проверка против, третий судья за. Владелец увидит обе стороны.
+                        "check_disputed_by_arbiter": bool(rejected)})
     # Третейский судья может предложить СВОЙ текст — когда правы оба наполовину. Он
     # идёт последним, чтобы номера уже показанных вариантов не сдвинулись под рукой у
     # владельца: он мог смотреть на экран до того, как спор разрешили.
     better = str((arbiter or {}).get("better") or "").strip()
-    if (better and not _phrase_same_text(better, original)
+    # Третий судья — ТАКАЯ ЖЕ МОДЕЛЬ, и его текст проходит ту же проверку, что правки
+    # первых двух (`phrase_night_check.settle_dispute` кладёт итог в `better_check`).
+    # Не прошёл — кнопки «сохранить» у него нет, как и у забракованных правок судей;
+    # с экрана он при этом не исчезает, владелец видит текст и причину отказа.
+    better_ok = fix_passed_check({"better_check": (arbiter or {}).get("better_check")},
+                                 "better") is not False
+    if (better and better_ok and not _phrase_same_text(better, original)
             and not any(_phrase_same_text(better, prev) for prev in seen)):
         out.append({"judge": 0, "field": "arbiter", "text": better,
                     "ru": str((arbiter or {}).get("better_ru") or "").strip()})
