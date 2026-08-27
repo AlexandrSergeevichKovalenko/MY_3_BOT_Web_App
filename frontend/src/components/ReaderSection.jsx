@@ -2082,7 +2082,15 @@ export default function ReaderSection(props) {
                       title={tr('Перейти к закладке', 'Zur Lesezeiche springen')}
                       aria-label={tr('Перейти к закладке', 'Zur Lesezeiche springen')}
                     >
-                      <svg viewBox="0 0 18 18" fill="none"><path d="M9 3.5v8M9 11.5 6.4 8.9M9 11.5l2.6-2.6M4.5 14h9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                      {/* Arrow INTO a solid bookmark: the arrow reads as movement, the
+                          bookmark as the destination. The old down-arrow-onto-a-line was
+                          the universal «download» glyph — owner 27.08.2026. The neighbour
+                          «set bookmark» stays an OUTLINE bookmark, so the pair reads as
+                          «отметить» / «вернуться к отметке». */}
+                      <svg viewBox="0 0 18 18" fill="none">
+                        <path d="M2.2 9h5.2M5.5 6.9 7.7 9l-2.2 2.1" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M11.4 3.6h3.4a.8.8 0 0 1 .8.8v9.8l-2.5-1.6-2.5 1.6V4.4a.8.8 0 0 1 .8-.8Z" fill="currentColor" />
+                      </svg>
                     </button>
                   )}
                   {!readerIsArticle && (
