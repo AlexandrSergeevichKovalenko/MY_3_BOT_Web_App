@@ -544,6 +544,7 @@ from backend.database import (
     count_card_review_response_seconds_today,
     has_available_new_srs_cards,
     get_manual_training_selection_card_ids,
+    describe_manual_selection_sleep,
     replace_manual_training_selection,
     add_cards_to_manual_training_selection,
     clear_manual_training_selection,
@@ -6504,6 +6505,63 @@ def _resolve_flashcards_manual_selection(
         target_lang=target_lang,
         cursor=cursor,
     )
+
+
+def _build_manual_selection_availability(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    card_ids: list[int],
+    now_utc: datetime | None = None,
+    cursor=None,
+) -> dict:
+    """Честная сводка по ручной выборке: сколько отмечено, сколько очередь отдаст СЕЙЧАС,
+    сколько спит до своего срока и когда вернётся ближайшее.
+
+    ЗАЧЕМ. Счётчик «Выбрано сейчас: 9» обещал девять карточек, а очередь отдавала
+    столько, сколько разрешал интервал повторения (замер 27.08.2026: 8 из 9, девятое
+    спало до следующего дня). Два разных числа на одном экране — это и есть дефект,
+    который человек видит как «программа потеряла мои слова». Алгоритм не трогаем
+    (решение владельца 27.08.2026), но экран обязан назвать оба числа заранее.
+
+    ЕДИНЫЙ ИСТОЧНИК. `available_now` берётся из _compute_srs_queue_info — того же
+    расчёта, которым живёт сама выдача карточек. Своего правила отбора здесь нет
+    специально: иначе экран и очередь разошлись бы уже на следующей правке.
+    """
+    now_utc = now_utc or datetime.now(timezone.utc)
+    normalized_ids = [int(card_id) for card_id in (card_ids or []) if int(card_id) > 0]
+    if not normalized_ids:
+        return {
+            "selected_total": 0,
+            "available_now": 0,
+            "asleep_count": 0,
+            "next_available_at": None,
+            "not_trainable_count": 0,
+        }
+    queue_info = _compute_srs_queue_info(
+        user_id=int(user_id),
+        now_utc=now_utc,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        queue_source="manual",
+        allowed_card_ids=normalized_ids,
+        cursor=cursor,
+    )
+    sleep_info = describe_manual_selection_sleep(
+        user_id=int(user_id),
+        card_ids=normalized_ids,
+        now_utc=now_utc,
+        cursor=cursor,
+    )
+    available_now = int(queue_info.get("due_count") or 0) + int(queue_info.get("new_remaining_today") or 0)
+    return {
+        "selected_total": len(normalized_ids),
+        "available_now": max(0, available_now),
+        "asleep_count": int(sleep_info.get("asleep_count") or 0),
+        "next_available_at": sleep_info.get("next_due_at"),
+        "not_trainable_count": int(sleep_info.get("not_trainable_count") or 0),
+    }
 
 
 def _build_upgrade_payload(plan_code: str = "pro") -> dict:
@@ -55835,6 +55893,15 @@ def get_flashcards_manual_selection():
             source_lang=source_lang,
             target_lang=target_lang,
         )
+        # Сводка «сколько доступно сейчас / когда вернутся спящие» считается ЗДЕСЬ, а не
+        # на горячем пути выдачи карточек: экран настроек открывают редко, а /api/cards/next
+        # зовут на каждую карточку. Ручной режим — единственный, где эти запросы вообще идут.
+        availability = _build_manual_selection_availability(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            card_ids=card_ids,
+        )
     except Exception as exc:
         return _сбой_запроса(exc, что="get_flashcards_manual_selection", код=500)
     return jsonify(
@@ -55843,6 +55910,7 @@ def get_flashcards_manual_selection():
             "queue_source": "manual",
             "card_ids": card_ids,
             "selected_count": len(card_ids),
+            "availability": availability,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )

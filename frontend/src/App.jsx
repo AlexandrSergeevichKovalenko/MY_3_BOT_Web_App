@@ -1319,6 +1319,40 @@ function formatLimitResetDateTime(value, locale = 'ru-RU') {
   }).format(new Date(timestampMs));
 }
 
+// «Когда вернётся спящая карточка» — человеческим текстом: сегодня/завтра + время по
+// Вене, дальше — датой. Нужен для ручной выборки: интервал повторения может увести
+// слово на часы или на недели, и «28.08.2026T19:41:49Z» человеку ничего не говорит.
+// Ничего не подставляет: не разобрали метку времени — вернётся пустая строка, и
+// вызывающий просто не покажет строку (а не «—» и не выдуманную дату).
+function formatManualSelectionReturnAt(value, uiLang = 'ru') {
+  const timestampMs = parseIsoTimestampMs(value);
+  if (!Number.isFinite(timestampMs)) {
+    return '';
+  }
+  const locale = uiLang === 'de' ? 'de-AT' : 'ru-RU';
+  const timeZone = 'Europe/Vienna';
+  const dayKey = (ms) => new Intl.DateTimeFormat('en-CA', {
+    year: 'numeric', month: '2-digit', day: '2-digit', timeZone,
+  }).format(new Date(ms));
+  const time = new Intl.DateTimeFormat(locale, {
+    hour: '2-digit', minute: '2-digit', timeZone, hour12: false,
+  }).format(new Date(timestampMs));
+  const nowMs = Date.now();
+  const todayKey = dayKey(nowMs);
+  const tomorrowKey = dayKey(nowMs + 24 * 60 * 60 * 1000);
+  const targetKey = dayKey(timestampMs);
+  if (targetKey === todayKey) {
+    return uiLang === 'de' ? `heute um ${time}` : `сегодня в ${time}`;
+  }
+  if (targetKey === tomorrowKey) {
+    return uiLang === 'de' ? `morgen um ${time}` : `завтра в ${time}`;
+  }
+  const date = new Intl.DateTimeFormat(locale, {
+    day: '2-digit', month: '2-digit', timeZone,
+  }).format(new Date(timestampMs));
+  return uiLang === 'de' ? `am ${date} um ${time}` : `${date} в ${time}`;
+}
+
 const SKILL_CATEGORY_LOCALIZATION = {
   'Verbs': { ru: 'Глаголы', de: 'Verben' },
   'Tenses': { ru: 'Времена', de: 'Zeiten' },
@@ -7269,6 +7303,10 @@ function AppInner() {
   const [manualTrainingSelectionSaving, setManualTrainingSelectionSaving] = useState(false);
   const [manualTrainingSelectionFolderBusyKey, setManualTrainingSelectionFolderBusyKey] = useState('');
   const [manualTrainingSelectionError, setManualTrainingSelectionError] = useState('');
+  // Сводка «сколько из отмеченного доступно ПРЯМО СЕЙЧАС и когда вернутся спящие».
+  // Приходит с бэкенда (/flashcards/manual-selection → availability); сами ничего не
+  // домысливаем: пока не пришла — null, и строка на экране не показывается вовсе.
+  const [manualTrainingSelectionAvailability, setManualTrainingSelectionAvailability] = useState(null);
   const [vocabMoveModalOpen, setVocabMoveModalOpen] = useState(false);
   const [vocabMoveLoading, setVocabMoveLoading] = useState(false);
   const [vocabMoveError, setVocabMoveError] = useState('');
@@ -27374,14 +27412,31 @@ function AppInner() {
         title: queueSource === 'manual'
           ? tr('В текущей выборке сейчас нет доступных карточек', 'In deiner aktuellen Auswahl gibt es aktuell keine verfügbaren Karten')
           : tr('На сегодня слова для тренировки уже закончились', 'Für heute sind die Trainingswörter schon erledigt'),
-        body: tr(
-          queueSource === 'manual'
-            ? 'Выбранные слова уже повторены или ещё не дошли по интервалу до следующего показа. Можно вернуться позже или собрать другую текущую выборку.'
-            : 'Вы уже прошли доступные карточки из общей очереди через Space Repetition или другой режим. Возвращайтесь позже или добавьте новые слова в словарь.',
-          queueSource === 'manual'
-            ? 'Die ausgewählten Wörter wurden bereits wiederholt oder sind noch nicht wieder fällig. Komm später wieder oder stelle eine andere aktuelle Auswahl zusammen.'
-            : 'Du hast die verfügbaren Karten aus der gemeinsamen Warteschlange bereits in Space Repetition oder einem anderen Modus durchgearbeitet. Komm später wieder oder füge neue Wörter zum Wörterbuch hinzu.'
-        ),
+        // ТОЧНОЕ ВРЕМЯ ВОЗВРАТА, а не «попробуйте позже». Человек, отметивший слова
+        // руками, вправе знать, КОГДА они вернутся: интервал повторения может увести
+        // карточку на двенадцать часов, а может на месяц. Время приходит с сервера
+        // (availability.next_available_at); не пришло — строки просто нет, ничего не
+        // выдумываем.
+        body: queueSource === 'manual'
+          ? (() => {
+              const returnAt = formatManualSelectionReturnAt(meta?.next_available_at, uiLang);
+              const head = tr(
+                'Все слова из вашей выборки уже повторены — тренажёр вернёт их, когда подойдёт срок повторения.',
+                'Alle Wörter deiner Auswahl sind wiederholt — das Training zeigt sie wieder, wenn der nächste Termin da ist.'
+              );
+              const when = returnAt
+                ? tr(`\n\nБлижайшее вернётся ${returnAt}.`, `\n\nDas nächste kommt ${returnAt} zurück.`)
+                : '';
+              const tail = tr(
+                '\n\nЕсли хотите заниматься прямо сейчас — отметьте в словаре другие слова.',
+                '\n\nWenn du sofort weitermachen willst, markiere im Wörterbuch andere Wörter.'
+              );
+              return `${head}${when}${tail}`;
+            })()
+          : tr(
+              'Вы уже прошли доступные карточки из общей очереди через Space Repetition или другой режим. Возвращайтесь позже или добавьте новые слова в словарь.',
+              'Du hast die verfügbaren Karten aus der gemeinsamen Warteschlange bereits in Space Repetition oder einem anderen Modus durchgearbeitet. Komm später wieder oder füge neue Wörter zum Wörterbuch hinzu.'
+            ),
       };
     }
     if (normalizedReason === 'blocks_no_eligible_cards_today') {
@@ -27468,7 +27523,11 @@ function AppInner() {
       }
       const data = await response.json();
       setManualTrainingSelectionIds(normalizePositiveIdList(data?.card_ids || []));
+      setManualTrainingSelectionAvailability(
+        data?.availability && typeof data.availability === 'object' ? data.availability : null
+      );
     } catch (error) {
+      setManualTrainingSelectionAvailability(null);
       const friendly = normalizeNetworkErrorMessage(
         error,
         'Не удалось загрузить текущую выборку.',
@@ -27636,6 +27695,89 @@ function AppInner() {
   }, [fetchWithTimeout, initData, initDataMissingMsg, loadVocabLibrary, manualTrainingSelectionIds, normalizeNetworkErrorMessage, readApiError]);
 
   const manualTrainingSelectionCount = manualTrainingSelectionIds.length;
+
+  // ЧТО ЭТО. Строка под счётчиком ручной выборки: «сегодня доступно N» и «остальные
+  // вернутся тогда-то». Без неё экран обещал столько карточек, сколько отмечено, а
+  // очередь отдавала столько, сколько разрешал интервал повторения (замер 27.08.2026:
+  // отмечено 9, отдано 8, девятое спало до следующего вечера — и человек решил, что
+  // программа потеряла его слова). Алгоритм не меняем, меняем ЧЕСТНОСТЬ экрана.
+  //
+  // Числа приходят с сервера из того же расчёта, что кормит саму выдачу; здесь ничего
+  // не вычисляется и не угадывается. Нет данных (ещё не загрузились или сеть упала) —
+  // возвращаем null, и строки просто нет.
+  const manualSelectionNote = useMemo(() => {
+    const info = manualTrainingSelectionAvailability;
+    if (!info || typeof info !== 'object') return null;
+    const selected = Math.max(0, Math.trunc(Number(info.selected_total || 0)));
+    if (selected <= 0) return null;
+    const availableNow = Math.max(0, Math.trunc(Number(info.available_now || 0)));
+    const asleep = Math.max(0, Math.trunc(Number(info.asleep_count || 0)));
+    const notTrainable = Math.max(0, Math.trunc(Number(info.not_trainable_count || 0)));
+    const returnAt = formatManualSelectionReturnAt(info.next_available_at, uiLang);
+    const availableLine = tr(
+      `сегодня доступно ${availableNow} из ${selected}`,
+      `heute ${availableNow} von ${selected} verfügbar`
+    );
+    let sleepLine = '';
+    if (asleep > 0) {
+      const wordFormRu = asleep === 1 ? 'слово ждёт' : 'слов ждут';
+      sleepLine = returnAt
+        ? tr(
+            `${asleep} ${wordFormRu} своего срока повторения — ближайшее вернётся ${returnAt}.`,
+            `${asleep} ${asleep === 1 ? 'Wort wartet' : 'Wörter warten'} auf den nächsten Wiederholungstermin — das nächste kommt ${returnAt} zurück.`
+          )
+        : tr(
+            `${asleep} ${wordFormRu} своего срока повторения.`,
+            `${asleep} ${asleep === 1 ? 'Wort wartet' : 'Wörter warten'} auf den nächsten Wiederholungstermin.`
+          );
+    }
+    let brokenLine = '';
+    if (notTrainable > 0) {
+      brokenLine = tr(
+        `${notTrainable} ${notTrainable === 1 ? 'слово' : 'слов'} из выборки тренажёр показать не сможет — откройте словарь и отметьте вместо них другие.`,
+        `${notTrainable} ${notTrainable === 1 ? 'Wort' : 'Wörter'} aus der Auswahl kann das Training nicht zeigen — markiere im Wörterbuch andere.`
+      );
+    }
+    return {
+      availableNow,
+      selected,
+      asleep,
+      availableLine,
+      sleepLine,
+      brokenLine,
+      returnAt,
+    };
+  }, [manualTrainingSelectionAvailability, tr, uiLang]);
+
+  // Пустой экран ручной выборки обязан назвать ВРЕМЯ возврата, а сводка грузилась до
+  // тренировки и за сессию устарела (все карточки как раз и уехали по срокам). Поэтому
+  // в момент, когда очередь опустела, перечитываем её РОВНО ОДИН РАЗ. На горячий путь
+  // выдачи карточек это не ложится: запрос уходит на конец тренировки, а не на каждую
+  // карточку.
+  const manualEmptyRefreshedRef = useRef(false);
+  useEffect(() => {
+    const isManualFsrsEmpty = flashcardActiveMode === 'fsrs'
+      && flashcardQueueSource === 'manual'
+      && !srsLoading
+      && !srsCard
+      && !srsError
+      && manualTrainingSelectionIds.length > 0;
+    if (!isManualFsrsEmpty) {
+      manualEmptyRefreshedRef.current = false;
+      return;
+    }
+    if (manualEmptyRefreshedRef.current) return;
+    manualEmptyRefreshedRef.current = true;
+    void loadManualTrainingSelection();
+  }, [
+    flashcardActiveMode,
+    flashcardQueueSource,
+    srsLoading,
+    srsCard,
+    srsError,
+    manualTrainingSelectionIds.length,
+    loadManualTrainingSelection,
+  ]);
 
   const toggleManualTrainingSelectionCard = useCallback((cardId) => {
     const normalizedCardId = Number(cardId);
@@ -41230,6 +41372,21 @@ function AppInner() {
                               </button>
                             </div>
                           )}
+                          {/* ЧЕСТНОЕ ВТОРОЕ ЧИСЛО. Счётчик выше говорит, сколько СЛОВ ОТМЕЧЕНО, а очередь
+                              отдаёт только те, у которых подошёл срок повторения. Пока эти два числа не были
+                              названы РЯДОМ, человек читал «Выбрано: 9» как обещание девяти карточек и считал
+                              пропавшими те, что просто спят до своего часа (разбор 27.08.2026). */}
+                          {flashcardQueueSource === 'manual' && manualSelectionNote && (
+                            <div className="flashcard-queue-source-availability">
+                              <span className="flashcard-queue-source-availability-now">{manualSelectionNote.availableLine}</span>
+                              {manualSelectionNote.sleepLine && (
+                                <span className="flashcard-queue-source-availability-sleep">{manualSelectionNote.sleepLine}</span>
+                              )}
+                              {manualSelectionNote.brokenLine && (
+                                <span className="flashcard-queue-source-availability-broken">{manualSelectionNote.brokenLine}</span>
+                              )}
+                            </div>
+                          )}
                           {flashcardQueueSource === 'manual' && manualTrainingSelectionCount <= 0 && !manualTrainingSelectionLoading && (
                             <div className="flashcard-queue-source-note">
                               {tr(
@@ -41309,7 +41466,12 @@ function AppInner() {
                               : 'shared_queue_completed_today';
                             const emptyState = buildFlashcardsEmptyState(
                               emptyReason,
-                              { queue_source: flashcardQueueSource === 'manual' ? 'manual' : 'system' },
+                              {
+                                queue_source: flashcardQueueSource === 'manual' ? 'manual' : 'system',
+                                // Срок ближайшего возврата — с сервера, из той же сводки,
+                                // что показана на экране выбора режима.
+                                next_available_at: manualTrainingSelectionAvailability?.next_available_at || null,
+                              },
                               'fsrs'
                             );
                             return emptyState ? (
@@ -42216,6 +42378,21 @@ function AppInner() {
                                       </button>
                                     </div>
                                   )}
+                                  {/* ЧЕСТНОЕ ВТОРОЕ ЧИСЛО. Счётчик выше говорит, сколько СЛОВ ОТМЕЧЕНО, а очередь
+                                      отдаёт только те, у которых подошёл срок повторения. Пока эти два числа не были
+                                      названы РЯДОМ, человек читал «Выбрано: 9» как обещание девяти карточек и считал
+                                      пропавшими те, что просто спят до своего часа (разбор 27.08.2026). */}
+                                  {flashcardQueueSource === 'manual' && manualSelectionNote && (
+                                    <div className="flashcard-queue-source-availability">
+                                      <span className="flashcard-queue-source-availability-now">{manualSelectionNote.availableLine}</span>
+                                      {manualSelectionNote.sleepLine && (
+                                        <span className="flashcard-queue-source-availability-sleep">{manualSelectionNote.sleepLine}</span>
+                                      )}
+                                      {manualSelectionNote.brokenLine && (
+                                        <span className="flashcard-queue-source-availability-broken">{manualSelectionNote.brokenLine}</span>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
                                 <div className="setup-group">
                                   <div className="setup-label">{tr('Card Queue', 'Card Queue')}</div>
@@ -42275,6 +42452,21 @@ function AppInner() {
                                         >
                                           {tr('Выбрать слова', 'Wörter wählen')}
                                         </button>
+                                      </div>
+                                    )}
+                                    {/* ЧЕСТНОЕ ВТОРОЕ ЧИСЛО. Счётчик выше говорит, сколько СЛОВ ОТМЕЧЕНО, а очередь
+                                        отдаёт только те, у которых подошёл срок повторения. Пока эти два числа не были
+                                        названы РЯДОМ, человек читал «Выбрано: 9» как обещание девяти карточек и считал
+                                        пропавшими те, что просто спят до своего часа (разбор 27.08.2026). */}
+                                    {flashcardQueueSource === 'manual' && manualSelectionNote && (
+                                      <div className="flashcard-queue-source-availability">
+                                        <span className="flashcard-queue-source-availability-now">{manualSelectionNote.availableLine}</span>
+                                        {manualSelectionNote.sleepLine && (
+                                          <span className="flashcard-queue-source-availability-sleep">{manualSelectionNote.sleepLine}</span>
+                                        )}
+                                        {manualSelectionNote.brokenLine && (
+                                          <span className="flashcard-queue-source-availability-broken">{manualSelectionNote.brokenLine}</span>
+                                        )}
                                       </div>
                                     )}
                                   </div>

@@ -10684,6 +10684,31 @@ body:has(.webapp-page.is-theme-light),
   line-height: 1.4;
 }
 
+/* Строка правды под счётчиком ручной выборки: «сегодня доступно N из M» и когда
+   вернутся спящие слова. Появилась 27.08.2026 — до неё экран называл только число
+   отмеченных слов, и человек считал пропавшими те, что ждут своего срока. */
+.flashcard-queue-source-availability {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.flashcard-queue-source-availability-now {
+  color: #dbe8ff;
+  font-weight: 700;
+}
+
+.flashcard-queue-source-availability-sleep {
+  color: rgba(191, 209, 246, 0.82);
+}
+
+.flashcard-queue-source-availability-broken {
+  color: rgba(252, 211, 77, 0.92);
+}
+
 .flashcard-mode-list {
   display: grid;
   gap: 0;
@@ -28094,6 +28119,15 @@ body.worldnews-active .webapp-topbar {
 }
 .webapp-page.is-theme-light .webapp-flashcards .flashcard-queue-source-note {
   color: var(--t-text-muted);
+}
+.webapp-page.is-theme-light .webapp-flashcards .flashcard-queue-source-availability-now {
+  color: var(--t-text-primary);
+}
+.webapp-page.is-theme-light .webapp-flashcards .flashcard-queue-source-availability-sleep {
+  color: var(--t-text-muted);
+}
+.webapp-page.is-theme-light .webapp-flashcards .flashcard-queue-source-availability-broken {
+  color: #9a6a12;
 }
 .webapp-page.is-theme-light .webapp-flashcards .flashcard-queue-source-link {
   border-color: rgba(167, 125, 75, 0.45);
