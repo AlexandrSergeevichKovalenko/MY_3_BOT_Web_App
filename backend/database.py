@@ -15871,6 +15871,276 @@ def is_access_denied_for_user(user_id: int) -> bool:
             return cursor.fetchone() is not None
 
 
+# ── Потолок впуска и очередь ────────────────────────────────────────────────
+# Владелец 27.08.2026, при разборе плана запуска: наращивать людей ступенями, чтобы
+# на каждой ступени видеть, справляется ли программа. Потолок — по числу ВПУЩЕННЫХ
+# (строк в bt_3_allowed_users), это единственное число, которое человеку можно честно
+# объяснить номером в очереди. Ступень двигает владелец кнопкой, увидев состояние.
+#
+# Пусто или 0 → потолка нет, дверь открыта всем. Это и есть поведение до 27.08.2026,
+# и оно остаётся значением по умолчанию: включает потолок владелец, осознанно.
+_ACCESS_WAITLIST_SCHEMA_DONE = False
+
+
+def ensure_access_waitlist_schema() -> None:
+    """Таблица очереди на вход. Свой страж, а не общий `ensure_webapp_tables`: в
+    очередь пишет И бот (дверь /start), а он ту общую подготовку не зовёт — на первом
+    же отказанном человеке очередь упала бы на несуществующей таблице."""
+    global _ACCESS_WAITLIST_SCHEMA_DONE
+    if _ACCESS_WAITLIST_SCHEMA_DONE:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_access_waitlist (
+                    user_id      BIGINT PRIMARY KEY,
+                    username     TEXT,
+                    source       TEXT NOT NULL DEFAULT '',
+                    requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    admitted_at  TIMESTAMPTZ,
+                    notified_at  TIMESTAMPTZ
+                );
+            """)
+            # Номер в очереди = сколько ждущих встали раньше. Индекс держит ровно этот
+            # порядок, чтобы номер считался проходом по ждущим, а не сортировкой всей
+            # таблицы (впущенные из неё не удаляются — по ним видно, кому уже сказали).
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_access_waitlist_waiting
+                ON bt_3_access_waitlist (requested_at ASC) WHERE admitted_at IS NULL;
+            """)
+            # Потолок живёт В БАЗЕ, а не в переменной окружения. Ступень двигает
+            # владелец КНОПКОЙ под утренним сообщением (его решение 27.08.2026), а
+            # кнопка не может править переменную на Railway — для этого нужен передеплой.
+            # Переменная PUBLIC_ACCESS_CAP осталась только как НАЧАЛЬНОЕ значение:
+            # ею потолок заводят один раз, дальше он двигается кнопкой.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_access_gate (
+                    id         SMALLINT PRIMARY KEY DEFAULT 1,
+                    cap        INTEGER NOT NULL DEFAULT 0,
+                    updated_by BIGINT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (id = 1)
+                );
+            """)
+            cursor.execute(
+                "INSERT INTO bt_3_access_gate (id, cap) VALUES (1, %s) "
+                "ON CONFLICT (id) DO NOTHING;",
+                (max(0, _access_cap_env_seed()),),
+            )
+        conn.commit()
+    _ACCESS_WAITLIST_SCHEMA_DONE = True
+
+
+def _access_cap_env_seed() -> int:
+    """НАЧАЛЬНОЕ значение потолка при самом первом создании таблицы. Дальше потолок
+    живёт в базе и двигается кнопкой; менять переменную задним числом бесполезно."""
+    try:
+        return max(0, int((os.getenv("PUBLIC_ACCESS_CAP") or "0").strip() or "0"))
+    except Exception:
+        logging.error("PUBLIC_ACCESS_CAP задан не числом — считаем, что потолка нет", exc_info=True)
+        return 0
+
+
+def public_access_cap() -> int:
+    """Текущий потолок впуска. 0 — потолка нет, дверь открыта всем (поведение до
+    27.08.2026 и значение по умолчанию: потолок включает владелец, осознанно)."""
+    cached = _ACCESS_COUNT_CACHE.get("cap")
+    if cached and (time.time() - cached[1]) < _ACCESS_COUNT_TTL_SEC:
+        return cached[0]
+    ensure_access_waitlist_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT cap FROM bt_3_access_gate WHERE id = 1;")
+            row = cursor.fetchone()
+    cap = max(0, int((row or [0])[0] or 0))
+    _ACCESS_COUNT_CACHE["cap"] = (cap, time.time())
+    return cap
+
+
+def raise_access_cap(by: int, *, admin_id: int | None = None) -> int:
+    """Поднять потолок на `by` и вернуть новый. Именно это делает кнопка «Впустить N»:
+    впустить порцию и НЕ поднять потолок — значит тут же упереться в него снова."""
+    шаг = max(0, int(by or 0))
+    ensure_access_waitlist_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_access_gate SET cap = GREATEST(0, cap + %s), "
+                "updated_by = %s, updated_at = NOW() WHERE id = 1 RETURNING cap;",
+                (шаг, admin_id),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    _ACCESS_COUNT_CACHE.pop("cap", None)
+    return int((row or [0])[0] or 0)
+
+
+def set_access_cap(cap: int, *, admin_id: int | None = None) -> int:
+    """Задать потолок числом. 0 — снять потолок и открыть дверь всем."""
+    значение = max(0, int(cap or 0))
+    ensure_access_waitlist_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_access_gate SET cap = %s, updated_by = %s, updated_at = NOW() "
+                "WHERE id = 1 RETURNING cap;",
+                (значение, admin_id),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    _ACCESS_COUNT_CACHE.pop("cap", None)
+    return int((row or [0])[0] or 0)
+
+
+_ACCESS_COUNT_CACHE: dict[str, tuple[int, float]] = {}
+_ACCESS_COUNT_TTL_SEC = 5.0
+
+
+def count_allowed_users() -> int:
+    """Сколько людей уже впущено. Держим 5 секунд: при упёртом потолке сюда приходит
+    каждая попытка отказанного, а число между попытками не меняется."""
+    cached = _ACCESS_COUNT_CACHE.get("allowed")
+    if cached and (time.time() - cached[1]) < _ACCESS_COUNT_TTL_SEC:
+        return cached[0]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM bt_3_allowed_users;")
+            n = int((cursor.fetchone() or [0])[0] or 0)
+    _ACCESS_COUNT_CACHE["allowed"] = (n, time.time())
+    return n
+
+
+def _public_access_cap_reached(user_id: int) -> bool:
+    """Упёрлись ли в потолок. Сбой счёта НЕ выдаётся за «место есть»: не смогли
+    посчитать — не впускаем и говорим об этом в лог. Впустить лишнего мы всегда успеем
+    следующей ступенью, а вот впустить толпу на слабый сервер обратно не отыграешь."""
+    cap = public_access_cap()
+    if cap <= 0:
+        return False
+    try:
+        return count_allowed_users() >= cap
+    except Exception:
+        logging.error("не смогли посчитать впущенных — считаем потолок достигнутым "
+                      "(user_id=%s, cap=%s)", user_id, cap, exc_info=True)
+        return True
+
+
+def add_to_access_waitlist(user_id: int, *, username: str | None = None,
+                           source: str | None = None) -> None:
+    """Поставить человека в очередь. Повторное открытие приложения место не двигает:
+    ON CONFLICT DO NOTHING хранит ПЕРВОЕ обращение, иначе номер бы прыгал туда-сюда и
+    самые терпеливые уезжали бы в конец."""
+    ensure_access_waitlist_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO bt_3_access_waitlist (user_id, username, source) "
+                "VALUES (%s, %s, %s) ON CONFLICT (user_id) DO NOTHING;",
+                (int(user_id), username, str(source or "").strip()),
+            )
+        conn.commit()
+
+
+def access_waitlist_position(user_id: int) -> int | None:
+    """Номер человека в очереди, считая с 1. None — его в очереди нет."""
+    ensure_access_waitlist_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT (SELECT COUNT(*) FROM bt_3_access_waitlist e "
+                "        WHERE e.admitted_at IS NULL AND e.requested_at < w.requested_at) + 1 "
+                "FROM bt_3_access_waitlist w "
+                "WHERE w.user_id = %s AND w.admitted_at IS NULL;",
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    return int(row[0]) if row else None
+
+
+def count_access_waitlist() -> int:
+    """Сколько человек сейчас ждут."""
+    ensure_access_waitlist_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_access_waitlist WHERE admitted_at IS NULL;")
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def admit_from_access_waitlist(limit: int) -> list[dict]:
+    """Впустить первых `limit` из очереди — по порядку обращения, без исключений.
+
+    Возвращает впущенных: [{user_id, username}]. Каждому из них ОБЯЗАНО уйти
+    сообщение «открыли» — иначе человек так и не узнает, что его пустили, а мы
+    пообещали ему написать. Отметку `notified_at` ставит тот, кто доставил письмо.
+    """
+    n = max(0, int(limit or 0))
+    if n <= 0:
+        return []
+    ensure_access_waitlist_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, username FROM bt_3_access_waitlist "
+                "WHERE admitted_at IS NULL ORDER BY requested_at ASC LIMIT %s "
+                "FOR UPDATE SKIP LOCKED;",
+                (n,),
+            )
+            rows = cursor.fetchall() or []
+            впущенные = []
+            for uid, uname in rows:
+                cursor.execute(
+                    "INSERT INTO bt_3_allowed_users (user_id, username, added_by, note) "
+                    "VALUES (%s, %s, NULL, %s) ON CONFLICT (user_id) DO NOTHING;",
+                    (int(uid), uname, f"{AUTO_ACCESS_NOTE_PREFIX}: waitlist"),
+                )
+                cursor.execute(
+                    "UPDATE bt_3_access_waitlist SET admitted_at = NOW() WHERE user_id = %s;",
+                    (int(uid),),
+                )
+                впущенные.append({"user_id": int(uid), "username": uname})
+        conn.commit()
+    _ACCESS_COUNT_CACHE.pop("allowed", None)
+    for человек in впущенные:
+        invalidate_telegram_user_allowed_cache(человек["user_id"])
+        _invalidate_webapp_allowlist_redis(человек["user_id"])
+    return впущенные
+
+
+def mark_waitlist_user_notified(user_id: int) -> None:
+    """Пометить, что человеку сказали об открытии. Ставится ПОСЛЕ доставки."""
+    ensure_access_waitlist_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_access_waitlist SET notified_at = NOW() WHERE user_id = %s;",
+                (int(user_id),),
+            )
+        conn.commit()
+
+
+def list_admitted_but_not_notified(limit: int = 200) -> list[dict]:
+    """Впущенные, которым ещё НЕ сказали. Обещание «напишем» держится через эту
+    выборку: доставка могла не пройти, и тогда человек ждёт письма, которого нет."""
+    ensure_access_waitlist_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, username FROM bt_3_access_waitlist "
+                "WHERE admitted_at IS NOT NULL AND notified_at IS NULL "
+                "ORDER BY admitted_at ASC LIMIT %s;",
+                (max(1, int(limit)),),
+            )
+            return [{"user_id": int(r[0]), "username": r[1]} for r in (cursor.fetchall() or [])]
+
+
+def access_gate_snapshot() -> dict:
+    """Состояние двери одним взглядом — для сообщения владельцу с кнопками."""
+    cap = public_access_cap()
+    return {"cap": cap, "allowed": count_allowed_users(), "waiting": count_access_waitlist(),
+            "cap_enabled": cap > 0}
+
+
 def auto_grant_telegram_user(
     user_id: int,
     username: str | None = None,
@@ -15886,6 +16156,12 @@ def auto_grant_telegram_user(
     """
     uid = int(user_id)
     if is_access_denied_for_user(uid):
+        return False
+    # ⛔ ПОТОЛОК ВПУСКА. Дверь одна на оба входа — бот /start и открытие мини-аппа, —
+    # поэтому потолок стоит ЗДЕСЬ, а не в каждом из них по отдельности.
+    # Потолок не задан → ведём себя ровно как раньше, никакой очереди не появляется.
+    if _public_access_cap_reached(uid):
+        add_to_access_waitlist(uid, username=username, source=source)
         return False
     note = f"{AUTO_ACCESS_NOTE_PREFIX}: {str(source or 'direct').strip() or 'direct'}"
     with get_db_connection_context() as conn:

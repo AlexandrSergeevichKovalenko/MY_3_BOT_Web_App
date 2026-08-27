@@ -3453,6 +3453,39 @@ def _self_serve_source_label(user_data: dict | None, parsed_init_data: dict | No
     return "приложение (Mini App)"
 
 
+def _access_denied_payload(user_id: int) -> dict:
+    """Что сказать человеку, которого не пустили. Ровно два законных состояния:
+
+      · он в ОЧЕРЕДИ — упёрлись в потолок впуска (PUBLIC_ACCESS_CAP). Отдаём его
+        НОМЕР: экран показывает его крупно и обещает написать в чат с ботом;
+      · ему ЗАПРЕТИЛ администратор — прежний текст и прежний экран.
+
+    Не смогли узнать номер — говорим общими словами про очередь, но НЕ подсовываем
+    «закрыт администратором»: человека никто не запрещал, и обвинять его за нашу
+    неудачу с чтением базы нельзя.
+    """
+    bot = str(TELEGRAM_BOT_USERNAME or "").strip().lstrip("@")
+    try:
+        from backend.database import access_waitlist_position, public_access_cap
+        в_очереди = public_access_cap() > 0
+        номер = access_waitlist_position(int(user_id)) if в_очереди else None
+    except Exception:
+        logging.warning("не смогли узнать номер в очереди user_id=%s", user_id, exc_info=True)
+        в_очереди, номер = False, None
+    if в_очереди:
+        return {
+            "error": "Вы в очереди на подключение — мы напишем, как только откроем.",
+            "reason": "in_queue",
+            "queue_position": int(номер) if номер else None,
+            "bot_username": bot,
+        }
+    return {
+        "error": "Доступ к приложению закрыт администратором.",
+        "reason": "access_closed",
+        "bot_username": bot,
+    }
+
+
 def _grant_self_serve_webapp_access(
     user_id: int,
     user_data: dict | None = None,
@@ -3745,11 +3778,12 @@ def enforce_webapp_access():
     if not is_allowed:
         # `reason` lets the SPA show a calm full-screen card instead of a red error banner
         # (the same central 403 interceptor that handles the bot-left gate picks it up).
-        return jsonify({
-            "error": "Доступ к приложению закрыт администратором.",
-            "reason": "access_closed",
-            "bot_username": str(TELEGRAM_BOT_USERNAME or "").strip().lstrip("@"),
-        }), 403
+        #
+        # ДВА РАЗНЫХ СОСТОЯНИЯ, и смешивать их нельзя. Человек в ОЧЕРЕДИ пришёл по
+        # ссылке и ни в чём не виноват: он упёрся в потолок впуска, который владелец
+        # двигает ступенями. Сказать ему «доступ закрыт администратором» — соврать и
+        # обидеть. Ему полагается номер, причина и обещание написать самим.
+        return jsonify(_access_denied_payload(int(resolved_user_id))), 403
 
     g.telegram_user_id = int(resolved_user_id)
     g.telegram_user = resolved_user_data

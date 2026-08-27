@@ -775,6 +775,89 @@ function showAccessClosedGate(botUsername) {
   } catch (_e) { /* ignore */ }
 }
 
+let __accessQueueGateShown = false;
+
+// Экран «вы в очереди». Отдельный от «доступ закрыт» намеренно: это ДВА РАЗНЫХ
+// состояния, и путать их нельзя. «Закрыт администратором» человеку, который просто
+// пришёл по ссылке, сообщает, что его за что-то наказали, — а его никто не наказывал,
+// он просто пришёл раньше, чем мы успели открыть дверь шире.
+//
+// Владелец 27.08.2026: отказанный обязан понимать, что с ним происходит, почему, и
+// что от него ничего не требуется. Поэтому здесь три вещи и ровно в этом порядке:
+// его НОМЕР, ПРИЧИНА человеческими словами и обещание НАПИСАТЬ САМИМ.
+function showAccessQueueGate(position, botUsername) {
+  if (__accessQueueGateShown || __appBlockedGateShown || __accessClosedGateShown) return;
+  __accessQueueGateShown = true;
+  const uname = String(botUsername || 'Ich_Deutsch_bot').trim().replace(/^@/, '') || 'Ich_Deutsch_bot';
+  const de = (() => { try { return (localStorage.getItem('ui_lang') || '').toLowerCase() === 'de'; } catch (_e) { return false; } })();
+  const num = Number(position) > 0 ? Number(position) : null;
+  const title = de ? 'Du bist in der Warteschlange' : 'Вы в очереди на подключение';
+  const numLine = num
+    ? (de ? `Deine Nummer: ${num}` : `Ваш номер — ${num}`)
+    : (de ? 'Dein Platz ist reserviert.' : 'Ваше место уже занято за вами.');
+  const body = de
+    ? 'Wir öffnen den Zugang portionsweise, damit die App für alle schnell bleibt. Sobald du dran bist, schreibe ich dir im Bot-Chat — du musst nichts tun.'
+    : 'Мы открываем доступ порциями, чтобы приложение отвечало быстро всем, кто уже занимается. Как только очередь дойдёт до вас, я напишу в чат с ботом — делать ничего не нужно.';
+  const btn = de ? 'Bot-Chat öffnen' : 'Открыть чат с ботом';
+  const openBot = () => {
+    const https = `https://t.me/${uname}?start=queue`;
+    try { window.location.href = `tg://resolve?domain=${uname}&start=queue`; } catch (_e) { /* ignore */ }
+    setTimeout(() => {
+      if (document.hidden) return;
+      try { window.location.href = https; } catch (_e) { /* ignore */ }
+    }, 800);
+  };
+  try {
+    const wrap = document.createElement('div');
+    wrap.setAttribute('style', [
+      'position:fixed', 'inset:0', 'z-index:2147483647', 'display:flex',
+      'align-items:center', 'justify-content:center', 'padding:24px', 'box-sizing:border-box',
+      'background:linear-gradient(160deg,#0f766e 0%,#115e59 100%)', 'color:#fff',
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif', 'text-align:center',
+    ].join(';'));
+    wrap.innerHTML = `
+      <div style="max-width:340px;display:flex;flex-direction:column;align-items:center;gap:16px">
+        <div style="font-size:56px;line-height:1">🦊</div>
+        <div style="font-size:22px;font-weight:700;line-height:1.25">${title}</div>
+        <div style="font-size:34px;font-weight:800;line-height:1;letter-spacing:-.02em">${numLine}</div>
+        <div style="font-size:15px;line-height:1.5;opacity:.94">${body}</div>
+        <button type="button" style="margin-top:8px;border:0;border-radius:14px;padding:14px 22px;font-size:16px;font-weight:600;background:#fff;color:#115e59;cursor:pointer">${btn}</button>
+      </div>`;
+    wrap.querySelector('button').addEventListener('click', openBot);
+    document.body.appendChild(wrap);
+  } catch (_e) { /* ignore */ }
+}
+
+// Перехватчик СОСТОЯНИЯ ДВЕРИ — узкий и отдельный от токенных шимов.
+// Те работают только вне Telegram (`if (!token || inTelegram()) return`), а очередь
+// обязана показываться и внутри мини-аппа: именно оттуда приходит большинство людей.
+// Поэтому смотрим только на 403 и только на поле `reason`, ничего больше не трогая.
+function installAccessGateInterceptor() {
+  if (typeof window === 'undefined' || typeof window.fetch !== 'function') return;
+  if (window.__accessGateInterceptorInstalled) return;
+  window.__accessGateInterceptorInstalled = true;
+  const origFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    const out = origFetch(input, init);
+    try {
+      return out.then((resp) => {
+        try {
+          if (resp && resp.status === 403) {
+            resp.clone().json().then((j) => {
+              const reason = String((j && j.reason) || '').trim();
+              if (reason === 'in_queue') showAccessQueueGate(j.queue_position, j.bot_username);
+              else if (reason === 'access_closed') showAccessClosedGate(j && j.bot_username);
+            }).catch(() => {});
+          }
+        } catch (_e) { /* ignore */ }
+        return resp;
+      });
+    } catch (_e) {
+      return out;
+    }
+  };
+}
+
 function installAppTokenAuthShim() {
   if (typeof window === 'undefined' || typeof window.fetch !== 'function') return;
   if (window.__appAuthShimInstalled) return;
@@ -841,6 +924,9 @@ function installAppTokenAuthShim() {
 }
 
 async function bootstrapApp() {
+  // Состояние двери — раньше всех прочих шимов: человек в очереди не должен сначала
+  // увидеть кусок приложения, а потом узнать, что его туда ещё не пустили.
+  installAccessGateInterceptor();
   installDictTokenAuthShim();
   installAppTokenAuthShim();
   const answerStartParam = getAnswerStartParam();
