@@ -174,6 +174,38 @@ class ArbiterAnswersBeforeTheScreenTests(unittest.TestCase):
         self.assertEqual(variants[0]["kind"] if "kind" in variants[0] else variants[0]["field"],
                          "arbiter")
 
+    def test_a_disputed_variant_is_given_only_to_a_surface_that_shows_the_objection(self):
+        """⛔ Вариант с оговоркой не утекает на чужой экран сам собой.
+
+        Наша проверка забраковала правку, третейский судья назвал её верной — на экране
+        владельца такой вариант есть, и рядом с ним печатается возражение проверки. На
+        экране проверки слов у обычного человека места для возражения нет: там кнопка
+        «Да, правильно так: …», и он одним касанием заучил бы ровно то, что система сама
+        отвергла. Поэтому умолчание — НЕ отдавать, а вызывающий подписывается явно."""
+        from backend.database import phrase_review_variants
+        judges = [{"verdict": "error", "category": "kasus",
+                   "corrected": "Anzeichen für einen Herzinfarkt",
+                   "corrected_ru": "Признаки сердечного приступа",
+                   "corrected_check": {"checked": True, "grammar_ok": True,
+                                       "meaning_kept": False, "why": "смысл другой"}}]
+        arbiter = {"winner": 1, "why": "вариант судьи верен", "better": ""}
+        text = "Anzeichen für einen Herzi"
+        self.assertEqual(phrase_review_variants(judges, text, arbiter), [],
+                         "спорный вариант утёк на поверхность, которая не покажет оговорку")
+        opted_in = phrase_review_variants(judges, text, arbiter, include_disputed=True)
+        self.assertEqual([v["text"] for v in opted_in], ["Anzeichen für einen Herzinfarkt"])
+        self.assertTrue(opted_in[0]["check_disputed_by_arbiter"])
+
+    def test_the_screen_and_the_decision_count_variants_the_same_way(self):
+        """Номер на кнопке = номер при записи. Разъедься эти два места — владелец нажмёт
+        «сохранить второй», а в словарь уедет первый, молча и без следа."""
+        server = _src("backend/backend_server.py")
+        i = server.index("def _phrase_review_payload(")
+        self.assertIn("include_disputed=True", server[i:i + 2500])
+        db = _src("backend/database.py")
+        j = db.index("def apply_phrase_review_decision(")
+        self.assertIn("include_disputed=True", db[j:j + 4000])
+
     def test_the_night_calls_him_and_closes_what_is_not_a_question(self):
         block = _src("backend/phrase_night_check.py")
         i = block.index("def run_phrase_night_check(")
@@ -266,12 +298,15 @@ class PanelCardsHaveTheirOwnDoorTests(unittest.TestCase):
         self.assertIn('get_webapp_deeplink("ans_frvp_0")', bot[i:i + 2500])
         overlay = _src("frontend/src/answer/AnswerOverlay.jsx")
         self.assertIn("kind === 'frvp'", overlay)
-        self.assertIn('only="panel"', overlay)
+        # С 27.08.2026 дверь открывает ОБА вопроса о карточке: спор о примерах и
+        # неподтверждённый перевод. Владельцу они приходят одним сообщением.
+        self.assertIn('only="cards"', overlay)
 
     def test_the_screen_shows_only_its_own_kind_behind_that_door(self):
         src = _src("frontend/src/answer/PhraseReviewScreen.jsx")
-        self.assertIn("only ? all.filter", src,
+        self.assertIn("only === 'cards'", src,
                       "отдельная дверь снова показывает всю очередь вперемешку")
+        self.assertIn("!== 'grammar'", src, "грамматика подмешалась в очередь карточек")
 
 
 if __name__ == "__main__":
