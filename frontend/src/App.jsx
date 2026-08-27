@@ -39323,24 +39323,41 @@ function AppInner() {
                       )}
                     </div>
 
-                    {/* Tab switcher */}
+                    {/* Tab switcher.
+
+                        Закладок ЧЕТЫРЕ, и все четыре стоят на месте всегда. Раньше
+                        «История» показывалась по условию «список непустой», а сам список
+                        лежит только в памяти браузера (localStorage, ключ dq_recents_v1;
+                        на сервере истории нет вовсе). У Telegram, у приложения с рабочего
+                        стола и у Safari память РАЗНАЯ — поэтому в новом месте человек
+                        видел три закладки вместо четырёх и думал, что раздел пропал.
+                        Пустая история честно говорит, что она пустая; исчезать она не
+                        имеет права. (Владелец 27.08.2026.)
+
+                        Подпись — только у активной закладки, у остальных остаётся значок:
+                        четыре немецкие подписи в строку не помещаются, «Unterschiede»
+                        обрезалось многоточием. Решение владельца 27.08.2026, макет
+                        mockups/_dict_tabs_4th.png. Счётчик слов остаётся видимым и на
+                        неактивной закладке: место есть, а число человек уже привык видеть. */}
                     <div className="vocab-tabs">
                       <button
                         type="button"
                         className={`vocab-tab ${vocabTab === 'search' ? 'is-active' : ''}`}
                         onClick={() => setVocabTab('search')}
+                        aria-label={tr('Поиск', 'Suche')}
                       >
-                        🔍 {tr('Поиск', 'Suche')}
+                        🔍 <span className="vocab-tab-label">{tr('Поиск', 'Suche')}</span>
                       </button>
                       <button
                         type="button"
                         className={`vocab-tab ${vocabTab === 'library' ? 'is-active' : ''}`}
                         onClick={() => setVocabTab('library')}
+                        aria-label={tr('Слова', 'Wörter')}
                       >
                         {/* Была «Библиотека» — звучало как чужая полка с чьими-то книгами.
                             Это личные сохранённые слова человека, и называться они должны
                             так, чтобы было понятно, чьи они. Список тот же, ничего не переехало. */}
-                        📚 {tr('Слова', 'Wörter')}
+                        📚 <span className="vocab-tab-label">{tr('Слова', 'Wörter')}</span>
                         {vocabFoldersMeta?.total_count > 0 && (
                           // Пять цифр рядом с подписью не помещаются: «Мои слова 15070»
                           // выдавливало соседнюю закладку. Точное число человеку здесь
@@ -39352,15 +39369,14 @@ function AppInner() {
                           </span>
                         )}
                       </button>
-                      {dictHistory.length > 0 && (
-                        <button
-                          type="button"
-                          className={`vocab-tab ${vocabTab === 'history' ? 'is-active' : ''}`}
-                          onClick={() => setVocabTab('history')}
-                        >
-                          🕘 {tr('История', 'Verlauf')}
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        className={`vocab-tab ${vocabTab === 'history' ? 'is-active' : ''}`}
+                        onClick={() => setVocabTab('history')}
+                        aria-label={tr('История', 'Verlauf')}
+                      >
+                        🕘 <span className="vocab-tab-label">{tr('История', 'Verlauf')}</span>
+                      </button>
                       {/* Четвёртая закладка — та же, что в быстром словаре, и тот же
                           компонент: два словаря обязаны выглядеть одинаково, а копия
                           экрана рано или поздно разъезжается с оригиналом. */}
@@ -39368,14 +39384,36 @@ function AppInner() {
                         type="button"
                         className={`vocab-tab ${vocabTab === 'diff' ? 'is-active' : ''}`}
                         onClick={() => setVocabTab('diff')}
+                        aria-label={tr('Отличия', 'Unterschiede')}
                       >
-                        ⚖️ {tr('Отличия', 'Unterschiede')}
+                        ⚖️ <span className="vocab-tab-label">{tr('Отличия', 'Unterschiede')}</span>
                       </button>
                     </div>
 
                     {/* ─── ОТЛИЧИЯ ─── */}
+                    {/* Платный отказ показываем НАШИМ обычным окном ProFeatureModal, а не
+                        прямым вызовом оплаты. handleBillingUpgrade вне Telegram (приложение
+                        с рабочего стола, браузер) звёздами платить не может: он ставит признак
+                        «плати в Telegram», а окно по этому признаку нарисовано только внутри
+                        раздела «Подписка». На экране словаря его нет — поэтому кнопка «Открыть
+                        полный доступ» там просто ничего не делала. Проверено 27.08.2026 по
+                        жалобе владельца; ProFeatureModal ведёт на «Подписку» и работает
+                        одинаково и в Telegram, и в приложении с рабочего стола. */}
                     {vocabTab === 'diff' && (
-                      <WordDiff onNeedFullAccess={() => handleBillingUpgrade('pro')} />
+                      <WordDiff onNeedFullAccess={() => setProFeatureModal({
+                        emoji: '⚖️',
+                        title: tr('Новое сравнение — в полном доступе',
+                                  'Neuer Vergleich — im vollen Zugang'),
+                        intro: tr(
+                          'Этой пары ещё никто не разбирал. Разбор мы делаем на месте — он открыт в полном доступе.',
+                          'Dieses Paar hat noch niemand analysiert. Die Analyse machen wir auf der Stelle — sie gehört zum vollen Zugang.'),
+                        bullets: [
+                          tr('Всё, что уже разобрано, открывается бесплатно — список на экране.',
+                             'Alles, was schon analysiert ist, öffnet sich gratis — die Liste steht auf dem Bildschirm.'),
+                          tr('С полным доступом сравниваете любые свои слова, без счётчика.',
+                             'Mit vollem Zugang vergleichst du beliebige eigene Wörter, ohne Zähler.'),
+                        ],
+                      })} />
                     )}
 
                     {/* ─── ИСТОРИЯ ─── */}

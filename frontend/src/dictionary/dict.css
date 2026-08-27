@@ -1636,7 +1636,16 @@ html[data-scheme="light"] .dq-gt > summary,
   background: var(--dq-accent);
   border-color: var(--dq-accent);
   color: var(--dq-accent-ink);
+  flex: 1 1 auto;
 }
+/* Закладок четыре, и четыре подписи в строку узкого экрана не помещаются: подпись
+   показывает активная, у остальных остаётся значок. Решение владельца 27.08.2026,
+   макет mockups/_dict_tabs_4th.png. Правило дублируется здесь намеренно: быстрый
+   словарь открывается сам по себе и App.css не грузит. Подпись для чтения с экрана
+   не теряется — у кнопок стоит aria-label. */
+.dq-tabs .vocab-tab { flex: 0 0 auto; }
+.dq-tabs .vocab-tab:not(.is-active) .vocab-tab-label { display: none; }
+.dq-tabs .vocab-tab:not(.is-active) { min-width: 44px; } /* цель для пальца */
 
 /* Список слов и истории — общий вид для обеих закладок. */
 .dict-history { display: flex; flex-direction: column; gap: 6px; }

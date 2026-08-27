@@ -84,7 +84,6 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
   const [limitReached, setLimitReached] = useState(false);
   const [history, setHistory] = useState([]);   // свои сравнения
   const [popular, setPopular] = useState([]);   // всё, что разбирали все, по частоте
-  const [canCreate, setCanCreate] = useState(true); // новый разбор — по полному доступу
   const [isAdmin, setIsAdmin] = useState(false);    // хозяин общей полки
   const [swiped, setSwiped] = useState('');         // строка, смахнутая влево
   // Списки сворачиваются: они растут, а рабочая часть экрана должна остаться видимой.
@@ -107,7 +106,6 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
       const data = await api('/api/webapp/dictionary/diff/history', { limit: 20 });
       setHistory(Array.isArray(data?.items) ? data.items : []);
       setPopular(Array.isArray(data?.popular) ? data.popular : []);
-      setCanCreate(data?.can_create !== false);
       setIsAdmin(data?.is_admin === true);
     } catch (_e) {
       // Списки — витрина, а не ответ на вопрос человека. Их отсутствие не должно мешать
@@ -148,6 +146,11 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
   // Выбор человека нужен внутри уже запущенного запроса, поэтому держим его в ссылке:
   // состояние обновится позже, а тело запроса собирается сейчас.
   const picksRef = useRef({});
+  // Вызов «нужен полный доступ» приходит от родителя стрелкой, то есть новой функцией на
+  // каждую перерисовку. Держим его в ссылке, чтобы обработчики разбора не пересобирались
+  // впустую, — тем же приёмом, что и picksRef выше.
+  const needFullAccessRef = useRef(null);
+  needFullAccessRef.current = onNeedFullAccess;
 
   const runDiff = useCallback(async (words) => {
     setPhase('loading');
@@ -189,10 +192,13 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           return;
         }
         if (data && data.ok === false && data.reason === 'paid_only') {
-          setLimitReached(true);
-          setError(String(data.message || ''));
-          setPhase('error');
-          setCanCreate(false);
+          // Платный отказ — не ошибка экрана, а разговор о деньгах, и место ему в
+          // модальном окне (владелец 27.08.2026: «не должны занимать место на экране
+          // под вот эту плашку»). Экран остаётся как был, человек закрывает окно и
+          // продолжает. Серверную формулировку наружу не выносим: текст окна пишет
+          // тот, кто это окно показывает.
+          setPhase('idle');
+          if (needFullAccessRef.current) needFullAccessRef.current();
           return;
         }
         setResult(data);
@@ -229,10 +235,9 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
             setChoices(Array.isArray(data.choices) ? data.choices : []);
             setPhase('choose');
           } else if (data && data.reason === 'paid_only') {
-            setLimitReached(true);
-            setCanCreate(false);
-            setError(String(data.message || ''));
-            setPhase('error');
+            // То же, что и в JSON-ветке выше: платный отказ живёт в модальном окне.
+            setPhase('idle');
+            if (needFullAccessRef.current) needFullAccessRef.current();
           } else {
             setError(String(data?.message || data?.error || 'Не получилось разобрать.'));
             setLimitReached(String(data?.error || '') === 'free_limit_exceeded');
@@ -798,30 +803,23 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
         <button type="button" className="wd-add" onClick={addCell}>＋ ещё слово</button>
       )}
 
-      {canCreate ? (
-        <button
-          type="button"
-          className={`wd-cta${canSubmit ? '' : ' is-off'}`}
-          onClick={submit}
-          disabled={!canSubmit}
-        >
-          {phase === 'loading' ? 'Разбираю…' : 'Объяснить отличия'}
-        </button>
-      ) : (
-        <div className="wd-notice is-paid">
-          <div className="wd-notice-title">Свои сравнения — в полном доступе</div>
-          <div className="wd-notice-row">
-            <span>Всё, что уже разобрали другие, открывается бесплатно — список ниже.</span>
-          </div>
-          {onNeedFullAccess && (
-            <div className="wd-notice-row">
-              <button type="button" className="wd-notice-btn is-primary" onClick={onNeedFullAccess}>
-                Открыть полный доступ
-              </button>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Кнопка стоит у ВСЕХ, включая бесплатный тариф.
+
+          Раньше вместо неё бесплатному показывали плашку «Свои сравнения — в полном
+          доступе», и это ломало работу: сервер отдаёт бесплатному ГОТОВУЮ пару из общей
+          полки бесплатно (backend_server.py, _word_diff_can_create → get_word_diff_card
+          с any_version), а попросить её человеку было нечем — кнопки не было. Он мог
+          только тыкать по списку внизу и не мог набрать свои два слова.
+          Теперь решает сервер: пара есть — открывается сразу и даром; пары нет — приходит
+          ответ paid_only, и мы показываем модальное окно (см. выше). ПРОВЕРЕНО 27.08.2026. */}
+      <button
+        type="button"
+        className={`wd-cta${canSubmit ? '' : ' is-off'}`}
+        onClick={submit}
+        disabled={!canSubmit}
+      >
+        {phase === 'loading' ? 'Разбираю…' : 'Объяснить отличия'}
+      </button>
 
       {phase === 'loading' && (
         <div className="wd-steps">
