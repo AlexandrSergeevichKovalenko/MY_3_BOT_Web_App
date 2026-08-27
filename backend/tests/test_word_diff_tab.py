@@ -89,6 +89,7 @@ def _patch_db(monkeypatch, **overrides):
         "save_word_usage": lambda *a, **k: {},
         "get_lex_unit_card": lambda *a, **k: None,
         "get_word_diff_card": lambda *a, **k: None,
+        "find_word_diff_card_for_pair": lambda *a, **k: None,
         "save_word_diff_card": lambda *a, **k: None,
         "record_word_diff_open": lambda *a, **k: None,
         "record_word_diff_miss": lambda *a, **k: None,
@@ -439,7 +440,9 @@ def test_free_user_reads_the_shared_shelf_but_orders_nothing_new(client, monkeyp
     _patch_db(monkeypatch)
     monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: False)
     monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
-    monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", lambda *a, **k: ENTRY)
+    # Сбор статей — это и запрос «чем бывает написание», и достройка бедной статьи
+    # полным разбором. Бесплатному человеку он не положен ВООБЩЕ: см. следующий тест.
+    monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", _forbid("сбор статей"))
 
     resp = _post(client, ["Anzahlung", "Vorschuss"])
 
@@ -449,15 +452,47 @@ def test_free_user_reads_the_shared_shelf_but_orders_nothing_new(client, monkeyp
     assert "бесплатно" in body["message"]
 
 
+def test_free_user_is_refused_BEFORE_any_paid_work_not_after(client, monkeypatch):
+    """Порядок действий: сначала смотрим тариф, потом работаем. Не наоборот.
+
+    Владелец 27.08.2026: «зачем мы проделываем работу, тратим ресурсы, токены — а потом
+    выбрасываем её?» До этой правки бесплатному человеку сперва спрашивали у модели, чем
+    бывает написание, задавали вопрос «глагол или существительное», достраивали бедную
+    статью полным разбором (~7 c и ещё запрос, до четырёх слов сразу) — и ТОЛЬКО ПОТОМ
+    смотрели тариф и отвечали «вам нельзя». Ограничителя частоты у экрана нет, поэтому
+    повторять это можно было сколько угодно.
+
+    Тест держит именно ПОРЯДОК: ни одна платная дверь не открывается до отказа.
+    """
+    touched = []
+    _patch_db(monkeypatch)
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: False)
+    for name in ("_word_diff_lookup_sources", "_word_diff_readings",
+                 "_word_diff_full_lookup", "run_word_diff_multilang"):
+        if hasattr(backend_server, name):
+            monkeypatch.setattr(backend_server, name,
+                                (lambda n: lambda *a, **k: touched.append(n))(name))
+
+    resp = _post(client, ["Anzahlung", "Vorschuss"])
+
+    assert resp.get_json()["reason"] == "paid_only"
+    assert touched == [], (
+        f"до отказа успели поработать: {touched} — значит токены снова тратятся впустую"
+    )
+
+
 def test_ready_pair_opens_for_everyone_including_free(client, monkeypatch):
     """Готовая пара приходит из базы и тарифа не спрашивает — она нам ничего не стоит."""
     cached = {"words": ["Miete", "Pacht"], "payload": FULL_ANSWER, "sources": {}, "created_at": None}
-    _patch_db(monkeypatch, get_word_diff_card=lambda *a, **k: cached)
-    # Тариф спрашиваем — но только чтобы решить, годится ли УСТАРЕВШАЯ запись.
-    # На выдачу готовой пары он не влияет: она нам ничего не стоит.
+    _patch_db(
+        monkeypatch,
+        get_word_diff_card=lambda *a, **k: cached,
+        find_word_diff_card_for_pair=lambda *a, **k: {"pair_key": "de-ru|miete|pacht", **cached},
+    )
     monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: False)
     monkeypatch.setattr(backend_server, "run_word_diff_multilang", _forbid("модель"))
-    monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", lambda *a, **k: ENTRY)
+    # Готовую пару отдаём БЕЗ сбора статей: она уже собрана, платить за это не за что.
+    monkeypatch.setattr(backend_server, "_word_diff_lookup_sources", _forbid("сбор статей"))
 
     resp = _post(client, ["Miete", "Pacht"])
 
@@ -617,9 +652,22 @@ def test_outdated_answer_still_serves_the_one_who_cannot_order_a_new_one(monkeyp
     Тому, кто может заказать новый, устаревшая запись не отдаётся — он получит свежую.
     """
     import inspect
+    # Раньше это правило жило строкой «any_version=not can_create» в одном выражении.
+    # 27.08.2026 отказ бесплатному переехал в начало функции, и правило переехало вместе
+    # с ним: find_word_diff_card_for_pair НЕ смотрит на версию разбора вовсе (значит
+    # старая запись бесплатному достанется), а платному кеш отдаётся строго свежий.
     src = inspect.getsource(backend_server._word_diff_prepare)
-    assert "any_version=not can_create" in src, (
-        "устаревшая запись либо не отдаётся бесплатному, либо мешает платному пересобрать"
+    assert "find_word_diff_card_for_pair(base_key)" in src, (
+        "бесплатному больше нечем достать разобранную пару"
+    )
+    assert "any_version=False" in src, (
+        "платному отдаётся устаревшая запись — он не получит пересобранный разбор"
+    )
+    db_src = inspect.getsource(__import__("backend.database", fromlist=["x"])
+                               .find_word_diff_card_for_pair)
+    assert "schema_version" not in db_src, (
+        "поиск пары начал отбирать по версии — бесплатный вместо старого разбора "
+        "получит пустоту, а старый ответ полезнее пустоты"
     )
 
 

@@ -43681,6 +43681,7 @@ def _word_diff_prepare(payload: dict) -> dict:
     """
     from backend.database import (
         build_word_diff_pair_key,
+        find_word_diff_card_for_pair,
         get_word_diff_card,
         record_word_diff_open,
         record_word_diff_miss,
@@ -43697,6 +43698,46 @@ def _word_diff_prepare(payload: dict) -> dict:
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     studied_lang = str(target_lang or "de").strip().lower()
     explain_lang = str(source_lang or "ru").strip().lower()
+
+    # ── БЕСПЛАТНЫЙ ЧЕЛОВЕК: развилка ЗДЕСЬ, до единого запроса к модели. ──────────
+    #
+    # Владелец 27.08.2026, увидев прежний порядок: «зачем мы проделываем работу,
+    # тратим ресурсы, токены — а потом выбрасываем её?»
+    #
+    # Так и было. Раньше проверка тарифа стояла ПОСЛЕ сбора статей: сначала мы
+    # спрашивали у модели, чем бывает написание (запрос на слово), показывали человеку
+    # вопрос «глагол или существительное», достраивали бедную статью полным разбором
+    # (~7 c и ещё запрос, до четырёх слов параллельно) — и только потом смотрели тариф
+    # и отвечали «вам нельзя». До четырёх обращений к модели ради отказа, и повторять
+    # это бесплатный человек мог сколько угодно: ограничителя частоты у экрана нет.
+    #
+    # Правило простое и другого не нужно:
+    #   платный   → полная процедура;
+    #   бесплатный → отдаём только то, что УЖЕ разобрано и лежит в базе, иначе окно.
+    #
+    # Прочтение здесь не спрашивается намеренно: вопрос стоит денег, а пару в полке
+    # находит find_word_diff_card_for_pair и без него.
+    can_create = _word_diff_can_create(int(user_id))
+    if not can_create:
+        base_key = build_word_diff_pair_key(words, studied_lang, explain_lang)
+        ready = find_word_diff_card_for_pair(base_key)
+        if ready:
+            record_word_diff_open(int(user_id), ready["pair_key"], ready.get("words") or words)
+            return {"cached": {
+                "ok": True,
+                "pair_key": ready["pair_key"],
+                "words": ready.get("words") or words,
+                "diff": ready.get("payload") or {},
+                "sources": ready.get("sources") or {},
+                "from_cache": True,
+                "created_at": ready.get("created_at"),
+            }}
+        return {"refuse": ({
+            "ok": False,
+            "reason": "paid_only",
+            "message": "Новые сравнения — в полном доступе. Всё, что уже разобрали, "
+                       "открывается бесплатно: список ниже.",
+        }, 200)}
 
     # 1. Источники. Ищем ПАРАЛЛЕЛЬНО: незнакомое слово разбирается на месте (~7 c), и
     # четыре таких подряд превратились бы в полминуты ожидания. Расход считается на
@@ -43756,8 +43797,11 @@ def _word_diff_prepare(payload: dict) -> dict:
         pair_key = f"{pair_key}#" + "|".join(sorted(chosen_marks))
 
     # 2. Готовая пара — из общего кеша. Платить за это не надо никому.
-    can_create = _word_diff_can_create(int(user_id))
-    cached = get_word_diff_card(pair_key, any_version=not can_create)
+    #
+    # Сюда доходит только человек с полным доступом: бесплатный развёрнут в самом
+    # начале, до сбора статей (см. развилку выше). Поэтому берём строго свежую версию
+    # разбора — устаревшую отдавать тому, кто может получить новую, незачем.
+    cached = get_word_diff_card(pair_key, any_version=False)
     if cached:
         record_word_diff_open(int(user_id), pair_key, cached.get("words") or words)
         return {"cached": {
@@ -43777,13 +43821,9 @@ def _word_diff_prepare(payload: dict) -> dict:
     # НОВЫЙ разбор делает только полный доступ, а всё уже разобранное открывается всем и
     # бесплатно, из базы. Для бесплатного человека это витрина: он видит, что тут есть,
     # и решает, нужно ли ему это.
-    if not can_create:
-        return {"refuse": ({
-            "ok": False,
-            "reason": "paid_only",
-            "message": "Новые сравнения — в полном доступе. Всё, что уже разобрали, "
-                       "открывается бесплатно: список ниже.",
-        }, 200)}
+    #
+    # Отказа здесь БОЛЬШЕ НЕТ — он переехал в начало функции (27.08.2026). Стоял он тут,
+    # и из-за этого вся дорогая работа делалась ДО того, как мы смотрели тариф.
 
     return {"ctx": {
         "user_id": int(user_id),

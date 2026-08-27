@@ -32612,6 +32612,62 @@ def list_word_diff_popular(limit: int = 40) -> list[dict]:
     ]
 
 
+def find_word_diff_card_for_pair(base_pair_key: str) -> dict | None:
+    """Разбор ЭТОЙ пары, если он уже лежит в общей полке. Иначе None.
+
+    Зачем отдельно от get_word_diff_card: ключ пары бывает двух видов. Обычный —
+    «de-ru|beschliessen|entscheiden». И уточнённый — тот же плюс «#слово=прочтение»,
+    он появляется, когда спрашивающий ответил на вопрос «глагол или существительное».
+    Спросить, чем было слово, стоит денег, и бесплатному человеку мы этот вопрос не
+    задаём — значит уточнённого ключа у нас на руках нет, а разбор в полке есть.
+
+    Правило владельца 27.08.2026: «если это уже разбиралось — это лежит в базе, мы её
+    даём; если не разбиралось — показываем модальное окно». Поэтому ищем пару, а не
+    точное совпадение строки.
+
+    Несколько уточнённых записей на одну пару — это РАЗНЫЕ прочтения, и выбирать за
+    человека, какое ему показать, мы не станем (правило 26.08.2026). Тогда None: пусть
+    лучше увидит окно, чем чужое прочтение.
+
+    ┌─ ПРОВЕРЕНО 27.08.2026. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ─────────────────────┐
+    │ Замер живой базы: 5 разобранных пар, из них 1 с уточнением — и у неё есть   │
+    │ обычный близнец. То есть сегодня прямой ключ покрывает всю полку, а ветка с │
+    │ уточнением написана на вырост, а не потому что без неё что-то сломано.      │
+    │ Перемерить: SELECT split_part(pair_key,'#',1), count(*) ... GROUP BY 1.     │
+    └─────────────────────────────────────────────────────────────────────────────┘
+    """
+    base = str(base_pair_key or "").strip()
+    if not base:
+        return None
+    ensure_word_diff_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT pair_key, words, payload, sources, created_at
+                FROM bt_3_word_diff_cards
+                WHERE pair_key = %s OR pair_key LIKE %s
+                ORDER BY (pair_key = %s) DESC, created_at DESC;
+                """,
+                (base, base + "#%", base),
+            )
+            rows = cursor.fetchall() or []
+    if not rows:
+        return None
+    exact = [row for row in rows if str(row[0]) == base]
+    if not exact and len(rows) > 1:
+        # Несколько разных прочтений и ни одного обычного ключа — выбирать нельзя.
+        return None
+    row = exact[0] if exact else rows[0]
+    return {
+        "pair_key": str(row[0]),
+        "words": list(row[1] or []),
+        "payload": row[2] or {},
+        "sources": row[3] or {},
+        "created_at": row[4].isoformat() if row[4] else None,
+    }
+
+
 def list_word_diff_history(user_id: int, limit: int = 20) -> list[dict]:
     """Список «вы уже сравнивали» — свежие сверху."""
     if not user_id:
