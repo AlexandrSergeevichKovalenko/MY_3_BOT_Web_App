@@ -58122,6 +58122,22 @@ def ensure_article_learn_schema() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_article_learn_user_word "
                 "ON bt_3_article_learn_answers (user_id, word, created_at DESC);"
             )
+            # Ключ одного нажатия, чтобы ПОВТОР отправки не удваивал ответ.
+            # Клиент теперь не бросает ответ в пустоту («fire-and-forget»), а повторяет
+            # его при сбое сети и досылает отложенное. Без этого ключа повтор был бы
+            # ХУЖЕ потери: «освоено» здесь считается как COUNT(*) FILTER (is_correct)
+            # >= ARTIKEL_MASTERY_CORRECT, и один и тот же верный ответ, записанный
+            # дважды, объявил бы слово выученным после ОДНОГО правильного нажатия.
+            # Ключ рождается на клиенте в момент нажатия и не меняется между попытками.
+            cursor.execute(
+                "ALTER TABLE bt_3_article_learn_answers "
+                "ADD COLUMN IF NOT EXISTS client_answer_id TEXT;"
+            )
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_article_learn_client_answer "
+                "ON bt_3_article_learn_answers (user_id, client_answer_id) "
+                "WHERE client_answer_id IS NOT NULL;"
+            )
             # Pro personal learning focus: a theme to learn on a given date (picked
             # the day before, prepped overnight). Overrides the shared daily set.
             cursor.execute(
@@ -58358,19 +58374,41 @@ def list_article_battle_available() -> list[dict]:
 
 def record_article_learn_answer(*, user_id: int, word: str, article: str,
                                 is_correct: bool, theme_key: str = "",
-                                set_id: str = "") -> None:
+                                set_id: str = "",
+                                client_answer_id: str | None = None) -> None:
+    """Записать ОДИН ответ тренажёра артиклей. Повтор той же отправки безопасен.
+
+    `client_answer_id` — ключ нажатия, рождённый на клиенте. Он один и тот же у всех
+    попыток отправки одного ответа, поэтому вторая попытка ничего не добавляет.
+    Ключа нет (старый бандл в руках у человека) — пишем как раньше, без защиты: это
+    ровно прежнее поведение, а не новая дыра, и оно исчезнет вместе со старым бандлом.
+    """
     ensure_article_learn_schema()
+    key = str(client_answer_id or "").strip() or None
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO bt_3_article_learn_answers
-                    (user_id, word, article, theme_key, set_id, is_correct)
-                VALUES (%s, %s, %s, %s, %s, %s);
-                """,
-                (int(user_id), str(word), str(article or "").lower(),
-                 str(theme_key or ""), str(set_id or ""), bool(is_correct)),
-            )
+            if key:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_article_learn_answers
+                        (user_id, word, article, theme_key, set_id, is_correct,
+                         client_answer_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id, client_answer_id) DO NOTHING;
+                    """,
+                    (int(user_id), str(word), str(article or "").lower(),
+                     str(theme_key or ""), str(set_id or ""), bool(is_correct), key),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_article_learn_answers
+                        (user_id, word, article, theme_key, set_id, is_correct)
+                    VALUES (%s, %s, %s, %s, %s, %s);
+                    """,
+                    (int(user_id), str(word), str(article or "").lower(),
+                     str(theme_key or ""), str(set_id or ""), bool(is_correct)),
+                )
         conn.commit()
 
 

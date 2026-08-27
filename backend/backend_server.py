@@ -33064,9 +33064,19 @@ def artikel_learn_themes():
 
 @app.route("/api/webapp/artikel/learn/answer", methods=["POST"])
 def artikel_learn_answer():
-    """Record one learning answer (drives the review pile + progress). The card is
-    graded client-side (not competitive), so this is fire-and-forget. `article` is
-    the CORRECT article; `is_correct` is whether the user's tap matched."""
+    """Record one learning answer (drives the review pile + progress). `article` is
+    the CORRECT article; `is_correct` is whether the user's tap matched.
+
+    ⛔ ЗДЕСЬ БЫЛО «fire-and-forget» С ОБЕИХ СТОРОН, И ЭТО ТЕРЯЛО ОТВЕТ ЧЕЛОВЕКА.
+    Клиент бросал отправку в пустоту (`.catch(() => {})`), а сервер ловил сбой записи
+    и всё равно отвечал `ok: True`. Две половины одного дефекта: даже начни клиент
+    повторять, ему бы соврали, что ответ дошёл, — и ошибка не попала бы в работу над
+    ошибками, а человек её больше не увидел бы. Теперь клиент повторяет и откладывает
+    неушедшее (`reviewAnswerQueue.js`), а сервер говорит правду: не записал — `ok: False`.
+    Повтор безопасен: `client_answer_id` — ключ одного нажатия, вторая попытка ничего
+    не добавляет (иначе одно верное нажатие засчиталось бы за два и слово объявили бы
+    выученным раньше срока).
+    """
     user_id, _user_name, err = _answer_auth_user_id()
     if user_id is None:
         return err
@@ -33082,9 +33092,13 @@ def artikel_learn_answer():
             is_correct=bool(payload.get("is_correct")),
             theme_key=str(payload.get("theme_key") or ""),
             set_id=str(payload.get("set_id") or ""),
+            client_answer_id=str(payload.get("answer_id") or "").strip() or None,
         )
     except Exception:
         logging.warning("artikel_learn_answer record failed", exc_info=True)
+        # Не записали — так и говорим. Клиент повторит, а совсем не ушедшее отложит
+        # и дошлёт при следующем открытии экрана.
+        return jsonify({"ok": False, "error": "not_recorded"}), 200
     return jsonify({"ok": True})
 
 
