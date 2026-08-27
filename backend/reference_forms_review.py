@@ -198,6 +198,11 @@ def send_reference_forms_review_dm(*, force: bool = False) -> dict[str, Any]:
 
     items = unresolved_batch(limit=BATCH)
     left = unresolved_count()
+    if left < 0:
+        # Счётчик вернул «не смог посчитать». Пустой список при этом НЕОТЛИЧИМ от
+        # честного «очередь пуста», а разница огромна: во втором случае владельцу
+        # рапортуют «всё в порядке 🎉», когда на деле мы просто не заглянули в базу.
+        return {"ok": False, "error": "очередь не прочиталась"}
     if not items:
         if not force:
             finish_scheduler_run_guard(job_key=JOB_KEY, run_period=run_period,
