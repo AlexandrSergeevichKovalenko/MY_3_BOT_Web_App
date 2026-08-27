@@ -14315,7 +14315,12 @@ async def _app_spend_ceiling_tick_job(context: CallbackContext) -> None:
     if not admin_ids:
         return
 
-    # 1) Alerts — deduped inside evaluate_ceiling via notified_thresholds (fire once/week).
+    # 1) Предупреждение владельцу. ПОМЕТКА «уведомлён» — ТОЛЬКО ПОСЛЕ ДОСТАВКИ.
+    # Раньше её ставил сам расчёт (evaluate_ceiling), до всякой отправки: Telegram
+    # моргнул или список админов не прочитался — порог уже помечен, и владелец за всю
+    # неделю не получал ни одного предупреждения (дедупликация недельная). Теперь
+    # порядок такой: отправили → Telegram принял хотя бы у одного → пометили.
+    # Не приняли ни у кого — не помечаем, и следующий тик предложит то же самое снова.
     text = None
     if decision.get("hard_newly"):
         text = _sc.format_hard_alert(decision)
@@ -14326,14 +14331,30 @@ async def _app_spend_ceiling_tick_job(context: CallbackContext) -> None:
             kb = _sc.build_appcap_keyboard()
         except Exception:
             kb = None
+        доставлено = False
         for aid in admin_ids:
             try:
                 await context.bot.send_message(
                     chat_id=aid, text=text, parse_mode="HTML",
                     reply_markup=kb, suppress_private_keyboard_attach=True,
                 )
+                доставлено = True
             except Exception:
                 logging.debug("spend-ceiling alert DM failed aid=%s", aid, exc_info=True)
+        if доставлено:
+            try:
+                await asyncio.to_thread(
+                    _sc.confirm_thresholds_notified,
+                    decision.get("pending_thresholds") or [],
+                    week=decision.get("week"),
+                )
+            except Exception:
+                logging.warning("spend-ceiling: не смогли пометить порог уведомлённым — "
+                                "письмо придёт ещё раз", exc_info=True)
+        else:
+            logging.warning("spend-ceiling: предупреждение о затратах НЕ доставлено ни одному "
+                            "администратору (порог %s%%) — повторим на следующем тике",
+                            decision.get("pct"))
 
     # 2) Auto-stop of the heavy tier — ONLY when explicitly enabled (shadow-first).
     if not _app_spend_ceiling_enforce_enabled() or not decision.get("hard"):

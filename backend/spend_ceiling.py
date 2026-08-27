@@ -179,15 +179,77 @@ def get_week_spend_eur(now: datetime | None = None, *, max_age_sec: int | None =
     return real
 
 
-# ── Tier gate (sub-ms Redis flag; fail-open) ─────────────────────────────────
-def is_tier_blocked(tier: str) -> bool:
-    client = _redis()
-    if client is None:
-        return False  # fail-open: never break UX on a Redis blip
+# ── Tier gate (sub-ms Redis flag поверх базы) ────────────────────────────────
+# Последнее ЗНАЕМОЕ состояние стопа, чтобы молчащий Redis не превращался в «не
+# заблокировано». Ключ — тариф, значение — (заблокирован, когда узнали).
+_TIER_BLOCK_LAST_KNOWN: dict[str, tuple[bool, float]] = {}
+_TIER_BLOCK_DB_TTL_SEC = 30.0
+
+
+def _tier_blocked_from_db(tier: str) -> bool | None:
+    """Правда о стопе из базы. None — база тоже не ответила."""
     try:
-        return bool(client.get(_REDIS_BLOCK_KEY.format(tier=str(tier).strip().lower())))
+        from backend.database import get_or_create_app_spend_ceiling
+        row = get_or_create_app_spend_ceiling()
+        if not row:
+            return None
+        blocked = {str(t).strip().lower() for t in (row.get("blocked_tiers") or [])}
+        return tier in blocked
     except Exception:
-        return False
+        logger.error("стоп-тариф: база не ответила про blocked_tiers (tier=%s)", tier, exc_info=True)
+        return None
+
+
+def is_tier_blocked(tier: str) -> bool:
+    """Остановлен ли этот тариф. Redis — быстрый кеш, ИСТОЧНИК ПРАВДЫ — база.
+
+    ⛔ ЗДЕСЬ БЫЛО `return False` НА ЛЮБОЙ СБОЙ REDIS, подписанное «fail-open: never
+    break UX». Находка 57 аудита костылей: владелец нажал «Остановить сейчас», Redis
+    моргнул — и деньги продолжали тратиться, потому что «раз не знаю, значит не
+    заблокировано». Это не про UX, это про деньги: стоп — предохранитель, а не
+    украшение, и «не смог прочитать предохранитель» не равно «предохранителя нет».
+
+    Порядок теперь такой:
+      1. Ответил Redis — верим ему (это и есть быстрый путь, доли миллисекунды);
+      2. Redis молчит — читаем базу, где стоп лежит всегда (`blocked_tiers`),
+         и держим ответ 30 секунд, чтобы не ходить туда на каждый вызов;
+      3. База тоже молчит — берём ПОСЛЕДНЕЕ ИЗВЕСТНОЕ состояние, а не выдумываем;
+      4. Не знаем вообще ничего — считаем ОСТАНОВЛЕННЫМ и пишем ошибку в лог.
+
+    Про шаг 4. Ошибиться можно в две стороны, и цены разные: лишний раз остановить
+    тяжёлую функцию — это временно недоступная генерация картинки при том, что
+    дешёвое ядро (перевод, словарь) работает; не остановить — это неограниченные
+    траты, пока владелец не смотрит в чат. К тому же шаг 4 наступает, только когда
+    молчат И Redis, И база, — то есть когда приложение и так почти ничего не может.
+    Решение владельца 27.08.2026 при разборе плана запуска.
+    """
+    key = str(tier).strip().lower()
+    client = _redis()
+    if client is not None:
+        try:
+            blocked = bool(client.get(_REDIS_BLOCK_KEY.format(tier=key)))
+            _TIER_BLOCK_LAST_KNOWN[key] = (blocked, _time.time())
+            return blocked
+        except Exception:
+            logger.warning("стоп-тариф: Redis не ответил (tier=%s) — идём в базу", key, exc_info=True)
+
+    known = _TIER_BLOCK_LAST_KNOWN.get(key)
+    if known is not None and (_time.time() - known[1]) < _TIER_BLOCK_DB_TTL_SEC:
+        return known[0]
+
+    from_db = _tier_blocked_from_db(key)
+    if from_db is not None:
+        _TIER_BLOCK_LAST_KNOWN[key] = (from_db, _time.time())
+        return from_db
+
+    if known is not None:
+        logger.warning("стоп-тариф: ни Redis, ни база не ответили (tier=%s) — берём последнее "
+                       "известное состояние, ему %.0f с", key, _time.time() - known[1])
+        return known[0]
+
+    logger.error("стоп-тариф: состояние НЕИЗВЕСТНО (tier=%s): молчат и Redis, и база. "
+                 "Считаем остановленным — дешевле, чем тратить деньги вслепую.", key)
+    return True
 
 
 def set_tier_blocked(tiers, *, reason: str | None = None, week: str | None = None) -> list[str]:
@@ -237,11 +299,27 @@ def should_block_tier(tier: str = TIER_HEAVY) -> bool:
 # ── Evaluation (compute status + record; does NOT DM or block) ───────────────
 def evaluate_ceiling(now: datetime | None = None) -> dict:
     """Compute weekly spend vs the ceiling and return a decision dict for the caller
-    (bot layer) to act on. Side effects are limited to recording soft-alert dedup and
-    the hard-state timestamps in bt_3_app_spend_ceiling — never DMs, never the block flag.
+    (bot layer) to act on. Side effects are limited to the hard-state timestamps in
+    bt_3_app_spend_ceiling — never DMs, never the block flag, and НИКОГДА пометка
+    «владелец уведомлён».
+
+    ⛔ ПОМЕТКА «УВЕДОМЛЁН» СТАВИТСЯ НЕ ЗДЕСЬ. Раньше стояла — и это было находкой 03
+    аудита костылей: порог помечался уведомлённым ЗДЕСЬ, а письмо владельцу слал
+    другой код позже. Телеграм моргнул, или список админов не прочитался, — пометка
+    уже стоит, следующий тик считает порог пройденным, и владелец за всю неделю не
+    получает ни одного предупреждения. Дедупликация недельная, окно потери — 7 суток.
+    Потолок в проде включён, так что первое заметное — тяжёлые функции выключились
+    сами через 2 часа. По истории таблицы недели W30–W32 упирались в 80%: механизм
+    используется постоянно, а не лежит про запас.
+
+    Теперь порядок обратный: здесь мы только СЧИТАЕМ, кому ещё не сказали
+    (`pending_thresholds`), а помечает доставивший — через
+    `confirm_thresholds_notified()`, по факту принятого Telegram сообщения. Не
+    доставили — следующий тик предложит то же самое снова.
 
     Decision keys:
       week, spent_eur, limit_eur, pct, new_soft (list[int]), hard (bool),
+      pending_thresholds (list[int]: что ещё не доставлено владельцу),
       should_block_now (bool: hard breach during the night window), grace_deadline (iso|None).
     """
     ceiling = get_or_create_app_spend_ceiling()
@@ -283,16 +361,9 @@ def evaluate_ceiling(now: datetime | None = None) -> dict:
             existing = ceiling.get("auto_stop_at")
             grace_deadline_iso = existing
 
-    for th in new_soft:
-        try:
-            mark_app_spend_ceiling_threshold_notified(threshold_percent=th, week=week_key)
-        except Exception:
-            logger.debug("mark threshold notified failed th=%s", th, exc_info=True)
-    if hard and str(HARD_THRESHOLD) not in notified:
-        try:
-            mark_app_spend_ceiling_threshold_notified(threshold_percent=HARD_THRESHOLD, week=week_key)
-        except Exception:
-            logger.debug("mark hard threshold notified failed", exc_info=True)
+    # Что ещё НЕ доставлено владельцу. Пометку ставит доставивший, а не мы.
+    hard_pending = hard and str(HARD_THRESHOLD) not in notified
+    pending_thresholds = list(new_soft) + ([HARD_THRESHOLD] if hard_pending else [])
 
     return {
         "week": week_key,
@@ -302,11 +373,37 @@ def evaluate_ceiling(now: datetime | None = None) -> dict:
         "pct": round(pct, 1),
         "new_soft": new_soft,
         "hard": hard,
-        "hard_newly": hard and not bool(ceiling.get("hard_reached_at")),
+        "pending_thresholds": pending_thresholds,
+        # «Впервые» = «владельцу об этом ещё не сказали», а НЕ «отметка времени уже
+        # стоит». Отметка hard_reached_at ставится выше и нужна автостопу; привязка к
+        # ней глушила повтор письма, которое так и не ушло.
+        "hard_newly": hard_pending,
         "should_block_now": should_block_now,
         "grace_deadline": grace_deadline_iso,
         "blocked_tiers": ceiling.get("blocked_tiers") or [],
     }
+
+
+def confirm_thresholds_notified(thresholds, *, week: str | None = None) -> list[int]:
+    """Пометить пороги уведомлёнными — ПОСЛЕ того, как владелец правда получил письмо.
+
+    Зовётся доставившим (слой бота), и только когда Telegram принял сообщение хотя бы
+    у одного администратора. Не доставили — не помечаем, и следующий тик предложит то
+    же самое снова. Возвращает то, что удалось пометить.
+
+    Сбой записи здесь НЕ глушится в тишину: он логируется как ошибка. Цена незаписи —
+    повторное письмо владельцу на следующем тике, то есть шум; цена ложной пометки —
+    неделя молчания о кончающихся деньгах. Второе дороже, поэтому порядок именно такой.
+    """
+    marked: list[int] = []
+    for th in sorted({int(t) for t in (thresholds or [])}):
+        try:
+            mark_app_spend_ceiling_threshold_notified(threshold_percent=th, week=week)
+            marked.append(th)
+        except Exception:
+            logger.error("не смогли пометить порог %s уведомлённым (week=%s) — "
+                         "владелец получит это письмо ещё раз", th, week, exc_info=True)
+    return marked
 
 
 # ── Presentation + admin actions (pure; the bot layer calls these) ───────────
