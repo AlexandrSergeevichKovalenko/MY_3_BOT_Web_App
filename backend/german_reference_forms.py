@@ -815,6 +815,33 @@ def unresolved_row(row_id: int) -> dict[str, Any] | None:
             "reviewed": bool(row[5])}
 
 
+def store_reason(row_id: int, reason: str) -> None:
+    """Записать в строку очереди причину, вычисленную ПЕРЕД ОТПРАВКОЙ.
+
+    ┌─ НАЙДЕНО 27.08.2026 НА ЖИВОМ НАЖАТИИ. ────────────────────────────────────────┐
+    │ Точную причину карточка вычисляет в момент отправки по свежей странице, а в    │
+    │ строке очереди лежала НОЧНАЯ, общая: «ни справочник, ни композит, ни модель».  │
+    │ Владелец нажал «разобраться» на «Finster» — и в жалобу к модели ушла именно    │
+    │ она. То есть судить слово модель села, не зная главного: что на странице       │
+    │ напечатано склонение ФАМИЛИИ. Причина обязана доезжать до того, кто по ней     │
+    │ принимает решение.                                                            │
+    └───────────────────────────────────────────────────────────────────────────────┘
+    """
+    from backend.database import get_db_connection_context
+    текст = str(reason or "").strip()
+    if not текст:
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE bt_3_reference_forms_unresolved SET reason = %s "
+                            " WHERE id = %s;", (текст, int(row_id)))
+            conn.commit()
+    except Exception:
+        logging.warning("формы из справочника: причина не записана для %s", row_id,
+                        exc_info=True)
+
+
 def mark_asked(row_ids: list[int]) -> None:
     """Отметить, что эти строки ушли владельцу. Переспрос — через REASK_DAYS."""
     from backend.database import get_db_connection_context

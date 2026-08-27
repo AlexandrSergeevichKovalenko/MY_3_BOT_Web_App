@@ -177,3 +177,31 @@ def test_нечитаемая_очередь_не_выглядит_пустой(
     monkeypatch.setenv("TELEGRAM_Deutsch_BOT_TOKEN", "тест")
     итог = RV.send_reference_forms_review_dm(force=True)
     assert итог["ok"] is False and "очередь" in итог["error"]
+
+
+def test_точная_причина_доезжает_до_жалобы(monkeypatch):
+    """Причина считается перед отправкой; если её не записать, дальше — в жалобу, в
+    отчёт, к модели-судье — уйдёт старая общая фраза. Так и вышло с «Finster»."""
+    записано = []
+    monkeypatch.setattr("backend.database.claim_scheduler_run_guard",
+                        lambda **kw: True, raising=False)
+    monkeypatch.setattr("backend.database.get_admin_telegram_ids", lambda: [1], raising=False)
+    monkeypatch.setattr("backend.german_reference_forms.unresolved_batch",
+                        lambda limit=20: [{"id": 9, "word": "Finster", "pos": "noun",
+                                           "reason": "ни справочник, ни композит, ни модель",
+                                           "candidates": []}])
+    monkeypatch.setattr("backend.german_reference_forms.unresolved_count", lambda: 1)
+    monkeypatch.setattr("backend.german_reference_forms.fetch_sources_bulk",
+                        lambda titles: {"Finster": "{{Wortart|Substantiv|Deutsch}}"
+                                                   "{{Wortart|Nachname|Deutsch}}"
+                                                   "{{Deutsch Nachname Übersicht|x=1}}"})
+    monkeypatch.setattr("backend.german_reference_forms.store_reason",
+                        lambda rid, reason: записано.append((rid, reason)))
+    monkeypatch.setattr("backend.german_reference_forms.mark_asked", lambda ids: None)
+    monkeypatch.setattr(RV, "_our_entry", lambda word: {})
+    monkeypatch.setattr(RV.requests, "post",
+                        lambda *a, **kw: type("Ответ", (), {"status_code": 200, "text": ""})())
+    monkeypatch.setenv("TELEGRAM_Deutsch_BOT_TOKEN", "тест")
+    RV.send_reference_forms_review_dm(force=True)
+    assert записано and записано[0][0] == 9
+    assert "ФАМИЛИИ" in записано[0][1], "в очередь обязана лечь ТОЧНАЯ причина"

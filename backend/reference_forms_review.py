@@ -199,9 +199,10 @@ def _word_text(item: dict, *, index: int, total: int, left: int,
 
     lines.append("")
     lines.append("<b>Что делают кнопки:</b>")
-    lines.append("✏️ <b>разобраться</b> — заведу жалобу на это слово. Ночью модель "
-                 "разберёт карточку целиком и предложит исправление; ты решишь на "
-                 "экране «было → станет», и правка разойдётся по всем местам.")
+    lines.append("✏️ <b>разобраться</b> — заведу жалобу на это слово. Модель разберёт "
+                 "карточку целиком и предложит исправление; ты решишь на экране "
+                 "«было → станет», и правка разойдётся по всем местам. Ночью это "
+                 "произойдёт само, а сразу — командой /zhaloby.")
     if код in _НАШЕ_НАПИСАНИЕ_НЕ_ПОДТВЕРЖДЕНО:
         lines.append("🗑 <b>убрать из словаря</b> — слово и его запись в общем словаре "
                      "уходят, снимок сохраняется, вернуть можно.")
@@ -232,7 +233,7 @@ def send_reference_forms_review_dm(*, force: bool = False) -> dict[str, Any]:
     )
     from backend.german_reference_forms import (
         _reference_title, diagnose_source, fetch_sources_bulk, mark_asked,
-        unresolved_batch, unresolved_count,
+        store_reason, unresolved_batch, unresolved_count,
     )
 
     now = datetime.now(timezone.utc)
@@ -271,7 +272,13 @@ def send_reference_forms_review_dm(*, force: bool = False) -> dict[str, Any]:
     for item in items:
         title = _reference_title(item["word"], item["pos"])
         text = None if sources is None else (sources.get(title) or sources.get(item["word"]) or "")
-        diagnoses[item["id"]] = diagnose_source(item["pos"], text)
+        код, фраза = diagnose_source(item["pos"], text)
+        diagnoses[item["id"]] = (код, фраза)
+        # Причина ложится В СТРОКУ ОЧЕРЕДИ: с ней слово уйдёт дальше — в жалобу, в
+        # отчёт, к модели-судье. Иначе решение принимают, не зная главного.
+        if код != "молчит":
+            store_reason(item["id"], фраза)
+            item["reason"] = фраза
 
     sent = 0
     delivered_to = 0
@@ -378,8 +385,9 @@ def apply_reference_forms_review(action: str, row_id: str | int,
                     f"({итог.get('reason') or 'причина в логах'}). Слово осталось в очереди.")
         mark_reviewed(rid, "отдано в разбор карточки по решению владельца")
         return (f"✏️ <b>{слово}</b> — отдал в разбор карточки.\n"
-                "Ночью модель разберёт слово целиком и предложит исправление. "
-                "Придёт отдельным экраном «было → станет», там и решишь.")
+                "Ночью модель разберёт слово целиком и предложит исправление, "
+                "и придёт экран «было → станет».\n"
+                "Не хочешь ждать ночь — набери <b>/zhaloby</b>: разберёт прямо сейчас.")
 
     if action == "drop":
         # Тем же путём, что в разборе слов: правило удаления владелец принял 23.08.2026
