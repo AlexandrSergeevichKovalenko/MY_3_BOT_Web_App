@@ -43,5 +43,62 @@ class DbPoolStarvationAlertTests(unittest.TestCase):
         self.assertEqual(len(db._DB_POOL_STARVATION_EVENTS), 0)
 
 
+class DbPoolStarvationMessageTests(unittest.TestCase):
+    """Письмо обязано отличать «запрос упал» от «ушёл мимо пула», а не звать оба
+    «резервным путём». Разбор 27.08.2026: DB_POOL_ALLOW_DIRECT_FALLBACK выключен во
+    всех сервисах, поэтому в проде срабатывала ровно ветка падения — а письмо при
+    этом писало «Это НЕ падение»."""
+
+    @staticmethod
+    def _events(kinds, label="unspecified"):
+        return [(1000.0 + index, kind, label) for index, kind in enumerate(kinds)]
+
+    def test_failures_are_called_a_failure_not_a_fallback(self):
+        text = db._build_db_pool_starvation_message(self._events(["failed"] * 5))
+        self.assertIn("🛑", text)
+        self.assertIn("упали", text)
+        self.assertIn("человек на экране увидел ошибку", text)
+        self.assertNotIn("резервн", text.lower())
+
+    def test_old_reassuring_line_is_gone(self):
+        for kinds in (["failed"] * 5, ["fallback"] * 5):
+            text = db._build_db_pool_starvation_message(self._events(kinds))
+            self.assertNotIn("Это НЕ падение", text)
+
+    def test_fallback_only_keeps_the_calm_heading(self):
+        text = db._build_db_pool_starvation_message(self._events(["fallback"] * 5))
+        self.assertIn("⚠️", text)
+        self.assertNotIn("🛑", text)
+        self.assertIn("мимо него прямым", text)
+
+    def test_mixed_window_counts_both_kinds_separately(self):
+        text = db._build_db_pool_starvation_message(
+            self._events(["failed", "failed", "fallback", "fallback", "fallback"])
+        )
+        self.assertIn("2 запрос(ов)", text)
+        self.assertIn("3 запрос(ов)", text)
+
+    def test_unlabeled_culprit_says_not_recorded_not_unspecified(self):
+        text = db._build_db_pool_starvation_message(self._events(["failed"] * 5))
+        self.assertIn("НЕ ЗАПИСАНО", text)
+        self.assertNotIn("unspecified", text)
+
+    def test_named_culprits_are_listed_with_counts(self):
+        events = (
+            self._events(["failed"] * 3, label="http:/api/dictionary/search")
+            + self._events(["failed"] * 2, label="bot:message")
+        )
+        text = db._build_db_pool_starvation_message(events)
+        self.assertIn("http:/api/dictionary/search — 3", text)
+        self.assertIn("bot:message — 2", text)
+        self.assertNotIn("НЕ ЗАПИСАНО", text)
+
+    def test_named_and_unnamed_are_both_reported(self):
+        events = self._events(["failed"] * 3, label="bot:message") + self._events(["failed"] * 2)
+        text = db._build_db_pool_starvation_message(events)
+        self.assertIn("bot:message — 3", text)
+        self.assertIn("ещё 2 без метки", text)
+
+
 if __name__ == "__main__":
     unittest.main()

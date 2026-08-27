@@ -245,6 +245,31 @@ def get_redis_client():
     return _REDIS_CLIENT
 
 
+class _NameDbAcquiresMiddleware(dramatiq.Middleware):
+    """Подписать именем актёра все соединения, которые он возьмёт.
+
+    Один раз на входе в задание — метка живёт в contextvar и достаётся любому
+    вложенному get_db_connection(). Без неё письмо о голоде пула приходило владельцу
+    со строкой «Последний триггер: unspecified» и не давало решения (27.08.2026).
+    Поток воркера переиспользуется под следующее задание, поэтому имя обязательно
+    снимается после — иначе в письме окажется невиновный актёр.
+    """
+
+    def before_process_message(self, broker, message):
+        try:
+            from backend.database import set_db_acquire_label
+            set_db_acquire_label(f"actor:{getattr(message, 'actor_name', '') or 'unknown'}")
+        except Exception:
+            logging.debug("db acquire label for actor failed", exc_info=True)
+
+    def after_process_message(self, broker, message, *, result=None, exception=None):
+        try:
+            from backend.database import set_db_acquire_label
+            set_db_acquire_label(None)
+        except Exception:
+            logging.debug("db acquire label reset for actor failed", exc_info=True)
+
+
 def get_dramatiq_broker():
     global _BROKER
     if _BROKER is not None:
@@ -255,6 +280,7 @@ def get_dramatiq_broker():
         _BROKER = RedisBroker(url=redis_url)
     else:  # pragma: no cover - local fallback when redis is absent
         _BROKER = StubBroker()
+    _BROKER.add_middleware(_NameDbAcquiresMiddleware())
     dramatiq.set_broker(_BROKER)
     return _BROKER
 

@@ -161,6 +161,7 @@ from backend.database import (
     set_reply_keyboard_anchor,
     init_db,
     db_acquire_scope,
+    set_db_acquire_label,
     get_db_connection,
     build_translation_session_minutes_sql,
     get_random_dictionary_entry,
@@ -40890,6 +40891,51 @@ async def admin_plan_command(update: Update, context: CallbackContext) -> None:
     await _send_plan_link(context)
 
 
+def _db_acquire_label_for_update(update: Update) -> str:
+    """Короткое имя тому, что человек сейчас нажал, — для письма о голоде пула.
+
+    Имён должно быть НЕМНОГО, иначе письмо превратится в простыню: команда целиком,
+    у кнопки — только префикс данных (то, что стоит до первого «:»), остальное одним
+    словом по типу обновления. Точный текст сообщения сюда не попадает никогда.
+    """
+    message = update.effective_message
+    text = str(getattr(message, "text", "") or "") if message else ""
+    if text.startswith("/"):
+        return "bot:" + text.split()[0].split("@")[0][:32]
+    query = getattr(update, "callback_query", None)
+    if query is not None:
+        data = str(getattr(query, "data", "") or "").strip()
+        return "bot:cb:" + ((data.split(":")[0] or "?")[:24] if data else "?")
+    if update.inline_query is not None:
+        return "bot:inline"
+    if update.my_chat_member is not None or update.chat_member is not None:
+        return "bot:chat_member"
+    if message is not None:
+        return "bot:message"
+    return "bot:update"
+
+
+async def _name_db_acquires_for_update(update: Update, context: CallbackContext) -> None:
+    """group=-7: подписать именем ВСЕ соединения, которые возьмёт это обновление.
+
+    Стоит первым из блокирующих — раньше даже проверки доступа, которая сама ходит
+    в базу. Обновление обрабатывается одной задачей asyncio, метка лежит в contextvar
+    и достаётся всему вложенному, включая asyncio.to_thread(): туда контекст
+    копируется. Именно поэтому метка НЕ thread-local — в цикле asyncio сотни
+    обработчиков делят один поток, и thread-local приписал бы работу соседу.
+
+    Снимать метку в конце не нужно: у каждого обновления свой контекст задачи,
+    чужое имя в него не протечёт.
+
+    Ради чего: письмо «пул голодает» обязано назвать владельцу виновника, а не
+    строку «Последний триггер: unspecified» (27.08.2026).
+    """
+    try:
+        set_db_acquire_label(_db_acquire_label_for_update(update))
+    except Exception:
+        logging.debug("db acquire label for update failed", exc_info=True)
+
+
 async def _set_billing_user_context(update: Update, context: CallbackContext) -> None:
     """group=-1: tag this update's task with the acting user so bot-tier OpenAI
     usage/cost is attributed to them (read by openai_manager._store_last_usage)."""
@@ -44255,6 +44301,7 @@ def main():
     # Нажатия меню и команды пользователя в личке — в ту же ночную чистку, что и
     # служебные сообщения бота (группа -6: раньше гейта доступа, чтобы след в чате
     # не оставался и у тех, кому доступ ещё не выдан).
+    application.add_handler(TypeHandler(Update, _name_db_acquires_for_update, block=True), group=-7)
     application.add_handler(MessageHandler(filters.ALL, _track_user_menu_message, block=False), group=-6)
     application.add_handler(ChatMemberHandler(handle_bot_group_membership, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER), group=-4)
     # Private-chat block/return detection (separate group so both my_chat_member handlers run).
