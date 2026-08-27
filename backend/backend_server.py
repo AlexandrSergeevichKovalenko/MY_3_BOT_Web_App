@@ -31500,23 +31500,30 @@ def _phrase_review_payload(limit: int = 200) -> dict:
     Варианты нумеруются ЗДЕСЬ, на сервере, и тот же номер уходит обратно в решении —
     иначе фронт и бэкенд могли бы разойтись в том, что значит «принять второй»."""
     from backend.database import (
-        list_open_phrase_reviews, phrase_review_card_examples, phrase_review_is_panel,
+        list_open_phrase_reviews, phrase_review_card_examples, phrase_review_kind,
         phrase_review_variants,
     )
     items = []
     for it in list_open_phrase_reviews(int(limit)):
         judges = it.get("judges") or []
         arbiter = it.get("arbiter") if isinstance(it.get("arbiter"), dict) else None
-        variants = phrase_review_variants(judges, it.get("text") or "", arbiter)
+        # include_disputed: экран владельца ПОКАЗЫВАЕТ возражение проверки рядом с
+        # таким вариантом («Наша проверка не согласна: …»), поэтому имеет право его
+        # получить. Нумерация вариантов здесь и в применении решения обязана совпадать.
+        variants = phrase_review_variants(judges, it.get("text") or "", arbiter,
+                                          include_disputed=True)
         slot_of = {v["text"]: n for n, v in enumerate(variants)}
-        # ДВА РАЗНЫХ ВОПРОСА В ОДНОЙ ОЧЕРЕДИ, и путать их нельзя.
-        # "grammar" — судьи разошлись о грамматике фразы: решение = выбрать текст.
-        # "panel"   — три голоса разошлись о КАРТОЧКЕ (примеры и перевод): выбирать
-        #             нечего, там другие кнопки и на экран нужны сами примеры.
-        panel = phrase_review_is_panel(judges)
+        # ТРИ РАЗНЫХ ВОПРОСА В ОДНОЙ ОЧЕРЕДИ, и путать их нельзя.
+        # "grammar"     — судьи разошлись о грамматике фразы: решение = выбрать текст.
+        # "panel"       — три голоса разошлись о КАРТОЧКЕ (примеры и перевод): выбирать
+        #                 нечего, там другие кнопки и на экран нужны сами примеры.
+        # "translation" — перевод карточки не прошёл проверку перед подъёмом в общий
+        #                 слой: решение = поднять его, вписать свой или оставить личным.
+        kind = phrase_review_kind(judges)
+        panel = kind == "panel"
         items.append({
             "id": it["id"],
-            "kind": "panel" if panel else "grammar",
+            "kind": kind,
             "text": it.get("text") or "",
             "translation": it.get("translation") or "",
             # Примеры — предмет спора панельного вопроса. У грамматического их не
@@ -31639,7 +31646,8 @@ def answer_phrase_review_decide():
     except (TypeError, ValueError):
         return jsonify({"error": "нет фразы"}), 400
     decision = str(payload.get("decision") or "").strip().lower()
-    if decision not in ("accept", "keep", "delete", "replace", "skip", "rewrite"):
+    if decision not in ("accept", "keep", "delete", "replace", "skip", "rewrite",
+                        "link_accept", "link_own"):
         return jsonify({"error": "неизвестное решение"}), 400
     own_text = str(payload.get("text") or "").strip()
     if decision == "replace" and not own_text:
@@ -31650,6 +31658,24 @@ def answer_phrase_review_decide():
         variant = 0
 
     from backend.database import apply_phrase_review_decision
+    if decision in ("link_accept", "link_own"):
+        # Вопрос о ПЕРЕВОДЕ карточки: проверка не подтвердила, что русский означает эту
+        # фразу, и решает владелец. «Принять» ставит перевод карточки общим (ранг 5),
+        # «свой» — его собственный, и тот встаёт выше, рангом 1 с подписью «вычитка»:
+        # решение человека не должна перебивать ни модель, ни машинный перевод.
+        from backend.database import apply_translation_link_decision
+        own = str(payload.get("text") or "").strip()
+        if decision == "link_own" and not own:
+            return jsonify({"error": "пустой перевод"}), 400
+        res = apply_translation_link_decision(review_id, decision, own)
+        if res.get("linked"):
+            note = (f"Перевод стал общим: {res.get('translation')}"
+                    if decision == "link_accept"
+                    else f"Записал твой перевод: {res.get('translation')}")
+        else:
+            note = "Не получилось записать перевод. Вопрос оставлен открытым."
+        return jsonify({"ok": True, "result": decision, "note": note,
+                        **_phrase_review_payload()})
     if decision == "rewrite":
         # Панельная карточка: спор не о фразе, а о её примерах и переводе. Владелец
         # отправляет её ночному переписчику — тот берёт другой моделью, проверяет

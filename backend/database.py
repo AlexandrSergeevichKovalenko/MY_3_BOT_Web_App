@@ -24225,10 +24225,13 @@ def count_open_phrase_reviews_by_kind() -> dict:
             _ensure_phrase_check_tables(cursor)
             cursor.execute("SELECT judges FROM bt_3_phrase_review WHERE status = 'open';")
             rows = cursor.fetchall() or []
-    out = {"panel": 0, "grammar": 0}
+    out = {"panel": 0, "grammar": 0, "translation": 0}
     for (judges,) in rows:
-        out["panel" if phrase_review_is_panel(
-            judges if isinstance(judges, list) else []) else "grammar"] += 1
+        kind = phrase_review_kind(judges if isinstance(judges, list) else [])
+        out[kind] = out.get(kind, 0) + 1
+    # «Карточки словаря» — это панель И переводы: они приходят владельцу ОДНИМ
+    # сообщением по вторникам и пятницам и разбираются на одном экране.
+    out["cards"] = out["panel"] + out["translation"]
     return out
 
 
@@ -24243,20 +24246,44 @@ def count_noise_phrase_reviews() -> int:
 
 
 PANEL_REVIEW_CATEGORY = "панель из трёх голосов"
+TRANSLATION_REVIEW_CATEGORY = "перевод карточки"
+# Вопросы НЕ о грамматике фразы. Живут в той же очереди сознательно: у владельца уже
+# шесть очередей с кнопками, седьмая означала бы седьмое место, куда надо не забыть
+# заглянуть. Различаются категорией, и по ней экран рисует свои кнопки.
+CARD_REVIEW_CATEGORIES = {PANEL_REVIEW_CATEGORY, TRANSLATION_REVIEW_CATEGORY}
+
+
+def phrase_review_kind(judges: list) -> str:
+    """Какой это вопрос: "grammar" | "panel" | "translation".
+
+    grammar     — судьи разошлись о немецком самой фразы, решение = выбрать текст;
+    panel       — три голоса разошлись о карточке (примеры и перевод), 23.08.2026;
+    translation — перевод карточки не прошёл проверку перед подъёмом в общий слой,
+                  27.08.2026 (`backend/translation_links.py`).
+
+    Отличаем по категории, потому что она приходит от того, кто вопрос завёл, и не
+    зависит ни от текста, ни от числа судей."""
+    for j in (judges or []):
+        if not isinstance(j, dict):
+            continue
+        category = str(j.get("category") or "")
+        if category == PANEL_REVIEW_CATEGORY:
+            return "panel"
+        if category == TRANSLATION_REVIEW_CATEGORY:
+            return "translation"
+    return "grammar"
 
 
 def phrase_review_is_panel(judges: list) -> bool:
-    """Вопрос не про грамматику фразы, а про её карточку — примеры и перевод.
+    """Вопрос не про грамматику фразы, а про её карточку — примеры, перевод.
 
-    Такие 79 записей положил в очередь разбор панели из трёх голосов 23.08.2026
-    (`scripts/dict_panel_disputes_to_owner.py`). У них один «судья», вердикт `doubt` и
-    НИКОГДА нет исправленного текста — исправлять там нечего, там другой вопрос.
-    На экране владельца 26.08.2026 они выглядели пустой карточкой без кнопок: он смотрел
-    на них и искал, что решить. Отличаем по категории, которую ставит тот же скрипт."""
-    for j in (judges or []):
-        if isinstance(j, dict) and str(j.get("category") or "") == PANEL_REVIEW_CATEGORY:
-            return True
-    return False
+    Именно это спрашивают все грамматические механизмы (третий судья, «пересудить
+    вслепую», закрытие бесспорных): им важно одно — их это работа или нет. Внутренние
+    виды различает `phrase_review_kind`.
+
+    На экране владельца 26.08.2026 такие вопросы выглядели пустой карточкой без кнопок:
+    он смотрел на них и искал, что решить, а решать там было нечего."""
+    return phrase_review_kind(judges) != "grammar"
 
 
 def list_open_phrase_reviews_needing_arbiter(limit: int = 60) -> list[int]:
@@ -24477,7 +24504,8 @@ def _phrase_text_key(value: str) -> str:
     return " ".join(str(value or "").split()).strip(" .!?…,;:")
 
 
-def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = None) -> list[dict]:
+def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = None,
+                           *, include_disputed: bool = False) -> list[dict]:
     """Все РАЗНЫЕ варианты правки, которые предложили судьи, по порядку судей.
 
     Судей двое, и они часто расходятся — ровно поэтому фраза и попала владельцу. Пока
@@ -24509,6 +24537,15 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
     # │ спор целиком) и идёт на более сильной модели. Но не молча: вариант приезжает │
     # │ с пометкой, что проверка с ним не согласна, и владелец видит обе стороны.    │
     # └─────────────────────────────────────────────────────────────────────────────┘
+    # ⛔ ВАРИАНТ С ОГОВОРКОЙ ОТДАЁТСЯ ТОЛЬКО ПО ЯВНОЙ ПРОСЬБЕ.
+    #
+    # Вариант, который наша проверка забраковала, а третейский судья назвал верным,
+    # возвращается лишь при include_disputed=True — и вызывающий этим подписывается,
+    # что ПОКАЖЕТ рядом возражение проверки. Экран владельца показывает; экран проверки
+    # слов у обычного человека — нет, там на кнопке только «Да, правильно так: …», и
+    # человек одним касанием заучил бы ровно то, что система сама отвергла (нашёл
+    # соседний агент 27.08.2026, до живого вреда не дошло). Молчаливая утечка такого
+    # варианта на чужую поверхность опаснее его отсутствия, поэтому умолчание — «нет».
     winner_text = ""
     try:
         winner = int((arbiter or {}).get("winner") or 0)
@@ -24533,7 +24570,7 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
             # отдаём человеку на глаз ровно то, что обязана была отсеять система.
             # Разобрано 19.08.2026 на «in den Taschen» — неверный падеж и другое число.
             rejected = fix_passed_check(j, field) is False
-            if rejected and not _phrase_same_text(value, winner_text):
+            if rejected and not (include_disputed and _phrase_same_text(value, winner_text)):
                 continue
             seen.add(value)
             out.append({"judge": n, "field": field, "text": value,
@@ -24739,6 +24776,53 @@ def spread_correction_everywhere(cursor, *, unit_id: int, old_text: str, new_tex
     return report
 
 
+def apply_translation_link_decision(review_id: int, decision: str,
+                                    own_text: str = "") -> dict:
+    """Решение владельца по вопросу «перевод карточки не прошёл проверку».
+
+    Два исхода, и они РАЗНЫЕ по рангу связи:
+      link_accept — перевод карточки годится. Ранг 5, подпись «перевод карточки»:
+                    ниже вычитки владельца, выше пула (его решение 27.08.2026);
+      link_own    — владелец вписал свой. Тогда это вычитка: ранг 1, и выдача ставит
+                    его выше машинной сортировки (`lex_units._fetch_links`).
+
+    «Оставить личным» и «удалить» сюда не приходят: их закрывают общие ветки keep и
+    delete, там ничего специфичного для перевода нет.
+    """
+    out = {"linked": False, "translation": "", "unit_id": 0}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "SELECT unit_id, text, translation FROM bt_3_phrase_review "
+                "WHERE id = %s AND status = 'open';", (int(review_id),))
+            row = cursor.fetchone()
+    if not row:
+        return out
+    unit_id, text, card_translation = int(row[0]), row[1], str(row[2] or "")
+    out["unit_id"] = unit_id
+    chosen = str(own_text or "").strip() if decision == "link_own" else card_translation.strip()
+    if not chosen:
+        return out
+    out["translation"] = chosen
+    if decision == "link_own":
+        # Тот же путь, что и у выбора владельца на экране спорных фраз: ранг 1,
+        # подпись «вычитка». Один путь на всё приложение — иначе выдача и запись
+        # разъедутся, как это уже было 20.08.2026.
+        out["linked"] = bool(promote_owner_translation(unit_id, chosen))
+    else:
+        from backend.translation_links import _link_translation
+        out["linked"] = bool(_link_translation(unit_id, chosen))
+    if out["linked"]:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_phrase_review SET status = 'linked', decided_at = NOW(), "
+                    "decided_text = %s WHERE id = %s;", (text, int(review_id)))
+            conn.commit()
+    return out
+
+
 def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = "",
                                  variant: int = 0, own_ru: str = "") -> dict:
     """Решение владельца по спорной фразе: принять правку, удалить или вписать свою.
@@ -24812,7 +24896,9 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
 
             chosen_ru = ""
             if decision == "accept":
-                variants = phrase_review_variants(judges, old_text, arbiter)
+                # Тот же набор, что на экране владельца: номер на кнопке = номер здесь.
+                variants = phrase_review_variants(judges, old_text, arbiter,
+                                                  include_disputed=True)
                 idx = int(variant or 0)
                 chosen = variants[idx] if 0 <= idx < len(variants) else {}
                 new_text = str(chosen.get("text") or "")

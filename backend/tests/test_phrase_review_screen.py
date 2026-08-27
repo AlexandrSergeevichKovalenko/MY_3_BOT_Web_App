@@ -326,8 +326,10 @@ class ActionsAreAlwaysReachableTests(unittest.TestCase):
         head = src[src.rindex("\n", 0, src.rindex("\n", 0, i)):i]
         conditions = [line for line in head.split("\n") if "?" in line]
         for line in conditions:
-            self.assertIn("isPanel", line,
-                          "«Пересудить» спрятана за условием, которое не про вид вопроса")
+            # `isCard` = панель ИЛИ перевод карточки: с 27.08.2026 вопросов о карточке
+            # два, и грамматическому судье не место ни в одном из них.
+            self.assertTrue("isCard" in line or "isPanel" in line,
+                            "«Пересудить» спрятана за условием, которое не про вид вопроса")
 
     def test_arbiter_is_offered_with_a_single_variant_too(self):
         src = self._screen()

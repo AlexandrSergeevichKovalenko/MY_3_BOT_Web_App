@@ -9838,6 +9838,87 @@ def run_phrase_fix_check(*, original: str, meaning_ru: str, fix: str) -> dict:
     }
 
 
+def run_translation_pair_check(*, german: str, russian: str, kind: str = "collocation") -> dict:
+    """Означает ли этот русский именно эту немецкую фразу. Один короткий вопрос.
+
+    ЗАЧЕМ. Русская половина карточки почти никогда не написана человеком: он спросил
+    бота, тот перевёл моделью (или переводчиком), человек выбрал вариант и нажал
+    «сохранить». Владелец 27.08.2026: «это не перевод человека — это машина, я только
+    выбрал». Значит перед тем, как поднять этот текст в ОБЩИЙ слой и показать другим,
+    его надо сверить: машинный перевод никто не проверял.
+
+    ПОЧЕМУ ЭТО НЕ «ВТОРОЙ ГОЛОС» ИЗ second_voice_check. Там проверяется то, что мы
+    СОЧИНИЛИ (примеры, значения), и проверяющий обязан быть чужого производителя:
+    замер 23.08.2026 — два голоса OpenAI расходятся всего в 15%, они обучены одинаково.
+    Здесь вопрос узкий и фактический, а не «оцени свою работу», и модель выбрал
+    владелец 27.08.2026 по цене: на нашей форме запроса (короткий вход, короткий выход)
+    gpt-4.1-mini стоит $0.00011 против $0.00014 у gemini-flash, а с кешируемым
+    системным промптом — $0.00009. Цены из bt_3_billing_price_snapshots.
+
+    Возвращает {"checked": bool, "ok": bool, "why": "<по-русски>"}.
+    checked=False — «спросить не удалось». Это НЕ «плохо» и НЕ «хорошо»: вызывающий
+    обязан не записывать ничего и вернуться к этой фразе в следующий раз.
+    """
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    de = str(german or "").strip()
+    ru = str(russian or "").strip()
+    if not api_key or not de or not ru or len(de) > 300 or len(ru) > 300:
+        return {"checked": False}
+    # Системный промпт держим НЕИЗМЕННЫМ и первым — это то, что кеширует OpenAI.
+    system = (
+        "You verify one dictionary entry of a German↔Russian learner's dictionary: does "
+        "the saved Russian actually mean the saved German?\n"
+        "- Judge MEANING, not style. A free but faithful translation is CORRECT.\n"
+        "- A shorter Russian gloss for a German phrase is CORRECT when it names the same "
+        "thing («Schwein haben» → «повезти»).\n"
+        "- A dictionary form with placeholders (jemanden, etwas, sich) matches a Russian "
+        "gloss with or without them.\n"
+        "- Mark it wrong ONLY when a learner would take away something false: the Russian "
+        "names a different action, a different object, the opposite, or is a translation "
+        "of some OTHER German words entirely; or the two sides are swapped (German text "
+        "sitting in the Russian field).\n"
+        "- An empty or nonsense Russian is wrong.\n"
+        "- `why` MUST be written in RUSSIAN, in Cyrillic letters, one short sentence. "
+        "Leave it empty when the pair is correct.\n"
+        "Answer STRICT JSON only: {\"ok\":true|false,\"why\":\"<RUSSIAN or empty>\"}"
+    )
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=15)
+        resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(
+                    {"german": de, "russian": ru, "kind": kind}, ensure_ascii=False)},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        logging.warning("run_translation_pair_check failed de=%s", de[:60], exc_info=True)
+        return {"checked": False}
+    try:
+        u = getattr(resp, "usage", None)
+        if u:
+            _LAST_LLM_USAGE.set({
+                "model": "gpt-4.1-mini",
+                "prompt_tokens": int(getattr(u, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(u, "total_tokens", 0) or 0),
+            })
+    except Exception:
+        pass
+    try:
+        data = json.loads(resp.choices[0].message.content or "{}") or {}
+    except Exception:
+        return {"checked": False}
+    if "ok" not in data:
+        return {"checked": False}          # ответ не той формы — это «не спросили»
+    return {"checked": True, "ok": bool(data.get("ok")),
+            "why": str(data.get("why") or "").strip()}
+
+
 def run_phrase_dispute_verdict(*, text: str, variants: list, translation: str = "",
                                kind: str = "collocation") -> dict:
     """Третейский судья: два первых разошлись — кто из них прав и почему.
