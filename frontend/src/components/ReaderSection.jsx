@@ -258,6 +258,18 @@ export default function ReaderSection(props) {
   // once that page is inside the window: used to reopen a book on its bookmark and
   // to jump to the bookmark from the dock.
   const readerColPendingAnchorRef = React.useRef(null);
+  // ┌─ FIXED 27.08.2026. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ─────────────────────────┐
+  // │ The reading position used to live ONLY as readerColAnchorCharRef — an       │
+  // │ offset inside the loaded window. The window is not fixed: it grows BACKWARDS │
+  // │ when earlier pages arrive, and every charStart shifts with it, so the same   │
+  // │ number silently starts pointing pages earlier. Measured on book 164: the     │
+  // │ bookmark at page 15 reopened on pages 11-12 while the counter said 13.       │
+  // │ The old `Math.abs(ap - readerCurrentPage) > 2` guard could not catch it —    │
+  // │ readerCurrentPage is derived from the SAME drifted number, so the two agreed │
+  // │ with each other while both were wrong. The position now lives in the only    │
+  // │ coordinates that survive a window slide: page + char inside that page.       │
+  // └─────────────────────────────────────────────────────────────────────────────┘
+  const readerColAnchorStableRef = React.useRef(null);
   // Real, measured column geometry — the CSS column pitch does NOT equal the
   // viewport width (the browser expands columns to fill), so we measure it from
   // the laid-out word spans and page by exactly that. Works on any screen.
@@ -463,14 +475,15 @@ export default function ReaderSection(props) {
     if (!off) return null;
     return { page: Number(page), char: Math.max(0, ch - Number(off.charStart || 0)) };
   };
-  // Same anchor mapped back into the CURRENT window's coordinates, or null when the
-  // bookmarked page is not inside the loaded window (then there is nothing to show).
-  const readerBookmarkWindowChar = () => {
-    if (!readerBookmarkAnchor || !readerWindowModel) return null;
-    const off = readerWindowModel.offsets.find((o) => Number(o.page) === Number(readerBookmarkAnchor.page));
+  // A stable {page, char} mapped into the CURRENT window's coordinates, or null when
+  // that page is not inside the loaded window (then there is nothing to point at).
+  const readerColStableToWindowChar = (stable) => {
+    if (!stable || !readerWindowModel) return null;
+    const off = readerWindowModel.offsets.find((o) => Number(o.page) === Number(stable.page));
     if (!off) return null;
-    return Number(off.charStart || 0) + Math.max(0, Number(readerBookmarkAnchor.char || 0));
+    return Number(off.charStart || 0) + Math.max(0, Number(stable.char || 0));
   };
+  const readerBookmarkWindowChar = () => readerColStableToWindowChar(readerBookmarkAnchor);
 
   // Record the reading position (char) and sync the server page for progress /
   // bookmark / prefetch — WITHOUT re-measuring (window text is unchanged).
@@ -479,6 +492,16 @@ export default function ReaderSection(props) {
     const ch = readerColVisibleCharAt(readerColIndexRef.current);
     readerColAnchorCharRef.current = ch;
     const p = readerColPageOfChar(ch);
+    // Same position in window-proof coordinates — this is what place() reads back.
+    if (p) {
+      const off = readerWindowModel.offsets.find((o) => Number(o.page) === Number(p));
+      if (off) {
+        readerColAnchorStableRef.current = {
+          page: Number(p),
+          char: Math.max(0, ch - Number(off.charStart || 0)),
+        };
+      }
+    }
     // During audio, the audio page-sync OWNS readerCurrentPage. If the word-follow
     // (which moves the column) also set it here, changing readerCurrentPage would
     // recompute the window → recompute the highlighted word → re-fire the follow →
@@ -519,6 +542,9 @@ export default function ReaderSection(props) {
         // be the wrong screen. Only armed once the bookmarked page is really inside
         // the loaded window — otherwise we wait for the window that holds it.
         if (readerColRestoredDocRef.current !== openKey) {
+          // A different book (or a fresh open of the same one): the position carried
+          // over from the previous one must not re-base into this window.
+          readerColAnchorStableRef.current = null;
           if (readerBookmarkAnchor) {
             // Wait for the window that actually holds the bookmarked page: staying
             // unmarked means the next measurement tries again.
@@ -545,12 +571,16 @@ export default function ReaderSection(props) {
         // An explicit "go exactly here" request (reopen-on-bookmark, dock jump) wins
         // over the running reading anchor for this one measurement.
         const pending = readerColPendingAnchorRef.current;
-        if (pending) {
-          const off = readerWindowModel.offsets.find((o) => Number(o.page) === Number(pending.page));
-          if (off) {
-            readerColAnchorCharRef.current = Number(off.charStart || 0) + Math.max(0, Number(pending.char || 0));
-            readerColPendingAnchorRef.current = null;
-          }
+        const pendingChar = readerColStableToWindowChar(pending);
+        if (pending && pendingChar != null) {
+          readerColAnchorCharRef.current = pendingChar;
+          readerColAnchorStableRef.current = { ...pending };
+          readerColPendingAnchorRef.current = null;
+        } else {
+          // Re-base the running position into THIS window's coordinates. Without it a
+          // window that grew backwards leaves the old number pointing pages earlier.
+          const rebased = readerColStableToWindowChar(readerColAnchorStableRef.current);
+          if (rebased != null) readerColAnchorCharRef.current = rebased;
         }
         let anchor = readerColAnchorCharRef.current;
         const ap = readerColPageOfChar(anchor);
