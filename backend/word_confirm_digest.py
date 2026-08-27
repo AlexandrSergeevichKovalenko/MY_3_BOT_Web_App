@@ -43,6 +43,15 @@ DONE = "done"
 # плашке при сохранении. Артикль здесь не часть имени слова, а часть карточки.
 _BARE = "regexp_replace({col}, '^(der|die|das)[[:space:]]+', '', 'i')"
 
+# ⚠ КАКИЕ ВОПРОСЫ ИЗ `bt_3_phrase_review` АДРЕСОВАНЫ ЧЕЛОВЕКУ.
+# В таблице три вида: 'grammar' (немецкий самой фразы), 'panel' (карточка тремя
+# голосами) и 'translation' (перевод карточки перед подъёмом в общий слой). Третий
+# сформулирован ДЛЯ ВЛАДЕЛЬЦА и решается на его экране своими кнопками. Пока отбора не
+# было, 27.08.2026 все 38 таких записей доехали до ученика и показались ему как
+# «фраза, в которой мы усомнились» — среди них одиночные слова «Besprechung», «Soile».
+# Правило для всех читателей таблицы — docs/tasks/phrase_review_kinds.md.
+ВИДЫ_ДЛЯ_ЧЕЛОВЕКА = ["grammar", "panel"]
+
 
 def _cleaned(text: str) -> str:
     """Общая чистка входа — та же, что стоит на всех дверях записи слова.
@@ -259,9 +268,7 @@ def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
     ⚠ СПРАШИВАЕМ АВТОРА, А НЕ ВСЕХ ПОДПИСЧИКОВ — то же правило и та же история
     дефекта, что в `words_for_user`. Автор — тот, чья карточка появилась первой.
     """
-    from backend.database import (
-        phrase_review_is_noise, phrase_review_kind, phrase_review_variants,
-    )
+    from backend.database import phrase_review_is_noise, phrase_review_variants
 
     cur.execute(
         """
@@ -275,14 +282,16 @@ def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
                r.unit_id
           FROM bt_3_phrase_review r
           JOIN авторы a ON a.lex_unit_id = r.unit_id
-         WHERE r.status = 'open' AND a.user_id = %s
+         -- ВИД НАЗЫВАЕТСЯ ЯВНО, прямо в запросе: человеку адресованы только вопросы о
+         -- самой фразе. Вопрос про перевод карточки решает владелец своим экраном.
+         WHERE r.status = 'open' AND r.kind = ANY(%s) AND a.user_id = %s
            AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
                             WHERE d.user_id = a.user_id AND d.word = btrim(r.text)
                               AND d.closed_at IS NOT NULL)
          ORDER BY r.id
          LIMIT %s;
         """,
-        (int(user_id), int(limit)),
+        (ВИДЫ_ДЛЯ_ЧЕЛОВЕКА, int(user_id), int(limit)),
     )
     items: list[dict[str, Any]] = []
     for review_id, текст, перевод, судьи, арбитр, unit_id in (cur.fetchall() or []):
@@ -298,8 +307,6 @@ def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
         # записей доехали до экрана проверки слов и показались человеку как «фраза, в
         # которой мы усомнились» — включая одиночные слова «Besprechung» и «Soile».
         # Чужой вопрос, заданный не тому человеку и не теми словами.
-        if phrase_review_kind(судьи) == "translation":
-            continue
         # Шум — это записи, где проверяющий «исправил» фразу в саму себя. На экране
         # владельца они уже отсеиваются; человеку тем более показывать нечего.
         if phrase_review_is_noise(судьи, str(текст)):
@@ -567,7 +574,7 @@ def _phrase_counts_by_author(cur) -> dict[int, int]:
     Пустые придирки («ошибка есть, а исправить нечего») отсеиваются тем же правилом,
     что и на экране. Иначе письмо обещает 186 фраз, а человек находит 98.
     """
-    from backend.database import phrase_review_is_noise, phrase_review_kind
+    from backend.database import phrase_review_is_noise
 
     cur.execute(
         """
@@ -580,19 +587,17 @@ def _phrase_counts_by_author(cur) -> dict[int, int]:
         SELECT a.user_id, btrim(r.text), r.judges
           FROM bt_3_phrase_review r
           JOIN авторы a ON a.lex_unit_id = r.unit_id
-         WHERE r.status = 'open'
+         -- Тот же отбор вида, что и на экране (см. `_phrase_items`).
+         WHERE r.status = 'open' AND r.kind = ANY(%s)
            AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
                             WHERE d.user_id = a.user_id AND d.word = btrim(r.text)
                               AND d.closed_at IS NOT NULL);
-        """
+        """,
+        (ВИДЫ_ДЛЯ_ЧЕЛОВЕКА,),
     )
     счёт: dict[int, int] = {}
     for user_id, текст, судьи in (cur.fetchall() or []):
         судьи = судьи if isinstance(судьи, list) else []
-        # Тот же отбор, что и на экране (см. `_phrase_items`): вопрос про перевод
-        # карточки решает владелец, человеку он не адресован.
-        if phrase_review_kind(судьи) == "translation":
-            continue
         if phrase_review_is_noise(судьи, str(текст)):
             continue
         счёт[int(user_id)] = счёт.get(int(user_id), 0) + 1

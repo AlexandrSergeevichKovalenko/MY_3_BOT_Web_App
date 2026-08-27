@@ -104,8 +104,12 @@ class ФразыДоходятДоАвтора(unittest.TestCase):
                       "без этого фразы уйдут любому подписчику общего слова")
 
     def test_phrase_query_is_scoped_to_this_user(self):
+        # Порядок подстановок: сначала виды вопроса, потом человек, потом сколько
+        # взять. Вид стоит первым, потому что он в запросе первым и есть.
         _, курсор = _спросить([[], ФРАЗА], user_id=424242)
-        self.assertEqual(курсор.запросы[1][1][0], 424242)
+        параметры = курсор.запросы[1][1]
+        self.assertEqual(параметры[0], ["grammar", "panel"])
+        self.assertEqual(параметры[1], 424242)
 
     def test_only_open_phrases_are_asked_about(self):
         """Решённые ночью фразы человека не беспокоят."""
@@ -116,7 +120,7 @@ class ФразыДоходятДоАвтора(unittest.TestCase):
         """Слова идут первыми; фраз берём ровно столько, сколько осталось места."""
         слова = [(f"Wort{i}", "перевод") for i in range(5)]
         _, курсор = _спросить([слова, ФРАЗА], limit=8)
-        self.assertEqual(курсор.запросы[1][1][1], 3)
+        self.assertEqual(курсор.запросы[1][1][2], 3)
 
     def test_full_batch_of_words_skips_the_phrase_query(self):
         слова = [(f"Wort{i}", "перевод") for i in range(12)]

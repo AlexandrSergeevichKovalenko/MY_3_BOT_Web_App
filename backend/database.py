@@ -23969,6 +23969,69 @@ def _create_phrase_check_tables(cursor) -> None:
     # Вердикт третейского судьи по спору двух первых: {winner, why, better}. Хранится,
     # а не пересчитывается: спор разрешается за деньги, и второй раз платить за тот же
     # ответ незачем — владелец может вернуться к фразе через день.
+    # ⚠ ВИД ВОПРОСА — КОЛОНКА, А НЕ ВЫВОД КАЖДОГО ЧИТАТЕЛЯ.
+    #
+    # В этой таблице живут ТРИ разных вопроса: про немецкий самой фразы (grammar), про
+    # карточку тремя голосами (panel) и про перевод карточки перед подъёмом в общий
+    # слой (translation). Пока вид вычислялся из `judges` у каждого читателя, любой,
+    # кто выбрал «всё со status='open'», получал ЧУЖИЕ вопросы и показывал их не тому
+    # человеку. Так и вышло 27.08.2026: все 38 записей вида translation доехали до
+    # экрана проверки слов у ученика и показались ему как «фраза, в которой мы
+    # усомнились» — включая одиночные слова «Besprechung» и «Soile».
+    #
+    # Колонка ставится при вставке и заполнена задним числом по той же `judges`, так что
+    # отбор идёт в SQL, стоит ничего и виден в самом запросе. Правило для всех, кто
+    # читает эту таблицу, — `docs/tasks/phrase_review_kinds.md` и страж
+    # `backend/tests/test_phrase_review_kind_is_named.py`.
+    cursor.execute(
+        "ALTER TABLE bt_3_phrase_review ADD COLUMN IF NOT EXISTS kind TEXT;"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS bt_3_phrase_review_kind_idx "
+        "ON bt_3_phrase_review (kind, status);"
+    )
+    # Задним числом: у записей, заведённых до появления колонки, вид берём из той же
+    # категории, что и раньше. Условие по `kind IS NULL` делает прогон одноразовым.
+    cursor.execute(
+        """
+        UPDATE bt_3_phrase_review SET kind = CASE
+            WHEN judges::text LIKE %s THEN 'panel'
+            WHEN judges::text LIKE %s THEN 'translation'
+            ELSE 'grammar' END
+         WHERE kind IS NULL;
+        """,
+        (f'%"{PANEL_REVIEW_CATEGORY}"%', f'%"{TRANSLATION_REVIEW_CATEGORY}"%'),
+    )
+    # ⚠ ВИД ПРОСТАВЛЯЕТ САМА ТАБЛИЦА, А НЕ ТОТ, КТО ПИШЕТ.
+    # Мест записи уже четыре (ночная проверка грамматики, панель трёх голосов, добор
+    # примеров, подъём перевода), и правило, которое держится на памяти пишущего,
+    # ломается на пятом. Тут оно держится на самой таблице: кто бы ни вставил строку и
+    # откуда бы ни пришёл, вид проставится из той же категории. Явно переданный вид
+    # уважается — триггер трогает только пустое.
+    cursor.execute(
+        """
+        CREATE OR REPLACE FUNCTION bt_3_phrase_review_set_kind() RETURNS trigger AS $$
+        BEGIN
+            IF NEW.kind IS NULL OR btrim(NEW.kind) = '' THEN
+                NEW.kind := CASE
+                    WHEN NEW.judges::text LIKE '%""" + PANEL_REVIEW_CATEGORY + """%'
+                        THEN 'panel'
+                    WHEN NEW.judges::text LIKE '%""" + TRANSLATION_REVIEW_CATEGORY + """%'
+                        THEN 'translation'
+                    ELSE 'grammar' END;
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        """
+    )
+    cursor.execute("DROP TRIGGER IF EXISTS bt_3_phrase_review_kind_trg "
+                   "ON bt_3_phrase_review;")
+    cursor.execute(
+        "CREATE TRIGGER bt_3_phrase_review_kind_trg "
+        "BEFORE INSERT OR UPDATE OF judges ON bt_3_phrase_review "
+        "FOR EACH ROW EXECUTE FUNCTION bt_3_phrase_review_set_kind();"
+    )
     cursor.execute(
         "ALTER TABLE bt_3_phrase_review ADD COLUMN IF NOT EXISTS arbiter JSONB;"
     )
