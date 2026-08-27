@@ -798,7 +798,8 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
        • GANZE SÄTZE UND SATZTEILE mit Subjekt und konjugiertem Verb: "Opfer fordern ihre
          Rechte", "eine wirksame Kontrolle muss es geben".
        • ZWEI EINHEITEN MIT KOMMA ZUSAMMENGEKLEBT: "ein neuer Markt, der Graumarkt" —
-         nimm EINE davon: "der Graumarkt".
+         nimm EINE davon: "der Graumarkt". Ein RELATIVSATZ ist keine Klebestelle:
+         "Akku, der nicht nachlässt" ist EINE Einheit und bleibt ganz.
        • DIE WENDUNG MITSAMT IHREM OBJEKT: aus «hat Tür und Tor für weniger Jugendschutz
          geöffnet» gehört "Tür und Tor öffnen (für etwas)" auf die Karte — NICHT der ganze
          Satzteil mit Objekt und Partizip. Die Wendung wird HERAUSGELÖST, nicht mitkopiert.

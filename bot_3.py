@@ -11694,14 +11694,16 @@ async def run_daily_video_recheck(context: CallbackContext):
     """
     from backend.database import get_admin_telegram_ids
     try:
-        removed_total, touched = await asyncio.to_thread(_recheck_stored_daily_video_cards)
+        removed_total, touched, labels_left = await asyncio.to_thread(
+            _recheck_stored_daily_video_cards)
     except Exception as exc:
         logging.exception("ночная перепроверка карточек не отработала")
         _record_sched_heartbeat("daily_video_recheck_result", "failed", {"error": str(exc)[:200]})
         return
     _record_sched_heartbeat("daily_video_recheck_result", "completed",
-                            {"removed": len(removed_total), "entries": touched})
-    if not removed_total:
+                            {"removed": len(removed_total), "entries": touched,
+                             "labels_left": labels_left})
+    if not removed_total and not labels_left:
         return   # тишина, когда чистить нечего: сообщать не о чем
     admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
     lines = ["🧹 <b>Ночная проверка карточек</b>", "",
@@ -11709,6 +11711,11 @@ async def run_daily_video_recheck(context: CallbackContext):
     lines += [f"· «{r['de']}» — {r['why']}" for r in removed_total[:8]]
     if len(removed_total) > 8:
         lines.append(f"…ещё {len(removed_total) - 8}")
+    if labels_left:
+        # Молчащий пробел неотличим от отсутствующего: если помету так и не добрали,
+        # владелец видит это числом, а не находит потом глазами на экране.
+        lines += ["", f"⚠️ Без служебной пометы осталось карточек: <b>{labels_left}</b> — "
+                      "дозапрос не дал ответа. Карточки на месте, немецкий не тронут."]
     text = "\n".join(lines)
     for admin_id in admin_ids:
         try:
@@ -11718,13 +11725,25 @@ async def run_daily_video_recheck(context: CallbackContext):
 
 
 def _recheck_stored_daily_video_cards():
-    """Прогнать заслон по сохранённым записям. Возвращает (что убрано, сколько записей)."""
+    """Прогнать заслон по сохранённым записям.
+
+    Возвращает (что убрано, сколько записей тронуто, сколько карточек осталось без
+    пометы). Ночь делает здесь ДВЕ вещи:
+      • убирает негодное — как и раньше;
+      • ДОБИРАЕТ недостающие служебные пометы вместо того, чтобы выбрасывать карточку
+        из-за отсутствующей подписи (решение владельца 27.08.2026).
+
+    Дозапрос идёт только там, где сохранились субтитры: шаг «объяснить» читает их для
+    контекста, а судить карточку по источнику, которого больше нет, мы не станем.
+    """
     import json as _json
 
-    from backend.daily_video_quality import recheck_cards
+    from backend.daily_video_pack import fill_missing_labels
+    from backend.daily_video_quality import cards_missing_labels, recheck_cards
     from backend.database import get_db_connection_context
+    from backend.world_news_generator import _ask_model
 
-    removed_all, touched = [], 0
+    removed_all, touched, labels_left = [], 0, 0
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT news_date, rubric, video_id, phrases FROM bt_3_world_news_daily;")
@@ -11736,20 +11755,45 @@ def _recheck_stored_daily_video_cards():
                 row = cur.fetchone()
                 items = (_json.loads(row[0]) if isinstance(row[0], str) else row[0]) if row else []
                 transcript = " ".join(str((i or {}).get("text") or "") for i in (items or []))
+                is_standup = (rubric == "standup")
                 result = recheck_cards(cards, transcript=transcript,
-                                       requires_register=(rubric == "standup"))
-                if not result["removed"]:
+                                       requires_register=is_standup)
+                keep = result["keep"]
+
+                # Пометы добираем ПОСЛЕ уборки: спрашивать их для карточки, которая всё
+                # равно уходит, значит платить за выброшенный ответ.
+                gaps = cards_missing_labels(keep, requires_register=is_standup)
+                filled = False
+                if gaps and transcript.strip():
+                    try:
+                        left = fill_missing_labels(
+                            keep, transcript=transcript,
+                            call_json=lambda s, u, w: _ask_model(s, u, None, what=w),
+                            is_standup=is_standup)
+                        filled = True
+                        labels_left += left
+                    except Exception:
+                        # Сбой дозапроса не глушим в тишину и не выдаём за успех: карточки
+                        # остаются как есть, а число «без пометы» честно растёт.
+                        logging.exception("перепроверка %s: дозапрос помет не удался",
+                                          news_date)
+                        labels_left += len(gaps)
+                elif gaps:
+                    labels_left += len(gaps)
+
+                if not result["removed"] and not filled:
                     continue
-                touched += 1
-                removed_all.extend(result["removed"])
+                if result["removed"]:
+                    touched += 1
+                    removed_all.extend(result["removed"])
                 cur.execute(
                     "UPDATE bt_3_world_news_daily SET phrases = %s, updated_at = NOW() "
                     "WHERE news_date = %s;",
-                    (_json.dumps(result["keep"], ensure_ascii=False), news_date),
+                    (_json.dumps(keep, ensure_ascii=False), news_date),
                 )
-                logging.info("перепроверка %s: убрано %d карточек", news_date,
-                             len(result["removed"]))
-    return removed_all, touched
+                logging.info("перепроверка %s: убрано %d, помет добрано у %d карточек",
+                             news_date, len(result["removed"]), len(gaps) if filled else 0)
+    return removed_all, touched, labels_left
 
 
 async def admin_daily_video_recheck_command(update: Update, context: CallbackContext):
@@ -11763,16 +11807,20 @@ async def admin_daily_video_recheck_command(update: Update, context: CallbackCon
         return
     status = await message.reply_text("🧹 Проверяю сохранённые карточки…")
     try:
-        removed, touched = await asyncio.to_thread(_recheck_stored_daily_video_cards)
+        removed, touched, labels_left = await asyncio.to_thread(
+            _recheck_stored_daily_video_cards)
     except Exception as exc:
         logging.exception("admin recheck_cards failed user_id=%s", int(sender.id))
         await status.edit_text(f"❌ Не удалось проверить: {exc}")
         return
-    if not removed:
+    if not removed and not labels_left:
         await status.edit_text("✅ Все сохранённые карточки проходят проверку — убирать нечего.")
         return
     lines = [f"🧹 Убрано негодных: <b>{len(removed)}</b> из {touched} записи(ей)", ""]
     lines += [f"· «{r['de']}» — {r['why']}" for r in removed[:10]]
+    if labels_left:
+        lines += ["", f"⚠️ Без служебной пометы осталось карточек: <b>{labels_left}</b> — "
+                      "дозапрос не дал ответа. Карточки на месте, немецкий не тронут."]
     await status.edit_text("\n".join(lines), parse_mode="HTML")
 
 

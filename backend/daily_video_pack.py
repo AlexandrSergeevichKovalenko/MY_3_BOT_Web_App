@@ -52,8 +52,12 @@ Situation wiederbegegnet — "der Schwarzmarkt", "unter Druck stehen", "Tür und
 WAS KEINE EINHEIT IST:
   • Amts- und Titelbezeichnungen: "der Drogenbeauftragte der Bundesregierung";
   • ganze Sätze mit Subjekt und konjugiertem Verb: "Opfer fordern ihre Rechte";
-  • zwei Einheiten mit Komma zusammengeklebt: "ein neuer Markt, der Graumarkt";
-  • etwas, das auf einem Artikel oder einer Konjunktion ENDET.
+  • zwei Einheiten mit Komma zusammengeklebt: "ein neuer Markt, der Graumarkt". Ein
+    RELATIVSATZ ist das nicht ("Akku, der nicht nachlässt" ist EINE Einheit);
+  • etwas, das MITTEN IM SATZ ABGESCHNITTEN ist ("die Koalition auffordern, die").
+    Das entscheidet die ROLLE des letzten Wortes: "mir fällt etwas ein" (trennbare
+    Vorsilbe), "es liegt nahe, dass" (Redemittel) und "ohne Wenn und Aber" (Redewendung)
+    sind VOLLSTÄNDIG und gehören dazu.
 
 ES GIBT KEINE ZIELZAHL. Geh das Transkript von ANFANG BIS ENDE durch, auch die zweite
 Hälfte. Findest du 25 lohnende Einheiten — nenn 25. Findest du 8 — nenn 8. Was du
@@ -141,6 +145,52 @@ was der Comedian mit einer Wendung meint, worüber das Publikum lacht. KEINE Fra
 Zahlen — das ist kein Nachrichtenvideo. Verrate auch hier den AUSGANG nicht."""
 
 
+def fill_missing_labels(cards: list, *, transcript: str, call_json, is_standup: bool) -> int:
+    """Дозапросить у модели ТОЛЬКО недостающие служебные пометы. Возвращает, скольким
+    карточкам их так и не хватило.
+
+    Зачем отдельный шаг (решение владельца 27.08.2026). Раньше карточка без пометы формы
+    удалялась заслоном целиком — вместе с верным немецким, верным переводом и сверенной
+    цитатой. Терять готовую работу из-за отсутствующей подписи неправильно: подпись — это
+    единственное, чего у нас нет, и её можно спросить.
+
+    Спрашивается тем же шагом «объяснить», которым пометы делаются изначально, поэтому
+    закрытый список помет здесь не дублируется — он живёт в _EXPLAIN_SYSTEM.
+
+    Ошибка запроса НЕ глушится: пусть падает шаг сборки, а не приезжает молча пустая
+    помета. Карточки при этом не трогаются — не смогли дозапросить, значит не смогли.
+    """
+    from backend.daily_video_quality import missing_labels
+
+    need = [c for c in (cards or []) if missing_labels(c, requires_register=is_standup)]
+    if not need:
+        return 0
+    logger.info("разбор: дозапрашиваю пометы для %d карточек", len(need))
+    system = _EXPLAIN_SYSTEM.format(extra_fields=_EXPLAIN_STANDUP_EXTRA if is_standup else "")
+    answer = call_json(
+        system,
+        "Transkript (для контекста):\n" + transcript[:6000] + "\n\nEinheiten:\n"
+        + json.dumps([{"de": c.get("de"), "quote_de": c.get("quote_de")} for c in need],
+                     ensure_ascii=False),
+        "дозапрос помет",
+    )
+    got = {str(c.get("de") or "").strip(): c
+           for c in (answer.get("cards") or []) if isinstance(c, dict)}
+    for card in need:
+        fresh = got.get(str(card.get("de") or "").strip())
+        if not fresh:
+            continue
+        # Берём ТОЛЬКО пометы. Всё остальное на карточке уже сверено с субтитрами, и
+        # переписывать это вторым ответом модели значит рисковать сверенным ради подписи.
+        for field in ("form_ru", "register_ru"):
+            if not str(card.get(field) or "").strip() and str(fresh.get(field) or "").strip():
+                card[field] = fresh[field]
+    left = len([c for c in need if missing_labels(c, requires_register=is_standup)])
+    if left:
+        logger.warning("разбор: пометы так и не добрались у %d карточек", left)
+    return left
+
+
 def build_pack_in_steps(*, title: str, transcript: str, profile, call_json) -> dict:
     """Собрать разбор четырьмя отдельными запросами вместо одного большого.
 
@@ -186,6 +236,11 @@ def build_pack_in_steps(*, title: str, transcript: str, profile, call_json) -> d
             card["quote_de"] = chunk[i]["quote_de"]
             card.setdefault("de", chunk[i]["de"])
         cards.extend(got[:len(chunk)])
+
+    # 2а. ДОСПРОСИТЬ ПОМЕТЫ у тех, кому их не хватило: карточка не выбрасывается из-за
+    # отсутствующей подписи, подпись добирается вопросом.
+    fill_missing_labels(cards, transcript=transcript, call_json=call_json,
+                        is_standup=is_standup)
 
     # 3. ПЕРЕСКАЗАТЬ
     summary = call_json(
