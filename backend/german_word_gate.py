@@ -716,12 +716,19 @@ def confirm_word_by_owner(word: str) -> None:
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
+                # ⚠ БЫЛО ЧИСТЫМ UPDATE — И ДЛЯ СЛОВА, КОТОРОГО ДВЕРЬ ЕЩЁ НЕ СУДИЛА,
+                # НЕ ДЕЛАЛО НИЧЕГО, МОЛЧА. Сквозная проверка 27.08.2026: владелец
+                # вписал в разборе своё слово «die Tischleuchte», подтверждение
+                # «записалось» — и строки в таблице не появилось. Ответ человека
+                # обязан храниться независимо от того, спрашивали мы про это слово
+                # раньше или нет.
                 cur.execute(
-                    """UPDATE bt_3_word_check
-                          SET status = %s, source = 'владелец подтвердил в личке',
-                              reviewed = TRUE, checked_at = NOW()
-                        WHERE lower(asked) = lower(%s);""",
-                    (CONFIRMED, name),
+                    """INSERT INTO bt_3_word_check (asked, text, status, source, reviewed, checked_at)
+                            VALUES (%s, %s, %s, 'владелец подтвердил', TRUE, NOW())
+                       ON CONFLICT (asked) DO UPDATE
+                          SET status = EXCLUDED.status, source = EXCLUDED.source,
+                              reviewed = TRUE, checked_at = NOW();""",
+                    (name, name, CONFIRMED),
                 )
             conn.commit()
     except Exception:
@@ -796,6 +803,18 @@ def warm_suggestions(*, limit: int = 60) -> dict:
                 (NOT_A_WORD, int(limit)),
             )
             words = [str(r[0]) for r in (cur.fetchall() or [])]
+
+    # ВТОРОЙ ИСТОЧНИК СЛОВ — очередь разбора словаря. Клеймо «не слово» получает не
+    # всякий обрывок: «inkelgasse» дверь оставила в состоянии «спросим позже», в кеш он
+    # не лёг, сюда не попал, и на экране разбора владелец видел «правку не предлагаем» —
+    # при том, что этот самый восстановитель поднимает его в «die Winkelgasse»
+    # (замер 20.08.2026). Теперь ночь считает подсказки и для очереди разбора.
+    # Ошибку здесь НЕ глушим: тихо пропущенный источник неотличим от «слов не было»,
+    # и очередь разбора снова осталась бы без подсказок — молча, как до 27.08.2026.
+    from backend.database import words_awaiting_integrity_hint
+    for word in words_awaiting_integrity_hint(limit=max(1, int(limit))):
+        if word not in words:
+            words.append(word)
 
     stats = {"смотрели": len(words), "подсказка есть": 0, "не восстановили": 0}
     for word in words:

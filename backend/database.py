@@ -31459,9 +31459,15 @@ def save_word_usage(word: str, payload: dict, *, lang: str = "de", explain_lang:
 
 _WORD_INTEGRITY_SCHEMA_READY = False
 
+# ⛔ ФОРМУЛИРОВКА — ЧАСТЬ ПРАВИЛЬНОСТИ, А НЕ ОФОРМЛЕНИЕ. 27.08.2026 владелец прочитал
+# на экране «существительное, а написано со строчной буквы» под словом «der Degenerierte»,
+# где существительное как раз с большой. Диагноз строился по лемме, а показывалась
+# витрина — и надпись врала. Тексты ниже описывают ровно то, что проверено в
+# _word_integrity_issue, и ничего сверх того.
 WORD_INTEGRITY_ISSUES = {
     "noun_lowercase": "Существительное, а написано со строчной буквы",
     "garbage_lemma": "Это не слово — обрывок или разметка",
+    "two_words": "В записи два разных слова",
 }
 
 
@@ -31739,65 +31745,236 @@ def ensure_word_integrity_schema() -> None:
 
 
 _GARBAGE_LEMMA_RE = re.compile(r"[=<>{}\[\]|\\/@#$%^*_~`]|\d{2,}")
+_INTEGRITY_ARTICLES = {"der", "die", "das"}
 
 
-def _word_integrity_suggestion(lemma: str, display: str, pos: str, gender: str) -> dict | None:
-    """Что предложить исправить. None — источник молчит, и кнопки «Исправить» не будет.
+def _integrity_split_article(text: str) -> tuple[str, str]:
+    """«der Hammer» → ('der', 'Hammer'). Артикль ОТДЕЛЯЕТСЯ, а не додумывается."""
+    parts = " ".join(str(text or "").split()).split(" ")
+    if len(parts) >= 2 and parts[0].lower() in _INTEGRITY_ARTICLES:
+        return parts[0].lower(), " ".join(parts[1:])
+    return "", " ".join(parts)
 
-    Заглавная буква у существительного — правило немецкой орфографии, а не догадка.
-    Артикль берётся из рода, который уже лежит в записи; рода нет — предлагаем только
-    заглавную букву, артикль не выдумываем.
+
+def _integrity_reference(word: str, *, allow_network: bool = False) -> dict | None:
+    """Что справочник знает про ЭТО написание. None — не знает или не ответил.
+
+    ⛔ ЭКРАН В СЕТЬ НЕ ХОДИТ. Справочник отвечает на очередь запросов хуже, чем на
+    редкие: в самой двери записано, что прогон по одному упёрся в 429 на седьмом слове,
+    и сухой прогон 27.08.2026 это повторил — half записей получила «молчание» там, где
+    поодиночке ответ есть. Поэтому в сеть ходит НОЧЬ (allow_network=True, с паузой), а
+    открытие экрана берёт только уже вынесённые вердикты из кеша двери: мгновенно и без
+    риска, что владелец увидит «правку не предлагаем» из-за чужого таймаута.
+
+    Молчание справочника приговором НЕ становится: запись без вариантов пересчитывается
+    при каждом скане (см. scan_word_integrity). До 27.08.2026 было наоборот — вариант
+    считался один раз, и если в ту секунду сеть молчала, надпись «правку не предлагаем»
+    оставалась у записи навсегда. У «degeneriert» ответ у справочника есть, а владелец
+    видел «правки нет» вторые сутки.
     """
-    text = " ".join(str(lemma or "").split())
+    from backend.german_word_gate import check_word, CONFIRMED, REPAIRED
+    text = " ".join(str(word or "").split())
     if not text or " " in text:
         return None
-    if str(pos or "").strip().lower() != "noun":
-        return None
-    if not text[:1].islower():
-        return None
-    fixed = text[:1].upper() + text[1:]
-
-    # Заглавная буква — правило орфографии, но она не делает слово словом: «inkelgasse»
-    # так и останется обрывком, а «degeneriert» — причастием. Поэтому предложенную форму
-    # ПРОВЕРЯЕМ по справочнику (дверь слова, без модели). Не подтвердилась — правки не
-    # предлагаем вовсе, и в разборе у записи останутся только «оставить» и «удалить».
     try:
-        from backend.german_word_gate import check_word, CONFIRMED, REPAIRED
-        verdict = check_word(fixed, allow_network=True, allow_model=False)
-        status = str(verdict.get("status") or "")
-        if status not in {CONFIRMED, REPAIRED}:
-            return None
-        confirmed = str(verdict.get("text") or "").strip() or fixed
-        if confirmed != fixed:
-            # Справочник знает другое написание — предлагаем ЕГО, а не наше. Но если он
-            # вернул слово со строчной, значит это вообще не существительное: «degeneriert»
-            # он чинит в глагол «degenerieren», и приклеивать к нему артикль нельзя.
-            if not confirmed[:1].isupper():
-                return None
-            fixed = confirmed
+        verdict = check_word(text, allow_network=allow_network, allow_model=False)
     except Exception:
-        logging.exception("word_integrity: дверь слова недоступна для %r", fixed)
+        logging.exception("разбор словаря: дверь слова недоступна для %r", text)
         return None
+    if str(verdict.get("status") or "") not in {CONFIRMED, REPAIRED}:
+        return None
+    found = str(verdict.get("text") or "").strip()
+    if not found:
+        return None
+    return {"word": found, "pos": str(verdict.get("pos") or ""),
+            "why": str(verdict.get("source") or "")}
 
-    article = str(gender or "").strip().lower()
-    article = article if article in {"der", "die", "das"} else ""
+
+def _word_integrity_options(lemma: str, display: str, pos: str, gender: str,
+                            *, allow_network: bool = False, pace: float = 0.0) -> list[dict]:
+    """Законные прочтения записи — каждое со своим источником. Пусто = источники молчат.
+
+    ПОЧЕМУ СПИСОК, А НЕ ОДНА ПРАВКА. Запись «der Degenerierte» / `degeneriert` — это не
+    слово с опечаткой, а ДВА РАЗНЫХ СЛОВА в одной строке: существительное «дегенерат» и
+    форма глагола «degenerieren». Справочник подтверждает оба. Выбирать за человека по
+    весу или по числу переводов запрещено (владелец 26.08.2026) — поэтому оба уходят на
+    экран кнопками, и решает он.
+
+    ⛔ АРТИКЛЬ НЕ ПРИКЛЕИВАЕТСЯ К НАПИСАНИЮ, И РОД НЕ БЕРЁТСЯ ИЗ САМОЙ ЗАПИСИ.
+    Сухой прогон 27.08.2026 показал, чем это кончается: у слова «Migrant» в колонке
+    `gender` лежит «die» (приехало от множественного «die Migranten»), и правка
+    предлагала владельцу «die Migrant» — неверный немецкий в предложении починки.
+    Колонка записи здесь не источник, она сама под подозрением.
+
+    Род спрашивается у арбитра (`article_authority`: Wiktionary, банк артиклей, правило
+    композита, честное «не знаю») — он же чинит род ночью. Арбитр молчит — рода нет, и
+    выдача покажет слово без артикля, пока ночь не достроит. Само написание всегда
+    ГОЛОЕ: артикль к заголовку приклеивает выдача (`lex_units._build_item`) из колонки
+    рода, и держать его ещё и в написании значит спорить с ней.
+    """
+    from backend.article_authority import authoritative_article
+
+    _, shown = _integrity_split_article(display)
+    _, stored = _integrity_split_article(lemma)
+
+    asked: list[str] = []
+    for form in (stored, shown):
+        if form and form not in asked:
+            asked.append(form)
+    # Существительное со строчной буквы: заглавная — правило немецкой орфографии, но
+    # СЛОВОМ её делает справочник, а не мы. Поэтому вариант не назначается, а спрашивается.
+    if str(pos or "").strip().lower() == "noun":
+        for form in list(asked):
+            if form[:1].islower():
+                big = form[:1].upper() + form[1:]
+                if big not in asked:
+                    asked.append(big)
+
+    options: list[dict] = []
+    for form in asked:
+        answer = _integrity_reference(form, allow_network=allow_network)
+        if allow_network and pace > 0:
+            time.sleep(pace)
+        if not answer:
+            continue
+        word = answer["word"]
+        if any(o["word"].lower() == word.lower() for o in options):
+            continue
+        kind = answer["pos"]
+        article = ""
+        if kind == "noun":
+            verdict, _where = authoritative_article(word, allow_network=False)
+            article = verdict if verdict in _INTEGRITY_ARTICLES else ""
+        options.append({
+            "word": word,
+            "pos": kind,
+            "gender": article,
+            "source": "справочник",
+            "why": answer["why"],
+        })
+    return options
+
+
+def _word_integrity_model_option(forms: list[str]) -> dict | None:
+    """Что модель восстановила НОЧЬЮ из обрывка. Берётся готовое, здесь модель не зовётся.
+
+    Источник — `bt_3_word_suggestion`: там лежит только то, на чём сошлись два
+    независимых ответа модели (german_word_gate.suggest_spelling), пустая строка значит
+    «не восстановили». Показывается с пометкой «модель», применяет решение человек:
+    справочник это написание не подтверждал.
+    """
+    keys = [f for f in (forms or []) if f]
+    if not keys:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT suggestion FROM bt_3_word_suggestion "
+                "WHERE lower(asked) = ANY(%s) AND COALESCE(suggestion, '') <> '' LIMIT 1;",
+                ([k.lower() for k in keys],),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    text = " ".join(str(row[0] or "").split())
+    if not text:
+        return None
+    article, bare = _integrity_split_article(text)
     return {
-        "action": "fix_case",
-        "to_lemma": fixed,
-        "to_display": f"{article} {fixed}".strip(),
-        "why": "Написание подтверждено справочником"
-               + ("; артикль — из рода записи" if article else "; род у записи не указан"),
+        "word": text,
+        "pos": "noun" if article else "",
+        "gender": article,
+        "source": "модель",
+        "why": "восстановлено по двум совпавшим ответам; справочник это написание не подтверждал",
     }
 
 
-def scan_word_integrity(limit: int = 200) -> dict:
+def _word_integrity_issue(stored: str, shown: str, pos: str) -> str:
+    """Что именно не так с записью. Диагноз строится по ФАКТУ, а не по одной колонке.
+    Пустая строка — назвать дефект нечем, и такая запись владельцу не показывается.
+
+    ⛔ 27.08.2026. Прежняя проверка печатала «существительное, а написано со строчной
+    буквы», если `pos = noun` и первая буква ЛЕММЫ строчная. На экране при этом стояла
+    ВИТРИНА — «der Degenerierte», где существительное как раз с большой, а со строчной
+    идёт артикль. Владелец прочитал надпись и справедливо спросил, в чём вопрос.
+    Надпись врала: сравнивали одно, показывали другое.
+
+    Сравнение идёт по `.lower()`, а НЕ по `.casefold()`: casefold нарочно приравнивает
+    «ß» к «ss», и пара «zielbewusst» / «zielbewußt» становилась «одним и тем же словом»
+    — запись получала диагноз «существительное со строчной», хотя это прилагательное и
+    хотя разница вовсе не в регистре (поймано тем же прогоном).
+    """
+    if _GARBAGE_LEMMA_RE.search(stored) or _GARBAGE_LEMMA_RE.search(shown):
+        return "garbage_lemma"
+    if stored.lower() != shown.lower():
+        return "two_words"
+    if str(pos or "").strip().lower() == "noun" and shown[:1].islower():
+        return "noun_lowercase"
+    return ""
+
+
+# Запись, попавшая под подозрение. Считается один раз и используется и сканом, и
+# пересчётом, чтобы диагноз с вариантами не разъезжались между двумя местами.
+def _word_integrity_verdict(lemma: str, display: str, pos: str, gender: str,
+                            *, allow_network: bool = False, pace: float = 0.0) -> dict:
+    _, shown = _integrity_split_article(display)
+    _, stored = _integrity_split_article(lemma)
+    issue = _word_integrity_issue(stored, shown, str(pos or ""))
+    options = (_word_integrity_options(lemma, display, pos, gender,
+                                       allow_network=allow_network, pace=pace)
+               if issue else [])
+    if issue and not options:
+        hint = _word_integrity_model_option([stored, shown])
+        if hint:
+            options = [hint]
+    return {"issue": issue, "options": options, "stored": stored, "shown": shown}
+
+
+def _word_integrity_is_a_question(verdict: dict) -> bool:
+    """Есть ли тут что решать владельцу.
+
+    Нет — только когда источник назвал РОВНО ОДНО прочтение и оно УЖЕ стоит и в основе,
+    и на витрине СИМВОЛ В СИМВОЛ: расхождения нет, спрашивать не о чем.
+
+    ⚠ Сравнение РЕГИСТРОЗАВИСИМОЕ, и это не придирка. Первый вариант сравнивал по
+    `.lower()` — и «tischlampe» с вариантом «Tischlampe» считался «тем же самым»,
+    то есть ВЕСЬ класс «существительное со строчной буквы» переставал доходить до
+    владельца. Поймано сквозной проверкой 27.08.2026 на своей же тестовой записи:
+    заглавная буква здесь и есть предмет разговора.
+
+    Одно прочтение, но витрина показывает другое («Bedingung» на витрине «bedingungen»,
+    «Migrant» на витрине «Migranten»), — это НЕ вопрос, а готовая правка в одно нажатие,
+    и такая запись владельцу показывается: витрина словаря обязана показывать заголовок.
+    """
+    if not verdict.get("issue"):
+        return False
+    options = verdict.get("options") or []
+    if len(options) != 1:
+        return True
+    only = str(options[0].get("word") or "")
+    return not (only == str(verdict.get("stored") or "")
+                and only == str(verdict.get("shown") or ""))
+
+
+# Сколько написаний за один скан разрешено спросить у справочника. Пачкой он отвечает
+# хуже, чем поодиночке: прогон 27.08.2026 подряд по 40 словам получил молчание на
+# половине, а те же слова по одному ответились все. Поэтому спрашиваем ограниченно, а
+# недоспрошенное берёт СЛЕДУЮЩИЙ скан — варианты у неразобранной строки пересчитываются.
+_WORD_INTEGRITY_LOOKUPS_PER_SCAN = 40
+
+
+def scan_word_integrity(limit: int = 200, *, allow_network: bool = False,
+                        pace: float = 0.0) -> dict:
     """Найти противоречивые записи и положить их в очередь разбора.
 
-    Ничего не правит и не удаляет — только собирает. Уже лежащие в очереди строки не
-    трогаются: решение по ним принимает владелец, и до этого они ждут сколько угодно.
+    Ничего не правит и не удаляет — только собирает. Решение по уже лежащим строкам
+    принимает владелец, и до этого они ждут сколько угодно. Но ВАРИАНТЫ ПРАВКИ у
+    неразобранной строки пересчитываются: молчание справочника в момент первого скана не
+    имеет права стать вечным «правку не предлагаем».
     """
     ensure_word_integrity_schema()
-    found, added = 0, 0
+    found = added = refreshed = reopened = skipped = 0
+    asked = 0
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -31808,6 +31985,11 @@ def scan_word_integrity(limit: int = 200) -> dict:
                   AND (
                         (u.pos = 'noun' AND u.lemma ~ '^[a-zäöüß]' AND u.lemma !~ '^(der|die|das) ')
                      OR u.lemma ~ '[=<>{}\\[\\]|@#$%%^*_~`]'
+                     OR (
+                          COALESCE(u.display, '') <> ''
+                          AND lower(regexp_replace(u.display, '^(der|die|das) ', ''))
+                           <> lower(regexp_replace(u.lemma,   '^(der|die|das) ', ''))
+                        )
                   )
                 ORDER BY u.id
                 LIMIT %s;
@@ -31817,10 +31999,17 @@ def scan_word_integrity(limit: int = 200) -> dict:
             rows = cursor.fetchall() or []
             for unit_id, lemma, display, pos, gender in rows:
                 found += 1
-                issue = ("garbage_lemma" if _GARBAGE_LEMMA_RE.search(str(lemma or ""))
-                         else "noun_lowercase")
-                suggestion = (None if issue == "garbage_lemma"
-                              else _word_integrity_suggestion(lemma, display, pos, gender))
+                # Потолок держит только поход в СЕТЬ. Разбор по кешу дешёвый, и
+                # ограничивать его нечем.
+                if allow_network:
+                    if asked >= _WORD_INTEGRITY_LOOKUPS_PER_SCAN:
+                        skipped += 1
+                        continue
+                    asked += 1
+                verdict = _word_integrity_verdict(lemma, display, pos, gender,
+                                                  allow_network=allow_network, pace=pace)
+                if not _word_integrity_is_a_question(verdict):
+                    continue
                 cursor.execute(
                     """
                     INSERT INTO bt_3_word_integrity_review
@@ -31829,11 +32018,80 @@ def scan_word_integrity(limit: int = 200) -> dict:
                     ON CONFLICT (unit_id) DO NOTHING;
                     """,
                     (int(unit_id), str(lemma or ""), str(display or ""), str(pos or ""),
-                     str(gender or ""), issue, Json(suggestion) if suggestion else None),
+                     str(gender or ""), verdict["issue"], Json({"options": verdict["options"]})),
                 )
-                added += cursor.rowcount or 0
+                if cursor.rowcount:
+                    added += 1
+                    continue
+                # Строка уже лежит. Если вариантов у неё нет, а сейчас они появились —
+                # дописываем: иначе «правку не предлагаем» бетонируется навсегда.
+                if verdict["options"]:
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_word_integrity_review
+                           SET suggestion = %s, issue = %s
+                         WHERE unit_id = %s AND status = 'pending'
+                           AND COALESCE(jsonb_array_length(suggestion -> 'options'), 0) = 0;
+                        """,
+                        (Json({"options": verdict["options"]}), verdict["issue"], int(unit_id)),
+                    )
+                    refreshed += cursor.rowcount or 0
+
+                    # «ОСТАВИТЬ», НАЖАТОЕ ОТ БЕЗЫСХОДНОСТИ, — НЕ РЕШЕНИЕ ПО СУЩЕСТВУ.
+                    # 27.08.2026 владелец нажал «Оставить» на «die inkelgasse»: третьей
+                    # кнопки на карточке не было вовсе, потому что правку мы не
+                    # предлагали. Такая запись возвращается ОДИН раз — когда источник
+                    # наконец назвал вариант; отметка `reopened` не даёт сделать это
+                    # дважды, и разобранное по существу назад не поднимается.
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_word_integrity_review
+                           SET suggestion = %s, issue = %s, status = 'pending', decided_at = NULL
+                         WHERE unit_id = %s AND status = 'kept'
+                           AND COALESCE(jsonb_array_length(suggestion -> 'options'), 0) = 0
+                           AND COALESCE((suggestion -> 'reopened')::text, 'false') <> 'true';
+                        """,
+                        (Json({"options": verdict["options"], "reopened": True}),
+                         verdict["issue"], int(unit_id)),
+                    )
+                    reopened += cursor.rowcount or 0
         conn.commit()
-    return {"found": found, "added": added}
+    if skipped:
+        # Молчаливого потолка не бывает: недоспрошенное названо числом и придёт в
+        # следующий скан, а не потеряется с видом «всё разобрали».
+        logging.info("разбор словаря: за скан спросили %s написаний, отложено %s",
+                     asked, skipped)
+    return {"found": found, "added": added, "refreshed": refreshed,
+            "reopened": reopened, "postponed": skipped}
+
+
+def words_awaiting_integrity_hint(limit: int = 40) -> list[str]:
+    """Написания из очереди разбора, которым ночь ещё не искала подсказку.
+
+    Зовётся ночным прогревом подсказок (german_word_gate.warm_suggestions). Без этого
+    восстановитель обрывков доставал только слова с клеймом «не слово», а «inkelgasse»
+    такого клейма не получил (дверь ответила «спросим позже») — и владелец видел
+    «правку не предлагаем» там, где у нас уже есть чем ответить.
+    """
+    ensure_word_integrity_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT regexp_replace(r.lemma, '^(der|die|das) ', '')
+                  FROM bt_3_word_integrity_review r
+                 WHERE r.status = 'pending'
+                   AND COALESCE(jsonb_array_length(r.suggestion -> 'options'), 0) = 0
+                   AND NOT EXISTS (
+                        SELECT 1 FROM bt_3_word_suggestion s
+                         WHERE lower(s.asked) = lower(regexp_replace(r.lemma, '^(der|die|das) ', ''))
+                   )
+                 ORDER BY r.created_at, r.id
+                 LIMIT %s;
+                """,
+                (max(1, min(int(limit or 40), 200)),),
+            )
+            return [str(r[0]) for r in (cursor.fetchall() or []) if str(r[0] or "").strip()]
 
 
 def list_word_integrity_pending(limit: int = 50) -> list[dict]:
@@ -31860,16 +32118,22 @@ def list_word_integrity_pending(limit: int = 50) -> list[dict]:
                 suggestion = json.loads(suggestion)
             except (ValueError, TypeError):
                 suggestion = None
+        options = (suggestion or {}).get("options") if isinstance(suggestion, dict) else None
+        _, shown = _integrity_split_article(row[3] or "")
+        _, stored = _integrity_split_article(row[2] or "")
         out.append({
             "id": int(row[0]),
             "unit_id": int(row[1]),
             "lemma": row[2],
             "display": row[3],
+            # Что решается и что видно в словаре — РАЗНЫЕ строки, и экран показывает обе.
+            "stored": stored,
+            "shown": shown,
             "pos": row[4] or "",
             "gender": row[5] or "",
             "issue": row[6],
             "issue_text": WORD_INTEGRITY_ISSUES.get(row[6], row[6]),
-            "suggestion": suggestion if isinstance(suggestion, dict) else None,
+            "options": options if isinstance(options, list) else [],
             "created_at": row[8].isoformat() if row[8] else None,
         })
     return out
@@ -31886,15 +32150,88 @@ def count_word_integrity_pending() -> int:
     return int(row[0] or 0) if row else 0
 
 
+def _write_word_integrity_choice(cursor, unit_id: int, option: dict) -> None:
+    """Записать выбранное прочтение в словарь.
+
+    ПЕРЕИМЕНОВАНИЕ — через `lex_units.retitle_unit`: там же чинятся ключ поиска, вид
+    записи и указатель написаний. Прямой UPDATE lemma/display этого не делает, и слово
+    после правки переставало находиться ПО СВОЕМУ ЖЕ ИМЕНИ (разобрано в retitle_unit на
+    «die Wettbewerbsregeln»). Для правки регистра это было незаметно — ключ поиска и так
+    совпадал; для «degeneriert → degenerieren» стало бы потерей слова.
+
+    СМЕНИЛОСЬ СЛОВО — РАЗБОР СНОСИТСЯ. Разбор описывает то слово, которое было: формы,
+    род, примеры, управление. Оставить его под новым заголовком значит показать человеку
+    чужую грамматику — ровно тот дефект, за который правило «неверное слово ⇒ весь разбор
+    в мусор» и написано. Пустой разбор сам встаёт в очередь ночного добора
+    (`units_needing_card`), и слово получает СВОЙ.
+
+    Разница только в регистре («hammer» → «Hammer») словом другого слова не делает:
+    разбор остаётся, род остаётся.
+
+    Род ставится тот, что назвал арбитр в выбранном варианте. Арбитр промолчал, а слово
+    сменилось — колонка чистится: род прежнего слова новому не принадлежит, а достроит
+    его ночная работа (`backfill_pos_gender_from_cards`, `fix_gender_conflicts_from_authority`).
+    """
+    from backend.lex_units import retitle_unit
+
+    word = " ".join(str(option.get("word") or "").split())
+    if not word:
+        raise ValueError("вариант без написания")
+
+    cursor.execute("SELECT lemma FROM bt_3_lex_units WHERE id = %s;", (int(unit_id),))
+    row = cursor.fetchone()
+    if not row:
+        return
+    _, was = _integrity_split_article(str(row[0] or ""))
+    _, becomes = _integrity_split_article(word)
+    another_word = was.lower() != becomes.lower()
+
+    retitle_unit(cursor, int(unit_id), word)
+
+    pos = str(option.get("pos") or "").strip()
+    gender = str(option.get("gender") or "").strip().lower()
+    gender = gender if gender in _INTEGRITY_ARTICLES else ""
+    source = str(option.get("source") or "").strip() or "разбор словаря"
+    cursor.execute(
+        """
+        UPDATE bt_3_lex_units
+           SET pos = COALESCE(NULLIF(%(pos)s, ''), pos),
+               pos_source = CASE WHEN NULLIF(%(pos)s, '') IS NULL THEN pos_source
+                                 ELSE %(source)s END,
+               gender = CASE WHEN NULLIF(%(gender)s, '') IS NOT NULL THEN %(gender)s
+                             WHEN %(another)s THEN NULL
+                             ELSE gender END,
+               gender_source = CASE WHEN NULLIF(%(gender)s, '') IS NOT NULL THEN %(source)s
+                                    WHEN %(another)s THEN NULL
+                                    ELSE gender_source END,
+               card = CASE WHEN %(another)s THEN NULL ELSE card END,
+               card_source = CASE WHEN %(another)s THEN NULL ELSE card_source END,
+               updated_at = NOW()
+         WHERE id = %(id)s;
+        """,
+        {"pos": pos, "gender": gender, "source": source, "another": another_word,
+         "id": int(unit_id)},
+    )
+
+
 def apply_word_integrity_decisions(decisions: list) -> dict:
-    """Выполнить решения владельца: исправить, оставить, удалить.
+    """Выполнить решения владельца: исправить выбранным вариантом, вписать своё,
+    оставить, удалить.
 
     Одно решение на запись. «Применить» в интерфейсе выполняет их разом — это один
     заход по списку, а не два действия над одним словом (владелец 26.08.2026 просил
     объяснить это прямо, потому что прежняя формулировка сбивала с толку).
+
+    ВАРИАНТ БЕРЁТСЯ ИЗ ОЧЕРЕДИ, А НЕ ИЗ БРАУЗЕРА: с экрана приходит НОМЕР выбранного
+    прочтения, а само написание читается из строки очереди. Иначе в словарь можно было
+    бы записать что угодно, минуя все источники.
+
+    Исключение — «своя правка»: там написание приходит с экрана, потому что его назвал
+    ВЛАДЕЛЕЦ. Оно проходит дверь слова, вердикт запоминается как «владелец подтвердил»,
+    и справочник больше не спрашивает про это слово.
     """
     ensure_word_integrity_schema()
-    fixed = kept = deleted = 0
+    fixed = kept = deleted = typed = 0
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             for item in (decisions or []):
@@ -31905,7 +32242,7 @@ def apply_word_integrity_decisions(decisions: list) -> dict:
                 except (TypeError, ValueError):
                     continue
                 action = str(item.get("action") or "").strip().lower()
-                if not review_id or action not in {"fix", "keep", "delete"}:
+                if not review_id or action not in {"fix", "own", "keep", "delete"}:
                     continue
 
                 cursor.execute(
@@ -31922,19 +32259,36 @@ def apply_word_integrity_decisions(decisions: list) -> dict:
                         suggestion = json.loads(suggestion)
                     except (ValueError, TypeError):
                         suggestion = None
+                options = (suggestion or {}).get("options") if isinstance(suggestion, dict) else []
+                options = options if isinstance(options, list) else []
 
                 if action == "fix":
-                    if not isinstance(suggestion, dict) or not suggestion.get("to_lemma"):
-                        continue  # правки нет — молча «исправить» нечего
-                    cursor.execute(
-                        """
-                        UPDATE bt_3_lex_units
-                        SET lemma = %s, display = %s, updated_at = NOW()
-                        WHERE id = %s;
-                        """,
-                        (suggestion["to_lemma"], suggestion.get("to_display") or suggestion["to_lemma"],
-                         unit_id),
-                    )
+                    try:
+                        index = int(item.get("option") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if not (0 <= index < len(options)) or not isinstance(options[index], dict):
+                        continue  # выбранного прочтения нет — записывать нечего
+                    _write_word_integrity_choice(cursor, unit_id, options[index])
+                    fixed += 1
+                    status = "fixed"
+                elif action == "own":
+                    text = " ".join(str(item.get("word") or "").split())
+                    if not text:
+                        continue
+                    article, bare = _integrity_split_article(text)
+                    said = _integrity_reference(bare)
+                    # Часть речи: из справочника, если он знает это слово; иначе из
+                    # артикля, который написал САМ ВЛАДЕЛЕЦ (артикль бывает только у
+                    # существительного — это его утверждение, а не наша догадка).
+                    # Не знает никто — часть речи не трогаем.
+                    pos = (said or {}).get("pos") or ("noun" if article else "")
+                    _write_word_integrity_choice(cursor, unit_id, {
+                        "word": text, "pos": pos, "gender": article, "source": "владелец",
+                    })
+                    from backend.german_word_gate import confirm_word_by_owner
+                    confirm_word_by_owner(bare)
+                    typed += 1
                     fixed += 1
                     status = "fixed"
                 elif action == "delete":
@@ -31951,7 +32305,7 @@ def apply_word_integrity_decisions(decisions: list) -> dict:
                     (status, review_id),
                 )
         conn.commit()
-    return {"fixed": fixed, "kept": kept, "deleted": deleted}
+    return {"fixed": fixed, "kept": kept, "deleted": deleted, "typed": typed}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
