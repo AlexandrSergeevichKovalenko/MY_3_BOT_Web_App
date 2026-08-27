@@ -1247,17 +1247,25 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
             «в словаре иконкой — всё как было, интерфейс же должен быть одинаков». Он
             прав: это один продукт в двух местах, и раскладка у них общая. Отличаются
             только цвета — так и договаривались. */}
+        {/* Закладок ЧЕТЫРЕ, и все четыре стоят на месте всегда. «История» раньше
+            показывалась по условию «список непустой», а список лежит только в памяти
+            этого браузера (localStorage) — в новом месте он пуст, и закладка исчезала.
+            Пустая история честно говорит, что она пустая. Подпись — у активной,
+            у остальных значок: четыре подписи в строку на узком экране не помещаются.
+            Решение владельца 27.08.2026, макет mockups/_dict_tabs_4th.png. */}
         <div className="vocab-tabs dq-tabs">
           <button type="button" className={`vocab-tab ${tab === 'search' ? 'is-active' : ''}`}
-                  onClick={() => setTab('search')}>🔍 Поиск</button>
+                  aria-label="Поиск"
+                  onClick={() => setTab('search')}>🔍 <span className="vocab-tab-label">Поиск</span></button>
           <button type="button" className={`vocab-tab ${tab === 'mine' ? 'is-active' : ''}`}
-                  onClick={() => { setTab('mine'); setMineCard(null); }}>📚 Слова</button>
-          {historyList.length > 0 && (
-            <button type="button" className={`vocab-tab ${tab === 'history' ? 'is-active' : ''}`}
-                    onClick={() => setTab('history')}>🕘 История</button>
-          )}
+                  aria-label="Слова"
+                  onClick={() => { setTab('mine'); setMineCard(null); }}>📚 <span className="vocab-tab-label">Слова</span></button>
+          <button type="button" className={`vocab-tab ${tab === 'history' ? 'is-active' : ''}`}
+                  aria-label="История"
+                  onClick={() => setTab('history')}>🕘 <span className="vocab-tab-label">История</span></button>
           <button type="button" className={`vocab-tab ${tab === 'diff' ? 'is-active' : ''}`}
-                  onClick={() => setTab('diff')}>⚖️ Отличия</button>
+                  aria-label="Отличия"
+                  onClick={() => setTab('diff')}>⚖️ <span className="vocab-tab-label">Отличия</span></button>
         </div>
 
         {tab === 'diff' && (
@@ -1270,7 +1278,13 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
 
         {tab === 'history' && (
           <div className="dict-history">
-            {historyList.map((w) => (
+            {historyList.length === 0 ? (
+              // Закладка стоит на месте всегда, поэтому пустой список обязан
+              // объяснить себя словами, а не остаться белым пятном.
+              <div className="dict-history-empty">
+                Здесь появятся слова, которые вы искали.
+              </div>
+            ) : historyList.map((w) => (
               <button key={w} type="button" className="dict-history-row"
                       onClick={() => { setTab('search'); setQuery(w); translate(w); }}>
                 {w}

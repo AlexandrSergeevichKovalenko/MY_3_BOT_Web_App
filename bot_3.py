@@ -14667,6 +14667,32 @@ async def handle_artikel_review_command(update: Update, context: CallbackContext
         await update.message.reply_text(f"Не отправилось: {res.get('error') or 'неизвестно'}")
 
 
+async def handle_formy_review_command(update: Update, context: CallbackContext) -> None:
+    """/formy_review — позвать разбор слов без форм сейчас, не дожидаясь пн/ср/пт."""
+    user = update.effective_user
+    if not user or not _is_admin_user(user.id):
+        return
+    await update.message.reply_text("Собираю слова, которым не досталось таблицы форм…")
+    try:
+        from backend.reference_forms_review import send_reference_forms_review_dm
+        res = await asyncio.to_thread(send_reference_forms_review_dm, force=True)
+    except Exception:
+        logging.warning("formy_review failed", exc_info=True)
+        await update.message.reply_text("Не получилось. Подробности в логах.")
+        return
+    if res.get("reason") == "nothing_to_review":
+        await update.message.reply_text(
+            "Разбирать нечего: у всех слов формы собраны 🎉\n"
+            "Слова попадают сюда, только если их не закрыл ни справочник, ни разбор "
+            "составного слова, ни модель.")
+        return
+    if not res.get("ok"):
+        await update.message.reply_text(f"Не отправилось: {res.get('error') or 'неизвестно'}")
+        return
+    await update.message.reply_text(
+        f"Отправил карточек: {res.get('sent')}. Всего ждут ответа: {res.get('left')}.")
+
+
 async def handle_artikel_retired_command(update: Update, context: CallbackContext) -> None:
     """/artikel_retired — позвать разбор снятых слов сейчас, не дожидаясь расписания."""
     user = update.effective_user
@@ -14791,18 +14817,19 @@ async def handle_reference_forms_review_callback(update: Update, context: Callba
     if not _is_admin_user(admin.id):
         await query.answer("Команда доступна только администратору.", show_alert=True)
         return
-    # reffrm:<der|die|das|nodeg|skip>:<слово>. Слово может содержать «:»? Нет — в очередь
-    # попадают только одиночные лексемы без пробелов, поэтому хвост берём целиком.
+    # reffrm:<v1|v2|bad|later>:<номер строки очереди>. Номер, а не слово: слово
+    # приходилось резать до 40 знаков ради лимита callback_data, и длинное слово
+    # потом не находилось при нажатии.
     parts = str(query.data or "").split(":", 2)
     action = parts[1] if len(parts) > 1 else ""
-    word = parts[2] if len(parts) > 2 else ""
-    if not action or not word:
+    row_id = parts[2] if len(parts) > 2 else ""
+    if not action or not str(row_id).strip().isdigit():
         await query.answer("Не понял кнопку.", show_alert=True)
         return
     await query.answer("Записываю…", show_alert=False)
     try:
         from backend.reference_forms_review import apply_reference_forms_review
-        text = await asyncio.to_thread(apply_reference_forms_review, action, word)
+        text = await asyncio.to_thread(apply_reference_forms_review, action, int(row_id))
     except Exception:
         logging.warning("reference forms review action failed", exc_info=True)
         try:
@@ -44474,6 +44501,7 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,
                                            handle_manual_theme_words), group=-3)
     application.add_handler(CommandHandler("artikel_review", handle_artikel_review_command))
+    application.add_handler(CommandHandler("formy_review", handle_formy_review_command))
     application.add_handler(CommandHandler("wiktionary_warm", handle_wiktionary_warm_command))
     application.add_handler(CommandHandler("reader_r2_orphans", reader_r2_orphans_command))
     application.add_handler(CommandHandler("r2_usage", r2_usage_command))

@@ -7,20 +7,33 @@
 
 Владелец 17.08.2026: «отчёт мне обязательно в личку по количеству слов, и сами эти слова
 нужно чтобы приходили с кнопками, чтобы я их мог самостоятельно на моё усмотрение
-проработать и дать им артикль». Периодичность — три раза в неделю (пн/ср/пт).
+проработать». Периодичность — три раза в неделю (пн/ср/пт).
 
-Устроено как разбор снятых слов (`article_retire_review.py`): порция с кнопками,
-спрошенное второй раз не приходит. Второго механизма рассылки в проекте заводить нельзя.
-
-Кнопки разные по частям речи, потому что вопрос разный:
-    существительное — der / die / das (артикль владельца ложится в банк как «owner»)
-    прилагательное  — «без степеней» (слово не сравнивается — это законный ответ)
-    оба             — «пропустить» (не знаю / разберусь позже)
+┌─ ПЕРЕДЕЛАНО 27.08.2026 ПО ЗАМЕЧАНИЮ ВЛАДЕЛЬЦА. НЕ ВОЗВРАЩАТЬ КАК БЫЛО. ───────────┐
+│ «Что я должен принять? В чём задача? Где подсказка модели относительно того, что   │
+│ она предлагает?» — на экране было слово, строка «форм нет нигде» и кнопки          │
+│ der/die/das. Три вещи были не так:                                                 │
+│                                                                                    │
+│ 1. Спрашивали НЕ О ТОМ. Дыра — таблица форм, а кнопки собирали артикль. Даже       │
+│    верное нажатие не создавало таблицу: карточка читает кэш склонений, а артикль   │
+│    ложился в банк слов игры «спринт артиклей». Артикль собирает СВОЙ механизм —    │
+│    `backend/article_review.py`, и он работает.                                     │
+│ 2. Кнопка не могла записать НИКОГДА: `ON CONFLICT (word)` при отсутствии такого    │
+│    ключа падал всегда, а слово при этом всё равно помечалось разобранным. Ответ    │
+│    «слово осталось в очереди» был неправдой.                                       │
+│ 3. Подсказки не было вовсе: два ответа модели, которые как раз и разошлись,        │
+│    выбрасывались. Человека звали решать, не показав ему ничего.                    │
+│                                                                                    │
+│ Теперь карточка показывает перевод, чего именно нет, что предложила модель и чем   │
+│ варианты отличаются, а кнопка кладёт выбранное В КЭШ ФОРМ, откуда его берёт        │
+│ карточка слова. «Отложить» откладывает на срок, а не хоронит навсегда.             │
+└────────────────────────────────────────────────────────────────────────────────────┘
 """
 from __future__ import annotations
 
 import logging
 import os
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,28 +41,137 @@ import requests
 
 JOB_KEY = "reference_forms_review"
 BATCH = max(1, int((os.getenv("REFERENCE_FORMS_REVIEW_BATCH") or "20").strip() or "20"))
+_HTTP_TIMEOUT = 20
+
+_KIND_RU = {"noun": "существительное", "adjective": "прилагательное", "adverb": "наречие"}
+# Порядок полей в ответе модели и человеческие подписи к ним.
+_CASES = (("nom_sg", "им."), ("gen_sg", "род."), ("dat_sg", "дат."), ("akk_sg", "вин."))
+_CASES_PL = (("nom_pl", "им."), ("gen_pl", "род."), ("dat_pl", "дат."), ("akk_pl", "вин."))
+_DEGREES = (("positive", "положительная"), ("comparative", "сравнительная"),
+            ("superlative", "превосходная"))
 
 
-def _keyboard(word: str, pos: str) -> dict[str, Any]:
-    """callback_data: reffrm:<действие>:<слово>. Слово короткое, в 64 байта влезает."""
-    safe = str(word or "")[:40]
+def _reference_link(word: str, pos: str) -> str:
+    from backend.german_reference_forms import _reference_title
+    title = _reference_title(word, pos) or word
+    return "https://de.wiktionary.org/wiki/" + urllib.parse.quote(title)
+
+
+def _translation(word: str) -> str:
+    """Перевод из словарной единицы. Пусто — значит пусто, ничего не выдумываем."""
+    from backend.database import get_db_connection_context
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT card->>'word_ru' FROM bt_3_lex_units "
+                    " WHERE lang = 'de' AND lower(lemma) = lower(%s) "
+                    " ORDER BY updated_at DESC NULLS LAST LIMIT 1;", (str(word or "").strip(),))
+                row = cur.fetchone()
+    except Exception:
+        logging.debug("разбор форм: перевод не прочитан для %s", word, exc_info=True)
+        return ""
+    return str((row or [""])[0] or "").strip()
+
+
+def _variant_line(answer: dict, pos: str, number: int) -> str:
+    """Один вариант модели человеческой строкой."""
+    mark = "①②③④"[number - 1] if 1 <= number <= 4 else str(number)
     if pos == "noun":
-        row = [{"text": "der", "callback_data": f"reffrm:der:{safe}"},
-               {"text": "die", "callback_data": f"reffrm:die:{safe}"},
-               {"text": "das", "callback_data": f"reffrm:das:{safe}"}]
+        singular = " · ".join(str(answer.get(k) or "—") for k, _ in _CASES)
+        plural_values = [str(answer.get(k) or "").strip() for k, _ in _CASES_PL]
+        plural = " · ".join(v or "—" for v in plural_values) if any(plural_values) else "нет"
+        return f"{mark} ед.: {singular}\n    мн.: {plural}"
+    degrees = " · ".join(str(answer.get(k) or "—") for k, _ in _DEGREES)
+    return f"{mark} {degrees}"
+
+
+def _difference(answers: list[dict], pos: str) -> str:
+    """Чем именно варианты расходятся. Человеку важно ровно это место, а не вся таблица."""
+    if len(answers) < 2:
+        return ""
+    spots = []
+    fields = _CASES if pos == "noun" else _DEGREES
+    for key, label in fields:
+        values = {str(a.get(key) or "").strip() for a in answers}
+        if len(values) > 1:
+            printed = " / ".join(v or "—" for v in sorted(values))
+            spots.append(f"{label} {printed}")
+    if pos == "noun":
+        # Множественное число — ОДНОЙ строкой. Когда один вариант его вовсе не даёт, а
+        # другой даёт, разница у всех четырёх падежей одна и та же, и печатать её
+        # четыре раза значит утопить настоящее расхождение в шуме.
+        plurals = {" · ".join(str(a.get(k) or "").strip() for k, _ in _CASES_PL)
+                   for a in answers}
+        if len(plurals) > 1:
+            printed = " / ".join(p.strip(" ·") or "нет" for p in sorted(plurals))
+            spots.append(f"мн. {printed}")
+    return "Расходятся: " + "; ".join(spots) if spots else ""
+
+
+def _keyboard(row_id: int, variants: int) -> dict[str, Any]:
+    """callback_data: reffrm:<действие>:<номер строки>. Номер, а не слово: слово
+    приходилось резать до 40 знаков, и длинное потом не находилось при нажатии."""
+    rows = []
+    if variants >= 1:
+        rows.append([{"text": f"{'①②③④'[i]} вариант {i + 1}",
+                      "callback_data": f"reffrm:v{i + 1}:{row_id}"}
+                     for i in range(min(variants, 4))])
+        rows.append([{"text": "🚫 ни один не верен",
+                      "callback_data": f"reffrm:bad:{row_id}"}])
     else:
-        row = [{"text": "без степеней", "callback_data": f"reffrm:nodeg:{safe}"}]
-    return {"inline_keyboard": [row, [{"text": "пропустить",
-                                       "callback_data": f"reffrm:skip:{safe}"}]]}
+        rows.append([{"text": "🚫 негодный заголовок",
+                      "callback_data": f"reffrm:bad:{row_id}"}])
+    rows.append([{"text": "⏳ отложить", "callback_data": f"reffrm:later:{row_id}"}])
+    return {"inline_keyboard": rows}
 
 
-def _word_text(word: str, pos: str, *, index: int, total: int, left: int) -> str:
-    kind = {"noun": "существительное", "adjective": "прилагательное",
-            "adverb": "наречие"}.get(pos, pos)
-    return (f"<b>{word}</b> — {kind}\n"
-            f"Форм нет ни в справочнике, ни через разбор составного слова, "
-            f"ни от модели.\n"
-            f"<i>{index} из {total} · всего ждёт разбора: {left}</i>")
+def _word_text(item: dict, *, index: int, total: int, left: int) -> str:
+    from backend.german_reference_forms import POSTPONE_DAYS
+
+    word, pos = item["word"], item["pos"]
+    kind = _KIND_RU.get(pos, pos)
+    translation = _translation(word)
+    head = f"<b>{word}</b> — {kind}"
+    if translation:
+        head += f" · {translation}"
+
+    чего_нет = ("таблицы склонения" if pos == "noun" else "степеней сравнения")
+    lines = [head, f"Нет {чего_нет}: справочник их не печатает, из составного слова "
+                   f"не выводятся."]
+
+    variants = [a for a in (item.get("candidates") or []) if isinstance(a, dict)]
+    if variants:
+        lines.append("")
+        lines.append("Модель спрошена дважды и ответила по-разному:")
+        lines.append("<code>" + "\n".join(
+            _variant_line(a, pos, i + 1) for i, a in enumerate(variants)) + "</code>")
+        разница = _difference(variants, pos)
+        if разница:
+            lines.append(f"<i>{разница}</i>")
+        lines.append("")
+        lines.append("Выберешь вариант — он ляжет в карточку слова, и человек увидит "
+                     "именно эти формы.")
+    else:
+        lines.append("")
+        lines.append("Модель тоже не ответила — предложить нечего. Если слово настоящее, "
+                     "формы придётся достать вручную; если заголовок негодный "
+                     "(форма слова, опечатка, чужая часть речи) — скажи кнопкой.")
+
+    lines.append(f"«Отложить» вернёт слово через {POSTPONE_DAYS} дней.")
+    lines.append(f'<a href="{_reference_link(word, pos)}">статья в справочнике</a>')
+    lines.append(f"<i>{index} из {total} · ждут ответа: {left}</i>")
+    return "\n".join(lines)
+
+
+def _head_text(left: int, sent: int) -> str:
+    return ("📇 <b>Слова без форм — нужен твой ответ</b>\n"
+            f"Не собралась таблица форм у {left} слов(а): справочник их не печатает, "
+            "из составных они не выводятся, а модель либо молчит, либо дала два разных "
+            "ответа.\n"
+            "Ничего не подставлено. Ниже по карточке на слово: что известно, что "
+            "предлагает модель и что сделает каждая кнопка.\n"
+            f"Сейчас пришло: {sent}.")
 
 
 def send_reference_forms_review_dm(*, force: bool = False) -> dict[str, Any]:
@@ -59,7 +181,7 @@ def send_reference_forms_review_dm(*, force: bool = False) -> dict[str, Any]:
         finish_scheduler_run_guard,
         get_admin_telegram_ids,
     )
-    from backend.german_reference_forms import unresolved_batch, unresolved_count
+    from backend.german_reference_forms import mark_asked, unresolved_batch, unresolved_count
 
     now = datetime.now(timezone.utc)
     run_period = now.strftime("%Y-%m-%d")
@@ -83,10 +205,6 @@ def send_reference_forms_review_dm(*, force: bool = False) -> dict[str, Any]:
                                        metadata={"sent": 0, "reason": "nothing_to_review"})
         return {"ok": True, "sent": 0, "reason": "nothing_to_review"}
 
-    head = ("📇 <b>Слова без форм — нужен твой ответ</b>\n"
-            f"Каскад не смог закрыть {left} слов: справочник их не знает, составными они "
-            "не разбираются, и два ответа модели разошлись.\n"
-            "Ничего не подставлено — эти слова ждут решения.")
     sent = 0
     delivered_to = 0
     for uid in admin_ids:
@@ -94,28 +212,37 @@ def send_reference_forms_review_dm(*, force: bool = False) -> dict[str, Any]:
         try:
             resp = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": uid, "text": head, "parse_mode": "HTML"}, timeout=20)
+                json={"chat_id": uid, "text": _head_text(left, len(items)),
+                      "parse_mode": "HTML"}, timeout=_HTTP_TIMEOUT)
             ok_here = resp.status_code < 400
         except Exception:
             logging.warning("разбор форм: шапка не ушла uid=%s", uid, exc_info=True)
-        for i, (word, pos, _reason) in enumerate(items, 1):
+        for i, item in enumerate(items, 1):
             try:
                 resp = requests.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
                     json={"chat_id": uid,
-                          "text": _word_text(word, pos, index=i, total=len(items), left=left),
+                          "text": _word_text(item, index=i, total=len(items), left=left),
                           "parse_mode": "HTML",
-                          "reply_markup": _keyboard(word, pos)}, timeout=20)
+                          "disable_web_page_preview": True,
+                          "reply_markup": _keyboard(
+                              item["id"], len(item.get("candidates") or []))},
+                    timeout=_HTTP_TIMEOUT)
                 if resp.status_code < 400:
                     sent += 1
                     ok_here = True
                 else:
                     logging.warning("разбор форм: слово не ушло uid=%s word=%s: %s",
-                                    uid, word, resp.text[:200])
+                                    uid, item["word"], resp.text[:200])
             except Exception:
-                logging.warning("разбор форм: слово не ушло uid=%s word=%s", uid, word,
-                                exc_info=True)
+                logging.warning("разбор форм: слово не ушло uid=%s word=%s", uid,
+                                item["word"], exc_info=True)
         delivered_to += 1 if ok_here else 0
+
+    if delivered_to:
+        # Отмечаем ФАКТ отправки: неотвеченное слово вернётся само через REASK_DAYS,
+        # а не будет приходить каждую отправку заново.
+        mark_asked([int(x["id"]) for x in items])
 
     if not force:
         # «Выполнено» ставится по ФАКТУ доставки хотя бы одному админу, а не по факту
@@ -125,54 +252,51 @@ def send_reference_forms_review_dm(*, force: bool = False) -> dict[str, Any]:
             job_key=JOB_KEY, run_period=run_period, target_scope="global",
             status="completed" if delivered_to else "failed",
             metadata={"sent": sent, "left": left, "admins": delivered_to})
-    return {"ok": bool(delivered_to), "sent": sent, "left": left}
+    return {"ok": bool(delivered_to), "sent": sent, "left": left,
+            "words": [x["word"] for x in items]}
 
 
-def apply_reference_forms_review(action: str, word: str) -> str:
-    """Нажатие кнопки. Возвращает человеческий текст для замены сообщения."""
-    from backend.german_reference_forms import mark_unresolved_reviewed
+def apply_reference_forms_review(action: str, row_id: str | int) -> str:
+    """Нажатие кнопки. Возвращает человеческий текст для замены сообщения.
 
-    name = str(word or "").strip()
-    if not name:
-        return "Пустое слово — пропускаю."
-
-    if action in ("der", "die", "das"):
-        stored = _store_owner_article(name, action)
-        mark_unresolved_reviewed(name)
-        return (f"✅ <b>{action} {name}</b> — записал как твоё решение."
-                if stored else
-                f"⚠️ <b>{name}</b>: не смог записать артикль, слово осталось в очереди.")
-    if action == "nodeg":
-        mark_unresolved_reviewed(name)
-        return f"✅ <b>{name}</b> — отмечено как несравнимое, больше не спрошу."
-    if action == "skip":
-        mark_unresolved_reviewed(name)
-        return f"⏭ <b>{name}</b> — пропущено."
-    return f"Не понял действие «{action}»."
-
-
-def _store_owner_article(word: str, article: str) -> bool:
-    """Решение владельца ложится в банк артиклей источником «owner».
-
-    Не в кэш Wiktionary: тот обязан оставаться слепком справочника, иначе мы перестанем
-    отличать «так напечатано в источнике» от «так решил владелец».
+    Ни одна ветка не помечает слово разобранным, если запись НЕ УДАЛАСЬ: прежний код
+    делал ровно это, и слово исчезало из очереди с текстом «осталось в очереди».
     """
-    from backend.database import get_db_connection_context
+    from backend.german_reference_forms import (
+        POSTPONE_DAYS,
+        apply_owner_choice,
+        mark_headword_defect,
+        postpone_unresolved,
+        unresolved_row,
+    )
+
     try:
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO bt_3_article_sprint_nouns (word, article, source, verified)
-                    VALUES (%s, %s, 'owner', TRUE)
-                    ON CONFLICT (word) DO UPDATE
-                       SET article = EXCLUDED.article, source = 'owner', verified = TRUE,
-                           updated_at = NOW();
-                    """,
-                    (word, article),
-                )
-            conn.commit()
-        return True
-    except Exception:
-        logging.warning("разбор форм: не записал артикль владельца %s", word, exc_info=True)
-        return False
+        rid = int(str(row_id).strip())
+    except (TypeError, ValueError):
+        return "Не понял, о каком слове речь."
+
+    row = unresolved_row(rid)
+    if not row:
+        return "Это слово уже закрыто — в очереди его нет."
+
+    if action in ("v1", "v2", "v3", "v4"):
+        applied = apply_owner_choice(rid, int(action[1:]))
+        if not applied:
+            return (f"⚠️ <b>{row['word']}</b>: не смог записать этот вариант. "
+                    "Слово ОСТАЁТСЯ в очереди — придёт снова.")
+        formes = "склонение" if row["pos"] == "noun" else "степени сравнения"
+        return (f"✅ <b>{row['word']}</b> — {formes} записано с твоих слов. "
+                "Теперь эти формы видит человек в карточке слова.")
+
+    if action == "bad":
+        mark_headword_defect(row["word"], row["pos"], "решение владельца: формы не годятся")
+        return (f"🚫 <b>{row['word']}</b> — отмечено как негодный заголовок. "
+                "Больше не спрошу; слово попадёт в разбор заголовков.")
+
+    if action == "later":
+        if not postpone_unresolved(rid, POSTPONE_DAYS):
+            return (f"⚠️ <b>{row['word']}</b>: не смог отложить. "
+                    "Слово остаётся в очереди.")
+        return f"⏳ <b>{row['word']}</b> — отложено, вернётся через {POSTPONE_DAYS} дней."
+
+    return f"Не понял действие «{action}»."

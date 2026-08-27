@@ -31802,16 +31802,25 @@ html[data-scheme="light"] .story-modal-guess-answer,
 .dict-word-of-day-de { font-size: 17px; font-weight: 700; color: var(--dict-text-primary); }
 .dict-word-of-day-ru { font-size: 14px; color: var(--dict-text-secondary); }
 
-/* Закладки словаря: три штуки со счётчиком не помещались в строку — подпись обрезалась.
-   Даём им ужиматься и не переносить текст. */
+/* Закладки словаря: их ЧЕТЫРЕ (Поиск / Слова / История / Отличия), и в строку узкого
+   экрана четыре подписи не помещаются — по-немецки «Unterschiede» обрезалось многоточием.
+   Решение владельца 27.08.2026 (макет mockups/_dict_tabs_4th.png): подпись показывает
+   активная закладка, у остальных остаётся значок. Значок сам по себе — цель для пальца,
+   поэтому неактивной закладке даём фиксированную ширину, а активной — всё остальное.
+   Счётчик слов (.vocab-tab-count) НЕ прячем: место есть, а число человек привык видеть.
+   Слепому читателю подпись остаётся: у кнопок стоит aria-label. */
 .vocab-tabs { display: flex; gap: 6px; }
 .vocab-tabs .vocab-tab {
-  flex: 1 1 0;
+  flex: 0 0 auto;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.vocab-tabs .vocab-tab.is-active { flex: 1 1 auto; }
+.vocab-tabs .vocab-tab:not(.is-active) .vocab-tab-label { display: none; }
+/* Один значок — узкая цель для пальца. Держим 44 точки: меньше — уже промахи. */
+.vocab-tabs .vocab-tab:not(.is-active) { min-width: 44px; }
 
 /* Подсказка над списком вариантов: что вообще происходит и что будет, если отметить. */
 .collocation-hint {
