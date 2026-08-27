@@ -28,9 +28,13 @@ import backend.reference_forms_review as RV
                    "reason": "ни справочник, ни композит, ни модель", "candidates": []}
 
 
-def _текст(item, monkeypatch):
-    monkeypatch.setattr(RV, "_translation", lambda word: "ходьба")
-    return RV._word_text(item, index=1, total=2, left=2)
+НАША_ЗАПИСЬ = {"unit_id": 7, "перевод": "ходьба", "шапка": "das Gehen",
+               "множественное": "", "родительный": "des Gehens", "сравнительная": ""}
+
+
+def _текст(item, monkeypatch, diagnosis=("нет_таблицы", "страница есть, таблицы нет")):
+    monkeypatch.setattr(RV, "_our_entry", lambda word: dict(НАША_ЗАПИСЬ))
+    return RV._word_text(item, index=1, total=2, left=2, diagnosis=diagnosis)
 
 
 def test_в_карточке_видно_что_предлагает_модель(monkeypatch):
@@ -53,25 +57,26 @@ def test_в_карточке_есть_перевод_и_последствие_�
 
 
 def test_кнопки_носят_номер_строки_а_не_обрезанное_слово():
-    клавиатура = RV._keyboard(42, 2)
+    клавиатура = RV._keyboard(42, 2, можно_убрать=True)
     данные = [b["callback_data"] for row in клавиатура["inline_keyboard"] for b in row]
     assert "reffrm:v1:42" in данные and "reffrm:v2:42" in данные
-    assert "reffrm:later:42" in данные
+    assert "reffrm:fix:42" in данные and "reffrm:keep:42" in данные
     assert all(d.split(":")[2].isdigit() for d in данные)
 
 
 def test_артикля_в_кнопках_больше_нет():
     """der/die/das собирает СВОЙ механизм (article_review) — и он работает.
     Здесь эта кнопка ничего не записывала и записать не могла."""
-    все = [b["text"] for row in RV._keyboard(42, 2)["inline_keyboard"] for b in row]
+    все = [b["text"] for row in RV._keyboard(42, 2, можно_убрать=True)["inline_keyboard"]
+           for b in row]
     assert not {"der", "die", "das"} & set(все)
 
 
 def test_когда_предлагать_нечего_карточка_говорит_это_прямо(monkeypatch):
     текст = _текст(БЕЗ_ПРЕДЛОЖЕНИЙ, monkeypatch)
-    assert "Модель тоже не ответила" in текст
-    кнопки = [b["text"] for row in RV._keyboard(43, 0)["inline_keyboard"] for b in row]
-    assert any("негодный заголовок" in t for t in кнопки)
+    assert "Модель тоже ничего не предложила" in текст
+    кнопки = [b["text"] for row in RV._keyboard(43, 0, можно_убрать=False)["inline_keyboard"]
+              for b in row]
     assert not any("вариант" in t for t in кнопки)
 
 
@@ -99,15 +104,65 @@ def test_успешная_запись_говорит_человеку_что_и
     assert "склонение" in ответ and "карточке слова" in ответ
 
 
-def test_отложить_откладывает_а_не_хоронит(monkeypatch):
-    отложено = []
+def test_оставить_как_есть_закрывает_вопрос_и_обещает_машинный_переспрос(monkeypatch):
+    закрыто = []
     monkeypatch.setattr("backend.german_reference_forms.unresolved_row",
                         lambda rid: dict(СЛОВО))
-    monkeypatch.setattr("backend.german_reference_forms.postpone_unresolved",
-                        lambda rid, days: отложено.append((rid, days)) or True)
-    ответ = RV.apply_reference_forms_review("later", 42)
-    assert отложено and отложено[0][1] > 0
-    assert "вернётся" in ответ
+    monkeypatch.setattr("backend.german_reference_forms.mark_reviewed",
+                        lambda rid, reason="": закрыто.append((rid, reason)) or True)
+    ответ = RV.apply_reference_forms_review("keep", 42)
+    assert закрыто and "оставить" in закрыто[0][1]
+    assert "переспрошу сам" in ответ
+
+
+def test_разобраться_заводит_жалобу_а_не_второй_редактор(monkeypatch):
+    """Правка заголовка живёт в разборе карточки — там уже есть экран «было → станет»
+    и разгон правки по всем местам. Второго редактора в проекте быть не должно."""
+    заведено = []
+    monkeypatch.setattr("backend.german_reference_forms.unresolved_row",
+                        lambda rid: dict(СЛОВО))
+    monkeypatch.setattr(RV, "_our_entry", lambda word: dict(НАША_ЗАПИСЬ))
+    monkeypatch.setattr("backend.card_complaints.add_complaint",
+                        lambda **kw: заведено.append(kw) or {"ok": True, "id": 5})
+    monkeypatch.setattr("backend.german_reference_forms.mark_reviewed",
+                        lambda rid, reason="": True)
+    ответ = RV.apply_reference_forms_review("fix", 42, 777)
+    assert заведено and заведено[0]["word"] == "Gehen" and заведено[0]["unit_id"] == 7
+    assert заведено[0]["user_id"] == 777
+    assert "было → станет" in ответ
+
+
+def test_несостоявшаяся_жалоба_не_закрывает_слово(monkeypatch):
+    monkeypatch.setattr("backend.german_reference_forms.unresolved_row",
+                        lambda rid: dict(СЛОВО))
+    monkeypatch.setattr(RV, "_our_entry", lambda word: dict(НАША_ЗАПИСЬ))
+    monkeypatch.setattr("backend.card_complaints.add_complaint",
+                        lambda **kw: {"ok": False, "reason": "error"})
+    закрыто = []
+    monkeypatch.setattr("backend.german_reference_forms.mark_reviewed",
+                        lambda rid, reason="": закрыто.append(rid) or True)
+    ответ = RV.apply_reference_forms_review("fix", 42, 777)
+    assert "осталось в очереди" in ответ and закрыто == []
+
+
+def test_убрать_показывается_только_когда_написание_не_подтверждено():
+    """Слово настоящее, не хватает лишь таблицы форм — удалять его нельзя."""
+    для_настоящего = [b["text"] for row in RV._keyboard(1, 0, можно_убрать=False)["inline_keyboard"]
+                      for b in row]
+    для_кривого = [b["text"] for row in RV._keyboard(1, 0, можно_убрать=True)["inline_keyboard"]
+                   for b in row]
+    assert not any("убрать" in t for t in для_настоящего)
+    assert any("убрать" in t for t in для_кривого)
+
+
+def test_карточка_называет_точную_причину_а_не_общую_фразу(monkeypatch):
+    """«Справочник их не печатает» на странице, где таблица есть, — это враньё.
+    Владелец открыл «Finster», увидел склонение фамилии и назвал это обманом."""
+    текст = _текст(БЕЗ_ПРЕДЛОЖЕНИЙ, monkeypatch,
+                   diagnosis=("только_фамилия", "справочник знает это написание только "
+                                                "как ФАМИЛИЮ"))
+    assert "ФАМИЛИЮ" in текст
+    assert "У нас записано" in текст and "das Gehen" in текст
 
 
 def test_нечитаемая_очередь_не_выглядит_пустой(monkeypatch):

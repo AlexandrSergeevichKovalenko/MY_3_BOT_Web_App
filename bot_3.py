@@ -14817,7 +14817,7 @@ async def handle_reference_forms_review_callback(update: Update, context: Callba
     if not _is_admin_user(admin.id):
         await query.answer("Команда доступна только администратору.", show_alert=True)
         return
-    # reffrm:<v1|v2|bad|later>:<номер строки очереди>. Номер, а не слово: слово
+    # reffrm:<v1|v2|fix|drop|keep>:<номер строки очереди>. Номер, а не слово: слово
     # приходилось резать до 40 знаков ради лимита callback_data, и длинное слово
     # потом не находилось при нажатии.
     parts = str(query.data or "").split(":", 2)
@@ -14829,7 +14829,8 @@ async def handle_reference_forms_review_callback(update: Update, context: Callba
     await query.answer("Записываю…", show_alert=False)
     try:
         from backend.reference_forms_review import apply_reference_forms_review
-        text = await asyncio.to_thread(apply_reference_forms_review, action, int(row_id))
+        text = await asyncio.to_thread(apply_reference_forms_review, action, int(row_id),
+                                       admin.id)
     except Exception:
         logging.warning("reference forms review action failed", exc_info=True)
         try:

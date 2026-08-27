@@ -420,3 +420,38 @@ def test_чужая_часть_речи_словом_не_закрывается
     assert R._pos_matches("adjective", {"Partizip II"}) is False
     assert R._pos_matches("noun", {"Deklinierte Form"}) is False
     assert R.forms_from_source("adjective", VERB_SOURCE) is None
+
+
+# Страница «Finster», снята запросом 27.08.2026. Помечена И существительным, И
+# фамилией, а таблица на ней ОДНА — фамилии. Именно её владелец увидел на экране.
+FINSTER_SOURCE = """
+== Finster ({{Sprache|Deutsch}}) ==
+=== {{Wortart|Substantiv|Deutsch}}, {{mf}}, {{Wortart|Nachname|Deutsch}} ===
+{{Deutsch Nachname Übersicht
+|Nominativ Singular m=Finster
+|Genitiv Singular m=Finsters
+}}
+"""
+
+
+def test_причина_называется_точно_а_не_одной_фразой_на_всё():
+    """Владелец открыл страницу «Finster», увидел там таблицу и назвал общую фразу
+    «справочник не печатает» обманом. Таблица там есть — но это склонение ФАМИЛИИ,
+    и пометка части речи её не выдаёт: страница помечена и существительным тоже."""
+    код, фраза = R.diagnose_source("noun", FINSTER_SOURCE)
+    assert код == "только_фамилия" and "ФАМИЛИИ" in фраза
+    assert R.forms_from_source("noun", FINSTER_SOURCE) is None, "фамилию в формы не берём"
+    assert R.diagnose_source("noun", "")[0] == "нет_страницы"
+    assert R.diagnose_source("adjective", "{{Wortart|Verb|Deutsch}}")[0] == "другая_часть_речи"
+    assert R.diagnose_source("noun", "{{Wortart|Substantiv|Deutsch}}")[0] == "нет_таблицы"
+
+
+def test_молчание_справочника_не_выдаётся_за_причину():
+    """None — «не спросили/не ответил». Это НЕ «страницы нет»: разные миры."""
+    код, _фраза = R.diagnose_source("noun", None)
+    assert код == "молчит"
+
+
+def test_переспрос_отказов_раз_в_месяц_а_не_каждую_неделю():
+    """Решение владельца 27.08.2026: «один раз в месяц запрашивать эту статью»."""
+    assert R._RECHECK_NEGATIVE_AFTER_DAYS == 30

@@ -57,21 +57,42 @@ def _reference_link(word: str, pos: str) -> str:
     return "https://de.wiktionary.org/wiki/" + urllib.parse.quote(title)
 
 
-def _translation(word: str) -> str:
-    """Перевод из словарной единицы. Пусто — значит пусто, ничего не выдумываем."""
+def _our_entry(word: str) -> dict[str, Any]:
+    """Что записано У НАС: номер строки словаря, перевод, шапка и формы из разбора.
+
+    Владелец решает зряче только тогда, когда видит ОБЕ стороны: что говорит справочник
+    и что лежит у нас. У «Finster» именно наша сторона и оказалась выдумкой —
+    «das Finster, мн. die Finster, род. des Finsters» при том, что такого
+    существительного в немецком нет.
+    """
     from backend.database import get_db_connection_context
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT card->>'word_ru' FROM bt_3_lex_units "
+                    "SELECT id, card FROM bt_3_lex_units "
                     " WHERE lang = 'de' AND lower(lemma) = lower(%s) "
-                    " ORDER BY updated_at DESC NULLS LAST LIMIT 1;", (str(word or "").strip(),))
+                    " ORDER BY updated_at DESC NULLS LAST LIMIT 1;",
+                    (str(word or "").strip(),))
                 row = cur.fetchone()
     except Exception:
-        logging.debug("разбор форм: перевод не прочитан для %s", word, exc_info=True)
-        return ""
-    return str((row or [""])[0] or "").strip()
+        logging.debug("разбор форм: словарная запись не прочитана для %s", word, exc_info=True)
+        return {}
+    if not row:
+        return {}
+    card = row[1] if isinstance(row[1], dict) else {}
+    forms = card.get("forms") if isinstance(card.get("forms"), dict) else {}
+    return {"unit_id": int(row[0]),
+            "перевод": str(card.get("word_ru") or "").strip(),
+            "шапка": str(card.get("word_de") or "").strip(),
+            "множественное": str(forms.get("plural") or "").strip(),
+            "родительный": str(forms.get("genitive") or "").strip(),
+            "сравнительная": str(forms.get("comparative") or "").strip()}
+
+
+def _translation(word: str) -> str:
+    """Перевод из словарной единицы. Пусто — значит пусто, ничего не выдумываем."""
+    return str(_our_entry(word).get("перевод") or "")
 
 
 def _variant_line(answer: dict, pos: str, number: int) -> str:
@@ -109,36 +130,58 @@ def _difference(answers: list[dict], pos: str) -> str:
     return "Расходятся: " + "; ".join(spots) if spots else ""
 
 
-def _keyboard(row_id: int, variants: int) -> dict[str, Any]:
+def _keyboard(row_id: int, variants: int, *, можно_убрать: bool) -> dict[str, Any]:
     """callback_data: reffrm:<действие>:<номер строки>. Номер, а не слово: слово
-    приходилось резать до 40 знаков, и длинное потом не находилось при нажатии."""
+    приходилось резать до 40 знаков, и длинное потом не находилось при нажатии.
+
+    ⚠ «УБРАТЬ» ПОКАЗЫВАЕТСЯ НЕ ВСЕГДА. Если справочник подтверждает и написание, и
+    часть речи, а не хватает только таблицы форм, — слово НАСТОЯЩЕЕ, и удалять его
+    из-за нашей нехватки источника нельзя. Кнопка появляется только там, где
+    справочник наше написание не подтверждает.
+    """
     rows = []
     if variants >= 1:
         rows.append([{"text": f"{'①②③④'[i]} вариант {i + 1}",
                       "callback_data": f"reffrm:v{i + 1}:{row_id}"}
                      for i in range(min(variants, 4))])
-        rows.append([{"text": "🚫 ни один не верен",
-                      "callback_data": f"reffrm:bad:{row_id}"}])
-    else:
-        rows.append([{"text": "🚫 негодный заголовок",
-                      "callback_data": f"reffrm:bad:{row_id}"}])
-    rows.append([{"text": "⏳ отложить", "callback_data": f"reffrm:later:{row_id}"}])
+    rows.append([{"text": "✏️ разобраться со словом",
+                  "callback_data": f"reffrm:fix:{row_id}"}])
+    if можно_убрать:
+        rows.append([{"text": "🗑 убрать из словаря",
+                      "callback_data": f"reffrm:drop:{row_id}"}])
+    rows.append([{"text": "✅ оставить как есть", "callback_data": f"reffrm:keep:{row_id}"}])
     return {"inline_keyboard": rows}
 
 
-def _word_text(item: dict, *, index: int, total: int, left: int) -> str:
-    from backend.german_reference_forms import POSTPONE_DAYS
+# Причины, при которых наше написание справочником НЕ подтверждено. Только на них
+# показывается «убрать из словаря».
+_НАШЕ_НАПИСАНИЕ_НЕ_ПОДТВЕРЖДЕНО = {"нет_страницы", "только_фамилия",
+                                    "другая_часть_речи", "чужая_таблица"}
+
+
+def _word_text(item: dict, *, index: int, total: int, left: int,
+               diagnosis: tuple[str, str] | None = None) -> str:
+    from backend.german_reference_forms import _RECHECK_NEGATIVE_AFTER_DAYS
 
     word, pos = item["word"], item["pos"]
     kind = _KIND_RU.get(pos, pos)
-    translation = _translation(word)
+    наше = _our_entry(word)
     head = f"<b>{word}</b> — {kind}"
-    if translation:
-        head += f" · {translation}"
+    if наше.get("перевод"):
+        head += f" · {наше['перевод']}"
+    lines = [head]
 
-    чего_нет = ("таблицы склонения" if pos == "noun" else "степеней сравнения")
-    lines = [head, f"Нет {чего_нет}: справочник их не печатает, из составного слова "
-                   f"не выводятся."]
+    # ── Что записано у нас ──────────────────────────────────────────────────
+    записано = [x for x in (наше.get("шапка") or word,
+                            f"мн. {наше['множественное']}" if наше.get("множественное") else "",
+                            f"род. {наше['родительный']}" if наше.get("родительный") else "",
+                            f"сравн. {наше['сравнительная']}" if наше.get("сравнительная") else "")
+                if x]
+    lines.append("<b>У нас записано:</b> " + " · ".join(записано))
+
+    # ── Что говорит справочник ──────────────────────────────────────────────
+    код, фраза = diagnosis or ("", "")
+    lines.append("<b>Справочник:</b> " + (фраза or "формы не напечатаны"))
 
     variants = [a for a in (item.get("candidates") or []) if isinstance(a, dict)]
     if variants:
@@ -149,27 +192,25 @@ def _word_text(item: dict, *, index: int, total: int, left: int) -> str:
         разница = _difference(variants, pos)
         if разница:
             lines.append(f"<i>{разница}</i>")
-        lines.append("")
         lines.append("Выберешь вариант — он ляжет в карточку слова, и человек увидит "
                      "именно эти формы.")
     else:
-        lines.append("")
-        lines.append("Модель тоже не ответила — предложить нечего. Если слово настоящее, "
-                     "формы придётся достать вручную; если заголовок негодный "
-                     "(форма слова, опечатка, чужая часть речи) — скажи кнопкой.")
+        lines.append("Модель тоже ничего не предложила.")
 
-    lines.append(f"«Отложить» вернёт слово через {POSTPONE_DAYS} дней.")
+    lines.append("")
+    lines.append("<b>Что делают кнопки:</b>")
+    lines.append("✏️ <b>разобраться</b> — заведу жалобу на это слово. Ночью модель "
+                 "разберёт карточку целиком и предложит исправление; ты решишь на "
+                 "экране «было → станет», и правка разойдётся по всем местам.")
+    if код in _НАШЕ_НАПИСАНИЕ_НЕ_ПОДТВЕРЖДЕНО:
+        lines.append("🗑 <b>убрать из словаря</b> — слово и его запись в общем словаре "
+                     "уходят, снимок сохраняется, вернуть можно.")
+    lines.append(f"✅ <b>оставить как есть</b> — вопрос закрою, слово останется с тем, "
+                 f"что у нас есть. Справочник переспрошу сам раз в "
+                 f"{_RECHECK_NEGATIVE_AFTER_DAYS} дней — тебя больше не потревожу.")
     lines.append(f'<a href="{_reference_link(word, pos)}">статья в справочнике</a>')
     lines.append(f"<i>{index} из {total} · ждут ответа: {left}</i>")
     return "\n".join(lines)
-
-
-def _слов(n: int) -> str:
-    """«1 слова», «2 слов» — по-русски. Отчёт читает человек, а не парсер."""
-    n = abs(int(n))
-    if n % 10 == 1 and n % 100 != 11:
-        return "слова"
-    return "слов"
 
 
 def _head_text(left: int, sent: int) -> str:
@@ -189,7 +230,10 @@ def send_reference_forms_review_dm(*, force: bool = False) -> dict[str, Any]:
         finish_scheduler_run_guard,
         get_admin_telegram_ids,
     )
-    from backend.german_reference_forms import mark_asked, unresolved_batch, unresolved_count
+    from backend.german_reference_forms import (
+        _reference_title, diagnose_source, fetch_sources_bulk, mark_asked,
+        unresolved_batch, unresolved_count,
+    )
 
     now = datetime.now(timezone.utc)
     run_period = now.strftime("%Y-%m-%d")
@@ -218,6 +262,17 @@ def send_reference_forms_review_dm(*, force: bool = False) -> dict[str, Any]:
                                        metadata={"sent": 0, "reason": "nothing_to_review"})
         return {"ok": True, "sent": 0, "reason": "nothing_to_review"}
 
+    # ПРИЧИНУ СПРАШИВАЕМ ЗАНОВО ПЕРЕД ОТПРАВКОЙ, а не берём из ночной пометки:
+    # владелец открывает страницу справочника ПРЯМО СЕЙЧАС и сверяет с нашей фразой.
+    # Расхождение между тем, что он видит, и тем, что мы написали, — это враньё,
+    # даже если ночью мы были правы.
+    sources = fetch_sources_bulk([_reference_title(x["word"], x["pos"]) for x in items])
+    diagnoses = {}
+    for item in items:
+        title = _reference_title(item["word"], item["pos"])
+        text = None if sources is None else (sources.get(title) or sources.get(item["word"]) or "")
+        diagnoses[item["id"]] = diagnose_source(item["pos"], text)
+
     sent = 0
     delivered_to = 0
     for uid in admin_ids:
@@ -235,11 +290,14 @@ def send_reference_forms_review_dm(*, force: bool = False) -> dict[str, Any]:
                 resp = requests.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
                     json={"chat_id": uid,
-                          "text": _word_text(item, index=i, total=len(items), left=left),
+                          "text": _word_text(item, index=i, total=len(items), left=left,
+                                             diagnosis=diagnoses.get(item["id"])),
                           "parse_mode": "HTML",
                           "disable_web_page_preview": True,
                           "reply_markup": _keyboard(
-                              item["id"], len(item.get("candidates") or []))},
+                              item["id"], len(item.get("candidates") or []),
+                              можно_убрать=(diagnoses.get(item["id"], ("", ""))[0]
+                                            in _НАШЕ_НАПИСАНИЕ_НЕ_ПОДТВЕРЖДЕНО))},
                     timeout=_HTTP_TIMEOUT)
                 if resp.status_code < 400:
                     sent += 1
@@ -269,17 +327,18 @@ def send_reference_forms_review_dm(*, force: bool = False) -> dict[str, Any]:
             "words": [x["word"] for x in items]}
 
 
-def apply_reference_forms_review(action: str, row_id: str | int) -> str:
+def apply_reference_forms_review(action: str, row_id: str | int,
+                                 admin_id: int | None = None) -> str:
     """Нажатие кнопки. Возвращает человеческий текст для замены сообщения.
 
-    Ни одна ветка не помечает слово разобранным, если запись НЕ УДАЛАСЬ: прежний код
+    Ни одна ветка не помечает слово разобранным, если действие НЕ УДАЛОСЬ: прежний код
     делал ровно это, и слово исчезало из очереди с текстом «осталось в очереди».
     """
     from backend.german_reference_forms import (
-        POSTPONE_DAYS,
+        _RECHECK_NEGATIVE_AFTER_DAYS,
         apply_owner_choice,
-        mark_headword_defect,
-        postpone_unresolved,
+        clear_unresolved,
+        mark_reviewed,
         unresolved_row,
     )
 
@@ -291,25 +350,54 @@ def apply_reference_forms_review(action: str, row_id: str | int) -> str:
     row = unresolved_row(rid)
     if not row:
         return "Это слово уже закрыто — в очереди его нет."
+    слово = row["word"]
 
     if action in ("v1", "v2", "v3", "v4"):
         applied = apply_owner_choice(rid, int(action[1:]))
         if not applied:
-            return (f"⚠️ <b>{row['word']}</b>: не смог записать этот вариант. "
+            return (f"⚠️ <b>{слово}</b>: не смог записать этот вариант. "
                     "Слово ОСТАЁТСЯ в очереди — придёт снова.")
-        formes = "склонение" if row["pos"] == "noun" else "степени сравнения"
-        return (f"✅ <b>{row['word']}</b> — {formes} записано с твоих слов. "
+        формы = "склонение" if row["pos"] == "noun" else "степени сравнения"
+        return (f"✅ <b>{слово}</b> — {формы} записано с твоих слов. "
                 "Теперь эти формы видит человек в карточке слова.")
 
-    if action == "bad":
-        mark_headword_defect(row["word"], row["pos"], "решение владельца: формы не годятся")
-        return (f"🚫 <b>{row['word']}</b> — отмечено как негодный заголовок. "
-                "Больше не спрошу; слово попадёт в разбор заголовков.")
+    if action == "fix":
+        # ОТДАЁМ В УЖЕ ПОСТРОЕННЫЙ РАЗБОР, а не строим второй редактор. Жалоба →
+        # ночной судья с моделью → экран владельца «было → станет» → переименование
+        # доводится до всех мест (лемма, ключ поиска, род, пул, кеш, карточки людей).
+        from backend.card_complaints import add_complaint
+        наше = _our_entry(слово)
+        итог = add_complaint(
+            user_id=int(admin_id or 0),
+            word=слово,
+            note=("Из разбора форм: справочник не дал таблицу форм. "
+                  f"Причина: {row.get('reason') or 'не названа'}."),
+            unit_id=наше.get("unit_id"))
+        if not итог.get("ok"):
+            return (f"⚠️ <b>{слово}</b>: не смог завести разбор "
+                    f"({итог.get('reason') or 'причина в логах'}). Слово осталось в очереди.")
+        mark_reviewed(rid, "отдано в разбор карточки по решению владельца")
+        return (f"✏️ <b>{слово}</b> — отдал в разбор карточки.\n"
+                "Ночью модель разберёт слово целиком и предложит исправление. "
+                "Придёт отдельным экраном «было → станет», там и решишь.")
 
-    if action == "later":
-        if not postpone_unresolved(rid, POSTPONE_DAYS):
-            return (f"⚠️ <b>{row['word']}</b>: не смог отложить. "
-                    "Слово остаётся в очереди.")
-        return f"⏳ <b>{row['word']}</b> — отложено, вернётся через {POSTPONE_DAYS} дней."
+    if action == "drop":
+        # Тем же путём, что в разборе слов: правило удаления владелец принял 23.08.2026
+        # (слово и общий кеш уходят всегда, снимок всегда, личные карточки — только у
+        # обрубков и опечаток). Второго правила удаления в проекте быть не должно.
+        from backend.word_review import apply_word_review
+        ответ = apply_word_review("drop", слово)
+        if ответ.startswith("⚠️"):
+            return ответ + "\nСлово осталось в очереди."
+        clear_unresolved(слово)
+        return ответ
+
+    if action == "keep":
+        if not mark_reviewed(rid, "решение владельца: оставить как есть"):
+            return f"⚠️ <b>{слово}</b>: не смог закрыть вопрос. Слово остаётся в очереди."
+        return (f"✅ <b>{слово}</b> — оставил как есть.\n"
+                f"Больше не спрошу. Справочник переспрошу сам раз в "
+                f"{_RECHECK_NEGATIVE_AFTER_DAYS} дней: появится статья — формы "
+                f"подставятся без тебя.")
 
     return f"Не понял действие «{action}»."
