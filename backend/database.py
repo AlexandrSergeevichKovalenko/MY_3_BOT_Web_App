@@ -21,6 +21,7 @@ import json
 import secrets
 import random
 import re
+import contextvars
 import threading
 
 # Cyrillic detector for dictionary script guards (a German headword must never be Cyrillic).
@@ -239,7 +240,20 @@ _ENSURE_PHASE1_PROJECTION_SCHEMA_MUTEX = threading.Lock()
 _ENSURE_PHASE1_PROJECTION_SCHEMA_DONE = False
 _DB_POOL_LOCK = threading.Lock()
 _DB_POOL: ThreadedConnectionPool | None = None
-_DB_ACQUIRE_LOCAL = threading.local()
+# Кто сейчас берёт соединение — имя, чтобы сигнал о голоде пула называл виновника.
+# ContextVar, а НЕ threading.local: бот (python-telegram-bot v20) держит сотни
+# обработчиков в ОДНОМ потоке цикла asyncio, и thread-local приписал бы работу одного
+# обработчика другому. ContextVar разделяет и потоки, и задачи asyncio, поэтому имя
+# всегда принадлежит тому, кто его поставил. Найдено 27.08.2026 при постройке имён.
+_DB_ACQUIRE_LABEL: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "db_acquire_label", default=None
+)
+_DB_ACQUIRE_EVENTS: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "db_acquire_events", default=None
+)
+_DB_ACQUIRE_SCOPE: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "db_acquire_scope", default=None
+)
 _BILLING_PLAN_CACHE_LOCK = threading.Lock()
 _BILLING_PLAN_CACHE: dict[str, tuple[float, dict | None]] = {}
 _STRICT_POOLED_DB_SERVICE_NAMES = {
@@ -8061,7 +8075,7 @@ def _db_runtime_base_fields(*, context_label: str | None = None) -> dict[str, An
 
 
 def _get_current_db_scope_context() -> dict[str, Any] | None:
-    scope = getattr(_DB_ACQUIRE_LOCAL, "scope", None)
+    scope = _DB_ACQUIRE_SCOPE.get()
     return scope if isinstance(scope, dict) else None
 
 
@@ -8077,7 +8091,7 @@ def note_db_provider_wait(wait_ms: int | float | None, *, provider_label: str | 
         labels = scope.setdefault("provider_labels", [])
         if isinstance(labels, list):
             labels.append(str(provider_label).strip() or "provider")
-    scoped_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
+    scoped_events = _DB_ACQUIRE_EVENTS.get()
     if isinstance(scoped_events, list):
         event = {"event": "provider_wait", "wait_ms": normalized_wait_ms}
         if provider_label:
@@ -8087,14 +8101,11 @@ def note_db_provider_wait(wait_ms: int | float | None, *, provider_label: str | 
 
 @contextmanager
 def db_acquire_scope(label: str):
-    previous_label = getattr(_DB_ACQUIRE_LOCAL, "label", None)
-    previous_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
-    previous_scope = getattr(_DB_ACQUIRE_LOCAL, "scope", None)
     scoped_events: list[dict[str, Any]] = []
     normalized_label = str(label or "").strip() or "unknown"
-    _DB_ACQUIRE_LOCAL.label = normalized_label
-    _DB_ACQUIRE_LOCAL.events = scoped_events
-    _DB_ACQUIRE_LOCAL.scope = {
+    label_token = _DB_ACQUIRE_LABEL.set(normalized_label)
+    events_token = _DB_ACQUIRE_EVENTS.set(scoped_events)
+    scope_token = _DB_ACQUIRE_SCOPE.set({
         "label": normalized_label,
         "events": scoped_events,
         "started_at_perf": time.perf_counter(),
@@ -8102,13 +8113,31 @@ def db_acquire_scope(label: str):
         "provider_wait_ms_max": 0,
         "provider_wait_count": 0,
         "provider_labels": [],
-    }
+    })
     try:
         yield scoped_events
     finally:
-        _DB_ACQUIRE_LOCAL.label = previous_label
-        _DB_ACQUIRE_LOCAL.events = previous_events
-        _DB_ACQUIRE_LOCAL.scope = previous_scope
+        _DB_ACQUIRE_LABEL.reset(label_token)
+        _DB_ACQUIRE_EVENTS.reset(events_token)
+        _DB_ACQUIRE_SCOPE.reset(scope_token)
+
+
+def set_db_acquire_label(label: str | None) -> None:
+    """Назвать того, кто сейчас берёт соединения, — для входов без контекст-менеджера.
+
+    Метку ставят ОДИН раз на входе (HTTP-запрос, обработчик бота, актёр очереди, ночная
+    задача), и её видит любой вложенный get_db_connection(): в backend/ и bot_3.py около
+    1500 мест, где берётся соединение, и обходить их по одному не нужно и вредно.
+
+    Зачем вообще: сигнал «пул голодает» без имени виновника не даёт владельцу решения —
+    27.08.2026 письмо приходило со строкой «Последний триггер: unspecified».
+    """
+    _DB_ACQUIRE_LABEL.set(str(label or "").strip() or None)
+
+
+def current_db_acquire_label() -> str | None:
+    """Чьё имя сейчас стоит на соединениях. Только для тестов и диагностики."""
+    return _DB_ACQUIRE_LABEL.get()
 
 
 def summarize_db_acquire_events(events: list[dict[str, Any]] | None) -> dict[str, Any]:
@@ -8286,11 +8315,95 @@ def _capture_pool_state(pool: ThreadedConnectionPool | None) -> tuple[int | None
 # rolling window before sending, then throttle by COOLDOWN. So the DM means "requests are
 # REPEATEDLY unable to get DB connections" — the real "raise the pool / offload heavy work"
 # signal, not "the pool was briefly busy".
+#
+# ┌─ НАЙДЕНО 27.08.2026, ПОЧИНЕНО. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ─────────────────┐
+# │ Письмо писало владельцу: «Это НЕ падение — резервный путь отработал». В нашем проде  │
+# │ это была НЕПРАВДА. Резервный путь включается DB_POOL_ALLOW_DIRECT_FALLBACK, по       │
+# │ умолчанию "0", и его не ставит НИ ОДИН сервис (проверено 27.08.2026 в railway        │
+# │ variables: MY_3_BOT, BACKGROUND_JOBS, AUX_BACKGROUND_WORKER, SCHEDULER_SERVICE,      │
+# │ TRANSLATION_CHECK_WORKER, BACKEND_WEB), а для BACKEND_WEB он ещё и запрещён явно     │
+# │ в _enforce_db_runtime_policy(). Значит единственная ветка, по которой письмо могло   │
+# │ сработать, — success=False, то есть get_db_connection() поднял RuntimeError «DB pool │
+# │ exhausted» и запрос УПАЛ: человек увидел ошибку. Письмо успокаивало там, где надо    │
+# │ было тревожить. Теперь два исхода считаются РАЗДЕЛЬНО и называются своими именами.   │
+# │ Перемерить: railway variables --service <имя> --json | grep DB_POOL_ALLOW_DIRECT.    │
+# └─────────────────────────────────────────────────────────────────────────────────────┘
 DB_POOL_SATURATION_ALERT_COOLDOWN_MIN = max(1, int(os.getenv("DB_POOL_SATURATION_ALERT_COOLDOWN_MIN", "30")))
 DB_POOL_SATURATION_ALERT_MIN_EVENTS = max(1, int(os.getenv("DB_POOL_SATURATION_ALERT_MIN_EVENTS", "5")))
 _DB_POOL_ALERT_LOCK = threading.Lock()
 _DB_POOL_ALERT_LAST_SENT_TS: float = 0.0
-_DB_POOL_STARVATION_EVENTS: list[float] = []
+# (когда, что случилось, кто просил). «Что случилось» — "failed" (запрос упал с ошибкой)
+# либо "fallback" (ушёл мимо пула прямым соединением). Смешивать их в одно число нельзя:
+# это два разных мира для человека у экрана.
+_DB_POOL_STARVATION_EVENTS: list[tuple[float, str, str]] = []
+
+
+def _describe_db_pool_starvation_culprits(labels: list[str]) -> str:
+    """Кто именно не дождался соединения — человеческой строкой.
+
+    Имя берётся из db_acquire_scope(). Если метки нет, honest-ответ — «не записано»,
+    а НЕ технический токен «unspecified», который владелец не может ни с чем соотнести.
+    """
+    counted: dict[str, int] = {}
+    unnamed = 0
+    for item in labels:
+        name = str(item or "").strip()
+        if not name or name in {"unspecified", "unknown"}:
+            unnamed += 1
+            continue
+        counted[name] = counted.get(name, 0) + 1
+    if not counted:
+        return ("Кто именно не дождался — НЕ ЗАПИСАНО: у этих мест нет метки "
+                "db_acquire_scope(). Без имени виновника решение принять не по чему.")
+    top = sorted(counted.items(), key=lambda pair: (-pair[1], pair[0]))[:5]
+    line = "Кто не дождался: " + ", ".join(f"{name} — {count}" for name, count in top)
+    if unnamed:
+        line += f"; ещё {unnamed} без метки"
+    return line + "."
+
+
+def _build_db_pool_starvation_message(events: list[tuple[float, str, str]]) -> str:
+    """Письмо владельцу по СОБЫТИЯМ окна, а не по одному последнему.
+
+    Два исхода разделены намеренно и никогда не складываются в одно число:
+      • "failed"   — соединения не дали, get_db_connection() поднял RuntimeError,
+                     запрос УПАЛ и человек увидел ошибку;
+      • "fallback" — ушли мимо пула прямым соединением, данные человек получил.
+    Прежний текст называл падение «резервным путём» и добавлял «это НЕ падение» —
+    см. рамку «НАЙДЕНО 27.08.2026» выше.
+    """
+    failed_count = sum(1 for item in events if item[1] == "failed")
+    fallback_count = len(events) - failed_count
+    window_min = int(DB_POOL_SATURATION_ALERT_COOLDOWN_MIN)
+    timeout_ms = int(DB_POOL_ACQUIRE_TIMEOUT_MS)
+    lines: list[str] = []
+    if failed_count:
+        lines.append("🛑 Запросы ПАДАЮТ: базе не хватает соединений")
+        lines.append(
+            f"{failed_count} запрос(ов) за последние ~{window_min} мин прождали свободное "
+            f"соединение все {timeout_ms} мс и не дождались — упали с ошибкой «DB pool "
+            f"exhausted». Это не тихая деградация: человек на экране увидел ошибку."
+        )
+    else:
+        lines.append("⚠️ DB-пул под устойчивой нагрузкой")
+    if fallback_count:
+        lines.append(
+            f"{fallback_count} запрос(ов) не дождались пула и ушли мимо него прямым "
+            f"соединением (включён DB_POOL_ALLOW_DIRECT_FALLBACK). Данные человек получил, "
+            f"но такие соединения открываются сверх размера пула — на масштабе это упрётся "
+            f"в потолок PgBouncer."
+        )
+    lines.append(_describe_db_pool_starvation_culprits([item[2] for item in events]))
+    lines.append(
+        f"Размер пула: {int(DB_POOL_MAXCONN)}. Ждём соединение: {timeout_ms} мс. Сигнал "
+        f"приходит только при устойчивом голоде (≥{DB_POOL_SATURATION_ALERT_MIN_EVENTS} "
+        f"событий за {window_min} мин), единичные всплески — норма."
+    )
+    lines.append(
+        "Что с этим делать: поднять DB_POOL_MAXCONN у названного сервиса или вынести его "
+        "тяжёлые операции в фон."
+    )
+    return "\n\n".join(lines)
 
 
 def _maybe_alert_db_pool_saturation(
@@ -8304,8 +8417,11 @@ def _maybe_alert_db_pool_saturation(
     the pool). Only a GENUINE starvation event — fallback_direct (pool full for the whole
     timeout) or an outright failure — is counted; once MIN_EVENTS pile up inside the cooldown
     window it DMs the admin off-thread, then throttles."""
-    genuine_starvation = (not success) or (str(connection_source or "").strip() == "fallback_direct")
-    if not genuine_starvation:
+    if not success:
+        starvation_kind = "failed"
+    elif str(connection_source or "").strip() == "fallback_direct":
+        starvation_kind = "fallback"
+    else:
         return
     if not DB_POOL_ENABLED:
         return
@@ -8314,28 +8430,18 @@ def _maybe_alert_db_pool_saturation(
     with _DB_POOL_ALERT_LOCK:
         global _DB_POOL_ALERT_LAST_SENT_TS
         cutoff = now_ts - window_seconds
-        _DB_POOL_STARVATION_EVENTS[:] = [t for t in _DB_POOL_STARVATION_EVENTS if t >= cutoff]
-        _DB_POOL_STARVATION_EVENTS.append(now_ts)
+        _DB_POOL_STARVATION_EVENTS[:] = [item for item in _DB_POOL_STARVATION_EVENTS if item[0] >= cutoff]
+        _DB_POOL_STARVATION_EVENTS.append((now_ts, starvation_kind, str(context_label or "")))
         event_count = len(_DB_POOL_STARVATION_EVENTS)
         if event_count < DB_POOL_SATURATION_ALERT_MIN_EVENTS:
             return
         if _DB_POOL_ALERT_LAST_SENT_TS and now_ts - _DB_POOL_ALERT_LAST_SENT_TS < window_seconds:
             return
         _DB_POOL_ALERT_LAST_SENT_TS = now_ts
+        window_events = list(_DB_POOL_STARVATION_EVENTS)
         _DB_POOL_STARVATION_EVENTS.clear()
 
-    max_conn = int(DB_POOL_MAXCONN)
-    window_min = int(DB_POOL_SATURATION_ALERT_COOLDOWN_MIN)
-    message_text = (
-        f"⚠️ DB-пул под устойчивой нагрузкой\n\n"
-        f"{event_count}+ раз за последние ~{window_min} мин запрос не смог сразу взять "
-        f"соединение из пула (пул был полностью занят весь таймаут → сработал резервный путь).\n"
-        f"Размер пула: {max_conn}. Последний триггер: {context_label}\n\n"
-        f"Это НЕ падение — резервный путь отработал. Но если повторяется регулярно, значит "
-        f"пул мал под текущую нагрузку: подними DB_POOL_MAXCONN или вынеси тяжёлые операции в "
-        f"фон. Единичные всплески — норма, алерт приходит только при устойчивом голоде "
-        f"(≥{DB_POOL_SATURATION_ALERT_MIN_EVENTS} событий/{window_min} мин)."
-    )
+    message_text = _build_db_pool_starvation_message(window_events)
 
     def _send() -> None:
         try:
@@ -8385,7 +8491,7 @@ def _record_db_acquire_event(
         "pool_used_count": pool_used_count,
         "pool_available_count": pool_available_count,
     }
-    scoped_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
+    scoped_events = _DB_ACQUIRE_EVENTS.get()
     if isinstance(scoped_events, list):
         scoped_events.append(event)
     if bool(pool_exhausted) or bool(event["direct_fallback"]) or bool(slow_acquire) or bool(timed_out):
@@ -8431,7 +8537,7 @@ def _record_db_checkout_return_event(
         "pool_used_count": pool_used_count,
         "pool_available_count": pool_available_count,
     }
-    scoped_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
+    scoped_events = _DB_ACQUIRE_EVENTS.get()
     if isinstance(scoped_events, list):
         scoped_events.append(event)
     if bool(long_hold):
@@ -8549,7 +8655,7 @@ class _DirectConnectionProxy:
 
 def get_db_connection(*, acquire_timeout_ms: int | None = None):
     pool = _get_or_init_db_pool()
-    context_label = str(getattr(_DB_ACQUIRE_LOCAL, "label", "") or "unspecified").strip() or "unspecified"
+    context_label = str(_DB_ACQUIRE_LABEL.get() or "unspecified").strip() or "unspecified"
     if pool is None:
         started_at = time.perf_counter()
         conn = _new_raw_db_connection()

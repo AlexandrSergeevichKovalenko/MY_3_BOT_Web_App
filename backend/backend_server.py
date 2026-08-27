@@ -108,6 +108,7 @@ from backend.database import (
     get_db_connection_context,
     get_active_db_endpoint_info,
     db_acquire_scope,
+    set_db_acquire_label,
     summarize_db_acquire_events,
     _emit_db_pool_runtime_audit,
     ensure_shortcut_tables,
@@ -3014,6 +3015,27 @@ if _force_backend_schema_bootstrap or (_BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENAB
         _coordinated_startup_bootstrap_backend_schema_or_raise()
     else:
         _bootstrap_backend_schema_or_raise()
+
+
+@app.before_request
+def _name_the_db_acquires_of_this_request():
+    """Подписать именем ВСЕ соединения, которые возьмёт этот HTTP-запрос.
+
+    Метка живёт в contextvar и достаётся любому вложенному get_db_connection(), поэтому
+    ставится один раз здесь, а не в каждом месте, где берётся соединение. Ради чего:
+    сигнал «пул голодает» (backend/database.py, _build_db_pool_starvation_message)
+    обязан назвать владельцу виновника, а не строку «unspecified».
+    """
+    endpoint = request.endpoint or request.path or "unknown"
+    set_db_acquire_label(f"http:{endpoint}")
+    return None
+
+
+@app.teardown_request
+def _forget_the_db_acquire_name(error):
+    """Снять метку: поток веб-сервера переиспользуется под следующий запрос, и чужое
+    имя на нём — это ложное обвинение в письме о голоде пула."""
+    set_db_acquire_label(None)
 
 
 @app.before_request
