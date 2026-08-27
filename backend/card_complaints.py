@@ -310,6 +310,90 @@ def owner_items(limit: int = 50) -> list[dict[str, Any]]:
 })
 
 
+def подчистить_после_переименования(cur, *, unit_id: int, old_text: str,
+                                    new_text: str) -> dict[str, int]:
+    """Довести переименование до КОНЦА: род, поля разбора, указатель, пул, кеш.
+
+    ┌─ НАЙДЕНО 27.08.2026 НА ЖИВОМ ПЕРЕИМЕНОВАНИИ. ────────────────────────────────┐
+    │ Владелец переименовал «der Wortschwall» → «das Geschwafel». Само слово, лемма │
+    │ и обе личные карточки поменялись, а ПЯТЬ мест остались со старым:             │
+    │   1. колонка рода: 'der' при артикле 'das' в разборе;                         │
+    │   2. `source_text` внутри разбора: «das Wortschwall»;                          │
+    │   3. указатель поиска: шесть ключей старого слова, включая его формы           │
+    │      (wortschwalle, -n, -s, -es) — поиск «Wortschwall» вёл на «Geschwafel»,   │
+    │      а Wortschwall это НАСТОЯЩЕЕ немецкое слово, и это прямая ложь;            │
+    │   4. общий пул: две записи «Словоблудие → der/das Wortschwall»;                │
+    │   5. кеш быстрого словаря: два ответа со старым словом.                        │
+    │                                                                              │
+    │ `retitle_unit` меняет написание, лемму, ключ и вид записи, а                  │
+    │ `spread_correction_everywhere` разносит текст по карточкам — но ни та, ни     │
+    │ другая не трогают род, указатель, пул и кеш. Дырку закрываем здесь, одним     │
+    │ местом, чтобы следующее переименование не собирало те же грабли.               │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    """
+    from backend.lex_units import normalize_query
+
+    итог = {"род": 0, "поля разбора": 0, "указатели": 0, "пул": 0, "кеш": 0}
+    старый_ключ = normalize_query(old_text)
+    новый_ключ = normalize_query(new_text)
+
+    # 1. Род берётся из АРТИКЛЯ новой шапки — источник назван, догадок нет.
+    артикль = ""
+    голова = str(new_text or "").strip().split(" ", 1)
+    if len(голова) == 2 and голова[0].lower() in {"der", "die", "das"}:
+        артикль = голова[0].lower()
+    if артикль:
+        cur.execute("UPDATE bt_3_lex_units SET gender=%s, gender_source=%s "
+                    "WHERE id=%s AND gender IS DISTINCT FROM %s;",
+                    (артикль, "переименование по решению владельца", int(unit_id), артикль))
+        итог["род"] = cur.rowcount or 0
+
+    # 2. Опознавательные поля внутри разбора: старое написание не имеет права там жить.
+    cur.execute("SELECT card FROM bt_3_lex_units WHERE id=%s;", (int(unit_id),))
+    разбор = (cur.fetchone() or [None])[0]
+    if isinstance(разбор, dict):
+        свежий = dict(разбор)
+        for поле in ("word_de", "translation_de", "source_text", "lemma", "display"):
+            if старый_ключ and старый_ключ in normalize_query(str(свежий.get(поле) or "")):
+                свежий[поле] = new_text
+                итог["поля разбора"] += 1
+        if артикль and свежий.get("article") != артикль:
+            свежий["article"] = артикль
+            итог["поля разбора"] += 1
+        if итог["поля разбора"]:
+            cur.execute("UPDATE bt_3_lex_units SET card=%s WHERE id=%s;",
+                        (json.dumps(свежий, ensure_ascii=False), int(unit_id)))
+
+    # 3. Указатель поиска. Ключи старого слова снимаем: оно существует само по себе, и
+    # вести по нему на другое слово нельзя. Новый ключ ставим, если его ещё нет.
+    if старый_ключ:
+        cur.execute("DELETE FROM bt_3_lex_surfaces WHERE unit_id=%s AND surface_key LIKE %s;",
+                    (int(unit_id), f"%{старый_ключ}%"))
+        итог["указатели"] = cur.rowcount or 0
+    if новый_ключ:
+        cur.execute("""INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
+                       VALUES ('de', %s, %s, 'exact') ON CONFLICT DO NOTHING;""",
+                    (новый_ключ, int(unit_id)))
+
+    # 4-5. Пул и кеш — это КОПИИ ответа, а не источник. Со старым словом они отдают
+    # человеку то, что мы только что признали неверным, поэтому просто сносим: пул
+    # соберётся заново из слоя, кеш — при следующем открытии.
+    # ⚠ ИЩЕМ ПО САМОМУ СЛОВУ, А НЕ ПО ШАПКЕ С АРТИКЛЕМ. Первый заход искал «der
+    # Wortschwall» целиком и прошёл мимо записи «das Wortschwall»: артикль в копиях
+    # гуляет, а слово — нет. Границы слова (\m…\M) не дают зацепить составные:
+    # «Wortschwallartig» это другое слово, и трогать его нельзя.
+    if старый_ключ:
+        граница = rf"\m{старый_ключ}\M"
+        cur.execute("""DELETE FROM bt_3_dictionary_entries
+                        WHERE source_text ~* %s OR target_text ~* %s;""",
+                    (граница, граница))
+        итог["пул"] = cur.rowcount or 0
+        cur.execute("""DELETE FROM bt_3_dictionary_lookup_cache
+                        WHERE response_json::text ~* %s;""", (граница,))
+        итог["кеш"] = cur.rowcount or 0
+    return итог
+
+
 def _разделить_предложение(предложение: dict) -> tuple[dict, dict]:
     """(что можно применить кнопкой, что относится к заголовку слова)."""
     предложение = предложение if isinstance(предложение, dict) else {}
@@ -415,6 +499,11 @@ def apply_owner_decision(complaint_id: int, decision: str, *,
                         свежий.update(заголовок)
                         cur.execute("UPDATE bt_3_lex_units SET card=%s WHERE id=%s;",
                                     (json.dumps(свежий, ensure_ascii=False), int(unit_id)))
+                    # Довести до конца: род, остальные поля разбора, указатель, пул, кеш.
+                    хвосты = подчистить_после_переименования(
+                        cur, unit_id=int(unit_id), old_text=старое_имя, new_text=новое_имя)
+                    logging.info("жалоба %s: хвосты переименования подчищены: %s",
+                                 complaint_id, хвосты)
                 conn.commit()
         except Exception:
             logging.warning("жалобы: переименование слова %s не удалось", unit_id,

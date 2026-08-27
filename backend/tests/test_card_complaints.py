@@ -245,6 +245,55 @@ class ПредложениеДолжноБытьПРИМЕНИМЫМ(unittest.Te
                          {"memory_tip": None})
 
 
+class ПереименованиеДоводитсяДоКонца(unittest.TestCase):
+    """Живая проверка 27.08.2026 после переименования «der Wortschwall» → «das
+    Geschwafel»: само слово, лемма и обе личные карточки поменялись, а ПЯТЬ мест
+    остались со старым — род 'der' при артикле 'das', `source_text` внутри разбора,
+    шесть ключей поиска (включая формы старого слова), запись в пуле и два ответа в
+    кеше. Поиск «Wortschwall» вёл на «Geschwafel», хотя это настоящее немецкое слово.
+    """
+
+    def _подчистить(self, разбор):
+        курсор = ПоддельныйКурсор([[(разбор,)]])
+        итог = жалобы.подчистить_после_переименования(
+            курсор, unit_id=27287, old_text="der Wortschwall", new_text="das Geschwafel")
+        return итог, " ".join(str(q[0]) for q in курсор.запросы), курсор
+
+    def test_gender_follows_the_new_article(self):
+        _, запросы, курсор = self._подчистить({})
+        self.assertIn("SET gender=%s", запросы)
+        self.assertEqual(курсор.запросы[0][1][0], "das")
+
+    def test_the_old_name_leaves_the_card_itself(self):
+        итог, _, курсор = self._подчистить({"source_text": "das Wortschwall",
+                                            "word_de": "der Wortschwall"})
+        записано = [q for q in курсор.запросы if "SET card=%s" in str(q[0])]
+        self.assertTrue(записано, "разбор со старым именем внутри не переписан")
+        self.assertNotIn("Wortschwall", записано[0][1][0])
+        # Два имени плюс артикль, которого в разборе не было вовсе.
+        self.assertEqual(итог["поля разбора"], 3)
+
+    def test_the_old_word_stops_pointing_at_the_new_one(self):
+        """«Wortschwall» существует сам по себе — вести по нему на другое слово нельзя."""
+        _, запросы, _ = self._подчистить({})
+        self.assertIn("DELETE FROM bt_3_lex_surfaces", запросы)
+        self.assertIn("INSERT INTO bt_3_lex_surfaces", запросы)
+
+    def test_copies_are_matched_by_the_word_not_by_the_headline(self):
+        """Первый заход искал «der Wortschwall» целиком и прошёл мимо «das Wortschwall»:
+        артикль в копиях гуляет, а слово — нет."""
+        _, _, курсор = self._подчистить({})
+        удаления = [q for q in курсор.запросы
+                    if "bt_3_dictionary_entries" in str(q[0])
+                    or "bt_3_dictionary_lookup_cache" in str(q[0])]
+        self.assertEqual(len(удаления), 2)
+        for _sql, параметры in удаления:
+            self.assertIn("wortschwall", параметры[0])
+            self.assertNotIn("der ", параметры[0])
+            # Границы слова: «Wortschwallartig» — другое слово, его трогать нельзя.
+            self.assertTrue(параметры[0].startswith("\\m"))
+
+
 class ПачкаВладельцу(unittest.TestCase):
     def test_ten_is_enough(self):
         курсор = ПоддельныйКурсор([[(10, False)]])
