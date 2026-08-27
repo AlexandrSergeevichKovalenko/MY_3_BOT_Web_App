@@ -94,13 +94,19 @@ class ОчередьИЗапретЭтоРазныеСостояния(unittest.
             ответ = server._access_denied_payload(555)
         self.assertEqual(ответ["reason"], "access_closed")
 
-    def test_номер_не_прочитался_но_виноватым_человека_не_делаем(self):
-        """Наша неудача с базой не повод сообщать человеку, что его запретили."""
-        with mock.patch("backend.database.public_access_cap", return_value=50), \
-             mock.patch("backend.database.access_waitlist_position",
+    def test_не_выяснили_какое_состояние_не_врём_ни_в_одну_сторону(self):
+        """Третье, незаконное состояние: мы не смогли выяснить, очередь это или запрет.
+
+        Нельзя ни «закрыт администратором» — это обвинило бы человека, которого никто
+        не запрещал, за нашу неудачу с базой; ни «вы в очереди» — это пообещало бы
+        письмо, которое некому отправить: в очередь его не поставили. Говорим правду:
+        у нас не вышло, зайдите позже."""
+        with mock.patch("backend.database.public_access_cap",
                         side_effect=RuntimeError("база молчит")):
             ответ = server._access_denied_payload(555)
-        self.assertEqual(ответ["reason"], "access_closed")
+        self.assertEqual(ответ["reason"], "access_check_failed")
+        self.assertNotIn("администратором", ответ["error"])
+        self.assertNotIn("очереди", ответ["error"])
 
 
 class ЭкранОчередиГоворитЧеловеческимЯзыком(unittest.TestCase):
