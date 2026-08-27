@@ -84,7 +84,12 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
   // котором нельзя было понять, что решаешь.
   const queue = useMemo(() => {
     const all = items || [];
-    const list = only ? all.filter((it) => (it.kind || 'grammar') === only) : all;
+    // «cards» — это ОБА вопроса про карточку: спор трёх голосов о примерах и
+    // неподтверждённый перевод. Владельцу они приходят одним сообщением и разбираются
+    // подряд, поэтому и на экране идут одним списком.
+    const list = only === 'cards'
+      ? all.filter((it) => (it.kind || 'grammar') !== 'grammar')
+      : (only ? all.filter((it) => (it.kind || 'grammar') === only) : all);
     return [...list.filter((it) => !skipped.has(it.id)), ...list.filter((it) => skipped.has(it.id))];
   }, [items, skipped, only]);
 
@@ -209,6 +214,12 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
   // модели, поэтому он не зависит от того, ответила ли она.
   const saveOwn = () => {
     if (!own.trim()) return;
+    // У вопроса о переводе своё поле — это РУССКАЯ половина, и уходит она другим
+    // решением: заменять немецкий текст фразы тут нечем и незачем.
+    if (card?.kind === 'translation') {
+      decide('link_own', { text: own.trim() });
+      return;
+    }
     decide('replace', { text: own.trim(), translation: ownRu.trim() });
   };
 
@@ -234,7 +245,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
     return (
       <div className="pinw">
         <div className="pinw-top">
-          <div className="pinw-title">{only === 'panel' ? '📗 Карточки словаря' : '📝 Спорные фразы'}</div>
+          <div className="pinw-title">{only === 'cards' ? '📗 Карточки словаря' : '📝 Спорные фразы'}</div>
           <div className="pinw-sub">Всё разобрано</div>
         </div>
         <div className="pinw-body">
@@ -261,6 +272,10 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
   // решение = выбрать текст. Панельный: три голоса разошлись о КАРТОЧКЕ — примеры и
   // перевод, — и выбирать там нечего, там своя кнопка и на экран нужны сами примеры.
   const isPanel = card.kind === 'panel';
+  // Вопрос о переводе: проверка не подтвердила, что русский из карточки означает эту
+  // фразу. Выбирать немецкий текст тут нечего — решается судьба РУССКОЙ половины.
+  const isTranslation = card.kind === 'translation';
+  const isCard = isPanel || isTranslation;
   const examples = card.examples || [];
   const history = card.history || [];
   const judges = card.judges || [];
@@ -302,8 +317,12 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
     });
   }
 
-  const kindTitle = isPanel ? 'Спор о карточке, а не о фразе' : 'Судьи разошлись о грамматике';
-  const kindText = isPanel
+  const kindTitle = isTranslation
+    ? 'Перевод не прошёл проверку'
+    : (isPanel ? 'Спор о карточке, а не о фразе' : 'Судьи разошлись о грамматике');
+  const kindText = isTranslation
+    ? 'Этот перевод сохранён вместе с карточкой. Прежде чем показывать его другим, мы спросили модель — она не подтвердила. Решаешь ты.'
+    : isPanel
     ? 'Три голоса разошлись о том, годятся ли примеры и перевод. Сама фраза тут ни при чём.'
     : (variants.length
       ? 'Ниже — тексты, которые прошли проверку. Нажми тот, который сохраняем.'
@@ -312,7 +331,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
   return (
     <div className={`pinw frrev-w${typing ? ' typing' : ''}`}>
       <div className="pinw-top pinw-top-row">
-        <span className="pinw-title">{only === 'panel' ? '📗 Карточки словаря' : '📝 Спорные фразы'}</span>
+        <span className="pinw-title">{only === 'cards' ? '📗 Карточки словаря' : '📝 Спорные фразы'}</span>
         <span className="pinw-count">
           осталось {Math.max(
             (only && byKind ? Number(byKind[only]) : total) || queue.length, 0)}
@@ -340,7 +359,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
       <div className="frv-scroll">
 
         <div className={`frv-kind${isPanel ? ' is-panel' : ''}`}>
-          <span className="frv-kind-ic">{isPanel ? '📗' : '⚖️'}</span>
+          <span className="frv-kind-ic">{isTranslation ? '🔤' : isPanel ? '📗' : '⚖️'}</span>
           <span className="frv-kind-tx"><b>{kindTitle}</b>{kindText}</span>
         </div>
 
@@ -366,6 +385,11 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
           {card.translation
             ? <div className="frv-ru">{card.translation}</div>
             : <div className="frv-ru is-missing">Перевода нет</div>}
+          {isTranslation && judges[0]?.why ? (
+            <div className="frv-v-why frv-objection">
+              <b>Что говорит проверка:</b> {judges[0].why}
+            </div>
+          ) : null}
         </div>
 
         {isPanel && examples.length ? (
@@ -456,7 +480,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
                 j.why ? (
                   <div className="frv-judge" key={j.no}>
                     <div className="frv-judge-h">
-                      {isPanel ? `Голос ${j.no}` : `Судья ${j.no}`}
+                      {isCard ? `Голос ${j.no}` : `Судья ${j.no}`}
                       {j.verdict === 'error' && j.category ? ` · ${j.category}` : ''}
                       {j.verdict === 'context' ? ' · зависит от контекста' : ''}
                       {j.verdict === 'style' ? ' · вопрос вкуса' : ''}
@@ -476,7 +500,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
           </details>
         ) : null}
 
-        {!variants.length && !isPanel && card.all_ok ? (
+        {!variants.length && !isCard && card.all_ok ? (
           <div className="frv-note">
             Оба судьи говорят: ошибки нет. Править нечего — оставь фразу как есть,
             и она больше не вернётся в этот разбор.
@@ -517,6 +541,12 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
             📗 Переписать примеры и перевод заново
           </button>
         ) : null}
+        {isTranslation ? (
+          <button className="frv-save frv-main" disabled={busy}
+            onClick={() => decide('link_accept')}>
+            🔤 Сохранить этот перевод как общий
+          </button>
+        ) : null}
 
         <div className="frv-own">
           <input
@@ -524,13 +554,13 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
             onChange={(e) => setOwn(e.target.value)}
             onFocus={() => setTyping(true)}
             onBlur={() => setTyping(false)}
-            placeholder={isPanel ? 'или впиши свой перевод фразы' : 'или впиши свой вариант'}
+            placeholder={isCard ? 'или впиши свой перевод' : 'или впиши свой вариант'}
             enterKeyHint="next"
             onKeyDown={(e) => {
               if (e.key === 'Enter' && own.trim()) { e.target.blur(); saveOwn(); }
             }}
           />
-          {own.trim() ? (
+          {own.trim() && !isTranslation ? (
             <input
               className="pinrev-word frrev-own-ru" value={ownRu} disabled={busy}
               onChange={(e) => setOwnRu(e.target.value)}
@@ -543,15 +573,15 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
           ) : null}
           {own.trim() ? (
             <button className="frv-save" disabled={busy} onClick={saveOwn}>
-              Сохранить свой вариант
+              {isTranslation ? 'Сохранить свой перевод' : 'Сохранить свой вариант'}
             </button>
           ) : null}
         </div>
 
         <div className="frrev-row">
-          <button className={variants.length || isPanel ? 'ans-btn-ghost' : 'ans-btn frrev-keep'}
+          <button className={variants.length || isCard ? 'ans-btn-ghost' : 'ans-btn frrev-keep'}
             disabled={busy} onClick={() => decide('keep')}>
-            👍 Оставить как есть
+            👍 {isTranslation ? 'Оставить личным' : 'Оставить как есть'}
           </button>
           {!asking ? (
             <button className="ans-btn-ghost" disabled={busy}
@@ -559,10 +589,10 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
           ) : null}
           {/* «Пересудить» только у грамматики: панельную карточку судят три голоса о
               примерах, и пересуживать её этим судьёй бессмысленно. */}
-          {!isPanel ? (
+          {!isCard ? (
             <button className="ans-btn-ghost" disabled={busy} onClick={rejudge}>🔁 Пересудить</button>
           ) : null}
-          {!isPanel && variants.length > 0 && !arbiter ? (
+          {!isCard && variants.length > 0 && !arbiter ? (
             <button className="ans-btn-ghost" disabled={busy} onClick={settle}>⚖️ Кто прав?</button>
           ) : null}
         </div>

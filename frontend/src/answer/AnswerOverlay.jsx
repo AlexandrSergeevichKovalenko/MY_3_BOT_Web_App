@@ -993,7 +993,7 @@ export default function AnswerOverlay({ startParam }) {
   // и пятницам: смешивать её с грамматикой в одной очереди — значит заставить владельца
   // переключаться между двумя разными вопросами на каждой карточке.
   if (kind === 'frvp') {
-    return <PhraseReviewScreen only="panel" api={api} haptic={haptic} onClose={close} />;
+    return <PhraseReviewScreen only="cards" api={api} haptic={haptic} onClose={close} />;
   }
   if (kind === 'al') {
     return <ArtikelLearnGame api={api} haptic={haptic} onClose={close} />;

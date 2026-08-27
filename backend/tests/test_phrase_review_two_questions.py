@@ -266,12 +266,15 @@ class PanelCardsHaveTheirOwnDoorTests(unittest.TestCase):
         self.assertIn('get_webapp_deeplink("ans_frvp_0")', bot[i:i + 2500])
         overlay = _src("frontend/src/answer/AnswerOverlay.jsx")
         self.assertIn("kind === 'frvp'", overlay)
-        self.assertIn('only="panel"', overlay)
+        # С 27.08.2026 дверь открывает ОБА вопроса о карточке: спор о примерах и
+        # неподтверждённый перевод. Владельцу они приходят одним сообщением.
+        self.assertIn('only="cards"', overlay)
 
     def test_the_screen_shows_only_its_own_kind_behind_that_door(self):
         src = _src("frontend/src/answer/PhraseReviewScreen.jsx")
-        self.assertIn("only ? all.filter", src,
+        self.assertIn("only === 'cards'", src,
                       "отдельная дверь снова показывает всю очередь вперемешку")
+        self.assertIn("!== 'grammar'", src, "грамматика подмешалась в очередь карточек")
 
 
 if __name__ == "__main__":

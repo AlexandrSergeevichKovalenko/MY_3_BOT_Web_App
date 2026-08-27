@@ -10048,7 +10048,9 @@ def _send_panel_cards_reminder() -> None:
             count_open_phrase_reviews_by_kind, count_panel_reviews_decided_since,
             get_admin_telegram_ids,
         )
-        waiting = int((count_open_phrase_reviews_by_kind() or {}).get("panel") or 0)
+        # «Карточки словаря» — это и спор трёх голосов о примерах, и неподтверждённый
+        # перевод: оба вопроса про карточку, оба разбираются на одном экране.
+        waiting = int((count_open_phrase_reviews_by_kind() or {}).get("cards") or 0)
         if waiting <= 0:
             _record_sched_heartbeat("panel_cards_reminder", "completed",
                                     {"waiting": 0, "sent": 0, "why": "очередь пуста"})
@@ -10077,6 +10079,50 @@ def _send_panel_cards_reminder() -> None:
     except Exception as exc:
         logging.exception("напоминание о карточках словаря не ушло")
         _record_sched_heartbeat("panel_cards_reminder", "failed", {"error": str(exc)[:300]})
+
+
+def _translation_links_line() -> str:
+    """Строка о подъёме переводов в общий слой — в тот же утренний отчёт.
+
+    Механизм работает под капотом каждую ночь, значит владелец обязан видеть его числом:
+    молчащий механизм неотличим от сломанного (его правило от 19.08.2026)."""
+    try:
+        from backend.database import get_latest_scheduler_run_guard
+        row = get_latest_scheduler_run_guard(job_key="translation_links") or {}
+        meta = row.get("metadata") or {}
+        if not meta:
+            return ""
+        lifted = int(meta.get("поднято") or 0)
+        asked = int(meta.get("ушло владельцу") or 0)
+        silent = int(meta.get("не смогли спросить") or 0)
+        left = int(meta.get("осталось") or 0)
+        if not any((lifted, asked, silent, left)):
+            return ""
+        out = f"\n🔗 Переводы, поднятые в общий словарь: <b>{lifted}</b>"
+        if asked:
+            out += f"\n   не подтвердились — ждут твоего решения: <b>{asked}</b>"
+        if silent:
+            out += f"\n   спросить не удалось (попробуем ещё): {silent}"
+        if left:
+            out += f"\n   осталось поднять: {left}"
+        return out + "\n"
+    except Exception:
+        logging.debug("строка о подъёме переводов не собралась", exc_info=True)
+        return ""
+
+
+def _run_translation_links_safe() -> None:
+    """Ночной подъём переводов карточек в общий слой. Идёт ДО проверки грамматики.
+
+    Порядок важен: связь, протянутая этой ночью, делает фразу видимой для ночной
+    проверки грамматики уже сегодня, а не через сутки."""
+    try:
+        from backend.translation_links import promote_card_translations
+        stats = promote_card_translations()
+        _record_sched_heartbeat("translation_links", "completed", stats)
+    except Exception as exc:
+        logging.exception("подъём переводов в общий слой упал")
+        _record_sched_heartbeat("translation_links", "failed", {"error": str(exc)[:300]})
 
 
 def _send_phrase_check_morning_report() -> None:
@@ -10134,6 +10180,7 @@ def _send_phrase_check_morning_report() -> None:
                    if circle_blocked else "")
                 + (f"Вернули с новым ответом: <b>{reopened}</b>\n" if reopened else "")
                 + (f"Спор разрешил третий судья: <b>{settled_ok}</b>\n" if settled_ok else "")
+                + _translation_links_line()
                 + (f"Осталось проверить: <b>{left}</b> (≈{nights} ноч"
                    f"{'ь' if nights == 1 else 'и' if nights < 5 else 'ей'} по {cap})\n"
                    if left else "✅ Все фразы проверены.\n")
@@ -10691,6 +10738,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("daily_audio_auto", "Аудио с ошибками в личку (06:35 Вена)", 30, True, "guard"),
     # Вторник и пятница: между запусками максимум 4 суток, поэтому порог 120 часов.
     ("panel_cards_reminder", "Карточки словаря на разбор (вт и пт, 10:00 Вена)", 120, True, "guard"),
+    ("translation_links", "Подъём переводов в общий словарь (03:20 Вена)", 30, True, "guard"),
     ("private_analytics_auto", "Личная аналитика в личку (19:30)", 30, True, "guard"),
     ("daily_group_summary_auto", "Итоги дня в группе (22:30)", 30, True, "guard"),
     ("weekly_group_summary_auto", "Недельные итоги группы (Вс)", 192, True, "guard"),
@@ -45028,6 +45076,20 @@ def main():
             "cron",
             hour=int((os.getenv("POOL_ENRICH_REPORT_HOUR") or "7").strip() or "7"),
             minute=int((os.getenv("POOL_ENRICH_REPORT_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Подъём переводов карточек в общий слой (03:20 Вена, ДО проверки фраз) --
+        # Фраза без связи на русский невидима для ночной проверки грамматики: судья без
+        # смысла судит вслепую. Связь тянем раньше — и фраза попадает в проверку в ту же
+        # ночь. Разобрано с владельцем 27.08.2026.
+        scheduler.add_job(
+            _run_translation_links_safe,
+            "cron",
+            hour=int((os.getenv("TRANSLATION_LINKS_HOUR") or "3").strip() or "3"),
+            minute=int((os.getenv("TRANSLATION_LINKS_MINUTE") or "20").strip() or "20"),
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
