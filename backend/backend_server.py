@@ -61474,6 +61474,24 @@ def reader_library_state():
     except Exception:
         return jsonify({"error": "progress_percent/bookmark_percent должны быть числами"}), 400
 
+    # ┌─ ЗАМЕР 27.08.2026, ОТКРЫТ. Не удалять, пока вопрос не закрыт. ────────┐
+    # │ Владелец: закладка сохранилась, а точный якорь пришёл нулём. Два мира │
+    # │ дают в базе одно и то же «0», и различить их можно только здесь:      │
+    # │   anchor=absent → клиент СТАРЫЙ, полей не шлёт вовсе (кеш бандла);    │
+    # │   anchor=sent, page=0 → клиент новый, но колоночный движок не отдал   │
+    # │     позицию — тогда дефект в readerColBookmarkAnchorNow.              │
+    # └───────────────────────────────────────────────────────────────────────┘
+    if bookmark_percent is not None:
+        logging.info(
+            "READER_BOOKMARK_SAVE user=%s doc=%s percent=%s anchor=%s page=%s char=%s",
+            user_id,
+            document_id,
+            bookmark_percent,
+            "absent" if bookmark_page is None else "sent",
+            bookmark_page,
+            bookmark_char,
+        )
+
     try:
         doc = update_reader_library_state(
             user_id=int(user_id),
