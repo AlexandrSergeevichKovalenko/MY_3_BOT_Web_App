@@ -1223,7 +1223,10 @@ def test_headword_does_not_shrink_and_get_clipped():
 
 _NEWS_REQUIREMENTS = {
     "единица должна годиться в другой новости": ("SPRACHEINHEIT", "wiederbegegnet"),
-    "числа из этой новости — не единица": ("ZAHLEN AUS DIESER MELDUNG",),
+    # «числа из этой новости — не единица» СНЯТО 27.08.2026 вместе с проверкой
+    # `_has_digits`: цифра в единице оказалась не дефектом, а частью языка («Auf 180
+    # sein», «die CO2-Abgabe», «5-Prozent-Hürde»). Разбор — в шапке проверок
+    # backend/daily_video_quality.py; держит снятым test_a_digit_in_a_unit_is_not_a_defect.
     "названия должностей — не единица": ("AMTS- UND TITELBEZEICHNUNGEN",),
     "целое предложение — не единица": ("GANZE SÄTZE",),
     "две единицы, склеенные запятой": ("ZUSAMMENGEKLEBT",),
@@ -1443,6 +1446,34 @@ def test_stored_cards_are_rechecked_not_only_new_ones():
     result = recheck_cards([bad])
     assert result["keep"] == [] and len(result["removed"]) == 1
     assert "запятой" in result["removed"][0]["why"]
+
+
+def test_a_digit_in_a_unit_is_not_a_defect():
+    """Цифра в единице НЕ делает её негодной. Проверка `_has_digits` удаляла всё с цифрой
+    как «факт из новости» — и 27.08.2026 ночью выбросила «über die 5% Hürde helfen» из
+    выпуска по ролику ZDF, который так и называется: «…und 5-Prozent-Hürde».
+
+    Замер по живой базе в тот же день: из 484 единиц словаря с цифрой 441 — предложения
+    (другая подсистема), а среди остальных законные «Er ist total 0815», «Auf 180 sein»,
+    «die CO2-Abgabe», «50-Euro-Schein», «5-Gänge-Menü». Класса «мусор» владелец не
+    признал: «не лезь вообще к цифрам, это нормальные предложения».
+
+    Проверка снята и здесь, и в промптах генератора. Тест держит её снятой."""
+    from backend.daily_video_quality import check_card, recheck_cards
+
+    quote = ("Sie ist nach Sachsenanhalt gekommen, um ihrer Partei über die 5% Hürde "
+             "zu helfen.")
+    card = {"de": "über die 5% Hürde helfen", "translation_ru": "помочь преодолеть барьер",
+            "usage_ru": "о выборах", "form_ru": "устойчивое выражение",
+            "quote_de": quote, "de_in_text": "über die 5% Hürde zu helfen"}
+    assert check_card(card, transcript=quote) == [], "цифра — не претензия к карточке"
+    assert recheck_cards([card], transcript=quote)["removed"] == []
+
+    # И на других законных единицах с цифрами, найденных в живом словаре.
+    for de in ("Auf 180 sein", "die CO2-Abgabe", "50-Euro-Schein", "5-Gänge-Menü"):
+        probe = {"de": de, "translation_ru": "перевод", "usage_ru": "подсказка",
+                 "form_ru": "устойчивое выражение", "quote_de": de, "de_in_text": de}
+        assert check_card(probe, transcript=de) == [], f"«{de}» обязана проходить"
 
 
 def test_a_missing_transcript_is_not_evidence_against_a_card():

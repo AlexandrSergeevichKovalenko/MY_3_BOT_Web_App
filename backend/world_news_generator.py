@@ -793,9 +793,6 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
      RICHTIG: "der Schwarzmarkt", "unter strengen Auflagen", "unter Druck stehen",
        "Tür und Tor öffnen (für etwas)", "einen langen Atem brauchen", "in Kraft treten".
      FALSCH — und das ist der häufigste Fehler:
-       • ZAHLEN AUS DIESER MELDUNG: "rund 300 Aussteller", "bis zu 30.000 Besuchern",
-         "21,5 Milliarden Euro". Morgen stehen dort andere Zahlen; gelernt wird nichts.
-         Brauchst du das Wort, nimm es NACKT: "der Aussteller", "der Besucher".
        • AMTS- UND TITELBEZEICHNUNGEN: "der Drogenbeauftragte der Bundesregierung",
          "das Bundesamt für Wirtschaft" — Namen von Stellen, keine Sprache.
        • GANZE SÄTZE UND SATZTEILE mit Subjekt und konjugiertem Verb: "Opfer fordern ihre

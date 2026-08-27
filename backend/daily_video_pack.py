@@ -50,7 +50,6 @@ Situation wiederbegegnet — "der Schwarzmarkt", "unter Druck stehen", "Tür und
 "nichts am Hut haben", "einen Kater haben".
 
 WAS KEINE EINHEIT IST:
-  • Zahlen dieser Meldung: "rund 300 Aussteller", "bis zu 30.000 Besuchern";
   • Amts- und Titelbezeichnungen: "der Drogenbeauftragte der Bundesregierung";
   • ganze Sätze mit Subjekt und konjugiertem Verb: "Opfer fordern ihre Rechte";
   • zwei Einheiten mit Komma zusammengeklebt: "ein neuer Markt, der Graumarkt";
