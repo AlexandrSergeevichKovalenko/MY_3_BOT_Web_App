@@ -90,13 +90,22 @@ def _difference(answers: list[dict], pos: str) -> str:
     """Чем именно варианты расходятся. Человеку важно ровно это место, а не вся таблица."""
     if len(answers) < 2:
         return ""
-    fields = (_CASES + _CASES_PL) if pos == "noun" else _DEGREES
     spots = []
+    fields = _CASES if pos == "noun" else _DEGREES
     for key, label in fields:
         values = {str(a.get(key) or "").strip() for a in answers}
         if len(values) > 1:
             printed = " / ".join(v or "—" for v in sorted(values))
             spots.append(f"{label} {printed}")
+    if pos == "noun":
+        # Множественное число — ОДНОЙ строкой. Когда один вариант его вовсе не даёт, а
+        # другой даёт, разница у всех четырёх падежей одна и та же, и печатать её
+        # четыре раза значит утопить настоящее расхождение в шуме.
+        plurals = {" · ".join(str(a.get(k) or "").strip() for k, _ in _CASES_PL)
+                   for a in answers}
+        if len(plurals) > 1:
+            printed = " / ".join(p.strip(" ·") or "нет" for p in sorted(plurals))
+            spots.append(f"мн. {printed}")
     return "Расходятся: " + "; ".join(spots) if spots else ""
 
 
