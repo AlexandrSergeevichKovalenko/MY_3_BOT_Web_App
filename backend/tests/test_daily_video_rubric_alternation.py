@@ -1263,7 +1263,11 @@ _JUDGE_REQUIREMENTS = {
     "закрытый список помет": ("ЗАКРЫТЫЙ СПИСОК",),
     "предложения из новости — вон": ("SÄTZE und Satzteile mit Subjekt",),
     "возвратность читается из цитаты": ("ВОЗВРАТНОСТЬ ЧИТАЕТСЯ ИЗ ЦИТАТЫ", "jemanden unter den Tisch saufen"),
-    "висящий артикль в конце — вон": ("auf einem Artikel oder einer Konjunktion ENDEN",),
+    # Формулировка сменилась 27.08.2026: «кончается артиклем или союзом» убивало законные
+    # единицы («mir fällt etwas ein» — отделяемая приставка, «es liegt nahe, dass» —
+    # речевая формула). Требование осталось, но названо по существу: обрезано посреди
+    # фразы, а решает РОЛЬ последнего слова, а не само слово.
+    "обрезанное посреди фразы — вон": ("MITTEN IM SATZ ABGESCHNITTENE", "TRENNBARE VORSILBE"),
     "перевранные имена — вон": ("Bafer",),
     "нейтральное выбрасывают, а не раздевают": ("keine reparierte Karte",),
     "английские цитаты и разовые шутки — вон": ("EINMALWITZE",),
@@ -1440,7 +1444,10 @@ def test_stored_cards_are_rechecked_not_only_new_ones():
     проверка никогда не применяется к тому, что собрано раньше."""
     from backend.daily_video_quality import recheck_cards
 
-    bad = {"de": "ein neuer Markt, der Graumarkt", "translation_ru": "перевод",
+    # Оборванная запятой — признак пунктуации, а не догадка о немецком: такую единицу
+    # вправду отрезали посреди фразы. (Проверка «две единицы склеены запятой» снята
+    # 27.08.2026: der/die после запятой в немецком чаще всего значит «который».)
+    bad = {"de": "die Koalition auffordern,", "translation_ru": "перевод",
            "usage_ru": "подсказка", "form_ru": "словарная форма",
            "quote_de": "нечто", "de_in_text": "нечто"}
     result = recheck_cards([bad])
@@ -1474,6 +1481,75 @@ def test_a_digit_in_a_unit_is_not_a_defect():
         probe = {"de": de, "translation_ru": "перевод", "usage_ru": "подсказка",
                  "form_ru": "устойчивое выражение", "quote_de": de, "de_in_text": de}
         assert check_card(probe, transcript=de) == [], f"«{de}» обязана проходить"
+
+
+def test_a_tail_word_does_not_make_a_unit_broken():
+    """Хвостовое слово не говорит о немецком ничего. Проверка «кончается артиклем или
+    союзом» на 9841 живом слове и сочетании срабатывала 44 раза, из них 34 — на здоровых
+    единицах. Разбор 27.08.2026: `ein` в конце — это отделяемая приставка, а не артикль;
+    `dass` — начало придаточного, то есть речевая формула; `der`/`die` после запятой —
+    словарная запись рода; идиомы законно кончаются союзом.
+
+    Взамен спрашивается то, что видно без грамматики: осталось ли содержательное слово."""
+    from backend.daily_video_quality import check_card
+
+    def probe(de):
+        return check_card({"de": de, "translation_ru": "перевод", "usage_ru": "подсказка",
+                           "form_ru": "устойчивое выражение", "quote_de": de,
+                           "de_in_text": de}, transcript=de)
+
+    for de in ("mir fällt etwas ein", "der Staat springt ein", "es liegt nahe, dass",
+               "vorausgesetzt, dass", "ohne Wenn und Aber", "Na und", "fungieren als",
+               "Kaum jemand weiß das", "insofern, als",
+               # и то, что убивала «склейка запятой»: der/die после запятой — «который»
+               "Akku, der nicht nachlässt", "Dinge, die gleich sind", "Vorzug, die Vorzüge"):
+        assert probe(de) == [], f"«{de}» — законная единица, убивать её нельзя"
+
+    for de in ("dass", "als", "weil", "eine", "Sondern"):
+        assert probe(de), f"«{de}» — одни служебные слова, единицы здесь нет"
+    assert probe("die Koalition auffordern,"), "оборванная запятой всё ещё негодна"
+    # Запятая И ОДИНОКИЙ АРТИКЛЬ в конце — случай владельца 22.08.2026, он видел это на
+    # экране. Признак узкий: замер по 9842 единицам словаря дал 3 совпадения, и все три —
+    # словарная запись рода («Nachhilfe, die»), которой в карточке рубрики не место в
+    # любом случае: там артикль стоит ПЕРЕД словом. Размен принят осознанно.
+    assert probe("die Koalition auffordern, die"), "обрезка с висящим артиклем — негодна"
+    assert probe("Nachhilfe, die"), "словарная запись рода — не форма заголовка рубрики"
+
+
+def test_a_missing_label_does_not_throw_away_a_good_card():
+    """Пустая помета формы карточку больше не убивает: немецкий верен, перевод верен,
+    цитата сверена — терять готовую работу из-за отсутствующей служебной подписи нельзя.
+    Подпись дозапрашивается (daily_video_pack.fill_missing_labels), а СОЧИНЁННАЯ помета
+    по-прежнему претензия: это неверные сведения на экране."""
+    from backend.daily_video_quality import cards_missing_labels, check_card
+
+    card = {"de": "unter Druck stehen", "translation_ru": "быть под давлением",
+            "usage_ru": "о человеке", "form_ru": "", "quote_de": "unter Druck stehen",
+            "de_in_text": "unter Druck stehen"}
+    assert check_card(card, transcript="unter Druck stehen") == []
+    assert cards_missing_labels([card]) == [0], "пробел обязан быть посчитан, а не забыт"
+
+    invented = dict(card, form_ru="инфинитив с sich")
+    assert check_card(invented, transcript="unter Druck stehen"), "выдумка — претензия"
+
+
+def test_missing_labels_are_asked_for_not_invented():
+    """Дозапрос берёт у модели ТОЛЬКО пометы. Всё остальное на карточке уже сверено с
+    субтитрами, и переписывать сверенное вторым ответом модели нельзя."""
+    from backend.daily_video_pack import fill_missing_labels
+
+    cards = [{"de": "unter Druck stehen", "translation_ru": "быть под давлением",
+              "usage_ru": "о человеке", "form_ru": "", "quote_de": "цитата"}]
+
+    def answer(system, user, what):
+        return {"cards": [{"de": "unter Druck stehen", "form_ru": "устойчивое выражение",
+                           "translation_ru": "ПОДМЕНА", "quote_de": "ПОДМЕНА"}]}
+
+    left = fill_missing_labels(cards, transcript="текст", call_json=answer, is_standup=False)
+    assert left == 0
+    assert cards[0]["form_ru"] == "устойчивое выражение", "помета обязана добраться"
+    assert cards[0]["translation_ru"] == "быть под давлением", "сверенное не переписываем"
+    assert cards[0]["quote_de"] == "цитата"
 
 
 def test_a_missing_transcript_is_not_evidence_against_a_card():

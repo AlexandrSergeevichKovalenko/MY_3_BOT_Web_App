@@ -114,9 +114,12 @@ Prüfe bei jeder Karte:
        die Karte; wenn nicht, wirf sie raus;
      • Karten, deren Name durch die Spracherkennung verstümmelt ist («Bafer» statt BAFA):
        schreib den Namen richtig, wenn du sicher bist, sonst raus;
-     • Einheiten, die auf einem Artikel oder einer Konjunktion ENDEN («die Koalition
-       auffordern, die») — mitten im Satz abgeschnitten; korrigiere auf den ganzen
-       Ausdruck oder wirf raus;
+     • MITTEN IM SATZ ABGESCHNITTENE Einheiten («die Koalition auffordern, die») —
+       korrigiere auf den ganzen Ausdruck oder wirf raus. ACHTUNG, das entscheidet die
+       ROLLE des letzten Wortes, nicht das Wort selbst: «mir fällt etwas ein» endet auf
+       eine TRENNBARE VORSILBE und ist vollständig, «es liegt nahe, dass» und
+       «vorausgesetzt, dass» sind vollständige Redemittel, «ohne Wenn und Aber» ist eine
+       Redewendung. Solche Einheiten sind RICHTIG und bleiben;
      • NEUTRALE Alltagswörter, die jeder kennt ("Applaus"). Solche Karten wirfst du RAUS —
        du entfernst NICHT ihre Stilmarkierung, um sie durchzulassen. Eine Karte ohne
        Markierung ist keine reparierte Karte, sondern eine kaputte.
@@ -286,6 +289,27 @@ def judge_and_repair_cards(cards: list, *, profile, transcript: str) -> tuple[li
                     report["frozen"] += 1
                     logger.info("судья: качели на %r — замораживаю карточку", card.get("de"))
                     next_cards.append(card)
+                    continue
+                # СУДЬЯ НЕ ИМЕЕТ ПРАВА СНИМАТЬ ПОМЕТУ. Живой случай: у «Applaus» он стёр
+                # помету регистра, потому что слово нейтральное, — и карточка проскочила
+                # в рубрику сленга уже без пометы. Правильный исход «выбросить», а не
+                # «снять помету».
+                #
+                # Проверка стоит ОТДЕЛЬНО от общего заслона и именно здесь, потому что
+                # 27.08.2026 пустая помета перестала быть претензией к карточке: её
+                # дозапрашивают вместо того, чтобы выбрасывать готовую работу. Но
+                # «пометы не дали» и «помету СНЯЛИ, чтобы обойти правило» — разные вещи, и
+                # смешивать их нельзя: второе — обход заслона, а не пробел в данных.
+                stripped = [name for name in ("form_ru", "register_ru")
+                            if str(card.get(name) or "").strip()
+                            and not str(merged.get(name) or "").strip()]
+                if stripped:
+                    touched += 1
+                    report["dropped"] += 1
+                    what = "пометы регистра" if "register_ru" in stripped else "пометы формы"
+                    report["reasons"].append(
+                        f"судья снял {what} у «{card.get('de')}»: {reason or '—'}"
+                    )
                     continue
                 # ГЛАВНЫЙ ЗАСЛОН: исправленная карточка проходит те же стражи, что и свежая.
                 # Если судья под видом правки что-то присочинил — цитату, которой нет в
