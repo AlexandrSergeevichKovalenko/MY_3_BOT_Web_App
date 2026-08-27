@@ -172,6 +172,34 @@ class ФразыНаЭкране(unittest.TestCase):
             карточки, _ = _экран([[], [ФРАЗА_СТРОКА]])
         self.assertEqual(len(карточки[0]["variants"]), 1)
 
+    def test_a_question_meant_for_the_owner_never_reaches_the_learner(self):
+        """В `bt_3_phrase_review` живут ТРИ вида вопроса, и они не взаимозаменяемы:
+        grammar и panel — про саму фразу, translation — про перевод карточки перед
+        подъёмом в общий слой, и он сформулирован ДЛЯ ВЛАДЕЛЬЦА.
+
+        Прогон по живой базе 27.08.2026 сразу после слияния с работой соседа: все 38
+        записей вида «перевод карточки» доехали до экрана проверки слов и показались
+        человеку как «фраза, в которой мы усомнились» — включая одиночные слова
+        «Besprechung» и «Soile». Чужой вопрос, заданный не тому человеку.
+        """
+        from backend.database import TRANSLATION_REVIEW_CATEGORY
+        чужой = (80, "Besprechung", "совещание",
+                 [{"verdict": "error", "category": TRANSLATION_REVIEW_CATEGORY}], None, 7)
+        карточки, _ = _экран([[], [чужой]])
+        self.assertEqual(карточки, [])
+
+    def test_a_real_phrase_doubt_still_reaches_the_learner(self):
+        """Отсекаем ровно один вид, а не всё подряд: panel — это та же фраза,
+        разобранная тремя голосами, и человеку она адресована."""
+        from backend.database import PANEL_REVIEW_CATEGORY
+        свой = (81, "Ich überhaupt kein Talent", "у меня совсем нет таланта",
+                [{"verdict": "error", "category": PANEL_REVIEW_CATEGORY,
+                  "corrected": "Ich habe überhaupt kein Talent",
+                  "corrected_ru": "у меня совсем нет таланта",
+                  "corrected_check": dict(ПРОВЕРКА_ПРОШЛА)}], None, 8)
+        карточки, _ = _экран([[], [свой]])
+        self.assertEqual(len(карточки), 1)
+
     def test_screen_asks_the_author_only(self):
         _, курсор = _экран([[], [ФРАЗА_СТРОКА]])
         текст = " ".join(str(q[0]) for q in курсор.запросы)

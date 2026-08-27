@@ -259,7 +259,9 @@ def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
     ⚠ СПРАШИВАЕМ АВТОРА, А НЕ ВСЕХ ПОДПИСЧИКОВ — то же правило и та же история
     дефекта, что в `words_for_user`. Автор — тот, чья карточка появилась первой.
     """
-    from backend.database import phrase_review_is_noise, phrase_review_variants
+    from backend.database import (
+        phrase_review_is_noise, phrase_review_kind, phrase_review_variants,
+    )
 
     cur.execute(
         """
@@ -285,6 +287,19 @@ def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for review_id, текст, перевод, судьи, арбитр, unit_id in (cur.fetchall() or []):
         судьи = судьи if isinstance(судьи, list) else []
+        # ⚠ БЕРЁМ ТОЛЬКО ВОПРОСЫ ПРО САМУ ФРАЗУ.
+        # В `bt_3_phrase_review` живут ТРИ вида вопроса, и они не взаимозаменяемы:
+        #   grammar     — судьи разошлись о немецком самой фразы;
+        #   panel       — три голоса разошлись о карточке;
+        #   translation — перевод карточки не прошёл проверку перед подъёмом в общий
+        #                 слой (заведён 27.08.2026, backend/translation_links.py).
+        # Третий вид сформулирован ДЛЯ ВЛАДЕЛЬЦА и решается на его экране своими
+        # кнопками. Прогон по живой базе 27.08.2026 сразу после слияния: все 38 таких
+        # записей доехали до экрана проверки слов и показались человеку как «фраза, в
+        # которой мы усомнились» — включая одиночные слова «Besprechung» и «Soile».
+        # Чужой вопрос, заданный не тому человеку и не теми словами.
+        if phrase_review_kind(судьи) == "translation":
+            continue
         # Шум — это записи, где проверяющий «исправил» фразу в саму себя. На экране
         # владельца они уже отсеиваются; человеку тем более показывать нечего.
         if phrase_review_is_noise(судьи, str(текст)):
@@ -552,7 +567,7 @@ def _phrase_counts_by_author(cur) -> dict[int, int]:
     Пустые придирки («ошибка есть, а исправить нечего») отсеиваются тем же правилом,
     что и на экране. Иначе письмо обещает 186 фраз, а человек находит 98.
     """
-    from backend.database import phrase_review_is_noise
+    from backend.database import phrase_review_is_noise, phrase_review_kind
 
     cur.execute(
         """
@@ -573,7 +588,12 @@ def _phrase_counts_by_author(cur) -> dict[int, int]:
     )
     счёт: dict[int, int] = {}
     for user_id, текст, судьи in (cur.fetchall() or []):
-        if phrase_review_is_noise(судьи if isinstance(судьи, list) else [], str(текст)):
+        судьи = судьи if isinstance(судьи, list) else []
+        # Тот же отбор, что и на экране (см. `_phrase_items`): вопрос про перевод
+        # карточки решает владелец, человеку он не адресован.
+        if phrase_review_kind(судьи) == "translation":
+            continue
+        if phrase_review_is_noise(судьи, str(текст)):
             continue
         счёт[int(user_id)] = счёт.get(int(user_id), 0) + 1
     return счёт
