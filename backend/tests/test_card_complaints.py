@@ -173,6 +173,32 @@ class ПредложениеДолжноБытьПРИМЕНИМЫМ(unittest.Te
             return openai_manager.run_card_complaint_verdict(
                 word="der Wortschwall", note="не то слово", card=card)
 
+    def test_an_empty_card_can_still_be_renamed(self):
+        """Живой случай 27.08.2026: «das Nässchen putzen», разбора нет вовсе. Список
+        полей выходил пустым, модель честно не предлагала ничего — и владельцу
+        доставался экран без единой кнопки правки, хотя починка очевидна: выражение не
+        немецкое, надо «die Nase putzen». Имя слова живёт отдельно от разбора."""
+        итог = self._судить({"word_de": "die Nase putzen"}, {})
+        self.assertEqual(итог["predlozhenie"], {"word_de": "die Nase putzen"})
+        _можно, заголовок = жалобы._разделить_предложение(итог["predlozhenie"])
+        self.assertEqual(заголовок, {"word_de": "die Nase putzen"})
+
+    def test_the_headword_is_offered_to_the_model_even_for_an_empty_card(self):
+        from backend import openai_manager
+        клиент = mock.Mock()
+        ответ = mock.Mock()
+        ответ.choices = [mock.Mock(message=mock.Mock(
+            content='{"card_is_wrong": false, "predlozhenie": {}}'))]
+        ответ.usage = None
+        клиент.chat.completions.create.return_value = ответ
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "тест"}), \
+             mock.patch("backend.synthetic_load.build_sync_openai_client",
+                        return_value=клиент):
+            openai_manager.run_card_complaint_verdict(word="х", note="", card={})
+        задание = клиент.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("word_de", задание)
+        self.assertIn("article", задание)
+
     def test_a_field_the_card_does_not_have_is_dropped(self):
         итог = self._судить({"meanings": "поток слов"},
                             {"dictionary_senses": [], "translation_ru": "Словоблудие"})

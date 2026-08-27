@@ -9601,8 +9601,15 @@ def run_card_complaint_verdict(*, word: str, note: str, card: dict) -> dict | No
     # которого в разборе НЕТ вовсе (значения там лежат в `dictionary_senses` и
     # `translation_ru`). Нажатие «принять» добавило бы неиспользуемый ключ и не
     # изменило бы на экране ничего — кнопка обещала бы правку и не делала её.
-    поля = ", ".join(sorted(k for k in (card or {}).keys()
-                            if not str(k).startswith("__"))) or "(карточка пуста)"
+    # ⚠ ЗАГОЛОВОК СЛОВА — ВСЕГДА ДОПУСТИМАЯ ЦЕЛЬ, ДАЖЕ У ПУСТОЙ КАРТОЧКИ.
+    # Живой случай 27.08.2026: «das Nässchen putzen», разбора нет вовсе. Список полей
+    # вышел пустым, модель честно не предложила ничего — и владельцу достался экран без
+    # единой кнопки правки, хотя починка очевидна: выражение не немецкое, надо
+    # «die Nase putzen». Пустая карточка не значит «менять нечего»: имя слова живёт
+    # отдельно от разбора и правится всегда.
+    _имена = {k for k in (card or {}).keys() if not str(k).startswith("__")}
+    _имена |= {"word_de", "article"}
+    поля = ", ".join(sorted(_имена))
 
     system = (
         "You are an editor of a German-Russian learner's dictionary. A learner "
@@ -9621,6 +9628,10 @@ def run_card_complaint_verdict(*, word: str, note: str, card: dict) -> dict | No
         "must change has no field in that list, leave `predlozhenie` empty and say so in "
         "`chto_ne_tak`.\n"
         "- ALLOWED FIELD NAMES for this card: " + поля + "\n"
+        "- `word_de` (and `article`) mean the HEADWORD itself. Propose them when the "
+        "entry is not real German, is misspelled, or when the card describes a different "
+        "word than the headword - renaming the entry is then the correct fix, and it is "
+        "available even when the card has no content yet.\n"
         "- `chto_ne_tak` and `predlozhenie_slovami` are read by a human: one short "
         "sentence each, in RUSSIAN, no jargon.\n"
         "Answer STRICT JSON only: {\"card_is_wrong\":true|false,\"chto_ne_tak\":\"<RUSSIAN>\","
@@ -9676,20 +9687,24 @@ def run_card_complaint_verdict(*, word: str, note: str, card: dict) -> dict | No
     # ⚠ ВТОРАЯ ПОЛОВИНА ТОЙ ЖЕ ЗАЩИТЫ: имя поля проверяем САМИ, а не верим на слово.
     # Правка в несуществующее поле неприменима, и предлагать её владельцу нельзя:
     # он нажмёт «принять», а на карточке не изменится ничего.
-    if предложение and isinstance(card, dict) and card:
-        лишние = [k for k in предложение if k not in card]
+    ЗАГОЛОВОК = {"word_de", "article"}
+    if предложение and isinstance(card, dict):
+        лишние = [k for k in предложение if k not in card and k not in ЗАГОЛОВОК]
         if лишние:
             logging.warning("разбор жалобы (%s): модель назвала поля, которых в карточке "
                             "нет: %s", слово[:40], лишние)
-        предложение = {k: v for k, v in предложение.items() if k in card}
+        предложение = {k: v for k, v in предложение.items()
+                       if k in card or k in ЗАГОЛОВОК}
         # Правка «Словоблудие → Словоблудие» — не правка. Такое поле на экране решения
         # выглядит как изменение, а нажатие не меняет ничего: то же самое правило, что
         # у судьи фраз, который «исправил» фразу в саму себя.
-        пустые = [k for k, v in предложение.items() if v == card.get(k)]
+        пустые = [k for k, v in предложение.items()
+                  if k in card and v == card.get(k)]
         if пустые:
             logging.info("разбор жалобы (%s): поля без изменений выброшены: %s",
                          слово[:40], пустые)
-        предложение = {k: v for k, v in предложение.items() if v != card.get(k)}
+        предложение = {k: v for k, v in предложение.items()
+                       if k not in card or v != card.get(k)}
     неверна = bool(данные.get("card_is_wrong")) and bool(предложение)
     return {
         "card_is_wrong": неверна,
