@@ -91,7 +91,23 @@ class ПовторНеУдваиваетОтвет(unittest.TestCase):
 
     def test_с_ключом_вторая_доставка_отбрасывается_базой(self):
         sql = " | ".join(self._собрать_sql("ключ-нажатия-1"))
-        self.assertIn("ON CONFLICT (user_id, client_answer_id) DO NOTHING", sql)
+        self.assertIn("ON CONFLICT (user_id, client_answer_id)", sql)
+        self.assertIn("DO NOTHING", sql)
+
+    def test_предикат_частичного_индекса_назван_в_on_conflict(self):
+        """⚠ ЭТО НЕ ПРИДИРКА К ТЕКСТУ ЗАПРОСА, А ЛОВУШКА, КОТОРАЯ УЖЕ СРАБОТАЛА.
+
+        Индекс частичный: …WHERE client_answer_id IS NOT NULL. Postgres сопоставляет
+        ON CONFLICT с частичным индексом ТОЛЬКО если предикат назван ровно так же.
+        Без него КАЖДАЯ запись ответа падает с InvalidColumnReference: «there is no
+        unique or exclusion constraint matching the ON CONFLICT specification».
+
+        27.08.2026 этого не увидел ни один тест выше: у них поддельный курсор, он
+        принимает любой SQL. Поймано прогоном на живом движке. Поэтому проверка
+        предиката стоит здесь отдельной строкой — она дешёвая, а цена пропуска —
+        полностью неработающая запись ответов в проде."""
+        sql = " | ".join(self._собрать_sql("ключ-нажатия-1"))
+        self.assertIn("WHERE client_answer_id IS NOT NULL", sql)
 
     def test_без_ключа_поведение_прежнее(self):
         """Старый бандл пишет как раньше — это не новая дыра, а прежнее поведение."""

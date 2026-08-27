@@ -58670,7 +58670,16 @@ def record_article_learn_answer(*, user_id: int, word: str, article: str,
                         (user_id, word, article, theme_key, set_id, is_correct,
                          client_answer_id)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (user_id, client_answer_id) DO NOTHING;
+                    -- Условие индекса ПОВТОРЯЕТСЯ здесь намеренно: индекс частичный
+                    -- (…WHERE client_answer_id IS NOT NULL), а Postgres сопоставляет
+                    -- ON CONFLICT с частичным индексом, только если предикат назван
+                    -- ровно так же. Без него запись падала с InvalidColumnReference:
+                    -- «there is no unique or exclusion constraint matching the
+                    -- ON CONFLICT specification». Поймано прогоном на живом движке
+                    -- 27.08.2026 — на поддельном курсоре в тесте это не видно.
+                    ON CONFLICT (user_id, client_answer_id)
+                        WHERE client_answer_id IS NOT NULL
+                    DO NOTHING;
                     """,
                     (int(user_id), str(word), str(article or "").lower(),
                      str(theme_key or ""), str(set_id or ""), bool(is_correct), key),
