@@ -11930,6 +11930,21 @@ def ensure_webapp_tables() -> None:
                 ALTER TABLE bt_3_reader_library
                 ADD COLUMN IF NOT EXISTS processing_attempts INTEGER NOT NULL DEFAULT 0;
             """)
+            # EXACT bookmark anchor (27.08.2026). bookmark_percent alone is only
+            # page-precise: the reader cuts books into ~1100-char server pages, and one
+            # such page spans 2-3 phone screens, so a percent can't say WHICH screen the
+            # ribbon belongs on. The pair below stores the anchor the way it survives
+            # font/screen changes: the server page + the character offset INSIDE it
+            # (an absolute doc offset would need every page loaded; pages are lazy).
+            # bookmark_page = 0 means "no exact anchor saved" (pages are 1-based).
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS bookmark_page INTEGER NOT NULL DEFAULT 0;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS bookmark_char INTEGER NOT NULL DEFAULT 0;
+            """)
             cursor.execute("""
                 UPDATE bt_3_reader_library
                 SET processing_status = 'ready'
@@ -11984,6 +11999,16 @@ def ensure_webapp_tables() -> None:
                     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (user_id, document_id)
                 );
+            """)
+            # Same exact bookmark anchor as the personal library rows — see the
+            # bookmark_page/bookmark_char comment on bt_3_reader_library above.
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_public_progress
+                ADD COLUMN IF NOT EXISTS bookmark_page INTEGER NOT NULL DEFAULT 0;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_public_progress
+                ADD COLUMN IF NOT EXISTS bookmark_char INTEGER NOT NULL DEFAULT 0;
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_reader_public_progress_user
@@ -40116,11 +40141,19 @@ def upsert_public_reader_progress(
     progress_percent: float | None = None,
     bookmark_percent: float | None = None,
     reading_mode: str | None = None,
+    bookmark_page: int | None = None,
+    bookmark_char: int | None = None,
 ) -> dict:
     """Save THIS user's reading position in a shared public book. COALESCE semantics:
     only the fields you pass are updated (a bookmark-only save keeps the progress)."""
     resolved_progress = None if progress_percent is None else max(0.0, min(100.0, float(progress_percent)))
     resolved_bookmark = None if bookmark_percent is None else max(0.0, min(100.0, float(bookmark_percent)))
+    # Exact anchor: page (1-based) + char offset inside it. Both or neither.
+    resolved_bm_page = None if bookmark_page is None else max(0, int(bookmark_page))
+    resolved_bm_char = None if bookmark_char is None else max(0, int(bookmark_char))
+    if resolved_bm_page is None or resolved_bm_char is None:
+        resolved_bm_page = None
+        resolved_bm_char = None
     resolved_mode = str(reading_mode or "").strip().lower()
     if resolved_mode not in {"", "vertical", "horizontal"}:
         resolved_mode = ""
@@ -40130,21 +40163,26 @@ def upsert_public_reader_progress(
                 """
                 INSERT INTO bt_3_reader_public_progress
                     (user_id, document_id, progress_percent, bookmark_percent, reading_mode,
-                     last_opened_at, created_at, updated_at)
+                     bookmark_page, bookmark_char, last_opened_at, created_at, updated_at)
                 VALUES (%s, %s, COALESCE(%s, 0), COALESCE(%s, 0),
-                        COALESCE(NULLIF(%s, ''), 'vertical'), NOW(), NOW(), NOW())
+                        COALESCE(NULLIF(%s, ''), 'vertical'),
+                        COALESCE(%s, 0), COALESCE(%s, 0), NOW(), NOW(), NOW())
                 ON CONFLICT (user_id, document_id) DO UPDATE SET
                     progress_percent = COALESCE(%s, bt_3_reader_public_progress.progress_percent),
                     bookmark_percent = COALESCE(%s, bt_3_reader_public_progress.bookmark_percent),
                     reading_mode = COALESCE(NULLIF(%s, ''), bt_3_reader_public_progress.reading_mode),
+                    bookmark_page = COALESCE(%s, bt_3_reader_public_progress.bookmark_page),
+                    bookmark_char = COALESCE(%s, bt_3_reader_public_progress.bookmark_char),
                     last_opened_at = NOW(),
                     updated_at = NOW()
-                RETURNING progress_percent, bookmark_percent, reading_mode;
+                RETURNING progress_percent, bookmark_percent, reading_mode, bookmark_page, bookmark_char;
                 """,
                 (
                     int(user_id), int(document_id),
                     resolved_progress, resolved_bookmark, resolved_mode,
+                    resolved_bm_page, resolved_bm_char,
                     resolved_progress, resolved_bookmark, resolved_mode,
+                    resolved_bm_page, resolved_bm_char,
                 ),
             )
             row = cursor.fetchone()
@@ -40152,6 +40190,8 @@ def upsert_public_reader_progress(
         "progress_percent": round(float(row[0] or 0.0), 2),
         "bookmark_percent": round(float(row[1] or 0.0), 2),
         "reading_mode": str(row[2] or "vertical"),
+        "bookmark_page": int(row[3] or 0),
+        "bookmark_char": int(row[4] or 0),
     }
 
 
@@ -40164,7 +40204,8 @@ def get_public_reader_progress_map(user_id: int, document_ids: list[int] | None 
             if ids:
                 cursor.execute(
                     """
-                    SELECT document_id, progress_percent, bookmark_percent, reading_mode, last_opened_at
+                    SELECT document_id, progress_percent, bookmark_percent, reading_mode, last_opened_at,
+                           bookmark_page, bookmark_char
                     FROM bt_3_reader_public_progress
                     WHERE user_id = %s AND document_id = ANY(%s);
                     """,
@@ -40173,7 +40214,8 @@ def get_public_reader_progress_map(user_id: int, document_ids: list[int] | None 
             else:
                 cursor.execute(
                     """
-                    SELECT document_id, progress_percent, bookmark_percent, reading_mode, last_opened_at
+                    SELECT document_id, progress_percent, bookmark_percent, reading_mode, last_opened_at,
+                           bookmark_page, bookmark_char
                     FROM bt_3_reader_public_progress
                     WHERE user_id = %s;
                     """,
@@ -40187,8 +40229,33 @@ def get_public_reader_progress_map(user_id: int, document_ids: list[int] | None 
             "bookmark_percent": round(float(r[2] or 0.0), 2),
             "reading_mode": str(r[3] or "vertical"),
             "last_opened_at": r[4].isoformat() if r[4] else None,
+            # 0 = no exact anchor saved for this book yet (pages are 1-based).
+            "bookmark_page": int(r[5] or 0),
+            "bookmark_char": int(r[6] or 0),
         }
     return out
+
+
+def get_reader_library_bookmark_anchor(*, user_id: int, document_id: int) -> dict:
+    """Exact bookmark anchor of a PERSONAL library row: {page, char}. page == 0 means
+    the row carries no exact anchor (bookmark set before 27.08.2026, or never set) —
+    the caller then falls back to the page-precise bookmark_percent, which is a
+    coarser TRUTH, not an invented one. Public books keep their anchor in
+    bt_3_reader_public_progress instead (see get_public_reader_progress_map)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT bookmark_page, bookmark_char
+                FROM bt_3_reader_library
+                WHERE id = %s AND user_id = %s;
+                """,
+                (int(document_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return {"bookmark_page": 0, "bookmark_char": 0}
+    return {"bookmark_page": int(row[0] or 0), "bookmark_char": int(row[1] or 0)}
 
 
 # ── Audio wallet & per-book unlock helpers (Phase 2) ─────────────────────────
@@ -40638,11 +40705,20 @@ def update_reader_library_state(
     progress_percent: float | None = None,
     bookmark_percent: float | None = None,
     reading_mode: str | None = None,
+    bookmark_page: int | None = None,
+    bookmark_char: int | None = None,
 ) -> dict | None:
     normalized_source = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target = str(target_lang or "de").strip().lower() or "de"
     resolved_progress = None if progress_percent is None else max(0.0, min(100.0, float(progress_percent)))
     resolved_bookmark = None if bookmark_percent is None else max(0.0, min(100.0, float(bookmark_percent)))
+    # Exact anchor: page is 1-based, char is the offset inside that page. Both are
+    # written together or not at all — half an anchor would point nowhere.
+    resolved_bm_page = None if bookmark_page is None else max(0, int(bookmark_page))
+    resolved_bm_char = None if bookmark_char is None else max(0, int(bookmark_char))
+    if resolved_bm_page is None or resolved_bm_char is None:
+        resolved_bm_page = None
+        resolved_bm_char = None
     resolved_mode = str(reading_mode or "").strip().lower()
     if resolved_mode not in {"", "vertical", "horizontal"}:
         resolved_mode = ""
@@ -40655,6 +40731,8 @@ def update_reader_library_state(
                 SET
                     progress_percent = COALESCE(%s, progress_percent),
                     bookmark_percent = COALESCE(%s, bookmark_percent),
+                    bookmark_page = COALESCE(%s, bookmark_page),
+                    bookmark_char = COALESCE(%s, bookmark_char),
                     reading_mode = COALESCE(NULLIF(%s, ''), reading_mode),
                     last_opened_at = NOW(),
                     updated_at = NOW()
@@ -40671,6 +40749,8 @@ def update_reader_library_state(
                 (
                     resolved_progress,
                     resolved_bookmark,
+                    resolved_bm_page,
+                    resolved_bm_char,
                     resolved_mode,
                     int(document_id),
                     int(user_id),

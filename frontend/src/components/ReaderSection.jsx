@@ -81,6 +81,8 @@ export default function ReaderSection(props) {
     readerProgressPercent,
     applyReaderProgressPercent = () => {},
     readerBookmarkPercent, setReaderBookmarkPercent, readerBookmarkPage,
+    readerBookmarkAnchor = null,
+    setReaderBookmarkAnchorSaved = () => {},
     persistReaderExactBookmark = () => {},
     isCurrentReaderPageBookmarked,
     readerCanUseOriginalLayout,
@@ -249,6 +251,13 @@ export default function ReaderSection(props) {
   // Tracks the doc whose saved bookmark has already been restored (one-shot per
   // open) so single-page/pageless sources land on the saved position, not char 0.
   const readerColRestoredDocRef = React.useRef(null);
+  // Which screen column the bookmark sits on (null = not on any column of the loaded
+  // window). Recomputed only where the geometry is actually known — inside place().
+  const [readerBookmarkCol, setReaderBookmarkCol] = React.useState(null);
+  // "Put the view exactly here" — {page, char-in-page}. Consumed by the next place()
+  // once that page is inside the window: used to reopen a book on its bookmark and
+  // to jump to the bookmark from the dock.
+  const readerColPendingAnchorRef = React.useRef(null);
   // Real, measured column geometry — the CSS column pitch does NOT equal the
   // viewport width (the browser expands columns to fill), so we measure it from
   // the laid-out word spans and page by exactly that. Works on any screen.
@@ -441,6 +450,28 @@ export default function ReaderSection(props) {
     }
     return page;
   };
+  // The bookmark, expressed the way it SURVIVES a font or screen change: the server
+  // page under the first visible character of a screen column, plus that character's
+  // offset INSIDE the page. Absolute doc offsets are unusable — pages load lazily, so
+  // the text before the current one may not be in memory at all.
+  const readerColBookmarkAnchorNow = () => {
+    if (!readerWindowModel) return null;
+    const ch = readerColVisibleCharAt(readerColIndexRef.current);
+    const page = readerColPageOfChar(ch);
+    if (!page) return null;
+    const off = readerWindowModel.offsets.find((o) => Number(o.page) === Number(page));
+    if (!off) return null;
+    return { page: Number(page), char: Math.max(0, ch - Number(off.charStart || 0)) };
+  };
+  // Same anchor mapped back into the CURRENT window's coordinates, or null when the
+  // bookmarked page is not inside the loaded window (then there is nothing to show).
+  const readerBookmarkWindowChar = () => {
+    if (!readerBookmarkAnchor || !readerWindowModel) return null;
+    const off = readerWindowModel.offsets.find((o) => Number(o.page) === Number(readerBookmarkAnchor.page));
+    if (!off) return null;
+    return Number(off.charStart || 0) + Math.max(0, Number(readerBookmarkAnchor.char || 0));
+  };
+
   // Record the reading position (char) and sync the server page for progress /
   // bookmark / prefetch — WITHOUT re-measuring (window text is unchanged).
   const readerColSyncPosition = () => {
@@ -481,17 +512,45 @@ export default function ReaderSection(props) {
       const { n } = measureReaderColGeometry();
       let target;
       if (readerWindowModel) {
-        // One-shot bookmark restore for single-page (pageless) sources — they have
-        // no server page to jump to, so map the saved % → a char anchor. Paged docs
-        // restore via readerCurrentPage and skip this.
-        if (readerSinglePageDoc
-            && readerColRestoredDocRef.current !== readerDocumentId
-            && readerWindowModel.totalChars > 0) {
-          const pct = Math.max(0, Math.min(100, Number(readerBookmarkPercent || 0)));
-          if (pct > 0.3) {
-            readerColAnchorCharRef.current = Math.round((pct / 100) * readerWindowModel.totalChars);
+        const openKey = `${readerDocumentId}:${readerOpenNonce}`;
+        // ── One-shot restore of the reading position, once per open ──────────────
+        // Best source first: the EXACT anchor (page + char inside it). A ~1100-char
+        // server page is 2-3 screens wide, so landing on "the right page" would still
+        // be the wrong screen. Only armed once the bookmarked page is really inside
+        // the loaded window — otherwise we wait for the window that holds it.
+        if (readerColRestoredDocRef.current !== openKey) {
+          if (readerBookmarkAnchor) {
+            // Wait for the window that actually holds the bookmarked page: staying
+            // unmarked means the next measurement tries again.
+            if (readerBookmarkWindowChar() != null) {
+              readerColPendingAnchorRef.current = { ...readerBookmarkAnchor };
+              readerColRestoredDocRef.current = openKey;
+            }
+          } else {
+            if (readerSinglePageDoc && readerWindowModel.totalChars > 0) {
+              // No exact anchor and no server pages to aim at: the saved percent IS
+              // the character position for these sources (see onReaderVisualProgress),
+              // so it is a real coordinate here, not a guess.
+              const pct = Math.max(0, Math.min(100, Number(readerBookmarkPercent || 0)));
+              if (pct > 0.3) {
+                readerColAnchorCharRef.current = Math.round((pct / 100) * readerWindowModel.totalChars);
+              }
+            }
+            // Nothing to restore (no bookmark) — but this open is DONE restoring, so
+            // setting a bookmark later never reads as "restore me to it" and yanks
+            // the reader away from where they are.
+            readerColRestoredDocRef.current = openKey;
           }
-          readerColRestoredDocRef.current = readerDocumentId;
+        }
+        // An explicit "go exactly here" request (reopen-on-bookmark, dock jump) wins
+        // over the running reading anchor for this one measurement.
+        const pending = readerColPendingAnchorRef.current;
+        if (pending) {
+          const off = readerWindowModel.offsets.find((o) => Number(o.page) === Number(pending.page));
+          if (off) {
+            readerColAnchorCharRef.current = Number(off.charStart || 0) + Math.max(0, Number(pending.char || 0));
+            readerColPendingAnchorRef.current = null;
+          }
         }
         let anchor = readerColAnchorCharRef.current;
         const ap = readerColPageOfChar(anchor);
@@ -503,6 +562,10 @@ export default function ReaderSection(props) {
       } else {
         target = readerColGoLastRef.current ? n - 1 : 0;
       }
+      // The ribbon belongs to ONE screen column. Measured here because only here is
+      // the laid-out geometry known; turning pages inside the window does not move it.
+      const bmWindowChar = readerBookmarkWindowChar();
+      setReaderBookmarkCol(bmWindowChar == null ? null : readerColFindColOfChar(bmWindowChar));
       readerColGoLastRef.current = false;
       target = Math.max(0, Math.min(n - 1, target));
       setReaderColCount(n);
@@ -546,7 +609,7 @@ export default function ReaderSection(props) {
       rafs.forEach((id) => window.cancelAnimationFrame(id));
       timers.forEach((id) => window.clearTimeout(id));
     };
-  }, [readerColUsesEngine, readerColContentSig, readerFontSize, readerFontWeight, readerDocumentId, readerOpenNonce]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [readerColUsesEngine, readerColContentSig, readerFontSize, readerFontWeight, readerDocumentId, readerOpenNonce, readerBookmarkAnchor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Animate the turn + record the new reading position.
   React.useEffect(() => {
@@ -783,6 +846,18 @@ export default function ReaderSection(props) {
 
   // Single-server-page sources (text/URL): page number/total is visual (columns).
   const readerSinglePageDoc = readerPageCount <= 1 && !readerUsesOriginalEpubLayout;
+  // ┌─ FIXED 27.08.2026. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ─────────────────────────┐
+  // │ The ribbon used to key off isCurrentReaderPageBookmarked — the SERVER page.  │
+  // │ The column engine cuts text by real screen width, so one ~1100-char server   │
+  // │ page covers 2-3 screens, and the ribbon (a child of the fixed viewport, not  │
+  // │ of the sliding track) stayed pinned to all of them: "закладка на 2 страницах"│
+  // │ reported 27.08.2026. It now keys off the measured bookmark COLUMN, so it     │
+  // │ shows on exactly one screen at any font size. isCurrentReaderPageBookmarked  │
+  // │ remains only for the non-engine page-sheet renderer, where page == screen.   │
+  // └─────────────────────────────────────────────────────────────────────────────┘
+  const readerBookmarkOnThisScreen = readerColUsesEngine
+    ? (readerBookmarkCol !== null && readerBookmarkCol === readerColIndex)
+    : isCurrentReaderPageBookmarked;
   const readerDockPageNum = readerSinglePageDoc ? (readerColIndex + 1) : readerCurrentPage;
   const readerDockPageTotal = readerSinglePageDoc ? readerColCount : readerPageCount;
 
@@ -1790,7 +1865,7 @@ export default function ReaderSection(props) {
                       '--reader-font-weight': readerFontWeight,
                     }}
                   >
-                    {isCurrentReaderPageBookmarked && (
+                    {readerBookmarkOnThisScreen && (
                       <span className="reader-page-bookmark-indicator" aria-hidden="true" />
                     )}
                     <div ref={readerColTrackRef} className="reader-col-track">
@@ -1930,12 +2005,26 @@ export default function ReaderSection(props) {
                   </button>
                   <button
                     type="button"
-                    className={`reader-dock-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
+                    className={`reader-dock-btn ${readerBookmarkOnThisScreen ? 'is-active' : ''}`}
                     onClick={() => {
                       const mark = computeReaderProgressPercent();
+                      // Exact anchor for the column engine. The epub.js renderer has no
+                      // server pages to anchor to, so it saves page/char 0 — which the
+                      // reader reads as "page precision only", never as position 0.
+                      const anchor = readerColUsesEngine ? readerColBookmarkAnchorNow() : null;
                       setReaderBookmarkPercent(mark);
                       persistReaderExactBookmark(readerCurrentPage);
-                      if (readerDocumentId) syncReaderState({ bookmark_percent: Number(mark.toFixed(2)) });
+                      setReaderBookmarkAnchorSaved(anchor);
+                      setReaderBookmarkCol(anchor ? readerColIndexRef.current : null);
+                      if (readerDocumentId) {
+                        syncReaderState({
+                          bookmark_percent: Number(mark.toFixed(2)),
+                          // Always sent: 0/0 CLEARS a stale anchor left by an earlier
+                          // bookmark, so percent and anchor can never disagree.
+                          bookmark_page: anchor ? anchor.page : 0,
+                          bookmark_char: anchor ? anchor.char : 0,
+                        });
+                      }
                     }}
                     disabled={!readerContent || !readerDocumentId}
                     title={tr('Поставить закладку', 'Lesezeichen setzen')}
@@ -1943,13 +2032,22 @@ export default function ReaderSection(props) {
                   >
                     <svg viewBox="0 0 18 18" fill="none"><path d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /></svg>
                   </button>
-                  {readerBookmarkPercent > 0 && !isCurrentReaderPageBookmarked && (
+                  {readerBookmarkPercent > 0 && !readerBookmarkOnThisScreen && (
                     <button
                       type="button"
                       className="reader-dock-btn reader-dock-bmjump"
                       onClick={() => {
                         if (readerUsesOriginalEpubLayout) { applyReaderProgressPercent(readerBookmarkPercent); return; }
-                        setReaderCurrentPage(readerBookmarkPage);
+                        // Bookmark already measured inside the loaded window → turn
+                        // straight to its column. Needed on its own: the bookmark is
+                        // often on the SAME server page, and setReaderCurrentPage to
+                        // the page we are already on changes nothing and would leave
+                        // the button dead.
+                        if (readerBookmarkCol !== null) { setReaderColIndex(readerBookmarkCol); return; }
+                        // Bookmark lives outside the loaded window: move the window to
+                        // its page, and let the next measurement land on the character.
+                        if (readerBookmarkAnchor) readerColPendingAnchorRef.current = { ...readerBookmarkAnchor };
+                        setReaderCurrentPage(readerBookmarkAnchor ? readerBookmarkAnchor.page : readerBookmarkPage);
                       }}
                       title={tr('Перейти к закладке', 'Zur Lesezeiche springen')}
                       aria-label={tr('Перейти к закладке', 'Zur Lesezeiche springen')}

@@ -762,6 +762,7 @@ from backend.database import (
     update_reader_library_state,
     upsert_public_reader_progress,
     get_public_reader_progress_map,
+    get_reader_library_bookmark_anchor,
     rename_reader_library_document,
     archive_reader_library_document,
     delete_reader_library_document,
@@ -61075,6 +61076,8 @@ def reader_library_open():
                 if saved:
                     doc["progress_percent"] = saved.get("progress_percent", 0.0)
                     doc["bookmark_percent"] = saved.get("bookmark_percent", 0.0)
+                    doc["bookmark_page"] = saved.get("bookmark_page", 0)
+                    doc["bookmark_char"] = saved.get("bookmark_char", 0)
                     if saved.get("reading_mode"):
                         doc["reading_mode"] = saved["reading_mode"]
             except Exception:
@@ -61090,6 +61093,17 @@ def reader_library_open():
             response_payload["source_url"] = doc.get("source_url")
             response_payload["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
             return jsonify(response_payload), 202
+        if not doc_is_public:
+            # Personal book: the exact bookmark anchor lives on the library row itself.
+            # _reader_library_row_to_dict reads its columns POSITIONALLY, so the anchor
+            # is fetched separately instead of being appended to those SELECTs. Asked
+            # only for a book that is really being opened — a still-processing document
+            # has no reading position to restore.
+            anchor = get_reader_library_bookmark_anchor(
+                user_id=int(user_id), document_id=int(document_id)
+            )
+            doc["bookmark_page"] = anchor["bookmark_page"]
+            doc["bookmark_char"] = anchor["bookmark_char"]
         try:
             doc = _maybe_repair_legacy_truncated_reader_epub(
                 user_id=int(user_id),
@@ -61432,6 +61446,11 @@ def reader_library_state():
     progress_percent = payload.get("progress_percent")
     bookmark_percent = payload.get("bookmark_percent")
     reading_mode = payload.get("reading_mode")
+    # Exact bookmark anchor: server page (1-based) + char offset inside that page.
+    # Sent together by the reader when the user taps the bookmark button; a
+    # progress-only save omits both and leaves the stored anchor untouched.
+    bookmark_page = payload.get("bookmark_page")
+    bookmark_char = payload.get("bookmark_char")
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -61450,6 +61469,8 @@ def reader_library_state():
     try:
         progress_val = None if progress_percent is None else float(progress_percent)
         bookmark_val = None if bookmark_percent is None else float(bookmark_percent)
+        bm_page_val = None if bookmark_page is None else int(bookmark_page)
+        bm_char_val = None if bookmark_char is None else int(bookmark_char)
     except Exception:
         return jsonify({"error": "progress_percent/bookmark_percent должны быть числами"}), 400
 
@@ -61462,6 +61483,8 @@ def reader_library_state():
             progress_percent=progress_val,
             bookmark_percent=bookmark_val,
             reading_mode=str(reading_mode or "").strip().lower() or None,
+            bookmark_page=bm_page_val,
+            bookmark_char=bm_char_val,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка обновления прогресса чтения: {exc}"}), 500
@@ -61480,6 +61503,8 @@ def reader_library_state():
                     progress_percent=progress_val,
                     bookmark_percent=bookmark_val,
                     reading_mode=str(reading_mode or "").strip().lower() or None,
+                    bookmark_page=bm_page_val,
+                    bookmark_char=bm_char_val,
                 )
             except Exception as exc:
                 return jsonify({"error": f"Ошибка обновления прогресса чтения: {exc}"}), 500
@@ -61489,6 +61514,8 @@ def reader_library_state():
                 "progress_percent": saved["progress_percent"],
                 "bookmark_percent": saved["bookmark_percent"],
                 "reading_mode": saved["reading_mode"],
+                "bookmark_page": saved["bookmark_page"],
+                "bookmark_char": saved["bookmark_char"],
             }})
         return jsonify({"error": "Книга не найдена"}), 404
     return jsonify({"ok": True, "document": doc})

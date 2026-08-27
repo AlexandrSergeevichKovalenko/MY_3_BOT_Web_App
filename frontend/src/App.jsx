@@ -6606,6 +6606,12 @@ function AppInner() {
   const [readerOriginalZoomed, setReaderOriginalZoomed] = useState(false);
   const readerOriginalCacheRef = useRef(new Map()); // physical page -> image url
   const [readerBookmarkPercent, setReaderBookmarkPercent] = useState(0);
+  // EXACT bookmark anchor as SAVED (27.08.2026): {page, char} — the server page the
+  // bookmark sits on plus the character offset INSIDE that page. bookmark_percent is
+  // only page-precise, and one ~1100-char server page spans 2-3 phone screens, so a
+  // percent cannot say which screen the ribbon belongs on. page === 0 → the stored
+  // bookmark predates this field and only its page is known.
+  const [readerBookmarkAnchorSaved, setReaderBookmarkAnchorSaved] = useState(null);
   const [readerReadingMode, setReaderReadingMode] = useState('vertical');
   const [readerSessionStartedAt, setReaderSessionStartedAt] = useState('');
   const [readerLiveSeconds, setReaderLiveSeconds] = useState(0);
@@ -15756,6 +15762,25 @@ function AppInner() {
   // guards against the phantom "page 1" the |0→||1 fallback would otherwise mark.
   const isCurrentReaderPageBookmarked = hasReaderBookmark && readerPageCount > 0
     && readerBookmarkPage === Math.max(1, Math.min(readerPageCount, Number(readerCurrentPage || 1)));
+  // Where the bookmark actually sits, in the ONLY coordinates that survive a font or
+  // screen change: {page, char-inside-that-page}. Two sources, both truthful:
+  //   • saved exact anchor  → character precision, the ribbon lands on one screen;
+  //   • bookmark_percent only → page precision (bookmarks set before 27.08.2026), so
+  //     char = 0, i.e. the ribbon sits at the START of the bookmarked page. That is
+  //     the whole precision we have for those rows — not a guess filling a blank.
+  const readerBookmarkAnchor = useMemo(() => {
+    if (!hasReaderBookmark || readerPageCount <= 0) return null;
+    const savedPage = Number(readerBookmarkAnchorSaved?.page || 0);
+    if (savedPage > 0) {
+      return {
+        page: Math.max(1, Math.min(readerPageCount, savedPage)),
+        char: Math.max(0, Number(readerBookmarkAnchorSaved?.char || 0)),
+        exact: true,
+      };
+    }
+    if (!readerBookmarkPage) return null;
+    return { page: readerBookmarkPage, char: 0, exact: false };
+  }, [hasReaderBookmark, readerPageCount, readerBookmarkAnchorSaved, readerBookmarkPage]);
 
   // ── Audio-sync: positional-index ↔ frontend wid maps ───────────────────
   const readerAudioWidMap = useMemo(() => {
@@ -20015,13 +20040,30 @@ function AppInner() {
     }
   }, [readerCurrentPage, readerDocumentId, readerPageCount, loadReaderPageRange, readerPages, readerUsesCustomLayout]);
 
+  // ┌─ FIXED 27.08.2026. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ────────────────────┐
+  // │ This effect used to POST progress on its very first run after a book    │
+  // │ opened. Combined with the page-1 open bug that meant every open wrote   │
+  // │ "progress = page 1" over the real saved position — opening a book       │
+  // │ ERASED how far you had read. Now the page the book OPENED on is the     │
+  // │ baseline: nothing is sent until the reader actually turns away from it. │
+  // └─────────────────────────────────────────────────────────────────────────┘
+  const readerProgressSyncBaselineRef = useRef({ key: '', page: 0, armed: false });
   useEffect(() => {
     if (!readerDocumentId || readerPageCount === 0) return;
     const nextPercent = computeReaderProgressPercent();
-    const pct = Number(nextPercent.toFixed(2));
     setReaderProgressPercent(nextPercent);
-    syncReaderState({ progress_percent: pct });
-  }, [readerCurrentPage, readerDocumentId, readerPageCount]);
+    const key = `${readerDocumentId}:${readerOpenNonce}`;
+    const base = readerProgressSyncBaselineRef.current;
+    if (base.key !== key) {
+      readerProgressSyncBaselineRef.current = { key, page: readerCurrentPage, armed: false };
+      return;
+    }
+    if (!base.armed) {
+      if (readerCurrentPage === base.page) return;
+      base.armed = true;
+    }
+    syncReaderState({ progress_percent: Number(nextPercent.toFixed(2)) });
+  }, [readerCurrentPage, readerDocumentId, readerPageCount, readerOpenNonce]);
 
   useEffect(() => {
     readerCurrentPageRef.current = readerCurrentPage;
@@ -25703,9 +25745,11 @@ function AppInner() {
       const preferredLayoutMode = getReaderPreferredLayoutMode(sourceType, pages);
       setReaderFontSize(telegramTabletLike ? READER_TABLET_FONT_SIZE : READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-      readerPendingPagePercentRef.current = preferredLayoutMode === 'custom'
-        ? (bookmark > 0 ? bookmark : progress)
-        : null;
+      // The client-reflow paginator that used to consume this ref was retired on
+      // 10.07.2026 (readerUsesCustomLayout === false), so handing it the reading
+      // position dropped that position on the floor. Restoring is done below, via
+      // initialPage + the exact bookmark anchor.
+      readerPendingPagePercentRef.current = null;
       setReaderDocumentId(Number(doc?.id || safeDocumentId));
       setReaderTitle(String(data?.title || doc?.title || ''));
       setReaderContent(resolvedText);
@@ -25745,9 +25789,17 @@ function AppInner() {
         pageCount: resolvedTotalPages,
         layoutMode: preferredLayoutMode,
       });
-      const initialPage = preferredLayoutMode === 'custom' || usesOriginalEpub
+      // ┌─ FIXED 27.08.2026. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ──────────────────┐
+      // │ Was: `preferredLayoutMode === 'custom' ? 1 : …`. Since 10.07.2026    │
+      // │ getReaderPreferredLayoutMode() returns 'custom' for EVERY format, so │
+      // │ that branch was ALWAYS taken and every book reopened at page 1 —     │
+      // │ the reported "не открывается на закладке". Only the epub.js renderer │
+      // │ genuinely starts at page 1 (it restores by CFI percentage instead).  │
+      // └──────────────────────────────────────────────────────────────────────┘
+      const serverBookmarkPage = Math.max(0, Number(doc?.bookmark_page || 0));
+      const initialPage = usesOriginalEpub
         ? 1
-        : (exactBookmarkPage || pageFromProgress);
+        : (Math.min(serverBookmarkPage, resolvedTotalPages) || exactBookmarkPage || pageFromProgress);
       setReaderCurrentPage(initialPage);
       // The bookmark ribbon must reflect ONLY a bookmark the user actually set —
       // never the opening/reading position. Seeding it from the initial page (a
@@ -25762,6 +25814,14 @@ function AppInner() {
           : resolvedTotalPages > 0
           ? Number(((exactBookmarkPage / resolvedTotalPages) * 100).toFixed(2))
           : 0
+      );
+      // Exact anchor as stored on the server. page === 0 means this book's bookmark
+      // was set before the anchor existed — then only its page is known, and
+      // readerBookmarkAnchor degrades to page precision EXPLICITLY, never silently.
+      setReaderBookmarkAnchorSaved(
+        serverBookmarkPage > 0
+          ? { page: serverBookmarkPage, char: Math.max(0, Number(doc?.bookmark_char || 0)) }
+          : null
       );
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
       setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
@@ -27275,9 +27335,9 @@ function AppInner() {
       const bookmark = Number(doc?.bookmark_percent || 0);
       setReaderFontSize(telegramTabletLike ? READER_TABLET_FONT_SIZE : READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-      readerPendingPagePercentRef.current = preferredLayoutMode === 'custom'
-        ? (bookmark || progress || 0)
-        : null;
+      // See openReaderDocument: this ref's consumer is retired; the position is
+      // restored through initialPage + the exact bookmark anchor instead.
+      readerPendingPagePercentRef.current = null;
       setReaderContent(resolvedText);
       setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
       setReaderPages(pages);
@@ -27299,9 +27359,17 @@ function AppInner() {
         pageCount: resolvedTotalPages,
         layoutMode: preferredLayoutMode,
       });
-      const initialPage = preferredLayoutMode === 'custom' || usesOriginalEpub
+      // ┌─ FIXED 27.08.2026. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ──────────────────┐
+      // │ Was: `preferredLayoutMode === 'custom' ? 1 : …`. Since 10.07.2026    │
+      // │ getReaderPreferredLayoutMode() returns 'custom' for EVERY format, so │
+      // │ that branch was ALWAYS taken and every book reopened at page 1 —     │
+      // │ the reported "не открывается на закладке". Only the epub.js renderer │
+      // │ genuinely starts at page 1 (it restores by CFI percentage instead).  │
+      // └──────────────────────────────────────────────────────────────────────┘
+      const serverBookmarkPage = Math.max(0, Number(doc?.bookmark_page || 0));
+      const initialPage = usesOriginalEpub
         ? 1
-        : (exactBookmarkPage || pageFromProgress);
+        : (Math.min(serverBookmarkPage, resolvedTotalPages) || exactBookmarkPage || pageFromProgress);
       setReaderCurrentPage(initialPage);
       // Ribbon reflects only a real user-set bookmark (see the other open path).
       const hasStoredBookmark = Number(bookmark || 0) > 0 || Number(exactBookmarkPage || 0) > 0;
@@ -27313,6 +27381,14 @@ function AppInner() {
           : resolvedTotalPages > 0
           ? Number(((exactBookmarkPage / resolvedTotalPages) * 100).toFixed(2))
           : 0
+      );
+      // Exact anchor as stored on the server. page === 0 means this book's bookmark
+      // was set before the anchor existed — then only its page is known, and
+      // readerBookmarkAnchor degrades to page precision EXPLICITLY, never silently.
+      setReaderBookmarkAnchorSaved(
+        serverBookmarkPage > 0
+          ? { page: serverBookmarkPage, char: Math.max(0, Number(doc?.bookmark_char || 0)) }
+          : null
       );
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
       setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
@@ -41174,6 +41250,8 @@ function AppInner() {
                   applyReaderProgressPercent={applyReaderProgressPercent}
                   readerBookmarkPercent={readerBookmarkPercent}       setReaderBookmarkPercent={setReaderBookmarkPercent}
                   readerBookmarkPage={readerBookmarkPage}
+                  readerBookmarkAnchor={readerBookmarkAnchor}
+                  setReaderBookmarkAnchorSaved={setReaderBookmarkAnchorSaved}
                   persistReaderExactBookmark={persistReaderExactBookmark}
                   isCurrentReaderPageBookmarked={isCurrentReaderPageBookmarked}
                   readerCanUseOriginalLayout={readerCanUseOriginalLayout}
