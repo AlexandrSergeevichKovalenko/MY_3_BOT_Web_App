@@ -108,3 +108,17 @@ def test_отложить_откладывает_а_не_хоронит(monkeypa
     ответ = RV.apply_reference_forms_review("later", 42)
     assert отложено and отложено[0][1] > 0
     assert "вернётся" in ответ
+
+
+def test_нечитаемая_очередь_не_выглядит_пустой(monkeypatch):
+    """«Разбирать нечего 🎉» и «не смог посчитать» — два разных мира. Счётчик
+    возвращает -1, когда база не ответила, и это НЕ ноль."""
+    monkeypatch.setattr("backend.database.claim_scheduler_run_guard",
+                        lambda **kw: True, raising=False)
+    monkeypatch.setattr("backend.database.get_admin_telegram_ids", lambda: [1], raising=False)
+    monkeypatch.setattr("backend.german_reference_forms.unresolved_batch",
+                        lambda limit=20: [])
+    monkeypatch.setattr("backend.german_reference_forms.unresolved_count", lambda: -1)
+    monkeypatch.setenv("TELEGRAM_Deutsch_BOT_TOKEN", "тест")
+    итог = RV.send_reference_forms_review_dm(force=True)
+    assert итог["ok"] is False and "очередь" in итог["error"]
