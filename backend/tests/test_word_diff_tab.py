@@ -671,6 +671,79 @@ def test_outdated_answer_still_serves_the_one_who_cannot_order_a_new_one(monkeyp
     )
 
 
+def test_ready_pair_skips_source_collection_entirely(client, monkeypatch):
+    """Пара уже разобрана → статьи по словам НЕ собираются вовсе.
+
+    Владелец 27.08.2026: «почему уже имеющийся так долго отображается?» Полка
+    проверялась НИЖЕ сбора статей, и до готового ответа надо было досидеть. Замер живой
+    базы на entscheiden · beschließen: сама пара достаётся из базы за 0,7 c, а подготовка
+    источников стоила 0,93 c на «beschließen» и 17,7 → 23,0 → 15,8 c на «entscheiden»
+    (три прогона подряд, дешевле не становится).
+
+    Тест держит ПОРЯДОК, а не скорость: до готовой пары ни одна платная дверь не
+    открывается. Секунды в тесте не мерить — они зависят от сети.
+    """
+    touched = []
+    cached = {
+        "pair_key": "de-ru|beschliessen|entscheiden",
+        "words": ["entscheiden", "beschließen"],
+        "payload": FULL_ANSWER,
+        "sources": {},
+        "created_at": "2026-08-27T13:28:11+00:00",
+    }
+    _patch_db(monkeypatch, get_word_diff_card=lambda *a, **k: cached)
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
+    for name in ("_word_diff_lookup_sources", "_word_diff_readings",
+                 "_word_diff_full_lookup", "run_word_diff_multilang"):
+        monkeypatch.setattr(backend_server, name,
+                            (lambda n: lambda *a, **k: touched.append(n))(name))
+
+    resp = _post(client, ["entscheiden", "beschließen"])
+
+    body = resp.get_json()
+    assert resp.status_code == 200 and body["from_cache"] is True
+    assert body["diff"] == FULL_ANSWER
+    assert touched == [], (
+        f"до готовой пары успели поработать: {touched} — значит человек снова ждёт "
+        "пересборку того, что уже лежит в полке"
+    )
+
+
+def test_the_persons_choice_still_goes_the_long_way(client, monkeypatch):
+    """Человек ответил «что вы имели в виду» → ранняя проверка полки ПРОПУСКАЕТСЯ.
+
+    Уточнённый ключ пары содержит «#слово=прочтение», и прочтение известно только после
+    сбора статей. Сократить дорогу здесь — значит отдать человеку разбор другого
+    прочтения вместо выбранного им, то есть решить за него.
+    """
+    seen = []
+    _patch_db(monkeypatch, get_word_diff_card=lambda *a, **k: None)
+    monkeypatch.setattr(backend_server, "_word_diff_can_create", lambda uid: True)
+    monkeypatch.setattr(
+        backend_server, "_word_diff_lookup_sources",
+        lambda word, studied, explain, pick="": (seen.append((word, pick)) or
+                                                 {**ENTRY, "word": word, "headword": word,
+                                                  "entry_key": f"verb:{len(seen)}"}),
+    )
+
+    async def _answer(*args, **kwargs):
+        return FULL_ANSWER
+
+    monkeypatch.setattr(backend_server, "run_word_diff_multilang", _answer)
+
+    client.post("/api/webapp/dictionary/diff", json={
+        "initData": "signed",
+        "words": ["gehen", "laufen"],
+        "picks": {"gehen": "pos:verb"},
+    })
+
+    assert [w for w, _ in seen] == ["gehen", "laufen"], (
+        "с ответом человека сбор статей обязан состояться: без него уточнённого ключа "
+        "не существует"
+    )
+    assert ("gehen", "pos:verb") in seen, "выбор человека не дошёл до сбора статьи"
+
+
 def test_lowercase_word_is_never_treated_as_a_noun():
     """«gehen» — глагол. Существительное в немецком всегда пишется с заглавной.
 
