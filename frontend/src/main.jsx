@@ -475,6 +475,14 @@ class DictErrorBoundary extends React.Component {
 // по понедельникам и воскресеньям.
 async function bootstrapWordIntegrity(scope = 'shared') {
   tgReady();
+  // ⛔ ОТМЕТКУ ТЕМЫ СТАВЯТ ВСЕ ЭКРАНЫ, КРОМЕ ЭТОГО — И ЭТО БЫЛО ВИДНО ГЛАЗОМ. Светлые
+  // цвета текста в answer.css висят на `html[data-scheme="light"]`; без отметки в дело
+  // шли тёмные из theme.css, и на белом фоне текст читался как водяной знак
+  // (владелец 27.08.2026). Схему спрашиваем у Telegram, как это делает словарь.
+  try {
+    const scheme = window.Telegram?.WebApp?.colorScheme === 'dark' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-scheme', scheme);
+  } catch (_e) { /* ignore */ }
   const { default: WordIntegrityReview } = await import('./dictionary/WordIntegrityReview.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>

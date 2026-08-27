@@ -1,4 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
+// ⛔ БЕЗ ЭТОЙ СТРОКИ ЭКРАН БЕЛЫЙ, А ТЕКСТ БЛЕДНО-СЕРЫЙ. Разметка ниже построена на
+// классах `ans-root` / `ans-card`, а описаны они в answer.css — и этот экран был
+// ЕДИНСТВЕННЫМ, кто их не подключал (у словаря по соседству строка есть:
+// DictionaryOverlay.jsx). Без файла нет ни карточки, ни фона, ни светлой темы: цвета
+// текста брались из theme.css, где они сделаны для ТЁМНОГО фона (#E2E8F0, #94A3B8), и
+// ложились на белое. Владелец 27.08.2026: «Ты видишь цвет текста?»
+import '../answer/answer.css';
 import './dict.css';
 import { api, haptic } from './WordBreakdown';
 import { humanizeDictError } from './errors.js';
@@ -10,17 +17,19 @@ import { humanizeDictError } from './errors.js';
  * здесь, а не в чате: только на экране можно показать «было → станет» и дать выбрать
  * решение, не набирая команд.
  *
- * Три решения на запись, одно из них:
- *   Исправить — привести запись к подтверждённой справочником форме;
- *   Оставить  — мы придрались зря, больше не показывать;
- *   Удалить   — это не слово.
+ * ⛔ КАРТОЧКА ПОКАЗЫВАЕТ ТО, ЧТО РЕШАЕТСЯ. До 27.08.2026 крупно стояла ВИТРИНА записи
+ * («der Degenerierte»), а решение принималось про ОСНОВУ («degeneriert») — и диагноз под
+ * витриной врал: «существительное, а написано со строчной буквы» стояло под словом, где
+ * существительное как раз с большой. Теперь видны обе строки, и подпись описывает ровно
+ * то, что проверено.
+ *
+ * Решения: выбрать одно из прочтений (кнопка со СЛОВОМ, а не «Исправить» — прочтений
+ * бывает два, и выбирать за человека нельзя), вписать своё, оставить, удалить.
  * «Применить» выполняет ВСЕ отмеченные решения за один заход — по одному действию на
  * запись, а не два над одной (владелец 26.08.2026 просил сказать это прямо).
  *
  * Ничего не пропадает: неотмеченное остаётся в очереди и придёт снова.
  */
-
-const ACTION_LABEL = { fix: 'Исправить', keep: 'Оставить', delete: 'Удалить' };
 
 const POS_RU = {
   noun: 'существительное', verb: 'глагол', adjective: 'прилагательное',
@@ -29,7 +38,7 @@ const POS_RU = {
 };
 
 // scope: 'shared' — общий словарь (только владелец), 'mine' — свои слова (каждому).
-// Экран один: и там, и там человек решает судьбу записи тремя кнопками.
+// Экран один: и там, и там человек решает судьбу записи кнопками.
 const ENDPOINTS = {
   shared: { list: '/api/webapp/dictionary/integrity/list', apply: '/api/webapp/dictionary/integrity/apply' },
   mine: { list: '/api/webapp/dictionary/mywords/review', apply: '/api/webapp/dictionary/mywords/apply' },
@@ -48,17 +57,37 @@ const TITLES = {
   },
 };
 
+// Личный разбор своих слов присылает ОДНУ правку старым полем `suggestion`. Приводим её
+// к тому же виду, что и прочтения общего словаря, чтобы экран был один, а не два.
+function optionsOf(row) {
+  if (Array.isArray(row.options) && row.options.length) return row.options;
+  const fix = row.suggestion;
+  if (!fix) return [];
+  const word = fix.to_display || fix.to_lemma || fix.to_word;
+  if (!word && !fix.to_translation) return [];
+  return [{
+    word: word || '',
+    pos: fix.to_pos || '',
+    translation: fix.to_translation || '',
+    source: 'справочник',
+    why: fix.why || '',
+    legacy: fix,
+  }];
+}
+
 export default function WordIntegrityReview({ scope = 'shared' }) {
   const urls = ENDPOINTS[scope] || ENDPOINTS.shared;
   const copy = TITLES[scope] || TITLES.shared;
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
-  const [decisions, setDecisions] = useState({});
+  const [decisions, setDecisions] = useState({});   // id → { action, option }
+  const [ownText, setOwnText] = useState({});       // id → что владелец вписал сам
+  const [ownOpen, setOwnOpen] = useState({});       // у каких записей открыто поле
   const [phase, setPhase] = useState('loading');
   const [error, setError] = useState('');
   const [done, setDone] = useState(null);
   const [translations, setTranslations] = useState([]); // не смогли перевести — ждут владельца
-  const [typed, setTyped] = useState({});               // что владелец вписал
+  const [typed, setTyped] = useState({});               // вписанные переводы
 
   const load = useCallback(async (rescan = false) => {
     setPhase('loading');
@@ -77,28 +106,49 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
 
   useEffect(() => { void load(true); }, [load]);
 
-  const choose = useCallback((id, action) => {
+  const choose = useCallback((id, action, option = 0) => {
     haptic('light');
     setDecisions((prev) => {
       const next = { ...prev };
-      if (next[id] === action) delete next[id];
-      else next[id] = action;
+      const now = next[id];
+      if (now && now.action === action && now.option === option) delete next[id];
+      else next[id] = { action, option };
+      return next;
+    });
+  }, []);
+
+  const typeOwn = useCallback((id, text) => {
+    setOwnText((prev) => ({ ...prev, [id]: text }));
+    setDecisions((prev) => {
+      const next = { ...prev };
+      if (String(text || '').trim()) next[id] = { action: 'own', option: 0 };
+      else if (next[id]?.action === 'own') delete next[id];
       return next;
     });
   }, []);
 
   const apply = useCallback(async () => {
-    const list = Object.entries(decisions).map(([id, action]) => {
+    const list = Object.entries(decisions).map(([id, pick]) => {
       const row = items.find((x) => String(x.id) === String(id));
-      const fix = row?.suggestion || {};
+      const chosen = optionsOf(row || {})[pick.option] || null;
+      if (pick.action === 'own') {
+        return { id: Number(id), action: 'own', word: String(ownText[id] || '').trim() };
+      }
+      if (pick.action !== 'fix') return { id: Number(id), action: pick.action };
+      // Общий словарь: с экрана уходит НОМЕР прочтения, само написание сервер берёт из
+      // очереди — иначе в словарь можно было бы записать что угодно мимо источников.
+      if (scope === 'shared') return { id: Number(id), action: 'fix', option: pick.option };
+      // Личный разбор своих слов: прежний договор с сервером, поля из старой правки.
+      const legacy = chosen?.legacy || {};
       return {
         id: Number(id),
-        action,
-        ...(action === 'fix' && fix.to_word ? { to_word: fix.to_word } : {}),
-        ...(action === 'fix' && fix.to_pos ? { to_pos: fix.to_pos } : {}),
-        ...(action === 'fix' && fix.to_translation ? { to_translation: fix.to_translation } : {}),
+        action: 'fix',
+        ...(legacy.to_word ? { to_word: legacy.to_word } : {}),
+        ...(legacy.to_pos ? { to_pos: legacy.to_pos } : {}),
+        ...(legacy.to_translation ? { to_translation: legacy.to_translation } : {}),
       };
-    });
+    }).filter((d) => d.action !== 'own' || d.word);
+
     if (!list.length && !Object.keys(typed).length) return;
     setPhase('applying');
     haptic('ok');
@@ -114,13 +164,15 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
         left: Number(data?.left) || 0,
       });
       setDecisions({});
+      setOwnText({});
+      setOwnOpen({});
       setTyped({});
       await load(false);
     } catch (e) {
       setError(humanizeDictError(e));
       setPhase('ready');
     }
-  }, [decisions, items, typed, translations, urls, load]);
+  }, [decisions, items, ownText, typed, scope, urls, load]);
 
   const marked = Object.keys(decisions).length;
 
@@ -154,59 +206,114 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
         )}
 
         {items.map((row) => {
-          const picked = decisions[row.id] || '';
-          const fix = row.suggestion;
+          const pick = decisions[row.id] || null;
+          const options = optionsOf(row);
+          const stored = row.stored || row.lemma || row.word || '';
+          const shown = row.shown || '';
+          const twoWords = Boolean(shown) && shown.toLowerCase() !== stored.toLowerCase();
           return (
-            <div className={`wi-row${picked ? ` is-${picked}` : ''}`} key={row.id}>
-              <div className="wi-word">{row.display || row.lemma || row.word}</div>
-              {row.translation && <div className="wi-what">{row.translation}</div>}
-              <div className="wi-what">{row.issue_text}</div>
+            <div className={`wi-row${pick ? ` is-${pick.action === 'own' ? 'fix' : pick.action}` : ''}`} key={row.id}>
+              {twoWords ? (
+                <>
+                  <div className="wi-word">{row.issue_text}</div>
+                  <div className="wi-two">
+                    <div className="wi-two-line">
+                      <span className="wi-two-w">{shown}</span>
+                      <span className="wi-two-m">показывается в словаре</span>
+                    </div>
+                    <div className="wi-two-line">
+                      <span className="wi-two-w">{stored}</span>
+                      <span className="wi-two-m">лежит в базе — решается именно оно</span>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="wi-word">{stored}</div>
+                  {row.translation && <div className="wi-what">{row.translation}</div>}
+                  <div className="wi-what">{row.issue_text}</div>
+                </>
+              )}
 
-              {fix && (fix.to_display || fix.to_lemma || fix.to_word) && (
-                <div className="wi-fix">
-                  <span className="from">{row.lemma || row.word}</span>
-                  <span>→</span>
-                  <span className="to">{fix.to_display || fix.to_lemma || fix.to_word}</span>
+              {options.map((opt, index) => (
+                <div className="wi-src" key={`why-${index}`}>
+                  <span className={`wi-tag ${opt.source === 'модель' ? 'model' : 'book'}`}>
+                    {opt.source === 'модель' ? 'Модель' : 'Справочник'}
+                  </span>
+                  <span>
+                    <b>{opt.word}</b>
+                    {opt.pos ? ` — ${POS_RU[opt.pos] || opt.pos}` : ''}
+                    {opt.why ? `. ${opt.why}` : ''}
+                  </span>
                 </div>
+              ))}
+              {options.length > 1 && (
+                <div className="wi-what">Справочник знает оба. Какое имелось в виду?</div>
               )}
-              {fix?.to_translation && (
-                <div className="wi-fix">
-                  <span className="from">нет перевода</span>
-                  <span>→</span>
-                  <span className="to">{fix.to_translation}</span>
-                </div>
-              )}
-              {row.issue === 'no_translation' && !fix?.to_translation && (
-                <div className="wi-src">Перевод подберёт ночная работа — обычно к утру.</div>
-              )}
-              {fix && fix.to_pos && (
-                <div className="wi-fix">
-                  <span className="from">{POS_RU[row.pos] || row.pos || 'часть речи'}</span>
-                  <span>→</span>
-                  <span className="to">{POS_RU[fix.to_pos] || fix.to_pos}</span>
-                </div>
-              )}
-              {fix?.why && <div className="wi-src">{fix.why}</div>}
-              {!fix && (
+              {!options.length && (
                 <div className="wi-src">
-                  {row.issue === 'no_translation'
-                    ? 'Перевод придумывать не станем — впишите его в словаре или удалите карточку.'
-                    : 'Правку не предлагаем: справочник эту форму не подтвердил.'}
+                  <span className="wi-tag none">Не восстановили</span>
+                  <span>
+                    {row.issue === 'no_translation'
+                      ? 'Перевод придумывать не станем — впишите его или удалите карточку.'
+                      : 'Ни справочник, ни модель это написание не подтвердили. Если знаете сами — впишите.'}
+                  </span>
                 </div>
+              )}
+              {row.issue === 'no_translation' && !options.length && (
+                <div className="wi-src">Перевод подберёт ночная работа — обычно к утру.</div>
               )}
 
               <div className="wi-acts">
-                {(fix ? ['fix', 'keep', 'delete'] : ['keep', 'delete']).map((action) => (
+                {options.map((opt, index) => (
                   <button
                     type="button"
-                    key={action}
-                    className={`wi-act ${action}${picked === action ? ' is-on' : ''}`}
-                    onClick={() => choose(row.id, action)}
+                    key={`opt-${index}`}
+                    className={`wi-act fix${pick?.action === 'fix' && pick.option === index ? ' is-on' : ''}`}
+                    onClick={() => choose(row.id, 'fix', index)}
                   >
-                    {ACTION_LABEL[action]}
+                    {opt.word || 'Исправить'}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  className={`wi-act keep${pick?.action === 'keep' ? ' is-on' : ''}`}
+                  onClick={() => choose(row.id, 'keep')}
+                >
+                  Оставить
+                </button>
+                <button
+                  type="button"
+                  className={`wi-act delete${pick?.action === 'delete' ? ' is-on' : ''}`}
+                  onClick={() => choose(row.id, 'delete')}
+                >
+                  Удалить
+                </button>
+                {scope === 'shared' && (
+                  <button
+                    type="button"
+                    className="wi-act own"
+                    onClick={() => setOwnOpen((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
+                  >
+                    ✎ Своя
+                  </button>
+                )}
               </div>
+
+              {scope === 'shared' && ownOpen[row.id] && (
+                <div className="wi-own">
+                  <input
+                    className="wi-input"
+                    type="text"
+                    placeholder="Напишите верную форму"
+                    value={ownText[row.id] || ''}
+                    onChange={(e) => typeOwn(row.id, e.target.value)}
+                  />
+                  <div className="wi-src">
+                    Запишем ровно то, что вы написали: ваше слово главнее нашего справочника.
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}

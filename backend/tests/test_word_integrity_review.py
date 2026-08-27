@@ -3,12 +3,20 @@
 Владелец 26.08.2026 выбрал устройство: разбираем в мини-приложении, приглашение приходит
 в понедельник и воскресенье, ничего не удаляется само, неразобранное переезжает дальше.
 
+27.08.2026 владелец поймал на экране ЛОЖНЫЙ ДИАГНОЗ: под словом «der Degenerierte» стояло
+«существительное, а написано со строчной буквы» — при том, что существительное там с
+большой, а со строчной идёт артикль. Проверка сравнивала ОСНОВУ записи (`degeneriert`), а
+показывалась ВИТРИНА. Отсюда правила ниже.
+
 Что тут держится:
-1. Правка предлагается ТОЛЬКО подтверждённая справочником. «inkelgasse» и «degeneriert»
-   заглавной буквой словами не становятся — у них кнопки «Исправить» быть не должно.
-2. Очередь копится: повторный скан не плодит дублей и не трогает уже лежащее.
-3. «Применить» выполняет по ОДНОМУ действию на запись — не два над одной.
-4. Разбор открыт только владельцу.
+1. Диагноз описывает то, что проверено, и ничего сверх того.
+2. Правка предлагается из ИСТОЧНИКА и называет его. Прочтений бывает два — тогда
+   спрашиваем владельца, а не выбираем за него.
+3. Артикль к чужому слову не приклеивается, род берётся у арбитра, а не из самой записи.
+4. Молчание справочника не становится вечным приговором «правку не предлагаем».
+5. Экран в сеть не ходит: в справочник ходит ночь, экран берёт готовое.
+6. Очередь копится, «Применить» делает по одному действию на запись.
+7. Разбор открыт только владельцу.
 """
 import inspect
 
@@ -16,29 +24,191 @@ from backend import backend_server
 from backend import database
 
 
-def test_fix_is_offered_only_when_the_reference_confirms_it(monkeypatch):
+def _reference(answers):
+    """Подменённый справочник: написание → (слово, часть речи)."""
     import backend.german_word_gate as gate
 
-    monkeypatch.setattr(gate, "check_word", lambda word, **k: (
-        {"status": gate.CONFIRMED, "text": word} if word == "Hammer"
-        else {"status": gate.NOT_A_WORD, "text": word}
-    ))
+    def fake(word, **kwargs):
+        found = answers.get(word)
+        if not found:
+            return {"status": gate.UNCONFIRMED, "text": word, "pos": "", "source": "молчал"}
+        text, pos = found
+        status = gate.CONFIRMED if text == word else gate.REPAIRED
+        return {"status": status, "text": text, "pos": pos, "source": "справочник"}
+    return fake
 
-    fix = database._word_integrity_suggestion("hammer", "hammer", "noun", "der")
-    assert fix and fix["to_display"] == "der Hammer"
 
-    assert database._word_integrity_suggestion("inkelgasse", "inkelgasse", "noun", "die") is None, (
+def test_fix_is_offered_only_when_the_reference_confirms_it(monkeypatch):
+    """Заглавная буква не делает слово словом: её подтверждает справочник."""
+    import backend.german_word_gate as gate
+    import backend.article_authority as authority
+
+    monkeypatch.setattr(gate, "check_word", _reference({"Hammer": ("Hammer", "noun")}))
+    monkeypatch.setattr(authority, "authoritative_article", lambda w, **k: ("der", "wiktionary"))
+
+    options = database._word_integrity_options("hammer", "hammer", "noun", "der")
+    assert [o["word"] for o in options] == ["Hammer"]
+    assert options[0]["gender"] == "der" and options[0]["source"] == "справочник"
+
+    assert database._word_integrity_options("inkelgasse", "die inkelgasse", "noun", "die") == [], (
         "предложили исправить обрывок — заглавная буква не делает слово словом"
     )
 
 
-def test_reference_repair_to_a_lowercase_word_is_not_a_noun_fix(monkeypatch):
-    """«degeneriert» справочник чинит в глагол «degenerieren» — артикль к нему не клеим."""
+def test_a_form_of_another_word_is_offered_as_that_word(monkeypatch):
+    """«degeneriert» справочник знает формой глагола — это и предлагаем, БЕЗ артикля.
+
+    Прежде такой ответ выбрасывался целиком («правку не предлагаем»), хотя источник его
+    знает: владелец двое суток видел запись без единого предложения починки.
+    """
     import backend.german_word_gate as gate
-    monkeypatch.setattr(gate, "check_word", lambda word, **k: {
-        "status": gate.REPAIRED, "text": "degenerieren",
-    })
-    assert database._word_integrity_suggestion("degeneriert", "degeneriert", "noun", "der") is None
+    import backend.article_authority as authority
+
+    monkeypatch.setattr(gate, "check_word", _reference({
+        "degeneriert": ("degenerieren", "verb"),
+        "Degeneriert": ("degenerieren", "verb"),
+    }))
+    monkeypatch.setattr(authority, "authoritative_article", lambda w, **k: ("", ""))
+
+    options = database._word_integrity_options("degeneriert", "der Degenerierte", "noun", "der")
+    assert [o["word"] for o in options] == ["degenerieren"]
+    assert options[0]["pos"] == "verb"
+    assert options[0]["gender"] == "", "к глаголу приклеили артикль"
+
+
+def test_two_legal_readings_go_to_the_owner_as_two_buttons(monkeypatch):
+    """Справочник знает оба написания разными словами — выбирает человек, не мы."""
+    import backend.german_word_gate as gate
+    import backend.article_authority as authority
+
+    monkeypatch.setattr(gate, "check_word", _reference({
+        "degeneriert": ("degenerieren", "verb"),
+        "Degenerierte": ("Degenerierter", "noun"),
+    }))
+    monkeypatch.setattr(authority, "authoritative_article", lambda w, **k: ("", ""))
+
+    options = database._word_integrity_options("degeneriert", "der Degenerierte", "noun", "")
+    assert [o["word"] for o in options] == ["degenerieren", "Degenerierter"], (
+        "одно из законных прочтений выбрано за владельца"
+    )
+
+
+def test_the_article_never_comes_from_the_record_itself(monkeypatch):
+    """Род записи сам под подозрением: у «Migrant» в колонке лежит «die» от множественного.
+
+    Сухой прогон 27.08.2026 показал, что старое правило предлагало владельцу «die Migrant».
+    Род спрашивается у арбитра — он же чинит род ночью.
+    """
+    import backend.german_word_gate as gate
+    import backend.article_authority as authority
+
+    monkeypatch.setattr(gate, "check_word", _reference({
+        "Migrant": ("Migrant", "noun"), "Migranten": ("Migrant", "noun"),
+    }))
+    monkeypatch.setattr(authority, "authoritative_article", lambda w, **k: ("der", "wiktionary"))
+
+    options = database._word_integrity_options("Migrant", "die Migranten", "noun", "die")
+    assert [o["word"] for o in options] == ["Migrant"], "одно слово превратилось в два варианта"
+    assert options[0]["gender"] == "der", "род взят из записи, а не у арбитра"
+
+
+def test_diagnosis_never_claims_lowercase_when_the_shown_word_is_capitalized():
+    """Тот самый ложный диагноз: под «der Degenerierte» стояло «написано со строчной»."""
+    assert database._word_integrity_issue("degeneriert", "Degenerierte", "noun") == "two_words"
+    assert database._word_integrity_issue("hammer", "hammer", "noun") == "noun_lowercase"
+    assert database._word_integrity_issue("spr=sk", "Spal", "noun") == "garbage_lemma"
+    # ß и ss — РАЗНЫЕ написания. casefold их приравнивает, и пара «zielbewusst» /
+    # «zielbewußt» получала диагноз «существительное со строчной», хотя это прилагательное.
+    assert database._word_integrity_issue("zielbewusst", "zielbewußt", "adjective") == "two_words"
+    # Назвать дефект нечем — владельцу не показываем вовсе.
+    assert database._word_integrity_issue("Hammer", "Hammer", "noun") == ""
+
+
+def test_a_lowercase_noun_still_reaches_the_owner():
+    """Заглавная буква и есть предмет разговора — сравнение регистронезависимым быть не может.
+
+    Первая версия правки сравнивала прочтение с записью по `.lower()`, и весь класс
+    «существительное со строчной буквы» («hammer» → «Hammer») тихо переставал доходить
+    до владельца. Поймано сквозной проверкой на живой базе 27.08.2026.
+    """
+    question = {"issue": "noun_lowercase", "stored": "hammer", "shown": "hammer",
+                "options": [{"word": "Hammer"}]}
+    assert database._word_integrity_is_a_question(question) is True
+    # А вот когда прочтение уже стоит и в основе, и на витрине — спрашивать не о чем.
+    settled = {"issue": "noun_lowercase", "stored": "Hammer", "shown": "Hammer",
+               "options": [{"word": "Hammer"}]}
+    assert database._word_integrity_is_a_question(settled) is False
+
+
+def test_a_silent_reference_never_becomes_a_permanent_verdict():
+    """Вариантов нет — значит спросим ещё раз, а не «правку не предлагаем» навсегда."""
+    src = inspect.getsource(database.scan_word_integrity)
+    assert "UPDATE bt_3_word_integrity_review" in src and "jsonb_array_length" in src, (
+        "приговор «правки нет» снова бетонируется первым сканом"
+    )
+
+
+def test_the_screen_never_asks_the_reference_over_the_network():
+    """В справочник ходит ночь с паузой; экран берёт готовое из кеша двери."""
+    assert "allow_network: bool = False" in inspect.getsource(database.scan_word_integrity)
+    screen = inspect.getsource(backend_server.list_webapp_word_integrity)
+    assert "allow_network" not in screen, "открытие экрана снова пошло в сеть за справочником"
+
+    import io as _io
+    from pathlib import Path
+    bot = Path(backend_server.__file__).resolve().parents[1] / "bot_3.py"
+    text = _io.open(bot, encoding="utf-8").read()
+    assert "scan_word_integrity(limit=300, allow_network=True, pace=1.0)" in text, (
+        "ночной скан перестал спрашивать справочник — очередь останется без правок"
+    )
+
+
+def test_the_model_hint_reaches_the_queue():
+    """«inkelgasse» восстанавливается в «die Winkelgasse» — ночь считает это и для очереди."""
+    from backend import german_word_gate
+    assert "words_awaiting_integrity_hint" in inspect.getsource(german_word_gate.warm_suggestions), (
+        "очередь разбора снова осталась без подсказок модели"
+    )
+    src = inspect.getsource(database._word_integrity_model_option)
+    assert "bt_3_word_suggestion" in src and "модель" in src, (
+        "подсказка перестала быть подписанной источником"
+    )
+
+
+def test_the_choice_is_read_from_the_queue_not_from_the_browser():
+    """С экрана приходит НОМЕР прочтения; написание сервер берёт из своей очереди."""
+    src = inspect.getsource(database.apply_word_integrity_decisions)
+    assert 'item.get("option")' in src and "options[index]" in src, (
+        "написание принимается с экрана — в словарь можно записать что угодно"
+    )
+    assert 'confirm_word_by_owner' in src, "своя правка владельца не запоминается как его ответ"
+
+
+def test_a_new_word_never_keeps_the_old_analysis():
+    """Слово сменилось — разбор прежнего слова сносится, а не остаётся под новым."""
+    src = inspect.getsource(database._write_word_integrity_choice)
+    assert "card = CASE WHEN %(another)s THEN NULL ELSE card END" in src, (
+        "под новым заголовком остаётся грамматика чужого слова"
+    )
+    assert "WHEN %(another)s THEN NULL" in src, "род прежнего слова переезжает на новое"
+
+
+def test_renaming_keeps_the_word_findable():
+    """Переименование идёт через retitle_unit: иначе слово теряет ключ поиска."""
+    src = inspect.getsource(database._write_word_integrity_choice)
+    assert "retitle_unit" in src, "слово после правки перестанет находиться по своему имени"
+
+
+def test_the_review_screen_loads_the_stylesheet_that_draws_it():
+    """Экран рисуется классами из answer.css. Без импорта текст серый на белом."""
+    import io as _io
+    from pathlib import Path
+    root = Path(backend_server.__file__).resolve().parents[1] / "frontend" / "src"
+    screen = _io.open(root / "dictionary" / "WordIntegrityReview.jsx", encoding="utf-8").read()
+    assert "answer/answer.css" in screen, "вернулся бледный текст на белом фоне"
+    main = _io.open(root / "main.jsx", encoding="utf-8").read()
+    start = main.index("async function bootstrapWordIntegrity")
+    assert "data-scheme" in main[start:start + 900], "экран снова открывается без отметки темы"
 
 
 def test_queue_carries_over_and_never_duplicates():
@@ -51,7 +221,7 @@ def test_queue_carries_over_and_never_duplicates():
 def test_apply_does_one_action_per_record():
     """Одно решение на запись. «Применить» — это один заход по списку, а не два действия."""
     src = inspect.getsource(database.apply_word_integrity_decisions)
-    assert '{"fix", "keep", "delete"}' in src, "набор решений изменился — проверить экран"
+    assert '{"fix", "own", "keep", "delete"}' in src, "набор решений изменился — проверить экран"
     assert "status = %s, decided_at = NOW()" in src, "решение не фиксируется в очереди"
 
 

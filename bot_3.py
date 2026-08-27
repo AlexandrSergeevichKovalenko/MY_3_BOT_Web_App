@@ -13329,7 +13329,10 @@ def _send_word_integrity_review(reminder: bool = False) -> None:
         from backend.database import (
             get_admin_telegram_ids, scan_word_integrity, count_word_integrity_pending,
         )
-        scan_word_integrity(limit=300)
+        # Скан ПЕРЕД рассылкой — единственное место, где мы ходим в справочник за
+        # вариантами правки: он в фоне и никого не ждёт, поэтому спрашивает с паузой и
+        # не упирается в 429. Экран разбора потом берёт готовое из кеша двери мгновенно.
+        scan_word_integrity(limit=300, allow_network=True, pace=1.0)
         pending = count_word_integrity_pending()
         try:
             from backend.database import count_failed_translations
@@ -13354,7 +13357,7 @@ def _send_word_integrity_review(reminder: bool = False) -> None:
         lines = [head, ""]
         if pending:
             lines.append(f"Записей, которые противоречат сами себе: <b>{pending}</b>.")
-            lines.append("Слово помечено существительным, а написано со строчной; или вместо слова обрывок.")
+            lines.append("Слово со строчной буквы; в записи два разных слова; или вместо слова обрывок.")
         if unresolved_translations:
             lines.append("")
             lines.append(f"Слов, которым ночь не смогла подобрать перевод: <b>{unresolved_translations}</b>.")

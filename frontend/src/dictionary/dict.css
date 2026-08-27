@@ -2072,6 +2072,22 @@ html[data-scheme="light"] .dq-gt > summary,
 .wi-fix .from { color: var(--dmps-text-muted, #94a3b8); text-decoration: line-through; }
 .wi-fix .to { font-weight: 750; color: var(--dq-good); }
 .wi-src { font-size: 12px; color: var(--dmps-text-muted, #94a3b8); }
+/* Две строки записи: витрина и основа. Показываем обе — решение принимается про основу,
+   а на экране до 27.08.2026 крупно стояла витрина, и подпись под ней врала. */
+.wi-two { display: flex; flex-direction: column; gap: 7px; padding: 9px 10px; border-radius: 12px; background: var(--dq-chip); }
+.wi-two-line { display: flex; flex-direction: column; gap: 1px; }
+.wi-two-w { font-size: 15.5px; font-weight: 800; color: var(--dmps-text-title, #f1f5f9); word-break: break-word; }
+.wi-two-m { font-size: 12.5px; color: var(--dmps-text-secondary, #cbd5e1); }
+/* Источник виден на самой карточке: справочник, модель или «не восстановили». */
+.wi-src .wi-tag {
+  font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+  border-radius: 6px; padding: 2px 6px; margin-right: 6px; white-space: nowrap;
+}
+.wi-tag.book { background: rgba(169, 116, 31, 0.16); color: var(--dq-warn); }
+.wi-tag.model { background: var(--dq-accent-wash); color: var(--dq-accent); }
+.wi-tag.none { background: var(--dq-chip-strong); color: var(--dmps-text-muted, #94a3b8); }
+.wi-own { display: flex; flex-direction: column; gap: 6px; }
+.wi-act.own { flex: 0 0 auto; color: var(--dq-accent); }
 
 .wi-acts { display: flex; gap: 6px; }
 .wi-act {
