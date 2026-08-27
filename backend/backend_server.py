@@ -31507,7 +31507,11 @@ def _phrase_review_payload(limit: int = 200) -> dict:
     for it in list_open_phrase_reviews(int(limit)):
         judges = it.get("judges") or []
         arbiter = it.get("arbiter") if isinstance(it.get("arbiter"), dict) else None
-        variants = phrase_review_variants(judges, it.get("text") or "", arbiter)
+        # include_disputed: экран владельца ПОКАЗЫВАЕТ возражение проверки рядом с
+        # таким вариантом («Наша проверка не согласна: …»), поэтому имеет право его
+        # получить. Нумерация вариантов здесь и в применении решения обязана совпадать.
+        variants = phrase_review_variants(judges, it.get("text") or "", arbiter,
+                                          include_disputed=True)
         slot_of = {v["text"]: n for n, v in enumerate(variants)}
         # ТРИ РАЗНЫХ ВОПРОСА В ОДНОЙ ОЧЕРЕДИ, и путать их нельзя.
         # "grammar"     — судьи разошлись о грамматике фразы: решение = выбрать текст.

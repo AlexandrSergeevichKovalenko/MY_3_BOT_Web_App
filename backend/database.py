@@ -24492,7 +24492,8 @@ def _phrase_text_key(value: str) -> str:
     return " ".join(str(value or "").split()).strip(" .!?…,;:")
 
 
-def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = None) -> list[dict]:
+def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = None,
+                           *, include_disputed: bool = False) -> list[dict]:
     """Все РАЗНЫЕ варианты правки, которые предложили судьи, по порядку судей.
 
     Судей двое, и они часто расходятся — ровно поэтому фраза и попала владельцу. Пока
@@ -24524,6 +24525,15 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
     # │ спор целиком) и идёт на более сильной модели. Но не молча: вариант приезжает │
     # │ с пометкой, что проверка с ним не согласна, и владелец видит обе стороны.    │
     # └─────────────────────────────────────────────────────────────────────────────┘
+    # ⛔ ВАРИАНТ С ОГОВОРКОЙ ОТДАЁТСЯ ТОЛЬКО ПО ЯВНОЙ ПРОСЬБЕ.
+    #
+    # Вариант, который наша проверка забраковала, а третейский судья назвал верным,
+    # возвращается лишь при include_disputed=True — и вызывающий этим подписывается,
+    # что ПОКАЖЕТ рядом возражение проверки. Экран владельца показывает; экран проверки
+    # слов у обычного человека — нет, там на кнопке только «Да, правильно так: …», и
+    # человек одним касанием заучил бы ровно то, что система сама отвергла (нашёл
+    # соседний агент 27.08.2026, до живого вреда не дошло). Молчаливая утечка такого
+    # варианта на чужую поверхность опаснее его отсутствия, поэтому умолчание — «нет».
     winner_text = ""
     try:
         winner = int((arbiter or {}).get("winner") or 0)
@@ -24548,7 +24558,7 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
             # отдаём человеку на глаз ровно то, что обязана была отсеять система.
             # Разобрано 19.08.2026 на «in den Taschen» — неверный падеж и другое число.
             rejected = fix_passed_check(j, field) is False
-            if rejected and not _phrase_same_text(value, winner_text):
+            if rejected and not (include_disputed and _phrase_same_text(value, winner_text)):
                 continue
             seen.add(value)
             out.append({"judge": n, "field": field, "text": value,
@@ -24874,7 +24884,9 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
 
             chosen_ru = ""
             if decision == "accept":
-                variants = phrase_review_variants(judges, old_text, arbiter)
+                # Тот же набор, что на экране владельца: номер на кнопке = номер здесь.
+                variants = phrase_review_variants(judges, old_text, arbiter,
+                                                  include_disputed=True)
                 idx = int(variant or 0)
                 chosen = variants[idx] if 0 <= idx < len(variants) else {}
                 new_text = str(chosen.get("text") or "")
