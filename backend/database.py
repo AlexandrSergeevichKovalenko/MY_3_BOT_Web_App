@@ -32770,6 +32770,106 @@ def get_dictionary_entry_for_user(user_id: int, card_id: int, cursor=None) -> di
             return _fetch(own_cursor)
 
 
+def describe_manual_selection_sleep(
+    user_id: int,
+    card_ids: list[int] | tuple[int, ...] | None,
+    now_utc: datetime | None = None,
+    cursor=None,
+) -> dict:
+    """Что в ручной выборке СПИТ и когда проснётся: сколько карточек ждут своего срока
+    и во сколько вернётся ближайшая. Плюс — сколько карточек очередь не отдаст никогда.
+
+    ЗАЧЕМ. 27.08.2026 владелец отметил 9 слов, тренажёр отдал 8, а девятое
+    («Lass uns sachlich bleiben», интервал 26 дней, срок 28.08 21:41) не показал ни
+    разу и молча пропустил: в ручном режиме очередь тоже уважает срок повторения
+    (backend_server._build_next_srs_payload, bypass_due_at=False — решение осознанное).
+    Экран при этом писал «Выбрано сейчас: 9», то есть обещал девять. Эта функция даёт
+    экрану то, чего ему не хватало, чтобы сказать правду ДО старта.
+
+    Ничего не подставляет: нет спящих — next_due_at будет None, а не выдуманная дата.
+    Правила отбора («не suspended», «не gpt_seed») — те же, что у самой очереди
+    (count_due_srs_cards, get_next_new_srs_candidate), поэтому число на экране не
+    может разойтись с выдачей.
+
+    ┌─ ПРОВЕРЕНО 27.08.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ─────────────────────┐
+    │ ЧТО МЕРИЛИ: цена сводки ручной выборки на масштабе. EXPLAIN (ANALYZE) на живой   │
+    │ zephyr: все пять запросов экрана — 2.07 мс на сервере суммарно.                  │
+    │                                                                                 │
+    │ СЫРАЯ НАХОДКА: этот запрос идёт Seq Scan по bt_3_card_srs_state. Выглядит как    │
+    │ бомба на масштабе: «читает всю таблицу на каждое открытие экрана».               │
+    │                                                                                 │
+    │ ДЕФЕКТА НЕТ. Индексный путь СУЩЕСТВУЕТ — uq_bt_3_card_srs_state_user_card        │
+    │ (user_id, card_id), ровно те две колонки, по которым здесь идёт join. Планировщик │
+    │ выбирает Seq Scan только потому, что в таблице сейчас 947 строк и прочитать её    │
+    │ целиком дешевле, чем ходить в индекс. Замер с SET enable_seqscan=off (то есть     │
+    │ ровно тот план, который база возьмёт на большой таблице): 0.48 мс против 1.84 мс  │
+    │ — индексный путь БЫСТРЕЕ уже сегодня, и Postgres переключится на него сам, как    │
+    │ только таблица вырастет. Ни хинта, ни нового индекса не нужно.                    │
+    │                                                                                 │
+    │ ОТ ЧИСЛА ЛЮДЕЙ ЗАПРОС НЕ ЗАВИСИТ: он ограничен user_id и списком id выборки,      │
+    │ то есть читает столько строк, сколько человек отметил, а не сколько их в базе.    │
+    │                                                                                 │
+    │ КАК ПЕРЕМЕРИТЬ: EXPLAIN (ANALYZE) этого запроса на проде. Ждём Index Scan по      │
+    │ uq_bt_3_card_srs_state_user_card. Если там Seq Scan И таблица уже большая —       │
+    │ вот ТОГДА это находка (проверить ANALYZE/статистику таблицы).                     │
+    └─────────────────────────────────────────────────────────────────────────────────┘
+    """
+    now_utc = now_utc or datetime.now(timezone.utc)
+    normalized_ids = _normalize_positive_bigint_list(card_ids)
+    empty = {
+        "selected_total": 0,
+        "asleep_count": 0,
+        "next_due_at": None,
+        "not_trainable_count": 0,
+    }
+    if not normalized_ids:
+        return empty
+
+    def _fetch(cur):
+        cur.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE s.id IS NOT NULL
+                      AND s.status <> 'suspended'
+                      AND s.due_at > %s
+                ) AS asleep_count,
+                MIN(s.due_at) FILTER (
+                    WHERE s.id IS NOT NULL
+                      AND s.status <> 'suspended'
+                      AND s.due_at > %s
+                ) AS next_due_at,
+                COUNT(*) FILTER (
+                    WHERE q.id IS NULL
+                       OR COALESCE(q.response_json->>'sentence_origin', '') = 'gpt_seed'
+                       OR s.status = 'suspended'
+                ) AS not_trainable_count
+            FROM unnest(%s::bigint[]) AS sel(card_id)
+            LEFT JOIN bt_3_webapp_dictionary_queries q
+              ON q.id = sel.card_id AND q.user_id = %s
+            LEFT JOIN bt_3_card_srs_state s
+              ON s.card_id = sel.card_id AND s.user_id = %s;
+            """,
+            (now_utc, now_utc, normalized_ids, int(user_id), int(user_id)),
+        )
+        row = cur.fetchone()
+        if not row:
+            return dict(empty, selected_total=len(normalized_ids))
+        next_due_at = row[1]
+        return {
+            "selected_total": len(normalized_ids),
+            "asleep_count": int(row[0] or 0),
+            "next_due_at": next_due_at.isoformat() if hasattr(next_due_at, "isoformat") else None,
+            "not_trainable_count": int(row[2] or 0),
+        }
+
+    if cursor is not None:
+        return _fetch(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _fetch(own_cursor)
+
+
 def get_manual_training_selection_card_ids(
     user_id: int,
     source_lang: str,
