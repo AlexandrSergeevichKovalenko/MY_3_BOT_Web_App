@@ -1,0 +1,72 @@
+# -*- coding: utf-8 -*-
+"""Целому предложению разбор не нужен, и обещать его нельзя.
+
+РЕШЕНИЕ ВЛАДЕЛЬЦА 27.08.2026, дословно: «предложению разбор не нужен, это уже
+предложение, включающее в себя контекст использования слов… наугад написать какой-то
+разбор практически невозможно, тут неясно, на что делать упор… главное, задача уже
+выполнена: есть немецкий и русский вариант предложения, и больше ничего не нужно».
+
+ПОЧЕМУ ЭТО БЕЗОПАСНО. Замер 27.08.2026: предложений в слое 6 294, без разбора 3 505.
+Личных карточек на них 6 924, и русский перевод есть у ВСЕХ 6 924 — ни одной без.
+Человек не остаётся ни с чем: у него полный ответ, немецкий и русский.
+
+ЧТО БЫЛО НЕ ТАК. Ночная очередь берёт только `word` и `collocation`, то есть разбор
+предложению не собирался НИКОГДА. А карточка показывала «Разбор этого слова ещё
+готовится… загляните завтра». Обещание, которое не могло исполниться.
+
+Кнопка «Пожаловаться на разбор» у предложения ОСТАЁТСЯ: она живёт в ряду действий
+карточки и от разбора не зависит — человек по-прежнему может прислать сомнение владельцу.
+"""
+import os
+import re
+import unittest
+
+os.environ.setdefault("SKIP_STARTUP_SCHEMA_BOOTSTRAP", "1")
+os.environ.setdefault("SECOND_VOICE_CHECK_DISABLED", "1")
+
+ЭКРАН = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), "frontend", "src", "App.jsx")
+СЛОЙ = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "database.py")
+
+
+def _текст(путь: str) -> str:
+    return open(путь, encoding="utf-8").read()
+
+
+class ПредложениеНеЖдётРазбора(unittest.TestCase):
+    def test_the_screen_knows_it_is_a_sentence(self):
+        """Вид записи приходит из базы, а не угадывается по точке в конце строки."""
+        слой = _текст(СЛОЙ)
+        self.assertIn("u.kind", слой)
+        self.assertIn('item["unit_kind"]', слой)
+
+    def test_the_kind_column_is_appended_not_inserted(self):
+        """Номера прежних колонок читают четыре поверхности и их тесты: вставка в
+        середину ломает всех сразу (проверено — 7 красных тестов)."""
+        слой = _текст(СЛОЙ)
+        запрос = слой[слой.index("SELECT q.id, q.word_de, u.card"):]
+        запрос = запрос[:запрос.index("FROM bt_3_webapp_dictionary_queries")]
+        плоский = re.sub(r"\s+", " ", запрос)
+        self.assertLess(плоский.index("q.user_notes"), плоский.index("u.kind"))
+        self.assertIn("row[6] if len(row) > 6 else None", слой)
+
+    def test_no_plate_and_no_fill_for_a_sentence(self):
+        экран = _текст(ЭКРАН)
+        self.assertIn("const этоПредложение", экран)
+        # Ранний выход ДО плашки: иначе человеку снова пообещают разбор.
+        self.assertIn("if (этоПредложение) return null;", экран)
+        # И до сбора при открытии: тратить деньги на разбор, который не нужен, нельзя.
+        self.assertIn("if (hasCard || !слово || этоПредложение) return undefined;", экран)
+
+    def test_the_complaint_button_does_not_depend_on_the_breakdown(self):
+        """Пожаловаться на предложение человек должен мочь — кнопка в ряду действий."""
+        экран = _текст(ЭКРАН)
+        self.assertIn("vocab-action-complain", экран)
+        кусок = экран[экран.index("vocab-action-complain") - 400:
+                      экран.index("vocab-action-complain") + 200]
+        self.assertNotIn("этоПредложение", кусок)
+
+
+if __name__ == "__main__":
+    unittest.main()

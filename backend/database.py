@@ -5587,7 +5587,13 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
                    -- справочник форм, а не сравниваем буквы. Без этого «Die
                    -- Strümpfe» не признаётся формой слова «Strumpf», и разбор с
                    -- общего слова не показывается вовсе (1077 таких карточек).
-                   COALESCE(""" + UNIT_OWNS_CARD_SURFACE_SQL.format(q="q", u="u") + """, FALSE)
+                   COALESCE(""" + UNIT_OWNS_CARD_SURFACE_SQL.format(q="q", u="u") + """, FALSE),
+                   -- Вид записи (слово / оборот / предложение) нужен экрану: у
+                   -- предложения разбора не бывает по решению владельца 27.08.2026, и
+                   -- плашку «разбор ещё готовится» ему показывать нельзя.
+                   -- ⚠ ДОБАВЛЕНО В КОНЕЦ НАМЕРЕННО: номера прежних колонок читают
+                   -- четыре поверхности и их тесты, и вставка в середину ломает всех.
+                   u.kind
             FROM bt_3_webapp_dictionary_queries q
             LEFT JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
             WHERE q.id = ANY(%s)
@@ -5608,7 +5614,9 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
         return items
 
     by_card = {
-        int(row[0]): (row[1], _coerce_json_object(row[2]), row[3], normalize_user_notes(row[4]), bool(row[5]))
+        int(row[0]): (row[1], _coerce_json_object(row[2]), row[3],
+                      normalize_user_notes(row[4]), bool(row[5]),
+                      row[6] if len(row) > 6 else None)
         for row in rows
     }
     # Личные правки человека — то, что он написал своей рукой. Ложатся поверх общего.
@@ -5622,7 +5630,11 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
             found = None
         if not found:
             continue
-        word_de, unit_card, lemma_key, user_notes, surface_confirms = found
+        word_de, unit_card, lemma_key, user_notes, surface_confirms, unit_kind = found
+        # Вид записи отдаём ВСЕГДА, даже когда разбора нет: именно по нему экран решает,
+        # ждать ему разбор или не ждать.
+        if unit_kind:
+            item["unit_kind"] = str(unit_kind)
         # Заметки человека — рядом с разбором, но НИКОГДА не внутри него: разбор общий
         # и обновляется, заметка личная и обновлениям не подлежит.
         if user_notes:
