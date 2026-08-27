@@ -311,7 +311,8 @@ def owner_items(limit: int = 50) -> list[dict[str, Any]]:
 
 
 def подчистить_после_переименования(cur, *, unit_id: int, old_text: str,
-                                    new_text: str) -> dict[str, int]:
+                                    new_text: str,
+                                    трогать_указатель: bool = True) -> dict[str, int]:
     """Довести переименование до КОНЦА: род, поля разбора, указатель, пул, кеш.
 
     ┌─ НАЙДЕНО 27.08.2026 НА ЖИВОМ ПЕРЕИМЕНОВАНИИ. ────────────────────────────────┐
@@ -342,11 +343,23 @@ def подчистить_после_переименования(cur, *, unit_id
     голова = str(new_text or "").strip().split(" ", 1)
     if len(голова) == 2 and голова[0].lower() in {"der", "die", "das"}:
         артикль = голова[0].lower()
-    if артикль:
+    # ⚠ РОД БЫВАЕТ ТОЛЬКО У СЛОВА, А НЕ У ОБОРОТА.
+    # Найдено 27.08.2026 на «die Nase putzen»: это оборот, и «die» здесь — артикль
+    # существительного ВНУТРИ него, а не род самой записи. Я поставил роду 'die' и
+    # получил бессмыслицу: у оборота рода нет вовсе. Смотрим вид записи, который
+    # `retitle_unit` только что пересчитал.
+    cur.execute("SELECT kind FROM bt_3_lex_units WHERE id=%s;", (int(unit_id),))
+    вид = str((cur.fetchone() or [""])[0] or "")
+    if артикль and вид == "word":
         cur.execute("UPDATE bt_3_lex_units SET gender=%s, gender_source=%s "
                     "WHERE id=%s AND gender IS DISTINCT FROM %s;",
                     (артикль, "переименование по решению владельца", int(unit_id), артикль))
         итог["род"] = cur.rowcount or 0
+    elif вид != "word":
+        # У оборота род не только не ставим — старый, если он там был, снимаем.
+        cur.execute("UPDATE bt_3_lex_units SET gender=NULL, gender_source=NULL "
+                    "WHERE id=%s AND gender IS NOT NULL;", (int(unit_id),))
+        итог["род"] = -(cur.rowcount or 0)
 
     # 2. Опознавательные поля внутри разбора: старое написание не имеет права там жить.
     cur.execute("SELECT card FROM bt_3_lex_units WHERE id=%s;", (int(unit_id),))
@@ -366,11 +379,18 @@ def подчистить_после_переименования(cur, *, unit_id
 
     # 3. Указатель поиска. Ключи старого слова снимаем: оно существует само по себе, и
     # вести по нему на другое слово нельзя. Новый ключ ставим, если его ещё нет.
-    if старый_ключ:
+    #
+    # ⚠ У ФРАЗ ЭТО ПРАВИЛО ДРУГОЕ, ПОЭТОМУ ЕСТЬ ФЛАГ. Старый текст исправленной фразы —
+    # это обычно кривой обрывок («Wie steht es um?»), и оставленный ключ работает
+    # АЛИАСОМ: человек ищет то, что сам сохранил криво, и попадает на исправленное.
+    # Замер 27.08.2026: у всех 50 правок фраз такой ключ остался, и это польза, а не
+    # мусор. У слова наоборот: «Wortschwall» — настоящее немецкое слово, и вести по
+    # нему на «Geschwafel» значит врать про язык.
+    if старый_ключ and трогать_указатель:
         cur.execute("DELETE FROM bt_3_lex_surfaces WHERE unit_id=%s AND surface_key LIKE %s;",
                     (int(unit_id), f"%{старый_ключ}%"))
         итог["указатели"] = cur.rowcount or 0
-    if новый_ключ:
+    if новый_ключ and трогать_указатель:
         cur.execute("""INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
                        VALUES ('de', %s, %s, 'exact') ON CONFLICT DO NOTHING;""",
                     (новый_ключ, int(unit_id)))

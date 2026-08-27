@@ -279,8 +279,10 @@ class ПереименованиеДоводитсяДоКонца(unittest.Test
     кеше. Поиск «Wortschwall» вёл на «Geschwafel», хотя это настоящее немецкое слово.
     """
 
-    def _подчистить(self, разбор):
-        курсор = ПоддельныйКурсор([[(разбор,)]])
+    def _подчистить(self, разбор, вид="word"):
+        # Курсор отвечает по порядку: сперва вид записи (род ставим только слову),
+        # потом сам разбор.
+        курсор = ПоддельныйКурсор([[(вид,)], [(разбор,)]])
         итог = жалобы.подчистить_после_переименования(
             курсор, unit_id=27287, old_text="der Wortschwall", new_text="das Geschwafel")
         return итог, " ".join(str(q[0]) for q in курсор.запросы), курсор
@@ -288,7 +290,17 @@ class ПереименованиеДоводитсяДоКонца(unittest.Test
     def test_gender_follows_the_new_article(self):
         _, запросы, курсор = self._подчистить({})
         self.assertIn("SET gender=%s", запросы)
-        self.assertEqual(курсор.запросы[0][1][0], "das")
+        родовые = [q for q in курсор.запросы if "SET gender=%s" in str(q[0])]
+        self.assertEqual(родовые[0][1][0], "das")
+
+    def test_a_collocation_gets_no_gender_at_all(self):
+        """Найдено 27.08.2026 на «die Nase putzen»: это оборот, и «die» здесь артикль
+        существительного ВНУТРИ него, а не род записи. Я поставил роду 'die' и получил
+        бессмыслицу — у оборота рода нет."""
+        итог, запросы, _ = self._подчистить({}, вид="collocation")
+        self.assertNotIn("SET gender=%s,", запросы)
+        self.assertIn("SET gender=NULL", запросы)
+        self.assertLessEqual(итог["род"], 0)
 
     def test_the_old_name_leaves_the_card_itself(self):
         итог, _, курсор = self._подчистить({"source_text": "das Wortschwall",
