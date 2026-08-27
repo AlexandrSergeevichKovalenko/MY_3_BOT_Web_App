@@ -17810,7 +17810,7 @@ body.worldnews-active .webapp-topbar {
   .youtube-puzzle-bar .ypb-scrub { position: relative; flex: 1 1 auto; min-width: 60px; height: 18px; display: flex; align-items: center; }
   .youtube-puzzle-bar .ypb-scrub::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 6px; border-radius: 999px; background: var(--d-border); opacity: .7; }
   .youtube-puzzle-bar .ypb-scrub-fill { position: absolute; left: 0; top: 50%; transform: translateY(-50%); height: 6px; border-radius: 999px; background: linear-gradient(90deg, var(--d-accent), var(--d-accent-2)); pointer-events: none; z-index: 1; }
-  .youtube-puzzle-bar .ypb-scrub-input { position: relative; z-index: 2; -webkit-appearance: none; appearance: none; width: 100%; height: 18px; margin: 0; background: transparent; cursor: pointer; }
+  .youtube-puzzle-bar .ypb-scrub-input { position: relative; z-index: 2; -webkit-appearance: none; appearance: none; width: 100%; height: 18px; margin: 0; background: transparent; cursor: pointer; touch-action: none; /* жест принадлежит ручке, не странице — 27.08.2026 */ }
   .youtube-puzzle-bar .ypb-scrub-input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 15px; height: 15px; border-radius: 50%; background: var(--d-accent); border: 2.5px solid #fff; box-shadow: 0 2px 6px rgba(111, 84, 52, .45); }
   .youtube-puzzle-bar .ypb-scrub-input::-moz-range-thumb { width: 15px; height: 15px; border-radius: 50%; background: var(--d-accent); border: 2.5px solid #fff; }
   .youtube-puzzle-bar .ypb-scrub-input:disabled { opacity: .5; }
@@ -18588,6 +18588,9 @@ body.worldnews-active .webapp-topbar {
   margin: 0;
   background: transparent;
   cursor: pointer;
+  /* Жест принадлежит ручке, а не странице: без этого лёгкое движение пальца вверх отдаёт
+     перетаскивание скроллу страницы, ползунок получает pointercancel на полпути. 27.08.2026 */
+  touch-action: none;
 }
 
 .youtube-scrubber-input::-webkit-slider-runnable-track {

@@ -6400,6 +6400,9 @@ function AppInner() {
   const [youtubeCurrentTime, setYoutubeCurrentTime] = useState(0);
   const [youtubeDuration, setYoutubeDuration] = useState(0);
   const youtubeScrubbingRef = useRef(false); // true while the user drags the scrubber
+  // Куда человек перемотал и ждём, пока плеер туда доедет: { value, ticks } либо null.
+  // Пока ждём — опрос позиции НЕ трогает показанное число (см. startTimePolling).
+  const youtubeSeekTargetRef = useRef(null);
   const [youtubeTranslations, setYoutubeTranslations] = useState({});
   const [youtubeTranslationEnabled, setYoutubeTranslationEnabled] = useState(false);
   // DE (оригинальные субтитры) — реальный вкл/выкл, как RU. По умолчанию показаны.
@@ -29483,6 +29486,81 @@ function AppInner() {
     return rows.findIndex((row) => Array.isArray(row.indices) && row.indices.includes(activeCueIndex));
   };
 
+  // ── Перемотка видео: ОДИН механизм на обе панели управления (телефон и планшет/браузер).
+  // ┌─ ПРОВЕРЕНО 27.08.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────────────┐
+  // │ Жалоба владельца: на телефоне бегунок тянется, отпускаешь — видео оказывается в    │
+  // │ ДРУГОМ месте (не там, куда вели, и не там, откуда начали).                         │
+  // │ Мерили тремя независимыми чтениями кода + документацией YouTube IFrame API.        │
+  // │ Сырое «ползунок глючит» разложилось на ДВЕ самостоятельные причины, обе настоящие, │
+  // │ обе присутствовали в ДВУХ панелях сразу (это один код, скопированный дважды):      │
+  // │  1. seekTo(t, false) вызывался на КАЖДОЕ движение пальца. По документации false =  │
+  // │     «не запрашивать у сервера то, чего нет в буфере» — плеер садится на край уже   │
+  // │     загруженного куска. Честный seekTo(t, TRUE) висел на onMouseUp и onKeyUp, а    │
+  // │     iOS WebKit подделывает мышиные события только после короткого ТАПА и отключает │
+  // │     подделку, как только палец поехал. Итог: на телефоне честной перемотки не      │
+  // │     происходило НИ РАЗУ за всё время жизни панели (включена коммитом d62d56f7).    │
+  // │  2. Опрос getCurrentTime() раз в 400 мс возобновлялся В МОМЕНТ отпускания пальца.  │
+  // │     Плеер ещё едет, отвечает старым числом — бегунок дёргает назад. Это отдельная  │
+  // │     причина: она осталась бы, даже если убрать первую.                             │
+  // │ Решение владельца 27.08.2026: пока ведут бегунок — видео МОЛЧИТ; перемотка одна и  │
+  // │ только после отпускания, как у YouTube и Netflix.                                  │
+  // │ ДЕФЕКТА НЕТ в jumpYoutubeBySubtitle и в обоих восстановлениях позиции (:33705,     │
+  // │ :33804) — там всегда стоял seekTo(..., true). Их подключили к тому же ожиданию     │
+  // │ только ради причины 2 (мигание бегунка), самой перемотки это не касалось.          │
+  // │ Как перемерить: на телефоне вести бегунок в НЕзагруженную часть длинного видео.    │
+  // │ Бегунок обязан остаться там, куда его привели, и видео обязано пойти оттуда же.    │
+  // └───────────────────────────────────────────────────────────────────────────────────┘
+
+  // Число с ползунка → секунды видео. Не число (плеер ещё не назвал длительность, пришёл
+  // мусор) — возвращаем null и НЕ перематываем. Догадка вместо значения тут запрещена.
+  const youtubeScrubValueToSeconds = (rawValue) => {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) return null;
+    const total = Number(youtubeDuration);
+    if (!Number.isFinite(total) || total <= 0) return null;
+    return Math.max(0, Math.min(value, total));
+  };
+
+  // Просим опрос позиции подождать, пока плеер доедет до запрошенной точки.
+  // Ничего не выдумываем: на полосе стоит либо запрошенное человеком время, либо реальное
+  // время плеера. Третьего числа не существует.
+  const awaitYoutubeSeek = (targetSeconds) => {
+    youtubeSeekTargetRef.current = { value: targetSeconds, ticks: 0 };
+  };
+
+  // Ведут бегунок: только рисуем, в плеер не лезем (решение владельца 27.08.2026).
+  const previewYoutubeScrub = (rawValue) => {
+    const next = youtubeScrubValueToSeconds(rawValue);
+    if (next === null) return;
+    youtubeScrubbingRef.current = true;
+    youtubeSeekTargetRef.current = null; // новый жест отменяет ожидание прошлой перемотки
+    setYoutubeCurrentTime(next);
+  };
+
+  // Отпустили бегунок — ОДНА настоящая перемотка. Вешается на все виды отпускания сразу:
+  // палец (pointerup / touchend / pointercancel), мышь (mouseup), клавиатура (keyup).
+  const commitYoutubeScrub = (rawValue) => {
+    youtubeScrubbingRef.current = false;
+    const next = youtubeScrubValueToSeconds(rawValue);
+    if (next === null) return;
+    // Одно отпускание пальца может прийти сразу тремя событиями (pointerup + touchend +
+    // синтетический mouseup). Вторую и третью перемотку в ту же точку не шлём.
+    const pending = youtubeSeekTargetRef.current;
+    if (pending && Math.abs(pending.value - next) < 0.05) return;
+    const player = youtubePlayerRef.current;
+    if (!player?.seekTo) return;
+    setYoutubeCurrentTime(next);
+    awaitYoutubeSeek(next);
+    try {
+      player.seekTo(next, true);
+    } catch (seekError) {
+      // Перемотка не удалась — молчать нельзя. Снимаем ожидание, чтобы полоса немедленно
+      // показала ПРАВДУ от плеера, а причину пишем в консоль, а не прячем.
+      youtubeSeekTargetRef.current = null;
+      console.error('[YT_SCRUB] seekTo failed', seekError);
+    }
+  };
+
   const jumpYoutubeBySubtitle = (direction) => {
     const step = Number(direction);
     const rows = youtubeSubtitleDisplayRows;
@@ -29495,6 +29573,7 @@ function AppInner() {
     try {
       youtubePlayerRef.current.seekTo(nextStart, true);
       setYoutubeCurrentTime(nextStart);
+      awaitYoutubeSeek(nextStart); // иначе опрос через 400 мс мигнёт старым временем
       persistYoutubeResumeState(nextStart);
     } catch (_seekError) {
       // ignore seek errors
@@ -29631,11 +29710,6 @@ function AppInner() {
       const pad = (n) => String(n).padStart(2, '0');
       return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
     };
-    const doSeek = (val, commit) => {
-      const next = Math.max(0, Math.min(Number(val) || 0, dur));
-      setYoutubeCurrentTime(next);
-      try { youtubePlayerRef.current?.seekTo?.(next, commit === true); } catch (e) { /* ignore */ }
-    };
     const scrubPct = dur > 0 ? (cur / dur) * 100 : 0;
     const isMuted = youtubeMuted || youtubeVolume === 0;
     return (
@@ -29698,12 +29772,15 @@ function AppInner() {
             step="any"
             value={cur}
             disabled={!canScrub}
+            // Тот же механизм, что и на телефоне: планшет — тоже тач-экран.
             onPointerDown={() => { youtubeScrubbingRef.current = true; }}
-            onPointerUp={() => { youtubeScrubbingRef.current = false; }}
-            onPointerCancel={() => { youtubeScrubbingRef.current = false; }}
-            onChange={(e) => doSeek(e.target.value, false)}
-            onMouseUp={(e) => { youtubeScrubbingRef.current = false; doSeek(e.target.value, true); }}
-            onTouchEnd={() => { youtubeScrubbingRef.current = false; }}
+            onKeyDown={() => { youtubeScrubbingRef.current = true; }}
+            onChange={(e) => previewYoutubeScrub(e.target.value)}
+            onPointerUp={(e) => commitYoutubeScrub(e.currentTarget.value)}
+            onPointerCancel={(e) => commitYoutubeScrub(e.currentTarget.value)}
+            onTouchEnd={(e) => commitYoutubeScrub(e.currentTarget.value)}
+            onMouseUp={(e) => commitYoutubeScrub(e.currentTarget.value)}
+            onKeyUp={(e) => commitYoutubeScrub(e.currentTarget.value)}
             aria-label={tr('Перемотка видео', 'Video vorspulen')}
           />
         </div>
@@ -29796,15 +29873,6 @@ function AppInner() {
       const pad = (n) => String(n).padStart(2, '0');
       return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
     };
-    const seekToScrub = (rawValue, commit) => {
-      const next = Math.max(0, Math.min(Number(rawValue) || 0, youtubeDuration || 0));
-      setYoutubeCurrentTime(next);
-      try {
-        youtubePlayerRef.current?.seekTo?.(next, commit === true);
-      } catch (error) {
-        // ignore
-      }
-    };
     const scrubPercent = youtubeDuration > 0 ? (clampedTime / youtubeDuration) * 100 : 0;
     return (
       <div
@@ -29827,14 +29895,15 @@ function AppInner() {
                 step="any"
                 value={clampedTime}
                 disabled={!canScrub}
+                // Тащим — только рисуем; отпустили (любым способом) — одна перемотка.
                 onPointerDown={() => { youtubeScrubbingRef.current = true; }}
-                onPointerUp={() => { youtubeScrubbingRef.current = false; }}
-                onPointerCancel={() => { youtubeScrubbingRef.current = false; }}
                 onKeyDown={() => { youtubeScrubbingRef.current = true; }}
-                onKeyUp={(e) => { youtubeScrubbingRef.current = false; seekToScrub(e.target.value, true); }}
-                onChange={(e) => seekToScrub(e.target.value, false)}
-                onMouseUp={(e) => { youtubeScrubbingRef.current = false; seekToScrub(e.target.value, true); }}
-                onTouchEnd={(e) => { youtubeScrubbingRef.current = false; }}
+                onChange={(e) => previewYoutubeScrub(e.target.value)}
+                onPointerUp={(e) => commitYoutubeScrub(e.currentTarget.value)}
+                onPointerCancel={(e) => commitYoutubeScrub(e.currentTarget.value)}
+                onTouchEnd={(e) => commitYoutubeScrub(e.currentTarget.value)}
+                onMouseUp={(e) => commitYoutubeScrub(e.currentTarget.value)}
+                onKeyUp={(e) => commitYoutubeScrub(e.currentTarget.value)}
                 aria-label={tr('Перемотка видео', 'Video vorspulen')}
               />
             </div>
@@ -33583,9 +33652,26 @@ function AppInner() {
       }
       youtubeTimeIntervalRef.current = setInterval(() => {
         try {
-          if (!youtubeScrubbingRef.current) {
-            const time = youtubePlayerRef.current?.getCurrentTime?.();
-            if (typeof time === 'number' && !Number.isNaN(time)) {
+          const time = youtubePlayerRef.current?.getCurrentTime?.();
+          if (typeof time === 'number' && !Number.isNaN(time)) {
+            const pendingSeek = youtubeSeekTargetRef.current;
+            if (pendingSeek) {
+              // Перемотка в полёте. Раньше опрос просыпался в момент отпускания пальца и
+              // затирал показанное число старым — от этого бегунок и дёргался назад.
+              if (Math.abs(time - pendingSeek.value) <= 1.2) {
+                youtubeSeekTargetRef.current = null; // доехал — снова верим плееру
+                setYoutubeCurrentTime(time);
+              } else {
+                pendingSeek.ticks += 1;
+                // 12 тактов по 400 мс ≈ 5 c. Дольше плеер не «едет»: если он до сих пор не
+                // там, значит и не поедет (например обрезал по ключевому кадру) — показываем
+                // ПРАВДУ от плеера, а не свою цель. Своих чисел мы не придумываем.
+                if (pendingSeek.ticks >= 12) {
+                  youtubeSeekTargetRef.current = null;
+                  setYoutubeCurrentTime(time);
+                }
+              }
+            } else if (!youtubeScrubbingRef.current) {
               setYoutubeCurrentTime(time);
             }
           }
@@ -33800,9 +33886,13 @@ function AppInner() {
           currentTime: Math.max(localTime, savedTime),
           updatedAt: Date.now(),
         });
-        if (savedTime > (youtubeCurrentTimeRef.current + 1)) {
+        // Ответ сервера может прийти в момент, когда человек уже сам ведёт бегунок или
+        // ждёт свою перемотку. Его выбор главнее сохранённой позиции — не перебиваем.
+        const userIsSeeking = youtubeScrubbingRef.current || youtubeSeekTargetRef.current !== null;
+        if (!userIsSeeking && savedTime > (youtubeCurrentTimeRef.current + 1)) {
           youtubePlayerRef.current?.seekTo?.(savedTime, true);
           setYoutubeCurrentTime(savedTime);
+          awaitYoutubeSeek(savedTime);
           youtubeResumeAppliedForVideoRef.current = youtubeId;
         }
       })
