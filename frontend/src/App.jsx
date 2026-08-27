@@ -39491,21 +39491,12 @@ function AppInner() {
                         полный доступ» там просто ничего не делала. Проверено 27.08.2026 по
                         жалобе владельца; ProFeatureModal ведёт на «Подписку» и работает
                         одинаково и в Telegram, и в приложении с рабочего стола. */}
+                    {/* Окно «нужен полный доступ» рисует сам WordDiff — одно и то же в
+                        обоих словарях. Здесь мы говорим только, ЧТО делает его кнопка:
+                        открыть «Подписку». Наружу уводим по нажатию, а не по отказу
+                        сервера — иначе человека уносит с экрана без объяснения. */}
                     {vocabTab === 'diff' && (
-                      <WordDiff onNeedFullAccess={() => setProFeatureModal({
-                        emoji: '⚖️',
-                        title: tr('Новое сравнение — в полном доступе',
-                                  'Neuer Vergleich — im vollen Zugang'),
-                        intro: tr(
-                          'Этой пары ещё никто не разбирал. Разбор мы делаем на месте — он открыт в полном доступе.',
-                          'Dieses Paar hat noch niemand analysiert. Die Analyse machen wir auf der Stelle — sie gehört zum vollen Zugang.'),
-                        bullets: [
-                          tr('Всё, что уже разобрано, открывается бесплатно — список на экране.',
-                             'Alles, was schon analysiert ist, öffnet sich gratis — die Liste steht auf dem Bildschirm.'),
-                          tr('С полным доступом сравниваете любые свои слова, без счётчика.',
-                             'Mit vollem Zugang vergleichst du beliebige eigene Wörter, ohne Zähler.'),
-                        ],
-                      })} />
+                      <WordDiff onNeedFullAccess={() => openSingleSectionAndScroll('subscription', billingRef)} />
                     )}
 
                     {/* ─── ИСТОРИЯ ─── */}

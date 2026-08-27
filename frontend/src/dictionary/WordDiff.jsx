@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, haptic, SpeakButton, getInitData, getDictToken } from './WordBreakdown';
 import { humanizeDictError } from './errors.js';
 import { saveLookedUpWord, savePhraseWithTranslation } from './saveUtils';
+import ProFeatureModal from '../components/ProFeatureModal';
 
 /**
  * Вкладка «Отличия» — чем похожие слова отличаются друг от друга.
@@ -96,6 +97,14 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
   const [sharing, setSharing] = useState(false);
   const [streaming, setStreaming] = useState(false); // разбор ещё дописывается
   const [stageText, setStageText] = useState('');    // что сервер делает прямо сейчас
+  // Окно «нужен полный доступ». Рисует его САМ этот компонент, а не тот, кто его
+  // вставил, — потому что оно должно быть одинаковым в обоих словарях. Раньше окно
+  // было только во внутреннем словаре, а быстрый по тому же сигналу молча уносил
+  // человека в Telegram: сигнал «нужен полный доступ» висел на кнопке внутри плашки,
+  // а после переезда плашки в окно стал срабатывать сам. Владелец 27.08.2026 упёрся
+  // ровно в это. Теперь наружу (в Telegram или на «Подписку») уходят ТОЛЬКО по нажатию
+  // кнопки в этом окне.
+  const [paywallOpen, setPaywallOpen] = useState(false);
 
   const filled = useMemo(() => normalizeCells(cells), [cells]);
   const canSubmit = filled.length >= MIN_WORDS && phase !== 'loading';
@@ -146,11 +155,6 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
   // Выбор человека нужен внутри уже запущенного запроса, поэтому держим его в ссылке:
   // состояние обновится позже, а тело запроса собирается сейчас.
   const picksRef = useRef({});
-  // Вызов «нужен полный доступ» приходит от родителя стрелкой, то есть новой функцией на
-  // каждую перерисовку. Держим его в ссылке, чтобы обработчики разбора не пересобирались
-  // впустую, — тем же приёмом, что и picksRef выше.
-  const needFullAccessRef = useRef(null);
-  needFullAccessRef.current = onNeedFullAccess;
 
   const runDiff = useCallback(async (words) => {
     setPhase('loading');
@@ -198,7 +202,7 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           // продолжает. Серверную формулировку наружу не выносим: текст окна пишет
           // тот, кто это окно показывает.
           setPhase('idle');
-          if (needFullAccessRef.current) needFullAccessRef.current();
+          setPaywallOpen(true);
           return;
         }
         setResult(data);
@@ -237,7 +241,7 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           } else if (data && data.reason === 'paid_only') {
             // То же, что и в JSON-ветке выше: платный отказ живёт в модальном окне.
             setPhase('idle');
-            if (needFullAccessRef.current) needFullAccessRef.current();
+            setPaywallOpen(true);
           } else {
             setError(String(data?.message || data?.error || 'Не получилось разобрать.'));
             setLimitReached(String(data?.error || '') === 'free_limit_exceeded');
@@ -996,6 +1000,25 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
           )}
         </div>
       )}
+
+      {/* Окно «нужен полный доступ» — ОДНО на оба словаря, тот же вид, что и во всём
+          приложении. Что делает его кнопка, решает тот, кто вставил компонент: во
+          внутреннем словаре она открывает «Подписку», в быстром — бота в Telegram.
+          Само окно наружу не уводит НИКОГДА: человек закрывает его и остаётся на месте.
+          Текст здесь русский, как и весь этот экран. */}
+      <ProFeatureModal
+        isOpen={paywallOpen}
+        onClose={() => setPaywallOpen(false)}
+        onUpgrade={() => { setPaywallOpen(false); if (onNeedFullAccess) onNeedFullAccess(); }}
+        tr={(ru) => ru}
+        emoji="⚖️"
+        title="Новое сравнение — в полном доступе"
+        intro="Этой пары ещё никто не разбирал. Разбор мы делаем на месте — он открыт в полном доступе."
+        bullets={[
+          'Всё, что уже разобрано, открывается бесплатно — список на этом экране.',
+          'С полным доступом сравниваете любые свои слова, без счётчика.',
+        ]}
+      />
     </div>
   );
 }
