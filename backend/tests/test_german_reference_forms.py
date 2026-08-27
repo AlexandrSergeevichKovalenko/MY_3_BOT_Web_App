@@ -334,3 +334,89 @@ def test_ночная_работа_идёт_тем_же_путём_что_раз
     source = inspect.getsource(R.warm_nightly)
     assert "warm_from_source_bulk" in source, "ночью обязан работать быстрый путь по исходнику"
     assert "triage_unresolved" in source, "ночью обязан работать разбор остатка"
+
+
+# ── Субстантивация: ответ был в справочнике, а уходил владельцу ──────────────
+# Исходник снят запросом к de.wiktionary 27.08.2026 (страница «Gehen»), обрезан до
+# нужного. Строчная страница «gehen» — это ГЛАГОЛ, таблицы существительного там нет.
+GEHEN_SOURCE = """
+== Gehen ({{Sprache|Deutsch}}) ==
+=== {{Wortart|Substantiv|Deutsch}}, {{n}} ===
+{{Deutsch Substantiv Übersicht
+|Genus=n
+|Nominativ Singular=Gehen
+|Nominativ Plural=—
+|Genitiv Singular=Gehens
+|Genitiv Plural=—
+|Dativ Singular=Gehen
+|Dativ Plural=—
+|Akkusativ Singular=Gehen
+|Akkusativ Plural=—
+|Bild=Osaka07 D8M Alex Schwazer walking.jpg|mini|2|''Gehen'' bei den Championships
+}}
+"""
+
+
+def test_существительное_спрашивается_у_справочника_с_заглавной():
+    """По адресу «gehen» напечатан глагол. Существительное лежит только под «Gehen»."""
+    assert R._reference_title("gehen", "noun") == "Gehen"
+    assert R._reference_title("Gehen", "noun") == "Gehen"
+    # Прилагательное и наречие — наоборот, со строчной. Это правило не трогаем.
+    assert R._reference_title("Grundlegend", "adjective") == "grundlegend"
+
+
+def test_субстантивированный_инфинитив_читается_из_исходника():
+    """«das Gehen» — настоящее существительное с полной таблицей и без множественного."""
+    tables = R.declension_from_source(GEHEN_SOURCE)
+    assert list(tables) == ["n"]
+    rows = {r["case"]: r for r in tables["n"]["rows"]}
+    assert rows["nom"]["singular"] == "das Gehen"
+    assert rows["gen"]["singular"] == "des Gehens"
+    assert tables["n"]["has_plural"] is False
+
+
+def test_скачанная_страница_закрывает_слово_а_не_идёт_к_владельцу(monkeypatch):
+    """Разбор остатка обязан СНАЧАЛА прочитать страницу. Ответ был у нас в руках."""
+    записано, снято = {}, []
+    monkeypatch.setattr(R, "store_noun_declension",
+                        lambda word, tables: записано.update({word: tables}))
+    monkeypatch.setattr(R, "clear_unresolved", lambda word: снято.append(word))
+    assert R.close_from_source("Gehen", "noun", GEHEN_SOURCE) is True
+    assert записано["Gehen"]["n"]["rows"][1]["singular"] == "des Gehens"
+    assert снято == ["Gehen"]
+
+
+def test_пустая_страница_слово_не_закрывает():
+    """Нечего разбирать — значит вопрос остаётся вопросом, а не «закрыт»."""
+    assert R.close_from_source("Bierhausschwätzer", "noun", "") is False
+
+
+def test_разбор_остатка_читает_страницу_прежде_чем_звать_человека():
+    """Защита от возврата дефекта: классификация не должна идти раньше разбора."""
+    import inspect
+    source = inspect.getsource(R.triage_unresolved)
+    assert "close_from_source" in source, "остаток обязан сперва попытаться закрыть слово"
+    assert source.index("close_from_source") < source.index("classify_uncovered"), \
+        "сначала читаем формы, и только потом решаем, звать ли владельца"
+
+
+def test_отказ_справочника_перепроверяется_а_не_живёт_вечно():
+    """«Страницы нет» — незакрытая задача. Ночная работа обязана к ней возвращаться."""
+    import inspect
+    assert "recheck_negatives" in inspect.getsource(R.warm_nightly)
+
+
+def test_подтип_наречия_это_наречие_а_не_чужая_часть_речи():
+    """«heute» помечено «Temporaladverb», «davor» — «Lokaladverb». Это наречия."""
+    assert R._pos_matches("adjective", {"Temporaladverb"}) is True
+    assert R._pos_matches("adverb", {"Konjunktionaladverb", "Modaladverb"}) is True
+    assert R._pos_matches("noun", {"Substantiv"}) is True
+
+
+def test_чужая_часть_речи_словом_не_закрывается():
+    """«ausstatten» лежит у нас прилагательным, а это глагол. Закрыть его как
+    «несравнимое прилагательное» значит спрятать дефект нашего заголовка."""
+    assert R._pos_matches("adjective", {"Verb"}) is False
+    assert R._pos_matches("adjective", {"Partizip II"}) is False
+    assert R._pos_matches("noun", {"Deklinierte Form"}) is False
+    assert R.forms_from_source("adjective", VERB_SOURCE) is None

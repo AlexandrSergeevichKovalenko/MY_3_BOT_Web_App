@@ -335,15 +335,22 @@ def _degrees_from_html(german_html: str) -> dict[str, str]:
 
 # ── Скачивание ───────────────────────────────────────────────────────────────
 def fetch_noun_declension(noun: str) -> dict[str, Any] | None:
-    """{} — страницы или таблицы нет. None — справочник молчит."""
-    html = _fetch_page(noun)
+    """{} — страницы или таблицы нет. None — справочник молчит.
+
+    Адрес страницы берётся правилом `_reference_title`, а НЕ словом как есть. Иначе
+    вызывающий со строчной буквой («голое» слово из скрипта уборки, лемма, пришедшая
+    из середины предложения) спрашивает чужую страницу, а отрицательный ответ ложится
+    в кэш под общим ключом. Так и вышло 23.08.2026 с «gehen»/«vier» — разобрано в
+    комментарии у `_reference_title`.
+    """
+    html = _fetch_page(_reference_title(noun, "noun"))
     if html is None:
         return None
     return _declension_from_html(html)
 
 
 def fetch_adjective_degrees(adjective: str) -> dict[str, str] | None:
-    html = _fetch_page(adjective)
+    html = _fetch_page(_reference_title(adjective, "adjective"))
     if html is None:
         return None
     return _degrees_from_html(html)
@@ -648,7 +655,13 @@ def mark_unresolved(word: str, pos: str, reason: str) -> None:
 
 
 def clear_unresolved(word: str) -> None:
-    """Слово закрылось — снимаем его с разбора."""
+    """Слово закрылось — снимаем его с разбора.
+
+    Сравнение БЕЗ РЕГИСТРА: в очередь слово попадает так, как лежит в словаре
+    («Gehen»), а кэш форм хранит ключ в нижнем регистре («gehen»). Точное сравнение
+    оставляло бы закрытое слово висеть в очереди и слать его владельцу — вопрос,
+    на который у нас уже есть ответ.
+    """
     from backend.database import get_db_connection_context
     key = str(word or "").strip()
     if not key:
@@ -656,7 +669,8 @@ def clear_unresolved(word: str) -> None:
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM bt_3_reference_forms_unresolved WHERE word = %s;", (key,))
+                cur.execute("DELETE FROM bt_3_reference_forms_unresolved "
+                            "WHERE lower(word) = lower(%s);", (key,))
             conn.commit()
     except Exception:
         logging.debug("формы из справочника: не снял непокрытое %s", key, exc_info=True)
@@ -1005,6 +1019,24 @@ def _reference_title(word: str, pos: str) -> str:
     name = str(word or "").strip()
     if not name:
         return ""
+    # ┌─ НАЙДЕНО 27.08.2026, ПОЧИНЕНО. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ─────────────┐
+    # │ Существительное в справочнике лежит ТОЛЬКО под заглавной буквой. По адресу  │
+    # │ «gehen» напечатан ГЛАГОЛ, и таблицы существительного там нет — значит       │
+    # │ вопрос со строчной буквы возвращает «страницы нет» про совсем другое слово. │
+    # │ Кэш форм хранит ключ в нижнем регистре, поэтому такой ответ накрывал        │
+    # │ существительное навсегда: «das Gehen», «das Schwimmen», «die Vier»,         │
+    # │ «das Wenn», «das Aber» висели в очереди к владельцу, хотя справочник        │
+    # │ печатает их таблицы целиком (проверено запросом 27.08.2026, разбор наш их   │
+    # │ читает без единой правки).                                                  │
+    # │ Пришло это не из воздуха: 23.08 слова лежали у нас со строчной, и «дверь    │
+    # │ слова» переименовала их в «Gehen»/«Vier» уже ПОСЛЕ того, как вердикт лёг    │
+    # │ в кэш (см. background_jobs.run_reference_forms_warm_actor).                 │
+    # │ Заглавная здесь — не выдуманная грамматика, а АДРЕС СТРАНИЦЫ. Что там       │
+    # │ напечатано, решает разбор: он берёт только блок «Deutsch Substantiv         │
+    # │ Übersicht», и чужая часть речи в таблицу попасть не может.                  │
+    # └────────────────────────────────────────────────────────────────────────────┘
+    if str(pos or "").strip().lower() == "noun":
+        return name[:1].upper() + name[1:] if name[:1].islower() else name
     try:
         from backend.german_grammar_tables import german_headword_case
         fixed = german_headword_case(name, pos)
@@ -1133,6 +1165,31 @@ _POS_OK = {"adjective": {"Adjektiv", "Adverb"}, "adverb": {"Adjektiv", "Adverb"}
            "noun": {"Substantiv"}}
 
 
+def _pos_matches(pos: str, kinds: set[str]) -> bool:
+    """Совпадает ли часть речи страницы с нашей. Пустой набор — страница молчит о ней.
+
+    ┌─ ПРОВЕРЕНО 27.08.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ───────────────────┐
+    │ Справочник помечает наречия ПОДТИПАМИ: «Temporaladverb» (heute),              │
+    │ «Lokaladverb»/«Pronominaladverb» (davor), «Modaladverb» (konsequenterweise),  │
+    │ «Konjunktionaladverb» (nichtsdestotrotz). Ровное сравнение со словом «Adverb»  │
+    │ объявляло их чужой частью речи — то есть дефектом НАШЕГО заголовка, хотя это   │
+    │ настоящие наречия, у которых степеней сравнения не бывает, и это ОТВЕТ.        │
+    │ Замер по всем 89 отказам кэша: таких слов 4, чужих частей речи (Verb,          │
+    │ Partizip, Konjunktion, Präposition, Deklinierte Form) — 32, и они остаются     │
+    │ дефектами заголовка, как и были.                                              │
+    │ Хвост «…adverb» — это собственное словоупотребление справочника, а не наша     │
+    │ догадка о языке: сам разбор форм по-прежнему берёт только напечатанное.        │
+    └───────────────────────────────────────────────────────────────────────────────┘
+    """
+    allowed = _POS_OK.get(str(pos or "").strip().lower(), set())
+    if not kinds or not allowed:
+        return not kinds
+    if kinds & allowed:
+        return True
+    return "Adverb" in allowed and any(str(k).strip().lower().endswith("adverb")
+                                       for k in kinds)
+
+
 def classify_uncovered(word: str, pos: str, source_text: str) -> tuple[str, str]:
     """(куда деть, почему). Правило одно и то же для разовой чистки и для ночной работы.
 
@@ -1149,9 +1206,53 @@ def classify_uncovered(word: str, pos: str, source_text: str) -> tuple[str, str]
     if not text:
         return "заголовок", "страницы в справочнике нет"
     kinds = set(re.findall(r"\{\{Wortart\|([^|}]+)", text))
-    if kinds and not (kinds & _POS_OK.get(pos, set())):
+    if not _pos_matches(pos, kinds):
         return "заголовок", f"часть речи не {pos}, а {sorted(kinds)[:3]}"
     return "владельцу", "слово настоящее, форм справочник не дал"
+
+
+def forms_from_source(pos: str, source_text: str) -> dict[str, Any] | None:
+    """Что даёт уже скачанная страница по НАШЕЙ части речи. None — не даёт ничего.
+
+    Отделено от записи нарочно: показом («что закроется») и записью обязано управлять
+    одно правило. Два похожих правила расходятся — это уже стоило нам дня.
+    """
+    text = str(source_text or "")
+    if not text:
+        return None
+    # Часть речи на странице обязана совпасть с нашей. Иначе «ausstatten», лежащее у
+    # нас прилагательным, закрылось бы как «глагол без степеней сравнения» — и дефект
+    # НАШЕГО заголовка исчез бы из виду. Разводит их `classify_uncovered`, и она
+    # должна получить это слово, а не потерять его здесь.
+    kinds = set(re.findall(r"\{\{Wortart\|([^|}]+)", text))
+    if not _pos_matches(pos, kinds):
+        return None
+    if str(pos or "").strip().lower() == "noun":
+        return declension_from_source(text) or None
+    return degrees_from_source(text) or None
+
+
+def close_from_source(word: str, pos: str, source_text: str) -> bool:
+    """Уже скачанный исходник → формы в кэш. True — слово закрыто, вопроса больше нет.
+
+    ┌─ НАЙДЕНО 27.08.2026, ПОЧИНЕНО. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ────────────────┐
+    │ Разбор остатка СКАЧИВАЛ страницу слова, смотрел в ней только пометку части     │
+    │ речи и по ней решал: «настоящее слово, форм справочник не дал» → владельцу.    │
+    │ А формы в этой самой странице были напечатаны. Так владельцу ушли «Gehen»,     │
+    │ «Schwimmen», «Vier», «Wenn», «Aber»: ответ лежал у нас в руках в ту же секунду.│
+    │ Теперь текст сперва РАЗБИРАЕТСЯ, и человека зовут только на то, чего в         │
+    │ источнике вправду нет.                                                         │
+    └───────────────────────────────────────────────────────────────────────────────┘
+    """
+    got = forms_from_source(pos, source_text)
+    if got is None:
+        return False
+    if str(pos or "").strip().lower() == "noun":
+        store_noun_declension(word, got)
+    else:
+        store_adjective_degrees(word, got)
+    clear_unresolved(word)
+    return True
 
 
 def mark_headword_defect(word: str, pos: str, why: str) -> None:
@@ -1190,10 +1291,75 @@ def warm_nightly(*, limit: int = 120, allow_model: bool = True) -> dict:
     остатка на «вопрос владельцу» и «дефект заголовка».
     """
     stats = warm_from_source_bulk(limit=limit)
+    # Перепроверка ДО модели: слово, которое справочник теперь закрывает, не должно
+    # стоить нам двух запросов к модели каждую ночь.
+    stats["перепроверка отказов"] = recheck_negatives(limit=limit)
     if allow_model:
         stats["добор"] = warm_with_model(limit=limit)
     stats["разбор остатка"] = triage_unresolved(limit=limit)
     return stats
+
+
+# Отказ справочника («страницы нет») — НЕ приговор навсегда, а незакрытая задача:
+# заголовок у нас мог быть кривым, регистр — не тем, статья в справочнике могла
+# появиться. Отказов мало (замер 27.08.2026: 39 существительных и 50 прилагательных),
+# пачка идёт по 50 названий за запрос, поэтому недельный круг стоит два-три запроса.
+_RECHECK_NEGATIVE_AFTER_DAYS = 7
+
+
+def recheck_negatives(*, limit: int = 120) -> dict:
+    """Спросить заново то, на что справочник когда-то ответил «страницы нет».
+
+    Зачем это отдельным шагом: быстрый путь `warm_from_source_bulk` пропускает любое
+    слово, у которого в кэше УЖЕ есть строка, — неважно, ответом она стоит или
+    отказом. Поэтому один неверный вопрос (не тот регистр, кривой заголовок) закрывал
+    слово от системы навсегда. Проверено 27.08.2026 на «gehen»: отказ лежал с 23.08.
+    """
+    import time
+    from backend.database import get_db_connection_context
+    sql = """
+        SELECT noun AS word, 'noun' AS pos, checked_at
+          FROM bt_3_german_noun_declensions
+         WHERE NOT documented AND checked_at < NOW() - INTERVAL '%(days)s days'
+        UNION ALL
+        SELECT adjective AS word, 'adjective' AS pos, checked_at
+          FROM bt_3_german_adjective_degrees
+         WHERE NOT documented AND checked_at < NOW() - INTERVAL '%(days)s days'
+         ORDER BY checked_at ASC
+         LIMIT %(limit)s
+    """ % {"days": int(_RECHECK_NEGATIVE_AFTER_DAYS), "limit": int(limit)}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            queue = [(str(a), str(b)) for a, b, _ in (cur.fetchall() or [])]
+
+    out = {"перепроверено": 0, "закрыто": 0, "по-прежнему нет": 0, "справочник молчал": 0}
+    for start in range(0, len(queue), 50):
+        chunk = queue[start:start + 50]
+        sources = None
+        for attempt in range(3):
+            sources = fetch_sources_bulk([_reference_title(w, p) for w, p in chunk])
+            if sources is not None:
+                break
+            time.sleep(8 * (attempt + 1))
+        if sources is None:
+            # Молчание справочника НЕ записывается как «ответ тот же»: кэш не трогаем.
+            out["справочник молчал"] += len(chunk)
+            continue
+        for word, pos in chunk:
+            text = sources.get(_reference_title(word, pos)) or sources.get(word) or ""
+            out["перепроверено"] += 1
+            if close_from_source(word, pos, text):
+                out["закрыто"] += 1
+                continue
+            # Ответ тот же — перештамповываем дату, чтобы круг не крутился каждую ночь.
+            if pos == "noun":
+                store_noun_declension(word, {})
+            else:
+                store_adjective_degrees(word, {})
+            out["по-прежнему нет"] += 1
+        time.sleep(2)
+    return out
 
 
 def triage_unresolved(*, limit: int = 120) -> dict:
@@ -1205,7 +1371,8 @@ def triage_unresolved(*, limit: int = 120) -> dict:
             cur.execute("SELECT word, pos FROM bt_3_reference_forms_unresolved "
                         "WHERE NOT reviewed ORDER BY checked_at LIMIT %s;", (int(limit),))
             queue = [(str(a), str(b)) for a, b in (cur.fetchall() or [])]
-    out = {"владельцу": 0, "заголовок": 0, "справочник молчал": 0}
+    out = {"закрыто справочником": 0, "владельцу": 0, "заголовок": 0,
+           "справочник молчал": 0}
     for start in range(0, len(queue), 40):
         chunk = queue[start:start + 40]
         sources = None
@@ -1219,6 +1386,10 @@ def triage_unresolved(*, limit: int = 120) -> dict:
             continue
         for word, pos in chunk:
             text = sources.get(_reference_title(word, pos)) or sources.get(word) or ""
+            # Сначала ЧИТАЕМ страницу, а не только смотрим на пометку части речи.
+            if close_from_source(word, pos, text):
+                out["закрыто справочником"] += 1
+                continue
             where, why = classify_uncovered(word, pos, text)
             if where == "заголовок":
                 mark_headword_defect(word, pos, why)
