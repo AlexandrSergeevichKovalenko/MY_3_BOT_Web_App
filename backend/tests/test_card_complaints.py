@@ -125,8 +125,11 @@ class ВердиктСверяетсяСамСобой(unittest.TestCase):
         with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "тест"}), \
              mock.patch("backend.synthetic_load.build_sync_openai_client",
                         return_value=self._ответ(тело)):
+            # Карточка настоящая по составу: страж имён полей сверяет предложение
+            # именно с ней, и подсунуть сюда {"a": 1} значит проверять не то.
             return openai_manager.run_card_complaint_verdict(
-                word="Alle meine Kollegen", note="перевод не тот", card={"a": 1})
+                word="Alle meine Kollegen", note="перевод не тот",
+                card={"translation_ru": "Все мои коллеги", "usage_examples": []})
 
     def test_supported_without_a_fix_is_not_supported(self):
         итог = self._спросить(
@@ -143,6 +146,76 @@ class ВердиктСверяетсяСамСобой(unittest.TestCase):
         """Не разобрали ответ — значит не судили. Пустого «всё хорошо» здесь нет."""
         self.assertIsNone(self._спросить("не json вовсе"))
         self.assertIsNone(self._спросить('{"что-то": "другое"}'))
+
+
+class ПредложениеДолжноБытьПРИМЕНИМЫМ(unittest.TestCase):
+    """Владелец 26.08.2026: «как я могу нажать "принять вариант", если я не вижу, какой
+    именно вариант мне предлагают?» Отсюда три правила, и все три — про одно: кнопка
+    обязана делать ровно то, что написано.
+
+    Живой прогон на «der Wortschwall» дал все три случая сразу: модель предложила поле
+    `meanings`, которого в карточке НЕТ (значения там в `dictionary_senses`); поле
+    `word_ru` со значением, равным нынешнему; и переименование самого слова.
+    """
+
+    def _судить(self, предложение, card):
+        from backend import openai_manager
+        тело = ('{"card_is_wrong": true, "chto_ne_tak": "перепутаны слова",'
+                ' "predlozhenie": ' + __import__("json").dumps(предложение) + '}')
+        ответ = mock.Mock()
+        ответ.choices = [mock.Mock(message=mock.Mock(content=тело))]
+        ответ.usage = None
+        клиент = mock.Mock()
+        клиент.chat.completions.create.return_value = ответ
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "тест"}), \
+             mock.patch("backend.synthetic_load.build_sync_openai_client",
+                        return_value=клиент):
+            return openai_manager.run_card_complaint_verdict(
+                word="der Wortschwall", note="не то слово", card=card)
+
+    def test_a_field_the_card_does_not_have_is_dropped(self):
+        итог = self._судить({"meanings": "поток слов"},
+                            {"dictionary_senses": [], "translation_ru": "Словоблудие"})
+        self.assertEqual(итог["predlozhenie"], {})
+        self.assertFalse(итог["card_is_wrong"], "нечего применять — значит и кнопки нет")
+
+    def test_a_change_that_changes_nothing_is_dropped(self):
+        итог = self._судить({"translation_ru": "Словоблудие"},
+                            {"translation_ru": "Словоблудие"})
+        self.assertEqual(итог["predlozhenie"], {})
+
+    def test_a_real_change_survives_both_guards(self):
+        итог = self._судить({"translation_ru": "поток слов"},
+                            {"translation_ru": "Словоблудие"})
+        self.assertEqual(итог["predlozhenie"], {"translation_ru": "поток слов"})
+        self.assertTrue(итог["card_is_wrong"])
+
+    def test_renaming_the_word_is_not_offered_as_a_field_edit(self):
+        """Заголовок живёт не в разборе, а в самой единице: save_unit_card его не тронет,
+        и «принять» дало бы полукарточку — ровно то, на что и пожаловались."""
+        можно, заголовок = жалобы._разделить_предложение(
+            {"word_de": "das Geschwafel", "article": "das", "usage_examples": ["…"]})
+        self.assertEqual(sorted(заголовок), ["article", "word_de"])
+        self.assertEqual(list(можно), ["usage_examples"])
+
+    def test_only_a_rename_means_no_accept_button(self):
+        курсор = ПоддельныйКурсор([[(4242, 99, 117649764, "der Wortschwall",
+                                     {"card_is_wrong": True,
+                                      "predlozhenie": {"word_de": "das Geschwafel"}})]])
+        with _с_базой(курсор):
+            итог = жалобы.apply_owner_decision(1, "принять")
+        self.assertEqual(итог["reason"], "no_proposal")
+
+    def test_the_screen_shows_what_will_be_replaced(self):
+        """Без «было» рядом со «станет» решение принять нельзя."""
+        было = {"translation_ru": "Словоблудие", "usage_examples": ["старый"]}
+        self.assertEqual(
+            жалобы._текущее_по_полям(было, {"translation_ru": "поток слов"}),
+            {"translation_ru": "Словоблудие"})
+
+    def test_a_field_missing_from_the_card_is_shown_as_empty_not_blank(self):
+        self.assertEqual(жалобы._текущее_по_полям({}, {"memory_tip": "х"}),
+                         {"memory_tip": None})
 
 
 class ПачкаВладельцу(unittest.TestCase):

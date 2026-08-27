@@ -41,6 +41,44 @@
 /* Предложение модели — единственное место, куда владелец смотрит перед нажатием. */
 .cr-fix { color: var(--primary); font-weight: 600; }
 
+/* «Было → станет». Ради этого блока экран и существует: решение принимают, глядя на
+   сравнение, а не на новый текст в одиночестве. Старое приглушено и перечёркнуто,
+   новое — обычным цветом текста: глаз сам ловит, что останется на карточке. */
+.cr-diff { border-color: rgba(88, 200, 236, .28); background: rgba(88, 200, 236, .05); }
+.cr-field { padding: 7px 0; border-top: 1px dashed var(--line); }
+.cr-field:first-of-type { border-top: none; padding-top: 2px; }
+.cr-field-name {
+  font-size: .78rem;
+  font-weight: 700;
+  color: var(--ink-2);
+  margin-bottom: 4px;
+}
+.cr-was, .cr-will {
+  margin: 3px 0 0;
+  font-size: .88rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.cr-was { color: var(--muted); text-decoration: line-through; text-decoration-color: rgba(148,163,184,.5); }
+.cr-will { color: var(--ink); }
+.cr-mark {
+  display: inline-block;
+  min-width: 52px;
+  margin-right: 7px;
+  font-size: .66rem;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--muted);
+  text-decoration: none;
+}
+.cr-mark-new { color: var(--primary); }
+.cr-empty { color: var(--muted); font-style: italic; }
+.cr-diff-note { margin-top: 9px; }
+
+.cr-rename { border-color: rgba(251, 191, 36, .3); background: rgba(251, 191, 36, .06); }
+.cr-was-inline { color: var(--muted); }
+
 .cr-card .wa-actions { margin-top: 12px; grid-template-columns: 1fr 1fr; }
 .cr-act-accept { grid-column: 1 / -1; }
 .cr-card[data-state="принять"] { border-left-color: var(--primary); }

@@ -9596,6 +9596,14 @@ def run_card_complaint_verdict(*, word: str, note: str, card: dict) -> dict | No
         return None
     from backend.synthetic_load import build_sync_openai_client
 
+    # ⚠ ИМЕНА ПОЛЕЙ ДАЁМ МОДЕЛИ СПИСКОМ, А НЕ «ТЕ ЖЕ, ЧТО В КАРТОЧКЕ».
+    # Живой прогон 26.08.2026 на «der Wortschwall»: модель предложила поле `meanings`,
+    # которого в разборе НЕТ вовсе (значения там лежат в `dictionary_senses` и
+    # `translation_ru`). Нажатие «принять» добавило бы неиспользуемый ключ и не
+    # изменило бы на экране ничего — кнопка обещала бы правку и не делала её.
+    поля = ", ".join(sorted(k for k in (card or {}).keys()
+                            if not str(k).startswith("__"))) or "(карточка пуста)"
+
     system = (
         "You are an editor of a German-Russian learner's dictionary. A learner "
         "complained about one entry. Decide whether the learner is RIGHT and propose a "
@@ -9607,8 +9615,12 @@ def run_card_complaint_verdict(*, word: str, note: str, card: dict) -> dict | No
         "- Never invent forms, genders or meanings. If you are not sure, say so in "
         "`chto_ne_tak` and answer \"uverennost\":\"низкая\".\n"
         "- The Russian translation must match the GERMAN headword, not the other way round.\n"
-        "- `predlozhenie` holds ONLY the fields that must change, with their new values, "
-        "using the SAME field names as the card. Leave it empty when the card is fine.\n"
+        "- `predlozhenie` holds ONLY the fields that must change, with their new values. "
+        "You MUST use field names taken VERBATIM from the list below - inventing a name "
+        "means the fix cannot be applied at all and the whole answer is wasted. If what "
+        "must change has no field in that list, leave `predlozhenie` empty and say so in "
+        "`chto_ne_tak`.\n"
+        "- ALLOWED FIELD NAMES for this card: " + поля + "\n"
         "- `chto_ne_tak` and `predlozhenie_slovami` are read by a human: one short "
         "sentence each, in RUSSIAN, no jargon.\n"
         "Answer STRICT JSON only: {\"card_is_wrong\":true|false,\"chto_ne_tak\":\"<RUSSIAN>\","
@@ -9661,6 +9673,23 @@ def run_card_complaint_verdict(*, word: str, note: str, card: dict) -> dict | No
     # ошибки нет». Владельцу это пришло бы противоречием прямо в заголовке карточки.
     # Жалоба, поддержанная БЕЗ единой правки, — пустая жалоба, как и придирка судьи,
     # который «исправил» фразу в саму себя (см. database.phrase_review_is_noise).
+    # ⚠ ВТОРАЯ ПОЛОВИНА ТОЙ ЖЕ ЗАЩИТЫ: имя поля проверяем САМИ, а не верим на слово.
+    # Правка в несуществующее поле неприменима, и предлагать её владельцу нельзя:
+    # он нажмёт «принять», а на карточке не изменится ничего.
+    if предложение and isinstance(card, dict) and card:
+        лишние = [k for k in предложение if k not in card]
+        if лишние:
+            logging.warning("разбор жалобы (%s): модель назвала поля, которых в карточке "
+                            "нет: %s", слово[:40], лишние)
+        предложение = {k: v for k, v in предложение.items() if k in card}
+        # Правка «Словоблудие → Словоблудие» — не правка. Такое поле на экране решения
+        # выглядит как изменение, а нажатие не меняет ничего: то же самое правило, что
+        # у судьи фраз, который «исправил» фразу в саму себя.
+        пустые = [k for k, v in предложение.items() if v == card.get(k)]
+        if пустые:
+            logging.info("разбор жалобы (%s): поля без изменений выброшены: %s",
+                         слово[:40], пустые)
+        предложение = {k: v for k, v in предложение.items() if v != card.get(k)}
     неверна = bool(данные.get("card_is_wrong")) and bool(предложение)
     return {
         "card_is_wrong": неверна,
