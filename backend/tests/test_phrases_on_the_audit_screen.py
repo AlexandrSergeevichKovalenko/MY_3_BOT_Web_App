@@ -140,6 +140,38 @@ class ФразыНаЭкране(unittest.TestCase):
         self.assertEqual(карточки[0]["variants"], [])
         self.assertIn("разошлись", карточки[0]["why"])
 
+    def test_a_fix_our_own_check_rejected_is_not_offered_in_one_tap(self):
+        """Вариант с `check_disputed_by_arbiter` — это правка, которую НАША проверка
+        забраковала, а третейский судья назвал верной.
+
+        У владельца такой вариант на экране есть, но рядом печатается возражение
+        проверки (backend_server.py, поле «objection») — он решает зряче. Здесь места
+        для возражения нет, а кнопка «Да, правильно так» читается как «система уверена».
+        Отдавать одним касанием то, что система сама забраковала, нельзя: человек учит
+        немецкий по нашему ответу.
+        """
+        спорный = dict(СУДЬИ[0], corrected="Anzeichen für einen Herzinfarkt")
+        спорный["corrected_check"] = {"checked": True, "grammar_ok": True,
+                                      "meaning_kept": False}
+        строка = (77, "Anzeichen für einen Herzi", "Признаки сердечного приступа",
+                  [спорный], {"verdict": "ok", "better": ""}, 4242)
+        with mock.patch("backend.database.phrase_review_variants",
+                        return_value=[{"text": "Anzeichen für einen Herzinfarkt",
+                                       "ru": "Признаки сердечного приступа",
+                                       "check_disputed_by_arbiter": True}]), \
+             mock.patch("backend.database.phrase_review_is_noise", return_value=False):
+            карточки, _ = _экран([[], [строка]])
+        self.assertEqual(карточки[0]["variants"], [])
+        self.assertEqual(len(карточки), 1, "сама фраза с экрана исчезать не должна")
+
+    def test_a_clean_fix_is_still_offered(self):
+        with mock.patch("backend.database.phrase_review_variants",
+                        return_value=[{"text": "Auftreten von Krankheitssymptomen",
+                                       "ru": "Появление симптомов заболевания"}]), \
+             mock.patch("backend.database.phrase_review_is_noise", return_value=False):
+            карточки, _ = _экран([[], [ФРАЗА_СТРОКА]])
+        self.assertEqual(len(карточки[0]["variants"]), 1)
+
     def test_screen_asks_the_author_only(self):
         _, курсор = _экран([[], [ФРАЗА_СТРОКА]])
         текст = " ".join(str(q[0]) for q in курсор.запросы)
