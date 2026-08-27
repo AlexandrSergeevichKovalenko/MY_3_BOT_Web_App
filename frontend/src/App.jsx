@@ -15,6 +15,7 @@ import ProFeatureModal from './components/ProFeatureModal';
 import NoticeModal from './components/NoticeModal';
 import LiveExamples from './dictionary/LiveExamples';
 import WordDiff from './dictionary/WordDiff';
+import { loadSearchHistory, recordSearch, readLocalHistory } from './dictionary/searchHistory';
 import WordHintModal, { collectHintExamples, hasHintBreakdown } from './components/WordHintModal';
 import FsrsHeadword from './answer/FsrsHeadword';
 import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
@@ -6344,15 +6345,12 @@ function AppInner() {
   });
   const [dictionarySaved, setDictionarySaved] = useState('');
   const [dictionaryDirection, setDictionaryDirection] = useState('ru-de');
-  // История поиска. Под чипами «Недавние» показываются шесть последних — это подсказка,
-  // а не история. Для отдельной вкладки держим список длиннее: человек заходит туда
-  // именно чтобы вспомнить, что искал на прошлой неделе.
-  const [dictHistory, setDictHistory] = useState(() => {
-    try {
-      const r = JSON.parse(localStorage.getItem('dq_recents_v1') || '[]');
-      return Array.isArray(r) ? r.filter((x) => typeof x === 'string').slice(0, 60) : [];
-    } catch (_e) { return []; }
-  });
+  // История поиска. Чипы «Недавние» под полем убраны 10.08.2026 (владелец: «если есть
+  // закладка История, зачем ещё и чипы»), так что список нужен ровно одному месту —
+  // закладке «История», куда человек заходит вспомнить, что искал на прошлой неделе.
+  // Первый кадр рисуем из локального зеркала, чтобы список не мигал пустотой, и тут же
+  // спрашиваем сервер: история одна на все устройства, и настоящий её порядок знает он.
+  const [dictHistory, setDictHistory] = useState(() => readLocalHistory());
   const [dictionaryLanguagePair, setDictionaryLanguagePair] = useState(null);
   // When the user clears the input, the result card should disappear and the screen
   // returns to its initial compose state. (Don't wipe while a lookup is in flight.)
@@ -10911,23 +10909,27 @@ function AppInner() {
     return () => window.clearTimeout(timerId);
   }, [dictionaryDirection, dictionaryResult, preloadTts, resolveDictionaryTargetTts]);
 
-  // Record successful Search lookups into the shared "Недавние" list (same
-  // localStorage key the quick dictionary uses, so recents are unified).
+  // Нашли слово по просьбе человека — это и есть история поиска. Пишем её через общий
+  // модуль: он кладёт слово на сервер (история одна на все устройства) и обновляет
+  // локальное зеркало для работы без сети. Ключ памяти тот же, что у быстрого словаря,
+  // поэтому найденное там видно здесь и наоборот.
+  //
+  // Список держим длинный: закладка «История» существует затем, чтобы человек нашёл в
+  // ней позавчерашнее слово. Когда-то хранились те же шесть, что показывались чипами, —
+  // и история обрывалась на позавчера.
   useEffect(() => {
     if (!dictionaryResult) return;
     const w = String(dictionaryWord || '').trim();
     if (!w) return;
-    try {
-      const prev = JSON.parse(localStorage.getItem('dq_recents_v1') || '[]');
-      const list = Array.isArray(prev) ? prev.filter((x) => typeof x === 'string') : [];
-      // Храним длинный список (для вкладки «История»), а чипами «Недавние» показываем
-      // только шесть: это подсказка под полем, а не история. Раньше хранились те же
-      // шесть — то есть история обрывалась на позавчера.
-      const next = [w, ...list.filter((x) => x.toLowerCase() !== w.toLowerCase())].slice(0, 60);
-      localStorage.setItem('dq_recents_v1', JSON.stringify(next));
-      setDictHistory(next);
-    } catch (_e) { /* ignore */ }
+    void recordSearch(w, dictionaryDirection).then(setDictHistory);
   }, [dictionaryResult]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // История приезжает с сервера один раз за сеанс, как только известно, кто спрашивает.
+  // Не приехала (нет сети) — на экране остаётся зеркало, и это честно: своё оно, не чужое.
+  useEffect(() => {
+    if (!initData && !getDictToken()) return;
+    void loadSearchHistory().then(({ items }) => setDictHistory(items));
+  }, [initData]);
 
   useEffect(() => {
     const locale = getLearningTtsLocale();

@@ -18,13 +18,21 @@ from pathlib import Path
 
 from backend import backend_server
 
-FRONT = Path(__file__).resolve().parents[2] / "frontend/src/dictionary/DictionaryOverlay.jsx"
+DICT_DIR = Path(__file__).resolve().parents[2] / "frontend/src/dictionary"
+# Экран словаря — не один файл. Часть своих запросов он делает через общие модули
+# рядом (27.08.2026 туда уехала история поиска), и такой запрос сторож обязан видеть
+# так же, как запрос из самого экрана: иначе дыру закрывает не тест, а случай.
+FRONT_FILES = [DICT_DIR / "DictionaryOverlay.jsx", DICT_DIR / "searchHistory.js"]
 SRC = inspect.getsource(backend_server)
 
 
 def _paths_the_standalone_calls() -> set[str]:
-    text = FRONT.read_text(encoding="utf-8")
-    return {m for m in re.findall(r"'(/api/webapp/[a-z/-]+)'", text)}
+    paths: set[str] = set()
+    for path in FRONT_FILES:
+        if not path.exists():
+            continue
+        paths |= set(re.findall(r"'(/api/webapp/[a-z/-]+)'", path.read_text(encoding="utf-8")))
+    return paths
 
 
 def _handler_body(path: str) -> str | None:

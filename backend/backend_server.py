@@ -44148,6 +44148,18 @@ def create_webapp_word_diff_share_link():
 @app.route("/api/webapp/dictionary/diff/shared", methods=["POST"])
 def get_webapp_word_diff_shared():
     """Гостевой показ разбора по ссылке: любой человек с подписью Telegram, только чтение."""
+    # ┌─ НАЙДЕНО 27.08.2026, ОТКРЫТО, ЖДЁТ РЕШЕНИЯ ВЛАДЕЛЬЦА. ────────────────────┐
+    # │ Этот обработчик требует ЖИВУЮ подпись Telegram (initData) и не смотрит на │
+    # │ токен словаря. Словарь с рабочего стола живёт вне Telegram: подпись у него│
+    # │ есть только первые тридцать дней после установки. Значит ссылка «Поделить-│
+    # │ ся» на разбор отличий, открытая там позже, отвечает 400/401 — тем же кла- │
+    # │ ссом отказа, ради которого написан backend/tests/                         │
+    # │ test_standalone_dict_endpoints_accept_token.py.                           │
+    # │ Найдено по дороге к переезду истории поиска, ПО КОДУ — на живых данных не │
+    # │ мерено, случаев не считано. Не чинил: гостевой доступ по ссылке — продук- │
+    # │ товое решение (кому вообще открывать чужой разбор), а его принимает вла-  │
+    # │ делец. Перемерить: открыть ссылку в словаре с иконки без Telegram.        │
+    # └───────────────────────────────────────────────────────────────────────────┘
     from backend.database import get_word_diff_by_share_token
 
     payload = request.get_json(silent=True) or {}
@@ -44199,6 +44211,70 @@ def get_webapp_dictionary_word_diff_history():
         "popular": list_word_diff_popular(limit=40),
         "can_create": _word_diff_can_create(int(user_id)),
         "is_admin": _word_diff_is_admin(int(user_id)),
+    })
+
+
+@app.route("/api/webapp/dictionary/history", methods=["POST"])
+def get_webapp_dictionary_search_history():
+    """Личная история поиска — одна на все устройства.
+
+    До 27.08.2026 история лежала только в памяти браузера, и у Telegram, у приложения
+    с рабочего стола и у Safari она была РАЗНАЯ: искал в одном месте — в другом пусто.
+
+    Необязательное поле `merge` — то, что устройство накопило в своей памяти ДО
+    переезда. Оно вливается один раз и позади всего, что сервер уже знает: точной
+    даты у тех слов не было никогда, и делать вид, что она есть, мы не станем.
+    """
+    from backend.database import (
+        list_dictionary_search_history,
+        merge_dictionary_search_history,
+    )
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        # Человека мы не узнали (быстрый словарь без токена). Это не ошибка экрана:
+        # история просто остаётся личной для устройства, и фронт покажет своё зеркало.
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+    try:
+        limit = int(payload.get("limit") or 60)
+    except (TypeError, ValueError):
+        limit = 60
+    merge = payload.get("merge")
+    if isinstance(merge, list) and merge:
+        merge_dictionary_search_history(int(user_id), merge[:300])
+    return jsonify({
+        "ok": True,
+        "items": list_dictionary_search_history(int(user_id), limit=limit),
+    })
+
+
+@app.route("/api/webapp/dictionary/history/record", methods=["POST"])
+def post_webapp_dictionary_search_history():
+    """Записать, что человек искал слово. Зовётся оттуда же, где раньше писалось в localStorage.
+
+    Записывает КЛИЕНТ, а не сам эндпоинт поиска, и это осознанно: по одному и тому же
+    /api/webapp/dictionary ходит не только человек с экрана поиска, но и служебные
+    вызовы (сохранение слова, чипы синонимов, разбор). Отличить «человек искал» от
+    «программа посмотрела» может только та сторона, которая знает, кто нажал.
+    """
+    from backend.database import list_dictionary_search_history, record_dictionary_search
+
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "Не удалось определить пользователя"}), 401
+    word = str(payload.get("word") or "").strip()
+    if not word:
+        return jsonify({"error": "Слово не передано"}), 400
+    record_dictionary_search(int(user_id), word, str(payload.get("lookup_lang") or ""))
+    try:
+        limit = int(payload.get("limit") or 60)
+    except (TypeError, ValueError):
+        limit = 60
+    return jsonify({
+        "ok": True,
+        "items": list_dictionary_search_history(int(user_id), limit=limit),
     })
 
 

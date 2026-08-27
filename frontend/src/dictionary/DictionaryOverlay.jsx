@@ -10,6 +10,7 @@ import { humanizeDictError } from './errors.js';
 import ProFeatureModal from '../components/ProFeatureModal';
 import SaveWordHint from './SaveWordHint';
 import WordDiff from './WordDiff';
+import { loadSearchHistory, recordSearch, readLocalHistory } from './searchHistory';
 
 /**
  * Lightweight "quick dictionary" overlay — a compact bottom-sheet translator
@@ -123,31 +124,14 @@ function germanNounAwaitingArticle(q) {
   return german;
 }
 
-// История поиска. Список общий с приложением — один ключ на оба словаря, поэтому
-// найденное здесь видно и во вкладке «История» внутри приложения.
+// История поиска. Список общий с приложением — и хранится он теперь НА СЕРВЕРЕ, один
+// на все устройства (см. ./searchHistory.js). Раньше он лежал только в памяти этого
+// браузера, и человек, искавший слова в Telegram, открывал приложение с рабочего стола
+// и видел пустую историю. Локальная память осталась зеркалом: словарь работает без сети.
 //
 // Храним 60, показываем 6. Раньше хранились те же шесть, и любой поиск в быстром
 // словаре обрезал историю приложения до шести — два словаря затирали друг другу память.
-const RECENTS_KEY = 'dq_recents_v1';
-const RECENTS_KEEP = 60;
-const RECENTS_SHOW = 6;
-function loadRecentsAll() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(RECENTS_KEY) || '[]');
-    return Array.isArray(raw) ? raw.filter((x) => typeof x === 'string').slice(0, RECENTS_KEEP) : [];
-  } catch (_e) { return []; }
-}
-function loadRecents() {
-  return loadRecentsAll().slice(0, RECENTS_SHOW);
-}
-function pushRecent(word) {
-  const w = String(word || '').trim();
-  if (!w) return loadRecents();
-  const next = [w, ...loadRecentsAll().filter((x) => x.toLowerCase() !== w.toLowerCase())]
-    .slice(0, RECENTS_KEEP);
-  try { localStorage.setItem(RECENTS_KEY, JSON.stringify(next)); } catch (_e) { /* ignore */ }
-  return next.slice(0, RECENTS_SHOW);
-}
+function loadRecentsAll() { return readLocalHistory(); }
 
 // "Tap a synonym to save it" hint — shown a few times total, then it stops nagging.
 const CHIP_HINT_KEY = 'dq_chip_hint_count_v1';
@@ -255,7 +239,12 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
   // Закладки быстрого словаря — те же, что во внутреннем.
   // Пришли по ссылке «Поделиться» на разбор отличий — открываем сразу ту вкладку.
   const [tab, setTab] = useState(sharedDiffToken ? 'diff' : 'search');
+  // Первый кадр — из локального зеркала, чтобы список не мигал пустотой; настоящий
+  // порядок приезжает с сервера, где история одна на все устройства.
   const [historyList, setHistoryList] = useState(() => loadRecentsAll());
+  useEffect(() => {
+    void loadSearchHistory().then(({ items }) => setHistoryList(items));
+  }, []);
   const [mine, setMine] = useState([]);
   const [mineState, setMineState] = useState('idle'); // idle | loading | ready | error
   const [mineQuery, setMineQuery] = useState('');
@@ -520,8 +509,9 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
       setChosen(0);
       setQuick(nextQuick);
       setPhase('done'); haptic('ok');
-      pushRecent(text);   // пополняем историю, показывает её своя закладка
-      setHistoryList(loadRecentsAll());
+      // Пополняем историю: слово уходит на сервер (она одна на все устройства) и в
+      // локальное зеркало. Показывает её своя закладка.
+      void recordSearch(text, `${detected}-${targetLang}`).then(setHistoryList);
       // ┌─ НАЙДЕНО 25.08.2026, ОТКРЫТО, ЖДЁТ ЧУЖОЙ ПРАВКИ. НЕ УБИРАТЬ САМОВОЛЬНО. ───┐
       // │ Этот опрос (5 попыток, паузы 0,9+1,3+1,6+2,0+2,5 = до 8,3 с) 25.08.2026    │
       // │ был убран и в тот же день ВОЗВРАЩЁН: замер, которым его убрали, оказался   │

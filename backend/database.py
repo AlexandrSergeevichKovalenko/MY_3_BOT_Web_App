@@ -32642,6 +32642,160 @@ def list_word_diff_history(user_id: int, limit: int = 20) -> list[dict]:
     ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# История поиска в словаре — ОДНА НА ВСЕ УСТРОЙСТВА.
+#
+# До 27.08.2026 история жила только в памяти браузера (localStorage, ключ
+# dq_recents_v1). У Telegram, у приложения с рабочего стола и у Safari память
+# РАЗНАЯ: человек искал слова в Telegram, открывал приложение с иконки — и видел
+# пустую историю. Владелец 27.08.2026: «Вы ищете в Telegram, открываете приложение
+# с рабочего стола — там пусто».
+#
+# Устройство таблицы списано с bt_3_word_diff_history («вы уже сравнивали»): та же
+# задача — личный список того, что человек открывал, повтор поднимает дату, а не
+# плодит строки. Изобретать второй способ хранить одно и то же незачем.
+#
+# Дедуп — по ключу lower(word), БЕЗ направления перевода: ровно так же схлопывал
+# список localStorage, и менять поведение вместе с переездом мы не стали. Направление
+# храним рядом как сведение, а не как часть ключа.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DICT_SEARCH_HISTORY_SCHEMA_READY = False
+
+# Сколько строк держим на человека. Больше — не «на всякий случай», а мусор:
+# история нужна, чтобы вспомнить недавнее, а не чтобы вести архив за год.
+DICT_SEARCH_HISTORY_KEEP = 300
+
+
+def ensure_dictionary_search_history_schema() -> None:
+    """Создать таблицу истории поиска. Идемпотентно, DDL идёт один раз на процесс."""
+    global _DICT_SEARCH_HISTORY_SCHEMA_READY
+    if _DICT_SEARCH_HISTORY_SCHEMA_READY:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_dictionary_search_history (
+                    id          BIGSERIAL PRIMARY KEY,
+                    user_id     BIGINT NOT NULL,
+                    word        TEXT NOT NULL,
+                    word_key    TEXT NOT NULL,
+                    lookup_lang TEXT NOT NULL DEFAULT '',
+                    searched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, word_key)
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_dict_search_history_user "
+                "ON bt_3_dictionary_search_history (user_id, searched_at DESC);"
+            )
+        conn.commit()
+    _DICT_SEARCH_HISTORY_SCHEMA_READY = True
+
+
+def record_dictionary_search(user_id: int, word: str, lookup_lang: str = "") -> None:
+    """Отметить, что человек искал это слово. Повтор поднимает дату, а не плодит строки."""
+    w = str(word or "").strip()
+    if not w or not user_id:
+        return
+    ensure_dictionary_search_history_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_dictionary_search_history (user_id, word, word_key, lookup_lang)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id, word_key)
+                DO UPDATE SET searched_at = NOW(),
+                              word = EXCLUDED.word,
+                              lookup_lang = EXCLUDED.lookup_lang;
+                """,
+                (int(user_id), w, w.casefold(), str(lookup_lang or "").strip().lower()),
+            )
+            # Хвост за пределами DICT_SEARCH_HISTORY_KEEP убираем сразу, а не «когда-нибудь
+            # ночью»: список личный и маленький, отдельная уборочная задача под него —
+            # лишний механизм, который потом некому чинить.
+            cursor.execute(
+                """
+                DELETE FROM bt_3_dictionary_search_history
+                WHERE user_id = %s AND id NOT IN (
+                    SELECT id FROM bt_3_dictionary_search_history
+                    WHERE user_id = %s
+                    ORDER BY searched_at DESC
+                    LIMIT %s
+                );
+                """,
+                (int(user_id), int(user_id), DICT_SEARCH_HISTORY_KEEP),
+            )
+        conn.commit()
+
+
+def merge_dictionary_search_history(user_id: int, words: list) -> None:
+    """Влить то, что устройство накопило в своей памяти ДО переезда истории на сервер.
+
+    Зовётся один раз с каждого устройства. Дата у влитых слов — не «сейчас»: они
+    искались раньше, и подниматься выше свежих они не должны. Точной даты у нас нет
+    (localStorage её не хранил), поэтому кладём их ПОЗАДИ всего, что уже есть на
+    сервере, сохраняя порядок внутри пачки. Это не догадка о времени, а честное
+    «раньше всего, что мы знаем точно».
+    """
+    clean_words = []
+    seen = set()
+    for item in (words or []):
+        w = str(item or "").strip()
+        if not w:
+            continue
+        key = w.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        clean_words.append(w)
+    if not user_id or not clean_words:
+        return
+    ensure_dictionary_search_history_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT MIN(searched_at) FROM bt_3_dictionary_search_history WHERE user_id = %s;",
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+            base = row[0] if row and row[0] else datetime.now(timezone.utc)
+            for offset, w in enumerate(clean_words, start=1):
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_dictionary_search_history
+                        (user_id, word, word_key, lookup_lang, searched_at)
+                    VALUES (%s, %s, %s, '', %s)
+                    ON CONFLICT (user_id, word_key) DO NOTHING;
+                    """,
+                    (int(user_id), w, w.casefold(), base - timedelta(seconds=offset)),
+                )
+        conn.commit()
+
+
+def list_dictionary_search_history(user_id: int, limit: int = 60) -> list[str]:
+    """История поиска, свежее сверху. Возвращает СЛОВА — экран показывает именно их."""
+    if not user_id:
+        return []
+    ensure_dictionary_search_history_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word FROM bt_3_dictionary_search_history
+                WHERE user_id = %s
+                ORDER BY searched_at DESC
+                LIMIT %s;
+                """,
+                (int(user_id), max(1, min(int(limit or 60), DICT_SEARCH_HISTORY_KEEP))),
+            )
+            rows = cursor.fetchall() or []
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
 def find_shared_razbor_token(
     owner_user_id: int, word: str, source_lang: str, target_lang: str
 ) -> str | None:
