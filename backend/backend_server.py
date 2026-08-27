@@ -42000,7 +42000,8 @@ def admin_complaints_apply():
         return jsonify({"ok": False, "message": "Пустой список решений."}), 200
 
     from backend.card_complaints import apply_owner_decision
-    счёт = {"исправлено": 0, "на пересборку": 0, "отклонено": 0, "не вышло": 0}
+    счёт = {"исправлено": 0, "переименовано": 0, "на пересборку": 0,
+            "отклонено": 0, "не вышло": 0}
     for решение in решения:
         if not isinstance(решение, dict):
             continue
@@ -42020,6 +42021,8 @@ def admin_complaints_apply():
             счёт["исправлено"] += 1
         elif если_что == "поставлено на пересборку":
             счёт["на пересборку"] += 1
+        elif если_что.startswith("переименовано"):
+            счёт["переименовано"] += 1
         else:
             счёт["отклонено"] += 1
     return jsonify({"ok": True, "counts": счёт}), 200

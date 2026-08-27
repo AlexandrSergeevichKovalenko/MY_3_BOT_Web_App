@@ -79,12 +79,61 @@
 .cr-rename { border-color: rgba(251, 191, 36, .3); background: rgba(251, 191, 36, .06); }
 .cr-was-inline { color: var(--muted); }
 
-.cr-card .wa-actions { margin-top: 12px; grid-template-columns: 1fr 1fr; }
-.cr-act-accept { grid-column: 1 / -1; }
+/* ── кнопки решения ───────────────────────────────────────────────────────────
+   Один столбец, одинаковая ширина и высота, один порядок у КАЖДОЙ жалобы: сверху
+   самое мелкое действие, снизу самое крупное. Прежняя сетка 1×2 давала разный вид
+   на каждой карточке — число кнопок разное, и они прыгали (владелец 27.08.2026:
+   «почему каждая кнопка разного размера и хаотично расположены?»).
+   У каждой кнопки две строки: что она сделает и чем это кончится. Вторая строка —
+   не украшение: без неё «принять» и «пересобрать» на глаз неразличимы. */
+.cr-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.cr-btn {
+  width: 100%;
+  min-height: 58px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 3px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .16s, background .16s;
+}
+.cr-btn:hover { border-color: var(--muted); }
+.cr-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.cr-btn-title { font-size: .95rem; font-weight: 650; color: var(--ink); }
+.cr-btn-note { font-size: .78rem; color: var(--muted); }
+
+/* Выбранная кнопка красится в цвет своего смысла — тот же язык цвета, что и на
+   экране проверки слов: голубой «поправить», янтарный «пересобрать», зелёный
+   «оставить как есть». */
+.cr-btn[aria-pressed="true"] { border-width: 1px; }
+.cr-btn-accept[aria-pressed="true"],
+.cr-btn-rename[aria-pressed="true"] {
+  background: var(--primary); border-color: var(--primary); color: #052330;
+}
+.cr-btn[aria-pressed="true"]:not(.cr-btn-accept):not(.cr-btn-rename):not(.cr-btn-keep) {
+  background: var(--fix); border-color: var(--fix); color: #422006;
+}
+.cr-btn-keep[aria-pressed="true"] {
+  background: var(--keep); border-color: var(--keep); color: #052e16;
+}
+.cr-btn[aria-pressed="true"] .cr-btn-title,
+.cr-btn[aria-pressed="true"] .cr-btn-note { color: inherit; }
+.cr-btn[aria-pressed="true"] .cr-btn-note { opacity: .75; }
 .cr-card[data-state="принять"] { border-left-color: var(--primary); }
 .cr-card[data-state="пересобрать"] { border-left-color: var(--fix); }
 .cr-card[data-state="отклонить"] { border-left-color: var(--keep); }
 .cr-card[data-state="своё"] { border-left-color: var(--primary); }
-.cr-card[data-state="принять"] .cr-act-accept {
-  background: var(--primary); border-color: var(--primary); color: #052330;
-}
+.cr-card[data-state="переименовать"] { border-left-color: var(--primary); }

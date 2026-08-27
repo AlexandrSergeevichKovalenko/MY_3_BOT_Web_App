@@ -81,6 +81,7 @@ function читаемо(значение) {
 }
 
 const ПРИНЯТЬ = 'принять';
+const ПЕРЕИМЕНОВАТЬ = 'переименовать';
 const ПЕРЕСОБРАТЬ = 'пересобрать';
 const ОТКЛОНИТЬ = 'отклонить';
 const СВОЁ = 'своё';
@@ -196,6 +197,16 @@ export default function ComplaintReview() {
       {items.map((it) => {
         const chosen = state[it.id] || '';
         const поля = Object.entries(it.proposal || {});
+        // Имя, в которое модель предлагает переименовать слово. Артикль приклеиваем
+        // здесь же: человек читает «das Geschwafel», а не «Geschwafel» отдельно от «das».
+        const переименование = (() => {
+          const п = it.renames || {};
+          const имя = String(п.word_de || п.source_text || п.translation_de || '').trim();
+          if (!имя) return '';
+          const артикль = String(п.article || '').trim();
+          return артикль && !имя.toLowerCase().startsWith(`${артикль.toLowerCase()} `)
+            ? `${артикль} ${имя}` : имя;
+        })();
         return (
           <div className="wa-card cr-card" data-state={chosen} key={it.id}>
             <div className="wa-word-row">
@@ -276,23 +287,57 @@ export default function ComplaintReview() {
               </div>
             ) : null}
 
-            <div className="wa-actions">
+            {/* ⚠ КНОПКИ — ОДНИМ СТОЛБЦОМ, ОДНОГО РАЗМЕРА, В ОДНОМ ПОРЯДКЕ.
+                Владелец 27.08.2026: «почему каждая кнопка разного размера и хаотично
+                расположены?» Раньше они лежали в сетке 1×2, и число кнопок у разных
+                жалоб разное — то две в ряд, то одна во всю ширину, то три вразнобой.
+                Здесь у каждой строки один смысл: сверху точечная правка, ниже правка
+                заголовка, ниже полная пересборка, в самом низу «ничего не менять».
+                Порядок — от самого мелкого действия к самому крупному. */}
+            <div className="cr-actions">
               {поля.length ? (
-                <button type="button" className="wa-act cr-act-accept"
+                <button type="button" className="cr-btn cr-btn-accept"
+                        aria-pressed={chosen === ПРИНЯТЬ}
                         onClick={() => pick(it.id, ПРИНЯТЬ)}>
-                  {/* Кнопка называет ТО, ЧТО СДЕЛАЕТ: «принять вариант» само по себе
-                      не говорит, что именно заменят. */}
-                  {chosen === ПРИНЯТЬ ? '✓ ' : ''}
-                  Заменить {поля.map(([ключ]) => имяПоля(ключ).toLowerCase()).join(' и ')}
+                  <span className="cr-btn-title">
+                    {chosen === ПРИНЯТЬ ? '✓ ' : ''}
+                    Заменить {поля.map(([ключ]) => имяПоля(ключ).toLowerCase()).join(' и ')}
+                  </span>
+                  <span className="cr-btn-note">заголовок слова останется прежним</span>
                 </button>
               ) : null}
-              <button type="button" className="wa-act"
+
+              {/* Вторая законная развилка: не карточку под шапку, а шапку под карточку. */}
+              {переименование ? (
+                <button type="button" className="cr-btn cr-btn-rename"
+                        aria-pressed={chosen === ПЕРЕИМЕНОВАТЬ}
+                        onClick={() => pick(it.id, ПЕРЕИМЕНОВАТЬ)}>
+                  <span className="cr-btn-title">
+                    {chosen === ПЕРЕИМЕНОВАТЬ ? '✓ ' : ''}
+                    Переименовать слово в «{переименование}»
+                  </span>
+                  <span className="cr-btn-note">разбор останется как есть, поменяется шапка</span>
+                </button>
+              ) : null}
+
+              <button type="button" className="cr-btn"
+                      aria-pressed={chosen === ПЕРЕСОБРАТЬ}
                       onClick={() => pick(it.id, ПЕРЕСОБРАТЬ)}>
-                {chosen === ПЕРЕСОБРАТЬ ? '✓ ' : ''}♻️ Пересобрать всю карточку
+                <span className="cr-btn-title">
+                  {chosen === ПЕРЕСОБРАТЬ ? '✓ ' : ''}♻️ Пересобрать всю карточку
+                </span>
+                <span className="cr-btn-note">
+                  соберём заново ночью: значения, примеры, синонимы, формы
+                </span>
               </button>
-              <button type="button" className="wa-act wa-act-drop"
+
+              <button type="button" className="cr-btn cr-btn-keep"
+                      aria-pressed={chosen === ОТКЛОНИТЬ}
                       onClick={() => pick(it.id, ОТКЛОНИТЬ)}>
-                {chosen === ОТКЛОНИТЬ ? '✓ ' : ''}Карточка верна — отклонить
+                <span className="cr-btn-title">
+                  {chosen === ОТКЛОНИТЬ ? '✓ ' : ''}Карточка верна — отклонить
+                </span>
+                <span className="cr-btn-note">ничего не меняем, вопрос закрыт</span>
               </button>
             </div>
 
@@ -326,9 +371,17 @@ export default function ComplaintReview() {
 
       <div className="wa-bar">
         <div className="wa-bar-inner">
-          <p className="wa-bar-note">Отмечено <b>{отмечено}</b> из {items.length}</p>
-          <button type="button" className="wa-done" disabled={busy} onClick={submit}>
-            {busy ? 'Применяю…' : 'Готово'}
+          {/* «Готово» само по себе не говорит, ЧТО произойдёт. Владелец 27.08.2026:
+              «что значит кнопка готово?» Теперь она называет действие и число. */}
+          <p className="wa-bar-note">
+            {отмечено
+              ? <>Применим решения по <b>{отмечено}</b> из {items.length} · остальные придут снова</>
+              : <>Ничего не отмечено — применять нечего</>}
+          </p>
+          <button type="button" className="wa-done" disabled={busy || !отмечено} onClick={submit}>
+            {busy ? 'Применяю…' : отмечено
+              ? `Применить решения (${отмечено})`
+              : 'Отметьте, что делать'}
           </button>
         </div>
       </div>

@@ -357,7 +357,7 @@ def apply_owner_decision(complaint_id: int, decision: str, *,
     from backend.database import get_db_connection_context
 
     решение = str(decision or "").strip()
-    if решение not in {"принять", "пересобрать", "отклонить", "своё"}:
+    if решение not in {"принять", "переименовать", "пересобрать", "отклонить", "своё"}:
         return {"ok": False, "reason": "unknown_decision"}
     try:
         with get_db_connection_context() as conn:
@@ -375,7 +375,55 @@ def apply_owner_decision(complaint_id: int, decision: str, *,
     вердикт = вердикт if isinstance(вердикт, dict) else {}
 
     сделано = ""
-    if решение == "пересобрать":
+    if решение == "переименовать":
+        # ⚠ ПОДОГНАТЬ ШАПКУ ПОД КАРТОЧКУ, А НЕ КАРТОЧКУ ПОД ШАПКУ.
+        # Владелец 27.08.2026: «я хочу поменять шапку слова, но карточку не пересобирать
+        # — где кнопка?» Её не было: экран говорил «карточка про другое слово» и не давал
+        # это сделать. Случай настоящий: у «der Wortschwall» весь разбор описывает
+        # «das Geschwafel», и разумных выходов ДВА — пересобрать разбор под заголовок
+        # либо переименовать заголовок под разбор. Второй здесь.
+        #
+        # Переименование идёт ТЕМ ЖЕ местом, что и решение по спорной фразе
+        # (`lex_units.retitle_unit` + `spread_correction_everywhere`): там пересчитывается
+        # ещё и вид записи, без которого слово навсегда выпадает из ночной работы.
+        from backend.database import spread_correction_everywhere
+        from backend.lex_units import retitle_unit
+        _можно, заголовок = _разделить_предложение(вердикт.get("predlozhenie"))
+        новое_имя = str(заголовок.get("word_de") or заголовок.get("source_text")
+                        or заголовок.get("translation_de") or "").strip()
+        if not новое_имя or not int(unit_id or 0):
+            return {"ok": False, "reason": "no_new_title"}
+        артикль = str(заголовок.get("article") or "").strip()
+        if артикль and not новое_имя.lower().startswith(артикль.lower() + " "):
+            новое_имя = f"{артикль} {новое_имя}"
+        try:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT display, card FROM bt_3_lex_units WHERE id=%s;",
+                                (int(unit_id),))
+                    строка_слова = cur.fetchone()
+                    старое_имя = str((строка_слова or ["", None])[0] or "")
+                    разбор = (строка_слова or ["", None])[1]
+                    retitle_unit(cur, int(unit_id), новое_имя)
+                    # Правка доезжает до всех мест сразу — то же, что и у фраз.
+                    spread_correction_everywhere(cur, unit_id=int(unit_id),
+                                                 old_text=старое_имя, new_text=новое_имя)
+                    # Опознавательные поля внутри разбора тоже обязаны совпасть с новой
+                    # шапкой, иначе останется полукарточка: снаружи одно, внутри другое.
+                    if isinstance(разбор, dict):
+                        свежий = dict(разбор)
+                        свежий.update(заголовок)
+                        cur.execute("UPDATE bt_3_lex_units SET card=%s WHERE id=%s;",
+                                    (json.dumps(свежий, ensure_ascii=False), int(unit_id)))
+                conn.commit()
+        except Exception:
+            logging.warning("жалобы: переименование слова %s не удалось", unit_id,
+                            exc_info=True)
+            return {"ok": False, "reason": "rename_failed"}
+        logging.info("жалоба %s: слово %s переименовано «%s» → «%s»",
+                     complaint_id, unit_id, старое_имя, новое_имя)
+        сделано = f"переименовано в «{новое_имя}»"
+    elif решение == "пересобрать":
         from backend.database import reset_dictionary_card_for_rebuild
         итог = reset_dictionary_card_for_rebuild(user_id=int(user_id),
                                                  entry_id=int(entry_id or 0))

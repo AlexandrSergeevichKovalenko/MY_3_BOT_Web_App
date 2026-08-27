@@ -198,6 +198,33 @@ class ПредложениеДолжноБытьПРИМЕНИМЫМ(unittest.Te
         self.assertEqual(sorted(заголовок), ["article", "word_de"])
         self.assertEqual(list(можно), ["usage_examples"])
 
+    def test_renaming_the_word_is_its_own_decision(self):
+        """Владелец 27.08.2026: «я хочу поменять шапку, но карточку не пересобирать —
+        где кнопка?» Её не было: экран говорил «карточка про другое слово» и не давал
+        это сделать. Переименование идёт тем же местом, что и решение по спорной фразе."""
+        курсор = ПоддельныйКурсор([
+            [(4242, 99, 117649764, "der Wortschwall",
+              {"card_is_wrong": True,
+               "predlozhenie": {"word_de": "Geschwafel", "article": "das"}})],
+            [("der Wortschwall", {"word_de": "der Wortschwall"})],
+        ])
+        with _с_базой(курсор), \
+             mock.patch("backend.lex_units.retitle_unit") as переименовать, \
+             mock.patch("backend.database.spread_correction_everywhere") as разнести:
+            итог = жалобы.apply_owner_decision(1, "переименовать")
+        self.assertTrue(итог["ok"])
+        self.assertEqual(переименовать.call_args[0][2], "das Geschwafel",
+                         "артикль обязан приклеиться к новому имени")
+        разнести.assert_called_once()
+        self.assertIn("переименовано", итог["result"])
+
+    def test_renaming_without_a_new_name_is_refused(self):
+        курсор = ПоддельныйКурсор([[(4242, 99, 117649764, "der Wortschwall",
+                                     {"card_is_wrong": True, "predlozhenie": {}})]])
+        with _с_базой(курсор):
+            итог = жалобы.apply_owner_decision(1, "переименовать")
+        self.assertEqual(итог["reason"], "no_new_title")
+
     def test_only_a_rename_means_no_accept_button(self):
         курсор = ПоддельныйКурсор([[(4242, 99, 117649764, "der Wortschwall",
                                      {"card_is_wrong": True,
