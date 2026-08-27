@@ -107,6 +107,27 @@ def ensure_german_reference_forms_schema() -> None:
                         reviewed    BOOLEAN NOT NULL DEFAULT FALSE,
                         checked_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     );
+                    -- Номер строки: кнопка в личке носит ЕГО, а не само слово.
+                    -- Слово в callback_data приходилось резать до 40 знаков, и длинное
+                    -- слово переставало находиться при нажатии.
+                    ALTER TABLE bt_3_reference_forms_unresolved
+                        ADD COLUMN IF NOT EXISTS id BIGSERIAL;
+                    -- Что предложила модель, когда два её ответа разошлись. Это и есть
+                    -- содержание вопроса к владельцу: раньше оба ответа выбрасывались,
+                    -- и человек получал слово без единой подсказки.
+                    ALTER TABLE bt_3_reference_forms_unresolved
+                        ADD COLUMN IF NOT EXISTS candidates JSONB;
+                    -- «Отложить» обязано именно откладывать. Прежняя кнопка помечала
+                    -- слово разобранным навсегда — дыра в данных оставалась, но
+                    -- становилась невидимой.
+                    ALTER TABLE bt_3_reference_forms_unresolved
+                        ADD COLUMN IF NOT EXISTS postponed_until TIMESTAMPTZ;
+                    -- Когда слово в последний раз уходило владельцу: неотвеченное
+                    -- возвращается, как в разборе артиклей.
+                    ALTER TABLE bt_3_reference_forms_unresolved
+                        ADD COLUMN IF NOT EXISTS asked_at TIMESTAMPTZ;
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_reference_forms_unresolved_id
+                        ON bt_3_reference_forms_unresolved (id);
                     """
                 )
             conn.commit()
@@ -540,29 +561,62 @@ _DECL_KEYS = ("nom_sg", "gen_sg", "dat_sg", "akk_sg", "nom_pl", "gen_pl", "dat_p
 _DEG_KEYS = ("positive", "comparative", "superlative")
 
 
-def declension_from_model(noun: str) -> dict[str, Any] | None:
-    """Склонение от модели при совпадении двух ответов. None — не подтвердилось."""
-    agreed = _agreed(_ask_once(_DECLENSION_TASK, noun),
-                     _ask_once(_DECLENSION_TASK, noun), _DECL_KEYS)
-    if not agreed:
+def _declension_of(answer: dict) -> dict[str, Any] | None:
+    """Ответ вида {"nom_sg": "der Hund", …} → таблица склонения. Одно место сборки:
+    ею пользуются и согласие двух ответов модели, и выбор владельца."""
+    if not isinstance(answer, dict):
         return None
     rows = []
     for case, label in (("nom", "Nominativ"), ("gen", "Genitiv"),
                         ("dat", "Dativ"), ("akk", "Akkusativ")):
         rows.append({"case": case, "label": label,
-                     "singular": agreed.get(f"{case}_sg", ""),
-                     "plural": agreed.get(f"{case}_pl", "")})
+                     "singular": str(answer.get(f"{case}_sg") or "").strip(),
+                     "plural": str(answer.get(f"{case}_pl") or "").strip()})
+    if not any(r["singular"] or r["plural"] for r in rows):
+        return None
     gender = _ARTICLE_GENDER.get(str(rows[0]["singular"]).split(" ")[0].lower(), "pl")
     return {gender: {"rows": rows,
                      "has_singular": any(r["singular"] for r in rows),
                      "has_plural": any(r["plural"] for r in rows)}}
 
 
+def _two_answers(task: str, word: str, keys: tuple[str, ...]) -> tuple[dict, list[dict]]:
+    """(согласованный ответ, что модель предложила). Второе — НЕ мусор.
+
+    Раньше при расхождении оба ответа выбрасывались, и владелец получал слово без
+    единой подсказки: «форм нет нигде». А расхождение и есть содержание вопроса —
+    показать оба варианта человеку честнее, чем молча выбрать один или смолчать.
+    """
+    first = _ask_once(task, word)
+    second = _ask_once(task, word)
+    предложения: list[dict] = []
+    for ответ in (first, second):
+        сжатый = {k: re.sub(r"\s+", " ", str(ответ.get(k) or "")).strip() for k in keys}
+        if any(сжатый.values()) and сжатый not in предложения:
+            предложения.append(сжатый)
+    return _agreed(first, second, keys), предложения
+
+
+def declension_from_model(noun: str) -> dict[str, Any] | None:
+    """Склонение от модели при совпадении двух ответов. None — не подтвердилось."""
+    return declension_by_model(noun)[0]
+
+
+def declension_by_model(noun: str) -> tuple[dict[str, Any] | None, list[dict]]:
+    """(таблица при согласии двух ответов, предложения модели для вопроса владельцу)."""
+    agreed, предложения = _two_answers(_DECLENSION_TASK, noun, _DECL_KEYS)
+    return (_declension_of(agreed) if agreed else None), предложения
+
+
 def degrees_from_model(adjective: str) -> dict[str, str] | None:
     """Степени сравнения от модели при совпадении двух ответов."""
-    agreed = _agreed(_ask_once(_DEGREES_TASK, adjective),
-                     _ask_once(_DEGREES_TASK, adjective), _DEG_KEYS)
-    return agreed or None
+    return degrees_by_model(adjective)[0]
+
+
+def degrees_by_model(adjective: str) -> tuple[dict[str, str] | None, list[dict]]:
+    """(степени при согласии двух ответов, предложения модели для вопроса владельцу)."""
+    agreed, предложения = _two_answers(_DEGREES_TASK, adjective, _DEG_KEYS)
+    return (agreed or None), предложения
 
 
 # ── Каскад: справочник → композит → модель → счётчик ─────────────────────────
@@ -631,23 +685,35 @@ def adjective_degrees_for(adjective: str, *, allow_network: bool = False,
 
 
 # ── Учёт непокрытых слов ─────────────────────────────────────────────────────
-def mark_unresolved(word: str, pos: str, reason: str) -> None:
-    """Слово, которое не закрыла ни одна ступень. Уходит владельцу на разбор."""
+def mark_unresolved(word: str, pos: str, reason: str,
+                    candidates: list[dict] | None = None) -> None:
+    """Слово, которое не закрыла ни одна ступень. Уходит владельцу на разбор.
+
+    `candidates` — то, что модель предложила, когда два её ответа разошлись. Раньше оба
+    ответа выбрасывались, и владелец получал голое слово: «форм нет нигде», решай сам,
+    без единой подсказки. Разошедшиеся ответы и ЕСТЬ вопрос — их показывают человеку.
+    """
     from backend.database import get_db_connection_context
     key = str(word or "").strip()
     if not key:
         return
+    packed = json.dumps(candidates, ensure_ascii=False) if candidates else None
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO bt_3_reference_forms_unresolved (word, pos, reason, checked_at)
-                    VALUES (%s, %s, %s, NOW())
+                    INSERT INTO bt_3_reference_forms_unresolved
+                           (word, pos, reason, candidates, checked_at)
+                    VALUES (%s, %s, %s, %s::jsonb, NOW())
                     ON CONFLICT (word) DO UPDATE
-                       SET reason = EXCLUDED.reason, checked_at = NOW();
+                       SET reason = EXCLUDED.reason, checked_at = NOW(),
+                           -- Новых предложений нет — старые не затираем: они могли
+                           -- прийти с прошлой ночи и всё ещё ждут ответа человека.
+                           candidates = COALESCE(EXCLUDED.candidates,
+                                                 bt_3_reference_forms_unresolved.candidates);
                     """,
-                    (key, str(pos or ""), str(reason or "")),
+                    (key, str(pos or ""), str(reason or ""), packed),
                 )
             conn.commit()
     except Exception:
@@ -676,47 +742,181 @@ def clear_unresolved(word: str) -> None:
         logging.debug("формы из справочника: не снял непокрытое %s", key, exc_info=True)
 
 
-def unresolved_batch(limit: int = 20) -> list[tuple[str, str, str]]:
-    """Порция для разбора в личке: [(слово, часть речи, причина)]."""
+# Через сколько дней вернуть слово, на которое владелец не ответил. Тот же срок, что
+# в разборе артиклей (`article_review.REASK_DAYS`, решение владельца 25.08.2026):
+# неотвеченное слово не имеет права потеряться.
+REASK_DAYS = max(1, int((os.getenv("REFERENCE_FORMS_REASK_DAYS") or "7").strip() or "7"))
+# «Отложить» — на сколько. Не «навсегда»: дыра в данных остаётся дырой.
+POSTPONE_DAYS = max(1, int((os.getenv("REFERENCE_FORMS_POSTPONE_DAYS") or "14").strip() or "14"))
+
+# Слова, ждущие ответа человека: не разобрано, срок отсрочки вышел, и либо ещё не
+# спрашивали, либо спрашивали давно.
+_QUEUE_WHERE = """
+      reviewed = FALSE
+      AND (postponed_until IS NULL OR postponed_until <= NOW())
+      AND (asked_at IS NULL OR asked_at < NOW() - INTERVAL '%d days')
+"""
+
+
+def unresolved_batch(limit: int = 20) -> list[dict[str, Any]]:
+    """Порция для разбора в личке. Строка целиком: номер, слово, причина, предложения."""
     from backend.database import get_db_connection_context
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT word, pos, reason FROM bt_3_reference_forms_unresolved "
-                    "WHERE reviewed = FALSE ORDER BY checked_at ASC LIMIT %s;",
+                    "SELECT id, word, pos, reason, candidates "
+                    "  FROM bt_3_reference_forms_unresolved "
+                    " WHERE " + (_QUEUE_WHERE % REASK_DAYS) +
+                    " ORDER BY checked_at ASC LIMIT %s;",
                     (int(limit),),
                 )
-                return [(str(a), str(b), str(c)) for a, b, c in (cur.fetchall() or [])]
+                rows = cur.fetchall() or []
     except Exception:
         logging.warning("формы из справочника: не прочитал очередь разбора", exc_info=True)
         return []
+    return [{"id": int(a), "word": str(b), "pos": str(c), "reason": str(d),
+             "candidates": e if isinstance(e, list) else []} for a, b, c, d, e in rows]
 
 
 def unresolved_count() -> int:
+    """Сколько слов ждёт ответа человека. -1 — посчитать не удалось (это не ноль)."""
     from backend.database import get_db_connection_context
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM bt_3_reference_forms_unresolved "
-                            "WHERE reviewed = FALSE;")
+                            " WHERE " + (_QUEUE_WHERE % REASK_DAYS) + ";")
                 return int((cur.fetchone() or [0])[0])
     except Exception:
         logging.warning("формы из справочника: не посчитал очередь разбора", exc_info=True)
         return -1
 
 
+def unresolved_row(row_id: int) -> dict[str, Any] | None:
+    """Строка очереди по номеру. None — строки нет (уже закрыта другим админом)."""
+    from backend.database import get_db_connection_context
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, word, pos, reason, candidates, reviewed "
+                    "  FROM bt_3_reference_forms_unresolved WHERE id = %s;",
+                    (int(row_id),),
+                )
+                row = cur.fetchone()
+    except Exception:
+        logging.warning("формы из справочника: не прочитал строку %s", row_id, exc_info=True)
+        return None
+    if not row:
+        return None
+    return {"id": int(row[0]), "word": str(row[1]), "pos": str(row[2]),
+            "reason": str(row[3]), "candidates": row[4] if isinstance(row[4], list) else [],
+            "reviewed": bool(row[5])}
+
+
+def mark_asked(row_ids: list[int]) -> None:
+    """Отметить, что эти строки ушли владельцу. Переспрос — через REASK_DAYS."""
+    from backend.database import get_db_connection_context
+    ids = [int(x) for x in (row_ids or [])]
+    if not ids:
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE bt_3_reference_forms_unresolved SET asked_at = NOW() "
+                            "WHERE id = ANY(%s);", (ids,))
+            conn.commit()
+    except Exception:
+        logging.warning("формы из справочника: не отметил отправку", exc_info=True)
+
+
+def postpone_unresolved(row_id: int, days: int = 0) -> bool:
+    """«Отложить». Слово вернётся само — это отсрочка, а не похороны."""
+    from backend.database import get_db_connection_context
+    срок = int(days) if int(days or 0) > 0 else POSTPONE_DAYS
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_reference_forms_unresolved "
+                    "   SET postponed_until = NOW() + make_interval(days => %s) "
+                    " WHERE id = %s;", (срок, int(row_id)))
+                затронуто = cur.rowcount
+            conn.commit()
+        return затронуто > 0
+    except Exception:
+        logging.warning("формы из справочника: не отложил строку %s", row_id, exc_info=True)
+        return False
+
+
+def mark_reviewed(row_id: int, reason: str = "") -> bool:
+    """Вопрос закрыт решением человека. Причина остаётся в строке — это список работ."""
+    from backend.database import get_db_connection_context
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_reference_forms_unresolved "
+                    "   SET reviewed = TRUE, reason = COALESCE(NULLIF(%s, ''), reason) "
+                    " WHERE id = %s;", (str(reason or ""), int(row_id)))
+                затронуто = cur.rowcount
+            conn.commit()
+        return затронуто > 0
+    except Exception:
+        logging.warning("формы из справочника: не пометил разобранным %s", row_id, exc_info=True)
+        return False
+
+
 def mark_unresolved_reviewed(word: str) -> None:
-    """Спрошенное второй раз не приходит — как в разборе снятых слов."""
+    """Пометить разобранным по слову. Оставлено для прежних вызывающих; новые ходят
+    по номеру строки — слово в кнопке приходилось резать, и длинное не находилось."""
     from backend.database import get_db_connection_context
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute("UPDATE bt_3_reference_forms_unresolved SET reviewed = TRUE "
-                            "WHERE word = %s;", (str(word or "").strip(),))
+                            "WHERE lower(word) = lower(%s);", (str(word or "").strip(),))
             conn.commit()
     except Exception:
         logging.warning("формы из справочника: не пометил разобранным", exc_info=True)
+
+
+def apply_owner_choice(row_id: int, variant: int) -> dict[str, Any] | None:
+    """Владелец выбрал вариант — таблица ложится в кэш форм с подписью «владелец».
+
+    ┌─ НАЙДЕНО 27.08.2026, ПОЧИНЕНО. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ────────────────┐
+    │ Прежняя кнопка писала артикль в БАНК СЛОВ ИГРЫ «спринт артиклей», а не в формы.│
+    │ Даже сработай она — таблица склонения на карточке осталась бы пустой, потому   │
+    │ что карточка читает `bt_3_german_noun_declensions`. Плюс сам запрос падал      │
+    │ всегда: `ON CONFLICT (word)` при отсутствии такого ключа. Ни одного успешного  │
+    │ нажатия за всё время быть не могло (проверено на живой базе).                  │
+    │ Артикль для игры собирает СВОЙ механизм — `backend/article_review.py`.         │
+    └───────────────────────────────────────────────────────────────────────────────┘
+    """
+    row = unresolved_row(row_id)
+    if not row:
+        return None
+    выбран = int(variant)
+    варианты = row.get("candidates") or []
+    if выбран < 1 or выбран > len(варианты):
+        return None
+    ответ = варианты[выбран - 1]
+    if not isinstance(ответ, dict):
+        return None
+    if row["pos"] == "noun":
+        таблица = _declension_of(ответ)
+        if not таблица:
+            return None
+        store_noun_declension(row["word"], {**таблица, "source": "владелец"})
+    else:
+        степени = {k: str(ответ.get(k) or "").strip() for k in _DEG_KEYS}
+        if not степени.get("positive"):
+            return None
+        store_adjective_degrees(row["word"], {**степени, "gradable": bool(степени["comparative"]),
+                                              "source": "владелец"})
+    clear_unresolved(row["word"])
+    return row
 
 
 # ── Прогрев ──────────────────────────────────────────────────────────────────
@@ -1131,8 +1331,10 @@ def warm_with_model(*, limit: int = 0) -> dict:
             cur.execute(sql)
             words = [(str(a), str(b)) for a, b in (cur.fetchall() or [])]
 
-    stats = {"слов": len(words), "композит": 0, "модель": 0, "не закрыто": 0}
+    stats = {"слов": len(words), "композит": 0, "модель": 0, "не закрыто": 0,
+             "с предложениями модели": 0}
     for word, pos in words:
+        предложения: list[dict] = []
         if pos == "noun":
             table = declension_from_compound(word)
             if table:
@@ -1142,21 +1344,26 @@ def warm_with_model(*, limit: int = 0) -> dict:
                 stats["композит"] += 1
                 clear_unresolved(word)
                 continue
-            guessed = declension_from_model(word)
+            guessed, предложения = declension_by_model(word)
             if guessed:
                 store_noun_declension(word, {**guessed, "source": "модель"})
                 stats["модель"] += 1
                 clear_unresolved(word)
                 continue
         else:
-            guessed = degrees_from_model(_reference_title(word, pos))
+            guessed, предложения = degrees_by_model(_reference_title(word, pos))
             if guessed:
                 store_adjective_degrees(word, {**guessed, "source": "модель"})
                 stats["модель"] += 1
                 clear_unresolved(word)
                 continue
         stats["не закрыто"] += 1
-        mark_unresolved(word, pos, "ни справочник, ни композит, ни модель")
+        # Расхождение двух ответов модели уходит владельцу ВМЕСТЕ С ОТВЕТАМИ: это и
+        # есть вопрос, а не «форм нет нигде, думай сам».
+        причина = ("модель предложила разное" if len(предложения) > 1
+                   else "ни справочник, ни композит, ни модель")
+        stats["с предложениями модели"] += 1 if len(предложения) > 1 else 0
+        mark_unresolved(word, pos, причина, candidates=предложения)
     return stats
 
 
