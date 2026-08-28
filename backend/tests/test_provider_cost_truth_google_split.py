@@ -126,10 +126,11 @@ class GoogleReportTextTest(unittest.TestCase):
     def test_account_charges_are_shown_separately_and_named(self):
         text = self._render()
         self.assertIn("счёт аккаунта (не расход на API): $20.00", text)
-        # Не «пополнение»: в экспорте ЗАТРАТ платежей нет вовсе, а строка идёт с
-        # положительной ценой и mode=MANUAL_ADJUSTMENT — это НАЧИСЛЕНИЕ на счёт.
-        self.assertIn("ручная корректировка счёта $16.66", text)
-        self.assertNotIn("пополнение", text)
+        # 28.08.2026 разобрано по чекам владельца: 8.33 + 1.67 НДС = $10.00, дважды —
+        # это два его пополнения предоплаченного счёта AI Studio (23.08, 20:14 и 22:45).
+        # Предоплаченный счёт в наш BigQuery-экспорт не попадает, поэтому со стороны
+        # затрат он неотличим от начисления — отсюда осторожное «пополнение/покупка».
+        self.assertIn("пополнение/покупка вне проектов $16.66", text)
         self.assertIn("налог $3.34", text)
 
     def test_unmetered_service_says_so_instead_of_showing_zero(self):
