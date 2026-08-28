@@ -93,9 +93,12 @@ def _compound_head_tip(low: str, word: str, article: str) -> str | None:
 
 
 def gender_tip(word: str, article: str) -> str:
-    """A short Russian 'why' hint for this noun's gender. Deterministic + instant.
-    Strong ending → confident rule (or 'rare exception' on mismatch); weak ending →
-    tendency (only if it matches); otherwise a 'feel it' fallback."""
+    """Короткая подсказка «почему такой род». Мгновенная, без обращений к модели.
+
+    Окончание совпало с правилом → правило и показываем. НЕ совпало → показываем
+    ЛОВУШКУ: правило существует, но к этому слову не относится. Ни при каких условиях
+    не называем слово «исключением» — см. разбор ниже по коду.
+    """
     w = str(word or "").strip()
     a = str(article or "").strip().lower()
     if not w or a not in ("der", "die", "das"):
@@ -107,12 +110,35 @@ def gender_tip(word: str, article: str) -> str:
     if head_tip:
         return head_tip
 
-    # Strong rules: confident, and flag true exceptions.
+    # ⛔ ПРАВИЛО НЕ СОШЛОСЬ — ЭТО НЕ «ИСКЛЮЧЕНИЕ», А ЛОВУШКА. РАЗОБРАНО 28.08.2026.
+    #
+    # Здесь стояло: «Обычно -chen → всегда das, но «Kuchen» — исключение: der». Это
+    # ложь, и она учит несуществующему исключению: Kuchen не уменьшительное от «Kuch»,
+    # он просто КОНЧАЕТСЯ на те же буквы.
+    #
+    # ЗАМЕР на всех 5835 словах живого банка артиклей. Правило не сошлось у 19 слов:
+    #   -chen  12 (der Kuchen, der Knochen, der Rachen, der Pfannkuchen, …)
+    #   -ment   3 (der Moment, der Zement, der Konsument)
+    #   -ung    2 (der Sprung, der Vorsprung)
+    #   -ling   1 (die Reling)     -lein 1 (der Lein)
+    #   -tion/-heit/-keit/-schaft/-tät/-sion/-ismus — 0, они не ошибаются вовсе.
+    # НАСТОЯЩИХ исключений среди 19 — НОЛЬ. Все девятнадцать этим суффиксом не
+    # образованы, они лишь оканчиваются на те же буквы.
+    #
+    # Отличить «настоящее исключение» от «просто похожие буквы» мы не можем, а раз не
+    # можем — не утверждаем. Зато можем честно сказать то, что ЗНАЕМ: правило есть,
+    # к этому слову оно не относится, верный артикль такой-то.
+    #
+    # Решение владельца 28.08.2026: не молчать, а ОБЪЯСНИТЬ ловушку — «человек может
+    # видеть der Kuchen, и у него может закрепиться, что это как-то связано с
+    # уменьшительным -chen». Предупреждённая ловушка учит больше, чем молчание.
     for suf, expected, rule in _STRONG_SUFFIX_RULES:
         if low.endswith(suf):
             if a == expected:
                 return f"✔️ {rule}."
-            return f"⚠️ Обычно {rule}, но «{w}» — исключение: {a}."
+            return (f"⚠️ Ловушка: «{w}» кончается на -{suf}, но правило «{rule}» на него "
+                    f"НЕ распространяется — верно {a} {w}. Обычно это значит, что слово "
+                    f"просто оканчивается на эти буквы, а таким суффиксом не образовано.")
 
     # Ge-… collective nouns lean neuter.
     if low.startswith("ge") and len(low) > 4 and a == "das":
