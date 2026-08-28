@@ -9669,6 +9669,17 @@ def ensure_webapp_tables() -> None:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
+            # СЧЁТЧИК ПОПАДАНИЙ В КЕШ, 28.08.2026. Пул — не только словарь, но и кеш
+            # ради экономии GPT: сюда попадает КАЖДЫЙ просмотр, включая субтитры и
+            # предложения из книги. Окупается ли он — до сегодня было НЕПРОВЕРЯЕМО:
+            # колонки обращений не было вовсе, и «работает» не отличалось от «склад».
+            # Замер 28.08.2026 обходным путём (по времени изменения строки) дал 50%
+            # нетронутых и 10% мёртвого груза — но это признак, а не попадание.
+            # Теперь считаем честно, чтобы судьбу кеша решать числом, а не на ощупь.
+            cursor.execute("ALTER TABLE bt_3_dictionary_entries "
+                           "ADD COLUMN IF NOT EXISTS hit_count BIGINT NOT NULL DEFAULT 0;")
+            cursor.execute("ALTER TABLE bt_3_dictionary_entries "
+                           "ADD COLUMN IF NOT EXISTS last_hit_at TIMESTAMPTZ;")
             cursor.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_dictionary_entries_pair_text
                 ON bt_3_dictionary_entries (source_lang, target_lang, source_text_norm, target_text_norm);
@@ -36306,6 +36317,38 @@ def search_shared_dictionary(
         if len(units) + len(extra) >= limit:
             break
     return units + extra
+
+
+def note_pool_entry_hit(entry_id) -> None:
+    """Отметить, что строка кеша ВПРАВДУ пригодилась: её отдали вместо похода в GPT.
+
+    Считаем не выборку кандидатов, а именно ВЫДАЧУ. Кандидатов достаётся до 20 на
+    запрос, и почти все отбраковываются (пустая карточка, чужой род, нет перевода);
+    считать их значило бы отчитаться о работе кеша в двадцать раз лучше настоящей.
+
+    Ошибку глушим намеренно и только здесь: это статистика рядом с ответом человеку,
+    и уронить из-за неё сам ответ нельзя. Молчания не выйдет — пишем в лог, а
+    незамеченным это не останется: счётчик, застрявший на нуле при живом поиске,
+    виден в первом же отчёте.
+    """
+    try:
+        normalized_id = int(entry_id)
+    except (TypeError, ValueError):
+        return
+    if normalized_id <= 0:
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_dictionary_entries "
+                    "SET hit_count = hit_count + 1, last_hit_at = NOW() WHERE id = %s;",
+                    (normalized_id,),
+                )
+            conn.commit()
+    except Exception as exc:
+        logging.warning("счётчик попаданий в кеш не записан для строки %s: %s",
+                        normalized_id, exc)
 
 
 def get_dictionary_pool_entry(entry_id: int) -> dict | None:

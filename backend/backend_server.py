@@ -421,6 +421,7 @@ from backend.database import (
     get_quick_dictionary_entries_for_backfill,
     get_pool_dictionary_entry,
     get_pool_dictionary_candidates,
+    note_pool_entry_hit,
     get_pool_dictionary_entry_reverse,
     upsert_dictionary_pool_entry,
     get_dictionary_entries_for_metainfo_scan,
@@ -8310,6 +8311,10 @@ def _load_dictionary_item_from_pool(*, word: str, source_lang: str, target_lang:
             payload["translation_ru"] = payload["target_text"]
         if source_lang == "de" and not str(payload.get("word_de") or "").strip():
             payload["word_de"] = payload["source_text"]
+        # ЗДЕСЬ И ТОЛЬКО ЗДЕСЬ КЕШ ВПРАВДУ СРАБОТАЛ: строку отдают человеку вместо
+        # похода в GPT. Считать выборку кандидатов выше нельзя — их достаётся до 20 на
+        # запрос, и почти все отсеиваются проверками ниже.
+        note_pool_entry_hit(entry.get("id"))
         return payload
     return None
 

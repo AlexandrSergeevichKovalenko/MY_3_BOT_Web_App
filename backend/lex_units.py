@@ -960,7 +960,7 @@ def door_check(text: str, lang: str) -> tuple[str, str, str] | None:
 # │                                                                             │
 # │ Перемерить: пары по (lang, lemma_key) при a.id < b.id.                      │
 # └─────────────────────────────────────────────────────────────────────────────┘
-def ensure_unit(text: str, lang: str) -> int | None:
+def ensure_unit(text: str, lang: str, *, deep: bool = False) -> int | None:
     """Найти единицу по написанию, а если её нет — завести.
 
     Нужно на сохранении: слово, которое человек только что положил себе в словарь,
@@ -978,7 +978,7 @@ def ensure_unit(text: str, lang: str) -> int | None:
     if not checked:
         return None
     text, key, kind = checked
-    passed = _word_gate_for_new_unit(text, key, kind, lang)
+    passed = _word_gate_for_new_unit(text, key, kind, lang, deep=deep)
     if not passed:
         return None
     text, key = passed
@@ -1024,7 +1024,8 @@ def ensure_unit(text: str, lang: str) -> int | None:
         return None
 
 
-def _word_gate_for_new_unit(text: str, key: str, kind: str, lang: str) -> tuple[str, str] | None:
+def _word_gate_for_new_unit(text: str, key: str, kind: str, lang: str,
+                            *, deep: bool = False) -> tuple[str, str] | None:
     """Дверь СЛОВА перед заведением единицы. None — заводить нельзя.
 
     Вынесена из `ensure_unit` 28.08.2026, когда у слоя появился второй заводчик
@@ -1046,12 +1047,26 @@ def _word_gate_for_new_unit(text: str, key: str, kind: str, lang: str) -> tuple[
     # Метка та же, что у парадигм глаголов: тесты и оффлайн-скрипты в боевую базу не
     # ходят. Прогон 19.08.2026 упёрся в таймаут именно на этом — дверь тянула справочник
     # родов из прода на каждом заведении единицы в тесте.
+    # ┌─ ГЛУБОКАЯ ПОЛОВИНА ДВЕРИ, 28.08.2026. ЗАЧЕМ ПОЯВИЛСЯ `deep`. ────────────────┐
+    # │ Дешёвая половина (без сети и модели) отвечает ТОЛЬКО про написания, которые  │
+    # │ дверь уже разбирала раньше. Для нового обрезка она молчит, и он проходит как │
+    # │ обычное слово. Так «Spal» (недописанное «Spalte») стал 28.08.2026 заголовком │
+    # │ общего словаря: вердикта «не слово» ему никто не выносил, а подсказки        │
+    # │ «вы имели в виду Spalte?» строятся только для тех, кому вердикт уже вынесен. │
+    # │ Механизм подсказок (german_word_gate.suggest_spelling + bt_3_word_suggestion │
+    # │ + сводка владельцу) был исправен — его просто нечем было кормить.            │
+    # │                                                                             │
+    # │ ⚠ ПОЧЕМУ НЕ ВКЛЮЧИТЬ ВСЕГДА. Сеть и модель держатся секундами, а сохранение  │
+    # │ человека обязано быть мгновенным и бесплатным — это решение владельца и оно  │
+    # │ не пересматривается. Поэтому `deep=True` ставит только НОЧНОЙ путь, где      │
+    # │ карточка становится заголовком общего словаря и спешить некуда.              │
+    # └─────────────────────────────────────────────────────────────────────────────┘
     _gate_off = (os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") == "1"
                  and not os.getenv("WORD_GATE_LOOKUP"))
     if kind == "word" and lang == "de" and not _gate_off:
         try:
             from backend.german_word_gate import check_word, NOT_A_WORD
-            verdict = check_word(text, allow_network=False, allow_model=False)
+            verdict = check_word(text, allow_network=deep, allow_model=deep)
             if verdict.get("status") == NOT_A_WORD:
                 # Дверь уже разбирала это написание и признала его не словом
                 # («Abschiebu», «inkelgasse»). Новую единицу не заводим.
@@ -1170,8 +1185,14 @@ def attach_entry_to_unit(
     source_lang: str | None = None,
     target_lang: str | None = None,
     card: dict | None = None,
+    deep: bool = False,
 ) -> int | None:
     """Проставить у только что сохранённой карточки указатель на её слово.
+
+    `deep=True` — полная дверь слова (справочник, сеть, модель). Ставит только ночной
+    подбор `attach_missing_entries`: на живом сохранении ждать сеть нельзя, а ночью
+    некуда спешить. Без него обрезок вроде «Spal» становится заголовком общего словаря
+    молча — см. пояснение у `_word_gate_for_new_unit`.
 
     Лучше делать это на сохранении, чем догонять разовыми проходами: иначе каждый
     новый день добавляет карточки без указателя, и слой отстаёт от жизни.
@@ -1189,7 +1210,7 @@ def attach_entry_to_unit(
         lang = next((l for l in langs if l and l != "de"), "ru")
     if not text:
         return None
-    unit_id = ensure_unit(text, lang)
+    unit_id = ensure_unit(text, lang, deep=deep)
     if not unit_id:
         return None
     try:
@@ -1247,7 +1268,18 @@ def attach_missing_entries(limit: int = 5000) -> dict:
     простановки на месте есть этот подбор: он ловит всё, что просочилось, независимо
     от того, каким путём карточка появилась.
 
-    Дешёвый: обычно находит ноль строк."""
+    ЗДЕСЬ И ТОЛЬКО ЗДЕСЬ ДВЕРЬ РАБОТАЕТ ПОЛНОСТЬЮ (deep=True), 28.08.2026. Это точка,
+    где сохранённая карточка человека становится ЗАГОЛОВКОМ ОБЩЕГО СЛОВАРЯ, — и
+    единственная, где можно позволить себе сеть и модель: работа ночная. Живое
+    сохранение остаётся мгновенным и бесплатным, карточка у человека появляется сразу.
+
+    Что это даёт: обрезок («Spal» вместо «Spalte») получает вердикт «не слово» и в общий
+    словарь не идёт. Личная карточка человека при этом ОСТАЁТСЯ — он её сохранил, это
+    его право. А дальше включается уже построенное: подсказка «вы имели в виду Spalte?»
+    (german_word_gate.suggest_spelling → bt_3_word_suggestion) и сводка владельцу с
+    кнопками. Раньше этот механизм был исправен, но пуст: вердикт никто не выносил.
+
+    Дешёвый по числу строк: обычно находит ноль."""
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
@@ -1268,7 +1300,7 @@ def attach_missing_entries(limit: int = 5000) -> dict:
     for entry_id, word_de, word_ru, source_lang, target_lang in rows:
         if attach_entry_to_unit(
             entry_id, word_de=word_de, word_ru=word_ru,
-            source_lang=source_lang, target_lang=target_lang,
+            source_lang=source_lang, target_lang=target_lang, deep=True,
         ):
             attached += 1
     if rows:
