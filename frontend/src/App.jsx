@@ -6274,14 +6274,85 @@ function AppInner() {
       try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { /* older engines */ }
     };
 
+    // ┌─ ИЗМЕРЕНО 28.08.2026 на iPhone, приложение с иконки (standalone PWA) ──────────┐
+    // │ Дефект: словарь → карточка слова → «Добавить своё» → карточка уезжает вверх,   │
+    // │ на экране остаётся только нижний край с кнопками. В Telegram этого нет.        │
+    // │ Прибор (ViewportProbe) снял с открытой клавиатурой:                            │
+    // │   ih481 ch894 vh481 vt413 pt413 sy413 app481px ovl-413/481 crd-413/68          │
+    // │ Читается так: экран 894, клавиатура забирает 413, окно честно сжимается до 481,│
+    // │ и карточка тоже сжимается правильно (app481). НО страница осталась ростом 894  │
+    // │ (в standalone у .webapp-page стоит min-height:100dvh, а 100dvh клавиатуру по   │
+    // │ спецификации не учитывает) — и получила ход прокрутки ровно на 413. Она        │
+    // │ прокрутилась (sy413), и прибитый к экрану оверлей уехал вместе с ней: его верх │
+    // │ оказался на -413. Прокрутка — единственный виновник; visualViewport.offsetTop  │
+    // │ здесь ДУБЛИРУЕТ прокрутку (vt413 = sy413) и в расчёт не годится — попытка      │
+    // │ лечить сдвигом слоя по offsetTop давала двойной сдвиг (откат 2d948b9d).        │
+    // │ Лечение: пока поле внутри прибитого слоя в фокусе, держим прокрутку страницы   │
+    // │ там, где она была. Тот же приём уже работает у плавающего словаря              │
+    // │ (pinYoutubeDictScroll). Поле показывает своя внутренняя прокрутка карточки.    │
+    // └────────────────────────────────────────────────────────────────────────────────┘
+    const fixedLayerOf = (el) => {
+      let node = el?.parentElement || null;
+      while (node && node !== document.body && node !== document.documentElement) {
+        let position = '';
+        try { position = window.getComputedStyle(node).position; } catch { position = ''; }
+        if (position === 'fixed') return node;
+        node = node.parentElement;
+      }
+      return null;
+    };
+
+    let scrollLock = null;
+    let unpinScroll = null;
+
+    const pinScroll = () => {
+      if (!scrollLock) return;
+      if (window.scrollX !== scrollLock.x || window.scrollY !== scrollLock.y) {
+        window.scrollTo(scrollLock.x, scrollLock.y);
+      }
+    };
+
+    const releaseScrollLock = () => {
+      unpinScroll?.();
+      unpinScroll = null;
+      scrollLock = null;
+    };
+
+    const holdScrollForFixedField = (el) => {
+      releaseScrollLock();
+      scrollLock = { x: window.scrollX, y: window.scrollY };
+      // iOS дёргает прокрутку не один раз, а на каждом кадре выезда клавиатуры —
+      // поэтому возвращаем её на место по событию, а не однократно.
+      const vv = window.visualViewport || null;
+      window.addEventListener('scroll', pinScroll, { passive: true });
+      vv?.addEventListener('resize', pinScroll);
+      vv?.addEventListener('scroll', pinScroll);
+      const timers = [0, 120, 350, 700].map((delay) => window.setTimeout(pinScroll, delay));
+      unpinScroll = () => {
+        timers.forEach((id) => window.clearTimeout(id));
+        window.removeEventListener('scroll', pinScroll);
+        vv?.removeEventListener('resize', pinScroll);
+        vv?.removeEventListener('scroll', pinScroll);
+      };
+    };
+
     const handleFocusIn = (event) => {
       const el = event.target;
       if (!isPageField(el)) return;
-      const scroller = el.closest('.webapp-page');
-      if (scroller) scroller.classList.add('is-keyboard-open');
+      const fixedLayer = fixedLayerOf(el);
+      if (fixedLayer) {
+        // Поле внутри прибитого к экрану слоя. Запас снизу для страницы ему не поможет
+        // (слой живёт своей высотой) и только удлинил бы страницу — то есть добавил бы
+        // прокрутки, из-за которой всё и уезжает. Вместо этого держим прокрутку.
+        holdScrollForFixedField(el);
+      } else {
+        releaseScrollLock();
+        const scroller = el.closest('.webapp-page');
+        if (scroller) scroller.classList.add('is-keyboard-open');
+      }
       clearTimers();
       [300, 650].forEach((delay) => {
-        settleTimers.push(window.setTimeout(() => centerField(el), delay));
+        settleTimers.push(window.setTimeout(() => { centerField(el); pinScroll(); }, delay));
       });
     };
 
@@ -6292,6 +6363,7 @@ function AppInner() {
         if (isPageField(document.activeElement)) return;
         clearTimers();
         clearReserve();
+        releaseScrollLock();
       }, 80);
     };
 
@@ -6300,6 +6372,7 @@ function AppInner() {
     return () => {
       clearTimers();
       clearReserve();
+      releaseScrollLock();
       document.removeEventListener('focusin', handleFocusIn);
       document.removeEventListener('focusout', handleFocusOut);
     };
