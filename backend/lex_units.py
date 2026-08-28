@@ -822,6 +822,60 @@ def retitle_unit(cur, unit_id: int, text: str) -> str:
     return kind
 
 
+def set_unit_kind(unit_id: int, kind: str, *, source: str = "модель") -> bool:
+    """Переписать ВИД записи (слово / словосочетание / предложение) по ответу модели.
+
+    ЗАЧЕМ, 28.08.2026. Вид определялся счётом слов (`_kind_for_text`) — догадкой, которая
+    ошибается на коротких предложениях. Замер по всей очереди двумя моделями: 453 из
+    1822 (25%) были предложениями под видом словосочетаний. Цена двойная: их грели
+    платным разбором вопреки решению владельца, и судья грамматики проверял их не как
+    предложения — то есть не проверял порядок слов вовсе.
+
+    Зовёт эту функцию только ночная проверка грамматики и только при согласии ОБОИХ
+    судей. Вид записи меняет поведение денег и проверок, поэтому одного голоса мало.
+
+    Двойник — не ошибка, а ожидаемый исход: ключ единицы уникален по (язык, ВИД, лемма,
+    часть речи, род), и такая же запись с новым видом может уже существовать. Тогда
+    сливаем в неё штатным `merge_unit_into`, а не оставляем две. Возвращаем True в обоих
+    случаях: вид приведён в порядок, а каким путём — дело внутреннее.
+    """
+    вид = str(kind or "").strip().lower()
+    if вид not in ("word", "collocation", "sentence"):
+        logging.warning("вид записи %r не из списка — единица %s не тронута", kind, unit_id)
+        return False
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT lang, kind, lemma_key, COALESCE(pos,''), "
+                            "COALESCE(gender,'') FROM bt_3_lex_units WHERE id=%s;",
+                            (int(unit_id),))
+                строка = cur.fetchone()
+                if not строка:
+                    return False
+                lang, прежний, ключ, pos, gender = строка
+                if прежний == вид:
+                    return False
+                cur.execute("""SELECT id FROM bt_3_lex_units
+                               WHERE lang=%s AND kind=%s AND lemma_key=%s
+                                 AND COALESCE(pos,'')=%s AND COALESCE(gender,'')=%s;""",
+                            (lang, вид, ключ, pos, gender))
+                двойник = cur.fetchone()
+                if двойник:
+                    merge_unit_into(cur, int(unit_id), int(двойник[0]))
+                    cur.execute("DELETE FROM bt_3_lex_units WHERE id=%s;", (int(unit_id),))
+                else:
+                    cur.execute("UPDATE bt_3_lex_units SET kind=%s, card_source=COALESCE("
+                                "NULLIF(card_source,''), %s), updated_at=NOW() WHERE id=%s;",
+                                (вид, f"вид записи: {source}", int(unit_id)))
+            conn.commit()
+        return True
+    except Exception as exc:
+        # Не глушим: несменившийся вид означает, что запись продолжит греться как
+        # словосочетание, и это надо видеть в логах, а не узнавать по счёту денег.
+        logging.warning("вид записи не переписан для единицы %s: %s", unit_id, exc)
+        return False
+
+
 def merge_unit_into(cur, form_id: int, keep_id: int) -> None:
     """Склеить лишнюю строку словаря с настоящим словом. Переносит, а не удаляет.
 
