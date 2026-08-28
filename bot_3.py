@@ -11935,10 +11935,25 @@ async def run_standup_shelf_refill(context: CallbackContext):
             except Exception:
                 logging.debug("standup shelf: admin DM failed id=%s", admin_id, exc_info=True)
         return
-    _record_sched_heartbeat("standup_shelf_refill_result", "completed",
-                            {"added": report.get("added"), "now": report.get("now_unused")})
+    # ┌─ НАЙДЕНО 29.08.2026, ПОЧИНЕНО. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ────────────────┐
+    # │ Прежнее условие «не добавили — молчим» задумывалось для полной полки, но       │
+    # │ глушило и противоположный случай: полка 4 из 30, семь ночей подряд добавлено   │
+    # │ ноль, владелец не знал ничего. Молчание тут не экономия внимания, а потеря     │
+    # │ рубрики: запас тратится через день, и он кончился бы молча.                    │
+    # │ Теперь молчим ТОЛЬКО когда полка полна. «Пробовали и не смогли» — и письмо,    │
+    # │ и status=failed в вечерней проверке планировщика.                              │
+    # └───────────────────────────────────────────────────────────────────────────────┘
+    from backend.standup_shelf import refill_fell_short
+    failed_to_refill = refill_fell_short(report)
+    _record_sched_heartbeat(
+        "standup_shelf_refill_result",
+        "failed" if failed_to_refill else "completed",
+        {"added": report.get("added"), "now": report.get("now_unused"),
+         "target": report.get("target"), "attempted": report.get("attempted"),
+         "no_transcript": report.get("no_transcript"),
+         "budget_spent": bool(report.get("budget_spent"))})
     # Тишина, когда полка и так полна: сообщать не о чем.
-    if not report.get("added"):
+    if not report.get("added") and not failed_to_refill:
         return
     admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
     text = format_shelf_refill_report(report)

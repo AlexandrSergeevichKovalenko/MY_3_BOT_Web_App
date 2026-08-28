@@ -78,7 +78,8 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
     want = int(target or shelf_target())
     counts = standup_shelf_counts()
     report = {"had_unused": counts["unused"], "target": want, "added": 0,
-              "no_transcript": 0, "short_transcript": 0, "dur_skipped": 0, "swept": 0}
+              "no_transcript": 0, "short_transcript": 0, "dur_skipped": 0, "swept": 0,
+              "attempted": 0, "budget_sec": budget_sec}
 
     if counts["unused"] >= want:
         report["reason"] = "полка полна — в YouTube не ходили"
@@ -185,11 +186,33 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
     after = standup_shelf_counts()
     report["now_unused"] = after["unused"]
     report["now_unused_manual"] = after["unused_manual"]
+    # Сколько роликов вообще дошло до скачивания субтитров. Без этого числа отчёт
+    # «добавлено 0» не отличает «перебрали полсотни, ни у кого нет субтитров» от
+    # «успели попробовать одного и упёрлись в бюджет» — а это разные поломки.
+    report["attempted"] = (report["added"] + report["no_transcript"]
+                           + report["short_transcript"])
     logger.info("standup shelf: пополнение — было %d, добавлено %d, стало %d "
                 "(без субтитров %d, коротких %d)",
                 counts["unused"], report["added"], after["unused"],
                 report["no_transcript"], report["short_transcript"])
     return report
+
+
+def refill_fell_short(report: dict) -> bool:
+    """Полка осталась неполной, и пополнение ничего не добавило.
+
+    Ровно тот случай, о котором владелец обязан узнать: «полка полна, в сеть не ходили» —
+    молчим, «полка на 4 из 30 и добавить не смогли» — говорим. Раньше оба случая
+    выглядели одинаково (никак), и полка простояла пустеющей семь ночей (29.08.2026).
+    """
+    if report.get("added"):
+        return False
+    now_unused = report.get("now_unused")
+    if now_unused is None:
+        # Ранний выход (полка полна / кандидатов не получено): пересчёта не было,
+        # значит на полке столько же, сколько было на входе.
+        now_unused = report.get("had_unused")
+    return int(now_unused or 0) < int(report.get("target") or 0)
 
 
 def format_shelf_refill_report(report: dict) -> str:
@@ -198,6 +221,39 @@ def format_shelf_refill_report(report: dict) -> str:
         return (f"🎤 <b>Полка стендапов</b>\n\n"
                 f"Непоказанных: <b>{report.get('had_unused', 0)}</b> из {report.get('target', 0)}\n"
                 f"{report['reason']}")
+    # ┌─ НАЙДЕНО 29.08.2026: пополнение молча не пополняло. ───────────────────────────┐
+    # │ Полка стояла на 4 роликах из 30 с 21.08, семь ночей подряд добавляя ноль, и    │
+    # │ владелец об этом не знал: сообщение уходило только при added > 0. Отдельный    │
+    # │ текст на случай «пробовали и не смогли» — чтобы «нечего добавить» и «не дошли  │
+    # │ руки из-за бюджета» больше не выглядели одинаково (никак).                     │
+    # └───────────────────────────────────────────────────────────────────────────────┘
+    if not report.get("added"):
+        lines = [
+            "🎤 <b>Полка стендапов НЕ пополнилась</b>",
+            "",
+            f"Непоказанных: <b>{report.get('now_unused', report.get('had_unused', 0))}</b> "
+            f"из {report.get('target', 0)} — это примерно "
+            f"{int(report.get('now_unused', report.get('had_unused', 0))) * 2} дн. вещания.",
+            "",
+            f"Обошли роликов: {report.get('swept', 0)}, "
+            f"до субтитров дошли: {report.get('attempted', 0)}",
+        ]
+        skipped = []
+        if report.get("no_transcript"):
+            skipped.append(f"без субтитров {report['no_transcript']}")
+        if report.get("short_transcript"):
+            skipped.append(f"субтитры слишком короткие {report['short_transcript']}")
+        if report.get("dur_skipped"):
+            skipped.append(f"не та длительность {report['dur_skipped']}")
+        if skipped:
+            lines += ["Не подошли: " + ", ".join(skipped)]
+        if report.get("budget_spent"):
+            lines += ["", f"⏳ Время вышло: за {report.get('budget_sec', 0)} c успели "
+                          f"попробовать {report.get('attempted', 0)}. Скачивание субтитров у "
+                          f"негодного ролика висит по полторы минуты и съедает всю ночную "
+                          f"попытку."]
+        lines += ["", "Проверить руками: /standup_shelf"]
+        return "\n".join(lines)
     lines = [
         "🎤 <b>Полка стендапов пополнена</b>",
         "",
