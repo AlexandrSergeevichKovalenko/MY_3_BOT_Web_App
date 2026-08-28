@@ -116,8 +116,15 @@ class SourceLabelTests(unittest.TestCase):
 
 
 class WebappSelfServeGrantTests(unittest.TestCase):
-    """The Mini App is a door of its own: invite share-cards open it directly
-    (t.me/<bot>/app?startapp=…) and never send /start."""
+    """Мини-апп — своя дверь: он открывается РАНЬШЕ, чем человек жмёт /start.
+
+    Здесь стояло «invite share-cards open it directly (t.me/<bot>/app?startapp=…)
+    and never send /start» — это неверно, проверено 28.08.2026. Ссылка-приглашение
+    ведёт в чат с ботом: t.me/<bot>?start=ref_<id>. Подробный вердикт и способ
+    перемерить — в докстроке `_grant_self_serve_webapp_access`.
+
+    Дверь всё равно нужна: замер на живой базе показал, что 3 из 4 самостоятельных
+    входов засчитаны именно здесь, а не в боте."""
 
     def test_first_open_grants_and_notifies(self):
         import backend.backend_server as server

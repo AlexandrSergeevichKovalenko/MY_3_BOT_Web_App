@@ -3501,9 +3501,34 @@ def _grant_self_serve_webapp_access(
 ) -> bool:
     """Let a brand-new user in on their first Mini-App open, and tell the admin.
 
-    Invite share-cards open the Mini App DIRECTLY (t.me/<bot>/app?startapp=…) without ever
-    sending /start, so the bot-side self-serve grant never runs for them. Without this the
-    invite funnel would still dead-end on a 403. Returns True when access now exists.
+    ┌─ ПРОВЕРЕНО 28.08.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────┐
+    │ Здесь стояло: «Invite share-cards open the Mini App DIRECTLY               │
+    │ (t.me/<bot>/app?startapp=…) without ever sending /start». ЭТО НЕВЕРНО, и   │
+    │ на этом комментарии уже была построена лишняя конструкция с отложенной     │
+    │ досылкой писем «на случай, если чата с ботом нет».                         │
+    │                                                                            │
+    │ Перебраны ВСЕ ссылки t.me, которые проект кому-либо отдаёт. Ссылок вида    │
+    │ `t.me/<bot>/app?startapp=` нет НИ ОДНОЙ — они существовали только в этом   │
+    │ комментарии и в докстроке теста. Приглашение — `t.me/<bot>?start=ref_<id>`,│
+    │ и оно ведёт В ЧАТ С БОТОМ (backend_server.py:51023, bot_3.py:3617).        │
+    │                                                                            │
+    │ Живая база на ту же дату: впущено 16, из них самостоятельно пришли 4, а    │
+    │ настоящих людей среди них 2 (id 7 и 777 — тестовые строки, телеграмных id  │
+    │ такой длины не бывает). У ОБОИХ настоящих чат с ботом есть: один писал     │
+    │ боту, оба прошли онбординг. Людей, попавших в приложение мимо бота, в      │
+    │ живых данных НЕ найдено.                                                   │
+    │                                                                            │
+    │ ЧТО ОСТАЁТСЯ ПРАВДОЙ: эта дверь нужна, потому что мини-апп открывается     │
+    │ раньше, чем человек жмёт /start (замер: 3 из 4 самостоятельных входов      │
+    │ засчитаны здесь, а не в боте). Узкий путь в приложение мимо бота тоже      │
+    │ существует — `?startapp=share_…` и `wdiff_…`, кнопка «Поделиться» на       │
+    │ разборе слова. Но это показ одного слова другу, а не приглашение.          │
+    │                                                                            │
+    │ Как перемерить: grep -roE "t\.me/[^\"' )]+" по backend, bot_3.py,          │
+    │ frontend/src — и SELECT note FROM bt_3_allowed_users.                      │
+    └────────────────────────────────────────────────────────────────────────────┘
+
+    Returns True when access now exists.
     """
     uid = int(user_id)
     if uid <= 0 or _is_synthetic_telegram_user_id(uid):

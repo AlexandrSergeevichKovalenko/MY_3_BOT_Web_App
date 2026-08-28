@@ -16067,6 +16067,20 @@ def count_access_waitlist() -> int:
             return int((cursor.fetchone() or [0])[0] or 0)
 
 
+def list_access_waitlist(limit: int = 30) -> list[dict]:
+    """Кто сейчас ждёт, по порядку обращения — для команды /dver."""
+    ensure_access_waitlist_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, username, source FROM bt_3_access_waitlist "
+                "WHERE admitted_at IS NULL ORDER BY requested_at ASC LIMIT %s;",
+                (max(1, int(limit)),),
+            )
+            return [{"user_id": int(r[0]), "username": r[1], "source": r[2]}
+                    for r in (cursor.fetchall() or [])]
+
+
 def admit_from_access_waitlist(limit: int) -> list[dict]:
     """Впустить первых `limit` из очереди — по порядку обращения, без исключений.
 
