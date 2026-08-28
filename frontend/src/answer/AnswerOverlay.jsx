@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { openBotChat } from '../telegramNav.js';
 import './answer.css';
 import AnagramGame from './AnagramGame.jsx';
 import MCGame from './MCGame.jsx';
@@ -1376,13 +1377,12 @@ export default function AnswerOverlay({ startParam }) {
 function DmStartHint({ hint }) {
   if (!hint || !hint.bot_username) return null;
   const name = String(hint.name || '').trim();
-  const url = `https://t.me/${hint.bot_username}?start=${encodeURIComponent(hint.start_param || 'fromgame')}`;
+  // Раньше здесь был голый openTelegramLink: ссылка отрабатывала, но мини-апп
+  // оставался поверх открытого чата, и кнопка выглядела мёртвой (замер 28.08.2026).
+  // Общая реализация уходит в чат по-настоящему — см. telegramNav.js.
   const open = () => {
     haptic('light');
-    try {
-      if (tg?.openTelegramLink) { tg.openTelegramLink(url); return; }
-    } catch (_e) { /* fall through to a plain navigation */ }
-    try { window.open(url, '_blank'); } catch (_e) { /* ignore */ }
+    openBotChat(hint.bot_username, hint.start_param || 'fromgame');
   };
   return (
     <div className="ans-dm-hint">

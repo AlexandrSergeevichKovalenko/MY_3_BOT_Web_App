@@ -161,6 +161,13 @@ function openBotLink(botUsername, startParam = '') {
     // Inside Telegram (initData present) → native opener. Otherwise we're the detached PWA.
     if (tgApp && tgApp.initData && typeof tgApp.openTelegramLink === 'function') {
       tgApp.openTelegramLink(https);
+      // Переход в ЧАТ (без ?startapp=) требует ещё и закрыть мини-апп: чат лежит прямо
+      // под ним, и без закрытия кнопка выглядит мёртвой — замер 28.08.2026. Со
+      // ?startapp= закрывать НЕЛЬЗЯ: там Telegram переоткрывает само приложение на
+      // другом экране, и человек должен в нём остаться.
+      if (!start) {
+        setTimeout(() => { try { tgApp.close?.(); } catch (_e) { /* ignore */ } }, 150);
+      }
       return;
     }
   } catch (_e) { /* fall through */ }

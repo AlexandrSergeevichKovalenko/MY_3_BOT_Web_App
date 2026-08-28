@@ -1,4 +1,5 @@
 import React from 'react'
+import { openBotChat } from './telegramNav.js';
 import ReactDOM from 'react-dom/client'
 import { detectAppMode } from './utils/appMode.js'
 // ./ в начале пути означает, что файл App.jsx находится в той же папке, что и текущий файл main.jsx
@@ -737,46 +738,6 @@ let __accessClosedGateShown = false;
 /** Access was closed by an admin (/deny). Same shape as the bot-left gate, amber instead of
  *  indigo: the app is not broken, someone decided this — so no red, no server text, one way
  *  out (open the bot, where «Запросить доступ» lives). */
-// Открыть чат с ботом. ⛔ НЕ ЧЕРЕЗ window.location.href.
-//
-// Замер 28.08.2026 на живом телефоне владельца: кнопка «Открыть чат с ботом» на экране
-// очереди не делала НИЧЕГО. Внутри мини-аппа Telegram переход по `tg://resolve` и по
-// `https://t.me/...` через location.href не срабатывает — оболочка его игнорирует.
-// Штатный способ ровно один: Telegram.WebApp.openTelegramLink(), им и пользуется весь
-// остальной проект (App.jsx, AnswerOverlay.jsx, SettingsScreen.jsx).
-//
-// Прежний код с location.href писался для экрана «доступ закрыт», а тот показывается
-// ТОЛЬКО вне Telegram (токенный шим выходит раньше при inTelegram()) — там location.href
-// работает, поэтому поломка и не всплывала. Экран очереди показывается ВНУТРИ мини-аппа,
-// и на нём она вылезла сразу.
-//
-// Кнопка не украшение: если человек пришёл в приложение по ссылке и с ботом ни разу не
-// переписывался, чата с ботом у него нет, и написать ему мы физически не сможем.
-// Нажатие создаёт чат — и только после этого обещание «напишу, когда откроем» выполнимо.
-function openBotChat(botUsername, startPayload) {
-  const uname = String(botUsername || 'Ich_Deutsch_bot').trim().replace(/^@/, '') || 'Ich_Deutsch_bot';
-  const suffix = startPayload ? `?start=${encodeURIComponent(startPayload)}` : '';
-  const httpsUrl = `https://t.me/${uname}${suffix}`;
-  const tg = (() => { try { return window.Telegram && window.Telegram.WebApp; } catch (_e) { return null; } })();
-  if (tg && typeof tg.openTelegramLink === 'function') {
-    try { tg.openTelegramLink(httpsUrl); } catch (_e) { /* закроем приложение ниже — этого хватит */ }
-    // ⛔ БЕЗ ЭТОГО ЗАКРЫТИЯ КНОПКА ВЫГЛЯДИТ НЕРАБОЧЕЙ.
-    // Замер на живом телефоне 28.08.2026: нажатие не делало ВИДИМО ничего. Причина не в
-    // ссылке — чат с ботом и так лежит ПРЯМО ПОД мини-аппом (человек открыл приложение
-    // из него же). Telegram честно «открывает» этот чат, но поверх остаётся то же
-    // приложение, и со стороны это неотличимо от мёртвой кнопки.
-    // Закрытие мини-аппа и ЕСТЬ переход в чат для того, кто пришёл из чата. А вызов
-    // openTelegramLink выше нужен второму случаю — человеку, который попал в приложение
-    // по прямой ссылке и чата с ботом не имеет: у него ссылка этот чат создаёт.
-    // Небольшая задержка — чтобы Telegram успел принять ссылку до закрытия.
-    setTimeout(() => { try { tg.close(); } catch (_e) { /* ignore */ } }, 150);
-    return;
-  }
-  // Вне Telegram (браузер, установленное приложение) — обычный переход, там он работает.
-  try { window.open(httpsUrl, '_blank'); return; } catch (_e) { /* ниже последний способ */ }
-  try { window.location.href = httpsUrl; } catch (_e) { /* ignore */ }
-}
-
 // Отметка сборки для угла экрана. Отвечает на вопрос «этот телефон вообще выполняет
 // новый код?» — тот самый, на котором в проекте уже горели дни.
 const BUILD_STAMP = (() => {

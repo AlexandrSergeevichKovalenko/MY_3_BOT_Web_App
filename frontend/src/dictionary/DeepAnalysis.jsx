@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { openBotChat } from '../telegramNav.js';
 import '../answer/answer.css';
 import './dict.css';
 import './deep.css';
@@ -293,14 +294,13 @@ export default function DeepAnalysis({ startParam }) {
     }
   }, [deepId, sharing]);
 
-  // Guest CTA: open the bot so a non-user can request access.
+  // Кнопка гостя: уйти в чат с ботом. Гость пришёл сюда по ссылке «Поделиться»
+  // (t.me/<бот>?startapp=share_…), то есть мимо чата с ботом — эта кнопка его чат и
+  // создаёт. Раньше здесь стоял голый openTelegramLink: ссылка отрабатывала, но
+  // мини-апп оставался поверх, и кнопка выглядела мёртвой (замер 28.08.2026).
   const requestAccess = useCallback(() => {
     haptic('light');
-    if (botUsername && typeof tg?.openTelegramLink === 'function') {
-      tg.openTelegramLink(`https://t.me/${botUsername}?start=access`);
-    } else if (typeof tg?.close === 'function') {
-      tg.close();
-    }
+    openBotChat(botUsername, 'access');
   }, [botUsername]);
 
   // Build a save payload for a «Вариант для сохранения» (both sides + direction known).

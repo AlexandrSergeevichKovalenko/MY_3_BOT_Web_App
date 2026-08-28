@@ -181,8 +181,11 @@ class ЭкранОчередиГоворитЧеловеческимЯзыком
         Кнопка не украшение: человеку, который пришёл в приложение и с ботом ни разу не
         переписывался, написать физически нельзя. Нажатие создаёт чат — и только после
         этого обещание «напишу, когда откроем» становится выполнимым."""
-        self.assertIn("function openBotChat(", self.главный)
-        self.assertIn("tg.openTelegramLink(httpsUrl)", self.главный)
+        # Сама реализация переехала в общий модуль: таких кнопок в проекте четыре,
+        # и все они обязаны вести себя одинаково (см.
+        # test_bot_chat_buttons_actually_leave.py). Здесь стережём, что ЭТОТ экран
+        # берёт общую, а не заводит свою копию с прежней поломкой.
+        self.assertIn("from './telegramNav.js'", self.главный)
         начало = self.главный.index("function showAccessQueueGate(")
         экран = self.главный[начало:начало + 2600]
         self.assertIn("openBotChat(uname, 'queue')", экран)
@@ -199,10 +202,11 @@ class ЭкранОчередиГоворитЧеловеческимЯзыком
         Закрытие мини-аппа И ЕСТЬ переход в чат для того, кто пришёл из чата. Вызов
         openTelegramLink остаётся для второго случая — человека, попавшего в приложение
         по прямой ссылке: у него чата с ботом нет, и ссылка его создаёт."""
-        начало = self.главный.index("function openBotChat(")
-        функция = self.главный[начало:начало + 2200]
-        self.assertIn("tg.openTelegramLink(httpsUrl)", функция)
-        self.assertIn("tg.close()", функция)
+        import pathlib
+        модуль = (pathlib.Path(__file__).resolve().parents[2]
+                  / "frontend" / "src" / "telegramNav.js").read_text(encoding="utf-8")
+        self.assertIn("tg.openTelegramLink(httpsUrl)", модуль)
+        self.assertIn("tg.close()", модуль)
 
     def test_на_экране_видно_какая_это_сборка(self):
         """«А этот телефон вообще выполняет новый код?» — вопрос, на котором в проекте
