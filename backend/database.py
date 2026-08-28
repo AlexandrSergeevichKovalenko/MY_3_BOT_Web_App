@@ -1389,10 +1389,24 @@ def _dedupe_webapp_dictionary_entry_after_insert(
     # Сужение может пропустить кандидата, у которого слово лежит только внутри
     # response_json, а колонка пуста. Это осознанный размен: непойманный дубль остаётся
     # лежать (его подберёт разовый прогон), а лишнего удаления не будет никогда.
-    narrow_word = _squash_space(word_de).casefold()
+    # ┌─ ПОЧИНЕНО 28.08.2026. ПОВТОР СО СЛОВОМ НА «ß» НЕ НАХОДИЛСЯ НИКОГДА. ──────────┐
+    # │ Здесь стоял `.casefold()`, а сравнивается он с `LOWER()` в SQL — и на «ß»    │
+    # │ они РАЗНЫЕ: python casefold('Weißt') = 'weisst', SQL lower('Weißt') =        │
+    # │ 'weißt'. Условие не совпадало ни при каких данных, кандидатов не было, и     │
+    # │ уборка молча возвращала ноль. Поймано на живом повторе карточек 620 и 1035   │
+    # │ («Weißt du zufällig Bescheid, wem sie gehört?») — обе строки совпадали до    │
+    # │ буквы, а уборка их не видела.                                                │
+    # │ Тот же урок этот файл уже проходил на артикле (test_word_audit_identity):    │
+    # │ выражение в питоне и выражение в SQL обязаны нормализовать ОДИНАКОВО.        │
+    # │ Здесь берём `.lower()` — ровно семантика SQL LOWER, под которую построен     │
+    # │ индекс. Ключи сравнения ниже остаются на casefold: они сравниваются в питоне │
+    # │ с питоном, и там casefold вернее.                                            │
+    # │ Перемерить: scripts/word_audit_settle_lost_fixes.py (раздел C).              │
+    # └──────────────────────────────────────────────────────────────────────────────┘
+    narrow_word = _squash_space(word_de).lower()
     narrow_column = "LOWER(BTRIM(word_de))"
     if not narrow_word:
-        narrow_word = _squash_space(word_ru).casefold()
+        narrow_word = _squash_space(word_ru).lower()
         narrow_column = "LOWER(BTRIM(word_ru))"
     if not narrow_word:
         return 0
@@ -25962,9 +25976,66 @@ def apply_translation_link_decision(review_id: int, decision: str,
     return out
 
 
+def _прибрать_повторы_после_слияния(переехавшие: list, keep_unit: int) -> int:
+    """После слияния двойника человек не должен видеть одну фразу дважды.
+
+    ┌─ НАЙДЕНО И ЗАКРЫТО 28.08.2026, ПО ДОРОГЕ К СЛИЯНИЮ ДВОЙНИКОВ. ────────────────┐
+    │ Слияние переносит личные карточки на выжившее слово — и там у человека уже    │
+    │ могла лежать своя карточка того же слова. Замер на живых данных того же дня:  │
+    │ пять починенных правок дали пять таких встреч у владельца, и в ДВУХ карточки  │
+    │ совпали целиком (#18295 «Weißt du zufällig Bescheid…», #25144 «Wir sind nicht │
+    │ in der Lage zu kommen») — он увидел бы одну фразу дважды.                      │
+    │                                                                              │
+    │ ПРАВИЛО НЕ НОВОЕ И НЕ ГАДАЮЩЕЕ: сносим ТОЛЬКО полное совпадение — совпали и   │
+    │ слово, и перевод (`dedupe_personal_entry_after_save`, разобрано 13.08.2026).  │
+    │ Остальные три пары различаются переводом («завидовать кому-либо в чём-либо» /  │
+    │ «завидовать кому-то») — это две РАЗНЫЕ карточки человека, и трогать их нельзя. │
+    │                                                                              │
+    │ Отдельный вопрос, СЮДА НЕ ВХОДЯЩИЙ: таких пар «человек + слово» в базе уже    │
+    │ 839 штук, накопленных не слиянием. Это другой класс и другое решение владельца.│
+    └──────────────────────────────────────────────────────────────────────────────┘
+
+    Хранителем берём карточку, которая на выжившем слове УЖЕ ЛЕЖАЛА: у неё разбор
+    собран под верный текст, а у переехавшей он только что переписан строкой.
+    """
+    убрано = 0
+    for user_id in {int(u) for _, u in (переехавшие or [])}:
+        переехавшие_этого = {int(c) for c, u in переехавшие if int(u) == user_id}
+        try:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT id FROM bt_3_webapp_dictionary_queries "
+                        "WHERE lex_unit_id = %s AND user_id = %s ORDER BY created_at, id;",
+                        (int(keep_unit), int(user_id)))
+                    свои = [int(r[0]) for r in (cursor.fetchall() or [])]
+            хранитель = next((c for c in свои if c not in переехавшие_этого), None)
+            if хранитель is None or len(свои) < 2:
+                continue
+            убрано += int(dedupe_personal_entry_after_save(user_id, хранитель) or 0)
+        except Exception:
+            # Уборка не имеет права уронить саму правку: она уже применена и
+            # закоммичена. Но и молчать нельзя — повтор останется на экране.
+            logging.warning("слияние %s: повторы карточек человека %s не прибраны",
+                            keep_unit, user_id, exc_info=True)
+    return убрано
+
+
 def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = "",
-                                 variant: int = 0, own_ru: str = "") -> dict:
+                                 variant: int = 0, own_ru: str = "", *,
+                                 chosen_text: str = "") -> dict:
     """Решение владельца по спорной фразе: принять правку, удалить или вписать свою.
+
+    ДВА СПОСОБА НАЗВАТЬ ПРИНЯТЫЙ ВАРИАНТ, И ЭТО НЕ ДУБЛИРОВАНИЕ.
+      `variant`     — НОМЕР. Приходит только с экрана владельца, где нумерует сам сервер
+                      (`_phrase_review_payload`) и отдаёт номер вместе с кнопкой: там
+                      список полный, и номер значит ровно то же на обоих концах.
+      `chosen_text` — САМ ТЕКСТ. Приходит с экрана проверки слов, где список кнопок
+                      УРЕЗАН (спорные варианты человеку не показываются, всего две
+                      кнопки). Номер оттуда указывал в другой список — и 28.08.2026 на
+                      живых данных дважды записал не то, что человек нажал (#317, #319).
+                      Текст указывать в чужой список не умеет.
+    Задан `chosen_text` — он и главный; `variant` при этом не читается вовсе.
 
     Правило удаления, согласованное 06.08.2026. Фраза уходит из общего словаря, и вместе
     с ней — ПОДПИСНЫЕ карточки людей, но только те, куда человек не вписал своих полей
@@ -26038,8 +26109,17 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 # Тот же набор, что на экране владельца: номер на кнопке = номер здесь.
                 variants = phrase_review_variants(judges, old_text, arbiter,
                                                   include_disputed=True)
-                idx = int(variant or 0)
-                chosen = variants[idx] if 0 <= idx < len(variants) else {}
+                if str(chosen_text or "").strip():
+                    # Выбор назван текстом — ищем его в том же списке. Не нашли — НЕ
+                    # берём «похожий» и не берём первый: вызывающий уже сверил текст со
+                    # своим экраном, и если здесь его нет, то список под рукой у
+                    # человека успел смениться. Пустой new_text ниже честно закроет
+                    # вопрос, ничего не переписав.
+                    chosen = next((v for v in variants
+                                   if _phrase_same_text(v.get("text"), chosen_text)), {})
+                else:
+                    idx = int(variant or 0)
+                    chosen = variants[idx] if 0 <= idx < len(variants) else {}
                 new_text = str(chosen.get("text") or "")
                 # Перевод, который владелец ВИДЕЛ НА КНОПКЕ, когда нажимал «Принять».
                 #
@@ -26074,54 +26154,106 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                 "SELECT id FROM bt_3_lex_units WHERE lang='de' AND lemma_key=%s AND id<>%s LIMIT 1;",
                 (key, unit_id),
             )
-            if cursor.fetchone():
+            двойник = cursor.fetchone()
+            if двойник:
+                # ┌─ ПОЧИНЕНО 28.08.2026. ЗДЕСЬ ПРАВКА МОЛЧА ВЫБРАСЫВАЛАСЬ. ───────────┐
+                # │ Стояло: «такая фраза уже есть» → status='closed' и выход. То есть  │
+                # │ человек нажал «Да, правильно так», вопрос закрылся НАВСЕГДА, а у   │
+                # │ него в словаре осталась кривая фраза — и на проверку она больше не │
+                # │ приходила. Замер по живой базе 28.08.2026: 6 правок за всё время,  │
+                # │ две из них в тот же день:                                          │
+                # │   #307 «…früh aufzustechen» — правильная лежала единицей 1858;     │
+                # │   #335 «…im Stand zu kommen» — правильная лежала единицей 25144.   │
+                # │ Владелец 28.08.2026: «сливай автоматически».                        │
+                # │                                                                    │
+                # │ Правильная запись УЖЕ ЕСТЬ — переименовывать некуда, и заводить    │
+                # │ второй такой же заголовок нельзя. Поэтому кривую единицу СЛИВАЕМ в │
+                # │ правильную: `lex_units.merge_unit_into` переносит поверхности,     │
+                # │ личные карточки, источники и связи, а не удаляет их.               │
+                # │ Порядок важен: сначала правим тексты карточек, пока они ещё висят  │
+                # │ на кривой единице, и только потом переносим их — иначе развоз      │
+                # │ пойдёт по единице, которой уже нет.                                │
+                # └────────────────────────────────────────────────────────────────────┘
+                keep_id = int(двойник[0])
+                # Кто переезжает — записываем ДО слияния: после него этих карточек уже
+                # не отличить от тех, что лежали на правильном слове (см. `_прибрать_
+                # повторы_после_слияния` — карточки могут встретиться и совпасть).
+                cursor.execute("SELECT id, user_id FROM bt_3_webapp_dictionary_queries "
+                               "WHERE lex_unit_id = %s;", (unit_id,))
+                переезжают = [(int(a), int(b)) for a, b in (cursor.fetchall() or [])]
                 cursor.execute(
-                    "UPDATE bt_3_phrase_review SET status = 'closed', decided_at = NOW() "
-                    "WHERE id = %s;", (int(review_id),)
+                    "UPDATE bt_3_phrase_review SET status = %s, decided_at = NOW(), "
+                    "decided_text = %s WHERE id = %s;",
+                    ("accepted" if decision == "accept" else "replaced",
+                     new_text, int(review_id)),
                 )
-                conn.commit()
-                result["text"] = ""
-                return result
-            # Переименование идёт ОДНИМ местом (lex_units.retitle_unit), потому что вместе
-            # с написанием обязан пересчитаться ВИД ЗАПИСИ. Здесь его не пересчитывали, а
-            # ночной добор берёт в работу только `kind = 'word'`: фраза, которую владелец
-            # свёл к одному слову («Die Feinde…» → «sich verzehnfachen»), оставалась
-            # «предложением» и разбор получить уже не могла. Замер 21.08.2026.
-            from backend.lex_units import retitle_unit
-            retitle_unit(cursor, unit_id, new_text)
-            # Правка доезжает ДО ВСЕХ мест сразу — см. spread_correction_everywhere.
-            spread_correction_everywhere(cursor, unit_id=unit_id,
-                                         old_text=old_text, new_text=new_text)
-            cursor.execute(
-                """INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
-                   VALUES ('de', %s, %s, 'exact') ON CONFLICT DO NOTHING;""",
-                (key, unit_id),
-            )
-            # ⚠ КОПИИ СТАРОГО ТЕКСТА В ПУЛЕ И КЕШЕ СНОСИМ ТОЙ ЖЕ ДОЧИСТКОЙ, ЧТО И
-            # ПЕРЕИМЕНОВАНИЕ СЛОВА. Ни retitle_unit, ни spread_correction_everywhere их
-            # не трогают. Замер 27.08.2026 по 50 правкам фраз владельца: у 36 старый
-            # текст остался лежать в общем пуле, у одной — в кеше словаря. Пул отдаёт
-            # готовый ответ ПО ТЕКСТУ, то есть кривой вариант мог уехать человеку снова.
-            # Указатель поиска здесь НЕ трогаем: у фразы старый текст это обрывок, и
-            # ключ по нему работает алиасом (см. подчистить_после_переименования).
-            from backend.card_complaints import подчистить_после_переименования
-            хвосты = подчистить_после_переименования(
-                cursor, unit_id=unit_id, old_text=old_text, new_text=new_text,
-                трогать_указатель=False)
-            if хвосты.get("пул") or хвосты.get("кеш"):
-                logging.info("правка фразы %s: снято копий старого текста — пул %s, кеш %s",
-                             review_id, хвосты.get("пул"), хвосты.get("кеш"))
-            # Текст другой — значит и разбор к нему другой. Снимаем метку проверки,
-            # чтобы ночь посмотрела фразу заново уже в новом виде.
-            cursor.execute("DELETE FROM bt_3_phrase_check WHERE unit_id = %s;", (unit_id,))
-            cursor.execute(
-                "UPDATE bt_3_phrase_review SET status = %s, decided_at = NOW(), "
-                "decided_text = %s WHERE id = %s;",
-                ("accepted" if decision == "accept" else "replaced",
-                 new_text, int(review_id)),
-            )
+                развоз = spread_correction_everywhere(cursor, unit_id=unit_id,
+                                                      old_text=old_text, new_text=new_text)
+                from backend.card_complaints import подчистить_после_переименования
+                подчистить_после_переименования(
+                    cursor, unit_id=unit_id, old_text=old_text, new_text=new_text,
+                    трогать_указатель=False)
+                from backend.lex_units import merge_unit_into
+                merge_unit_into(cursor, unit_id, keep_id)
+                # Строка решения могла уехать вместе со слиянием: у `bt_3_phrase_review`
+                # переносится только та, для которой у выжившей единицы места ещё нет
+                # (см. merge_unit_into). Поэтому след пишем в лог — молчать здесь нельзя.
+                logging.info(
+                    "правка фразы %s: %r уже была единицей %s — слил %s в неё "
+                    "(карточек поправлено %s, мест %s)",
+                    review_id, new_text[:60], keep_id, unit_id,
+                    развоз.get("cards"), развоз.get("places"))
+                # Дальше — общий хвост функции: он поднимет перевод и соберёт разбор.
+                # Собирать его надо уже для ВЫЖИВШЕЙ единицы: карточка человека висит
+                # теперь на ней, и описывать она обязана новый текст.
+                result["unit_id"] = keep_id
+                result["merged_into"] = keep_id
+                result["merged_cards"] = переезжают
+            else:
+                # Переименование идёт ОДНИМ местом (lex_units.retitle_unit), потому что вместе
+                # с написанием обязан пересчитаться ВИД ЗАПИСИ. Здесь его не пересчитывали, а
+                # ночной добор берёт в работу только `kind = 'word'`: фраза, которую владелец
+                # свёл к одному слову («Die Feinde…» → «sich verzehnfachen»), оставалась
+                # «предложением» и разбор получить уже не могла. Замер 21.08.2026.
+                from backend.lex_units import retitle_unit
+                retitle_unit(cursor, unit_id, new_text)
+                # Правка доезжает ДО ВСЕХ мест сразу — см. spread_correction_everywhere.
+                spread_correction_everywhere(cursor, unit_id=unit_id,
+                                             old_text=old_text, new_text=new_text)
+                cursor.execute(
+                    """INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
+                       VALUES ('de', %s, %s, 'exact') ON CONFLICT DO NOTHING;""",
+                    (key, unit_id),
+                )
+                # ⚠ КОПИИ СТАРОГО ТЕКСТА В ПУЛЕ И КЕШЕ СНОСИМ ТОЙ ЖЕ ДОЧИСТКОЙ, ЧТО И
+                # ПЕРЕИМЕНОВАНИЕ СЛОВА. Ни retitle_unit, ни spread_correction_everywhere их
+                # не трогают. Замер 27.08.2026 по 50 правкам фраз владельца: у 36 старый
+                # текст остался лежать в общем пуле, у одной — в кеше словаря. Пул отдаёт
+                # готовый ответ ПО ТЕКСТУ, то есть кривой вариант мог уехать человеку снова.
+                # Указатель поиска здесь НЕ трогаем: у фразы старый текст это обрывок, и
+                # ключ по нему работает алиасом (см. подчистить_после_переименования).
+                from backend.card_complaints import подчистить_после_переименования
+                хвосты = подчистить_после_переименования(
+                    cursor, unit_id=unit_id, old_text=old_text, new_text=new_text,
+                    трогать_указатель=False)
+                if хвосты.get("пул") or хвосты.get("кеш"):
+                    logging.info("правка фразы %s: снято копий старого текста — пул %s, кеш %s",
+                                 review_id, хвосты.get("пул"), хвосты.get("кеш"))
+                # Текст другой — значит и разбор к нему другой. Снимаем метку проверки,
+                # чтобы ночь посмотрела фразу заново уже в новом виде.
+                cursor.execute("DELETE FROM bt_3_phrase_check WHERE unit_id = %s;", (unit_id,))
+                cursor.execute(
+                    "UPDATE bt_3_phrase_review SET status = %s, decided_at = NOW(), "
+                    "decided_text = %s WHERE id = %s;",
+                    ("accepted" if decision == "accept" else "replaced",
+                     new_text, int(review_id)),
+                )
         conn.commit()
     result["text"] = new_text
+    # Слияние могло свести у одного человека ДВЕ карточки одного слова.
+    if result.get("merged_into"):
+        result["повторов убрано"] = _прибрать_повторы_после_слияния(
+            result.get("merged_cards") or [], int(result["merged_into"]))
     # ВЫБОР ВЛАДЕЛЬЦА СТАВИТСЯ ДО ТОГО, КАК МЫ ПОЙДЁМ К МОДЕЛИ.
     #
     # Раньше перевод владельца поднимался главным ВНУТРИ пересборки разбора, то есть

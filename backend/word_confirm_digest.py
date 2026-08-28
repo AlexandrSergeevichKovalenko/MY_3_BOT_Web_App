@@ -262,13 +262,54 @@ def _phrase_reason(judges: Any) -> str:
     return " ".join(названо[:2])
 
 
+# Сколько кнопок «Да, правильно так» помещается в карточку экрана проверки.
+КНОПОК_НА_ФРАЗУ = 2
+
+
+def кнопки_вариантов(judges: Any, text: str, arbiter: dict | None) -> list[dict[str, str]]:
+    """РОВНО те варианты, которые экран проверки слов рисует кнопками. Один источник.
+
+    ┌─ ПОЧИНЕНО 28.08.2026. НАЖИМАЛСЯ ОДИН ВАРИАНТ, ЗАПИСЫВАЛСЯ ДРУГОЙ. ────────────┐
+    │ Экран строил кнопки по ЭТОМУ списку (урезанному), а применение решения брало   │
+    │ присланный НОМЕР из полного списка `phrase_review_variants(…,                  │
+    │ include_disputed=True)`. Стоило спорному варианту стоять раньше — и номера      │
+    │ разъезжались. Замер по живой базе 28.08.2026: из 40 решений владельца за сутки  │
+    │ два записали не тот текст, который он нажал:                                    │
+    │   #317 нажато «Jemand klagt über etwas.» → записано «Jemand klagt über + A»     │
+    │   #319 нажато «Ich bewerbe mich bei der Firma.» → «Ich bewerbe mich bei + D»    │
+    │ Лечится не подгонкой флага, а тем, что номер с этого экрана НЕ ХОДИТ ВОВСЕ:     │
+    │ наверх уезжает сам текст кнопки, а сервер ищет его в этом же списке.            │
+    │ Перемерить: scripts/word_audit_variant_index_audit.py                           │
+    └──────────────────────────────────────────────────────────────────────────────┘
+
+    Готовых вариантов может не быть вовсе: на живых данных 28.08.2026 таких 116 из 222.
+    Тогда карточка честно предлагает только оставить, вписать своё или удалить —
+    придумывать за проверяющих мы не будем.
+
+    ⚠ СПОРНЫЙ ВАРИАНТ ОБЫЧНОМУ ЧЕЛОВЕКУ НЕ ПОКАЗЫВАЕМ.
+    `check_disputed_by_arbiter` означает: наша проверка правку ЗАБРАКОВАЛА, а третейский
+    судья назвал верной. У владельца такой вариант на экране есть — но рядом печатается
+    возражение проверки, и он решает зряче. Здесь экрана для возражения нет, а кнопка
+    «Да, правильно так» читается как «система уверена». Отдать одним касанием то, что
+    система сама забраковала, нельзя: человек учит немецкий по нашему ответу.
+    """
+    from backend.database import phrase_review_variants
+
+    варианты = phrase_review_variants(
+        judges if isinstance(judges, list) else [], str(text or ""),
+        arbiter if isinstance(arbiter, dict) else None)
+    return [{"text": str(v.get("text") or ""), "ru": str(v.get("ru") or "")}
+            for v in варианты
+            if not v.get("check_disputed_by_arbiter")][:КНОПОК_НА_ФРАЗУ]
+
+
 def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
     """Отложенные ночью фразы ЭТОГО человека — карточками того же экрана.
 
     ⚠ СПРАШИВАЕМ АВТОРА, А НЕ ВСЕХ ПОДПИСЧИКОВ — то же правило и та же история
     дефекта, что в `words_for_user`. Автор — тот, чья карточка появилась первой.
     """
-    from backend.database import phrase_review_is_noise, phrase_review_variants
+    from backend.database import phrase_review_is_noise
 
     cur.execute(
         """
@@ -311,27 +352,13 @@ def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
         # владельца они уже отсеиваются; человеку тем более показывать нечего.
         if phrase_review_is_noise(судьи, str(текст)):
             continue
-        варианты = phrase_review_variants(
-            судьи, str(текст), арбитр if isinstance(арбитр, dict) else None)
         items.append({
             "word": str(текст),
             "translation": str(перевод),
             "status": "фраза",
             "why": _phrase_reason(судьи),
-            # Готовых вариантов может не быть вовсе: на живых данных 26.08.2026 таких
-            # 88 из 232. Тогда карточка честно предлагает только оставить, вписать
-            # своё или удалить — придумывать за проверяющих мы не будем.
-            #
-            # ⚠ СПОРНЫЙ ВАРИАНТ ОБЫЧНОМУ ЧЕЛОВЕКУ НЕ ПОКАЗЫВАЕМ.
-            # `check_disputed_by_arbiter` означает: наша проверка правку ЗАБРАКОВАЛА, а
-            # третейский судья назвал верной. У владельца такой вариант на экране есть —
-            # но рядом печатается возражение проверки, и он решает зряче. Здесь экрана
-            # для возражения нет, а кнопка «Да, правильно так» читается как «система
-            # уверена». Отдать одним касанием то, что система сама забраковала, нельзя:
-            # человек учит немецкий по нашему ответу.
-            "variants": [{"text": str(v.get("text") or ""), "ru": str(v.get("ru") or "")}
-                         for v in варианты
-                         if not v.get("check_disputed_by_arbiter")][:2],
+            "variants": кнопки_вариантов(
+                судьи, str(текст), арбитр if isinstance(арбитр, dict) else None),
             "suggestion": "",
             "safe": False,
             "kind": "phrase",
@@ -604,8 +631,13 @@ def _phrase_counts_by_author(cur) -> dict[int, int]:
     return счёт
 
 
-def _phrase_owner(review_id: int) -> tuple[int, str, int]:
-    """(номер слова, текст, автор) для открытой фразы. Автор — чья карточка первая."""
+def _phrase_owner(review_id: int) -> tuple[int, str, int, list, dict | None]:
+    """(номер слова, текст, автор, судьи, арбитр) для открытой фразы.
+
+    Автор — чья карточка первая. Судьи и арбитр нужны здесь же, чтобы применение решения
+    собрало ТОТ ЖЕ список кнопок, что видел человек (см. `кнопки_вариантов`), — вторым
+    запросом их брать нельзя: между запросами ночь успевает дописать третьего судью, и
+    список опять разъедется с экраном."""
     from backend.database import get_db_connection_context
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
@@ -613,15 +645,18 @@ def _phrase_owner(review_id: int) -> tuple[int, str, int]:
                 """SELECT r.unit_id, btrim(r.text),
                           (SELECT q.user_id FROM bt_3_webapp_dictionary_queries q
                             WHERE q.lex_unit_id = r.unit_id
-                            ORDER BY q.created_at, q.id LIMIT 1)
+                            ORDER BY q.created_at, q.id LIMIT 1),
+                          r.judges, r.arbiter
                      FROM bt_3_phrase_review r
                     WHERE r.id = %s AND r.status = 'open';""",
                 (int(review_id),),
             )
             строка = cur.fetchone()
     if not строка or строка[2] is None:
-        return 0, "", 0
-    return int(строка[0]), str(строка[1]), int(строка[2])
+        return 0, "", 0, [], None
+    судьи = строка[3] if isinstance(строка[3], list) else []
+    арбитр = строка[4] if isinstance(строка[4], dict) else None
+    return int(строка[0]), str(строка[1]), int(строка[2]), судьи, арбитр
 
 
 def _apply_phrase_decision(user_id: int, item: dict[str, Any]) -> str:
@@ -653,7 +688,7 @@ def _apply_phrase_decision(user_id: int, item: dict[str, Any]) -> str:
     # review_id и unit_id, и подменить их в запросе может кто угодно. Без этой
     # проверки чужой номер удалил бы чужую фразу из общего словаря. Автора и номер
     # слова берём ЗАНОВО из базы и сверяем с тем, кто пришёл с ключом.
-    unit_id, текст, автор = _phrase_owner(review_id)
+    unit_id, текст, автор, судьи, арбитр = _phrase_owner(review_id)
     if not unit_id or автор != int(user_id):
         logging.warning("проверка фраз: человек %s прислал решение по чужой фразе %s",
                         user_id, review_id)
@@ -664,12 +699,27 @@ def _apply_phrase_decision(user_id: int, item: dict[str, Any]) -> str:
         return "оставлено"
 
     if action == "fixed":
-        try:
-            variant = max(0, int(item.get("variant") or 0))
-        except (TypeError, ValueError):
-            variant = 0
+        # ⚠ НОМЕР КНОПКИ СЮДА НЕ ПРИХОДИТ И ПРИХОДИТЬ НЕ ДОЛЖЕН — см. рамку в
+        # `кнопки_вариантов`. С экрана уезжает САМ ТЕКСТ нажатой кнопки, и он обязан
+        # найтись среди тех кнопок, которые экран имел право показать. Не нашёлся —
+        # значит либо список под рукой у человека сменился (ночь дописала судью), либо
+        # текст подставлен мимо экрана. В обоих случаях применять нечего: молча взять
+        # «похожий» вариант значит вернуть ровно тот дефект, который здесь чинится.
+        # Сравниваем ТЕМ ЖЕ правилом, каким список кнопок отсеивает повторы
+        # (`phrase_review_variants` → `_phrase_same_text`): разойдись эти два правила —
+        # и кнопка, которую человек видел, перестанет находиться.
+        from backend.database import _phrase_same_text
+        нажато = _cleaned(item.get("variant_text") or "")
+        разрешённые = кнопки_вариантов(судьи, текст, арбитр)
+        if not нажато or not any(_phrase_same_text(нажато, v["text"]) for v in разрешённые):
+            logging.warning(
+                "проверка фраз: вариант %r не из показанных человеку %s по фразе %s "
+                "(на экране было: %s)", нажато[:60], user_id, review_id,
+                [v["text"][:40] for v in разрешённые])
+            return "не применено"
         # Перевод к варианту берётся из самого варианта — человек читал его на кнопке.
-        итог = apply_phrase_review_decision(review_id, "accept", "", variant, "")
+        итог = apply_phrase_review_decision(review_id, "accept", "", 0, "",
+                                            chosen_text=нажато)
         return "исправлено" if itog_text(итог) else "оставлено"
 
     if action == "manual":

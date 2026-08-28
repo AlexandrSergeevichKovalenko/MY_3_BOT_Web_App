@@ -55147,7 +55147,13 @@ def webapp_word_audit_list():
 
 @app.route("/api/webapp/word-audit/apply", methods=["POST"])
 def webapp_word_audit_apply():
-    """Решения человека. Удаляется ТОЛЬКО то, что он не отметил."""
+    """Решения человека. Удаляется ТОЛЬКО то, что он не отметил.
+
+    ⚠ ЗДЕСЬ НИЧЕГО НЕ ПРИМЕНЯЕТСЯ — только ставится в очередь. Применение занимает
+    минуты (запрос к модели на каждую правку фразы), и держать на нём человека нельзя:
+    замер 28.08.2026 — 30 фраз за 295 секунд при лимите воркера 300. Подробности и
+    решение владельца — в рамке `job_queue.enqueue_word_audit_apply_job`.
+    """
     payload = request.get_json(silent=True) or {}
     user_id = _resolve_webapp_user_id(payload)
     if not user_id:
@@ -55155,13 +55161,23 @@ def webapp_word_audit_apply():
     decisions = payload.get("decisions")
     if not isinstance(decisions, list):
         return jsonify({"ok": False, "message": "Пустой список решений."}), 200
+    # Пустые решения (человек ничего не нажал) до очереди не доезжают: в фоне им нечего
+    # делать, а сообщение «готово» на пустом месте — обещание без содержания.
+    отмеченные = [d for d in decisions
+                  if isinstance(d, dict) and str(d.get("action") or "").strip()]
+    if not отмеченные:
+        return jsonify({"ok": True, "queued": False, "accepted": 0}), 200
     try:
-        from backend.word_confirm_digest import apply_decisions
-        counts = apply_decisions(int(user_id), decisions)
+        from backend.job_queue import enqueue_word_audit_apply_job
+        enqueue_word_audit_apply_job(user_id=int(user_id), decisions=отмеченные)
     except Exception:
-        logging.warning("экран проверки слов: решения не применились", exc_info=True)
-        return jsonify({"ok": False, "message": "Не удалось сохранить. Попробуй ещё раз."}), 200
-    return jsonify({"ok": True, "counts": counts}), 200
+        # Тихо применить синхронно — значит вернуть пятиминутный экран; тихо не
+        # применить — соврать «готово». Говорим правду, отметки остаются при человеке.
+        logging.warning("экран проверки слов: решения не приняты в работу", exc_info=True)
+        return jsonify({"ok": False, "message": (
+            "Сейчас не получилось принять решения в работу. Ничего не потеряно — "
+            "нажми «Готово» ещё раз через минуту.")}), 200
+    return jsonify({"ok": True, "queued": True, "accepted": len(отмеченные)}), 200
 
 
 @app.route("/api/webapp/battles/state", methods=["POST"])

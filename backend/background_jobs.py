@@ -1314,6 +1314,73 @@ def run_shortcut_lookup_job(
         raise
 
 
+def _word_audit_report_text(counts: dict) -> str:
+    """Что В САМОМ ДЕЛЕ сделано, человеческими словами. Молчать здесь нельзя.
+
+    Человек ушёл с экрана сразу после «Готово» — значит результат он увидит только
+    здесь. Молчащий механизм неотличим от сломанного, поэтому сообщение приходит и
+    тогда, когда делать было нечего."""
+    подписи = {
+        "исправлено": "исправлено",
+        "оставлено": "оставили как есть",
+        "на пересборку": "перевод пересоберём",
+        "удалено": "удалено",
+        # Вариант, которого на экране человека уже нет (список кнопок успел смениться).
+        # Придумывать за него замену мы не станем — фраза просто придёт снова.
+        "не применено": "не применили — спросим снова",
+    }
+    части = [f"{подписи.get(имя, имя)}: {число}"
+             for имя, число in (counts or {}).items() if int(число or 0) > 0]
+    if not части:
+        return ("🦊 Проверка слов: сохранять было нечего — ни одной кнопки не нажато.\n"
+                "Все слова и фразы остались на месте и придут на проверку снова.")
+    return ("🦊 Проверка слов: готово.\n" + " · ".join(части)
+            + "\n\nКарточки достроим этой ночью — часть речи, род и формы появятся сами.")
+
+
+@dramatiq.actor(max_retries=0, queue_name="word_audit_apply")
+def run_word_audit_apply_job(user_id: int, decisions: list) -> None:
+    """Применить решения с экрана проверки слов — ПОСЛЕ того, как человек уже отпущен.
+
+    Почему в фоне — см. рамку в `job_queue.enqueue_word_audit_apply_job`: на каждую
+    принятую правку фразы идёт запрос к модели, и тридцать фраз занимают пять минут.
+    Держать на этом человека нельзя, а обрывать его работу на середине — тем более.
+
+    Сорвалось — человек узнаёт об этом сообщением, а не по молчанию. Отметки при этом
+    не потеряны: непрочитанные записи остаются открытыми и придут на проверку снова.
+    """
+    safe_user_id = int(user_id or 0)
+    if safe_user_id <= 0 or not isinstance(decisions, list) or not decisions:
+        logging.warning("word_audit_apply_job skipped invalid_payload user_id=%s",
+                        safe_user_id)
+        return
+    started_at = time.perf_counter()
+    from backend.telegram_notify import _send_private_message
+    try:
+        from backend.word_confirm_digest import apply_decisions
+
+        counts = apply_decisions(safe_user_id, decisions)
+    except Exception:
+        logging.exception("word_audit_apply_job failed user_id=%s решений=%d total_ms=%s",
+                          safe_user_id, len(decisions),
+                          int((time.perf_counter() - started_at) * 1000))
+        try:
+            _send_private_message(safe_user_id, (
+                "🦊 Проверка слов: не смог сохранить твои решения.\n"
+                "Ничего не потеряно — открой проверку ещё раз и нажми «Готово»."))
+        except Exception:
+            logging.exception("word_audit_apply_job: не смог сказать человеку %s о сбое",
+                              safe_user_id)
+        raise
+    logging.info("word_audit_apply_job completed user_id=%s решений=%d итог=%s total_ms=%s",
+                 safe_user_id, len(decisions), counts,
+                 int((time.perf_counter() - started_at) * 1000))
+    try:
+        _send_private_message(safe_user_id, _word_audit_report_text(counts)[:4000])
+    except Exception:
+        logging.exception("word_audit_apply_job: отчёт человеку %s не ушёл", safe_user_id)
+
+
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_dictionary_dedupe_after_save_job(user_id: int, entry_id: int) -> None:
     """Убрать повторы одного слова у одного человека — ПОСЛЕ того, как сохранение уже

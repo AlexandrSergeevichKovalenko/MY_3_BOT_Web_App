@@ -94,7 +94,16 @@
   .wa-suggest:hover{border-color:var(--primary)}
   .wa-suggest:focus-visible{outline:2px solid var(--primary); outline-offset:2px}
   .wa-card[data-state="fixed"]{border-left-color:var(--primary); background:linear-gradient(180deg,var(--primary-soft),transparent 60%),var(--surface)}
-  .wa-card[data-state="fixed"] .wa-suggest{background:var(--primary); color:#052330; border-color:var(--primary)}
+  /* ┌─ ПОЧИНЕНО 28.08.2026. ЗАГОРАЛИСЬ ОБЕ КНОПКИ СРАЗУ. ─────────────────────────┐
+     │ Здесь стояло `.wa-card[data-state="fixed"] .wa-suggest` — селектор на всю   │
+     │ карточку, то есть на ВСЕ кнопки вариантов в ней. У фразы вариантов бывает   │
+     │ два, и при выборе одного подсвечивались оба; отличить выбранный можно было  │
+     │ только по галочке в тексте. Владелец 28.08.2026: «я нажимаю один и          │
+     │ подсвечивается сразу оба, как будто они выбраны».                            │
+     │ Признак выбора теперь ОДИН и висит на самой кнопке (`is-picked` в           │
+     │ WordAudit.jsx), а не выводится из состояния карточки.                        │
+     └────────────────────────────────────────────────────────────────────────────┘ */
+  .wa-suggest.is-picked{background:var(--primary); color:#052330; border-color:var(--primary)}
   .wa-manual{
     display:block; width:100%; margin-top:9px; background:none; border:none; cursor:pointer;
     font:inherit; font-size:.85rem; color:var(--muted); text-decoration:underline;

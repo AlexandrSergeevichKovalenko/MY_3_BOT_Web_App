@@ -55,7 +55,14 @@ const DROP = 'drop';
 export default function WordAudit() {
   const [items, setItems] = useState(null);
   const [state, setState] = useState({});       // слово → решение
-  const [variant, setVariant] = useState({});   // фраза → какой вариант правки принят
+  // Фраза → ТЕКСТ принятого варианта, а не его номер.
+  // ┌─ ПОЧИНЕНО 28.08.2026. НОМЕР УКАЗЫВАЛ В ДРУГОЙ СПИСОК. ────────────────────────┐
+  // │ Здесь лежал номер кнопки, а сервер применял его к ПОЛНОМУ списку вариантов —  │
+  // │ тогда как этот экран показывает урезанный (без забракованных, не больше двух).│
+  // │ Замер по живой базе 28.08.2026: из 40 решений владельца за сутки два записали │
+  // │ не то, что он нажал (#317, #319). Текст в чужой список указать не может.      │
+  // └──────────────────────────────────────────────────────────────────────────────┘
+  const [variant, setVariant] = useState({});
   const [typed, setTyped] = useState({});       // слово → написание, вписанное руками
   const [typedTrans, setTypedTrans] = useState({}); // слово → перевод, вписанный руками
   const [editing, setEditing] = useState({});   // слово → открыто ли поле правки
@@ -102,18 +109,27 @@ export default function WordAudit() {
       // решениях перевод человек не трогал, и переписывать его нечем.
       translation: state[it.word] === MANUAL ? (typedTrans[it.word] || '').trim() : '',
       // Фраза правится тем же механизмом, что и на экране владельца, и ему нужен
-      // номер строки проверки и номер принятого варианта. Сервер всё равно сверяет
-      // их заново по базе — присланному номеру он не верит.
+      // номер строки проверки. Сервер сверяет его заново по базе — присланному
+      // номеру он не верит. Принятый вариант уходит ТЕКСТОМ (см. useState выше):
+      // сервер ищет его среди тех кнопок, которые этот экран имел право показать.
       kind: it.kind || 'word',
       review_id: it.review_id || 0,
-      variant: variant[it.word] || 0,
+      variant_text: variant[it.word] || '',
     }));
     try {
+      // Сервер ТОЛЬКО ПРИНИМАЕТ решения и сразу отвечает — сама работа идёт под
+      // капотом, а её итог приходит человеку сообщением в чат.
+      // ┌─ ПОЧИНЕНО 28.08.2026. ЧЕЛОВЕК ЖДАЛ «СОХРАНЯЮ…» ПЯТЬ МИНУТ И НЕ ДОЖДАЛСЯ. ┐
+      // │ Раньше здесь ждали, пока сервер применит ВСЕ решения. На каждую правку   │
+      // │ фразы он ходит к модели: замер 28.08.2026 — 30 фраз за 295 секунд при    │
+      // │ лимите воркера 300, то есть ответа не было в принципе.                    │
+      // │ Владелец: «мы пользователя отпускаем, работу делаем под капотом».         │
+      // └─────────────────────────────────────────────────────────────────────────┘
       const data = await api('/api/webapp/word-audit/apply', { decisions });
       if (!data.ok) { setError(data.message || 'Не удалось сохранить.'); setBusy(false); return; }
-      setDone(data.counts || {});
+      setDone({ accepted: Number(data.accepted || 0) });
     } catch (e) {
-      setError('Не удалось сохранить решения. Ничего не изменилось — попробуй ещё раз.');
+      setError('Не удалось отправить решения. Ничего не изменилось — попробуй ещё раз.');
     }
     setBusy(false);
   };
@@ -123,17 +139,23 @@ export default function WordAudit() {
   }
 
   if (done) {
-    const parts = Object.entries(done).filter(([, n]) => n > 0)
-      .map(([k, n]) => `${k}: ${n}`);
+    const n = Number(done.accepted || 0);
     return (
       <div className="wa">
         <div className="wa-final">
           <div className="wa-final-emoji">🦊</div>
-          <h2>Готово</h2>
-          <p>{parts.length ? parts.join(' · ') : 'Ничего не изменилось.'}</p>
-          <p className="wa-final-note">
-            Карточки достроим этой ночью — часть речи, род и формы появятся сами.
+          <h2>{n ? 'Принято' : 'Ничего не отмечено'}</h2>
+          <p>
+            {n
+              ? `Твоих решений: ${n}. Дальше можно не ждать — закрывай экран и занимайся своим.`
+              : 'Ты не нажал ни одной кнопки, поэтому ничего не изменилось. Всё осталось на месте.'}
           </p>
+          {n ? (
+            <p className="wa-final-note">
+              Правки применяем под капотом — это занимает несколько минут.
+              Когда закончим, пришлём сообщение в чат: что исправили, что оставили.
+            </p>
+          ) : null}
         </div>
       </div>
     );
@@ -241,22 +263,39 @@ export default function WordAudit() {
                 проверяющие не всегда сходятся, и придумывать за них мы не станем.
                 Каждый вариант — своя кнопка, чтобы по нажатию было видно, что
                 именно принимаешь: ровно то же правило, что на экране владельца. */}
-            {isPhrase ? variants.map((v, idx) => (
-              <button type="button" className="wa-suggest wa-suggest-phrase" key={v.text}
-                      onClick={() => {
-                        setVariant((p) => ({ ...p, [it.word]: idx }));
-                        pick(it.word, FIXED);
-                      }}>
-                <span className="wa-suggest-de">
-                  {chosen === FIXED && (variant[it.word] || 0) === idx ? '✓ ' : ''}
-                  Да, правильно так: {v.text}
-                </span>
-                {v.ru ? <span className="wa-suggest-ru">{v.ru}</span> : null}
-              </button>
-            )) : null}
+            {/* Подсвечена РОВНО нажатая кнопка. До 28.08.2026 подсветку давал
+                css-селектор на всю карточку («.wa-card[data-state="fixed"] .wa-suggest»),
+                и при двух вариантах загорались оба: выбранный отличался только
+                галочкой. Владелец 28.08.2026: «я нажимаю один и подсвечивается сразу
+                оба, как будто они выбраны». Признак выбора теперь ровно один и на
+                самой кнопке. */}
+            {isPhrase ? variants.map((v) => {
+              const picked = chosen === FIXED && variant[it.word] === v.text;
+              return (
+                <button type="button" key={v.text}
+                        className={picked ? 'wa-suggest wa-suggest-phrase is-picked'
+                                          : 'wa-suggest wa-suggest-phrase'}
+                        aria-pressed={picked}
+                        onClick={() => {
+                          // Нажали УЖЕ выбранный — снимаем выбор. Нажали соседний —
+                          // переключаемся на него. Через общий pick() это не проходит:
+                          // он умеет только «включить/выключить», и при двух вариантах
+                          // переход с первого на второй гасил выбор целиком.
+                          if (picked) { pick(it.word, FIXED); return; }
+                          setVariant((p) => ({ ...p, [it.word]: v.text }));
+                          setState((p) => ({ ...p, [it.word]: FIXED }));
+                        }}>
+                  <span className="wa-suggest-de">
+                    {picked ? '✓ ' : ''}Да, правильно так: {v.text}
+                  </span>
+                  {v.ru ? <span className="wa-suggest-ru">{v.ru}</span> : null}
+                </button>
+              );
+            }) : null}
 
             {!isPhrase && it.suggestion ? (
-              <button type="button" className="wa-suggest"
+              <button type="button" aria-pressed={chosen === FIXED}
+                      className={chosen === FIXED ? 'wa-suggest is-picked' : 'wa-suggest'}
                       onClick={() => pick(it.word, FIXED)}>
                 {chosen === FIXED ? '✓ ' : ''}Да, это «{it.suggestion}»
               </button>
@@ -319,7 +358,10 @@ export default function WordAudit() {
               : <>Оставим <b>{keep}</b> · переделаем <b>{retrans}</b> · удалим <b>{drop}</b> — по твоей кнопке</>}
           </p>
           <button type="button" className="wa-done" disabled={busy} onClick={submit}>
-            {busy ? 'Сохраняю…' : 'Готово'}
+            {/* Не «Сохраняю…»: сохранение идёт под капотом, а здесь мы только
+                отправляем решения — это доли секунды. Обещать длительность,
+                которой нет, значит снова посадить человека ждать. */}
+            {busy ? 'Отправляю…' : 'Готово'}
           </button>
         </div>
       </div>

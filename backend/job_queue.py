@@ -2182,6 +2182,39 @@ def enqueue_shortcut_lookup_job(
         raise
 
 
+def enqueue_word_audit_apply_job(*, user_id: int, decisions: list) -> str | None:
+    """Решения с экрана проверки слов — в фон. Человека на экране не держим.
+
+    ┌─ ПОЧИНЕНО 28.08.2026. ЧЕЛОВЕК СИДЕЛ И СМОТРЕЛ НА «СОХРАНЯЮ…». ────────────────┐
+    │ Решения применялись ВНУТРИ HTTP-запроса, а на каждую принятую правку фразы    │
+    │ сервер синхронно ходит к модели пересобирать разбор. Замер по живой базе      │
+    │ 28.08.2026: 30 фраз применялись 295 секунд, по ~10 секунд на каждую. Лимит    │
+    │ воркера — 300 секунд (Procfile, Dockerfile.backend), то есть ответ до         │
+    │ человека не доходил в принципе: экран оставался в «Сохраняю…» навсегда, и     │
+    │ владелец нажал «Готово» второй раз, потому что первого ответа не увидел.      │
+    │ Побочно: web-сервис держит 1 воркер на 2 потока — одно такое сохранение на    │
+    │ пять минут съедало половину всего сервиса.                                     │
+    │ Владелец 28.08.2026: «мы пользователя отпускаем, работу делаем под капотом».  │
+    └──────────────────────────────────────────────────────────────────────────────┘
+
+    Очереди нет — БРОСАЕМ. Тихо применить синхронно значит вернуть тот самый пятиминутный
+    экран, а тихо не применить — соврать человеку «готово». Наверх уйдёт честное «сейчас
+    не приняли, нажми ещё раз», и его отметки останутся при нём.
+    """
+    if not can_enqueue_background_jobs():
+        raise RuntimeError("background_jobs_unavailable")
+    safe_user_id = int(user_id or 0)
+    if safe_user_id <= 0:
+        raise ValueError("user_id is required")
+    if not isinstance(decisions, list) or not decisions:
+        raise ValueError("decisions is required")
+    get_dramatiq_broker()
+    from backend.background_jobs import run_word_audit_apply_job
+
+    message = run_word_audit_apply_job.send(user_id=safe_user_id, decisions=decisions)
+    return str(getattr(message, "message_id", None) or "").strip() or None
+
+
 def enqueue_dictionary_dedupe_after_save(*, user_id: int, entry_id: int) -> bool:
     """Поставить в очередь уборку повторов для только что сохранённого слова.
 
