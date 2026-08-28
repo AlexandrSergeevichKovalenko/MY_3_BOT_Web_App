@@ -8476,6 +8476,31 @@ def _describe_db_pool_starvation_culprits(labels: list[str]) -> str:
     return line + "."
 
 
+def _откуда_позвали() -> str:
+    """Ближайший НАШ кадр стека — «файл:строка функция». Для писем о голоде пула.
+
+    Пропускаем сам слой базы: интересен тот, кто ПРИШЁЛ за соединением, а не путь
+    внутри database.py. Берём первый кадр из backend/ или bot_3.py вне этого файла.
+    """
+    try:
+        import traceback
+        свои = []
+        # [:-1] убирает кадр САМОЙ этой функции, и только его. Ставил [:-2] — терял
+        # заодно вызывающего, то есть ровно того, кого ищем (поймано тестом 28.08.2026).
+        for кадр in reversed(traceback.extract_stack()[:-1]):
+            путь = str(кадр.filename or "")
+            if путь.endswith("backend/database.py"):
+                continue
+            if "/backend/" in путь or путь.endswith("bot_3.py"):
+                короткий = путь.split("/")[-1]
+                свои.append(f"{короткий}:{кадр.lineno} {кадр.name}")
+                if len(свои) >= 2:
+                    break
+        return " ← ".join(свои)
+    except Exception:
+        return ""
+
+
 def _build_db_pool_starvation_message(events: list[tuple[float, str, str]]) -> str:
     """Письмо владельцу по СОБЫТИЯМ окна, а не по одному последнему.
 
@@ -8547,7 +8572,18 @@ def _maybe_alert_db_pool_saturation(
         global _DB_POOL_ALERT_LAST_SENT_TS
         cutoff = now_ts - window_seconds
         _DB_POOL_STARVATION_EVENTS[:] = [item for item in _DB_POOL_STARVATION_EVENTS if item[0] >= cutoff]
-        _DB_POOL_STARVATION_EVENTS.append((now_ts, starvation_kind, str(context_label or "")))
+        # ⛔ БЕЗ ИМЕНИ ВИНОВНИКА СИГНАЛ БЕСПОЛЕЗЕН. Владелец 28.08.2026 получил письмо
+        # «5 запросов не дождались соединения», а в нём — «кто именно, НЕ ЗАПИСАНО: у
+        # этих мест нет метки db_acquire_scope()». Решение принимать не по чему.
+        #
+        # Метка есть не везде и никогда не будет везде: вызывающих сотни, девятый
+        # обязательно забудет. Поэтому, когда метки нет, снимаем короткий след стека —
+        # ТОЛЬКО в момент голода. Голод редок (порог: 5 событий за 30 минут), а снятие
+        # стека стоит микросекунды; на горячий путь это не попадает вовсе.
+        имя = str(context_label or "").strip()
+        if not имя or имя == "unspecified":
+            имя = _откуда_позвали() or "без метки"
+        _DB_POOL_STARVATION_EVENTS.append((now_ts, starvation_kind, имя))
         event_count = len(_DB_POOL_STARVATION_EVENTS)
         if event_count < DB_POOL_SATURATION_ALERT_MIN_EVENTS:
             return
@@ -8594,7 +8630,7 @@ def _record_db_acquire_event(
         # Сторож выше кричит, когда УЖЕ БОЛЬНО (соединений не хватило). Этот замер
         # показывает приближение заранее — владельцу нужно видеть, что пора, а не что
         # уже сломалось. Пишет раз в минуту, на горячий путь не влияет.
-        _note_pool_usage_peak(pool_used_count)
+        _note_pool_usage_peak(pool_used_count, pool_available_count)
     except Exception:
         logging.debug("db pool saturation alert check failed", exc_info=True)
     event = {
@@ -16594,8 +16630,22 @@ def _note_pool_starvation() -> None:
         _POOL_STARVED_SEEN += 1
 
 
-def _note_pool_usage_peak(pool_used_count: int | None) -> None:
-    """Запомнить занятость пула и раз в минуту сложить пик в базу."""
+def _note_pool_usage_peak(pool_used_count: int | None,
+                          pool_available_count: int | None = None) -> None:
+    """Запомнить занятость пула. В БАЗУ пишет ОТДЕЛЬНЫЙ ПОТОК и только когда есть место.
+
+    ⛔ ЗДЕСЬ БЫЛА МОЯ ПОЛОМКА, СТОИВШАЯ ЛЮДЯМ ОШИБОК НА ЭКРАНЕ. Найдена 28.08.2026 по
+    сигналу «5 запросов не дождались соединения» у MY_3_BOT (пул 8, голод 11).
+    Замер вызывается ИЗНУТРИ пути получения соединения (`_record_db_acquire_event`) — и
+    раз в минуту брал ВТОРОЕ соединение из того же пула, не выпустив первого. При полном
+    пуле он сам становился тем, кто не дождался, и отнимал место у живого запроса.
+
+    Замер НЕ ИМЕЕТ ПРАВА мешать работе. Два правила теперь:
+      1. пишем из отдельного потока — путь получения соединения не ждёт нас;
+      2. в пуле нет ни одного свободного места — НЕ ПИШЕМ ВООБЩЕ, отложим до следующего
+         раза. Потерянный замер стоит строки в логе; отнятое соединение — ошибки у
+         человека на экране.
+    """
     global _POOL_PEAK_SEEN, _POOL_PEAK_FLUSH_LAST, _POOL_STARVED_SEEN
     if pool_used_count is None or not DB_POOL_ENABLED:
         return
@@ -16605,14 +16655,25 @@ def _note_pool_usage_peak(pool_used_count: int | None) -> None:
             _POOL_PEAK_SEEN = int(pool_used_count)
         if (now - _POOL_PEAK_FLUSH_LAST) < _POOL_PEAK_FLUSH_MIN_SEC or _POOL_PEAK_SEEN <= 0:
             return
+        # Пул забит — замер подождёт. Своё место в очереди он занимать не будет.
+        if pool_available_count is not None and int(pool_available_count) <= 0:
+            logging.debug("замер пула отложен: свободных соединений нет")
+            return
         _POOL_PEAK_FLUSH_LAST = now
         пик, голод = _POOL_PEAK_SEEN, _POOL_STARVED_SEEN
         _POOL_STARVED_SEEN = 0      # голод складывается в базе, поэтому здесь обнуляем
-    try:
-        record_capacity(service=(os.getenv("RAILWAY_SERVICE_NAME") or "-").strip() or "-",
-                        kind="db_pool", ceiling=int(DB_POOL_MAXCONN), peak=пик, hits=голод)
-    except Exception:
-        logging.warning("замер пула не записался (пик=%s, голод=%s)", пик, голод, exc_info=True)
+
+    сервис = (os.getenv("RAILWAY_SERVICE_NAME") or "-").strip() or "-"
+
+    def _записать() -> None:
+        try:
+            with db_acquire_scope("capacity_measurement_flush"):
+                record_capacity(service=сервис, kind="db_pool",
+                                ceiling=int(DB_POOL_MAXCONN), peak=пик, hits=голод)
+        except Exception:
+            logging.warning("замер пула не записался (пик=%s, голод=%s)", пик, голод, exc_info=True)
+
+    threading.Thread(target=_записать, daemon=True, name="capacity-flush").start()
 
 
 def ensure_access_waitlist_schema() -> None:
