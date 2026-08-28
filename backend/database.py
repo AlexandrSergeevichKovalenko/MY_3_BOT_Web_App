@@ -15907,6 +15907,172 @@ _WEB_CAPACITY_SCHEMA_DONE = False
 _TRAINING_MODE_SCHEMA_DONE = False
 
 
+# ── ОБЩАЯ ДОРОЖКА ЗАДАНИЙ «Дополни предложение» ────────────────────────────
+# Владелец 28.08.2026, дословно: «мы формируем 20 слов, и они используются ВСЕМИ
+# пользователями подряд. Никакого индивидуального подхода. Если завтра начали учиться
+# ещё 2000, а первые 2000 хорошо занимались, — первые получат следующие 20 слов, а
+# вторые получат ПЕРВЫЕ 20, которые мы грели для предыдущих».
+#
+# ⛔ ДО ЭТОГО ДНЯ БЫЛО РОВНО НАОБОРОТ. Набор собирался из ЛИЧНОГО словаря каждого
+# (get_webapp_dictionary_entries по user_id). Слова у людей разные, значит и задания
+# разные, значит за каждое платили заново. У владельца 15 464 слова, у остальных по
+# тысяче — общих у них было 7%.
+#
+# Теперь дорожка одна на всех: пронумерованная последовательность слов, выбранных НАМИ
+# из общего пула. У человека — только его место на этой дорожке. Прошёл двадцать —
+# сдвинулся на двадцать. Пришёл через год — начинает с первого и идёт по той же
+# дорожке, по прогретому. Инициатор прогрева МЫ, а не расписание отдельного человека.
+_SENTENCE_TRACK_SCHEMA_DONE = False
+
+
+def ensure_sentence_track_schema() -> None:
+    global _SENTENCE_TRACK_SCHEMA_DONE
+    if _SENTENCE_TRACK_SCHEMA_DONE:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_sentence_track (
+                    position   INTEGER PRIMARY KEY,
+                    word_de    TEXT NOT NULL,
+                    sentence   TEXT NOT NULL,
+                    entry_id   BIGINT,
+                    warmed     BOOLEAN NOT NULL DEFAULT FALSE,
+                    added_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            # Одно слово на дорожке ровно один раз: повтор означал бы, что человек
+            # получит то же задание дважды и решит, что программа его не помнит.
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_sentence_track_word
+                ON bt_3_sentence_track (lower(word_de));
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sentence_track_warmed
+                ON bt_3_sentence_track (position) WHERE warmed;
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_sentence_track_progress (
+                    user_id    BIGINT PRIMARY KEY,
+                    position   INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+        conn.commit()
+    _SENTENCE_TRACK_SCHEMA_DONE = True
+
+
+def get_sentence_track_position(user_id: int) -> int:
+    """Где человек стоит на общей дорожке. 0 — ещё не начинал, пойдёт с самого начала."""
+    ensure_sentence_track_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT position FROM bt_3_sentence_track_progress WHERE user_id = %s;",
+                           (int(user_id),))
+            row = cursor.fetchone()
+    return int((row or [0])[0] or 0)
+
+
+def advance_sentence_track_position(user_id: int, position: int) -> None:
+    """Подвинуть человека вперёд. Назад НЕ двигаем: GREATEST не даст откатить прогресс
+    при повторной выдаче того же набора."""
+    ensure_sentence_track_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO bt_3_sentence_track_progress (user_id, position) VALUES (%s, %s) "
+                "ON CONFLICT (user_id) DO UPDATE SET "
+                "position = GREATEST(bt_3_sentence_track_progress.position, EXCLUDED.position), "
+                "updated_at = NOW();",
+                (int(user_id), max(0, int(position))),
+            )
+        conn.commit()
+
+
+def get_sentence_track_slice(after_position: int, limit: int = 20) -> list[dict]:
+    """Следующие ПРОГРЕТЫЕ задания дорожки после места человека.
+
+    Непрогретые не отдаём: они ещё не готовы, и человек увидел бы пустое место. Он
+    просто получит меньше — а прогретое подъедет следующей ночью."""
+    ensure_sentence_track_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT position, word_de, sentence, entry_id FROM bt_3_sentence_track "
+                "WHERE position > %s AND warmed ORDER BY position LIMIT %s;",
+                (max(0, int(after_position)), max(1, int(limit))),
+            )
+            return [{"position": int(r[0]), "word_de": r[1], "sentence": r[2],
+                     "entry_id": r[3]} for r in (cursor.fetchall() or [])]
+
+
+def sentence_track_state() -> dict:
+    """Состояние дорожки: длина, сколько прогрето, докуда дошёл самый быстрый."""
+    ensure_sentence_track_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT count(*), count(*) FILTER (WHERE warmed), "
+                           "COALESCE(max(position), 0) FROM bt_3_sentence_track;")
+            всего, прогрето, конец = cursor.fetchone()
+            cursor.execute("SELECT COALESCE(max(position), 0) FROM bt_3_sentence_track_progress;")
+            самый_быстрый = int((cursor.fetchone() or [0])[0] or 0)
+    return {"total": int(всего or 0), "warmed": int(прогрето or 0),
+            "last_position": int(конец or 0), "furthest_user": самый_быстрый}
+
+
+def append_to_sentence_track(items: list[dict]) -> int:
+    """Дописать слова в конец дорожки. items: [{word_de, sentence, entry_id}].
+
+    Слово, которое на дорожке уже есть, пропускается молча: дорожка одна на всех, и
+    повтор означал бы, что человек получит то же задание второй раз."""
+    if not items:
+        return 0
+    ensure_sentence_track_schema()
+    добавлено = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COALESCE(max(position), 0) FROM bt_3_sentence_track;")
+            место = int((cursor.fetchone() or [0])[0] or 0)
+            for item in items:
+                слово = str(item.get("word_de") or "").strip()
+                предложение = str(item.get("sentence") or "").strip()
+                if not слово or not предложение:
+                    continue
+                место += 1
+                cursor.execute(
+                    "INSERT INTO bt_3_sentence_track (position, word_de, sentence, entry_id) "
+                    "VALUES (%s, %s, %s, %s) ON CONFLICT (lower(word_de)) DO NOTHING;",
+                    (место, слово, предложение, item.get("entry_id")),
+                )
+                if cursor.rowcount:
+                    добавлено += 1
+                else:
+                    место -= 1          # не заняли место — не двигаем счётчик
+        conn.commit()
+    return добавлено
+
+
+def mark_sentence_track_warmed(position: int) -> None:
+    ensure_sentence_track_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE bt_3_sentence_track SET warmed = TRUE WHERE position = %s;",
+                           (int(position),))
+        conn.commit()
+
+
+def get_cold_sentence_track_items(limit: int = 20) -> list[dict]:
+    """Что на дорожке ещё не прогрето — по порядку, ближайшее первым."""
+    ensure_sentence_track_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT position, word_de, sentence, entry_id FROM bt_3_sentence_track "
+                "WHERE NOT warmed ORDER BY position LIMIT %s;", (max(1, int(limit)),))
+            return [{"position": int(r[0]), "word_de": r[1], "sentence": r[2],
+                     "entry_id": r[3]} for r in (cursor.fetchall() or [])]
+
+
 # ── Задание «Дополни предложение» — ОБЩЕЕ ДОСТОЯНИЕ ────────────────────────
 # Требование владельца 28.08.2026: «мы должны греть задание, и они должны быть
 # ПЕРЕИСПОЛЬЗОВАНЫ всеми остальными. Тот, кто занимается активно, получает их быстрее,
@@ -15920,6 +16086,86 @@ _TRAINING_MODE_SCHEMA_DONE = False
 # Теперь построенное задание кладётся ЕЩЁ И в общий пул (bt_3_dictionary_entries) — он
 # по устройству без user_id, одна строка на слово. Читается сначала личная карточка,
 # потом пул. Активный оплачивает прогрев один раз, остальные берут даром.
+def get_pool_entry_by_word(word_de: str) -> dict | None:
+    """Строка ОБЩЕГО пула по немецкому слову — из неё собирается задание дорожки."""
+    слово = str(word_de or "").strip()
+    if not слово:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, source_lang, target_lang, source_text, target_text, "
+                "       word_ru, word_de, translation_ru, translation_de, response_json "
+                "FROM bt_3_dictionary_entries WHERE lower(word_de) = lower(%s) "
+                "ORDER BY (response_json ? 'sentence_gap_v2') DESC, id LIMIT 1;",
+                (слово,),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    поля = ["id", "source_lang", "target_lang", "source_text", "target_text",
+            "word_ru", "word_de", "translation_ru", "translation_de", "response_json"]
+    return dict(zip(поля, row))
+
+
+def pick_words_for_sentence_track(limit: int = 20) -> list[dict]:
+    """Выбрать материал для ДОРОЖКИ — общей для всех, ещё не поставленный на неё.
+
+    Правило отбора (владелец 28.08.2026: «мы берём оттуда подходящие нам слова»):
+      · немецкая сторона должна быть НАСТОЯЩИМ ПРЕДЛОЖЕНИЕМ — минимум четыре слова.
+        Задание с пропуском в одном слове бессмысленно: дыру не в чем прятать;
+      · никакой кириллицы в немецкой стороне и никакой цифровой каши;
+      · сначала то, что встречается у БОЛЬШЕГО числа людей, и то, для чего задание уже
+        готово, — такая дорожка наполняется дешевле;
+      · одно слово на дорожке ровно один раз.
+
+    ⚠ СЧЁТ ЛЮДЕЙ СЧИТАЕТСЯ ОДНИМ ПРОХОДОМ, а не подзапросом на каждую строку пула: на
+    15 тысячах записей это разница между секундой и пятью минутами (замер 28.08.2026,
+    первый вариант не уложился в пять минут и был снят).
+    """
+    ensure_sentence_track_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH сколько_людей AS (
+                    SELECT lower(word_de) w, count(DISTINCT user_id) c
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE word_de IS NOT NULL AND word_de <> ''
+                    GROUP BY 1
+                ),
+                годные AS (
+                    SELECT e.id,
+                           e.word_de,
+                           e.target_text AS предложение,
+                           COALESCE(л.c, 0) AS у_скольких,
+                           (e.response_json ? 'sentence_gap_v2') AS готово,
+                           row_number() OVER (
+                               PARTITION BY lower(e.word_de)
+                               ORDER BY (e.response_json ? 'sentence_gap_v2') DESC, e.id
+                           ) AS n
+                    FROM bt_3_dictionary_entries e
+                    LEFT JOIN сколько_людей л ON л.w = lower(e.word_de)
+                    WHERE e.word_de IS NOT NULL AND e.word_de <> ''
+                      AND e.target_text IS NOT NULL
+                      -- настоящее предложение: минимум четыре слова
+                      AND array_length(regexp_split_to_array(trim(e.target_text), '\\s+'), 1) >= 4
+                      -- немецкая сторона без кириллицы
+                      AND e.target_text !~ '[А-Яа-яЁё]'
+                      AND lower(e.word_de) NOT IN (SELECT lower(word_de) FROM bt_3_sentence_track)
+                )
+                SELECT word_de, предложение, id, у_скольких
+                FROM годные
+                WHERE n = 1
+                ORDER BY у_скольких DESC, готово DESC, id
+                LIMIT %s;
+                """,
+                (max(1, int(limit)),),
+            )
+            return [{"word_de": r[0], "sentence": r[1], "entry_id": r[2], "users": int(r[3] or 0)}
+                    for r in (cursor.fetchall() or [])]
+
+
 def get_pool_sentence_quiz(word_de: str, source_sentence: str) -> dict | None:
     """Готовое задание из общего пула для этого слова. None — в пуле его нет.
 

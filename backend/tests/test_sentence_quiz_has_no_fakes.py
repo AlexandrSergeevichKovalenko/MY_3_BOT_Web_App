@@ -72,16 +72,19 @@ class ДнёмКМоделиНеХодим(unittest.TestCase):
         self.assertIn('os.getenv("SENTENCE_TRAINING_LLM_MAX_PER_REQUEST") or "0"', текст)
 
 
-class СначалаВыдаётсяУжеПрогретое(unittest.TestCase):
-    """Требование владельца: редко заходящий получает ТЕ ЖЕ готовые задания, а новые
-    для него не греются. Задание кешируется на СЛОВЕ — таблица пула не знает про людей,
-    поэтому прогретое одним доступно всем, у кого это слово есть."""
+class ПорядокВыдачиПереехалВОбщуюДорожку(unittest.TestCase):
+    """Здесь проверялось «сначала выдаём уже прогретое» внутри личного набора.
 
-    def test_готовые_идут_первыми(self):
-        import pathlib
-        текст = pathlib.Path(server.__file__).read_text(encoding="utf-8")
-        self.assertIn("прогретые, холодные = [], []", текст)
-        self.assertIn("dictionary_candidates = прогретые + холодные", текст)
+    28.08.2026 владелец отменил личные наборы целиком: «никакого индивидуального
+    подхода — мы формируем 20 слов, и они используются всеми пользователями подряд».
+    Порядок теперь задаёт сама дорожка (она отсортирована и отдаёт только прогретое),
+    и стережёт его test_sentence_track_is_one_for_everyone.py.
+    """
+
+    def test_личный_набор_больше_не_собирается(self):
+        import inspect
+        код = inspect.getsource(server._build_sentence_training_set)
+        self.assertNotIn("get_webapp_dictionary_entries", код)
 
 
 class ПричиныНеудачСчитаютсяПоотдельности(unittest.TestCase):
