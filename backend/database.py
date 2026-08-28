@@ -14,6 +14,7 @@ from backend import dictionary_intake as intake
 import hashlib
 import atexit
 import math
+import hashlib as _hashlib
 import logging
 from contextlib import contextmanager
 import asyncio
@@ -3430,17 +3431,116 @@ def adjektiv_gap_rebuilds(payload: dict | None) -> bool:
     return (before + correct + after) == full
 
 
+# ── АВАРИЙНЫЙ ЗАПАС заданий на окончания ───────────────────────────────────
+# Решение владельца 28.08.2026, дословно: «чего мы 30 одинаковых всегда давать будем?
+# Давай посмотрим, сколько их готовых есть (если нет — подготовим), и каждый раз будем
+# делать перемешивание. И ОБЯЗАТЕЛЬНО МНЕ СООБЩАТЬ ОБ ЭТОМ, чтобы я знал, что нормальная
+# схема не сработала, чтобы мы искали ошибки. Это уже не заглушка, а аварийный выход.»
+#
+# ЧЕМ ЭТО ОТЛИЧАЕТСЯ ОТ ЗАГЛУШКИ, КОТОРАЯ БЫЛА:
+#   · было — 30 ВШИТЫХ В КОД слов, одни и те же всегда, и владелец ничего не знал;
+#   · стало — 1000 РАЗНЫХ настоящих заданий в банке, каждый раз перемешиваются,
+#     и о каждом случае использования владельцу СООБЩАЕТСЯ.
+#
+# Запас бесплатный: задания собирает то же детерминированное правило склонений, что и
+# основной путь, без единого обращения к модели. Замер 28.08.2026: 250 штук за 2,8 с.
+ADJEKTIV_RESERVE_TARGET = max(0, int((os.getenv("ADJEKTIV_RESERVE_TARGET") or "1000").strip()))
+
+# Сколько раз аварийный запас пришлось задействовать с прошлого доклада владельцу.
+_ADJEKTIV_RESERVE_LOCK = threading.Lock()
+_ADJEKTIV_RESERVE_USES: list[str] = []
+
+
+def note_adjektiv_reserve_use(причина: str) -> None:
+    with _ADJEKTIV_RESERVE_LOCK:
+        _ADJEKTIV_RESERVE_USES.append(str(причина or "")[:120])
+
+
+def take_adjektiv_reserve_uses() -> list[str]:
+    """Забрать случаи использования запаса и обнулить (их докладывает читающий)."""
+    with _ADJEKTIV_RESERVE_LOCK:
+        снимок = list(_ADJEKTIV_RESERVE_USES)
+        _ADJEKTIV_RESERVE_USES.clear()
+    return снимок
+
+
+def count_adjektiv_reserve() -> int:
+    """Сколько годных заданий лежит в аварийном запасе."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM bt_3_aufgabe_bank "
+                           "WHERE format='adjektiv' AND retired=FALSE;")
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def ensure_adjektiv_reserve(target: int | None = None) -> dict:
+    """Догреть аварийный запас до цели. Бесплатно — генератор детерминированный.
+
+    Зовётся ночью. Запас полон — не делаем ничего. Заданий не хватает — досыпаем ровно
+    недостающее, каждое проверяя тем же стражем «пропуск склеивается обратно», что и
+    на выдаче: в аварийный запас негодное попадать не должно тем более.
+    """
+    цель = ADJEKTIV_RESERVE_TARGET if target is None else max(0, int(target))
+    if цель <= 0:
+        return {"ok": True, "skipped": True, "reason": "цель 0"}
+    есть = count_adjektiv_reserve()
+    надо = цель - есть
+    if надо <= 0:
+        return {"ok": True, "have": есть, "added": 0}
+    from backend.adjektiv_endings import build_adjektiv_items
+    # Просим с запасом: часть отсеется как повтор или как несклеивающееся.
+    items = build_adjektiv_items(int(надо * 2))
+    if not items:
+        logging.error("аварийный запас окончаний НЕ пополнен: генератор не дал заданий "
+                      "(банк существительных пуст или недоступен)")
+        return {"ok": False, "have": есть, "added": 0}
+    добавлено = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for payload in items:
+                if добавлено >= надо:
+                    break
+                if not adjektiv_gap_rebuilds(payload):
+                    continue
+                # aufgabe_id обязателен и уникален. Ключ считаем от САМОЙ ФРАЗЫ, а не
+                # случайный: повторный прогон пополнения не должен плодить дубли — то
+                # же задание просто не вставится (ON CONFLICT DO NOTHING).
+                фраза = str(payload.get("full") or "").strip().lower()
+                if not фраза:
+                    continue
+                ключ = "adj_res_" + _hashlib.sha1(фраза.encode("utf-8")).hexdigest()[:20]
+                cursor.execute(
+                    "INSERT INTO bt_3_aufgabe_bank (aufgabe_id, format, level, payload, retired) "
+                    "VALUES (%s, 'adjektiv', 'B2', %s, FALSE) "
+                    "ON CONFLICT (aufgabe_id) DO NOTHING;",
+                    (ключ, Json(payload)),
+                )
+                if cursor.rowcount:
+                    добавлено += 1
+        conn.commit()
+    logging.info("аварийный запас окончаний: было %s, добавлено %s, цель %s",
+                 есть, добавлено, цель)
+    return {"ok": True, "have": есть + добавлено, "added": добавлено}
+
+
 def pick_adjektiv_payloads(n: int = 15) -> list[dict]:
     """`n` adjective items. Primary source: the DETERMINISTIC rule-based generator
     (unlimited, 100% correct, no LLM). Falls back to the aufgabe bank only if that
     ever fails."""
+    причина = ""
     try:
         from backend.adjektiv_endings import build_adjektiv_items
         items = build_adjektiv_items(int(n))
         if items:
             return items
-    except Exception:
+        причина = "банк существительных пуст"
+    except Exception as exc:
         logging.warning("pick_adjektiv_payloads: deterministic gen failed", exc_info=True)
+        причина = f"генератор упал: {str(exc)[:70]}"
+    # ⛔ ДАЛЬШЕ — АВАРИЙНЫЙ ВЫХОД, А НЕ ЗАГЛУШКА. Берём СЛУЧАЙНЫЕ задания из запаса
+    # (ORDER BY random() ниже) и ОБЯЗАТЕЛЬНО сообщаем владельцу: он просил знать
+    # каждый раз, когда нормальная схема не сработала, чтобы искать причину.
+    note_adjektiv_reserve_use(причина)
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
