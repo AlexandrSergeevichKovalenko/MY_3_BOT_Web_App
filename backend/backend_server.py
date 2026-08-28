@@ -19142,6 +19142,9 @@ def _ensure_sentence_gpt_seed_entries(
     return seed_entries
 
 
+# ⚠ ПЕРЕД ЛЮБОЙ ПРАВКОЙ ЭТОЙ ТРЕНИРОВКИ — docs/tasks/sentence_track_strategy.md
+# Там договорённость с владельцем от 28.08.2026 целиком: почему дорожка одна на всех,
+# почему днём мы не ходим к модели, что уже измерено и что делать НЕЛЬЗЯ.
 def _build_sentence_training_set(
     *,
     user_id: int,
@@ -29073,6 +29076,7 @@ def _extend_and_warm_sentence_track(*, бюджет: int) -> dict:
     return итог
 
 
+# ⚠ Стратегия и запреты — docs/tasks/sentence_track_strategy.md (28.08.2026).
 def _dispatch_sentence_quiz_warm() -> dict:
     """Ночная работа по заданиям «Дополни предложение» — ОДНА ДОРОЖКА НА ВСЕХ.
 
