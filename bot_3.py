@@ -70,6 +70,8 @@ from backend.backend_server import (
     _sanitize_focus_topic,
     _start_shortcut_lookup_enqueue_runner,
     get_or_create_tts_clip,
+    tts_synthesis_accounting,
+    bill_listening_bank_tts,
     chunk_sentence_llm_de,
     schedule_user_paid_subscription_cancel_at_period_end,
     wait_for_completed_webapp_startup_bootstrap_marker_or_raise,
@@ -43022,13 +43024,32 @@ async def _backfill_listening_audio(limit: int = 10) -> dict:
     from backend.r2_storage import r2_put_bytes
     entries = await asyncio.to_thread(get_listening_entries_missing_audio, limit)
     made = 0
+
+    # ┌─ ПОЧИНЕНО 28.08.2026. ЗДЕСЬ ОЗВУЧКА УХОДИЛА В GOOGLE МИМО ВЕДОМОСТИ. ────────┐
+    # │ Замер: 67 992 символа за август не оставили ни одной строки расхода. Ночь на │
+    # │ 21.08 сделала 37 записей = 42 357 символов, в ведомости за тот день — 780.   │
+    # │ `get_or_create_tts_clip` внутри честно зовёт `_note_tts_synthesis`, но тот   │
+    # │ пишет в ПОТОКОВЫЙ ledger, а его открывает `tts_synthesis_accounting()`. Без  │
+    # │ этого контекста заметка о синтезе падала в пустоту.                          │
+    # │ Синтез идёт в рабочих потоках через `asyncio.to_thread`, а ledger — thread-  │
+    # │ local, поэтому контекст открывается ВНУТРИ потока, вокруг самого вызова.     │
+    # └──────────────────────────────────────────────────────────────────────────────┘
+    def _synthesize_with_accounting(text: str):
+        with tts_synthesis_accounting() as ledger:
+            try:
+                return get_or_create_tts_clip("de", text, 0.95)
+            finally:
+                # Google получил свои символы даже если дальше упадёт упаковка или
+                # выгрузка — расход пишем в любом случае.
+                bill_listening_bank_tts(ledger=ledger)
+
     for e in entries:
         listening_id = str(e.get("listening_id") or "")
         german_text = str(e.get("german_text") or "").strip()
         if not listening_id or not german_text:
             continue
         try:
-            audio_segment = await asyncio.to_thread(get_or_create_tts_clip, "de", german_text, 0.95)
+            audio_segment = await asyncio.to_thread(_synthesize_with_accounting, german_text)
             mp3_bytes = await asyncio.to_thread(_audiosegment_to_mp3_bytes, audio_segment)
             object_key = f"listening/audio/{listening_id}.mp3"
             await asyncio.to_thread(
