@@ -251,6 +251,25 @@ def fix_passed_check(judge: dict, field: str) -> bool | None:
     return None if check.get("disputed") else True
 
 
+def _both_name_the_same_kind(judges: list[dict]) -> str:
+    """Вид записи, названный ОБОИМИ судьями одинаково. Иначе пустая строка.
+
+    Судьи спрашиваются независимо и оба видят наш вид лишь подсказкой. Согласие двоих —
+    та же планка, по которой ночь молча правит текст: разошлись хоть в чём-то — не наше
+    дело решать, вид остаётся прежним и запись просто продолжает жить как жила.
+
+    Пустая строка от судьи («не назвал», ответ не той формы) согласием НЕ считается:
+    иначе два молчания сошлись бы в «единогласно» и переписали вид ни на чём.
+    """
+    if len(judges) != 2:
+        return ""
+    первый = str((judges[0] or {}).get("kind") or "").strip()
+    второй = str((judges[1] or {}).get("kind") or "").strip()
+    if not первый or первый != второй:
+        return ""
+    return первый if первый in ("sentence", "collocation") else ""
+
+
 def _both_agree(judges: list[dict]) -> tuple[bool, str, str]:
     """Согласны ли судьи ДОСЛОВНО. Возвращает (согласны, категория, исправленный текст).
 
@@ -532,6 +551,17 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
             if not any(j for j in judges):
                 report["errors"] += 1
                 continue
+            # ВИД ЗАПИСИ — ОТ МОДЕЛИ, А НЕ ОТ СЧЁТА СЛОВ (решение владельца 28.08.2026).
+            # Спрошено тем же запросом, что и грамматика, поэтому даром. Меняем молча
+            # только при согласии ОБОИХ судей — то же правило, что и для правок текста.
+            if not dry_run:
+                новый_вид = _both_name_the_same_kind(judges)
+                if новый_вид and новый_вид != str(row.get("kind") or ""):
+                    from backend.lex_units import set_unit_kind
+                    if set_unit_kind(row["unit_id"], новый_вид, source="модель"):
+                        report["kind_fixed"] = report.get("kind_fixed", 0) + 1
+                        logging.info("вид записи %r: %s → %s (оба судьи)",
+                                     row["text"][:60], row.get("kind"), новый_вид)
             agreed, category, corrected = _both_agree(judges)
             if agreed and category in SILENT_CATEGORIES:
                 if dry_run or _apply_silent_fix(row["unit_id"], corrected):

@@ -9460,6 +9460,25 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence",
     t = str(text or "").strip()
     if not api_key or not t or len(t) > 300:
         return {"verdict": "ok", "category": "", "corrected": "", "why": ""}
+    # ┌─ 28.08.2026. СУДЬЯ ТЕПЕРЬ ЕЩЁ И НАЗЫВАЕТ ВИД ЗАПИСИ. ────────────────────────┐
+    # │ Вид (предложение / словосочетание) до сих пор определялся СЧЁТОМ СЛОВ:       │
+    # │ lex_units._kind_for_text — «больше четырёх слов или точка в конце». Это      │
+    # │ догадка, и она ошибается на коротких предложениях: «Das geht nicht» после    │
+    # │ снятия артикля — два слова, «Ich bin verwirrt» — три. Замер 28.08.2026 по    │
+    # │ всей очереди двумя независимыми моделями: из 1822 записей 453 (25%) были     │
+    # │ законченными предложениями под видом словосочетаний.                         │
+    # │                                                                             │
+    # │ Цена ошибки ДВОЙНАЯ, и вторая половина — прямо здесь:                        │
+    # │   1) предложения греются платным разбором, хотя владелец греть их не велел;  │
+    # │   2) СУДЬЯ СУДИТ ПОД ЧУЖОЙ ВИД. Ниже прямо сказано: порядок слов проверяется │
+    # │      только у самостоятельного предложения. Предложение, названное обрывком, │
+    # │      на порядок слов не проверяется ВОВСЕ.                                   │
+    # │                                                                             │
+    # │ Вид спрашивается здесь, в запросе, который и так уходит на каждую фразу, —   │
+    # │ отдельных денег это не стоит (решение владельца 28.08.2026). Наш вид идёт    │
+    # │ подсказкой, но решает судья и судит ПОД СВОЙ ОТВЕТ. Молча меняем вид только  │
+    # │ когда ОБА судьи назвали одно — правило то же, что для грамматических правок. │
+    # └─────────────────────────────────────────────────────────────────────────────┘
     as_what = ("a COMPLETE standalone German sentence"
                if str(kind or "").lower() == "sentence"
                else "a German phrase / fragment (NOT a full sentence)")
@@ -9480,8 +9499,17 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence",
         "is impossible in every reading; when in doubt answer verdict=\"context\".\n"
     )
     system = (
-        "You are a strict German grammar examiner. You are given " + as_what + " that a "
-        "learner saved into a dictionary. Decide whether it is grammatically correct AS SUCH.\n"
+        "You are a strict German grammar examiner. Our records call this " + as_what + ", "
+        "saved into a dictionary by a learner. Our record may be WRONG - it was produced by "
+        "counting words, not by reading the text.\n"
+        "FIRST decide for yourself what it is and answer it in `kind`:\n"
+        "  \"sentence\" - a complete standalone sentence or main clause: it has a subject "
+        "and a finite verb (\"Das geht nicht\", \"Ich bin verwirrt\", \"Mir reicht's\"). "
+        "An imperative counts too (\"Rate mal\").\n"
+        "  \"collocation\" - a phrase, a set expression, an infinitive group, a noun group "
+        "or a sign (\"den Ton aufnehmen\", \"staatliche Subventionen\").\n"
+        "THEN judge the grammar under YOUR OWN answer, not under our record.\n"
+        "Decide whether it is grammatically correct AS SUCH.\n"
         "- Judge grammar only: spelling, agreement, case, prepositions, and - for a "
         "standalone sentence - verb position. Never judge style, register or word choice.\n"
         "- If the text is a fragment and the only complaint would be word order, answer "
@@ -9523,7 +9551,8 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence",
         "there is INVALID even when the sentence you judge is German: the reader is a "
         "Russian speaker deciding whether to keep the entry. German words may appear "
         "only as quoted examples inside the Russian sentence.\n"
-        "Answer STRICT JSON only: {\"verdict\":\"ok|error|context|style\","
+        "Answer STRICT JSON only: {\"kind\":\"sentence|collocation\","
+        "\"verdict\":\"ok|error|context|style\","
         "\"category\":\"rechtschreibung|kongruenz|kasus|praeposition|wortstellung|stil|\","
         "\"corrected\":\"<fixed text or empty>\",\"corrected_ru\":\"<RUSSIAN or empty>\","
         "\"proposal\":\"<complete German text or empty>\",\"proposal_ru\":\"<RUSSIAN or empty>\","
@@ -9559,7 +9588,12 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence",
         data = json.loads(resp.choices[0].message.content or "{}") or {}
     except Exception:
         return {"verdict": "ok", "category": "", "corrected": "", "why": ""}
+    # Вид записи: только два законных ответа. Всё остальное (пусто, «phrase», выдумка)
+    # означает «судья не назвал» — пустая строка, а НЕ подстановка нашей догадки:
+    # ночь меняет вид лишь при согласии обоих судей, а «не назвал» согласием не будет.
+    заявленный_вид = str(data.get("kind") or "").strip().lower()
     out = {
+        "kind": заявленный_вид if заявленный_вид in ("sentence", "collocation") else "",
         "verdict": str(data.get("verdict") or "ok").strip().lower(),
         "category": str(data.get("category") or "").strip().lower(),
         "corrected": str(data.get("corrected") or "").strip(),
