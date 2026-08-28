@@ -40,7 +40,14 @@ class БезСкрытойЗависимости(unittest.TestCase):
 
 
 class НеПроверилиЗначитНеПишем(unittest.TestCase):
-    """«Не смогли спросить» — это НЕ «всё хорошо». Иначе дверь становится картинкой."""
+    """«Не смогли спросить» — это НЕ «всё хорошо». Иначе дверь становится картинкой.
+
+    ОБНОВЛЕНО 28.08.2026: судей стало ДВА. Решение владельца — если Gemini молчит (у
+    него кончились деньги), проверку делает запасной GPT mini, иначе встаёт вся ночная
+    работа. Поэтому «молчит Gemini» больше НЕ равно «не проверили»: чтобы проверить
+    прежнюю гарантию, здесь глушится и запасной (OPENAI_API_KEY=""). Сама гарантия не
+    ослаблена ни на шаг — молчат оба, значит не пишем. Ниже это же и проверяется.
+    """
 
     def _ответ(self, код=200, тело=None):
         ответ = mock.Mock()
@@ -49,8 +56,11 @@ class НеПроверилиЗначитНеПишем(unittest.TestCase):
         ответ.json.return_value = тело or {}
         return ответ
 
+    # Оба судьи глухи — ровно то состояние, при котором писать нельзя.
+    ОБА_МОЛЧАТ = {"GEMINI_API_KEY": "ключ", "OPENAI_API_KEY": ""}
+
     def test_http_error_is_not_a_pass(self):
-        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "ключ"}), \
+        with mock.patch.dict(os.environ, self.ОБА_МОЛЧАТ), \
              mock.patch("requests.post", return_value=self._ответ(код=503)):
             итог = second_voice_check.review_new_card(
                 headword="Haus", card={"usage_examples": [{"source": "Das Haus."}]})
@@ -58,18 +68,30 @@ class НеПроверилиЗначитНеПишем(unittest.TestCase):
         self.assertFalse(итог["ok"])
 
     def test_network_failure_is_not_a_pass(self):
-        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "ключ"}), \
+        with mock.patch.dict(os.environ, self.ОБА_МОЛЧАТ), \
              mock.patch("requests.post", side_effect=RuntimeError("сети нет")):
             итог = second_voice_check.review_new_card(
                 headword="Haus", card={"usage_examples": [{"source": "Das Haus."}]})
         self.assertFalse(итог["checked"])
 
     def test_missing_key_is_not_a_pass(self):
-        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "", "OPENAI_API_KEY": ""}):
             итог = second_voice_check.review_new_card(
                 headword="Haus", card={"usage_examples": [{"source": "Das Haus."}]})
         self.assertFalse(итог["checked"])
         self.assertIn("ключа", итог["why"])
+
+    def test_the_reserve_saves_the_night_when_gemini_is_out_of_money(self):
+        """Обратная сторона той же двери: Gemini отдал 429 «денег нет», а запасной
+        судья на месте — работа обязана идти дальше, и видно, КТО судил."""
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "ключ"}), \
+             mock.patch("requests.post", return_value=self._ответ(код=429)), \
+             mock.patch.object(second_voice_check, "_ask_openai", return_value=([], "")):
+            итог = second_voice_check.review_new_card(
+                headword="Haus", card={"usage_examples": [{"source": "Das Haus."}]})
+        self.assertTrue(итог["checked"])
+        self.assertTrue(итог["ok"])
+        self.assertEqual("openai", итог["voice"])
 
     def test_a_clean_answer_passes(self):
         тело = {"candidates": [{"content": {"parts": [{"text": '{"defects": []}'}]}}]}

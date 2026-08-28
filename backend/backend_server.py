@@ -11730,6 +11730,9 @@ def _run_units_night_enrichment(
             )
         except Exception:
             logging.warning("ночной добор синонимов не удался", exc_info=True)
+    if not dry_run:
+        from backend.second_voice_check import stats as _voice_stats
+        report["second_voice"] = _voice_stats()
     return report
 
 
@@ -11949,12 +11952,16 @@ def run_pool_night_enrichment(
     # Падаем ВСЛУХ, а не возвращаем пустой отчёт: heartbeat запишет status=failed, и
     # утренняя сводка скажет «❌ Упал» с причиной вместо безымянного «Ошибок: 400».
     if not dry_run:
-        from backend.second_voice_check import unavailable_reason
+        from backend.second_voice_check import unavailable_reason, reset_stats
         причина = unavailable_reason()
         if причина:
             raise RuntimeError(
                 f"ночной добор не начат: {причина}. Ни одного запроса к модели не сделано."
             )
+        # Считаем ЗАНОВО за этот прогон: кто из двух голосов проверял разбор. Число
+        # проверок запасным голосом уходит в утренний отчёт — подмена сильного судьи
+        # слабым обязана быть видимой, иначе это та самая тихая деградация.
+        reset_stats()
     global _POOL_NIGHT_ENRICH_RUNNING
     if not dry_run:
         with _POOL_NIGHT_ENRICH_LOCK:
@@ -12066,6 +12073,9 @@ def run_pool_night_enrichment(
                 )
         except Exception:
             report["remaining"] = 0
+        if not dry_run:
+            from backend.second_voice_check import stats as _voice_stats
+            report["second_voice"] = _voice_stats()
         return report
     finally:
         if not dry_run:

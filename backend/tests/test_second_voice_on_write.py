@@ -80,8 +80,11 @@ class SecondVoiceOnWriteTests(unittest.TestCase):
 
 class ReviewAnswerTests(unittest.TestCase):
     def test_missing_key_is_not_a_verdict(self):
+        """С 28.08.2026 судей два (Gemini основной, GPT mini запасной), поэтому
+        «нет вердикта» — это отсутствие ОБОИХ ключей, а не одного."""
         from backend import second_voice_check
-        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": ""}, clear=False):
+        with mock.patch.dict(os.environ,
+                             {"GEMINI_API_KEY": "", "OPENAI_API_KEY": ""}, clear=False):
             answer = second_voice_check.review_new_card(headword="x", card=CARD)
         self.assertFalse(answer["checked"])
         self.assertFalse(answer["ok"])

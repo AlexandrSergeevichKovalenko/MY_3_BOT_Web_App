@@ -9912,6 +9912,28 @@ def _send_pool_enrich_morning_report() -> None:
                     )
             except Exception:
                 logging.debug("quarantine count for morning report failed", exc_info=True)
+            # КТО ПРОВЕРЯЛ РАЗБОР ЭТОЙ НОЧЬЮ. Основной судья — Gemini, он чужой и потому
+            # сильный. Когда он молчит (кончились деньги, квота, сеть), проверку делает
+            # запасной GPT mini — тот же производитель, что и писал разбор, а значит
+            # СЛАБЕЕ: замер 23.08.2026 — два голоса OpenAI спорят между собой почти
+            # никогда. Молча подменить судью нельзя, поэтому строка появляется ровно
+            # тогда, когда подмена была, и говорит, что делать.
+            voice_line = ""
+            голоса = meta.get("second_voice") or {}
+            if isinstance(голоса, dict):
+                запасной = int(голоса.get("openai") or 0)
+                не_судили = int(голоса.get("unchecked") or 0)
+                if запасной:
+                    voice_line = (
+                        f"⚠️ Проверял запасной судья (GPT mini): <b>{запасной}</b> разбор"
+                        f"{'' if запасной == 1 else 'ов'} — основной (Gemini) молчал. "
+                        f"Проверка слабее обычной: пополни Gemini, когда сможешь.\n"
+                    )
+                if не_судили:
+                    voice_line += (
+                        f"⛔️ Не проверил никто: <b>{не_судили}</b> — эти разборы НЕ "
+                        f"записаны и вернутся следующей ночью.\n"
+                    )
             text = (
                 f"🌙 <b>Ночной добор словаря</b> — {stamp}\n\n"
                 f"Наполнено за ночь: <b>{enriched}</b> из {int(meta.get('picked') or 0)} взятых\n"
@@ -9921,6 +9943,7 @@ def _send_pool_enrich_morning_report() -> None:
                 + (f"Это ещё ~{nights_left} ноч{'ь' if nights_left == 1 else 'и' if nights_left < 5 else 'ей'} "
                    f"по {cap} слов." if remaining else "✅ Пул наполнен полностью.")
                 + (f"\n{quarantine_line}" if quarantine_line else "")
+                + (f"\n{voice_line}" if voice_line else "")
                 # Синонимы — отдельным блоком в конце: это другая работа той же ночи,
                 # и мешать её цифры с основным добором значит запутать обе.
                 + _synonym_backfill_lines(meta)

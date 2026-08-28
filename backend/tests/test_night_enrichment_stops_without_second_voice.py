@@ -20,15 +20,28 @@ from unittest import mock
 
 class NightEnrichmentStopsWithoutSecondVoice(unittest.TestCase):
     def _no_key_env(self):
-        """Прод без ключа: выключатель для тестов снят, GEMINI_API_KEY пуст."""
+        """Прод без ключей: выключатель для тестов снят, оба судьи недоступны.
+
+        С 28.08.2026 судей ДВА (Gemini основной, GPT mini запасной), поэтому «спросить
+        нечем» — это отсутствие ОБОИХ ключей, а не одного."""
         env = {k: v for k, v in os.environ.items()
-               if k not in ("SECOND_VOICE_CHECK_DISABLED", "GEMINI_API_KEY")}
+               if k not in ("SECOND_VOICE_CHECK_DISABLED", "GEMINI_API_KEY",
+                            "OPENAI_API_KEY")}
         return mock.patch.dict(os.environ, env, clear=True)
 
-    def test_reason_is_named_when_the_key_is_missing(self):
+    def test_reason_is_named_when_both_keys_are_missing(self):
         from backend.second_voice_check import unavailable_reason
         with self._no_key_env():
-            self.assertIn("GEMINI_API_KEY", unavailable_reason())
+            сказано = unavailable_reason()
+        self.assertIn("GEMINI_API_KEY", сказано)
+        self.assertIn("OPENAI_API_KEY", сказано)
+
+    def test_reserve_key_alone_is_enough_to_start_the_night(self):
+        """Gemini не пополнен, GPT есть — ночь обязана идти, а не вставать."""
+        from backend.second_voice_check import unavailable_reason
+        with self._no_key_env():
+            with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "тест"}):
+                self.assertEqual("", unavailable_reason())
 
     def test_no_reason_when_the_check_is_switched_off_on_purpose(self):
         from backend.second_voice_check import unavailable_reason
@@ -47,6 +60,29 @@ class NightEnrichmentStopsWithoutSecondVoice(unittest.TestCase):
         сказано = str(поймано.exception)
         self.assertIn("GEMINI_API_KEY", сказано)
         self.assertIn("Ни одного запроса к модели не сделано", сказано)
+
+    def test_night_run_starts_when_only_the_reserve_voice_is_available(self):
+        """Ровно случай владельца: Gemini не пополнен. Прогон обязан НАЧАТЬСЯ —
+        значит дойти до модели, а не упасть на пороге."""
+        from backend import backend_server
+        дошли = []
+        with self._no_key_env():
+            with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "тест"}):
+                with mock.patch.object(
+                    backend_server.lex_units, "units_needing_card",
+                    return_value=[{"id": 1, "display": "der Zufall", "translation": "случай"}],
+                ):
+                    with mock.patch.object(
+                        backend_server, "_rich_enrich_card_fields",
+                        side_effect=lambda **kw: дошли.append(kw) or {},
+                    ):
+                        with mock.patch.object(
+                            backend_server.lex_units, "count_units_needing_card",
+                            return_value=0,
+                        ):
+                            backend_server.run_pool_night_enrichment(limit=1)
+        self.assertEqual(1, len(дошли),
+                         "ночь не дошла до модели, хотя запасной судья доступен")
 
     def test_dry_run_still_works_without_the_second_voice(self):
         """Сухой прогон ничего не пишет, значит и дверь ему не нужна: он обязан
