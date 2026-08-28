@@ -757,19 +757,35 @@ function openBotChat(botUsername, startPayload) {
   const uname = String(botUsername || 'Ich_Deutsch_bot').trim().replace(/^@/, '') || 'Ich_Deutsch_bot';
   const suffix = startPayload ? `?start=${encodeURIComponent(startPayload)}` : '';
   const httpsUrl = `https://t.me/${uname}${suffix}`;
-  try {
-    const tg = window.Telegram && window.Telegram.WebApp;
-    if (tg && typeof tg.openTelegramLink === 'function') {
-      tg.openTelegramLink(httpsUrl);
-      return;
-    }
-  } catch (_e) { /* не в Telegram — уходим на обычный переход ниже */ }
-  // Вне Telegram (браузер, установленное приложение) обычный переход — рабочий путь.
-  try { window.location.href = `tg://resolve?domain=${uname}${startPayload ? `&start=${encodeURIComponent(startPayload)}` : ''}`; } catch (_e) { /* ignore */ }
-  setTimeout(() => {
-    if (document.hidden) return;
-    try { window.location.href = httpsUrl; } catch (_e) { /* ignore */ }
-  }, 800);
+  const tg = (() => { try { return window.Telegram && window.Telegram.WebApp; } catch (_e) { return null; } })();
+  if (tg && typeof tg.openTelegramLink === 'function') {
+    try { tg.openTelegramLink(httpsUrl); } catch (_e) { /* закроем приложение ниже — этого хватит */ }
+    // ⛔ БЕЗ ЭТОГО ЗАКРЫТИЯ КНОПКА ВЫГЛЯДИТ НЕРАБОЧЕЙ.
+    // Замер на живом телефоне 28.08.2026: нажатие не делало ВИДИМО ничего. Причина не в
+    // ссылке — чат с ботом и так лежит ПРЯМО ПОД мини-аппом (человек открыл приложение
+    // из него же). Telegram честно «открывает» этот чат, но поверх остаётся то же
+    // приложение, и со стороны это неотличимо от мёртвой кнопки.
+    // Закрытие мини-аппа и ЕСТЬ переход в чат для того, кто пришёл из чата. А вызов
+    // openTelegramLink выше нужен второму случаю — человеку, который попал в приложение
+    // по прямой ссылке и чата с ботом не имеет: у него ссылка этот чат создаёт.
+    // Небольшая задержка — чтобы Telegram успел принять ссылку до закрытия.
+    setTimeout(() => { try { tg.close(); } catch (_e) { /* ignore */ } }, 150);
+    return;
+  }
+  // Вне Telegram (браузер, установленное приложение) — обычный переход, там он работает.
+  try { window.open(httpsUrl, '_blank'); return; } catch (_e) { /* ниже последний способ */ }
+  try { window.location.href = httpsUrl; } catch (_e) { /* ignore */ }
+}
+
+// Отметка сборки для угла экрана. Отвечает на вопрос «этот телефон вообще выполняет
+// новый код?» — тот самый, на котором в проекте уже горели дни.
+const BUILD_STAMP = (() => {
+  try { return typeof __BUILD_STAMP__ === 'string' ? __BUILD_STAMP__ : ''; } catch (_e) { return ''; }
+})();
+
+function buildStampNode() {
+  if (!BUILD_STAMP) return '';
+  return `<div style="position:absolute;bottom:10px;left:0;right:0;text-align:center;font-size:11px;opacity:.45">сборка ${BUILD_STAMP}</div>`;
 }
 
 function showAccessClosedGate(botUsername) {
@@ -797,7 +813,7 @@ function showAccessClosedGate(botUsername) {
         <div style="font-size:22px;font-weight:700;line-height:1.25">${title}</div>
         <div style="font-size:15px;line-height:1.5;opacity:.94">${body}</div>
         <button type="button" style="margin-top:8px;border:0;border-radius:14px;padding:14px 22px;font-size:16px;font-weight:600;background:#fff;color:#b45309;cursor:pointer">${btn}</button>
-      </div>`;
+      </div>${buildStampNode()}`;
     wrap.querySelector('button').addEventListener('click', openBot);
     document.body.appendChild(wrap);
   } catch (_e) { /* ignore */ }
@@ -843,7 +859,7 @@ function showAccessQueueGate(position, botUsername) {
         <div style="font-size:34px;font-weight:800;line-height:1;letter-spacing:-.02em">${numLine}</div>
         <div style="font-size:15px;line-height:1.5;opacity:.94">${body}</div>
         <button type="button" style="margin-top:8px;border:0;border-radius:14px;padding:14px 22px;font-size:16px;font-weight:600;background:#fff;color:#115e59;cursor:pointer">${btn}</button>
-      </div>`;
+      </div>${buildStampNode()}`;
     wrap.querySelector('button').addEventListener('click', openBot);
     document.body.appendChild(wrap);
   } catch (_e) { /* ignore */ }
