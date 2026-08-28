@@ -32,8 +32,10 @@ from backend import word_confirm_digest as сводка  # noqa: E402
      "corrected_ru": "Появление симптомов заболевания",
      "corrected_check": dict(ПРОВЕРКА_ПРОШЛА)},
 ]
+# Строка запроса экрана: с 28.08.2026 она везёт ещё ВИД вопроса и карточку —
+# панельный вопрос спрашивает о наполнении карточки, и предмет спора нужен на экране.
 ФРАЗА_СТРОКА = (77, "Auftreten vonKrankheitssymptomen", "Появление симптомов заболевания",
-                СУДЬИ, None, 4242)
+                СУДЬИ, None, 4242, "grammar", None)
 СЛОВО_СТРОКА = ("Nährstoff", "питательное вещество", "не подтверждено",
                 "модель: слово есть, редкое", "")
 
@@ -128,14 +130,15 @@ class ФразыНаЭкране(unittest.TestCase):
         более нечего показать — спрашивать «что не так?» и не мочь ответить нельзя.
         """
         придирка = (78, "Ich überhaupt kein Talent", "у меня совсем нет таланта",
-                    [{"verdict": "error", "category": "wortstellung"}], None, 5)
+                    [{"verdict": "error", "category": "wortstellung"}], None, 5,
+                    "grammar", None)
         карточки, _ = _экран([[], [придирка]])
         self.assertEqual(карточки, [])
 
     def test_phrase_without_a_variant_but_without_a_claim_still_shows_up(self):
         """Проверяющие не назвали ошибку, но и не сошлись — решает человек."""
         спорная = (79, "Alles Banane", "всё нормально",
-                   [{"verdict": "ok", "category": ""}], None, 6)
+                   [{"verdict": "ok", "category": ""}], None, 6, "grammar", None)
         карточки, _ = _экран([[], [спорная]])
         self.assertEqual(карточки[0]["variants"], [])
         self.assertIn("разошлись", карточки[0]["why"])
@@ -154,7 +157,7 @@ class ФразыНаЭкране(unittest.TestCase):
         спорный["corrected_check"] = {"checked": True, "grammar_ok": True,
                                       "meaning_kept": False}
         строка = (77, "Anzeichen für einen Herzi", "Признаки сердечного приступа",
-                  [спорный], {"verdict": "ok", "better": ""}, 4242)
+                  [спорный], {"verdict": "ok", "better": ""}, 4242, "grammar", None)
         with mock.patch("backend.database.phrase_review_variants",
                         return_value=[{"text": "Anzeichen für einen Herzinfarkt",
                                        "ru": "Признаки сердечного приступа",
@@ -184,7 +187,8 @@ class ФразыНаЭкране(unittest.TestCase):
         """
         from backend.database import TRANSLATION_REVIEW_CATEGORY
         чужой = (80, "Besprechung", "совещание",
-                 [{"verdict": "error", "category": TRANSLATION_REVIEW_CATEGORY}], None, 7)
+                 [{"verdict": "error", "category": TRANSLATION_REVIEW_CATEGORY}], None, 7,
+                 "translation", None)
         карточки, _ = _экран([[], [чужой]])
         self.assertEqual(карточки, [])
 
@@ -196,7 +200,7 @@ class ФразыНаЭкране(unittest.TestCase):
                 [{"verdict": "error", "category": PANEL_REVIEW_CATEGORY,
                   "corrected": "Ich habe überhaupt kein Talent",
                   "corrected_ru": "у меня совсем нет таланта",
-                  "corrected_check": dict(ПРОВЕРКА_ПРОШЛА)}], None, 8)
+                  "corrected_check": dict(ПРОВЕРКА_ПРОШЛА)}], None, 8, "panel", None)
         карточки, _ = _экран([[], [свой]])
         self.assertEqual(len(карточки), 1)
 
