@@ -4231,7 +4231,49 @@ def api_healthz():
         db_info = get_active_db_endpoint_info()
     except Exception:
         db_info = {}
-    return jsonify({"ok": True, "service": "backend_web", "db": db_info}), 200
+    return jsonify({"ok": True, "service": "backend_web", "db": db_info,
+                    "runtime": _runtime_capacity_info()}), 200
+
+
+def _runtime_capacity_info() -> dict:
+    """С какой пропускной способностью РЕАЛЬНО работает этот процесс.
+
+    Заведено 28.08.2026, когда поднимали потолок веб-сервиса. Вопрос «сколько запросов
+    приложение тянет одновременно прямо сейчас» не имел ответа: переменные окружения
+    показывают, что ЗАДАНО, а не что процесс подхватил, а свои настройки приложение
+    пишет только в момент старта — Railway к тому времени отдаёт уже другой хвост лога.
+    Дважды за день пришлось бы отвечать догадкой; вместо этого — числа из самого процесса.
+
+    `threads` и `workers` читаются из окружения ЭТОГО процесса — ровно те значения,
+    по которым gunicorn себя и построил (см. CMD в Dockerfile.backend). `db_pool_max` —
+    настоящая константа слоя базы, не пересказ переменной.
+
+    Одновременных запросов = workers × threads. Соединений с базой на процесс —
+    db_pool_max: если оно меньше threads, потоки будут стоять в очереди за соединением.
+    """
+    def _целое(имя: str, по_умолчанию: int) -> int | None:
+        сырое = (os.getenv(имя) or "").strip()
+        if not сырое:
+            return по_умолчанию
+        try:
+            return int(сырое)
+        except ValueError:
+            logging.warning("%s задана не числом: %r", имя, сырое)
+            return None
+
+    воркеров = _целое("WEB_CONCURRENCY", 1)
+    потоков = _целое("GUNICORN_THREADS", 2)
+    из_базы = None
+    try:
+        from backend.database import DB_POOL_MAXCONN, DB_POOL_MINCONN
+        из_базы = {"db_pool_max": int(DB_POOL_MAXCONN), "db_pool_min": int(DB_POOL_MINCONN)}
+    except Exception:
+        logging.warning("не смогли прочитать настройки пула базы", exc_info=True)
+    итог = {"workers": воркеров, "threads": потоков,
+            "concurrent_requests": (воркеров * потоков) if (воркеров and потоков) else None}
+    if из_базы:
+        итог.update(из_базы)
+    return итог
 
 
 @app.route("/api/web/auth/telegram", methods=["POST"])
