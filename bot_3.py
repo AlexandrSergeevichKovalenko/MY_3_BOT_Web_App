@@ -10882,7 +10882,20 @@ _SCHEDULER_HEALTH_CATALOG = [
     # recorded from the job bodies under dedicated keys, so status='failed' on a bad prep raises a
     # ⚠️ alarm here, and a stalled/never-fired cron goes ПРОТУХЛО past 30h. ---
     ("world_news_evening_result", "Новость дня — вечерняя подготовка (20:00)", 30, True, "guard"),
-    ("standup_pool_report_result", "Стендап — отчёт о состоянии пула (вс 11:00)", 10, True, "guard"),
+    # ┌─ ПРОВЕРЕНО 28.08.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────────┐
+    # │ Вечерняя проверка кричала «⚠️ ПРОТУХЛО • Стендап — отчёт о состоянии пула,     │
+    # │ 5.4 дн назад». Отчёт УХОДИЛ исправно: heartbeat в bt_3_scheduler_run_guards —  │
+    # │ 2026-08-23 09:00 UTC (= вс 11:00 Вена), status=completed, metadata sent=1.     │
+    # │ Дефект был в самой проверке: порог стоял 10 ч при недельном cron'е (bot_3.py   │
+    # │ ~45721: day_of_week="sun", hour=11). Между воскресеньями 168 ч, значит 158 ч   │
+    # │ из 168 (94% времени) живой отчёт числился протухшим. Порог приведён к общему   │
+    # │ для недельных заданий 192 ч = 168 ч периода + 24 ч запаса (так же у            │
+    # │ _send_weekly_champion_job, stars_refund_weekly_report и прочих недельных).     │
+    # │ Перемерить: railway ssh --service BACKGROUND_JOBS → SELECT из                  │
+    # │ bt_3_scheduler_run_guards WHERE job_key='standup_pool_report_result'.          │
+    # │ Класс закрыт тестом backend/tests/test_scheduler_health_weekly_thresholds.py.  │
+    # └───────────────────────────────────────────────────────────────────────────────┘
+    ("standup_pool_report_result", "Стендап — отчёт о состоянии пула (вс 11:00)", 192, True, "guard"),
     ("standup_shelf_refill_result", "Стендап — пополнение полки (3:40)", 30, True, "guard"),
     ("daily_video_recheck_result", "Видеорубрика — ночная проверка карточек (3:20)", 30, True, "guard"),
     ("world_news_morning_result", "Новость дня — утренняя рассылка (6:30)", 30, True, "guard"),
