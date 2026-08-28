@@ -25,8 +25,6 @@ import StarsInfoModal from './components/StarsInfoModal';
 import BonusProDaysModal from './components/BonusProDaysModal';
 import VocabSearchOverlay from './components/VocabSearchOverlay';
 import CardOwnNotes from './components/CardOwnNotes';
-// ВРЕМЕННО (28.08.2026): измерительная строка для починки клавиатуры в приложении с иконки.
-import ViewportProbe from './components/ViewportProbe';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass, splitLeadingArticle, getInitData as getDictInitData, getDictToken } from './dictionary/WordBreakdown';
 import { splitTranslationSenses } from './dictionary/senses';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
@@ -36171,8 +36169,6 @@ function AppInner() {
               </button>
             </div>
             <div className="vocab-word-fullscreen-body">
-              {/* ВРЕМЕННО: числа вьюпорта для починки клавиатуры. Только владельцу. */}
-              {vocabIsAdmin && <ViewportProbe />}
               {savedMeanings.length > 0 && (
                 <div className="vocab-word-details">
                   <div className="vocab-word-detail-title">
@@ -36208,9 +36204,6 @@ function AppInner() {
                 </div>
               )}
               <LibraryWordDetail item={item} />
-              {/* ВРЕМЕННО: та же строка рядом с полем ввода — она остаётся на виду,
-                  когда верх карточки уезжает за экран. */}
-              {vocabIsAdmin && <ViewportProbe />}
               {/* Своё — последним, под общим разбором: видно, где наше, а где его. */}
               {!isPoolEntry && (
                 <CardOwnNotes
