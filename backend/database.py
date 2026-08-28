@@ -8423,6 +8423,8 @@ def _maybe_alert_db_pool_saturation(
         starvation_kind = "fallback"
     else:
         return
+    # Тот же случай считаем и для утреннего отчёта — ИМЕННО ГОЛОД, а не пик.
+    _note_pool_starvation()
     if not DB_POOL_ENABLED:
         return
     now_ts = time.time()
@@ -16461,9 +16463,26 @@ _POOL_PEAK_FLUSH_LAST = 0.0
 _POOL_PEAK_FLUSH_MIN_SEC = 60.0
 
 
+# Настоящий ГОЛОД пула: соединения не хватило, запрос ушёл в прямое подключение или
+# провалился. Вот ЭТО повод добавлять соединения — а не «пик коснулся потолка».
+#
+# ⛔ РАЗОБРАНО НА ЖИВЫХ ДАННЫХ 28.08.2026. Первый вариант судил по пику: пик равен
+# потолку — «пора добавлять». Замер того же дня: у MY_3_BOT пик 8 из 8, у BACKEND_WEB
+# 10 из 10 — и при этом НОЛЬ голода. Пул, заполнившийся на мгновение, это норма; вердикт
+# по пику объявил бы «пора» при полностью нормальной работе. Та же ошибка, что и с
+# упираниями в потолок запросов, — повторять её третий раз нельзя.
+_POOL_STARVED_SEEN = 0
+
+
+def _note_pool_starvation() -> None:
+    global _POOL_STARVED_SEEN
+    with _POOL_PEAK_LOCK:
+        _POOL_STARVED_SEEN += 1
+
+
 def _note_pool_usage_peak(pool_used_count: int | None) -> None:
     """Запомнить занятость пула и раз в минуту сложить пик в базу."""
-    global _POOL_PEAK_SEEN, _POOL_PEAK_FLUSH_LAST
+    global _POOL_PEAK_SEEN, _POOL_PEAK_FLUSH_LAST, _POOL_STARVED_SEEN
     if pool_used_count is None or not DB_POOL_ENABLED:
         return
     now = time.time()
@@ -16473,12 +16492,13 @@ def _note_pool_usage_peak(pool_used_count: int | None) -> None:
         if (now - _POOL_PEAK_FLUSH_LAST) < _POOL_PEAK_FLUSH_MIN_SEC or _POOL_PEAK_SEEN <= 0:
             return
         _POOL_PEAK_FLUSH_LAST = now
-        пик = _POOL_PEAK_SEEN
+        пик, голод = _POOL_PEAK_SEEN, _POOL_STARVED_SEEN
+        _POOL_STARVED_SEEN = 0      # голод складывается в базе, поэтому здесь обнуляем
     try:
         record_capacity(service=(os.getenv("RAILWAY_SERVICE_NAME") or "-").strip() or "-",
-                        kind="db_pool", ceiling=int(DB_POOL_MAXCONN), peak=пик)
+                        kind="db_pool", ceiling=int(DB_POOL_MAXCONN), peak=пик, hits=голод)
     except Exception:
-        logging.warning("замер пула не записался (пик=%s)", пик, exc_info=True)
+        logging.warning("замер пула не записался (пик=%s, голод=%s)", пик, голод, exc_info=True)
 
 
 def ensure_access_waitlist_schema() -> None:
