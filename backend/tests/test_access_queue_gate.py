@@ -170,6 +170,25 @@ class ЭкранОчередиГоворитЧеловеческимЯзыком
         self.assertIn("function installAccessGateInterceptor(", self.главный)
         self.assertIn("installAccessGateInterceptor();", self.главный)
 
+    def test_кнопка_чата_открывается_штатным_способом_telegram(self):
+        """Замер 28.08.2026 на живом телефоне: кнопка не делала НИЧЕГО.
+
+        Внутри мини-аппа переход по tg:// и по https://t.me через window.location.href
+        оболочка игнорирует. Штатный способ ровно один — openTelegramLink(), им
+        пользуется весь остальной проект. Прежний код писался для экрана «доступ
+        закрыт», а тот показывается только ВНЕ Telegram, поэтому поломка не всплывала.
+
+        Кнопка не украшение: человеку, который пришёл в приложение и с ботом ни разу не
+        переписывался, написать физически нельзя. Нажатие создаёт чат — и только после
+        этого обещание «напишу, когда откроем» становится выполнимым."""
+        self.assertIn("function openBotChat(", self.главный)
+        self.assertIn("tg.openTelegramLink(httpsUrl)", self.главный)
+        начало = self.главный.index("function showAccessQueueGate(")
+        экран = self.главный[начало:начало + 2600]
+        self.assertIn("openBotChat(uname, 'queue')", экран)
+        self.assertNotIn("window.location.href", экран,
+                         "переход внутри мини-аппа так не работает — это и была поломка")
+
     def test_на_экране_есть_номер_причина_и_обещание(self):
         начало = self.главный.index("function showAccessQueueGate(")
         экран = self.главный[начало:начало + 2600]
