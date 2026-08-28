@@ -4264,6 +4264,7 @@ _INFLIGHT_LOCK = threading.Lock()
 _INFLIGHT_NOW = 0
 _INFLIGHT_PEAK = 0
 _CEILING_HITS = 0
+_REQ_TOTAL = 0
 _CAPACITY_FLUSH_LAST = 0.0
 _CAPACITY_FLUSH_MIN_SEC = 60.0
 
@@ -4280,14 +4281,20 @@ def _capacity_ceiling() -> int:
 
 @app.before_request
 def _capacity_track_start():
-    global _INFLIGHT_NOW, _INFLIGHT_PEAK, _CEILING_HITS
+    global _INFLIGHT_NOW, _INFLIGHT_PEAK, _CEILING_HITS, _REQ_TOTAL
     потолок = _capacity_ceiling()
     with _INFLIGHT_LOCK:
+        _REQ_TOTAL += 1
         _INFLIGHT_NOW += 1
         сейчас = _INFLIGHT_NOW
         if сейчас > _INFLIGHT_PEAK:
             _INFLIGHT_PEAK = сейчас
-        # «Упёрлись» = заняты ВСЕ места. Следующий запрос будет ждать освобождения.
+        # «Упёрлись» = заняты ВСЕ места; следующий запрос будет ждать освобождения.
+        # ⚠ САМО ПО СЕБЕ ЭТО НЕ БЕДА, и на этом я 28.08.2026 ошибся. Браузер тянет
+        # десяток файлов страницы разом, каждый за миллисекунды — коснуться потолка на
+        # мгновение нормально. Поэтому здесь только СЧЁТ, а судит доля от общего числа
+        # запросов (см. вердикт в боте): 19 упираний из 5000 — это 0.4% и норма,
+        # 19 из 100 — уже человек, который ждал.
         if потолок and сейчас >= потолок:
             _CEILING_HITS += 1
     return None
@@ -4309,25 +4316,30 @@ def _capacity_flush_if_due() -> None:
     него падать не должен — замер не имеет права ломать работу. Поэтому исключение
     ловится и считается: потерянный замер = недооценённая нагрузка, о нём надо знать.
     """
-    global _CAPACITY_FLUSH_LAST, _INFLIGHT_PEAK, _CEILING_HITS
+    # _REQ_TOTAL здесь ОБЯЗАН быть в списке: он присваивается ниже, и без объявления
+    # Python считает его локальным — UnboundLocalError на каждом запросе. Поймано
+    # прогоном тестов 28.08.2026 до деплоя (171 красный).
+    global _CAPACITY_FLUSH_LAST, _INFLIGHT_PEAK, _CEILING_HITS, _REQ_TOTAL
     now = time.time()
     with _INFLIGHT_LOCK:
         if (now - _CAPACITY_FLUSH_LAST) < _CAPACITY_FLUSH_MIN_SEC:
             return
-        пик, упирания = _INFLIGHT_PEAK, _CEILING_HITS
-        if пик <= 0 and упирания <= 0:
+        пик, упирания, всего = _INFLIGHT_PEAK, _CEILING_HITS, _REQ_TOTAL
+        if пик <= 0 and упирания <= 0 and всего <= 0:
             return
         _CAPACITY_FLUSH_LAST = now
-        _CEILING_HITS = 0          # упирания складываются в базе, поэтому здесь обнуляем
+        # Упирания и общее число складываются в базе, поэтому здесь обнуляем.
+        _CEILING_HITS = 0
+        _REQ_TOTAL = 0
         # Пик НЕ обнуляем: в базе берётся наибольший за сутки, а внутри процесса он
         # должен остаться, иначе следующая запись занизит его до случайного значения.
     try:
         from backend.database import record_capacity
         record_capacity(service="BACKEND_WEB", kind="web_requests",
-                        ceiling=_capacity_ceiling(), peak=пик, hits=упирания)
+                        ceiling=_capacity_ceiling(), peak=пик, hits=упирания, total=всего)
     except Exception:
-        logging.warning("замер занятости не записался (пик=%s, упираний=%s)",
-                        пик, упирания, exc_info=True)
+        logging.warning("замер занятости не записался (пик=%s, упираний=%s, всего=%s)",
+                        пик, упирания, всего, exc_info=True)
 
 
 def _runtime_capacity_info() -> dict:
@@ -4367,7 +4379,7 @@ def _runtime_capacity_info() -> dict:
     итог = {"workers": воркеров, "threads": потоков,
             "concurrent_requests": (воркеров * потоков) if (воркеров and потоков) else None,
             "inflight_now": _INFLIGHT_NOW, "inflight_peak": _INFLIGHT_PEAK,
-            "ceiling_hits": _CEILING_HITS}
+            "ceiling_hits": _CEILING_HITS, "requests_total": _REQ_TOTAL}
     if из_базы:
         итог.update(из_базы)
     return итог
