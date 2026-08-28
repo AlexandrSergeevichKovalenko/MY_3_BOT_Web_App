@@ -8475,6 +8475,10 @@ def _record_db_acquire_event(
             context_label=context_label, connection_source=connection_source,
             success=success, pool_used_count=pool_used_count,
         )
+        # Сторож выше кричит, когда УЖЕ БОЛЬНО (соединений не хватило). Этот замер
+        # показывает приближение заранее — владельцу нужно видеть, что пора, а не что
+        # уже сломалось. Пишет раз в минуту, на горячий путь не влияет.
+        _note_pool_usage_peak(pool_used_count)
     except Exception:
         logging.debug("db pool saturation alert check failed", exc_info=True)
     event = {
@@ -15880,6 +15884,119 @@ def is_access_denied_for_user(user_id: int) -> bool:
 # Пусто или 0 → потолка нет, дверь открыта всем. Это и есть поведение до 27.08.2026,
 # и оно остаётся значением по умолчанию: включает потолок владелец, осознанно.
 _ACCESS_WAITLIST_SCHEMA_DONE = False
+
+
+# ── Замер занятости веб-сервиса ────────────────────────────────────────────
+# Владелец 28.08.2026: «как я могу понять, что есть необходимость это сделать? как я
+# могу это понимать в будущем при росте пользователей?» — про поднятие потолка.
+#
+# Потолок веб-сервиса = воркеры × потоки (сейчас 1 × 8 = 8 одновременных запросов).
+# Пока пик занятости заметно ниже потолка — поднимать нечего, это трата денег на
+# память впустую. Когда пик начинает упираться — время следующей ступени.
+#
+# Само число живёт в ПАМЯТИ каждого процесса, а владельцу отчёт шлёт БОТ, другой
+# сервис. Поэтому пик кладётся в базу — но не на каждом запросе (это было бы дороже
+# самого замера), а только когда он вырос, и не чаще раза в минуту.
+_WEB_CAPACITY_SCHEMA_DONE = False
+
+
+def ensure_web_capacity_schema() -> None:
+    global _WEB_CAPACITY_SCHEMA_DONE
+    if _WEB_CAPACITY_SCHEMA_DONE:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_capacity_daily (
+                    day        DATE NOT NULL,
+                    service    TEXT NOT NULL,
+                    -- Два ЧЕСТНО РАЗНЫХ потолка, и путать их нельзя:
+                    --   web_requests — сколько запросов процесс ведёт одновременно
+                    --                  (воркеры × потоки). Это ступень 2.
+                    --   db_pool      — сколько соединений с базой у процесса.
+                    --                  Это ступень 3, и она отдельная у каждого сервиса.
+                    kind       TEXT NOT NULL,
+                    ceiling    INTEGER NOT NULL,
+                    peak       INTEGER NOT NULL DEFAULT 0,
+                    hits       BIGINT  NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (day, service, kind)
+                );
+            """)
+        conn.commit()
+    _WEB_CAPACITY_SCHEMA_DONE = True
+
+
+def record_capacity(*, service: str, kind: str, ceiling: int, peak: int,
+                    hits: int = 0, day=None) -> None:
+    """Запомнить дневной пик занятости и число упираний в потолок.
+
+    Пик берётся НАИБОЛЬШИЙ за сутки (GREATEST), упирания СКЛАДЫВАЮТСЯ: процессов может
+    быть несколько, и каждый досылает своё. Потолок пишем последним известным — он
+    меняется только когда его двигают руками.
+    """
+    ensure_web_capacity_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_capacity_daily (day, service, kind, ceiling, peak, hits)
+                VALUES (COALESCE(%s, CURRENT_DATE), %s, %s, %s, %s, %s)
+                ON CONFLICT (day, service, kind) DO UPDATE SET
+                    ceiling    = EXCLUDED.ceiling,
+                    peak       = GREATEST(bt_3_capacity_daily.peak, EXCLUDED.peak),
+                    hits       = bt_3_capacity_daily.hits + EXCLUDED.hits,
+                    updated_at = NOW();
+                """,
+                (day, str(service), str(kind), int(ceiling), int(peak), int(hits)),
+            )
+        conn.commit()
+
+
+def get_capacity_days(days: int = 7) -> list[dict]:
+    """Занятость за последние сутки — для отчёта владельцу. Свежее первым."""
+    ensure_web_capacity_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT day, service, kind, ceiling, peak, hits "
+                "FROM bt_3_capacity_daily "
+                "WHERE day >= CURRENT_DATE - (%s * INTERVAL '1 day') "
+                "ORDER BY day DESC, kind, service;",
+                (max(1, int(days)),),
+            )
+            return [{"day": r[0], "service": r[1], "kind": r[2], "ceiling": int(r[3]),
+                     "peak": int(r[4]), "hits": int(r[5])}
+                    for r in (cursor.fetchall() or [])]
+
+
+# Пик занятости ПУЛА БАЗЫ — тот же замер, но про ступень 3. Пул свой у каждого сервиса,
+# поэтому и строка своя. Сторож голода (_maybe_alert_db_pool_saturation) кричит, когда
+# УЖЕ БОЛЬНО — соединений не хватило; этот замер показывает приближение заранее.
+_POOL_PEAK_LOCK = threading.Lock()
+_POOL_PEAK_SEEN = 0
+_POOL_PEAK_FLUSH_LAST = 0.0
+_POOL_PEAK_FLUSH_MIN_SEC = 60.0
+
+
+def _note_pool_usage_peak(pool_used_count: int | None) -> None:
+    """Запомнить занятость пула и раз в минуту сложить пик в базу."""
+    global _POOL_PEAK_SEEN, _POOL_PEAK_FLUSH_LAST
+    if pool_used_count is None or not DB_POOL_ENABLED:
+        return
+    now = time.time()
+    with _POOL_PEAK_LOCK:
+        if int(pool_used_count) > _POOL_PEAK_SEEN:
+            _POOL_PEAK_SEEN = int(pool_used_count)
+        if (now - _POOL_PEAK_FLUSH_LAST) < _POOL_PEAK_FLUSH_MIN_SEC or _POOL_PEAK_SEEN <= 0:
+            return
+        _POOL_PEAK_FLUSH_LAST = now
+        пик = _POOL_PEAK_SEEN
+    try:
+        record_capacity(service=(os.getenv("RAILWAY_SERVICE_NAME") or "-").strip() or "-",
+                        kind="db_pool", ceiling=int(DB_POOL_MAXCONN), peak=пик)
+    except Exception:
+        logging.warning("замер пула не записался (пик=%s)", пик, exc_info=True)
 
 
 def ensure_access_waitlist_schema() -> None:

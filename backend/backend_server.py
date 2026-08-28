@@ -4252,6 +4252,84 @@ def api_healthz():
                     "runtime": _runtime_capacity_info()}), 200
 
 
+# ── Сколько запросов приложение обслуживает ОДНОВРЕМЕННО ───────────────────
+# Владелец 28.08.2026: «как я могу понять, что есть необходимость это сделать?» — про
+# следующую ступень поднятия потолка. Пока пик занятости заметно ниже потолка,
+# поднимать нечего: это деньги за память впустую. Упёрлись — время ступени.
+#
+# Считаем в памяти процесса (одна пара +1/−1 на запрос, стоит наносекунды), а в базу
+# кладём только когда пик ВЫРОС или когда упёрлись в потолок, и не чаще раза в минуту.
+# Писать на каждом запросе было бы дороже самого замера.
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT_NOW = 0
+_INFLIGHT_PEAK = 0
+_CEILING_HITS = 0
+_CAPACITY_FLUSH_LAST = 0.0
+_CAPACITY_FLUSH_MIN_SEC = 60.0
+
+
+def _capacity_ceiling() -> int:
+    """Сколько запросов процесс физически может вести одновременно."""
+    try:
+        сведения = _runtime_capacity_info()
+        потолок = сведения.get("concurrent_requests")
+        return int(потолок) if потолок else 0
+    except Exception:
+        return 0
+
+
+@app.before_request
+def _capacity_track_start():
+    global _INFLIGHT_NOW, _INFLIGHT_PEAK, _CEILING_HITS
+    потолок = _capacity_ceiling()
+    with _INFLIGHT_LOCK:
+        _INFLIGHT_NOW += 1
+        сейчас = _INFLIGHT_NOW
+        if сейчас > _INFLIGHT_PEAK:
+            _INFLIGHT_PEAK = сейчас
+        # «Упёрлись» = заняты ВСЕ места. Следующий запрос будет ждать освобождения.
+        if потолок and сейчас >= потолок:
+            _CEILING_HITS += 1
+    return None
+
+
+@app.teardown_request
+def _capacity_track_end(_exc=None):
+    global _INFLIGHT_NOW
+    with _INFLIGHT_LOCK:
+        if _INFLIGHT_NOW > 0:
+            _INFLIGHT_NOW -= 1
+    _capacity_flush_if_due()
+
+
+def _capacity_flush_if_due() -> None:
+    """Сложить пик в базу — отчёт владельцу шлёт БОТ, другой сервис, памяти он не видит.
+
+    Сбой записи здесь НЕ глушится в тишину: он логируется. Но и запрос человека из-за
+    него падать не должен — замер не имеет права ломать работу. Поэтому исключение
+    ловится и считается: потерянный замер = недооценённая нагрузка, о нём надо знать.
+    """
+    global _CAPACITY_FLUSH_LAST, _INFLIGHT_PEAK, _CEILING_HITS
+    now = time.time()
+    with _INFLIGHT_LOCK:
+        if (now - _CAPACITY_FLUSH_LAST) < _CAPACITY_FLUSH_MIN_SEC:
+            return
+        пик, упирания = _INFLIGHT_PEAK, _CEILING_HITS
+        if пик <= 0 and упирания <= 0:
+            return
+        _CAPACITY_FLUSH_LAST = now
+        _CEILING_HITS = 0          # упирания складываются в базе, поэтому здесь обнуляем
+        # Пик НЕ обнуляем: в базе берётся наибольший за сутки, а внутри процесса он
+        # должен остаться, иначе следующая запись занизит его до случайного значения.
+    try:
+        from backend.database import record_capacity
+        record_capacity(service="BACKEND_WEB", kind="web_requests",
+                        ceiling=_capacity_ceiling(), peak=пик, hits=упирания)
+    except Exception:
+        logging.warning("замер занятости не записался (пик=%s, упираний=%s)",
+                        пик, упирания, exc_info=True)
+
+
 def _runtime_capacity_info() -> dict:
     """С какой пропускной способностью РЕАЛЬНО работает этот процесс.
 
@@ -4287,7 +4365,9 @@ def _runtime_capacity_info() -> dict:
     except Exception:
         logging.warning("не смогли прочитать настройки пула базы", exc_info=True)
     итог = {"workers": воркеров, "threads": потоков,
-            "concurrent_requests": (воркеров * потоков) if (воркеров and потоков) else None}
+            "concurrent_requests": (воркеров * потоков) if (воркеров and потоков) else None,
+            "inflight_now": _INFLIGHT_NOW, "inflight_peak": _INFLIGHT_PEAK,
+            "ceiling_hits": _CEILING_HITS}
     if из_базы:
         итог.update(из_базы)
     return итог

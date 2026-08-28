@@ -526,13 +526,18 @@
 .deep-invite-title {
   font-size: 19px;
   font-weight: 800;
-  color: var(--dmps-text-title, #f1f5f9);
+  /* Белым НАПРЯМУЮ, без переменной темы. Замер на живом телефоне 28.08.2026:
+     через var(--dmps-text-title) заголовок вышел тёмно-серым на тёмной карточке и
+     не читался вовсе. Карточка здесь всегда тёмная — она своя, а не часть темы
+     экрана, — поэтому и цвет у неё свой, а не унаследованный. */
+  color: #ffffff;
   margin-bottom: 8px;
 }
 .deep-invite-note {
   font-size: 14.5px;
   line-height: 1.55;
-  color: var(--dmps-text-muted, #94a3b8);
+  /* По той же причине: приглушённый, но гарантированно светлый на тёмной карточке. */
+  color: #cbd5e1;
   margin-bottom: 16px;
 }
 .deep-invite-later {
@@ -542,7 +547,7 @@
   border: none;
   border-radius: 12px;
   background: transparent;
-  color: var(--dmps-text-muted, #94a3b8);
+  color: #94a3b8;
   font-size: 14.5px;
   cursor: pointer;
 }
