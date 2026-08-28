@@ -872,8 +872,29 @@ def merge_unit_into(cur, form_id: int, keep_id: int) -> None:
                 (keep_id, form_id, keep_id, keep_id))
     cur.execute("DELETE FROM bt_3_lex_links WHERE from_unit=%s OR to_unit=%s",
                 (form_id, form_id))
+    # ┌─ ПОЧИНЕНО 28.08.2026. СЛИЯНИЕ ПАДАЛО ЦЕЛИКОМ НА ПРОВЕРЕННЫХ ФРАЗАХ. ─────────┐
+    # │ Здесь стоял голый UPDATE без защиты от совпадения — единственные две таблицы │
+    # │ в этой функции без неё. У bt_3_phrase_check колонка unit_id это ПЕРВИЧНЫЙ    │
+    # │ КЛЮЧ, поэтому как только ночная проверка грамматики успевала посмотреть ОБЕ  │
+    # │ записи (а она смотрит все фразы подряд), слияние падало с duplicate key и    │
+    # │ откатывалось вместе со всей уборкой. Поймано на живом слиянии двойника       │
+    # │ «Ich schämemich für dich» → «ich schäme mich für dich»: обе были проверены.  │
+    # │                                                                             │
+    # │ Тот же урок функция уже проходила на связях 19.08.2026 — там защиту          │
+    # │ поставили, а на эти две таблицы не перенесли.                                │
+    # │                                                                             │
+    # │ Что делаем: строка проверки описывает КОНКРЕТНЫЙ текст. У настоящего слова   │
+    # │ свой текст и своя проверка — она вернее. Поэтому переносим только когда у    │
+    # │ настоящего проверки нет, а иначе строку двойника снимаем: она про написание, │
+    # │ которого больше не будет. Перемерить: слить две проверенные фразы.           │
+    # └─────────────────────────────────────────────────────────────────────────────┘
     for table in ("bt_3_phrase_check", "bt_3_phrase_review"):
-        cur.execute(f"UPDATE {table} SET unit_id=%s WHERE unit_id=%s", (keep_id, form_id))
+        cur.execute(
+            f"UPDATE {table} SET unit_id=%s WHERE unit_id=%s "
+            f"AND NOT EXISTS (SELECT 1 FROM {table} t WHERE t.unit_id=%s)",
+            (keep_id, form_id, keep_id),
+        )
+        cur.execute(f"DELETE FROM {table} WHERE unit_id=%s", (form_id,))
     cur.execute("DELETE FROM bt_3_lex_senses WHERE unit_id=%s", (form_id,))
     cur.execute("DELETE FROM bt_3_lex_units WHERE id=%s", (form_id,))
 
