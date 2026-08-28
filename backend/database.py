@@ -15919,36 +15919,56 @@ def ensure_web_capacity_schema() -> None:
                     ceiling    INTEGER NOT NULL,
                     peak       INTEGER NOT NULL DEFAULT 0,
                     hits       BIGINT  NOT NULL DEFAULT 0,
+                    -- Всего запросов за сутки. Без него «упирались 19 раз» ничего не
+                    -- значит: 19 из 5000 — это 0.4% и норма, 19 из 100 — беда.
+                    total      BIGINT  NOT NULL DEFAULT 0,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (day, service, kind)
                 );
+            """)
+            # Таблица уже могла быть создана вчерашней версией, а CREATE TABLE IF NOT
+            # EXISTS в неё колонку не добавит. Поймано 28.08.2026 в тот же день, когда
+            # колонка понадобилась: без этой строки замер писал бы в несуществующее поле.
+            cursor.execute("""
+                ALTER TABLE bt_3_capacity_daily
+                ADD COLUMN IF NOT EXISTS total BIGINT NOT NULL DEFAULT 0;
             """)
         conn.commit()
     _WEB_CAPACITY_SCHEMA_DONE = True
 
 
 def record_capacity(*, service: str, kind: str, ceiling: int, peak: int,
-                    hits: int = 0, day=None) -> None:
+                    hits: int = 0, total: int = 0, day=None) -> None:
     """Запомнить дневной пик занятости и число упираний в потолок.
 
     Пик берётся НАИБОЛЬШИЙ за сутки (GREATEST), упирания СКЛАДЫВАЮТСЯ: процессов может
     быть несколько, и каждый досылает своё. Потолок пишем последним известным — он
     меняется только когда его двигают руками.
     """
+    # ⛔ ЛОКАЛЬНЫЙ ПРОГОН В БОЕВУЮ ВЕДОМОСТЬ НЕ ПИШЕТ.
+    # 28.08.2026 мой же скрипт с ноутбука записал сюда строку с сервисом «-»: имя
+    # сервиса берётся из RAILWAY_SERVICE_NAME, а вне Railway её просто нет. В этом
+    # проекте на таком уже горели — прогоны кода по боевой базе оставляли призраков в
+    # списке пользователей. Замер обязан отражать ПРОД, иначе он не замер.
+    имя = str(service or "").strip()
+    if not имя or имя == "-":
+        logging.debug("замер занятости не записан: сервис не назван (локальный прогон?)")
+        return
     ensure_web_capacity_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO bt_3_capacity_daily (day, service, kind, ceiling, peak, hits)
-                VALUES (COALESCE(%s, CURRENT_DATE), %s, %s, %s, %s, %s)
+                INSERT INTO bt_3_capacity_daily (day, service, kind, ceiling, peak, hits, total)
+                VALUES (COALESCE(%s, CURRENT_DATE), %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (day, service, kind) DO UPDATE SET
                     ceiling    = EXCLUDED.ceiling,
                     peak       = GREATEST(bt_3_capacity_daily.peak, EXCLUDED.peak),
                     hits       = bt_3_capacity_daily.hits + EXCLUDED.hits,
+                    total      = bt_3_capacity_daily.total + EXCLUDED.total,
                     updated_at = NOW();
                 """,
-                (day, str(service), str(kind), int(ceiling), int(peak), int(hits)),
+                (day, имя, str(kind), int(ceiling), int(peak), int(hits), int(total)),
             )
         conn.commit()
 
@@ -15959,14 +15979,14 @@ def get_capacity_days(days: int = 7) -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT day, service, kind, ceiling, peak, hits "
+                "SELECT day, service, kind, ceiling, peak, hits, total "
                 "FROM bt_3_capacity_daily "
                 "WHERE day >= CURRENT_DATE - (%s * INTERVAL '1 day') "
                 "ORDER BY day DESC, kind, service;",
                 (max(1, int(days)),),
             )
             return [{"day": r[0], "service": r[1], "kind": r[2], "ceiling": int(r[3]),
-                     "peak": int(r[4]), "hits": int(r[5])}
+                     "peak": int(r[4]), "hits": int(r[5]), "total": int(r[6])}
                     for r in (cursor.fetchall() or [])]
 
 
