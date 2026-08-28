@@ -345,6 +345,10 @@ def rejudge_open_phrase_reviews(limit: int = 60) -> dict:
 
 # ── ТРЕТИЙ СУДЬЯ ЗОВЁТСЯ НОЧЬЮ, А НЕ КНОПКОЙ ────────────────────────────────────
 ARBITER_CAP = int(os.getenv("PHRASE_ARBITER_CAP", "60") or "60")
+# Потолок применения вердиктов. Каждое применение пересобирает разбор — то есть идёт
+# к модели, — поэтому порция ограничена так же, как у третьего судьи. Накопленные 64
+# разойдутся за одну ночь, дальше поток — единицы в сутки.
+APPLY_CAP = int(os.getenv("PHRASE_APPLY_CAP", "60") or "60")
 
 
 def _judge_proposals(judges: list) -> list[str]:
@@ -484,6 +488,126 @@ def settle_open_disputes(limit: int | None = None) -> dict:
         for ok in pool.map(settle_dispute, ids):
             out["решено" if ok else "не вышло"] += 1
     logging.info("третий судья за ночь: %s", out)
+    return out
+
+
+def settled_verdict_to_apply(judges: list, arbiter: dict | None) -> tuple[str, str]:
+    """Что из вердикта третьего судьи ночь имеет право применить САМА.
+
+    ┌─ ЗАВЕДЕНО 29.08.2026 ПО РЕШЕНИЮ ВЛАДЕЛЬЦА. ──────────────────────────────────┐
+    │ Владелец 28.08.2026, глядя на экран: «а если третий судья рассудил спор, то   │
+    │ зачем тут я? Давай принимать то, что судья оставил».                          │
+    │ Он прав: третьего судью научили только ПОКАЗЫВАТЬ вердикт, а половину         │
+    │ «применить» не написал никто. Замер по живой базе 28.08.2026 по 104 открытым  │
+    │ вопросам про немецкий — вердикт есть у ВСЕХ 104, и 64 из них выбирают правку  │
+    │ судьи, прошедшую нашу проверку. То есть три четверти очереди владельца висели  │
+    │ на нём без причины.                                                           │
+    └──────────────────────────────────────────────────────────────────────────────┘
+
+    ПЛАНКА ЗДЕСЬ НЕ НИЖЕ, ЧЕМ У МОЛЧАЛИВОЙ ПРАВКИ (`_both_agree`), а по одному
+    признаку выше. Там: двое судей сошлись дословно + обе правки прошли проверку.
+    Здесь: правку предложил судья + НАША независимая проверка её пропустила + третий
+    судья, видевший обе стороны спора, выбрал именно её. Три сигнала против двух.
+
+    ⛔ БЕРЁМ ТОЛЬКО `corrected` — ПРАВКУ ТОГО, ЧТО БЫЛО.
+    Поле `proposal` — это ДОСТРОЙКА: судья дописывает подлежащее, местоимение,
+    сказуемое, и словарная запись превращается в готовое предложение («Leiche
+    verwesen» → «Die Leiche verwest»). Это решение о СМЫСЛЕ, и его принимает владелец
+    — правило его же, от 06.08.2026, оно записано в `_both_agree` и здесь не
+    отменяется. Замер 28.08.2026: таких вердиктов 22 из 104, они по-прежнему его.
+
+    ⛔ СВОЙ ТЕКСТ ТРЕТЬЕГО СУДЬИ ТОЖЕ НЕ БЕРЁМ, И ВОТ ПОЧЕМУ.
+    У правки судьи есть подпись самого судьи, чем она является: `corrected` (правка)
+    или `proposal` (достройка). У текста, который третий судья написал сам, такой
+    подписи НЕТ — он просто текст. Разбор всех 14 таких вердиктов на живой базе
+    29.08.2026: семь из них перестраивают запись ровно так же, как достройка —
+    «ganz vorbei sein der Gefahr aber nicht» → «Es ist ganz vorbei, aber die Gefahr
+    besteht noch.», «Die Karriere von Null an aufgebaut» → «Ich baue die Karriere
+    von Null an auf.». Отличить их от настоящих правок можно только счётом слов, а
+    счёт слов — это догадка: «Gesamtsumme sich belaufen auf» → «Die Gesamtsumme
+    beläuft sich auf» тоже длиннее на слово и при этом чистая правка артикля.
+    Гадать нельзя, поэтому эти 14 остаются владельцу до его отдельного решения.
+
+    Возвращает (текст, почему) — или ("", причина отказа).
+    """
+    arbiter = arbiter if isinstance(arbiter, dict) else None
+    if not arbiter:
+        return "", "третий судья не высказался"
+    if str(arbiter.get("better") or "").strip():
+        return "", "свой текст третьего судьи — решает владелец"
+    try:
+        winner = int(arbiter.get("winner") or 0)
+    except (TypeError, ValueError):
+        winner = 0
+    proposals = _judge_proposals(judges or [])
+    if not (1 <= winner <= len(proposals)):
+        return "", "вердикт есть, а выбор не читается"
+    chosen = proposals[winner - 1]
+    for judge in (judges or []):
+        if not isinstance(judge, dict):
+            continue
+        if str(judge.get("corrected") or "").strip() == chosen:
+            if fix_passed_check(judge, "corrected") is not True:
+                return "", "наша проверка эту правку не пропустила"
+            return chosen, str(arbiter.get("why") or "").strip()
+        if str(judge.get("proposal") or "").strip() == chosen:
+            return "", "достройка — дописаны слова, решает владелец"
+    return "", "выбранный текст не нашёлся у судей"
+
+
+def apply_settled_disputes(limit: int | None = None) -> dict:
+    """Применить вердикты третьего судьи, которые ночь имеет право применить сама.
+
+    Правка идёт ТОЙ ЖЕ дверью, что и решение владельца кнопкой
+    (`database.apply_phrase_review_decision`): она переименует запись, разнесёт текст
+    по всем местам, снимет метку проверки и соберёт разбор заново. Своя копия этой
+    логики означала бы третий путь правки фразы, который завтра разойдётся с двумя
+    другими.
+
+    Отчёт возвращается СТРОКАМИ «было → стало»: владелец должен видеть, что ночь
+    сделала за него, а не узнавать об этом по исчезнувшей очереди.
+    """
+    from backend.database import (
+        apply_phrase_review_decision, get_db_connection_context,
+    )
+
+    cap = int(limit if limit is not None else APPLY_CAP)
+    out = {"взято": 0, "применено": 0, "не вышло": 0, "оставлено владельцу": 0,
+           "строки": [], "причины": {}}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, btrim(text), judges, arbiter
+                     FROM bt_3_phrase_review
+                    WHERE status = 'open' AND kind = 'grammar' AND arbiter IS NOT NULL
+                    ORDER BY id LIMIT %s;""",
+                (cap,))
+            rows = cur.fetchall() or []
+    out["взято"] = len(rows)
+    for review_id, text, judges, arbiter in rows:
+        judges = judges if isinstance(judges, list) else []
+        chosen, why = settled_verdict_to_apply(judges, arbiter)
+        if not chosen:
+            out["оставлено владельцу"] += 1
+            out["причины"][why] = out["причины"].get(why, 0) + 1
+            continue
+        try:
+            итог = apply_phrase_review_decision(int(review_id), "accept", "", 0, "",
+                                                chosen_text=chosen)
+        except Exception as exc:                                   # noqa: BLE001
+            logging.warning("вердикт третьего судьи по #%s не применён: %s", review_id, exc)
+            out["не вышло"] += 1
+            continue
+        # Пустой текст означает, что применить было нечего (правка совпала с самой
+        # фразой либо такая запись уже есть). Это не «применено» — не считаем.
+        if not str(итог.get("text") or ""):
+            out["не вышло"] += 1
+            continue
+        out["применено"] += 1
+        out["строки"].append({"id": int(review_id), "было": str(text),
+                              "стало": str(итог.get("text")), "почему": why})
+    logging.info("вердикты третьего судьи за ночь: применено %s, оставлено владельцу %s",
+                 out["применено"], out["оставлено владельцу"])
     return out
 
 
@@ -649,7 +773,21 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
             if not dry_run:
                 mark_phrase_checked(row["unit_id"], row["text"], "ok")
 
-    if not dry_run:
+    # ⚠ ХВОСТ ДЕЛАЕТ НАСТОЯЩУЮ РАБОТУ, И ЭТО ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ЕЁ МОЖНО ЗАПРЕТИТЬ.
+    #
+    # ┌─ ПОЧИНЕНО 29.08.2026. ПРОГОН ТЕСТОВ ПРИМЕНИЛ 64 ПРАВКИ В ЖИВОЙ БАЗЕ. ────────┐
+    # │ Ниже закрываются бесспорные вопросы, зовётся третий судья (это деньги) и      │
+    # │ применяются решённые споры. Тест `test_sentences_get_no_breakdown` зовёт эту  │
+    # │ функцию с подменёнными судьями, а хвост не подменяет — и хвост отработал по   │
+    # │ живой базе: 28.08.2026, 22:20 UTC, 64 записи. Итог совпал с тем, что владелец │
+    # │ утвердил, но сделал его прогон тестов, а не ночь. Тот же класс, что и 1010    │
+    # │ фантомных строк расхода от локального pytest (см. backend/tests/conftest.py). │
+    # │ Переменную ставит conftest; в проде её нет, и ночь работает как работала.     │
+    # └──────────────────────────────────────────────────────────────────────────────┘
+    побочное_запрещено = str(os.getenv("SKIP_NIGHT_SIDE_EFFECTS") or "").strip() == "1"
+    if побочное_запрещено:
+        report["side_effects_skipped"] = True
+    if not dry_run and not побочное_запрещено:
         # Что не вопрос — до владельца не доходит.
         try:
             from backend.database import close_all_ok_phrase_reviews
@@ -662,6 +800,13 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
             report["settled"] = settle_open_disputes()
         except Exception as exc:
             logging.warning("третий судья за ночь не отработал: %s", exc)
+        # …а разрешённый спор — это уже ОТВЕТ, а не вопрос. Держать его в очереди
+        # владельца значит спрашивать о том, на что ответ уже получен и оплачен.
+        # Решение владельца 28.08.2026: «если третий судья рассудил — принимаем».
+        try:
+            report["applied"] = apply_settled_disputes()
+        except Exception as exc:
+            logging.warning("вердикты третьего судьи не применились: %s", exc)
 
     report["left"] = count_phrases_left_for_grammar_check()
     report["open_reviews"] = count_open_phrase_reviews()
