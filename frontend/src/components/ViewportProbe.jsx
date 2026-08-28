@@ -5,9 +5,12 @@
 // visualViewport, и она промахнулась: карточка уехала в другую сторону. Значит, числам
 // нельзя верить «по документации» — их надо УВИДЕТЬ на этом телефоне.
 //
-// Строка живая: обновляется на каждое событие вьюпорта и раз в 250 мс, чтобы её можно
-// было снять на видео с открытой клавиатурой. Показывается ТОЛЬКО владельцу (признак
-// админа из словаря), обычный пользователь её не видит.
+// Строка живая, НО снять её с открытой клавиатурой нельзя: карточку как раз и уносит за
+// экран вместе с ней (видео 28.08.2026 — на экране остаётся только нижний край карточки).
+// Поэтому прибор ВЕДЁТ ЗАПИСЬ: пока поле в фокусе, он снимает показания 4 раза в секунду
+// и складывает их в журнал, а когда клавиатура закрылась — печатает журнал прямо в
+// карточке. Достаточно ткнуть в поле, закрыть клавиатуру и прислать один скриншот.
+// Показывается ТОЛЬКО владельцу (признак админа из словаря).
 //
 // Что означают поля:
 //   ih  — window.innerHeight, высота РАЗМЕТОЧНОГО вьюпорта (полный экран)
@@ -55,10 +58,32 @@ function readNumbers() {
 
 export default function ViewportProbe() {
   const [line, setLine] = useState(() => readNumbers());
+  const [log, setLog] = useState([]);
+  const [focused, setFocused] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
-    const update = () => setLine(readNumbers());
+    let sinceFocus = 0;
+    const fieldFocused = () => {
+      const el = document.activeElement;
+      return !!el && /^(input|textarea)$/i.test(el.tagName || '');
+    };
+    const update = () => {
+      const next = readNumbers();
+      setLine(next);
+      const isFocused = fieldFocused();
+      setFocused(isFocused);
+      // Пишем журнал, пока поле в фокусе, и ещё пару тактов после — чтобы поймать, как
+      // числа возвращаются обратно. Повторы подряд не пишем: журнал должен читаться.
+      if (isFocused) sinceFocus = 0; else sinceFocus += 1;
+      if (isFocused || sinceFocus <= 2) {
+        setLog((prev) => {
+          const mark = `${isFocused ? 'KB' : '..'} ${next}`;
+          if (prev.length && prev[prev.length - 1] === mark) return prev;
+          return [...prev, mark].slice(-10);
+        });
+      }
+    };
     update();
     const vv = window.visualViewport || null;
     vv?.addEventListener('resize', update);
@@ -67,8 +92,6 @@ export default function ViewportProbe() {
     window.addEventListener('scroll', update, { passive: true });
     document.addEventListener('focusin', update);
     document.addEventListener('focusout', update);
-    // Клавиатура выезжает анимацией: событий может не хватить, чтобы поймать конечные
-    // числа. Тик раз в 250 мс делает строку пригодной для съёмки на видео.
     const tick = window.setInterval(update, 250);
     return () => {
       window.clearInterval(tick);
@@ -81,22 +104,37 @@ export default function ViewportProbe() {
     };
   }, []);
 
+  const box = {
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    fontSize: '9px',
+    lineHeight: 1.35,
+    color: '#0f172a',
+    background: '#fde68a',
+    border: '1px solid #f59e0b',
+    borderRadius: '6px',
+    padding: '3px 5px',
+    margin: '6px 0',
+    wordBreak: 'break-all',
+  };
+
   return (
-    <div
-      style={{
-        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-        fontSize: '9px',
-        lineHeight: 1.35,
-        color: '#0f172a',
-        background: '#fde68a',
-        border: '1px solid #f59e0b',
-        borderRadius: '6px',
-        padding: '3px 5px',
-        margin: '6px 0',
-        wordBreak: 'break-all',
-      }}
-    >
-      {line}
+    <div style={box}>
+      <div>{line}</div>
+      {!focused && log.length > 0 && (
+        <>
+          <div style={{ marginTop: 3, fontWeight: 700 }}>журнал клавиатуры ({log.length}):</div>
+          {log.map((entry, index) => (
+            <div key={`probe-log-${index}`} style={{ opacity: 0.95 }}>{index + 1}. {entry}</div>
+          ))}
+          <button
+            type="button"
+            onClick={() => setLog([])}
+            style={{ marginTop: 3, fontSize: '9px', padding: '2px 6px' }}
+          >
+            очистить журнал
+          </button>
+        </>
+      )}
     </div>
   );
 }
