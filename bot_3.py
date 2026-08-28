@@ -17801,9 +17801,15 @@ async def admin_dver_command(update: Update, context: CallbackContext) -> None:
     вслепую — не видя ни очереди, ни того, что именно увидит человек.
 
       /dver              — состояние двери + ТЕ ЖЕ кнопки, что приходят утром
-      /dver cap <N>      — поставить потолок (0 = снять потолок, дверь открыта всем)
+      /dver zakryt       — закрыть дверь ПРЯМО СЕЙЧАС (потолок = сколько людей внутри)
+      /dver otkryt       — снова открыть всем
       /dver ochered      — кто сейчас ждёт и с какими номерами
-      /dver demo         — показать ОБА текста, которые увидит человек, никого не трогая
+      /dver demo         — показать все три текста, которые увидит человек, никого не трогая
+      /dver zabud <id>   — сделать аккаунт «новым»: убрать пропуск и место в очереди
+      /dver cap <N>      — потолок числом, если нужно вручную
+
+    «zakryt» и «otkryt» существуют, чтобы владельцу не приходилось считать в уме,
+    сколько сейчас людей внутри: он и так один раз ошибся бы, а число меняется само.
     """
     user = update.effective_user
     if not user or not _is_admin_user(user.id):
@@ -17812,7 +17818,51 @@ async def admin_dver_command(update: Update, context: CallbackContext) -> None:
     команда = аргументы[0] if аргументы else ""
     from backend.database import (
         access_gate_snapshot, set_access_cap, count_allowed_users, list_access_waitlist,
+        forget_user_for_retest,
     )
+
+    if команда in ("zakryt", "закрыть"):
+        внутри = await asyncio.to_thread(count_allowed_users)
+        await asyncio.to_thread(set_access_cap, внутри, admin_id=int(user.id))
+        await update.message.reply_text(
+            f"🚪 <b>Дверь закрыта.</b> Внутри {внутри} человек — ровно столько, сколько было.\n"
+            "Следующий новый человек встанет в очередь и увидит свой номер.\n\n"
+            "Посмотреть ждущих: <code>/dver ochered</code>\n"
+            "Впустить: <code>/dver</code> и кнопка\n"
+            "Вернуть как было: <code>/dver otkryt</code>",
+            parse_mode="HTML")
+        return
+
+    if команда in ("otkryt", "открыть"):
+        await asyncio.to_thread(set_access_cap, 0, admin_id=int(user.id))
+        внутри = await asyncio.to_thread(count_allowed_users)
+        await update.message.reply_text(
+            f"🚪 <b>Дверь открыта всем.</b> Внутри {внутри}.\n"
+            "Потолка нет — новые входят сразу, как было до этого.",
+            parse_mode="HTML")
+        return
+
+    if команда in ("zabud", "забудь"):
+        if len(аргументы) < 2 or not аргументы[1].isdigit():
+            await update.message.reply_text(
+                "Укажите id: <code>/dver zabud 8546091375</code>.\n\n"
+                "Аккаунт станет «новым»: пропуск и место в очереди уберутся, и он сможет "
+                "войти заново. <b>Слова, карточки, прогресс и оплата останутся на месте</b> — "
+                "это не удаление человека, для того есть /deny.", parse_mode="HTML")
+            return
+        итог = await asyncio.to_thread(forget_user_for_retest, int(аргументы[1]))
+        было = []
+        if итог["был_впущен"]:
+            было.append("убран из впущенных")
+        if итог["стоял_в_очереди"]:
+            было.append("убран из очереди")
+        внутри = await asyncio.to_thread(count_allowed_users)
+        await update.message.reply_text(
+            f"🧹 <code>{итог['user_id']}</code>: " + (", ".join(было) if было else "его и не было нигде") +
+            f".\nВнутри теперь: {внутри}.\n\n"
+            "Данные аккаунта не тронуты. Он войдёт как новый человек.",
+            parse_mode="HTML")
+        return
 
     if команда == "cap":
         if len(аргументы) < 2 or not аргументы[1].lstrip("-").isdigit():
@@ -17872,11 +17922,13 @@ async def admin_dver_command(update: Update, context: CallbackContext) -> None:
     if not состояние.get("cap_enabled"):
         await update.message.reply_text(
             f"🚪 <b>Потолка нет — дверь открыта всем.</b>\nВнутри: {состояние.get('allowed', 0)}.\n\n"
-            "Чтобы попробовать очередь, поставьте потолок равным числу впущенных:\n"
-            f"<code>/dver cap {состояние.get('allowed', 0)}</code>\n"
+            "Чтобы попробовать очередь: <code>/dver zakryt</code> — дверь закроется на "
+            "текущем числе людей, считать ничего не нужно.\n"
             "Тогда следующий новый человек встанет в очередь, а вы увидите его в "
             "<code>/dver ochered</code> и впустите кнопкой.\n\n"
-            "Посмотреть тексты, никого не трогая: <code>/dver demo</code>",
+            "Посмотреть тексты, никого не трогая: <code>/dver demo</code>\n"
+            "Проверить со своего второго аккаунта: <code>/dver zabud &lt;его id&gt;</code> — "
+            "он станет новым, данные останутся.",
             parse_mode="HTML")
         return
     текст = "🚪 <b>Дверь</b>" + _format_access_gate_text(состояние)
