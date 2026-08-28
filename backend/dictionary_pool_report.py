@@ -209,7 +209,16 @@ def build_dictionary_pool_report_text(stats: dict[str, Any]) -> str:
                 f"⚠️ Модель не собрала разбор: <b>{incomplete}</b> раз за неделю — "
                 "это задача на промпт, человек в эти разы остался без ответа"
             )
-        if not not_found and not incomplete and not gaps:
+        # Разбор собран и показан, но осесть ему было некуда — значит за него заплатят
+        # ещё раз. Снаружи это не видно ничем, поэтому строка обязательна.
+        no_home = int(misses.get("no_home") or 0)
+        if no_home:
+            lines.append(
+                f"Разборы без дома: <b>{no_home}</b> за неделю — слово разобрали, но "
+                "часть речи не названа или источники о ней спорят, поэтому разбор не "
+                "осел в словаре и соберётся заново"
+            )
+        if not not_found and not incomplete and not gaps and not no_home:
             lines.append("Ни одного промаха за неделю")
     elif diff_stats is None and "word_diff" in stats:
         lines += ["", "⚠️ Состояние вкладки «Отличия» собрать не удалось — смотри лог."]

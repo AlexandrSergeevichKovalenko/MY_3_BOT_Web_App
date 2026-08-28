@@ -170,3 +170,85 @@ class TestTheServePointIsTheLastWord:
         })
         assert out.get("article") == "die"
         assert out.get("part_of_speech") == "noun"
+
+
+class TestGermanSideComesFromTheCardNotFromTheLanguageSetting:
+    """Немецкую сторону берём из карточки, а не из настройки языковой пары.
+
+    НАЙДЕНО 28.08.2026. Правило «многословное — не существительное» верное, но опору
+    под ним перенесли из прежней узкой версии не глядя: немецкую сторону выбирали по
+    языковой паре пользователя. У пары «русский → немецкий» — а это большинство —
+    немецкой стороной объявлялся `target_text`, где лежит РУССКИЙ перевод. «рыночная
+    цена» это два слова, поэтому обычное существительное «der Marktpreis» теряло
+    артикль и переклеивалось в «фразу».
+
+    Замер 27.08.2026 на одном слове, ответ модели побуквенно одинаковый:
+        пара de→ru:  article='der'  part_of_speech='noun'
+        пара ru→de:  article=''     part_of_speech='phrase'   ← дефект
+
+    Почему это жило незамеченным: во всех тестах этого файла (и трёх соседних) была
+    прописана ТОЛЬКО пара de→ru — то есть ровно тот случай, где ошибки нет. Поэтому
+    здесь пара развёрнута нарочно.
+    """
+
+    @staticmethod
+    def _run_ru_de(payload):
+        # Языковая пара человека: учит немецкий, объяснения по-русски.
+        return _apply_german_headword_normalization(
+            payload=payload, source_lang="ru", target_lang="de")
+
+    def test_a_noun_with_a_multiword_translation_keeps_its_article(self):
+        result = self._run_ru_de({
+            "entry_kind": "word",
+            "part_of_speech": "noun",
+            "article": "der",
+            "word_de": "der Marktpreis",
+            "source_text": "der Marktpreis",
+            "target_text": "рыночная цена",
+        })
+        assert result["part_of_speech"] == "noun", (
+            "существительное объявлено фразой из-за длины РУССКОГО перевода"
+        )
+        assert result["article"] == "der", "у существительного отобрали артикль"
+        assert result["target_text"] == "рыночная цена", "русский перевод переписан"
+
+    def test_the_owners_phrase_is_still_caught_on_the_other_pair(self):
+        """Правка не ослабляет правило: настоящая фраза теряет артикль на любой паре."""
+        result = self._run_ru_de({
+            "entry_kind": "phrase",
+            "part_of_speech": "noun",
+            "article": "der",
+            "word_de": "ziehender, dumpfer Schmerz in der Seite",
+            "source_text": "ziehender, dumpfer Schmerz in der Seite",
+            "target_text": "ноющая, тянущая боль в боку",
+        })
+        assert result["article"] == ""
+        assert result["part_of_speech"] == "phrase"
+
+    def test_the_german_text_is_never_written_into_the_translation_field(self):
+        """Исправленный заголовок уходит в немецкое поле, а не в поле перевода."""
+        result = self._run_ru_de({
+            "entry_kind": "word",
+            "part_of_speech": "noun",
+            "article": "der",
+            "word_de": "der Im Flur brennt das Licht",
+            "source_text": "der Im Flur brennt das Licht",
+            "target_text": "в коридоре горит свет",
+        })
+        assert result["word_de"] == "Im Flur brennt das Licht"
+        assert result["source_text"] == "Im Flur brennt das Licht"
+        assert result["target_text"] == "в коридоре горит свет", (
+            "немецкий заголовок уехал в поле русского перевода"
+        )
+
+    def test_a_bare_noun_keeps_its_article_on_the_learners_pair(self):
+        result = self._run_ru_de({
+            "entry_kind": "word",
+            "part_of_speech": "noun",
+            "article": "die",
+            "word_de": "Brücke",
+            "source_text": "die Brücke",
+            "target_text": "мост, переправа через реку",
+        })
+        assert result["article"] == "die"
+        assert result["part_of_speech"] == "noun"

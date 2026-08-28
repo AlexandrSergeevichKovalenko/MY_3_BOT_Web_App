@@ -362,6 +362,182 @@ def test_thin_entry_is_enriched_before_the_comparison(monkeypatch):
     assert article["constructions"][0]["pattern"] == "jdn. abschieben + Akkusativ"
 
 
+def _stub_unit_row(monkeypatch, row):
+    """Чем отвечает база на вопрос «чьё это слово». row = (lemma, lemma_key, pos)."""
+    class _Cur:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a, **k): pass
+        def fetchone(self): return row
+
+    class _Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def cursor(self): return _Cur()
+
+    monkeypatch.setattr(backend_server, "get_db_connection_context", lambda *a, **k: _Conn())
+
+
+def _homeless_word_setup(monkeypatch, *, card_pos="verb", card_head="entscheiden",
+                         entry_pos="verb"):
+    """Слово из базового словаря: статья есть, СВОЕЙ единицы нет (unit_id отсутствует)."""
+    import backend.dictionary_entries as de
+    import backend.database as db
+    monkeypatch.setattr(de, "entries_for_query", lambda word, source_lang="", target_lang="": [
+        {"headword": word, "pos": entry_pos, "translations": ["решать"], "examples": []}
+    ])
+    monkeypatch.setattr(db, "get_lex_unit_card", lambda unit_id: None)
+    monkeypatch.setattr(backend_server, "_word_diff_usage", lambda *a, **k: {})
+    monkeypatch.setattr(
+        backend_server, "_word_diff_full_lookup",
+        lambda word, studied, explain: {
+            "word_de": card_head, "part_of_speech": card_pos,
+            "translations": [{"value": "решать", "context": "принимать решение"}],
+            "usage_examples": [{"source": "Er entscheidet selbst.", "target": "Он решает сам."}],
+            "government_patterns": [{"pattern": "über etw. entscheiden", "case": "Akkusativ",
+                                     "example_source": "", "example_target": ""}],
+            "common_collocations": ["über den Antrag entscheiden"],
+        },
+    )
+
+
+def test_word_without_our_unit_gets_a_home_instead_of_being_rebuilt_forever(monkeypatch):
+    """Разбор слова без своей единицы обязан осесть в словаре, а не собираться заново.
+
+    Владелец 27.08.2026: «почему уже имеющийся так долго?» Замер живой базы на
+    «entscheiden» — своей единицы нет, статья пришла из базового словаря, поэтому
+    разбор собирался ЗАНОВО при каждом обращении: 17,7 → 23,0 → 15,8 c три прогона
+    подряд. Результат уходил в общий пул статей, а сравнение читает слой единиц —
+    работа ложилась туда, куда этот путь не смотрит.
+    """
+    created, saved, adopted = [], [], []
+    _homeless_word_setup(monkeypatch)
+    # Заведённая единица — про ЭТО слово: лемма совпадает, части речи ещё нет.
+    _stub_unit_row(monkeypatch, ("entscheiden", "entscheiden", ""))
+
+    import backend.lex_units as lex
+    monkeypatch.setattr(lex, "ensure_unit",
+                        lambda text, lang: created.append((text, lang)) or 7001)
+    monkeypatch.setattr(lex, "adopt_pos_gender_from_card",
+                        lambda unit_id, card, lemma="": adopted.append(unit_id) or True)
+    monkeypatch.setattr(lex, "save_unit_card_if_richer",
+                        lambda unit_id, card, **k: saved.append(unit_id) or True)
+
+    article = backend_server._word_diff_lookup_sources("entscheiden", "de", "ru")
+
+    assert created == [("entscheiden", "de")], "слову не завели дом — разбор снова выброшен"
+    assert adopted == [7001], (
+        "часть речи не проставлена: единица без неё не сольётся со статьёй базового "
+        "словаря, и человек получит лишний вопрос «что вы имели в виду»"
+    )
+    assert saved == [7001], "разбор не лёг на слово — за него заплатят ещё раз"
+    assert [x["meaning"] for x in article["senses"]] == ["решать"]
+
+
+def test_no_home_without_a_part_of_speech_and_the_case_is_counted(monkeypatch):
+    """Разбор не назвал часть речи → дом НЕ заводим и случай считаем.
+
+    Единицу опознают написание, часть речи и род. Завести её «неизвестно чем» значит
+    получить две статьи на одно слово и вопрос человеку с двумя одинаковыми строками —
+    ровно то, что владелец видел 26.08.2026 на «gehen · laufen». Догадываться о части
+    речи нельзя, поэтому случай уходит в счётчик, а не в тишину.
+    """
+    created, counted = [], []
+    _homeless_word_setup(monkeypatch, card_pos="")
+
+    import backend.lex_units as lex
+    import backend.database as db
+    monkeypatch.setattr(lex, "ensure_unit", lambda text, lang: created.append(text) or 7002)
+    monkeypatch.setattr(db, "record_word_diff_miss",
+                        lambda uid, words, reason, detail="": counted.append(reason))
+
+    backend_server._word_diff_lookup_sources("entscheiden", "de", "ru")
+
+    assert created == [], "единица заведена без части речи — вернулись к двум статьям"
+    assert counted == ["no_home"], "бездомный разбор не посчитан — молчание неотличимо от нормы"
+
+
+def test_no_home_when_the_sources_disagree_about_the_part_of_speech(monkeypatch):
+    """Разбор говорит «существительное», статья — «глагол». Спор источников не решаем сами."""
+    created, counted = [], []
+    _homeless_word_setup(monkeypatch, card_pos="noun", entry_pos="verb")
+
+    import backend.lex_units as lex
+    import backend.database as db
+    monkeypatch.setattr(lex, "ensure_unit", lambda text, lang: created.append(text) or 7003)
+    monkeypatch.setattr(db, "record_word_diff_miss",
+                        lambda uid, words, reason, detail="": counted.append(reason))
+
+    backend_server._word_diff_lookup_sources("entscheiden", "de", "ru")
+
+    assert created == [], "завели дом по спорной части речи — это выбор за источник"
+    assert counted == ["no_home"]
+
+
+def test_no_home_when_the_breakdown_is_titled_with_another_word(monkeypatch):
+    """Разбор озаглавлен другим написанием → дом не заводим: это не то слово."""
+    created, counted = [], []
+    _homeless_word_setup(monkeypatch, card_head="Entscheidung")
+
+    import backend.lex_units as lex
+    import backend.database as db
+    monkeypatch.setattr(lex, "ensure_unit", lambda text, lang: created.append(text) or 7004)
+    monkeypatch.setattr(db, "record_word_diff_miss",
+                        lambda uid, words, reason, detail="": counted.append(reason))
+
+    backend_server._word_diff_lookup_sources("entscheiden", "de", "ru")
+
+    assert created == [], "разбор соседнего слова лёг бы на чужое написание"
+    assert counted == ["no_home"]
+
+
+def test_breakdown_never_lands_on_another_word_behind_the_same_spelling(monkeypatch):
+    """Указатель форм ведёт на ЧУЖОЕ слово → разбор туда не кладём.
+
+    ПРОВЕРЕНО 27.08.2026 на живой базе. «entscheiden» — это ещё и дательный падеж
+    множественного числа существительного «der Entscheid», и указатель форм законно
+    ведёт написание на него (единица 26384, match_kind='inflected'). `ensure_unit`
+    ищет ПО УКАЗАТЕЛЮ, а не по лемме, поэтому без проверки разбор глагола лёг бы на
+    существительное. В том замере запись не состоялась лишь случайно — у соседнего
+    слова разбор оказался полнее, и страж «только если полнее» отказал.
+    """
+    saved, adopted, counted = [], [], []
+    _homeless_word_setup(monkeypatch)
+
+    import backend.lex_units as lex
+    import backend.database as db
+    # Указатель форм возвращает чужую единицу: лемма «Entscheid», часть речи noun.
+    monkeypatch.setattr(lex, "ensure_unit", lambda text, lang: 26384)
+    monkeypatch.setattr(lex, "adopt_pos_gender_from_card",
+                        lambda unit_id, card, lemma="": adopted.append(unit_id) or True)
+    monkeypatch.setattr(lex, "save_unit_card_if_richer",
+                        lambda unit_id, card, **k: saved.append(unit_id) or True)
+    monkeypatch.setattr(db, "record_word_diff_miss",
+                        lambda uid, words, reason, detail="": counted.append(reason))
+    _stub_unit_row(monkeypatch, ("Entscheid", "entscheid", "noun"))
+
+    backend_server._word_diff_lookup_sources("entscheiden", "de", "ru")
+
+    assert saved == [], "разбор глагола лёг на СУЩЕСТВИТЕЛЬНОЕ — это порча чужого слова"
+    assert adopted == [], "чужому слову переписали часть речи"
+    assert counted == ["no_home"], "случай не посчитан — молчание неотличимо от нормы"
+
+
+def test_homeless_breakdowns_reach_the_owner_as_a_number():
+    """Счётчик без строки в отчёте — это тишина. Владелец обязан увидеть число сам."""
+    from backend.dictionary_pool_report import build_dictionary_pool_report_text
+    text = build_dictionary_pool_report_text({
+        "word_diff": {"pairs_total": 5, "pairs_new": 1, "opens_total": 9,
+                      "misses": {"no_home": 12}, "days": 7},
+    })
+    assert "Разборы без дома" in text and "12" in text, (
+        "разборы, которым не нашлось дома, не доходят до владельца — механизм молчит"
+    )
+    assert "Ни одного промаха за неделю" not in text, (
+        "отчёт назвал неделю чистой, хотя 12 разборов собрались впустую"
+    )
+
+
 def test_part_of_speech_and_construction_never_come_from_the_model():
     """Часть речи и управление — данные справочника. Ответ модели по ним отбрасывается."""
     sources = [dict(_entry("Anzahlung"), pos="noun"), dict(_entry("Vorschuss"), pos="noun")]
