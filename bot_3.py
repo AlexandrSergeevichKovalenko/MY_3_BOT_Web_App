@@ -10050,9 +10050,63 @@ def _run_phrase_night_check_safe() -> None:
         stats = run_phrase_night_check()
         _record_sched_heartbeat("phrase_night_check", "completed", stats)
         logging.info("phrase night check result=%s", stats)
+        _send_settled_disputes_report(stats.get("applied") or {})
     except Exception as exc:
         logging.exception("phrase night check failed")
         _record_sched_heartbeat("phrase_night_check", "failed", {"error": str(exc)[:300]})
+
+
+def _send_settled_disputes_report(applied: dict) -> None:
+    """Что ночь исправила ЗА владельца — списком «было → стало».
+
+    ЗАЧЕМ. С 29.08.2026 разрешённый третьим судьёй спор ночь применяет сама, не
+    спрашивая (решение владельца 28.08.2026: «если судья рассудил — принимаем»). Но
+    молчащий механизм неотличим от сломанного, и правка, сделанная за человека без
+    следа, — это ровно то, чего в этом проекте делать нельзя. Поэтому утром приходит
+    список: что было, что стало и сколько осталось ему самому.
+
+    МОЛЧИТ, КОГДА ПРИМЕНЯТЬ БЫЛО НЕЧЕГО. «Исправлено: 0» — не новость.
+    """
+    строки = list((applied or {}).get("строки") or [])
+    if not строки:
+        return
+    try:
+        from backend.database import get_admin_telegram_ids
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
+        if not token or not admin_ids:
+            return
+        осталось = int((applied or {}).get("оставлено владельцу") or 0)
+        показываем = строки[:20]
+        куски = [
+            "🌙 <b>Ночь применила решённые споры</b>\n",
+            "Третий проверяющий рассудил, наша проверка правку пропустила — "
+            "спрашивать было не о чем. Вот что изменилось:\n",
+        ]
+        for n, с in enumerate(показываем, 1):
+            куски.append(f"{n}. <s>{html.escape(str(с.get('было'))[:70])}</s>\n"
+                         f"    → <b>{html.escape(str(с.get('стало'))[:70])}</b>")
+        if len(строки) > len(показываем):
+            куски.append(f"\n…и ещё <b>{len(строки) - len(показываем)}</b>.")
+        куски.append(f"\nВсего исправлено: <b>{len(строки)}</b>")
+        if осталось:
+            куски.append(f"Осталось тебе: <b>{осталось}</b> — там дописаны слова "
+                         "или наша проверка не пропустила правку.")
+        markup = None
+        if осталось:
+            markup = {"inline_keyboard": [[{"text": f"Разобрать ({осталось})",
+                                            "url": get_webapp_deeplink("ans_frv_0")}]]}
+        delivered, failures = send_telegram_message_to_all(
+            admin_ids, text="\n".join(куски), token=token, reply_markup=markup,
+            disable_web_page_preview=True, timeout=15,
+            what="ночь применила решённые споры")
+        _record_sched_heartbeat("settled_disputes_report", "completed",
+                                {"применено": len(строки), "осталось": осталось,
+                                 "sent": delivered, "failed": failures})
+    except Exception as exc:
+        logging.exception("отчёт о применённых вердиктах не ушёл")
+        _record_sched_heartbeat("settled_disputes_report", "failed",
+                                {"error": str(exc)[:300]})
 
 
 def _run_examples_retry_safe() -> None:

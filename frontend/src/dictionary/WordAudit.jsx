@@ -536,8 +536,8 @@ export default function WordAudit() {
                   <label className="wa-opt">
                     <input type="checkbox" checked={!!разбор.topup}
                            onChange={() => правитьКарточку(it, (d) => { d.topup = !d.topup; })} />
-                    <span>Примеров осталось мало — пусть ночь допишет недостающие.
-                      Твои останутся как есть.</span>
+                    <span>Остался один пример — пусть ночь допишет второй.
+                      Твой останется как есть.</span>
                   </label>
                 ) : null}
               </>
