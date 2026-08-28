@@ -44540,6 +44540,53 @@ def get_google_tts_monthly_budget_status(
     )
 
 
+def get_provider_free_tier_status(
+    *,
+    provider: str,
+    units_type: str = "chars",
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict:
+    """Сколько месячного БЕСПЛАТНОГО лимита провайдера съедено и какая доля записанных
+    в ведомость денег — настоящая.
+
+    ЗАЧЕМ. `cost_amount` в `bt_3_billing_events` — это списочная цена КАЖДОЙ единицы,
+    считая бесплатные: ведомость не умеет знать, попадёт ли конкретный символ в
+    бесплатный миллион, потому что это выясняется только на масштабе месяца. Поэтому
+    сумма по ведомости — ПОТОЛОК («сколько стоило бы без бесплатного лимита»), а не счёт.
+
+    Замер 28.08.2026, август: Google выставил за Text-to-Speech $0.17, ведомость
+    насчитала $1.92 — разница ровно в бесплатном лимите, а не в ошибке счётчика.
+
+    Возвращает:
+        used            — израсходовано единиц с начала месяца;
+        limit           — бесплатный лимит месяца (0 = у провайдера его нет);
+        remaining       — сколько бесплатного осталось;
+        real_money_fraction — доля потолка, которая уже стоит настоящих денег.
+                          0.0 пока сидим внутри лимита, растёт до 1.0 на перерасходе.
+
+    ⚠️ Функция НЕ глушит ошибки: если посчитать не удалось, исключение уходит наверх.
+    Молча вернуть 1.0 значит показать выдуманные деньги как настоящие, а вернуть 0.0 —
+    спрятать настоящий перерасход. Решает вызывающий, и решает вслух.
+    """
+    key = str(provider or "").strip().lower()
+    units = str(units_type or "chars").strip().lower() or "chars"
+    used = float(get_provider_budget_month_usage(
+        provider=key, units_type=units, period_month=period_month, tz=tz))
+    limit = float(_provider_budget_default_base_limit(key))
+    if limit <= 0:
+        # Бесплатного лимита у провайдера нет — каждая единица стоит денег с первой.
+        return {"used": used, "limit": 0.0, "remaining": 0.0, "real_money_fraction": 1.0}
+    overage = max(0.0, used - limit)
+    fraction = min(1.0, overage / used) if used > 0 else 0.0
+    return {
+        "used": used,
+        "limit": limit,
+        "remaining": max(0.0, limit - used),
+        "real_money_fraction": fraction,
+    }
+
+
 def get_google_tts_standard_monthly_budget_status(
     *,
     period_month: date | datetime | None = None,

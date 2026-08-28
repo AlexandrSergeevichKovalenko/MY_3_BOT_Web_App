@@ -27,7 +27,7 @@ from backend.database import (
     list_admin_configurable_limits,
     resolve_entitlement,
 )
-from backend.database import _provider_budget_default_base_limit
+from backend.database import _provider_budget_default_base_limit, get_provider_free_tier_status
 
 
 ADMIN_ECONOMICS_TZ = "Europe/Vienna"
@@ -66,6 +66,13 @@ _NON_COST_PROVIDERS: tuple[str, ...] = ("stripe", "app_internal")
 # the units_type its free allowance is measured in.
 _FREE_TIER_PROVIDERS: dict[str, str] = {
     "google_tts": "chars",
+    # google_tts_standard ЗДЕСЬ НЕ БЫЛО до 28.08.2026 — и это самый расходный бакет по
+    # символам (озвучка «Классики»). Замер за август: 311 772 символа, ведомость насчитала
+    # $1.25, Google выставил $0.00 — весь объём внутри бесплатных 4 млн/мес. Отчёт по
+    # экономике показывал эти $1.25 настоящими деньгами. Свой бесплатный лимит у бакета
+    # есть с самого начала (_provider_budget_default_base_limit → GOOGLE_TTS_STANDARD_
+    # MONTHLY_BASE_LIMIT_CHARS), в этот список его просто забыли внести.
+    "google_tts_standard": "chars",
     "google_translate": "chars",
     "deepl_free": "chars",
     "azure_translator": "chars",
@@ -89,14 +96,16 @@ def _provider_real_money_fraction(provider: str) -> float:
     if key in _real_money_fraction_cache:
         return _real_money_fraction_cache[key]
     try:
-        mtd = float(get_provider_budget_month_usage(provider=key, units_type=units_type, tz=ADMIN_ECONOMICS_TZ))
-        if mtd <= 0:
-            frac = 0.0
-        else:
-            free = float(_provider_budget_default_base_limit(key))
-            overage = max(0.0, mtd - free)
-            frac = min(1.0, overage / mtd)
+        # Формула живёт в ОДНОМ месте — database.get_provider_free_tier_status. Раньше её
+        # копия стояла здесь, а отчёт-эталон не знал о бесплатном лимите вообще, и оттого
+        # показывал владельцу «наш $1.92 против счёта $0.17» как слепоту счётчика.
+        frac = float(get_provider_free_tier_status(
+            provider=key, units_type=units_type, tz=ADMIN_ECONOMICS_TZ)["real_money_fraction"])
     except Exception:
+        # Посчитать не смогли. Показываем расход ЦЕЛИКОМ (1.0) — это завышение, но оно
+        # видно; занижение до нуля спрятало бы настоящий перерасход. Причину в лог.
+        logging.warning("free-tier доля не посчитана для provider=%s — показываю расход целиком",
+                        key, exc_info=True)
         frac = 1.0
     _real_money_fraction_cache[key] = frac
     return frac

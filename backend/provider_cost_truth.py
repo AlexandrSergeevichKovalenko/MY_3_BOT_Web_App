@@ -44,16 +44,114 @@ _HTTP_TIMEOUT = 25
 # (agent_tts = Chirp3-HD premium voice, also billed by Google Cloud TTS.)
 _OUR_PROVIDER_GROUPS: dict[str, tuple[str, ...]] = {
     "openai": ("openai",),
-    "google": (
-        "google_tts",
-        "agent_tts",
-        "google_translate",
-        "youtube_api",
-        "youtube_manual_search",
-        "youtube_proxy",
-    ),
     "deepl": ("deepl_free",),
     "perplexity": ("perplexity",),
+}
+# Google сюда НЕ входит намеренно: один общий котёл «google» складывал в наш столбец
+# сервисы, которые мы меряем (TTS, Translate), вместе с теми, которых не меряем вовсе
+# (Gemini) — и выдавал Δ −98% как «слепой счётчик». Сверка по Google идёт посервисно,
+# см. _GOOGLE_SERVICE_TO_OURS ниже.
+
+# Какой сервис в счёте Google меряется какими ключами НАШЕЙ ведомости.
+# Пустой кортеж = мы этот сервис НЕ СЧИТАЕМ ВООБЩЕ. Это отдельное состояние, и в отчёте
+# оно пишется словами «мы не считаем», а НЕ нулём: ноль означал бы «спросили и вышло 0»,
+# а здесь мы не спрашивали. Имена слева — ровно те, что лежат в service.description
+# billing-экспорта (сверено с живой таблицей 28.08.2026), справа — ровно те, что лежат в
+# bt_3_billing_events.provider (сверено SELECT DISTINCT по живой базе 28.08.2026:
+# openai, google_tts_standard, google_tts, deepl_free, youtube_api, cloudflare_r2_*,
+# app_internal — и БОЛЬШЕ НИКАКИХ; agent_tts / google_translate / youtube_manual_search /
+# youtube_proxy не встречались ни разу за всё время, но оставлены как законные имена).
+_GOOGLE_SERVICE_TO_OURS: dict[str, tuple[str, ...]] = {
+    # google_tts_standard тут был ПРОПУЩЕН до 28.08.2026 — а это 4 207 строк и $1.28,
+    # то есть две трети нашего же счётчика TTS не попадали в сверку вообще.
+    "Cloud Text-to-Speech API": ("google_tts", "google_tts_standard", "agent_tts"),
+    "Translate": ("google_translate",),
+    "Cloud Translation API": ("google_translate",),
+    "YouTube Data API v3": ("youtube_api", "youtube_manual_search", "youtube_proxy"),
+    # Gemini — второй голос на записи (backend/second_voice_check.py). Расход НЕ пишется
+    # в bt_3_billing_events: модуль ходит прямым HTTP и ведомость не трогает.
+    # НАЙДЕНО 28.08.2026, ОТКРЫТО, ЖДЁТ РЕШЕНИЯ ВЛАДЕЛЬЦА (цену за токен задавать
+    # неоткуда — источника прайса Gemini в проекте нет, а выдумывать его запрещено).
+    "Gemini API": (),
+    # Инфраструктура самого экспорта, не расход продукта. Меряется счётом, не нами.
+    "Cloud Logging": (),
+    "BigQuery": (),
+}
+
+# В каких единицах меряется месячный бесплатный лимит каждого нашего ключа.
+_OUR_PROVIDER_UNITS: dict[str, str] = {
+    "google_tts": "chars",
+    "google_tts_standard": "chars",
+    "agent_tts": "chars",
+    "google_translate": "chars",
+    "youtube_api": "requests",
+    "youtube_manual_search": "requests",
+    "youtube_proxy": "requests",
+}
+
+
+def _free_tier_split(
+    keys: tuple[str, ...],
+    our_mtd: dict[str, float],
+    tz_name: str,
+) -> tuple[float, list[str], list[str]]:
+    """Разложить наш ПОТОЛОК по ключам на «настоящие деньги» и «бесплатный лимит».
+
+    ПОВОД, 28.08.2026. Владелец: «TTS завышен в 11 раз — это нужно чинить!» Замер за
+    август: Google выставил за Text-to-Speech $0.17, ведомость насчитала $1.92. Обе
+    цифры верные. `cost_amount` в ведомости — списочная цена КАЖДОГО символа, включая
+    те, что уехали в бесплатный лимит (Standard 4 млн/мес, WaveNet 1 млн/мес): в момент
+    записи строки ещё неизвестно, попадёт ли символ в бесплатные, это решается только на
+    масштабе месяца. Значит сумма по ведомости — ПОТОЛОК, а не счёт, и сравнивать со
+    счётом надо ту её долю, которая вышла за бесплатный лимит.
+
+    Механизм не новый: `admin_economics._provider_real_money_fraction` делал ровно это с
+    самого начала — просто отчёт-эталон о нём не знал, а в списке free-tier провайдеров
+    не хватало `google_tts_standard` (это две трети объёма). Формула теперь одна на всех:
+    `database.get_provider_free_tier_status`.
+
+    Возвращает (настоящие деньги, строки про остаток лимита, ключи без ответа).
+    Ключ, по которому посчитать не удалось, идёт ТРЕТЬИМ списком и его потолок кладётся
+    в деньги целиком: завышение видно глазами, занижение спрятало бы перерасход.
+    """
+    from backend.database import get_provider_free_tier_status
+
+    real = 0.0
+    free_parts: list[str] = []
+    unknown: list[str] = []
+    for key in keys:
+        ceiling = float(our_mtd.get(key, 0.0))
+        try:
+            status = get_provider_free_tier_status(
+                provider=key,
+                units_type=_OUR_PROVIDER_UNITS.get(key, "chars"),
+                tz=tz_name,
+            )
+        except Exception:  # noqa: BLE001 — причину называем в отчёте, а не глушим
+            logging.warning("free-tier статус не посчитан для %s", key, exc_info=True)
+            unknown.append(key)
+            real += ceiling
+            continue
+        real += ceiling * float(status["real_money_fraction"])
+        used, limit = float(status["used"]), float(status["limit"])
+        if limit > 0 and used > 0:
+            free_parts.append(f"{key} {used:,.0f}/{limit:,.0f} ({used / limit * 100:.0f}%)")
+    return real, free_parts, unknown
+
+
+# Готовая инструкция владельцу, когда Budgets API ещё не включён. Показывается В ОТЧЁТЕ:
+# молчаливое «бюджета нет» неотличимо от «бюджет не читается», а это разные вещи.
+_GOOGLE_BUDGET_SETUP_HINT = (
+    "чтобы видеть остаток бюджета — включите Cloud Billing Budget API "
+    "(console.cloud.google.com → APIs → Billing Budget API → Enable), задайте бюджет "
+    "в Billing → Budgets & alerts и дайте сервис-аккаунту роль Billing Account Viewer"
+)
+
+# cost_type из billing-экспорта человеческим языком (всё, кроме regular).
+_NONUSAGE_RU: dict[str, str] = {
+    "tax": "налог",
+    "adjustment": "корректировка/пополнение",
+    "rounding_error": "округление",
 }
 
 # Cloudflare R2 — monthly free allowances + list prices (2026) for an overage estimate.
@@ -236,7 +334,34 @@ def fetch_openai_costs(*, start_day: date, yesterday: date) -> dict[str, Any]:
 def fetch_google_costs(*, start_day: date, yesterday: date, tz_name: str) -> dict[str, Any]:
     """Net cost (cost + credits) per Google service for [start_day, today] and for
     yesterday, from the Cloud Billing export table in BigQuery.
-    Requires env GOOGLE_BILLING_BQ_TABLE = `project.dataset.gcp_billing_export_*`."""
+    Requires env GOOGLE_BILLING_BQ_TABLE = `project.dataset.gcp_billing_export_*`.
+
+    Разделяет строки по ``cost_type``:
+      • ``regular``  — расход на API. ТОЛЬКО он сравнивается с нашей ведомостью;
+      • всё прочее (``tax``, ``adjustment``, ``rounding_error``) — счёт аккаунта,
+        показывается отдельной строкой и в сравнение НЕ входит.
+
+    # ┌─ ПРОВЕРЕНО 28.08.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────────┐
+    # │ Владелец: «эталон 31 евро?! а в приложении 11,45». Сырое число месяца было     │
+    # │ $31.63 против $11.45 на карточке проекта в консоли — расхождения НЕТ, это      │
+    # │ два разных периметра. Разложение живого экспорта (BigQuery, август 2026):      │
+    # │   Invoice / Billing Adjustment (Standalone)  2 × $8.33 = 16.66  cost_type=adjustment │
+    # │   Invoice / Tax (Standalone)                 2 × $1.67 =  3.34  cost_type=tax  │
+    # │   Gemini API (gemini-3.6-flash in+out)                 = 11.45  cost_type=regular    │
+    # │   Cloud Text-to-Speech API (WaveNet)                   =  0.17  cost_type=regular    │
+    # │ Итого 31.63. Карточка «Abrechnung für My Project Bot» в консоли показывает     │
+    # │ 11,45 — это ОДИН проект, без налога и без аккаунтовых начислений.              │
+    # │                                                                                │
+    # │ ЧТО ТАКОЕ $20. Два начисления по $10 (8.33 + 1.67 НДС 20%), проставлены 01.08  │
+    # │ на биллинг-аккаунт вне проектов. Владелец 28.08.2026: «по 10 $ два раза — это  │
+    # │ моё пополнение, я это делал сам». ЭТО НЕ ДЕФЕКТ И НЕ РАСХОД НА API.            │
+    # │                                                                                │
+    # │ ГДЕ БЫЛ НАСТОЯЩИЙ ДЕФЕКТ: запрос суммировал ВСЕ cost_type и сравнивал этот     │
+    # │ итог с нашей ведомостью, которая считает только токены и символы API. Δ −98%   │
+    # │ рождалось арифметикой отчёта, а не слепым счётчиком. Починено этим разделением.│
+    # │ ПЕРЕМЕРИТЬ: SELECT service.description, cost_type, SUM(cost) … GROUP BY 1,2.   │
+    # └────────────────────────────────────────────────────────────────────────────────┘
+    """
     table = (os.getenv("GOOGLE_BILLING_BQ_TABLE") or "").strip()
     if not table:
         return {"configured": False}
@@ -252,15 +377,33 @@ def fetch_google_costs(*, start_day: date, yesterday: date, tz_name: str) -> dic
         project = (os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip() or None
         client = bigquery.Client(project=project) if project else bigquery.Client()
 
+        # ┌─ ПРОВЕРЕНО 28.08.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ─────────────────┐
+        # │ Месяц берётся по `invoice.month` — по СЧЁТУ, а не по дате использования.   │
+        # │ Раньше стояло `DATE(usage_start_time) >= month_start`, и это разные вещи:  │
+        # │ Google относит первые часы 1-го числа к ПРЕДЫДУЩЕМУ счёту. Замер:          │
+        # │   invoice=202607, использование 01.08 → 10 908 символов WaveNet, $0.1745   │
+        # │ Ровно эти $0.17 отчёт показывал как «расход на TTS в августе», хотя они    │
+        # │ июльские, а настоящий счёт за август по TTS = $0.00 (сидим в бесплатном    │
+        # │ лимите). Владельцу уходило чужое число как своё.                           │
+        # │ «Вчера» по-прежнему считается по дате использования — это дневной пульс,   │
+        # │ у него другого ключа и нет; поэтому в WHERE стоят оба условия.             │
+        # │ ПЕРЕМЕРИТЬ: SELECT invoice.month, FORMAT_DATE('%Y-%m',DATE(usage_start_    │
+        # │ time)), SUM(cost) … GROUP BY 1,2 — строки, где месяцы разошлись, и есть    │
+        # │ переходные.                                                                │
+        # └────────────────────────────────────────────────────────────────────────────┘
         query = f"""
             SELECT
               service.description AS service,
+              IFNULL(cost_type, 'regular') AS cost_type,
+              ANY_VALUE(billing_account_id) AS billing_account_id,
               SUM(IF(DATE(usage_start_time, @tz) = @yday,
                      cost + IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0), 0)) AS net_yday,
-              SUM(cost + IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS net_mtd
+              SUM(IF(invoice.month = @invoice_month,
+                     cost + IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0), 0)) AS net_mtd
             FROM `{table}`
-            WHERE DATE(usage_start_time, @tz) >= @month_start
-            GROUP BY service
+            WHERE invoice.month = @invoice_month
+               OR DATE(usage_start_time, @tz) = @yday
+            GROUP BY service, cost_type
             ORDER BY net_mtd DESC
         """
         job = client.query(
@@ -269,27 +412,108 @@ def fetch_google_costs(*, start_day: date, yesterday: date, tz_name: str) -> dic
                 query_parameters=[
                     bigquery.ScalarQueryParameter("tz", "STRING", tz_name),
                     bigquery.ScalarQueryParameter("yday", "DATE", yesterday),
-                    bigquery.ScalarQueryParameter("month_start", "DATE", start_day),
+                    # Ключ счёта Google — строка 'ГГГГММ' того месяца, за который выставят.
+                    bigquery.ScalarQueryParameter(
+                        "invoice_month", "STRING", f"{start_day.year:04d}{start_day.month:02d}"),
                 ]
             ),
         )
-        by_service: dict[str, dict[str, float]] = {}
-        mtd_total = yday_total = 0.0
+        billing_account_id = ""                             # берётся из самих строк счёта
+        by_service: dict[str, dict[str, float]] = {}       # только cost_type=regular
+        non_usage: dict[str, dict[str, float]] = {}         # tax / adjustment / rounding
+        mtd_total = yday_total = 0.0                        # расход на API
+        nonusage_mtd = nonusage_yday = 0.0                  # счёт аккаунта
         for row in job.result():
             svc = str(row["service"] or "—")
+            cost_type = str(row["cost_type"] or "regular")
+            billing_account_id = billing_account_id or str(row["billing_account_id"] or "")
             net_mtd = float(row["net_mtd"] or 0.0)
             net_yday = float(row["net_yday"] or 0.0)
-            by_service[svc] = {"mtd": net_mtd, "yday": net_yday}
-            mtd_total += net_mtd
-            yday_total += net_yday
+            if cost_type == "regular":
+                bucket = by_service.setdefault(svc, {"mtd": 0.0, "yday": 0.0})
+                mtd_total += net_mtd
+                yday_total += net_yday
+            else:
+                bucket = non_usage.setdefault(cost_type, {"mtd": 0.0, "yday": 0.0})
+                nonusage_mtd += net_mtd
+                nonusage_yday += net_yday
+            bucket["mtd"] += net_mtd
+            bucket["yday"] += net_yday
         return {
             "configured": True,
             "mtd_usd": mtd_total,
             "yday_usd": yday_total,
-            "by_service": by_service,
+            "by_service": dict(sorted(by_service.items(), key=lambda kv: kv[1]["mtd"], reverse=True)),
+            "nonusage_mtd_usd": nonusage_mtd,
+            "nonusage_yday_usd": nonusage_yday,
+            "nonusage_by_type": dict(sorted(non_usage.items(), key=lambda kv: kv[1]["mtd"], reverse=True)),
+            "billing_account_id": billing_account_id,
         }
     except Exception as exc:  # noqa: BLE001
         logging.warning("Google BigQuery costs fetch failed: %s", exc, exc_info=True)
+        return {"configured": True, "error": str(exc)}
+
+
+# --------------------------------------------------------------------------- #
+# Google Cloud Billing Budgets  (настоящий источник «сколько ещё можно потратить»)
+# --------------------------------------------------------------------------- #
+def fetch_google_budget(*, billing_account_id: str) -> dict[str, Any]:
+    """Бюджет, заданный владельцем в консоли Google Cloud.
+
+    ЗАЧЕМ. Владелец 28.08.2026: «можно ещё как-то показывать остаток на API Gemini и
+    остаток OpenAI API, чтобы я видел?» Остатка на счету у Cloud Billing НЕ СУЩЕСТВУЕТ:
+    это постоплата, счёт копится и выставляется в конце месяца, вычитать не из чего.
+    Единственное настоящее «сколько ещё можно» — БЮДЖЕТ, который владелец задаёт сам;
+    его отдаёт Billing Budgets API. Сумма бюджета — оттуда, потраченное — из billing-
+    экспорта. Оба числа из источника, ничего не выводится нашей арифметикой.
+
+    Номер биллинг-аккаунта берётся из САМОГО экспорта (колонка billing_account_id) —
+    отдельная переменная окружения не нужна и не заводится.
+
+    ⚠️ Если API выключен или у сервис-аккаунта нет роли — возвращаем `error` с готовой
+    инструкцией. Молчать нельзя: выключенный бюджет неотличим от «бюджета нет».
+    """
+    account = str(billing_account_id or "").strip()
+    if not account:
+        return {"configured": False}
+    try:
+        import google.auth  # type: ignore
+        import google.auth.transport.requests as google_requests  # type: ignore
+
+        from backend.utils import prepare_google_creds_for_tts
+
+        key_path = prepare_google_creds_for_tts()
+        if key_path:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+        creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        creds.refresh(google_requests.Request())
+        resp = requests.get(
+            f"https://billingbudgets.googleapis.com/v1/billingAccounts/{account}/budgets",
+            headers={"Authorization": f"Bearer {creds.token}"},
+            timeout=_HTTP_TIMEOUT,
+        )
+        if resp.status_code == 403:
+            return {"configured": True, "error": _GOOGLE_BUDGET_SETUP_HINT}
+        if resp.status_code >= 400:
+            return {"configured": True, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+        budgets: list[dict[str, Any]] = []
+        for item in (resp.json() or {}).get("budgets") or []:
+            amount = ((item.get("amount") or {}).get("specifiedAmount") or {})
+            units = amount.get("units")
+            if units is None:
+                # Бюджет «процент от прошлого месяца» суммы не несёт — считать её самим
+                # значило бы выдумать. Показываем именем, без числа.
+                budgets.append({"name": item.get("displayName") or "—", "amount": None,
+                                "currency": amount.get("currencyCode") or ""})
+                continue
+            budgets.append({
+                "name": item.get("displayName") or "—",
+                "amount": float(units) + float(amount.get("nanos") or 0) / 1e9,
+                "currency": amount.get("currencyCode") or "USD",
+            })
+        return {"configured": True, "budgets": budgets}
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Google budgets fetch failed: %s", exc, exc_info=True)
         return {"configured": True, "error": str(exc)}
 
 
@@ -492,6 +716,7 @@ def build_provider_cost_truth_text(*, target_day: date | None = None, tz_name: s
     openai = fetch_openai_costs(start_day=month_start, yesterday=yesterday)
     openai_usage = fetch_openai_usage_tokens(start_day=month_start)
     google = fetch_google_costs(start_day=month_start, yesterday=yesterday, tz_name=tz_name)
+    google_budget = fetch_google_budget(billing_account_id=str(google.get("billing_account_id") or ""))
     deepl = fetch_deepl_usage()
     r2 = fetch_cloudflare_r2(start_day=month_start)
     railway = fetch_railway_usage(start_day=month_start)
@@ -527,18 +752,74 @@ def build_provider_cost_truth_text(*, target_day: date | None = None, tz_name: s
     lines.append("")
 
     # ---- Google ----
-    lines.append("▪️ Google Cloud (TTS + Translate + YouTube)")
+    lines.append("▪️ Google Cloud")
     if not google.get("configured"):
         lines.append("  не настроено (нет GOOGLE_BILLING_BQ_TABLE / BigQuery export)")
     elif google.get("error"):
         lines.append(f"  ошибка BigQuery: {google['error']}")
     else:
-        lines.append(_delta_line(label="вчера", truth=google.get("yday_usd"),
-                                 ours=_our_group_total(our_yday, "google")))
-        lines.append(_delta_line(label="месяц", truth=google.get("mtd_usd"),
-                                 ours=_our_group_total(our_mtd, "google")))
-        for svc, vals in list((google.get("by_service") or {}).items())[:6]:
-            lines.append(f"    · {svc}: месяц {_fmt_usd(vals.get('mtd'))} (вчера {_fmt_usd(vals.get('yday'))})")
+        # Сравниваем ТОЛЬКО расход на API (cost_type=regular) — см. большой блок
+        # «ПРОВЕРЕНО 28.08.2026» у fetch_google_costs. И сравниваем только по тем
+        # сервисам, которые наша ведомость вправду меряет: сложить в «наш» столбец
+        # ноль за Gemini и назвать это расхождением — врать себе же.
+        by_service = google.get("by_service") or {}
+        metered = {s: v for s, v in by_service.items() if _GOOGLE_SERVICE_TO_OURS.get(s)}
+        unmetered = {s: v for s, v in by_service.items() if not _GOOGLE_SERVICE_TO_OURS.get(s)}
+
+        lines.append(f"  расход на API (месяц): {_fmt_usd(google.get('mtd_usd'))} · вчера {_fmt_usd(google.get('yday_usd'))}")
+        for svc, vals in metered.items():
+            keys = _GOOGLE_SERVICE_TO_OURS.get(svc, ())
+            ceiling_mtd = sum(float(our_mtd.get(k, 0.0)) for k in keys)
+            real_mtd, free_parts, unknown_keys = _free_tier_split(keys, our_mtd, tz_name)
+            lines.append(f"    · {svc}")
+            # Сравнивать со счётом можно ТОЛЬКО настоящие деньги: потолок считает и те
+            # единицы, что уехали в бесплатный лимит, и Google за них не берёт ничего.
+            lines.append("     " + _delta_line(label="месяц", truth=vals.get("mtd"), ours=real_mtd).strip())
+            if ceiling_mtd - real_mtd >= 0.005:
+                lines.append(f"       без бесплатного лимита стоило бы {_fmt_usd(ceiling_mtd)}")
+            if free_parts:
+                lines.append("       бесплатный лимит: " + " · ".join(free_parts))
+            if unknown_keys:
+                # Не посчитали — говорим об этом, а не выдаём потолок за счёт.
+                lines.append(f"       ❔ бесплатный лимит не посчитан: {', '.join(unknown_keys)}")
+        for svc, vals in unmetered.items():
+            if abs(float(vals.get("mtd") or 0.0)) < 0.005:
+                continue
+            lines.append(
+                f"    · {svc}: месяц {_fmt_usd(vals.get('mtd'))} "
+                f"(вчера {_fmt_usd(vals.get('yday'))}) — мы не считаем ❔"
+            )
+
+        # Счёт аккаунта: налог, корректировки, округления. Это НЕ расход на API и с
+        # нашей ведомостью не сравнивается — иначе получается фальшивое Δ.
+        # Бюджет владельца — единственный настоящий ответ на «сколько ещё можно потратить»:
+        # остатка на счету у Cloud Billing не существует, это постоплата. Сумма бюджета из
+        # Budgets API, потраченное — из счёта; своей арифметикой ничего не выводим.
+        spent_total = float(google.get("mtd_usd") or 0.0) + float(google.get("nonusage_mtd_usd") or 0.0)
+        if google_budget.get("error"):
+            lines.append(f"  бюджет: ❔ {google_budget['error']}")
+        else:
+            for budget in google_budget.get("budgets") or []:
+                amount = budget.get("amount")
+                if amount is None:
+                    lines.append(f"  бюджет «{budget.get('name')}»: сумма задана процентом от прошлого месяца")
+                    continue
+                left = float(amount) - spent_total
+                pct = (spent_total / float(amount) * 100.0) if float(amount) > 0 else 0.0
+                lines.append(
+                    f"  бюджет «{budget.get('name')}»: потрачено {_fmt_usd(spent_total)} из "
+                    f"{_fmt_usd(amount)} ({pct:.0f}%), осталось {_fmt_usd(left)}"
+                    + (" ⚠️" if pct > 80.0 else "")
+                )
+
+        nonusage = float(google.get("nonusage_mtd_usd") or 0.0)
+        if abs(nonusage) >= 0.005:
+            parts = ", ".join(
+                f"{_NONUSAGE_RU.get(t, t)} {_fmt_usd(v.get('mtd'))}"
+                for t, v in (google.get("nonusage_by_type") or {}).items()
+                if abs(float(v.get("mtd") or 0.0)) >= 0.005
+            )
+            lines.append(f"  счёт аккаунта (не расход на API): {_fmt_usd(nonusage)} — {parts}")
     lines.append("")
 
     # ---- DeepL ----
