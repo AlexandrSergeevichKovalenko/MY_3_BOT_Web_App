@@ -416,8 +416,8 @@ def test_word_without_our_unit_gets_a_home_instead_of_being_rebuilt_forever(monk
     _stub_unit_row(monkeypatch, ("entscheiden", "entscheiden", ""))
 
     import backend.lex_units as lex
-    monkeypatch.setattr(lex, "ensure_unit",
-                        lambda text, lang: created.append((text, lang)) or 7001)
+    monkeypatch.setattr(lex, "ensure_unit_for_lemma",
+                        lambda text, lang, *, pos: created.append((text, lang, pos)) or 7001)
     monkeypatch.setattr(lex, "adopt_pos_gender_from_card",
                         lambda unit_id, card, lemma="": adopted.append(unit_id) or True)
     monkeypatch.setattr(lex, "save_unit_card_if_richer",
@@ -425,7 +425,7 @@ def test_word_without_our_unit_gets_a_home_instead_of_being_rebuilt_forever(monk
 
     article = backend_server._word_diff_lookup_sources("entscheiden", "de", "ru")
 
-    assert created == [("entscheiden", "de")], "слову не завели дом — разбор снова выброшен"
+    assert created == [("entscheiden", "de", "verb")], "слову не завели дом — разбор снова выброшен"
     assert adopted == [7001], (
         "часть речи не проставлена: единица без неё не сольётся со статьёй базового "
         "словаря, и человек получит лишний вопрос «что вы имели в виду»"
@@ -447,7 +447,8 @@ def test_no_home_without_a_part_of_speech_and_the_case_is_counted(monkeypatch):
 
     import backend.lex_units as lex
     import backend.database as db
-    monkeypatch.setattr(lex, "ensure_unit", lambda text, lang: created.append(text) or 7002)
+    monkeypatch.setattr(lex, "ensure_unit_for_lemma",
+                        lambda text, lang, *, pos: created.append(text) or 7002)
     monkeypatch.setattr(db, "record_word_diff_miss",
                         lambda uid, words, reason, detail="": counted.append(reason))
 
@@ -464,7 +465,8 @@ def test_no_home_when_the_sources_disagree_about_the_part_of_speech(monkeypatch)
 
     import backend.lex_units as lex
     import backend.database as db
-    monkeypatch.setattr(lex, "ensure_unit", lambda text, lang: created.append(text) or 7003)
+    monkeypatch.setattr(lex, "ensure_unit_for_lemma",
+                        lambda text, lang, *, pos: created.append(text) or 7003)
     monkeypatch.setattr(db, "record_word_diff_miss",
                         lambda uid, words, reason, detail="": counted.append(reason))
 
@@ -481,7 +483,8 @@ def test_no_home_when_the_breakdown_is_titled_with_another_word(monkeypatch):
 
     import backend.lex_units as lex
     import backend.database as db
-    monkeypatch.setattr(lex, "ensure_unit", lambda text, lang: created.append(text) or 7004)
+    monkeypatch.setattr(lex, "ensure_unit_for_lemma",
+                        lambda text, lang, *, pos: created.append(text) or 7004)
     monkeypatch.setattr(db, "record_word_diff_miss",
                         lambda uid, words, reason, detail="": counted.append(reason))
 
@@ -507,7 +510,7 @@ def test_breakdown_never_lands_on_another_word_behind_the_same_spelling(monkeypa
     import backend.lex_units as lex
     import backend.database as db
     # Указатель форм возвращает чужую единицу: лемма «Entscheid», часть речи noun.
-    monkeypatch.setattr(lex, "ensure_unit", lambda text, lang: 26384)
+    monkeypatch.setattr(lex, "ensure_unit_for_lemma", lambda text, lang, *, pos: 26384)
     monkeypatch.setattr(lex, "adopt_pos_gender_from_card",
                         lambda unit_id, card, lemma="": adopted.append(unit_id) or True)
     monkeypatch.setattr(lex, "save_unit_card_if_richer",
@@ -521,6 +524,43 @@ def test_breakdown_never_lands_on_another_word_behind_the_same_spelling(monkeypa
     assert saved == [], "разбор глагола лёг на СУЩЕСТВИТЕЛЬНОЕ — это порча чужого слова"
     assert adopted == [], "чужому слову переписали часть речи"
     assert counted == ["no_home"], "случай не посчитан — молчание неотличимо от нормы"
+
+
+def test_a_homograph_gets_its_own_home_next_to_the_other_word():
+    """Слово-двойник заводит СВОЮ единицу, а не садится в чужую.
+
+    «entscheiden» — глагол «решать» и одновременно дательный падеж множественного числа
+    существительного «der Entscheid». Указатель форм законно ведёт это написание на
+    существительное, поэтому поиск ПО НАПИСАНИЮ (`ensure_unit`) возвращал чужое слово.
+    Поиск по ЛЕММЕ И ЧАСТИ РЕЧИ обязан вернуть своё — или завести новое.
+
+    База это разрешает: ключ указателя уникален по тройке (язык, написание, единица),
+    а на «auf» уже висит 35 единиц (замер 28.08.2026).
+    """
+    import inspect
+    from backend import lex_units as lex
+
+    src = inspect.getsource(lex.ensure_unit_for_lemma)
+    assert "lemma_key = %s" in src, "опознание перестало идти по лемме"
+    assert "COALESCE(pos, '') IN ('', %s)" in src, (
+        "часть речи выпала из опознания — чужое слово снова может стать домом"
+    )
+    assert "_word_gate_for_new_unit" in src, (
+        "второй заводчик пошёл мимо двери слова — так мусор и получал прописку"
+    )
+    # Дверь одна на обоих заводчиков, а не скопирована.
+    assert "_word_gate_for_new_unit" in inspect.getsource(lex.ensure_unit), (
+        "у ensure_unit своя копия двери — они разъедутся"
+    )
+
+
+def test_part_of_speech_is_required_to_open_a_home():
+    """Без части речи дом не заводится: она входит в опознание единицы."""
+    from backend import lex_units as lex
+    assert lex.ensure_unit_for_lemma("entscheiden", "de", pos="") is None, (
+        "единица заведена «неизвестно чем» — она не сольётся со статьёй словаря "
+        "и человек получит лишний вопрос"
+    )
 
 
 def test_homeless_breakdowns_reach_the_owner_as_a_number():

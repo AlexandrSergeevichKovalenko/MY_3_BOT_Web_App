@@ -957,43 +957,10 @@ def ensure_unit(text: str, lang: str) -> int | None:
     if not checked:
         return None
     text, key, kind = checked
-    # ДВЕРЬ СЛОВА, дешёвая половина. Регистр заголовка правится ЗДЕСЬ, при заведении, а
-    # не только на показе. Замер 19.08.2026: правило `german_headword_case` стояло лишь
-    # в отрисовке, поэтому «Grundlegend» и «betäubung» ложились в базу как есть — экран
-    # выглядел правильным, а данные оставались кривыми. Тот же урок уже разбирался
-    # однажды в backend_server:10166, но до заведения единиц не дошёл.
-    #
-    # В сеть и к модели отсюда НЕ ходим: сохранение не должно ждать справочник и не
-    # должно стоить денег. Дорогие ступени (обрезка, умлаут, устаревшее написание,
-    # существует ли слово вообще) делает ночная работа, у неё для этого нет спешки.
-    # Метка та же, что у парадигм глаголов: тесты и оффлайн-скрипты в боевую базу не
-    # ходят. Прогон 19.08.2026 упёрся в таймаут именно на этом — дверь тянула справочник
-    # родов из прода на каждом заведении единицы в тесте.
-    _gate_off = (os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") == "1"
-                 and not os.getenv("WORD_GATE_LOOKUP"))
-    if kind == "word" and lang == "de" and not _gate_off:
-        try:
-            from backend.german_word_gate import check_word, NOT_A_WORD
-            verdict = check_word(text, allow_network=False, allow_model=False)
-            if verdict.get("status") == NOT_A_WORD:
-                # Дверь уже разбирала это написание и признала его не словом
-                # («Abschiebu», «inkelgasse»). Новую единицу не заводим.
-                #
-                # Именно так мусор и получал прописку: ночное дообогащение видело текст
-                # в чьей-то карточке и заводило его словом общего словаря. Замер
-                # 19.08.2026: семь мусорных слов из четырнадцати завели не люди, а мы.
-                # Карточка человека при этом остаётся — он её сохранил, это его право.
-                logging.warning("единица не заведена: %r — дверь слова признала не словом",
-                                str(text)[:60])
-                return None
-            fixed = str(verdict.get("text") or "").strip()
-            if fixed and fixed != text:
-                logging.info("дверь слова: заголовок исправлен %r → %r", text, fixed)
-                text = fixed
-                key = normalize_query(text)
-        except Exception:
-            logging.warning("дверь слова недоступна при заведении %r", str(text)[:60],
-                            exc_info=True)
+    passed = _word_gate_for_new_unit(text, key, kind, lang)
+    if not passed:
+        return None
+    text, key = passed
     body = _ANY_ARTICLE_RE.sub("", _SPACE_RE.sub(" ", str(text).strip())).strip()
     display = _SPACE_RE.sub(" ", str(text).strip()) if kind != "word" else body
     try:
@@ -1033,6 +1000,144 @@ def ensure_unit(text: str, lang: str) -> int | None:
         return unit_id
     except Exception as exc:
         logging.debug("ensure unit failed for %r: %s", text, exc)
+        return None
+
+
+def _word_gate_for_new_unit(text: str, key: str, kind: str, lang: str) -> tuple[str, str] | None:
+    """Дверь СЛОВА перед заведением единицы. None — заводить нельзя.
+
+    Вынесена из `ensure_unit` 28.08.2026, когда у слоя появился второй заводчик
+    (`ensure_unit_for_lemma`). Копировать дверь второму нельзя ни в каком виде: этот
+    проект уже проходил ровно это — `sync_unit_links_from_card` заводила единицы мимо
+    двери, и мусор получал прописку в общем словаре. Одна дверь на всех заводчиков.
+
+    Возвращает (написание, ключ поиска) — оба могут быть исправлены дверью.
+    """
+    # ДВЕРЬ СЛОВА, дешёвая половина. Регистр заголовка правится ЗДЕСЬ, при заведении, а
+    # не только на показе. Замер 19.08.2026: правило `german_headword_case` стояло лишь
+    # в отрисовке, поэтому «Grundlegend» и «betäubung» ложились в базу как есть — экран
+    # выглядел правильным, а данные оставались кривыми. Тот же урок уже разбирался
+    # однажды в backend_server:10166, но до заведения единиц не дошёл.
+    #
+    # В сеть и к модели отсюда НЕ ходим: сохранение не должно ждать справочник и не
+    # должно стоить денег. Дорогие ступени (обрезка, умлаут, устаревшее написание,
+    # существует ли слово вообще) делает ночная работа, у неё для этого нет спешки.
+    # Метка та же, что у парадигм глаголов: тесты и оффлайн-скрипты в боевую базу не
+    # ходят. Прогон 19.08.2026 упёрся в таймаут именно на этом — дверь тянула справочник
+    # родов из прода на каждом заведении единицы в тесте.
+    _gate_off = (os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") == "1"
+                 and not os.getenv("WORD_GATE_LOOKUP"))
+    if kind == "word" and lang == "de" and not _gate_off:
+        try:
+            from backend.german_word_gate import check_word, NOT_A_WORD
+            verdict = check_word(text, allow_network=False, allow_model=False)
+            if verdict.get("status") == NOT_A_WORD:
+                # Дверь уже разбирала это написание и признала его не словом
+                # («Abschiebu», «inkelgasse»). Новую единицу не заводим.
+                #
+                # Именно так мусор и получал прописку: ночное дообогащение видело текст
+                # в чьей-то карточке и заводило его словом общего словаря. Замер
+                # 19.08.2026: семь мусорных слов из четырнадцати завели не люди, а мы.
+                # Карточка человека при этом остаётся — он её сохранил, это его право.
+                logging.warning("единица не заведена: %r — дверь слова признала не словом",
+                                str(text)[:60])
+                return None
+            fixed = str(verdict.get("text") or "").strip()
+            if fixed and fixed != text:
+                logging.info("дверь слова: заголовок исправлен %r → %r", text, fixed)
+                text = fixed
+                key = normalize_query(text)
+        except Exception:
+            logging.warning("дверь слова недоступна при заведении %r", str(text)[:60],
+                            exc_info=True)
+    return text, key
+
+
+def ensure_unit_for_lemma(text: str, lang: str, *, pos: str) -> int | None:
+    """Единица ИМЕННО ЭТОГО слова с ЭТОЙ частью речи. Заводит, если её нет.
+
+    Чем отличается от `ensure_unit` и зачем нужна отдельно
+    ─────────────────────────────────────────────────────
+    `ensure_unit` ищет по УКАЗАТЕЛЮ ФОРМ: набранное написание может оказаться формой
+    совсем другого слова, и тогда она вернёт чужую единицу. Для сохранения это верно —
+    человек, набравший «Häuser», должен попасть в «das Haus». Но когда мы кладём разбор
+    СЛОВА, чужая единица — это катастрофа.
+
+    ┌─ ПОВОД, ЗАМЕР 27.08.2026. ──────────────────────────────────────────────────┐
+    │ «entscheiden» — глагол «решать». И одновременно дательный падеж              │
+    │ множественного числа существительного «der Entscheid» (решение). Указатель   │
+    │ форм законно ведёт это написание на существительное (единица 26384,          │
+    │ match_kind='inflected'), поэтому `ensure_unit('entscheiden')` возвращала      │
+    │ «der Entscheid», и разбор ГЛАГОЛА лёг бы на СУЩЕСТВИТЕЛЬНОЕ.                 │
+    └─────────────────────────────────────────────────────────────────────────────┘
+
+    Здесь опознание идёт по ЛЕММЕ и ЧАСТИ РЕЧИ, а не по написанию. Слово-двойник
+    получает СВОЮ единицу и свой ярлычок в указателе — база это разрешает и давно так
+    живёт: ключ указателя уникален по тройке (язык, написание, единица), а на «auf»
+    висит 35 единиц (замер 28.08.2026). Читающая сторона к этому готова: `_from_units`
+    берёт до 12 единиц на написание, а какая нужна человеку — спрашивают у него
+    (правило владельца 26.08.2026: не решаем за пользователя).
+
+    Часть речи ОБЯЗАТЕЛЬНА: она входит в опознание единицы, и заводить «неизвестно что»
+    нельзя — такая единица не сольётся со статьёй и породит лишний вопрос человеку.
+    """
+    known_pos = str(pos or "").strip().lower()
+    if not known_pos:
+        return None
+    checked = door_check(text, lang)
+    if not checked:
+        return None
+    text, key, kind = checked
+    passed = _word_gate_for_new_unit(text, key, kind, lang)
+    if not passed:
+        return None
+    text, key = passed
+    body = _ANY_ARTICLE_RE.sub("", _SPACE_RE.sub(" ", str(text).strip())).strip()
+    display = _SPACE_RE.sub(" ", str(text).strip()) if kind != "word" else body
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                # Своё слово — это совпадение ЛЕММЫ. Часть речи либо та же, либо ещё не
+                # проставлена (её допишет разбор). Чужая часть речи — чужое слово.
+                cur.execute(
+                    """
+                    SELECT id FROM bt_3_lex_units
+                    WHERE lang = %s AND kind = %s AND lemma_key = %s
+                      AND COALESCE(pos, '') IN ('', %s)
+                    ORDER BY (COALESCE(pos, '') = %s) DESC, (card IS NULL), id
+                    LIMIT 1;
+                    """,
+                    (lang, kind, key, known_pos, known_pos),
+                )
+                row = cur.fetchone()
+                if row:
+                    unit_id = int(row[0])
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO bt_3_lex_units
+                            (lang, kind, lemma, lemma_key, display, pos, card_source)
+                        VALUES (%s, %s, %s, %s, %s, %s, 'сравнение отличий')
+                        ON CONFLICT (lang, kind, lemma_key, COALESCE(pos, ''), COALESCE(gender, ''))
+                        DO UPDATE SET updated_at = NOW()
+                        RETURNING id;
+                        """,
+                        (lang, kind, body or display, key, display, known_pos),
+                    )
+                    unit_id = int(cur.fetchone()[0])
+                # Ярлычок в указателе форм. Соседние единицы того же написания остаются
+                # на месте: ключ уникален по тройке (язык, написание, единица).
+                cur.execute(
+                    """
+                    INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
+                    VALUES (%s, %s, %s, 'exact') ON CONFLICT DO NOTHING;
+                    """,
+                    (lang, key, unit_id),
+                )
+            conn.commit()
+        return unit_id
+    except Exception as exc:
+        logging.debug("ensure unit for lemma failed for %r (%s): %s", text, known_pos, exc)
         return None
 
 
