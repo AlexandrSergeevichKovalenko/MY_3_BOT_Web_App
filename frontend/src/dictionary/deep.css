@@ -484,3 +484,66 @@
 }
 .deep-guest-btn:hover { box-shadow: 0 10px 26px rgba(59, 116, 224, 0.5); }
 .deep-guest-btn:active { transform: scale(0.98); }
+
+/* ── Приглашение гостю: всплывает через 7 секунд ────────────────────────────
+   Человек пришёл по ссылке на одно слово и про бота не знает ничего. Блок
+   приглашения внизу экрана он может не долистать и не заметить — владелец
+   28.08.2026: «не каждый перейдёт, не каждый заметит».
+   Поймать его в момент закрытия нельзя: события «человек закрывает мини-апп»
+   у Telegram НЕ СУЩЕСТВУЕТ (проверено по их telegram-web-app.js — ни
+   beforeClose, ни closeRequested). Поэтому зовём, пока он ещё здесь: семь
+   секунд — успел прочитать слово, но ещё не ушёл. */
+.deep-invite-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(4, 10, 22, 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: deep-invite-veil-in 0.22s ease-out;
+}
+@keyframes deep-invite-veil-in { from { opacity: 0; } to { opacity: 1; } }
+.deep-invite-card {
+  width: 100%;
+  max-width: 420px;
+  border-radius: 22px;
+  padding: 22px 20px 18px;
+  text-align: center;
+  background: var(--dmps-surface, #131c2e);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  animation: deep-invite-card-in 0.26s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+@keyframes deep-invite-card-in {
+  from { transform: translateY(26px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.deep-invite-fox { font-size: 42px; line-height: 1; margin-bottom: 8px; }
+.deep-invite-title {
+  font-size: 19px;
+  font-weight: 800;
+  color: var(--dmps-text-title, #f1f5f9);
+  margin-bottom: 8px;
+}
+.deep-invite-note {
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--dmps-text-muted, #94a3b8);
+  margin-bottom: 16px;
+}
+.deep-invite-later {
+  margin-top: 10px;
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--dmps-text-muted, #94a3b8);
+  font-size: 14.5px;
+  cursor: pointer;
+}
+.deep-invite-later:active { transform: scale(0.98); }
