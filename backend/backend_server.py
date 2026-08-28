@@ -9981,6 +9981,26 @@ def _dictionary_entry_tokens(value: str | None) -> list[str]:
     return re.findall(r"[0-9A-Za-zÀ-ÿА-Яа-яЁёÄÖÜäöüß'-]+", str(value or "").strip(), flags=re.UNICODE)
 
 
+def _german_sides_match(candidate: str | None, word_de: str | None) -> bool:
+    """Одна и та же немецкая сторона, записанная с артиклем и без него?
+
+    Нужно, чтобы найти, в каком поле карточки лежит немецкий заголовок: «der Marktpreis»
+    в одном поле и «Marktpreis» в другом — это одно и то же, а «рыночная цена» — нет.
+    Сравниваем по словам без ведущего артикля; ничего не додумываем и не угадываем.
+    """
+    left = _dictionary_entry_tokens(candidate)
+    right = _dictionary_entry_tokens(word_de)
+    if not left or not right:
+        return False
+
+    def _bare(tokens: list[str]) -> list[str]:
+        if len(tokens) > 1 and tokens[0].casefold() in _GERMAN_SINGLE_WORD_ARTICLES:
+            return [t.casefold() for t in tokens[1:]]
+        return [t.casefold() for t in tokens]
+
+    return _bare(left) == _bare(right)
+
+
 def _looks_like_dictionary_sentence(value: str | None) -> bool:
     text = str(value or "").strip()
     if not text:
@@ -10327,9 +10347,46 @@ def _apply_german_headword_normalization(
     #
     # Прежняя защита ловила только `entry_kind = sentence`; правило то же, но полное:
     # многословное — не существительное, у него нет ни рода, ни артикля.
+    #
+    # ┌─ НАЙДЕНО 28.08.2026. НЕМЕЦКАЯ СТОРОНА БЕРЁТСЯ ИЗ КАРТОЧКИ, А НЕ ИЗ НАСТРОЙКИ. ─┐
+    # │ Правило выше верное, но опора под ним была слабая: немецкую сторону выбирали  │
+    # │ по языковой паре пользователя. У пары «русский → немецкий» (то есть у         │
+    # │ большинства) `target_lang='de'`, и «немецкой стороной» объявлялся target_text │
+    # │ — а там лежит РУССКИЙ перевод. «рыночная цена» — два слова, значит правило    │
+    # │ решало, что это фраза, стирало артикль и переписывало часть речи.             │
+    # │                                                                              │
+    # │ Замер 27.08.2026, одно слово «Marktpreis», ответ модели побуквенно один:      │
+    # │     пара de→ru:  article='der'  part_of_speech='noun'                         │
+    # │     пара ru→de:  article=''     part_of_speech='phrase'   ← дефект            │
+    # │                                                                              │
+    # │ ПОЧЕМУ НЕ ЗАМЕТИЛИ. Строчка выбора стороны написана под УЗКОЕ правило         │
+    # │ (`entry_kind='sentence'`, коммит 90b1a377) и почти никогда не работала.       │
+    # │ 22.08.2026 правило расширили на любой многословный заголовок (1732c41a), а    │
+    # │ опору перенесли как есть. Плюс во ВСЕХ четырёх файлах тестов прописана пара   │
+    # │ de→ru — то есть ровно тот случай, где ошибки нет.                             │
+    # │                                                                              │
+    # │ Накопилось мало (замер 27.08): 11 записей пула и одна карточка Vorauszahlung. │
+    # │ Перемерить: пул, где word_de — одно слово с заглавной, pos='phrase', артикль  │
+    # │ пуст.                                                                        │
+    # └──────────────────────────────────────────────────────────────────────────────┘
+    #
+    # Судим по полю, которое немецкой стороной И ЯВЛЯЕТСЯ. Настройка пары остаётся
+    # запасным вариантом — на случай, если немецкого поля в карточке нет вовсе.
+    # ⚠ Та же переменная решает, КУДА записать исправленный текст. Ошибись здесь — и
+    # немецкий заголовок уедет в поле русского перевода, поэтому поле для записи
+    # ищется по содержимому, а не назначается.
     _gk = "source_text" if _normalize_short_lang_code(source_lang, fallback="") == "de" else (
         "target_text" if _normalize_short_lang_code(target_lang, fallback="") == "de" else "")
-    _gtext = str((normalized.get(_gk) if _gk else "") or normalized.get("word_de") or "").strip()
+    _word_de = str(normalized.get("word_de") or "").strip()
+    if _word_de:
+        _gtext = _word_de
+        _gk = ""
+        for _candidate in ("source_text", "target_text"):
+            if _german_sides_match(str(normalized.get(_candidate) or ""), _word_de):
+                _gk = _candidate
+                break
+    else:
+        _gtext = str((normalized.get(_gk) if _gk else "") or "").strip()
     if _gtext and not _is_single_word_dictionary_entry(_gtext, "de"):
         _fixed = _strip_spurious_leading_article(_gtext) or _gtext
         if _fixed != _gtext:
@@ -42706,6 +42763,117 @@ def _word_diff_normalize_words(raw_words) -> list[str]:
     return out
 
 
+def _word_diff_count_homeless(word: str, studied_lang: str, explain_lang: str) -> None:
+    """Разбор собран, но дома ему не нашлось — считаем, а не молчим.
+
+    Молчание тут особенно дорого: снаружи всё выглядит работающим (человек получил
+    сравнение), а под капотом мы платим за один и тот же разбор при каждом обращении.
+    Число уходит в недельный отчёт словаря строкой `no_home` — это наряд на источник:
+    либо разбор не называет часть речи, либо источники о ней спорят.
+    """
+    try:
+        from backend.database import record_word_diff_miss
+        record_word_diff_miss(0, [word], "no_home", detail=f"{studied_lang}->{explain_lang}")
+    except Exception:
+        logging.exception("word_diff: не удалось посчитать бездомный разбор %r", word)
+
+
+def _word_diff_ensure_home(word: str, card: dict, studied_lang: str,
+                           entry_pos: str = "") -> int:
+    """Дом для только что собранного разбора — единица слоя. 0 значит «дома не нашлось».
+
+    ┌─ НАЙДЕНО 27.08.2026 (владелец: «почему уже имеющийся так долго?»). ────────────┐
+    │ Разбор слова, у которого нет НАШЕЙ единицы, собирался заново при каждом        │
+    │ обращении: `_word_diff_full_lookup` кладёт результат в общий пул статей, а     │
+    │ сравнение читает слой единиц — то есть работа ложилась туда, куда этот путь    │
+    │ не смотрит. Замер живой базы: entscheiden 17,7 → 23,0 → 15,8 c три прогона     │
+    │ подряд, дешевле не становится никогда. Выборка 60 случайных немецких слов      │
+    │ базового словаря: у 49 своей единицы нет — то есть это класс, а не слово.      │
+    │ Перемерить: scripts/word_diff_speed_probe.py                                   │
+    └────────────────────────────────────────────────────────────────────────────────┘
+
+    ПОЧЕМУ ПРАВИЛО ТАКОЕ СТРОГОЕ. Единицу опознают три вещи: написание, часть речи и
+    род. Заведи её без части речи — и она НЕ сольётся со статьёй базового словаря:
+    слой вернёт две статьи на одно слово, а человек получит вопрос «что вы имели в
+    виду» с двумя одинаковыми строками. Ровно это владелец видел 26.08.2026 на
+    «gehen · laufen». Поэтому дом заводится только тогда, когда источники согласны:
+
+      • разбор НАЗВАЛ часть речи (не назвал — не догадываемся, случай считается);
+      • она не спорит с той, что уже стоит у найденной статьи;
+      • заголовок разбора — то самое слово, а не соседнее написание.
+
+    Часть речи ставится на единицу СРАЗУ, до укладки разбора: если разбор отвергнет
+    страж целостности, слово всё равно останется опознанным, а не «неизвестно чем».
+    """
+    text = " ".join(str(word or "").split())
+    if not text or not isinstance(card, dict) or not card:
+        return 0
+    from backend.lex_units import (
+        _card_headword, _pos_from_card, adopt_pos_gender_from_card, ensure_unit,
+    )
+    from backend.dictionary_entries import normalize_query
+
+    pos = str(_pos_from_card(card) or "").strip().lower()
+    if not pos:
+        logging.info("word_diff: %r — разбор не назвал часть речи, дом не заводим", text)
+        return 0
+    known_pos = str(entry_pos or "").strip().lower()
+    if known_pos and known_pos != pos:
+        logging.info("word_diff: %r — разбор говорит %r, статья %r; источники спорят, "
+                     "дом не заводим", text, pos, known_pos)
+        return 0
+    head = str(_card_headword(card) or "").strip()
+    if not head or normalize_query(head) != normalize_query(text):
+        logging.info("word_diff: %r — разбор озаглавлен %r, это другое написание, "
+                     "дом не заводим", text, head)
+        return 0
+
+    lang = str(studied_lang or "de").strip().lower()
+    unit_id = int(ensure_unit(head, lang) or 0)
+    if not unit_id:
+        # Дверь единицы не пустила: свалка значений, чужой алфавит, «не слово».
+        # Это её работа, и спорить с ней здесь нечем.
+        return 0
+
+    # ⛔ ГЛАВНАЯ ЛОВУШКА ЭТОГО МЕСТА. ПРОВЕРЕНО 27.08.2026 НА ЖИВОЙ БАЗЕ.
+    #
+    # `ensure_unit` ищет по УКАЗАТЕЛЮ ФОРМ, а не по лемме, и потому законно возвращает
+    # ЧУЖОЕ слово: написание «entscheiden» — это дательный падеж множественного числа
+    # существительного «der Entscheid», и указатель ведёт на него (единица 26384,
+    # match_kind='inflected'). То есть без этой проверки разбор ГЛАГОЛА лёг бы на
+    # СУЩЕСТВИТЕЛЬНОЕ. В замере 27.08 запись не состоялась только случайно — у того
+    # слова разбор оказался полнее, и `save_unit_card_if_richer` отказал.
+    #
+    # Поэтому дом принимается, только если единица — про ЭТО слово: её лемма совпадает
+    # с заголовком разбора, а часть речи либо ещё не проставлена, либо та же самая.
+    # Не совпало — не наш дом, и подгонять его нельзя ничем.
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT lemma, lemma_key, COALESCE(pos, '') FROM bt_3_lex_units WHERE id = %s;",
+                    (unit_id,),
+                )
+                row = cursor.fetchone()
+    except Exception:
+        logging.exception("word_diff: не смогли проверить, чьё это слово (%s)", unit_id)
+        return 0
+    if not row:
+        return 0
+    unit_lemma, unit_key, unit_pos = str(row[0] or ""), str(row[1] or ""), str(row[2] or "")
+    if normalize_query(unit_lemma) != normalize_query(head) and unit_key != normalize_query(head):
+        logging.info("word_diff: %r — указатель форм ведёт на другое слово %r, "
+                     "дом не заводим", text, unit_lemma)
+        return 0
+    if unit_pos and unit_pos.strip().lower() != pos:
+        logging.info("word_diff: %r — у единицы %s часть речи %r, а разбор про %r; "
+                     "дом не заводим", text, unit_id, unit_pos, pos)
+        return 0
+
+    adopt_pos_gender_from_card(unit_id, card, lemma=head)
+    return unit_id
+
+
 def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str,
                               pick: str = "") -> dict | None:
     """Всё, что мы знаем о слове, — в форме, готовой для сравнения. None — «не знаем».
@@ -42793,12 +42961,19 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str,
             # честно сравнит мусор («abschieben — убраться», замер 25.08.2026).
             enriched = _word_diff_full_lookup(text, studied_lang, explain_lang)
             if isinstance(enriched, dict) and enriched:
-                if unit_id:
+                # Дом обязателен: без него разбор, за который мы только что заплатили,
+                # собирается заново при КАЖДОМ обращении (см. _word_diff_ensure_home).
+                home_id = unit_id or _word_diff_ensure_home(
+                    text, enriched, studied_lang, entry_pos=str(entry.get("pos") or ""),
+                )
+                if home_id:
                     try:
                         from backend.lex_units import save_unit_card_if_richer
-                        save_unit_card_if_richer(unit_id, enriched, source="сравнение отличий")
+                        save_unit_card_if_richer(home_id, enriched, source="сравнение отличий")
                     except Exception:
-                        logging.exception("word_diff: не удалось дописать карточку %s", unit_id)
+                        logging.exception("word_diff: не удалось дописать карточку %s", home_id)
+                else:
+                    _word_diff_count_homeless(text, studied_lang, explain_lang)
                 card = enriched
         payload = _word_diff_payload_from_card(
             text, card or {},
@@ -42843,6 +43018,19 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str,
     fresh = _word_diff_full_lookup(text, studied_lang, explain_lang)
     if not isinstance(fresh, dict) or not fresh:
         return None
+    # Слова не было ни в слое, ни в Wiktionary — и мы только что разобрали его целиком.
+    # Дом ему нужен ровно по той же причине, что и выше: иначе следующее обращение
+    # заплатит за тот же разбор второй раз. Часть речи здесь сверять не с чем — статьи
+    # у слова не было, — поэтому источником выступает сам разбор.
+    home_id = _word_diff_ensure_home(text, fresh, studied_lang)
+    if home_id:
+        try:
+            from backend.lex_units import save_unit_card_if_richer
+            save_unit_card_if_richer(home_id, fresh, source="сравнение отличий")
+        except Exception:
+            logging.exception("word_diff: не удалось положить разбор на слово %s", home_id)
+    else:
+        _word_diff_count_homeless(text, studied_lang, explain_lang)
     payload = _word_diff_payload_from_card(text, fresh, source="dictionary_lookup")
     if not payload:
         return None
