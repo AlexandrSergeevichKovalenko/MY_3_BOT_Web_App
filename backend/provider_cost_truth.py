@@ -166,7 +166,11 @@ _GOOGLE_BUDGET_SETUP_HINT = (
 # cost_type из billing-экспорта человеческим языком (всё, кроме regular).
 _NONUSAGE_RU: dict[str, str] = {
     "tax": "налог",
-    "adjustment": "корректировка/пополнение",
+    # НЕ «пополнение». Замер 28.08.2026: adjustment_info.mode=MANUAL_ADJUSTMENT,
+    # type=GENERAL_ADJUSTMENT, cost положительный (+8.33 ×2). Экспорт ЗАТРАТ платежи
+    # не показывает вовсе — в нём только начисления, поэтому назвать эту строку
+    # пополнением значит соврать владельцу в противоположную сторону.
+    "adjustment": "ручная корректировка счёта",
     "rounding_error": "округление",
 }
 
@@ -811,7 +815,16 @@ def build_provider_cost_truth_text(*, target_day: date | None = None, tz_name: s
         # Бюджет владельца — единственный настоящий ответ на «сколько ещё можно потратить»:
         # остатка на счету у Cloud Billing не существует, это постоплата. Сумма бюджета из
         # Budgets API, потраченное — из счёта; своей арифметикой ничего не выводим.
-        spent_total = float(google.get("mtd_usd") or 0.0) + float(google.get("nonusage_mtd_usd") or 0.0)
+        # ┌─ ПРОВЕРЕНО 28.08.2026. НЕ СКЛАДЫВАТЬ ЗДЕСЬ РАСХОД С НАЧИСЛЕНИЯМИ СЧЁТА. ────┐
+        # │ Владелец: «почему затраты смешаны с моим пополнением?!» — и был прав.      │
+        # │ Я сначала написал spent = расход на API + начисления аккаунта = $31.46.    │
+        # │ Google свой бюджет так НЕ считает: его консоль на том же бюджете «Alex»    │
+        # │ показывает $11.46 / $10.00 — то есть ТОЛЬКО расход на API (cost_type=      │
+        # │ regular), без налога и ручных корректировок. Складывать их значит показать │
+        # │ число, которого нет ни в одном интерфейсе Google, и снова смешать разное.  │
+        # │ ПЕРЕМЕРИТЬ: Billing → Budgets & alerts, колонка «Spend and budget amount». │
+        # └───────────────────────────────────────────────────────────────────────────┘
+        spent_total = float(google.get("mtd_usd") or 0.0)
         if google_budget.get("error"):
             lines.append(f"  бюджет: ❔ {google_budget['error']}")
         else:
@@ -822,9 +835,12 @@ def build_provider_cost_truth_text(*, target_day: date | None = None, tz_name: s
                     continue
                 left = float(amount) - spent_total
                 pct = (spent_total / float(amount) * 100.0) if float(amount) > 0 else 0.0
+                # «осталось $-1.46» — ребус, а не сообщение. Перебор называется перебором.
+                tail = (f"осталось {_fmt_usd(left)}" if left >= 0
+                        else f"ПЕРЕБОР на {_fmt_usd(abs(left))}")
                 lines.append(
-                    f"  бюджет «{budget.get('name')}»: потрачено {_fmt_usd(spent_total)} из "
-                    f"{_fmt_usd(amount)} ({pct:.0f}%), осталось {_fmt_usd(left)}"
+                    f"  бюджет «{budget.get('name')}»: расход на API {_fmt_usd(spent_total)} из "
+                    f"{_fmt_usd(amount)} ({pct:.0f}%), {tail}"
                     + (" ⚠️" if pct > 80.0 else "")
                 )
 

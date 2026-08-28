@@ -126,7 +126,10 @@ class GoogleReportTextTest(unittest.TestCase):
     def test_account_charges_are_shown_separately_and_named(self):
         text = self._render()
         self.assertIn("счёт аккаунта (не расход на API): $20.00", text)
-        self.assertIn("корректировка/пополнение $16.66", text)
+        # Не «пополнение»: в экспорте ЗАТРАТ платежей нет вовсе, а строка идёт с
+        # положительной ценой и mode=MANUAL_ADJUSTMENT — это НАЧИСЛЕНИЕ на счёт.
+        self.assertIn("ручная корректировка счёта $16.66", text)
+        self.assertNotIn("пополнение", text)
         self.assertIn("налог $3.34", text)
 
     def test_unmetered_service_says_so_instead_of_showing_zero(self):
