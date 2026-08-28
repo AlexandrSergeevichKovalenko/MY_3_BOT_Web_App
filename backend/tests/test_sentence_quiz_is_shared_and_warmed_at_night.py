@@ -66,80 +66,31 @@ class ПрогретоеДостаётсяВсем(unittest.TestCase):
             self.assertIsNone(server._pool_quiz_payload(запись, "Das eignet sich nicht."))
 
 
-class ГреемТолькоТем_КтоСюдаЗаходил(unittest.TestCase):
+class ПерсональныйПрогревОтменёнВладельцем(unittest.TestCase):
+    """⛔ ЗДЕСЬ ПРОВЕРЯЛСЯ ПРОГРЕВ ПОД КАЖДОГО ЧЕЛОВЕКА — «добить каждому до 20»,
+    «держать 30 общих слов на новичка». Всё это отменено 28.08.2026 прямым указанием
+    владельца:
 
-    def test_заход_в_режим_записывается(self):
-        """Раньше режим не писался нигде — в базе было только «карточка показана»."""
-        import inspect
+        «Мы формируем 20 слов, и они используются ВСЕМИ пользователями подряд.
+        Никакого индивидуального подхода.»
+
+    Персональный прогрев означал платить за каждого заново: при 7% общих слов
+    переиспользовалось почти ничего. Осталась одна ночная работа — держать запас
+    впереди самого быстрого на ОБЩЕЙ дорожке; её стережёт
+    test_sentence_track_is_one_for_everyone.py.
+    """
+
+    def test_персональные_цели_не_вернулись(self):
+        for имя in ("SENTENCE_QUIZ_WARM_TARGET_PER_USER",
+                    "SENTENCE_QUIZ_WARM_STARTER_TARGET",
+                    "SENTENCE_QUIZ_WARM_STARTER_SHARE"):
+            self.assertFalse(hasattr(server, имя),
+                             f"{имя} вернулась — это оплата за каждого человека отдельно")
+
+    def test_запись_захода_в_режим_осталась(self):
+        """Она пригодилась не для прогрева, а чтобы знать, кто вообще пользуется."""
         self.assertTrue(hasattr(db, "record_training_mode_use"))
-        код = inspect.getsource(db.get_users_of_training_mode)
-        self.assertIn("bt_3_training_mode_usage", код)
-
-    def test_ночь_берёт_людей_именно_этого_режима(self):
-        import inspect
-        код = inspect.getsource(server._dispatch_sentence_quiz_warm)
-        self.assertIn('get_users_of_training_mode("sentence"', код)
-
-    def test_готовое_засчитывается_в_запас(self):
-        """Иначе платили бы за то, что сосед уже оплатил."""
-        import inspect
-        код = inspect.getsource(server._warm_sentence_quizzes_for_user)
-        self.assertIn("SENTENCE_QUIZ_WARM_TARGET_PER_USER - готово", код)
-
-    def test_запас_добивается_до_двадцати(self):
-        self.assertEqual(server.SENTENCE_QUIZ_WARM_TARGET_PER_USER, 20)
-
-    def test_у_ночи_есть_потолок(self):
-        """Без потолка одна ночь могла бы выесть бюджет: 1,88 с и деньги за каждое."""
-        self.assertGreater(server.SENTENCE_QUIZ_WARM_NIGHTLY_CAP, 0)
-
-
-class НовичокНеУпираетсяВПустоту(unittest.TestCase):
-    """Владелец: «зайдёт впервые из любопытства, а карточек нет — и он не вернётся».
-    Замер 28.08.2026: ~1000 слов сохранены у 10–13 человек из 13 — это стартовый
-    словарь, одинаковый у всех. Прогрев его один раз обеспечивает первый заход любого."""
-
-    def test_у_стартового_прогрева_ЦЕЛЬ_а_не_доля_от_потолка(self):
-        """⛔ ПЕРВАЯ ВЕРСИЯ БЫЛА НЕВЕРНОЙ. Она отдавала общему словарю ПОЛОВИНУ ночного
-        потолка КАЖДУЮ НОЧЬ, независимо от того, хватает ли уже готового, — то есть
-        грела впрок. Владелец: «зачем греть 150, если нам достаточно 20 и они
-        переиспользуются?». Теперь есть цель: закрыли — тратим ноль."""
-        self.assertFalse(hasattr(server, "SENTENCE_QUIZ_WARM_STARTER_SHARE"),
-                         "доля вернулась — вместе с ней вернётся и прогрев впрок")
-        self.assertGreater(server.SENTENCE_QUIZ_WARM_STARTER_TARGET, 0)
-        import inspect
-        код = inspect.getsource(server._warm_starter_sentence_quizzes)
-        self.assertIn("count_shared_words_with_quiz", код)
-        self.assertIn("SENTENCE_QUIZ_WARM_STARTER_TARGET - готово", код)
-
-    def test_цель_закрыта_значит_ночь_не_тратит(self):
-        with mock.patch("backend.database.count_shared_words_with_quiz",
-                        return_value=server.SENTENCE_QUIZ_WARM_STARTER_TARGET + 5), \
-             mock.patch("backend.database.get_shared_cold_words_for_quiz") as выбор:
-            построено = server._warm_starter_sentence_quizzes(бюджет=100)
-        self.assertEqual(построено, 0)
-        выбор.assert_not_called()
-
-    def test_цель_равна_двум_полным_заходам(self):
-        """Набор — 15 заданий. Цель 30 = два полных первых захода, а не запас на год."""
-        self.assertEqual(server.SENTENCE_QUIZ_WARM_STARTER_TARGET, 30)
-
-    def test_потолок_ночи_посчитан_от_смысла(self):
-        """Потолок обязан вмещать стартовую цель — иначе она не закроется никогда."""
-        self.assertGreaterEqual(server.SENTENCE_QUIZ_WARM_NIGHTLY_CAP,
-                                server.SENTENCE_QUIZ_WARM_STARTER_TARGET)
-
-    def test_берём_слова_которые_есть_у_многих(self):
-        import inspect
-        код = inspect.getsource(db.get_shared_cold_words_for_quiz)
-        self.assertIn("count(DISTINCT user_id) >= %s", код)
-        self.assertIn("NOT EXISTS", код)
-
-    def test_на_слово_греем_одну_карточку(self):
-        """Иначе заплатили бы за одно и то же слово столько раз, у скольких оно есть."""
-        import inspect
-        код = inspect.getsource(db.get_shared_cold_words_for_quiz)
-        self.assertIn("SELECT DISTINCT ON (х.w) q.id", код)
+        self.assertTrue(hasattr(db, "get_users_of_training_mode"))
 
 
 if __name__ == "__main__":

@@ -19146,83 +19146,64 @@ def _build_sentence_training_set(
     source_lang: str,
     target_lang: str,
 ) -> list[dict]:
-    raw_entries = get_webapp_dictionary_entries(
-        user_id=int(user_id),
-        limit=SENTENCE_TRAINING_LOOKUP_LIMIT,
-        folder_mode=folder_mode,
-        folder_id=folder_id,
-        source_lang=source_lang,
-        target_lang=target_lang,
+    """Набор заданий «Дополни предложение» — из ОБЩЕЙ ДОРОЖКИ, одной на всех.
+
+    Владелец 28.08.2026, дословно: «мы формируем 20 слов, и они используются ВСЕМИ
+    пользователями подряд. Никакого индивидуального подхода. Если завтра начали учиться
+    ещё 2000, а первые 2000 хорошо занимались, — первые получат следующие 20 слов, а
+    вторые получат ПЕРВЫЕ 20, которые мы грели для предыдущих».
+
+    ⛔ ДО ЭТОГО ДНЯ БЫЛО РОВНО НАОБОРОТ. Набор собирался из ЛИЧНОГО словаря каждого:
+    слова у людей разные — значит и задания разные, значит за каждое платили заново.
+    Замер 28.08.2026: у владельца 15 464 слова, у остальных по тысяче, общих между
+    ними 7%. Прогретое одним почти никому не доставалось.
+
+    Теперь у человека есть только МЕСТО на дорожке. Прошёл двадцать — сдвинулся на
+    двадцать. Пришёл через год — идёт по той же дорожке с начала, по уже прогретому.
+    Инициатор прогрева МЫ, а не расписание отдельного человека.
+
+    Отдаём только ПРОГРЕТОЕ: непрогретое не готово, и человек увидел бы пустое место.
+    Не хватило — набор просто короче, остальное подъедет ночью.
+
+    `folder_mode` и `folder_id` больше не участвуют: дорожка общая, папки человека к
+    ней отношения не имеют. Оставлены в подписи ради вызывающего.
+    """
+    from backend.database import (
+        get_sentence_track_position, get_sentence_track_slice,
+        advance_sentence_track_position, get_pool_entry_by_word,
     )
-    if not raw_entries:
+    место = get_sentence_track_position(int(user_id))
+    куски = get_sentence_track_slice(место, limit=max(1, int(set_size)))
+    if not куски:
+        _note_sentence_quiz_miss("дорожка пуста впереди — ждём ночного прогрева")
         return []
-    decorated_all = [
-        _decorate_dictionary_item(item, source_lang=source_lang, target_lang=target_lang, direction=f"{source_lang}-{target_lang}")
-        for item in raw_entries
-    ]
 
-    desired_seed_count = min(set_size, int(round(set_size * SENTENCE_TRAINING_GPT_SEED_SHARE)))
-    gpt_seed_entries = [
-        item for item in decorated_all
-        if _is_gpt_seed_sentence_entry(item) and separable_gap_entry_is_sound(item.get("response_json"))
-    ]
-    if desired_seed_count > 0 and folder_mode in {"all", "none"}:
-        gpt_seed_entries = _ensure_sentence_gpt_seed_entries(
-            user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            existing_entries=decorated_all,
-        )
-    selected_seed = random.sample(gpt_seed_entries, k=min(len(gpt_seed_entries), desired_seed_count)) if gpt_seed_entries else []
-    selected_seed = [_merge_sentence_quiz_into_entry(item, _coerce_response_json(item.get("response_json")), sentence_origin="gpt_seed") for item in selected_seed]
-
-    remaining = max(0, set_size - len(selected_seed))
-    dictionary_candidates = []
-    for entry in decorated_all:
-        if _is_gpt_seed_sentence_entry(entry):
+    собрано: list[dict] = []
+    дошли_до = место
+    for кусок in куски:
+        слово, предложение = str(кусок["word_de"]), str(кусок["sentence"])
+        запись = get_pool_entry_by_word(слово)
+        if not запись:
             continue
-        german_sentence, _, _ = _extract_sentence_training_pair(entry, source_lang, target_lang)
-        if _looks_like_german_sentence(german_sentence):
-            dictionary_candidates.append(entry)
-    # ⛔ СНАЧАЛА ТО, ЧТО УЖЕ ПРОГРЕТО. Требование владельца 28.08.2026:
-    # «человек, который активно занимается, получает задания быстрее, а тот, который
-    # менее активно, получает ТЕ ЖЕ САМЫЕ, уже прогретые для других — но новые для него
-    # не греются».
-    #
-    # Задание кешируется на СЛОВЕ, а не на человеке (таблица общего пула не знает про
-    # пользователей), поэтому прогретое одним доступно всем, у кого это слово есть.
-    # Слепое перемешивание тянуло непрогретые слова наравне с готовыми и заставляло
-    # платить там, где платить было не нужно.
-    #
-    # Перемешиваем ВНУТРИ каждой группы, чтобы набор не был одинаковым день ото дня.
-    random.shuffle(dictionary_candidates)
-    прогретые, холодные = [], []
-    for entry in dictionary_candidates:
-        german_sentence, _, response_json = _extract_sentence_training_pair(entry, source_lang, target_lang)
-        (прогретые if _entry_sentence_cache_payload(response_json, german_sentence) else холодные).append(entry)
-    dictionary_candidates = прогретые + холодные
+        src = _normalize_short_lang_code(запись.get("source_lang") or source_lang, fallback="ru")
+        tgt = _normalize_short_lang_code(запись.get("target_lang") or target_lang, fallback="de")
+        item = _decorate_dictionary_item(dict(запись), source_lang=src, target_lang=tgt,
+                                         direction=f"{src}-{tgt}")
+        payload = _pool_quiz_payload(item, предложение)
+        if payload is None:
+            continue
+        собрано.append(_merge_sentence_quiz_into_entry(item, payload, sentence_origin="track"))
+        дошли_до = кусок["position"]
 
-    selected_dict: list[dict] = []
-    llm_remaining = SENTENCE_TRAINING_LLM_MAX_PER_REQUEST
-    for entry in dictionary_candidates:
-        if len(selected_dict) >= remaining:
-            break
-        allow_llm = llm_remaining > 0
-        if allow_llm:
-            llm_remaining -= 1
-        quiz_entry = _build_sentence_quiz_from_dictionary_entry(
-            entry,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            allow_llm=allow_llm,
-        )
-        if quiz_entry:
-            selected_dict.append(quiz_entry)
-
-    result = selected_seed + selected_dict
-    random.shuffle(result)
-    return result[:set_size]
-
+    if дошли_до > место:
+        # Двигаем человека вперёд СРАЗУ при выдаче: иначе, закрыв приложение на
+        # середине, он получит тот же набор снова и решит, что программа его не помнит.
+        try:
+            advance_sentence_track_position(int(user_id), int(дошли_до))
+        except Exception:
+            logging.warning("не смогли подвинуть человека по дорожке user_id=%s", user_id,
+                            exc_info=True)
+    return собрано[:set_size]
 
 def _language_label(code: str) -> str:
     normalized = _normalize_short_lang_code(code, fallback="unknown")
@@ -29008,28 +28989,18 @@ def _run_translation_focus_pool_admin_report_scheduler_job() -> None:
 #     греются, пока есть готовые»;
 #   · сверх того — стартовый запас: греем слова общего словаря, чтобы у любого нового
 #     человека первый заход был мгновенным.
-SENTENCE_QUIZ_WARM_TARGET_PER_USER = max(1, int((os.getenv("SENTENCE_QUIZ_WARM_TARGET_PER_USER") or "20").strip()))
+# ⛔ ЗДЕСЬ БЫЛИ ЦЕЛИ ПЕРСОНАЛЬНОГО ПРОГРЕВА. УБРАНЫ 28.08.2026.
+# Владелец: «никакого индивидуального подхода — мы формируем 20 слов, и они
+# используются всеми пользователями подряд». Персональные цели («добить каждому до 20»,
+# «держать 30 общих слов») означали платить за каждого человека отдельно. Осталась одна
+# цель — SENTENCE_TRACK_AHEAD: сколько прогретых заданий держать впереди самого
+# быстрого на ОБЩЕЙ дорожке.
 
-# ⛔ У СТАРТОВОГО ПРОГРЕВА ЦЕЛЬ, А НЕ ДОЛЯ ОТ ПОТОЛКА. Владелец 28.08.2026: «зачем
-# греть 150, если нам достаточно 20 и они переиспользуются?»
-#
-# Он прав, и первая версия была неверной: она отдавала стартовому словарю ПОЛОВИНУ
-# ночного потолка КАЖДУЮ НОЧЬ, независимо от того, хватает ли уже готового. Это и есть
-# «греем впрок» — ровно то, что он запретил.
-#
-# Теперь есть цель: держать ГОТОВЫМИ столько общих слов, чтобы первый заход новичка был
-# полным. Набор — 15 заданий, поэтому цель 30: два полных захода. Достигли — ночь
-# больше не тратит на это НИ ЦЕНТА, пока цель не просядет (новые люди, чистка).
-#
-# ЗАЧЕМ ЭТО ВООБЩЕ НУЖНО. Замер 28.08.2026: готовых заданий 268, но на словах общего
-# словаря из них ВСЕГО ДВА — остальные на личных словах владельца. Новый человек, у
-# которого только стартовая тысяча, нашёл бы два задания. Это та самая пустота, из-за
-# которой «зайдёт впервые из любопытства и больше не вернётся».
-SENTENCE_QUIZ_WARM_STARTER_TARGET = max(0, int((os.getenv("SENTENCE_QUIZ_WARM_STARTER_TARGET") or "30").strip()))
+# Сколько ПРОГРЕТЫХ заданий держать впереди самого быстрого человека на общей дорожке.
+# Двадцать — один набор: «просто кто-то, кто занимается, получает их быстрее» (владелец
+# 28.08.2026). Запас впереди есть — ночь не тратит ничего.
+SENTENCE_TRACK_AHEAD = max(1, int((os.getenv("SENTENCE_TRACK_AHEAD") or "20").strip()))
 
-# Потолок ночи. Считается от смысла, а не от балды: цель стартового словаря (30) плюс
-# запас на добивку тем, кто тренируется (20 на человека). Сорок хватает, чтобы за одну
-# ночь закрыть стартовую цель, а дальше ночь тратит только на реально занимающихся.
 SENTENCE_QUIZ_WARM_NIGHTLY_CAP = max(0, int((os.getenv("SENTENCE_QUIZ_WARM_NIGHTLY_CAP") or "40").strip()))
 
 
@@ -29040,82 +29011,47 @@ def _warm_one_entry_quiz(entry: dict, *, source_lang: str, target_lang: str) -> 
     return bool(итог)
 
 
-def _warm_sentence_quizzes_for_user(user_id: int, *, бюджет: int) -> int:
-    """Догреть человеку запас до цели. Возвращает, сколько заданий построили.
+def _extend_and_warm_sentence_track(*, бюджет: int) -> dict:
+    """Держать впереди самого быстрого человека запас ПРОГРЕТЫХ заданий дорожки.
 
-    Сначала считаем, сколько у него УЖЕ готово: платить за то, что активные соседи уже
-    оплатили, не нужно. Не хватает до цели — достраиваем ровно недостающее.
+    Владелец 28.08.2026: «просто кто-то, кто занимается, получает их быстрее». Значит
+    ориентир — самый быстрый: пока у него впереди есть запас, ночь не тратит ничего.
+
+    Сколько держим впереди — SENTENCE_TRACK_AHEAD (20, один набор). Дошёл до края —
+    дописываем дорожку и греем. Никакого прогрева «на год вперёд».
     """
-    if бюджет <= 0:
-        return 0
-    source_lang, target_lang, _ = _get_user_language_pair(int(user_id))
-    записи = get_webapp_dictionary_entries(
-        user_id=int(user_id), limit=SENTENCE_TRAINING_LOOKUP_LIMIT,
-        folder_mode="all", folder_id=None,
-        source_lang=source_lang, target_lang=target_lang,
-    )
-    готово, холодные = 0, []
-    for сырое in записи:
-        item = _decorate_dictionary_item(
-            сырое if isinstance(сырое, dict) else {},
-            source_lang=source_lang, target_lang=target_lang,
-            direction=f"{source_lang}-{target_lang}")
-        предложение, _перевод, response_json = _extract_sentence_training_pair(
-            item, source_lang, target_lang)
-        if not _looks_like_german_sentence(предложение):
-            continue
-        if _entry_sentence_cache_payload(response_json, предложение):
-            готово += 1
-        else:
-            холодные.append(item)
-    нужно = max(0, SENTENCE_QUIZ_WARM_TARGET_PER_USER - готово)
-    if нужно <= 0:
-        return 0
-    построено = 0
-    for item in холодные[: min(нужно, бюджет)]:
-        try:
-            if _warm_one_entry_quiz(item, source_lang=source_lang, target_lang=target_lang):
-                построено += 1
-        except Exception:
-            logging.warning("ночной прогрев задания не удался user_id=%s", user_id, exc_info=True)
-    return построено
-
-
-def _warm_starter_sentence_quizzes(*, бюджет: int) -> int:
-    """Догреть общий словарь ДО ЦЕЛИ — и ни одним заданием больше.
-
-    Замер 28.08.2026: ~1000 слов сохранены у 10–13 человек из 13 — это стартовый
-    словарь, одинаковый у всех. Задание лежит на слове, поэтому прогретое здесь
-    достаётся каждому будущему человеку даром — платим один раз за всех.
-
-    Цель, а не «сколько влезет»: достигли — тратим ноль. Греть всю тысячу незачем,
-    новичку нужен полный первый заход, а не запас на год.
-    """
-    if бюджет <= 0 or SENTENCE_QUIZ_WARM_STARTER_TARGET <= 0:
-        return 0
     from backend.database import (
-        get_shared_cold_words_for_quiz, get_dictionary_entry_by_id,
-        count_shared_words_with_quiz,
+        sentence_track_state, append_to_sentence_track, pick_words_for_sentence_track,
+        get_cold_sentence_track_items, mark_sentence_track_warmed, get_pool_entry_by_word,
     )
-    try:
-        готово = count_shared_words_with_quiz(min_users=5)
-    except Exception:
-        logging.warning("не смогли посчитать готовые общие слова", exc_info=True)
-        return 0
-    нужно = max(0, SENTENCE_QUIZ_WARM_STARTER_TARGET - готово)
-    if нужно <= 0:
-        logging.info("стартовый прогрев: цель уже закрыта (%s из %s) — не тратим",
-                     готово, SENTENCE_QUIZ_WARM_STARTER_TARGET)
-        return 0
-    try:
-        ids = get_shared_cold_words_for_quiz(min_users=5, limit=min(нужно, бюджет))
-    except Exception:
-        logging.warning("не смогли выбрать слова общего словаря для прогрева", exc_info=True)
-        return 0
-    построено = 0
-    for entry_id in ids:
+    итог = {"added": 0, "warmed": 0}
+    if бюджет <= 0:
+        return итог
+    состояние = sentence_track_state()
+    запас_впереди = состояние["warmed"] - состояние["furthest_user"]
+    if запас_впереди >= SENTENCE_TRACK_AHEAD:
+        logging.info("дорожка: впереди %s прогретых при цели %s — ночь не тратит",
+                     запас_впереди, SENTENCE_TRACK_AHEAD)
+        return итог
+    надо = min(бюджет, SENTENCE_TRACK_AHEAD - запас_впереди)
+
+    # 1. Дописать дорожку, если материала на ней не хватает.
+    не_хватает = надо - (состояние["total"] - состояние["warmed"])
+    if не_хватает > 0:
         try:
-            запись = get_dictionary_entry_by_id(int(entry_id))
+            итог["added"] = append_to_sentence_track(pick_words_for_sentence_track(не_хватает))
+        except Exception:
+            logging.warning("не смогли дописать дорожку", exc_info=True)
+
+    # 2. Прогреть ближайшее непрогретое.
+    try:
+        холодные = get_cold_sentence_track_items(limit=надо)
+    except Exception:
+        logging.warning("не смогли прочитать непрогретое с дорожки", exc_info=True)
+        return итог
+    for кусок in холодные:
+        try:
+            запись = get_pool_entry_by_word(str(кусок["word_de"]))
             if not запись:
                 continue
             src = _normalize_short_lang_code(запись.get("source_lang") or "ru", fallback="ru")
@@ -29123,49 +29059,34 @@ def _warm_starter_sentence_quizzes(*, бюджет: int) -> int:
             item = _decorate_dictionary_item(dict(запись), source_lang=src, target_lang=tgt,
                                              direction=f"{src}-{tgt}")
             if _warm_one_entry_quiz(item, source_lang=src, target_lang=tgt):
-                построено += 1
+                mark_sentence_track_warmed(int(кусок["position"]))
+                итог["warmed"] += 1
         except Exception:
-            logging.warning("прогрев общего слова %s не удался", entry_id, exc_info=True)
-    return построено
+            logging.warning("прогрев дорожки на месте %s не удался", кусок.get("position"),
+                            exc_info=True)
+    logging.info("дорожка: дописано %s, прогрето %s", итог["added"], итог["warmed"])
+    return итог
 
 
 def _dispatch_sentence_quiz_warm() -> dict:
-    """Ночной прогрев заданий: сначала тем, кто тренируется, потом общий словарь."""
+    """Ночная работа по заданиям «Дополни предложение» — ОДНА ДОРОЖКА НА ВСЕХ.
+
+    ⛔ ЗДЕСЬ БЫЛ ПРОГРЕВ ПОД КАЖДОГО ЧЕЛОВЕКА ОТДЕЛЬНО. Убран 28.08.2026 по прямому
+    указанию владельца: «мы формируем 20 слов, и они используются ВСЕМИ пользователями
+    подряд. Никакого индивидуального подхода». Персональный прогрев означал платить за
+    каждого заново — при 7% общих слов почти ничего не переиспользовалось.
+
+    Осталась одна работа: держать впереди самого быстрого человека запас прогретых
+    заданий общей дорожки. Запас есть — ночь не тратит ни цента.
+    """
     if SENTENCE_QUIZ_WARM_NIGHTLY_CAP <= 0:
         return {"ok": True, "skipped": True, "reason": "nightly cap = 0"}
-    from backend.database import get_users_of_training_mode
-    бюджет = SENTENCE_QUIZ_WARM_NIGHTLY_CAP
-    итог = {"ok": True, "for_users": 0, "starter": 0, "users_seen": 0}
     try:
-        люди = get_users_of_training_mode("sentence", lookback_days=30, limit=100)
+        итог = _extend_and_warm_sentence_track(бюджет=SENTENCE_QUIZ_WARM_NIGHTLY_CAP)
     except Exception:
-        logging.warning("не смогли прочитать, кто тренируется", exc_info=True)
-        люди = []
-    итог["users_seen"] = len(люди)
-    # Оставляем место под стартовую цель, но ровно столько, сколько ей ещё нужно.
-    try:
-        from backend.database import count_shared_words_with_quiz
-        осталось_старту = max(0, SENTENCE_QUIZ_WARM_STARTER_TARGET - count_shared_words_with_quiz(min_users=5))
-    except Exception:
-        осталось_старту = 0
-    доля_на_старт = min(осталось_старту, SENTENCE_QUIZ_WARM_NIGHTLY_CAP)
-    for user_id in люди:
-        if бюджет <= доля_на_старт:
-            break
-        if _is_synthetic_telegram_user_id(int(user_id)) or not _is_webapp_user_allowed(int(user_id)):
-            continue
-        try:
-            построено = _warm_sentence_quizzes_for_user(int(user_id), бюджет=бюджет - доля_на_старт)
-        except Exception:
-            logging.warning("ночной прогрев для user_id=%s не удался", user_id, exc_info=True)
-            построено = 0
-        итог["for_users"] += построено
-        бюджет -= построено
-    итог["starter"] = _warm_starter_sentence_quizzes(бюджет=max(0, бюджет))
-    итог["spent"] = потрачено = итог["for_users"] + итог["starter"]
-    logging.info("ночной прогрев заданий: людям %s, стартовому словарю %s (всего %s из %s)",
-                 итог["for_users"], итог["starter"], потрачено, SENTENCE_QUIZ_WARM_NIGHTLY_CAP)
-    return итог
+        logging.exception("ночная работа с дорожкой не удалась")
+        return {"ok": False}
+    return {"ok": True, **итог}
 
 
 def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
