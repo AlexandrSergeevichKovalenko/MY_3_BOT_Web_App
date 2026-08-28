@@ -7236,18 +7236,162 @@ body:has(.webapp-page.is-theme-light),
   word-break: break-word;
 }
 
-.webapp-selection-menu {
+/* ╭──────────────────────────────────────────────────────────────────────────╮
+   │  КАРТОЧКА ПЕРЕВОДА — «лист снизу» (читалка, YouTube, переводы, словарь)   │
+   │  Решение владельца 28.08.2026. Одна карточка на все четыре поверхности.   │
+   │  Она ЛОЖИТСЯ ПОВЕРХ экрана и НИЧЕГО под собой не двигает: основа не едет, │
+   │  не подкручивается и не пересчитывается. position: fixed + transform —    │
+   │  макет страницы под ней вообще не участвует.                             │
+   ╰──────────────────────────────────────────────────────────────────────────╯ */
+.webapp-selection-sheet {
   position: fixed;
-  z-index: 140;
-  background: rgba(15, 23, 42, 0.95);
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  border-radius: 12px;
-  padding: 10px 12px;
-  box-shadow: 0 12px 24px rgba(8, 11, 26, 0.4);
-  display: grid;
-  gap: 8px;
-  min-width: 180px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0 auto;
+  width: min(100%, 640px);
+  z-index: 150;
+  background: rgba(12, 19, 36, 0.985);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-bottom: none;
+  border-radius: 20px 20px 0 0;
+  box-shadow: 0 -14px 40px rgba(2, 6, 23, 0.55);
+  color: #eef2fb;
+  overflow: hidden;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  animation: wssSheetIn 0.2s cubic-bezier(0.22, 0.61, 0.36, 1);
+  touch-action: none;
 }
+
+@keyframes wssSheetIn {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .webapp-selection-sheet { animation: none; }
+}
+
+.webapp-selection-sheet .wss-grab {
+  width: 38px;
+  height: 4px;
+  margin: 8px auto 0;
+  border-radius: 99px;
+  background: rgba(232, 237, 247, 0.22);
+}
+
+/* Прокрутка длинного предложения живёт ВНУТРИ карточки: overscroll-behavior
+   не пускает её дальше, чтобы страница под карточкой не поехала. */
+.webapp-selection-sheet .wss-body {
+  display: grid;
+  gap: 7px;
+  padding: 10px 16px 14px;
+  max-height: 46vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+
+.webapp-selection-sheet .wss-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.webapp-selection-sheet .wss-chip {
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: #d9b98a;
+  background: rgba(196, 146, 74, 0.16);
+  border: 1px solid rgba(196, 146, 74, 0.34);
+}
+
+.webapp-selection-sheet .wss-chip.is-provider {
+  color: #93c5fd;
+  background: rgba(37, 99, 235, 0.2);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+/* Оригинал целиком, с переносом: обрезать многоточием запрещено — человек
+   выделил фразу, чтобы сверить её с переводом. */
+.webapp-selection-sheet .wss-orig {
+  font-size: 14.5px;
+  line-height: 1.42;
+  font-weight: 600;
+  color: rgba(232, 237, 247, 0.72);
+  overflow-wrap: anywhere;
+}
+
+.webapp-selection-sheet .wss-tra {
+  font-size: 20px;
+  line-height: 1.3;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+  overflow-wrap: anywhere;
+}
+
+.webapp-selection-sheet .wss-tra.is-long {
+  font-size: 17px;
+  line-height: 1.36;
+  font-weight: 650;
+}
+
+.webapp-selection-sheet .wss-acts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.webapp-selection-sheet .wss-act {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 11px 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: rgba(232, 237, 247, 0.82);
+  background: none;
+  border: none;
+  border-right: 1px solid rgba(148, 163, 184, 0.22);
+  cursor: pointer;
+}
+
+.webapp-selection-sheet .wss-act:last-child { border-right: none; }
+.webapp-selection-sheet .wss-act:disabled { opacity: 0.5; cursor: default; }
+.webapp-selection-sheet .wss-act:active:not(:disabled) { background: rgba(148, 163, 184, 0.12); }
+
+.webapp-selection-sheet .wss-act-icon {
+  font-size: 16px;
+  line-height: 1;
+  color: #5ec9b0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+}
+
+.webapp-selection-sheet .wss-tip {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  padding: 8px 14px 11px;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: rgba(232, 237, 247, 0.5);
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(122, 162, 255, 0.05);
+}
+
+.webapp-selection-sheet .wss-tip-icon { font-size: 12px; line-height: 1.2; }
 
 .webapp-selection-translation {
   font-size: 14px;
@@ -7257,54 +7401,6 @@ body:has(.webapp-page.is-theme-light),
   border: 1px solid rgba(148, 163, 184, 0.25);
   border-radius: 10px;
   padding: 10px 12px;
-}
-
-.webapp-selection-provider {
-  display: inline-block;
-  margin-bottom: 4px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: #93c5fd;
-  background: rgba(37, 99, 235, 0.2);
-  border: 1px solid rgba(59, 130, 246, 0.35);
-}
-
-.webapp-selection-menu.is-compact {
-  min-width: 128px;
-  padding: 6px 8px;
-  gap: 6px;
-  border-radius: 10px;
-}
-
-.webapp-selection-menu.is-compact .webapp-selection-text {
-  font-size: 11px;
-}
-
-.webapp-selection-menu.is-compact .secondary-button {
-  min-height: 30px;
-  font-size: 12px;
-  padding: 6px 8px;
-  border-radius: 9px;
-}
-
-.webapp-selection-menu.is-overlay-mode {
-  min-width: 136px;
-  max-width: min(220px, 58vw);
-}
-
-.webapp-selection-menu.is-overlay-mode .secondary-button {
-  min-height: 30px;
-  font-size: 12px;
-  padding: 6px 8px;
-}
-
-.webapp-selection-text {
-  font-size: 12px;
-  color: rgba(248, 250, 252, 0.7);
-  word-break: break-word;
 }
 
 .webapp-inline-toast {
@@ -27696,26 +27792,41 @@ body.worldnews-active .webapp-topbar {
   border-color: rgba(185, 28, 28, 0.2);
 }
 
-.webapp-page.is-theme-light .webapp-selection-menu {
-  background: rgba(253, 247, 236, 0.97);
+.webapp-page.is-theme-light .webapp-selection-sheet {
+  background: rgba(253, 247, 236, 0.99);
   border-color: rgba(171, 139, 98, 0.34);
-  box-shadow: 0 14px 30px rgba(105, 78, 47, 0.24);
+  box-shadow: 0 -14px 34px rgba(105, 78, 47, 0.24);
+  color: #241a0c;
 }
 
-.webapp-page.is-theme-light .webapp-selection-text {
-  color: rgba(46, 37, 27, 0.78);
+.webapp-page.is-theme-light .webapp-selection-sheet .wss-grab { background: rgba(58, 44, 26, 0.2); }
+.webapp-page.is-theme-light .webapp-selection-sheet .wss-chip {
+  color: #7a5220;
+  background: rgba(196, 146, 74, 0.16);
+  border-color: rgba(171, 126, 72, 0.34);
+}
+.webapp-page.is-theme-light .webapp-selection-sheet .wss-chip.is-provider {
+  color: #2f5da8;
+  background: rgba(59, 108, 240, 0.12);
+  border-color: rgba(59, 108, 240, 0.3);
+}
+.webapp-page.is-theme-light .webapp-selection-sheet .wss-orig { color: rgba(45, 33, 18, 0.74); }
+.webapp-page.is-theme-light .webapp-selection-sheet .wss-tra { color: #221a0e; }
+.webapp-page.is-theme-light .webapp-selection-sheet .wss-acts,
+.webapp-page.is-theme-light .webapp-selection-sheet .wss-act { border-color: rgba(171, 139, 98, 0.28); }
+.webapp-page.is-theme-light .webapp-selection-sheet .wss-act { color: rgba(58, 44, 26, 0.8); }
+.webapp-page.is-theme-light .webapp-selection-sheet .wss-act:active:not(:disabled) { background: rgba(171, 139, 98, 0.14); }
+.webapp-page.is-theme-light .webapp-selection-sheet .wss-act-icon { color: #12796d; }
+.webapp-page.is-theme-light .webapp-selection-sheet .wss-tip {
+  color: rgba(58, 44, 26, 0.6);
+  border-color: rgba(171, 139, 98, 0.22);
+  background: rgba(196, 146, 74, 0.08);
 }
 
 .webapp-page.is-theme-light .webapp-selection-translation {
   color: #2f271f;
   background: rgba(255, 248, 238, 0.95);
   border-color: rgba(171, 139, 98, 0.32);
-}
-
-.webapp-page.is-theme-light .webapp-selection-provider {
-  color: #6f4f2e;
-  background: rgba(221, 180, 126, 0.25);
-  border-color: rgba(171, 126, 72, 0.45);
 }
 
 .webapp-page.is-theme-light .webapp-inline-toast {

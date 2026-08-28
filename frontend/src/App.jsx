@@ -6793,10 +6793,14 @@ function AppInner() {
   const [selectionText, setSelectionText] = useState('');
   const [selectionPos, setSelectionPos] = useState(null);
   const [selectionType, setSelectionType] = useState('');
+  // Смахивание карточки перевода вниз. Число живёт ТОЛЬКО на самой карточке
+  // (transform), страница под ней не участвует — решение владельца 28.08.2026:
+  // основа не двигается и не перестраивается из-за карточки.
+  const [selectionSheetDragY, setSelectionSheetDragY] = useState(0);
+  const selectionSheetDragRef = useRef({ active: false, startY: 0, dy: 0 });
   const [selectedMeta, setSelectedMeta] = useState(null);
   const [readerAudioStartWid, setReaderAudioStartWid] = useState(null);
   const [readerAudioAwaitingWordTap, setReaderAudioAwaitingWordTap] = useState(false);
-  const [selectionCompact, setSelectionCompact] = useState(false);
   const [selectionLookupLang, setSelectionLookupLang] = useState('');
   const [selectionInlineMode, setSelectionInlineMode] = useState(false);
   const [selectionInlineLookup, setSelectionInlineLookup] = useState({ loading: false, word: '', translation: '', direction: '', provider: '' });
@@ -15233,9 +15237,24 @@ function AppInner() {
     () => (shouldPrepareGuideContent ? buildGuideStepItems(uiLang) : []),
     [shouldPrepareGuideContent, uiLang],
   );
-  const isYoutubeSelectionMenu = String(selectionType || '').startsWith('youtube_');
-  const isTranslationResultSelectionMenu = String(selectionType || '').startsWith('translation_result_');
-  const isInlineSelectionMenu = isYoutubeSelectionMenu || isTranslationResultSelectionMenu;
+  // ── Карточка перевода: подпись «что выделено» ────────────────────────────
+  // Источник — САМО выделение (число слов) и тип, который прислала поверхность,
+  // где предложение отмечено явно. Ничего не выводим «на глаз»: часть речи здесь
+  // НЕ показываем, потому что быстрый перевод её не возвращает (см. карточку).
+  const selectionWordCount = String(selectionText || '').trim()
+    ? String(selectionText).trim().split(/\s+/).filter(Boolean).length
+    : 0;
+  const selectionKindLabel = (() => {
+    const type = String(selectionType || '');
+    if (type.includes('multi_sentence')) return tr('несколько предложений', 'mehrere Sätze');
+    if (type.endsWith('sentence')) return tr('предложение', 'Satz');
+    if (selectionWordCount <= 1) return tr('слово', 'Wort');
+    const n = selectionWordCount;
+    const tail = (n % 10 === 1 && n % 100 !== 11)
+      ? 'слово'
+      : ((n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) ? 'слова' : 'слов');
+    return tr(`фраза · ${n} ${tail}`, `Wortgruppe · ${n} Wörter`);
+  })();
   const isLightTheme = themeMode === 'light';
   const readerHasContent = Boolean(String(readerContent || '').trim());
   const readerCanonicalText = useMemo(
@@ -23534,7 +23553,6 @@ function AppInner() {
     setSelectionPos({ x: safeX, y: safeY });
     setSelectionType(nextSelectionType);
     setSelectedMeta(options?.selectedMeta || null);
-    setSelectionCompact(Boolean(options?.compact));
     setSelectionLookupLang(normalizeLangCode(options?.lookupLang || ''));
     setSelectionInlineMode(Boolean(options?.inlineLookup));
     if (options?.inlineLookup) {
@@ -23559,13 +23577,43 @@ function AppInner() {
     setSelectionPos(null);
     setSelectionType('');
     setSelectedMeta(null);
-    setSelectionCompact(false);
     setSelectionLookupLang('');
     setSelectionInlineMode(false);
     setSelectionLookupLoading(false);
     setSelectionInlineLookup({ loading: false, word: '', translation: '', direction: '', provider: '' });
+    selectionSheetDragRef.current = { active: false, startY: 0, dy: 0 };
+    setSelectionSheetDragY(0);
     youtubeDragSelectionMetaRef.current = null;
     setYoutubeDragSelectionMeta(null);
+  };
+
+  // ── Карточка перевода: смахнуть вниз ───────────────────────────────────────
+  // Двигается только сама карточка. Ни скролла страницы, ни изменения высот —
+  // transform на фиксированном элементе не вызывает перестроения макета.
+  const onSelectionSheetPointerDown = (event) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest('button')) return;
+    // Длинное предложение прокручивается ВНУТРИ карточки. Пока текст не домотан
+    // до верха, палец листает его, а не смахивает карточку.
+    const scroller = target instanceof Element ? target.closest('.wss-body') : null;
+    if (scroller && scroller.scrollTop > 0) return;
+    selectionSheetDragRef.current = { active: true, startY: Number(event.clientY || 0), dy: 0 };
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch (_captureError) { /* захват курсора — не данные */ }
+  };
+  const onSelectionSheetPointerMove = (event) => {
+    const state = selectionSheetDragRef.current;
+    if (!state.active) return;
+    const dy = Math.max(0, Number(event.clientY || 0) - state.startY);
+    state.dy = dy;
+    setSelectionSheetDragY(dy);
+  };
+  const onSelectionSheetPointerEnd = () => {
+    const state = selectionSheetDragRef.current;
+    if (!state.active) return;
+    const dy = state.dy;
+    selectionSheetDragRef.current = { active: false, startY: 0, dy: 0 };
+    setSelectionSheetDragY(0);
+    if (dy > 60) clearSelection();
   };
 
   const normalizeForLookup = async (rawText) => {
@@ -44631,90 +44679,95 @@ function AppInner() {
             )}
 
             {selectionText && selectionPos && (isSectionVisible('youtube') || isSectionVisible('dictionary') || isSectionVisible('translations') || isSectionVisible('reader')) && (
+              /* ── Карточка перевода: лист снизу ────────────────────────────────────
+                 Решение владельца 28.08.2026. Карточка ЛОЖИТСЯ ПОВЕРХ экрана и не
+                 трогает основу: ни страница читалки, ни панель субтитров не едут,
+                 не подкручиваются и не пересчитываются. Всё движение — transform
+                 на самом фиксированном листе. Закрытие: тап вне (глобальный
+                 pointerdown ниже), Escape, смахивание вниз. */
               <div
                 ref={selectionMenuRef}
-                className={`webapp-selection-menu ${selectionCompact ? 'is-compact' : ''} ${(youtubeAppFullscreen || selectionInlineMode) ? 'is-overlay-mode' : ''} ${selectionType ? `is-${selectionType}` : ''}`}
-                style={{
-                  left: `${selectionPos.x}px`,
-                  top: `${selectionPos.y}px`,
-                  minWidth: 180,
-                  maxWidth: 280,
-                  borderRadius: 10,
-                  padding: '8px 9px',
-                  boxShadow: '0 14px 28px rgba(8, 11, 26, 0.45)',
-                  gap: 6,
-                }}
-                onMouseLeave={clearSelection}
+                className={`webapp-selection-sheet ${selectionType ? `is-${selectionType}` : ''}`}
+                style={selectionSheetDragY > 0
+                  ? { transform: `translateY(${selectionSheetDragY}px)`, transition: 'none', animation: 'none' }
+                  : undefined}
+                onPointerDown={onSelectionSheetPointerDown}
+                onPointerMove={onSelectionSheetPointerMove}
+                onPointerUp={onSelectionSheetPointerEnd}
+                onPointerCancel={onSelectionSheetPointerEnd}
               >
-                <div
-                  className="webapp-selection-text"
-                  style={{
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    maxWidth: 248,
-                    fontSize: 12,
-                    lineHeight: 1.2,
-                  }}
-                  title={selectionText}
-                >
-                  {selectionText}
+                <div className="wss-grab" aria-hidden="true" />
+                <div className="wss-body">
+                  <div className="wss-chips">
+                    <span className="wss-chip">{selectionKindLabel}</span>
+                    {canSeeEngineDebugLabels && selectionInlineLookup.provider && (
+                      <span className="wss-chip is-provider">
+                        {String(selectionInlineLookup.provider).toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+                  {/* Оригинал ЦЕЛИКОМ, с переносом. Многоточие здесь запрещено: человек
+                      выделил фразу именно для того, чтобы сверить её с переводом. */}
+                  <div className="wss-orig">{selectionText}</div>
+                  {(selectionInlineLookup.loading || selectionInlineLookup.translation) && (
+                    <div className={`wss-tra ${selectionWordCount > 3 ? 'is-long' : ''}`}>
+                      {selectionInlineLookup.loading
+                        ? tr('Переводим…', 'Übersetzen…')
+                        : selectionInlineLookup.translation}
+                    </div>
+                  )}
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: isInlineSelectionMenu ? '1fr' : '1fr 1fr', gap: 6 }}>
-                  {!isInlineSelectionMenu && (() => {
+                <div className="wss-acts">
+                  {(() => {
                     const selTtsKey = 'selection-menu-play';
                     const selTtsLoading = isTtsPending(selTtsKey);
                     return (
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => {
-                        const { sourceLangHint } = resolveQuickTranslateParams(selectionText);
-                        void playTtsWithUi(selTtsKey, selectionText, sourceLangHint || 'de');
-                      }}
-                      disabled={selTtsLoading}
-                      style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
-                      aria-label={tr('Воспроизвести', 'Abspielen')}
-                      title={tr('Воспроизвести', 'Abspielen')}
-                    >
-                      {selTtsLoading
-                        ? <span className="tts-mini-spinner" aria-hidden="true" />
-                        : <span aria-hidden="true" style={{ fontSize: 14 }}>▶</span>
-                      }
-                    </button>
+                      <button
+                        type="button"
+                        className="wss-act"
+                        onClick={() => {
+                          const { sourceLangHint } = resolveQuickTranslateParams(selectionText);
+                          void playTtsWithUi(selTtsKey, selectionText, sourceLangHint || 'de');
+                        }}
+                        disabled={selTtsLoading}
+                      >
+                        <span className="wss-act-icon" aria-hidden="true">
+                          {selTtsLoading ? <span className="tts-mini-spinner" /> : '▶'}
+                        </span>
+                        <span>{tr('Слушать', 'Hören')}</span>
+                      </button>
                     );
                   })()}
                   <button
                     type="button"
-                    className="secondary-button"
+                    className="wss-act"
                     onClick={() => { void handleSelectionSave(selectionText); }}
                     disabled={dictionaryLoading}
-                    style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
                   >
-                    {dictionaryLoading ? tr('Словарь...', 'Wörterbuch...') : tr('Сохранить', 'Speichern')}
+                    <span className="wss-act-icon" aria-hidden="true">★</span>
+                    <span>{dictionaryLoading ? tr('Сохраняем…', 'Speichern…') : tr('Сохранить', 'Speichern')}</span>
                   </button>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 6 }}>
                   <button
                     type="button"
-                    className="secondary-button"
+                    className="wss-act"
                     onClick={handleSelectionGptLookup}
                     disabled={selectionGptLoading}
-                    style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
                   >
-                    {selectionGptLoading ? 'GPT...' : 'GPT'}
+                    <span className="wss-act-icon" aria-hidden="true">✦</span>
+                    <span>{selectionGptLoading ? tr('Готовим…', 'Moment…') : tr('Разбор', 'Analyse')}</span>
                   </button>
                 </div>
-                {(selectionInlineLookup.loading || selectionInlineLookup.translation) && (
-                  <div className="webapp-selection-translation" style={{ fontSize: 11, padding: '5px 7px' }}>
-                    {canSeeEngineDebugLabels && selectionInlineLookup.provider && (
-                      <div className="webapp-selection-provider">
-                        {String(selectionInlineLookup.provider).toUpperCase()}
-                      </div>
-                    )}
-                    {selectionInlineLookup.loading
-                      ? tr('Переводим...', 'Übersetzen...')
-                      : (selectionInlineLookup.translation || '—')}
+                {/* Подсказка о жесте — только на карточке ОДНОГО слова: выделивший фразу
+                    только что этим жестом и воспользовался. Флаг «уже видел» не нужен. */}
+                {selectionWordCount === 1 && (
+                  <div className="wss-tip">
+                    <span className="wss-tip-icon" aria-hidden="true">☝</span>
+                    <span>
+                      {tr(
+                        'Задержи слово и проведи пальцем — переведём несколько слов сразу',
+                        'Halte ein Wort gedrückt und zieh den Finger weiter — wir übersetzen mehrere Wörter auf einmal',
+                      )}
+                    </span>
                   </div>
                 )}
               </div>
