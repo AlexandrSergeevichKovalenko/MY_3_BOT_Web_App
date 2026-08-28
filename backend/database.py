@@ -34764,7 +34764,12 @@ def list_user_vocabulary(
                           AND s.surface_key = LOWER(BTRIM(REGEXP_REPLACE(
                                   COALESCE(q.word_de, ''),
                                   '^(der|die|das|ein|eine|einen|einem|einer|eines)[[:space:]]+', '', 'i')))
-                    ), FALSE) AS surface_confirms
+                    ), FALSE) AS surface_confirms,
+                    -- Вид записи (слово / оборот / предложение). Экран решает по нему,
+                    -- ждать ли разбор: у предложения его не бывает по решению владельца
+                    -- 27.08.2026. Без этой колонки страж в браузере смотрел в пустоту и
+                    -- пропускал сбор разбора для предложений — замер 27.08.2026.
+                    lu.kind         AS unit_kind
                 FROM bt_3_webapp_dictionary_queries q
                 LEFT JOIN bt_3_card_srs_state s
                     ON s.user_id = q.user_id AND s.card_id = q.id
@@ -34893,6 +34898,10 @@ def list_user_vocabulary(
             ),
             "display_translation": native_display or row[25] or "",
             "user_notes": normalize_user_notes(row[21]),
+            # Вид записи отдаём ВСЕГДА, даже когда разбора нет: именно по нему экран
+            # решает, ждать ему разбор или не ждать. Ровно так же это сделано в
+            # attach_unit_content_to_cards — второй поверхности, где живут карточки.
+            "unit_kind": str(row[28] or ""),
         })
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}

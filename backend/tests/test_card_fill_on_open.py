@@ -26,9 +26,13 @@ from backend import lex_units  # noqa: E402
 РАЗБОР = {"word_de": "Nährstoff", "translation_ru": "питательное вещество",
           "part_of_speech": "существительное",
           "usage_examples": [{"source": "Der Nährstoff fehlt.", "target": "Не хватает вещества."}]}
-# Что отдаёт база на один запрос эндпоинта: (номер слова, есть ли разбор, сам разбор).
-ЕСТЬ_РАЗБОР = (4242, True, dict(РАЗБОР))
-ПУСТОЕ = (4242, False, None)
+# Что отдаёт база на один запрос эндпоинта:
+# (номер слова, есть ли разбор, сам разбор, ВИД ЗАПИСИ).
+# Вид записи добавлен 27.08.2026: предложению разбор не собирается, и решает это сервер.
+ЕСТЬ_РАЗБОР = (4242, True, dict(РАЗБОР), "word")
+ПУСТОЕ = (4242, False, None, "word")
+ПУСТОЕ_ПРЕДЛОЖЕНИЕ = (4242, False, None, "sentence")
+ПРЕДЛОЖЕНИЕ_С_РАЗБОРОМ = (4242, True, dict(РАЗБОР), "sentence")
 ЧУЖОЕ = None            # карточки с таким словом у этого человека нет
 
 
@@ -145,6 +149,72 @@ class ДозаполнениеПриОткрытии(unittest.TestCase):
                                      json={"initData": "signed", "word": "Nährstoff"})
         поиск.assert_not_called()
         self.assertTrue(ответ.get_json()["ok"])
+
+
+class ПредложениюРазборНеСобирается(unittest.TestCase):
+    """⛔ Решение владельца 27.08.2026, дословно: «это уже предложение, включающее в себя
+    контекст использования слов… главное — есть немецкий и русский вариант, и больше
+    ничего не нужно».
+
+    ПОВОД. Страж стоял только в браузере и смотрел на поле `unit_kind`, а экран «Мои
+    слова» его не отдавал вовсе — смотреть было не на что. Замер 27.08.2026 по живой
+    базе: 2 793 предложения из 6 332 носят словарный разбор. В карточке «Gesundheit ist
+    mehr denn je ein wichtiges Thema.» стояли формы глагола sein (war / ist gewesen),
+    антоним «Krankheit» к целому предложению и этимология слова Gesundheit.
+    """
+
+    def setUp(self):
+        self.client = server.app.test_client()
+        подмены = [
+            mock.patch.object(server, "WEBAPP_SINGLE_INSTANCE_GUARD_ENABLED", False),
+            mock.patch.object(server, "_resolve_webapp_user_allowed", return_value=(True, "test")),
+            mock.patch.object(server, "_telegram_hash_is_valid", return_value=True),
+            mock.patch.object(server, "_parse_telegram_init_data",
+                              return_value={"user": {"id": 117649764}}),
+        ]
+        for п in подмены:
+            п.start()
+            self.addCleanup(п.stop)
+
+    def _спросить(self, строка):
+        with mock.patch.object(server, "_resolve_webapp_user_id", return_value=117649764), \
+             mock.patch.object(server, "_get_user_language_pair", return_value=("de", "ru", {})), \
+             mock.patch.object(server, "get_db_connection_context",
+                               return_value=ПоддельноеСоединение(строка)), \
+             mock.patch.object(server, "resolve_entitlement",
+                               return_value={"effective_mode": "pro"}) as права, \
+             mock.patch.object(server, "stream_dictionary_breakdown_sections") as поток:
+            ответ = self.client.post("/api/webapp/dictionary/card/fill",
+                                     json={"initData": "signed", "word": "Gesundheit ist wichtig."})
+        return ответ, поток, права
+
+    def test_sentence_never_reaches_the_model(self):
+        ответ, поток, _ = self._спросить(ПУСТОЕ_ПРЕДЛОЖЕНИЕ)
+        поток.assert_not_called()
+        тело = ответ.get_json()
+        self.assertFalse(тело["ok"])
+        self.assertEqual(тело["reason"], "sentence")
+
+    def test_the_refusal_is_free_even_before_entitlement(self):
+        """Отказ не должен стоить нам ни запроса к модели, ни выяснения прав."""
+        _, поток, права = self._спросить(ПУСТОЕ_ПРЕДЛОЖЕНИЕ)
+        поток.assert_not_called()
+        права.assert_not_called()
+
+    def test_a_sentence_that_already_has_a_breakdown_still_shows_it(self):
+        """Накопленное владелец решил НЕ трогать (28.08.2026): «уже как есть так пусть и
+        будет». Поэтому страж стоит ПОСЛЕ выдачи готового разбора, а не до неё —
+        новый не собираем, старый не прячем."""
+        ответ, поток, _ = self._спросить(ПРЕДЛОЖЕНИЕ_С_РАЗБОРОМ)
+        поток.assert_not_called()
+        тело = ответ.get_json()
+        self.assertTrue(тело["ok"])
+        self.assertEqual(тело["source"], "already")
+
+    def test_a_word_is_still_built(self):
+        """Страж не должен зацепить слова и обороты — им разбор нужен."""
+        _, поток, права = self._спросить(ПУСТОЕ)
+        права.assert_called()          # до денег дошли, значит страж пропустил
 
 
 class ЗаписьИдётЧерезДверь(unittest.TestCase):
