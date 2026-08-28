@@ -15997,17 +15997,54 @@ _ACCESS_COUNT_TTL_SEC = 5.0
 
 
 def count_allowed_users() -> int:
-    """Сколько людей уже впущено. Держим 5 секунд: при упёртом потолке сюда приходит
-    каждая попытка отказанного, а число между попытками не меняется."""
+    """Сколько ЖИВЫХ ЛЮДЕЙ уже впущено — ровно то же число, что в утреннем отчёте.
+
+    Считается по общему правилу REAL_ALLOWED_USER_SQL, а не сырым COUNT(*). Сырой счёт
+    здесь стоял один день и сразу дал расхождение: отчёт «14», дверь «16». Разницу
+    давали строки id=7 и id=777 от прогонов по боевой базе. Владелец увидел это первым
+    же взглядом — два числа про одно и то же не имеют права различаться.
+
+    Держим 5 секунд: при упёртом потолке сюда приходит каждая попытка отказанного, а
+    число между попытками не меняется."""
     cached = _ACCESS_COUNT_CACHE.get("allowed")
     if cached and (time.time() - cached[1]) < _ACCESS_COUNT_TTL_SEC:
         return cached[0]
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT COUNT(*) FROM bt_3_allowed_users;")
+            cursor.execute(
+                f"SELECT COUNT(*) FROM bt_3_allowed_users WHERE {REAL_ALLOWED_USER_SQL};",
+                (SYNTHETIC_TELEGRAM_USER_ID_MIN, _MIN_REAL_TELEGRAM_USER_ID),
+            )
             n = int((cursor.fetchone() or [0])[0] or 0)
     _ACCESS_COUNT_CACHE["allowed"] = (n, time.time())
     return n
+
+
+def forget_user_for_retest(user_id: int) -> dict:
+    """Сделать аккаунт «новым»: убрать его из списка впущенных и из очереди.
+
+    Нужна ровно для проверки двери своими руками (просьба владельца 28.08.2026:
+    «хочу отключиться на втором аккаунте, чтобы потом войти как новый пользователь»).
+
+    ⚠ ЭТО НЕ УДАЛЕНИЕ ЧЕЛОВЕКА. Команда `/deny` ставит данные в очередь на стирание и
+    отменяет подписку — для проверки это слишком: аккаунт потерял бы свои слова,
+    прогресс и оплату. Здесь убираются ДВЕ строки, и только они: пропуск на вход и
+    место в очереди. Слова, карточки, прогресс, подписка остаются нетронутыми, и
+    следующий вход вернёт человека к своим данным.
+    """
+    uid = int(user_id)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM bt_3_allowed_users WHERE user_id = %s;", (uid,))
+            убрано_из_впущенных = cursor.rowcount
+            cursor.execute("DELETE FROM bt_3_access_waitlist WHERE user_id = %s;", (uid,))
+            убрано_из_очереди = cursor.rowcount
+        conn.commit()
+    _ACCESS_COUNT_CACHE.pop("allowed", None)
+    invalidate_telegram_user_allowed_cache(uid)
+    _invalidate_webapp_allowlist_redis(uid)
+    return {"user_id": uid, "был_впущен": bool(убрано_из_впущенных),
+            "стоял_в_очереди": bool(убрано_из_очереди)}
 
 
 def _public_access_cap_reached(user_id: int) -> bool:
@@ -16196,6 +16233,34 @@ def auto_grant_telegram_user(
     return granted
 
 
+# ⛔ ОДНО ПРАВИЛО «КТО СЧИТАЕТСЯ ЖИВЫМ ЧЕЛОВЕКОМ» НА ВЕСЬ ПРОЕКТ.
+#
+# Раньше правило жило внутри одного только утреннего отчёта, а потолок впуска
+# (27.08.2026) взял сырой COUNT(*). Владелец сразу увидел расхождение: отчёт писал
+# «Всего живых пользователей: 14», а дверь считала 16. Разница — строки id=7 и id=777,
+# осевшие от прогонов кода по боевой базе; телеграмных id такой длины не существует.
+#
+# Два экрана, дающих два ответа на один вопрос, — это дефект того же рода, что и
+# заглушка: оба выглядят рабочими. Поэтому правило вынесено сюда, и оба места берут
+# его отсюда. Появится третье место — возьмёт то же самое.
+#
+# Параметры подставляются в этом порядке: (SYNTHETIC_TELEGRAM_USER_ID_MIN,
+# _MIN_REAL_TELEGRAM_USER_ID). Отсекаются ОБА конца: верхний — синтетика нагрузочных
+# прогонов, нижний — выдуманные короткие id (11.08.2026 прогон записал 5555, 987654,
+# 776655, и верхний порог их пропустил). По username фильтровать НЕЛЬЗЯ: живой человек,
+# зашедший с иконки на домашнем экране, приходит без имени.
+REAL_ALLOWED_USER_SQL = """
+        user_id < %s
+        AND user_id >= %s
+        AND COALESCE(note, '') NOT LIKE 'load_test%%'
+        AND COALESCE(note, '') NOT LIKE '%%smoke%%'
+        AND COALESCE(note, '') NOT LIKE '%%synthetic%%'
+        AND COALESCE(note, '') NOT LIKE '%%runtime validation%%'
+        AND COALESCE(note, '') NOT LIKE 'phase_c_worker%%'
+        AND COALESCE(note, '') NOT LIKE 'postclaim_timeout%%'
+    """
+
+
 def get_access_growth_snapshot(hours: int = 24) -> dict:
     """Numbers behind the admin's daily «кто подключился» digest.
 
@@ -16213,16 +16278,7 @@ def get_access_growth_snapshot(hours: int = 24) -> dict:
     """
     window_hours = max(1, int(hours or 24))
     synthetic_floor = SYNTHETIC_TELEGRAM_USER_ID_MIN
-    real_user_filter = """
-        user_id < %s
-        AND user_id >= %s
-        AND COALESCE(note, '') NOT LIKE 'load_test%%'
-        AND COALESCE(note, '') NOT LIKE '%%smoke%%'
-        AND COALESCE(note, '') NOT LIKE '%%synthetic%%'
-        AND COALESCE(note, '') NOT LIKE '%%runtime validation%%'
-        AND COALESCE(note, '') NOT LIKE 'phase_c_worker%%'
-        AND COALESCE(note, '') NOT LIKE 'postclaim_timeout%%'
-    """
+    real_user_filter = REAL_ALLOWED_USER_SQL
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(

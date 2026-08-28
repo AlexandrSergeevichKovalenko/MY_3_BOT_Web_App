@@ -79,6 +79,50 @@ class ПотолокСтоитВОднойДвери(unittest.TestCase):
             self.assertTrue(db._public_access_cap_reached(555))
 
 
+class ДверьИОтчётСчитаютОдноИТоЖе(unittest.TestCase):
+    """Владелец 28.08.2026: «А почему 16 пользователей, если вот мой отчёт приходит:
+    Всего живых пользователей: 14?»
+
+    Дверь брала сырой COUNT(*), отчёт — с фильтром. Разницу давали строки id=7 и
+    id=777, осевшие от прогонов кода по боевой базе (телеграмных id такой длины не
+    бывает). Два экрана, дающих два ответа на один вопрос, — дефект того же рода, что
+    и заглушка: оба выглядят рабочими. Правило вынесено в REAL_ALLOWED_USER_SQL, и оба
+    места берут его оттуда."""
+
+    def test_правило_живого_человека_одно_на_проект(self):
+        self.assertTrue(hasattr(db, "REAL_ALLOWED_USER_SQL"))
+
+    def test_дверь_не_считает_сырым_count(self):
+        """Именно сырой COUNT(*) и дал расхождение 16 против 14."""
+        import inspect
+        код = inspect.getsource(db.count_allowed_users)
+        self.assertIn("REAL_ALLOWED_USER_SQL", код)
+        self.assertNotIn("SELECT COUNT(*) FROM bt_3_allowed_users;", код)
+
+    def test_отчёт_берёт_то_же_правило_а_не_свою_копию(self):
+        """Копия правила разошлась бы снова — молча и незаметно."""
+        import inspect
+        код = inspect.getsource(db.get_access_growth_snapshot)
+        self.assertIn("REAL_ALLOWED_USER_SQL", код)
+        self.assertNotIn("NOT LIKE 'load_test", код)
+
+
+class ПроверитьДверьСвоимиРукамиМожноБезПотерь(unittest.TestCase):
+    """Владелец 28.08.2026: «хочу отключиться на втором аккаунте, чтобы потом войти
+    как новый пользователь». Для этого нельзя предлагать /deny: он ставит данные в
+    очередь на стирание и отменяет подписку — аккаунт потерял бы слова и прогресс."""
+
+    def test_сброс_убирает_только_пропуск_и_место_в_очереди(self):
+        import inspect
+        код = inspect.getsource(db.forget_user_for_retest)
+        self.assertIn("DELETE FROM bt_3_allowed_users", код)
+        self.assertIn("DELETE FROM bt_3_access_waitlist", код)
+        # Ничего из данных человека трогать не имеем права.
+        for запретное in ("bt_3_user_removal_queue", "bt_3_dictionary", "bt_3_user_progress",
+                          "subscription", "DROP", "TRUNCATE"):
+            self.assertNotIn(запретное, код, f"сброс не имеет права трогать {запретное}")
+
+
 class ОчередьИЗапретЭтоРазныеСостояния(unittest.TestCase):
 
     def test_человеку_в_очереди_дают_его_номер(self):
@@ -171,6 +215,18 @@ class БотРазличаетОчередьИЗапрет(unittest.TestCase):
         отправка = self.бот[начало:начало + 2200]
         self.assertIn("continue", отправка)
         self.assertIn("он ВНУТРИ", отправка)
+
+    def test_закрыть_и_открыть_дверь_без_арифметики(self):
+        """Владельцу нельзя предлагать считать в уме, сколько людей внутри: число
+        меняется само, и он ошибётся ровно один раз — незаметно."""
+        self.assertIn('if команда in ("zakryt", "закрыть")', self.бот)
+        self.assertIn('if команда in ("otkryt", "открыть")', self.бот)
+
+    def test_сброс_аккаунта_не_зовёт_deny(self):
+        начало = self.бот.index('if команда in ("zabud", "забудь")')
+        кусок = self.бот[начало:начало + 1500]
+        self.assertIn("forget_user_for_retest", кусок)
+        self.assertNotIn("deny", кусок.lower().replace("/deny", ""))
 
     def test_состояние_двери_приходит_само_с_кнопками(self):
         """Владелец: «всё, что я должен вызывать командой, я забуду»."""
