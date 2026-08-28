@@ -226,7 +226,17 @@ def _validate_generated(data: dict) -> None:
 # ─── TTS audio generation ─────────────────────────────────────────────────────
 
 def _generate_tts_audio(text: str) -> bytes:
-    """Convert German text to MP3 bytes via Google TTS."""
+    """Convert German text to MP3 bytes via Google TTS.
+
+    ⚠️ НИКЕМ НЕ ВЫЗЫВАЕТСЯ (проверено 28.08.2026). Озвучка банка делается ночной
+    работой `_backfill_listening_audio` (bot_3.py) через `get_or_create_tts_clip`,
+    и ТОЛЬКО там она попадает в ведомость расходов.
+
+    Если соберётесь звать эту функцию — сначала оберните вызов в
+    `tts_synthesis_accounting()` и добавьте `bill_listening_bank_tts(ledger=…)`.
+    Без этого расход снова уйдёт в Google молча: ровно так за август 67 992 символа
+    не оставили в ведомости ни одной строки.
+    """
     try:
         from google.cloud import texttospeech
         client = texttospeech.TextToSpeechClient()

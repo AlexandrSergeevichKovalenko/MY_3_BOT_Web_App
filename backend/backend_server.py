@@ -65085,6 +65085,54 @@ def _bill_mistakes_audio_tts(
         logging.debug("mistakes-audio TTS billing skipped", exc_info=True)
 
 
+def bill_listening_bank_tts(*, ledger: dict) -> None:
+    """Записать в ведомость озвучку банка аудирования — НА ДОМ, без пользователя.
+
+    ПОВОД, 28.08.2026. Владелец: «счётчик слепой — почини». Замер за август свёл счёт
+    Google с нашей ведомостью по дням, и всплески совпали в символ:
+
+        день      Google WaveNet   ведомость   банк аудирования
+        01.08         15 564          5 637          8 240
+        08.08          8 348            420          8 076
+        16.08          9 514            983          9 319
+        21.08         42 484            780         42 357
+
+    Итого 67 992 символа за месяц уходили в Google, не оставляя в ведомости НИ ОДНОЙ
+    строки. Корень: `_backfill_listening_audio` (bot_3.py) звал `get_or_create_tts_clip`
+    вне контекста `tts_synthesis_accounting()`. Внутренний счётчик `_note_tts_synthesis`
+    честно срабатывал, но писать было некуда — потоковый ledger отсутствовал, и заметка
+    падала в пустоту. Снаружи это выглядело как «TTS почти ничего не стоит».
+
+    Чем это было опасно: банк аудирования наполняется пачками (21.08 — 37 записей за
+    ночь). Один такой прогон съедает 4-5% месячного бесплатного лимита WaveNet, и в
+    отчёте это не видно НИКАК — ни в деньгах, ни в остатке лимита. Дойти до перерасхода
+    можно было молча.
+
+    На дом (user_id=None), а не на человека: банк переиспользуется всеми и попадает
+    под правило владельца «на человека — то, что никому больше не пригодится»
+    (схема распределения затрат, закрыта 02.08.2026).
+    """
+    try:
+        chars = int((ledger or {}).get("chars") or 0)
+        if chars <= 0:
+            return
+        _billing_log_event_safe(
+            user_id=None,
+            action_type="listening_bank_tts_chars",
+            provider="google_tts",
+            units_type="chars",
+            units_value=float(chars),
+            idempotency_seed=f"listening-bank-tts:{chars}:{time.time_ns()}",
+            status="estimated",
+            metadata={
+                "clips": int((ledger or {}).get("clips") or 0),
+                "surface": "listening_bank",
+            },
+        )
+    except Exception:
+        logging.warning("listening-bank TTS billing failed", exc_info=True)
+
+
 def vienna_day_bounds_utc(day: date) -> tuple[datetime, datetime]:
     """Границы венских суток `day` в том виде, в каком время лежит в базе.
 
