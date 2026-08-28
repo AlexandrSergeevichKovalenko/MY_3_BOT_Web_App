@@ -3093,6 +3093,23 @@ def _apply_hashed_asset_cache_headers(response):
 _ACCESS_PUBLIC_WEBAPP_PATHS = {
     "/api/webapp/topics",
     "/api/webapp/version",
+    # ⛔ ГОСТЕВОЙ ПОКАЗ ПО ССЫЛКЕ «ПОДЕЛИТЬСЯ» — СПЕЦИАЛЬНО БЕЗ ПРОВЕРКИ ДОСТУПА.
+    #
+    # Оба обработчика написаны открытыми для всех, и так сказано у них в описании:
+    # «Any valid Telegram user may open it — NO allow-list and NO ownership check — so a
+    # recipient who isn't a bot user yet can still see the breakdown and be funnelled to
+    # request access». Но сторож выше проверяет ВСЕ пути /api/webapp/, и без этих двух
+    # строк он резал их первым, до самого обработчика. То есть воронка «покажи разбор →
+    # позови в бота» не работала НИКОГДА: чужой человек упирался в отказ вместо слова.
+    # Найдено 28.08.2026, когда владелец прошёл этот путь вторым аккаунтом.
+    #
+    # Пускать безопасно: подпись Telegram обработчик проверяет сам, токен ссылки — тоже,
+    # отдаёт только чтение уже посчитанного разбора, денег это не стоит ни копейки.
+    #
+    # Решение владельца 28.08.2026: «пускать смотреть слово всегда, а очередь показывать,
+    # только когда он захочет большего».
+    "/api/webapp/dictionary/shared",
+    "/api/webapp/dictionary/diff/shared",
 }
 _ACCESS_PROTECTED_EXACT_PATHS = {"/api/message"}
 _LEGACY_API_PREFIXES = (

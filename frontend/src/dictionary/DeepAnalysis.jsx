@@ -84,6 +84,7 @@ export default function DeepAnalysis({ startParam }) {
   const [savedChips, setSavedChips] = useState(() => new Set());
   const [isGuest, setIsGuest] = useState(false);       // opened via share_<token> by a non-owner
   const [botUsername, setBotUsername] = useState('');  // for the guest "request access" CTA
+  const [inviteOpen, setInviteOpen] = useState(false);  // приглашение гостю в бот
   const [deepId, setDeepId] = useState('');            // id we can share (owner view only)
   const [sharing, setSharing] = useState(false);
   const tts = useTts();
@@ -293,6 +294,35 @@ export default function DeepAnalysis({ startParam }) {
       setSharing(false);
     }
   }, [deepId, sharing]);
+
+  // ⏱ ПРИГЛАШЕНИЕ ГОСТЮ ЧЕРЕЗ 7 СЕКУНД.
+  //
+  // Гость пришёл по ссылке на одно слово и про бота не знает ничего. Блок приглашения
+  // внизу экрана он может не долистать и не заметить — владелец 28.08.2026: «не каждый
+  // перейдёт, не каждый заметит».
+  //
+  // ⛔ ПОЙМАТЬ ЕГО НА ВЫХОДЕ НЕЛЬЗЯ, И ЭТО ПРОВЕРЕНО, А НЕ ПРЕДПОЛОЖЕНО.
+  // В telegram-web-app.js нет ни одного события до закрытия: ни beforeClose, ни
+  // closeRequested, ни willClose — ноль совпадений во всём файле. Есть только
+  // enableClosingConfirmation, и там окно ТЕЛЕГРАМА с ИХ текстом, наш не поставить.
+  // Значит звать надо, пока человек ещё здесь.
+  //
+  // Семь секунд — решение владельца: успел прочитать слово, но ещё не ушёл. Отсчёт
+  // идёт от МОМЕНТА ПОКАЗА разбора, а не от открытия экрана: пока крутится загрузка,
+  // человек ничего не увидел, и звать его не за что.
+  //
+  // Показываем ОДИН РАЗ за сессию экрана. Закрыл — больше не лезем: внизу его ждёт
+  // та же кнопка, и окно про неё прямо говорит.
+  const inviteShownRef = useRef(false);
+  useEffect(() => {
+    if (!isGuest || phase !== 'done' || inviteShownRef.current) return undefined;
+    const t = setTimeout(() => {
+      inviteShownRef.current = true;
+      setInviteOpen(true);
+      haptic('light');
+    }, 7000);
+    return () => clearTimeout(t);
+  }, [isGuest, phase]);
 
   // Кнопка гостя: уйти в чат с ботом. Гость пришёл сюда по ссылке «Поделиться»
   // (t.me/<бот>?startapp=share_…), то есть мимо чата с ботом — эта кнопка его чат и
@@ -631,6 +661,41 @@ export default function DeepAnalysis({ startParam }) {
 
         {error && <div className="deep-inline-err">{error}</div>}
       </div>
+
+      {isGuest && inviteOpen && (
+        <div
+          className="deep-invite-veil"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setInviteOpen(false)}
+        >
+          <div className="deep-invite-card" onClick={(e) => e.stopPropagation()}>
+            <div className="deep-invite-fox">🦊</div>
+            <div className="deep-invite-title">Понравился разбор?</div>
+            <p className="deep-invite-note">
+              Так здесь разбирается <b>любое</b> слово: значения, примеры, грамматика.
+              Плюс свой словарь и задания каждый день.
+              <br /><br />
+              Можешь перейти в бот прямо сейчас — или дочитать разбор до конца:
+              <b> внизу страницы та же кнопка</b>.
+            </p>
+            <button
+              type="button"
+              className="deep-guest-btn"
+              onClick={() => { setInviteOpen(false); requestAccess(); }}
+            >
+              🤖 Перейти в бот
+            </button>
+            <button
+              type="button"
+              className="deep-invite-later"
+              onClick={() => setInviteOpen(false)}
+            >
+              Дочитаю разбор
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
