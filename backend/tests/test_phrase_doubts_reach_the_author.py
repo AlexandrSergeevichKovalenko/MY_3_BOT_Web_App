@@ -70,12 +70,15 @@ def _спросить(ответы, user_id=777, limit=12):
 
 
 ПРОВЕРКА_ПРОШЛА = {"checked": True, "grammar_ok": True, "meaning_kept": True}
-# Строка проверки фразы как её отдаёт база: (id, текст, перевод, судьи, арбитр, слово).
+# Строка проверки фразы как её отдаёт база:
+# (id, текст, перевод, судьи, арбитр, слово, ВИД, карточка).
+# Вид и карточка добавлены 28.08.2026: панельный вопрос спрашивает о наполнении
+# карточки, и предмет спора — сами примеры — нужен на экране.
 ФРАЗА = [(77, "Ich überhaupt kein Talent", "у меня совсем нет таланта",
           [{"verdict": "error", "category": "wortstellung",
             "corrected": "Ich habe überhaupt kein Talent",
             "corrected_ru": "у меня совсем нет таланта",
-            "corrected_check": dict(ПРОВЕРКА_ПРОШЛА)}], None, 4242)]
+            "corrected_check": dict(ПРОВЕРКА_ПРОШЛА)}], None, 4242, "grammar", None)]
 СЛОВО = [("Regenschirm", "зонт")]
 
 
@@ -130,7 +133,7 @@ class ФразыДоходятДоАвтора(unittest.TestCase):
 
     def test_same_text_is_not_asked_twice(self):
         та_же = [(77, "Alles Banane", "всё нормально",
-                  [{"verdict": "ok", "category": ""}], None, 5)]
+                  [{"verdict": "ok", "category": ""}], None, 5, "grammar", None)]
         строки, _ = _спросить([[("Alles Banane", "всё нормально")], та_же])
         self.assertEqual(len(строки), 1)
 

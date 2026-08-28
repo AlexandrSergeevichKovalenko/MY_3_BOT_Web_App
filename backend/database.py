@@ -25715,6 +25715,118 @@ def _has_cyrillic_letters(value: str) -> bool:
     return any("\u0400" <= ch <= "\u04ff" for ch in str(value or ""))
 
 
+def apply_panel_card_edit(review_id: int, *, translation: str = "",
+                          examples: list | None = None, top_up: bool = False) -> dict:
+    """Правки человека ВНУТРИ карточки: примеры и перевод. Не пересборка, а его работа.
+
+    ┌─ ЗАВЕДЕНО 28.08.2026 ПО РЕШЕНИЮ ВЛАДЕЛЬЦА. ──────────────────────────────────┐
+    │ До этого дня на панельный вопрос было ровно два ответа: «пересобрать всю      │
+    │ карточку ночью» или «оставить как есть». Если испорчен один пример из трёх,   │
+    │ оба ответа неверные: пересборка выбросит и то, что было в порядке, и потратит │
+    │ запрос к модели, а «оставить» сохранит брак.                                  │
+    │ Владелец 28.08.2026: «зачем же её полностью отправлять на пересборку, если я  │
+    │ могу просто удалить один пример и всё остальное ок… внутри должна быть полная │
+    │ гибкость и управление».                                                       │
+    │ Замер того же дня: панельных вопросов 77 из 218 открытых.                     │
+    └──────────────────────────────────────────────────────────────────────────────┘
+
+    ЧТО ЗДЕСЬ НЕ ПРИДУМЫВАЕТСЯ. Ни одного слова от себя: пишем ровно тот текст,
+    который человек оставил на экране. Пустые строки отбрасываем — это не «пример без
+    перевода», а недописанная строка.
+
+    СТОРОНЫ НЕ ПЕРЕСТАВЛЯЕМ ВСЛЕПУЮ. В `usage_examples` немецкий лежит то в `source`,
+    то в `target` — у части карточек запись собиралась со стороны «русский → немецкий»
+    (см. `phrase_review_card_examples`). Ориентацию определяем по буквам самой карточки
+    и пишем обратно В ТОЙ ЖЕ ориентации, иначе стороны перевернутся.
+    """
+    итог = {"unit_id": 0, "examples": 0, "translation_set": False, "cards_touched": 0}
+    примеры = [e for e in (examples or []) if isinstance(e, dict)
+               and str(e.get("de") or "").strip() and str(e.get("ru") or "").strip()]
+    перевод = str(translation or "").strip()
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "SELECT unit_id, text, COALESCE(translation,'') FROM bt_3_phrase_review "
+                "WHERE id = %s AND status = 'open';", (int(review_id),))
+            row = cursor.fetchone()
+            if not row:
+                return итог
+            unit_id, текст, старый_перевод = int(row[0]), str(row[1]), str(row[2])
+            итог["unit_id"] = unit_id
+
+            cursor.execute("SELECT card FROM bt_3_lex_units WHERE id = %s;", (unit_id,))
+            строка = cursor.fetchone()
+            карточка = dict(строка[0]) if строка and isinstance(строка[0], dict) else {}
+
+            # Ориентация: где в этой карточке лежит немецкий.
+            было = карточка.get("usage_examples") or []
+            немецкий_в_source = True
+            for item in было:
+                if not isinstance(item, dict):
+                    continue
+                s, t = str(item.get("source") or ""), str(item.get("target") or "")
+                if _has_cyrillic_letters(s) and not _has_cyrillic_letters(t):
+                    немецкий_в_source = False
+                break
+            карточка["usage_examples"] = [
+                ({"source": e["de"].strip(), "target": e["ru"].strip()}
+                 if немецкий_в_source
+                 else {"source": e["ru"].strip(), "target": e["de"].strip()})
+                for e in примеры]
+            итог["examples"] = len(примеры)
+
+            if перевод and перевод != старый_перевод:
+                # Русскую сторону карточки правим ТОЛЬКО там, где лежал прежний перевод:
+                # поле, куда человек вписал что-то своё, чужой правкой не затираем.
+                for поле in ("translation_ru", "word_ru", "target_text"):
+                    if str(карточка.get(поле) or "").strip() == старый_перевод:
+                        карточка[поле] = перевод
+                итог["translation_set"] = True
+
+            from backend.lex_units import save_unit_card
+            save_unit_card(unit_id, карточка, source="владелец: правка карточки",
+                           cursor=cursor)
+
+            if итог["translation_set"]:
+                cursor.execute(
+                    "UPDATE bt_3_webapp_dictionary_queries SET translation_ru = %s, "
+                    "updated_at = NOW() WHERE lex_unit_id = %s AND btrim(COALESCE("
+                    "translation_ru,'')) = %s;",
+                    (перевод, unit_id, старый_перевод))
+                итог["cards_touched"] = cursor.rowcount or 0
+
+            # ⚠ ВОПРОС ЗАКРЫВАЕТ ЧЕЛОВЕК, И НОЧЬ НЕ ИМЕЕТ ПРАВА ПОДНЯТЬ ЕГО СНОВА.
+            # Без этой строки `bt_3_field_checks.phrase_panel` остаётся «спорное», и
+            # та же карточка вернётся к нему следующей ночью с той же претензией —
+            # уже исправленной. Отметка «не хватает примеров» ставится ОТДЕЛЬНО и
+            # только по явной просьбе человека (см. ниже).
+            # Слова вердиктов берём из модуля ночного повтора — он их и читает.
+            # Своя строка здесь означала бы, что назавтра одна сторона поменяет
+            # написание, и отметка перестанет находиться, молча и без ошибки.
+            from backend.example_retry import CLEAN, TOP_UP
+            cursor.execute(
+                """UPDATE bt_3_field_checks
+                      SET verdict = %s, attempts = 0, checked_at = NOW(),
+                          source = 'владелец: правка карточки'
+                    WHERE unit_id = %s AND field = 'phrase_panel';""",
+                (TOP_UP if top_up else CLEAN, unit_id))
+            cursor.execute(
+                "UPDATE bt_3_phrase_review SET status = 'edited', decided_at = NOW(), "
+                "decided_text = %s WHERE id = %s;", (текст, int(review_id)))
+        conn.commit()
+
+    # Выбор человека по русской стороне ставится главным — тем же способом, каким
+    # это делает решение по фразе (см. promote_owner_translation).
+    if итог["translation_set"]:
+        итог["owner_ru_set"] = promote_owner_translation(unit_id, перевод)
+    logging.info("правка карточки %s (вопрос %s): примеров %s, перевод %s, карточек %s, "
+                 "добор ночью %s", unit_id, review_id, итог["examples"],
+                 итог["translation_set"], итог["cards_touched"], top_up)
+    return итог
+
+
 def send_panel_card_to_rewrite(review_id: int) -> dict:
     """«Переписать примеры и перевод заново» — решение владельца по панельной карточке.
 
@@ -26262,6 +26374,19 @@ def apply_phrase_review_decision(review_id: int, decision: str, own_text: str = 
                          SET text_hash = EXCLUDED.text_hash, verdict = 'ok', checked_at = NOW();""",
                     (unit_id, phrase_check_text_hash(old_text)),
                 )
+                # «Оставить как есть» — ЭТО ТОЖЕ РЕШЕНИЕ, и оно должно быть записано
+                # там, где стоял вопрос. У панельной карточки вопрос живёт не здесь,
+                # а в `bt_3_field_checks.phrase_panel` со словом «спорное»; без этой
+                # строки запись навсегда оставалась бы «нерешённой» при решённом
+                # вопросе — состояние, по которому потом нельзя ничего посчитать.
+                # Владелец 28.08.2026: «то, что я оставляю, тоже означает моё решение».
+                from backend.example_retry import CLEAN as _ЧИСТО
+                cursor.execute(
+                    """UPDATE bt_3_field_checks SET verdict = %s, checked_at = NOW(),
+                              source = 'владелец: карточка нормальная'
+                        WHERE unit_id = %s AND field = 'phrase_panel'
+                          AND verdict <> %s;""",
+                    (_ЧИСТО, unit_id, _ЧИСТО))
                 conn.commit()
                 result["text"] = old_text
                 return result

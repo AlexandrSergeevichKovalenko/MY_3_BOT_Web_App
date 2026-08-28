@@ -262,8 +262,14 @@ def _phrase_reason(judges: Any) -> str:
     return " ".join(названо[:2])
 
 
-# Сколько кнопок «Да, правильно так» помещается в карточку экрана проверки.
-КНОПОК_НА_ФРАЗУ = 2
+# ┌─ ПОЧИНЕНО 28.08.2026. ОБРЕЗКА ДО ДВУХ КНОПОК СНЯТА. ─────────────────────────┐
+# │ Здесь стояло КНОПОК_НА_ФРАЗУ = 2, и третий годный вариант человек не видел    │
+# │ вовсе. Замер по живой базе 28.08.2026 по 104 открытым вопросам про немецкий:  │
+# │ у 70 годный вариант один, у 31 — два, у 3 — три. То есть у трёх фраз мы прятали│
+# │ рабочий вариант, ничего этим не выигрывая: варианты идут блоками по судьям и   │
+# │ занимают ровно столько места, сколько их есть.                                │
+# │ Владелец 28.08.2026: «зачем обрезать, покажи все и дай выбрать».               │
+# └──────────────────────────────────────────────────────────────────────────────┘
 
 
 def кнопки_вариантов(judges: Any, text: str, arbiter: dict | None) -> list[dict[str, str]]:
@@ -298,9 +304,18 @@ def кнопки_вариантов(judges: Any, text: str, arbiter: dict | None
     варианты = phrase_review_variants(
         judges if isinstance(judges, list) else [], str(text or ""),
         arbiter if isinstance(arbiter, dict) else None)
-    return [{"text": str(v.get("text") or ""), "ru": str(v.get("ru") or "")}
+    return [{"text": str(v.get("text") or ""), "ru": str(v.get("ru") or ""),
+             # Кто предложил — чтобы кнопка стояла рядом со словами СВОЕГО судьи.
+             "judge": int(v.get("judge") or 0),
+             # Чем это является. «Правка» — исправлено то, что было. «Достройка» —
+             # судья ДОПИСАЛ слова (местоимение, подлежащее), и фраза стала другой по
+             # объёму. Разница видна человеку на кнопке: это разные решения.
+             "field": str(v.get("field") or ""),
+             "kind": ("достройка: дописаны слова" if v.get("field") == "proposal"
+                      else "правка того, что было" if v.get("field") == "corrected"
+                      else "текст третьего судьи")}
             for v in варианты
-            if not v.get("check_disputed_by_arbiter")][:КНОПОК_НА_ФРАЗУ]
+            if not v.get("check_disputed_by_arbiter")]
 
 
 def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
@@ -320,8 +335,9 @@ def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
            ORDER BY lex_unit_id, created_at, id
         )
         SELECT r.id, btrim(r.text), COALESCE(r.translation, ''), r.judges, r.arbiter,
-               r.unit_id
+               r.unit_id, COALESCE(r.kind, ''), u.card
           FROM bt_3_phrase_review r
+          JOIN bt_3_lex_units u ON u.id = r.unit_id
           JOIN авторы a ON a.lex_unit_id = r.unit_id
          -- ВИД НАЗЫВАЕТСЯ ЯВНО, прямо в запросе: человеку адресованы только вопросы о
          -- самой фразе. Вопрос про перевод карточки решает владелец своим экраном.
@@ -334,9 +350,13 @@ def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
         """,
         (ВИДЫ_ДЛЯ_ЧЕЛОВЕКА, int(user_id), int(limit)),
     )
+    from backend.database import phrase_review_card_examples
+
     items: list[dict[str, Any]] = []
-    for review_id, текст, перевод, судьи, арбитр, unit_id in (cur.fetchall() or []):
+    for (review_id, текст, перевод, судьи, арбитр,
+         unit_id, вид, карточка) in (cur.fetchall() or []):
         судьи = судьи if isinstance(судьи, list) else []
+        арбитр = арбитр if isinstance(арбитр, dict) else None
         # ⚠ БЕРЁМ ТОЛЬКО ВОПРОСЫ ПРО САМУ ФРАЗУ.
         # В `bt_3_phrase_review` живут ТРИ вида вопроса, и они не взаимозаменяемы:
         #   grammar     — судьи разошлись о немецком самой фразы;
@@ -352,13 +372,36 @@ def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
         # владельца они уже отсеиваются; человеку тем более показывать нечего.
         if phrase_review_is_noise(судьи, str(текст)):
             continue
+        # ⚠ ДВА РАЗНЫХ ВОПРОСА — ДВЕ РАЗНЫЕ КАРТОЧКИ НА ЭКРАНЕ.
+        #
+        # ┌─ ПОЧИНЕНО 28.08.2026. ПАНЕЛЬНЫЙ ВОПРОС ПРИХОДИЛ НЕМЫМ. ──────────────────┐
+        # │ «panel» — это сомнение НЕ во фразе, а в НАПОЛНЕНИИ карточки: примеры не  │
+        # │ иллюстрируют выражение, перевод не той формы. Кнопки «правильно так» у   │
+        # │ него не бывает и быть не может — исправлять нечего, спор о другом. А     │
+        # │ экран рисовал его как вопрос о фразе, с текстом «проверяющие разошлись   │
+        # │ во мнении об этой фразе» и без единой кнопки.                            │
+        # │ Замер по живой базе 28.08.2026: таких вопросов 77 из 218 открытых, и все  │
+        # │ 77 доезжали до человека в таком виде.                                    │
+        # │ Владелец 28.08.2026: «если вопрос в наполнении карточки — я должен каждый │
+        # │ пример либо откорректировать, либо удалить, либо оставить».               │
+        # │ Теперь панельная карточка везёт то, о чём спор: сами примеры и претензии  │
+        # │ проверяющих по пунктам.                                                   │
+        # └──────────────────────────────────────────────────────────────────────────┘
+        панель = str(вид or "") == "panel"
         items.append({
             "word": str(текст),
             "translation": str(перевод),
             "status": "фраза",
             "why": _phrase_reason(судьи),
-            "variants": кнопки_вариантов(
-                судьи, str(текст), арбитр if isinstance(арбитр, dict) else None),
+            "variants": [] if панель else кнопки_вариантов(судьи, str(текст), арбитр),
+            # Слова судей — то, ради чего человек и открывает экран. Их 319 из 322
+            # (замер 28.08.2026), и до этого дня на экран не доезжало ни одно.
+            "judges": [] if панель else _слова_судей(судьи),
+            "arbiter": None if панель else _слова_арбитра(арбитр),
+            # Предмет панельного спора: претензии по пунктам и сами примеры.
+            "doubts": _претензии(судьи) if панель else [],
+            "examples": phrase_review_card_examples(карточка) if панель else [],
+            "question": "card" if панель else "text",
             "suggestion": "",
             "safe": False,
             "kind": "phrase",
@@ -366,6 +409,43 @@ def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
             "unit_id": int(unit_id),
         })
     return items
+
+
+def _слова_судей(судьи: Any) -> list[dict[str, Any]]:
+    """Что сказал каждый проверяющий — его словами, а не нашей обобщённой строкой."""
+    out = []
+    for n, судья in enumerate(судьи if isinstance(судьи, list) else [], 1):
+        почему = str((судья or {}).get("why") or "").strip()
+        if not почему:
+            continue
+        out.append({"n": n, "why": почему})
+    return out
+
+
+def _слова_арбитра(арбитр: dict | None) -> dict[str, Any] | None:
+    """Вердикт третьего судьи. Он спор уже разрешил — человек должен это видеть."""
+    if not isinstance(арбитр, dict):
+        return None
+    почему = str(арбитр.get("why") or "").strip()
+    if not почему:
+        return None
+    try:
+        победитель = int(арбитр.get("winner") or 0)
+    except (TypeError, ValueError):
+        победитель = 0
+    return {"why": почему, "winner": победитель}
+
+
+def _претензии(судьи: Any) -> list[str]:
+    """Претензии панели по пунктам. Панель складывает их в одну строку через «; » —
+    разбираем обратно, чтобы каждая читалась отдельным пунктом, а не абзацем."""
+    out: list[str] = []
+    for судья in (судьи if isinstance(судьи, list) else []):
+        for кусок in str((судья or {}).get("why") or "").split(";"):
+            кусок = кусок.strip()
+            if кусок and кусок not in out:
+                out.append(кусок if кусок.endswith(".") else кусок + ".")
+    return out
 
 
 # ── Что показывает экран проверки ────────────────────────────────────────────
@@ -697,6 +777,27 @@ def _apply_phrase_decision(user_id: int, item: dict[str, Any]) -> str:
     if action == "keep":
         apply_phrase_review_decision(review_id, "keep")
         return "оставлено"
+
+    if action == "edit":
+        # Правки ВНУТРИ карточки: примеры и перевод. Это решение человека целиком —
+        # что он оставил, то и ложится. На пересборку карточка при этом НЕ идёт.
+        примеры = item.get("examples")
+        if not isinstance(примеры, list):
+            примеры = []
+        чистые = [{"de": _cleaned(e.get("de") or ""), "ru": _cleaned(e.get("ru") or "")}
+                  for e in примеры if isinstance(e, dict)]
+        from backend.database import apply_panel_card_edit
+        итог = apply_panel_card_edit(
+            review_id, translation=_cleaned(item.get("translation") or ""),
+            examples=[e for e in чистые if e["de"] and e["ru"]],
+            top_up=bool(item.get("top_up")))
+        return "карточка поправлена" if итог.get("unit_id") else ""
+
+    if action == "rebuild":
+        # «Пересобрать всю карточку ночью» — та же дверь, что у владельца.
+        from backend.database import send_panel_card_to_rewrite
+        итог = send_panel_card_to_rewrite(review_id)
+        return "карточка на пересборку" if итог.get("unit_id") else ""
 
     if action == "fixed":
         # ⚠ НОМЕР КНОПКИ СЮДА НЕ ПРИХОДИТ И ПРИХОДИТЬ НЕ ДОЛЖЕН — см. рамку в

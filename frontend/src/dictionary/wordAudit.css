@@ -200,3 +200,138 @@
 .wa-safe{
   margin-top:8px; font-size:.84rem; color:var(--keep, #4ade80);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   РАЗБОР СПОРА: слова каждого проверяющего и его вариант рядом с ними.
+   Заведено 28.08.2026. До этого дня на экран не доезжало ни одно обоснование
+   (319 из 322 мнений судей несут текст «почему»), а кнопки стояли без подписи,
+   кто и на каком основании это предложил.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.wa-judge{
+  background:var(--surface-2); border:1px solid var(--line);
+  border-radius:12px; padding:11px 12px; margin:10px 0 9px;
+}
+.wa-judge-who{
+  display:flex; align-items:center; gap:7px; margin:0 0 6px;
+  font-size:.68rem; letter-spacing:.09em; text-transform:uppercase; color:var(--muted);
+}
+.wa-dot{width:7px; height:7px; border-radius:50%; background:var(--primary); flex:0 0 auto}
+.wa-judge-2 .wa-dot{background:#b58ee8}
+.wa-judge-why{margin:0 0 10px; font-size:.88rem; line-height:1.5; color:var(--ink-2)}
+.wa-judge-none{margin:0; font-size:.8rem; color:var(--muted)}
+.wa-judge .wa-suggest{background:var(--primary-soft)}
+/* Чем является вариант: правка того, что было, или достройка с дописанными
+   словами. Это разные решения, и человек должен видеть разницу до нажатия. */
+.wa-suggest-meta{
+  font-size:.68rem; letter-spacing:.05em; color:var(--muted); font-weight:400; margin-top:4px;
+}
+.wa-suggest.is-picked .wa-suggest-meta{color:#0d3a4a}
+
+/* Вердикт третьего судьи: спор уже разрешён, и человек должен это видеть. */
+.wa-arb{
+  background:var(--fix-soft); border:1px solid rgba(251,191,36,.32);
+  border-radius:12px; padding:10px 12px; margin:2px 0 12px;
+}
+.wa-arb-who{
+  margin:0 0 5px; font-size:.68rem; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--fix);
+}
+.wa-arb p{margin:0; font-size:.85rem; line-height:1.5; color:var(--ink-2)}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   СОДЕРЖИМОЕ КАРТОЧКИ: каждым примером человек распоряжается отдельно.
+   Владелец 28.08.2026: «внутри должна быть полная гибкость и управление».
+   ═══════════════════════════════════════════════════════════════════════════ */
+.wa-doubt{
+  background:var(--danger-soft); border:1px solid rgba(248,113,113,.3);
+  border-radius:12px; padding:10px 12px; margin:10px 0;
+}
+.wa-doubt-who{
+  margin:0 0 5px; font-size:.68rem; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--danger);
+}
+.wa-doubt ul{margin:0; padding-left:17px}
+.wa-doubt li{font-size:.86rem; line-height:1.5; color:var(--ink-2)}
+
+.wa-sub{
+  display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+  margin:14px 0 7px; font-size:.68rem; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--muted);
+}
+.wa-trans-box{
+  background:var(--surface-2); border:1px solid var(--line);
+  border-radius:11px; padding:8px 9px;
+}
+.wa-trans-box.edited{border-color:rgba(88,200,236,.5); background:var(--primary-soft)}
+.wa-trans-box input,.wa-ex-edit input{
+  font:inherit; font-size:.88rem; padding:8px 10px; border-radius:9px; width:100%;
+  background:var(--bg-2); border:1px solid var(--line-strong); color:var(--ink);
+}
+
+.wa-ex{margin:0 0 9px; padding:0; list-style:none; counter-reset:waex}
+.wa-ex li{
+  display:grid; grid-template-columns:20px 1fr; gap:8px; padding:9px 10px;
+  background:var(--surface-2); border:1px solid var(--line);
+  border-radius:11px; margin-bottom:6px;
+}
+.wa-ex li::before{
+  counter-increment:waex; content:counter(waex); font-size:.72rem; color:var(--muted);
+}
+.wa-ex-de{display:block; font-size:.88rem; font-weight:600; line-height:1.4; overflow-wrap:anywhere}
+.wa-ex-ru{display:block; font-size:.8rem; color:var(--ink-2); margin-top:3px; line-height:1.45}
+/* Помеченное на удаление ОСТАЁТСЯ ВИДИМЫМ и возвращается одним нажатием:
+   до «Готово» на экране не пропадает ничего (то же правило, что у слов). */
+.wa-ex li.gone{opacity:.5; border-style:dashed}
+.wa-ex li.gone .wa-ex-de,.wa-ex li.gone .wa-ex-ru{text-decoration:line-through}
+.wa-ex li.edited{border-color:rgba(88,200,236,.5); background:var(--primary-soft)}
+.wa-ex-mark{display:block; font-size:.66rem; letter-spacing:.06em; text-transform:uppercase; margin-top:5px}
+.wa-ex-mark.m-gone{color:var(--danger)}
+.wa-ex-mark.m-edit{color:var(--primary)}
+.wa-ex-mark.m-new{color:var(--keep)}
+.wa-ex-tools{display:flex; gap:6px; margin-top:8px; flex-wrap:wrap}
+.wa-ex-edit{display:grid; gap:6px; margin-top:2px}
+.wa-ex-edit .row{display:flex; gap:6px}
+.wa-ex-edit .row button{
+  font:inherit; font-size:.8rem; font-weight:600; padding:7px 12px; cursor:pointer;
+  border-radius:9px; border:0; background:var(--primary); color:#052330;
+}
+.wa-ex-edit .row button.ghost{
+  background:transparent; border:1px solid var(--line-strong); color:var(--ink-2);
+}
+
+.wa-tool{
+  font:inherit; font-size:.76rem; font-weight:600; cursor:pointer;
+  padding:6px 11px; border-radius:9px; background:transparent;
+  border:1px solid var(--line-strong); color:var(--ink-2);
+}
+.wa-tool:hover{border-color:var(--primary); color:var(--ink)}
+.wa-tool:focus-visible{outline:2px solid var(--primary); outline-offset:2px}
+.wa-tool-del{border-color:rgba(248,113,113,.45); color:#fca5a5}
+.wa-tool-back{border-color:rgba(74,222,128,.45); color:#9ae6b8}
+.wa-tool-wide{display:block; width:100%; padding:9px}
+
+/* Итог по ОДНОЙ карточке. Он обязан быть виден ДО «Готово»: человек должен
+   понимать, что именно означает его решение, а не узнавать это после.
+   ⚠ Имя не `.wa-tally`: тем классом уже подписана полоса счётчиков в шапке экрана
+   («оставим / переделаем / удалим»), и второе правило с тем же именем молча
+   переопределяло её оформление. Поймано прогоном в браузере 28.08.2026. */
+.wa-card-tally{
+  background:var(--bg-2); border:1px solid var(--line); border-radius:11px;
+  padding:9px 11px; margin:11px 0 9px; font-size:.82rem; line-height:1.5; color:var(--ink-2);
+}
+.wa-card-tally b{color:var(--ink)}
+.wa-card-tally .none{color:var(--muted)}
+.wa-opt{
+  display:flex; gap:9px; align-items:flex-start; cursor:pointer;
+  font-size:.82rem; line-height:1.45; color:var(--ink-2); margin:0 0 10px;
+}
+.wa-opt input{margin:2px 0 0; width:16px; height:16px; accent-color:var(--primary); flex:0 0 auto}
+
+.wa-act-wide{flex-basis:100%}
+.wa-act-apply{background:var(--primary); border-color:var(--primary); color:#052330}
+.wa-act-apply[disabled]{opacity:.4; cursor:default}
+.wa-card[data-state="edit"]{border-left-color:var(--primary)}
+.wa-card[data-state="rebuild"]{border-left-color:var(--fix)}
+.wa-card[data-state="rebuild"] .wa-act-rebuild{
+  background:var(--fix); border-color:var(--fix); color:#422006;
+}
