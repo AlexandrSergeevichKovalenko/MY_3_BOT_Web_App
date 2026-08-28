@@ -29009,8 +29009,28 @@ def _run_translation_focus_pool_admin_report_scheduler_job() -> None:
 #   · сверх того — стартовый запас: греем слова общего словаря, чтобы у любого нового
 #     человека первый заход был мгновенным.
 SENTENCE_QUIZ_WARM_TARGET_PER_USER = max(1, int((os.getenv("SENTENCE_QUIZ_WARM_TARGET_PER_USER") or "20").strip()))
-SENTENCE_QUIZ_WARM_NIGHTLY_CAP = max(0, int((os.getenv("SENTENCE_QUIZ_WARM_NIGHTLY_CAP") or "150").strip()))
-SENTENCE_QUIZ_WARM_STARTER_SHARE = 0.5   # половина ночного потолка — на стартовый словарь
+
+# ⛔ У СТАРТОВОГО ПРОГРЕВА ЦЕЛЬ, А НЕ ДОЛЯ ОТ ПОТОЛКА. Владелец 28.08.2026: «зачем
+# греть 150, если нам достаточно 20 и они переиспользуются?»
+#
+# Он прав, и первая версия была неверной: она отдавала стартовому словарю ПОЛОВИНУ
+# ночного потолка КАЖДУЮ НОЧЬ, независимо от того, хватает ли уже готового. Это и есть
+# «греем впрок» — ровно то, что он запретил.
+#
+# Теперь есть цель: держать ГОТОВЫМИ столько общих слов, чтобы первый заход новичка был
+# полным. Набор — 15 заданий, поэтому цель 30: два полных захода. Достигли — ночь
+# больше не тратит на это НИ ЦЕНТА, пока цель не просядет (новые люди, чистка).
+#
+# ЗАЧЕМ ЭТО ВООБЩЕ НУЖНО. Замер 28.08.2026: готовых заданий 268, но на словах общего
+# словаря из них ВСЕГО ДВА — остальные на личных словах владельца. Новый человек, у
+# которого только стартовая тысяча, нашёл бы два задания. Это та самая пустота, из-за
+# которой «зайдёт впервые из любопытства и больше не вернётся».
+SENTENCE_QUIZ_WARM_STARTER_TARGET = max(0, int((os.getenv("SENTENCE_QUIZ_WARM_STARTER_TARGET") or "30").strip()))
+
+# Потолок ночи. Считается от смысла, а не от балды: цель стартового словаря (30) плюс
+# запас на добивку тем, кто тренируется (20 на человека). Сорок хватает, чтобы за одну
+# ночь закрыть стартовую цель, а дальше ночь тратит только на реально занимающихся.
+SENTENCE_QUIZ_WARM_NIGHTLY_CAP = max(0, int((os.getenv("SENTENCE_QUIZ_WARM_NIGHTLY_CAP") or "40").strip()))
 
 
 def _warm_one_entry_quiz(entry: dict, *, source_lang: str, target_lang: str) -> bool:
@@ -29062,17 +29082,33 @@ def _warm_sentence_quizzes_for_user(user_id: int, *, бюджет: int) -> int:
 
 
 def _warm_starter_sentence_quizzes(*, бюджет: int) -> int:
-    """Прогреть слова ОБЩЕГО словаря — чтобы первый заход любого новичка был мгновенным.
+    """Догреть общий словарь ДО ЦЕЛИ — и ни одним заданием больше.
 
     Замер 28.08.2026: ~1000 слов сохранены у 10–13 человек из 13 — это стартовый
     словарь, одинаковый у всех. Задание лежит на слове, поэтому прогретое здесь
-    достаётся каждому будущему человеку даром.
+    достаётся каждому будущему человеку даром — платим один раз за всех.
+
+    Цель, а не «сколько влезет»: достигли — тратим ноль. Греть всю тысячу незачем,
+    новичку нужен полный первый заход, а не запас на год.
     """
-    if бюджет <= 0:
+    if бюджет <= 0 or SENTENCE_QUIZ_WARM_STARTER_TARGET <= 0:
         return 0
-    from backend.database import get_shared_cold_words_for_quiz, get_dictionary_entry_by_id
+    from backend.database import (
+        get_shared_cold_words_for_quiz, get_dictionary_entry_by_id,
+        count_shared_words_with_quiz,
+    )
     try:
-        ids = get_shared_cold_words_for_quiz(min_users=5, limit=бюджет)
+        готово = count_shared_words_with_quiz(min_users=5)
+    except Exception:
+        logging.warning("не смогли посчитать готовые общие слова", exc_info=True)
+        return 0
+    нужно = max(0, SENTENCE_QUIZ_WARM_STARTER_TARGET - готово)
+    if нужно <= 0:
+        logging.info("стартовый прогрев: цель уже закрыта (%s из %s) — не тратим",
+                     готово, SENTENCE_QUIZ_WARM_STARTER_TARGET)
+        return 0
+    try:
+        ids = get_shared_cold_words_for_quiz(min_users=5, limit=min(нужно, бюджет))
     except Exception:
         logging.warning("не смогли выбрать слова общего словаря для прогрева", exc_info=True)
         return 0
@@ -29106,7 +29142,13 @@ def _dispatch_sentence_quiz_warm() -> dict:
         logging.warning("не смогли прочитать, кто тренируется", exc_info=True)
         люди = []
     итог["users_seen"] = len(люди)
-    доля_на_старт = int(SENTENCE_QUIZ_WARM_NIGHTLY_CAP * SENTENCE_QUIZ_WARM_STARTER_SHARE)
+    # Оставляем место под стартовую цель, но ровно столько, сколько ей ещё нужно.
+    try:
+        from backend.database import count_shared_words_with_quiz
+        осталось_старту = max(0, SENTENCE_QUIZ_WARM_STARTER_TARGET - count_shared_words_with_quiz(min_users=5))
+    except Exception:
+        осталось_старту = 0
+    доля_на_старт = min(осталось_старту, SENTENCE_QUIZ_WARM_NIGHTLY_CAP)
     for user_id in люди:
         if бюджет <= доля_на_старт:
             break

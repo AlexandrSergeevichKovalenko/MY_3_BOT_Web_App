@@ -99,11 +99,35 @@ class НовичокНеУпираетсяВПустоту(unittest.TestCase):
     Замер 28.08.2026: ~1000 слов сохранены у 10–13 человек из 13 — это стартовый
     словарь, одинаковый у всех. Прогрев его один раз обеспечивает первый заход любого."""
 
-    def test_часть_ночного_потолка_идёт_общему_словарю(self):
-        self.assertGreater(server.SENTENCE_QUIZ_WARM_STARTER_SHARE, 0)
+    def test_у_стартового_прогрева_ЦЕЛЬ_а_не_доля_от_потолка(self):
+        """⛔ ПЕРВАЯ ВЕРСИЯ БЫЛА НЕВЕРНОЙ. Она отдавала общему словарю ПОЛОВИНУ ночного
+        потолка КАЖДУЮ НОЧЬ, независимо от того, хватает ли уже готового, — то есть
+        грела впрок. Владелец: «зачем греть 150, если нам достаточно 20 и они
+        переиспользуются?». Теперь есть цель: закрыли — тратим ноль."""
+        self.assertFalse(hasattr(server, "SENTENCE_QUIZ_WARM_STARTER_SHARE"),
+                         "доля вернулась — вместе с ней вернётся и прогрев впрок")
+        self.assertGreater(server.SENTENCE_QUIZ_WARM_STARTER_TARGET, 0)
         import inspect
-        код = inspect.getsource(server._dispatch_sentence_quiz_warm)
-        self.assertIn("_warm_starter_sentence_quizzes", код)
+        код = inspect.getsource(server._warm_starter_sentence_quizzes)
+        self.assertIn("count_shared_words_with_quiz", код)
+        self.assertIn("SENTENCE_QUIZ_WARM_STARTER_TARGET - готово", код)
+
+    def test_цель_закрыта_значит_ночь_не_тратит(self):
+        with mock.patch("backend.database.count_shared_words_with_quiz",
+                        return_value=server.SENTENCE_QUIZ_WARM_STARTER_TARGET + 5), \
+             mock.patch("backend.database.get_shared_cold_words_for_quiz") as выбор:
+            построено = server._warm_starter_sentence_quizzes(бюджет=100)
+        self.assertEqual(построено, 0)
+        выбор.assert_not_called()
+
+    def test_цель_равна_двум_полным_заходам(self):
+        """Набор — 15 заданий. Цель 30 = два полных первых захода, а не запас на год."""
+        self.assertEqual(server.SENTENCE_QUIZ_WARM_STARTER_TARGET, 30)
+
+    def test_потолок_ночи_посчитан_от_смысла(self):
+        """Потолок обязан вмещать стартовую цель — иначе она не закроется никогда."""
+        self.assertGreaterEqual(server.SENTENCE_QUIZ_WARM_NIGHTLY_CAP,
+                                server.SENTENCE_QUIZ_WARM_STARTER_TARGET)
 
     def test_берём_слова_которые_есть_у_многих(self):
         import inspect

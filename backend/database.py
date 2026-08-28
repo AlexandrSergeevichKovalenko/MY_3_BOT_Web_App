@@ -16030,6 +16030,34 @@ def get_users_of_training_mode(mode: str, *, lookback_days: int = 30, limit: int
             return [int(r[0]) for r in (cursor.fetchall() or [])]
 
 
+def count_shared_words_with_quiz(*, min_users: int = 5) -> int:
+    """Сколько слов СТАРТОВОГО словаря уже имеют готовое задание.
+
+    По этому числу ночь решает, тратить ли на стартовый прогрев вообще. Владелец
+    28.08.2026: «зачем греть 150, если нам достаточно 20 и они переиспользуются?» —
+    цель закрыта, значит ночь не тратит ни цента.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH общие AS (
+                    SELECT lower(word_de) w
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE word_de IS NOT NULL AND word_de <> ''
+                    GROUP BY 1
+                    HAVING count(DISTINCT user_id) >= %s
+                )
+                SELECT count(DISTINCT о.w)
+                FROM общие о
+                JOIN bt_3_dictionary_entries e ON lower(e.word_de) = о.w
+                WHERE e.response_json ? 'sentence_gap_v2';
+                """,
+                (max(2, int(min_users)),),
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
 def get_shared_cold_words_for_quiz(*, min_users: int = 5, limit: int = 200) -> list[int]:
     """Слова СТАРТОВОГО словаря, у которых ещё нет готового задания.
 
