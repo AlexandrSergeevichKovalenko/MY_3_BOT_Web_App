@@ -6272,115 +6272,11 @@ function AppInner() {
       try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { /* older engines */ }
     };
 
-    // ┌─ НАЙДЕНО 28.08.2026: в приложении с иконки (standalone PWA) клавиатура уносит ──┐
-    // │ вверх ВЕСЬ position:fixed-слой, а не только поле.                              │
-    // │ Повод: словарь → карточка слова → «Добавить своё» → карточка уехала за верх    │
-    // │ экрана, снизу до клавиатуры осталась серая подложка оверлея.                   │
-    // │ Механика ровно та же, что уже разобрана у плавающего словаря (см.              │
-    // │ positionWidgetAboveKeyboard): WebKit в standalone НЕ МОЖЕТ прокрутить документ,│
-    // │ чтобы показать поле внутри fixed-слоя, и вместо этого двигает ВИЗУАЛЬНЫЙ       │
-    // │ вьюпорт: visualViewport.offsetTop становится равен высоте клавиатуры, а слой,  │
-    // │ прибитый к РАЗМЕТОЧНОМУ вьюпорту, уезжает наверх ровно на это число.           │
-    // │ В Telegram offsetTop остаётся 0 (его webview прокручивает документ) — поэтому  │
-    // │ «в телеграме нормально, а в приложении с иконки нет».                          │
-    // │ Лечение: пока поле в фокусе, держим слой в ВИДИМОЙ полосе экрана — двигаем    │
-    // │ ровно на столько, на сколько он из неё вышел (замером, а не формулой).          │
-    // │ offsetTop = 0 → не трогаем ничего: Telegram и браузер работают как работали.    │
-    // └────────────────────────────────────────────────────────────────────────────────┘
-    const fixedLayerOf = (el) => {
-      let node = el?.parentElement || null;
-      while (node && node !== document.body && node !== document.documentElement) {
-        let position = '';
-        try { position = window.getComputedStyle(node).position; } catch { position = ''; }
-        if (position === 'fixed') return node;
-        node = node.parentElement;
-      }
-      return null;
-    };
-
-    let kbLayer = null;          // fixed-слой, который сейчас держим
-    let kbLayerBase = 'none';    // его собственный transform (центрирование модалок и т.п.)
-    let kbLayerCleanup = null;
-
-    const applyLayerShift = (shift) => {
-      // Собственный transform слоя не затираем, а дописываем к нему сдвиг: иначе окно,
-      // которое центрируется через translate(-50%, -50%), улетело бы в угол.
-      const base = kbLayerBase && kbLayerBase !== 'none' ? kbLayerBase : '';
-      if (!shift) {
-        kbLayer.style.transform = base;
-        kbLayer.style.willChange = '';
-        return;
-      }
-      kbLayer.style.transform = base ? `${base} translateY(${shift}px)` : `translateY(${shift}px)`;
-      kbLayer.style.willChange = 'transform';
-    };
-
-    const syncFixedLayer = () => {
-      if (!kbLayer) return;
-      const vv = window.visualViewport;
-      const visTop = vv ? Math.round(vv.offsetTop) : 0;
-      const visHeight = vv ? Math.round(vv.height) : 0;
-      // offsetTop === 0 — это Telegram и обычный браузер: там вьюпорт не сдвинут, слой
-      // стоит где стоял, и трогать его НЕЛЬЗЯ (в Telegram эта карточка ведёт себя верно).
-      if (!(visTop > 0) || !(visHeight > 0)) { applyLayerShift(0); return; }
-      const visBottom = visTop + visHeight;
-      // Мерим слой БЕЗ своей поправки, иначе на втором заходе поправка сложится сама с собой.
-      applyLayerShift(0);
-      const rect = kbLayer.getBoundingClientRect();
-      // Двигаем ровно настолько, насколько слой вышел за видимую полосу, и не больше:
-      //   слой выше полосы (наш случай: фикс-оверлей с top:0 уехал за верх экрана) — опускаем;
-      //   слой ниже полосы (нижняя шторка за клавиатурой) — поднимаем, но не выше её верха;
-      //   слой целиком внутри полосы (центрированная модалка) — не трогаем вообще.
-      let shift = 0;
-      if (rect.top < visTop) shift = visTop - rect.top;
-      else if (rect.bottom > visBottom) shift = Math.max(visBottom - rect.bottom, visTop - rect.top);
-      applyLayerShift(Math.round(shift));
-    };
-
-    const releaseFixedLayer = () => {
-      kbLayerCleanup?.();
-      kbLayerCleanup = null;
-      if (!kbLayer) return;
-      kbLayer.style.transform = '';
-      kbLayer.style.willChange = '';
-      kbLayer = null;
-      kbLayerBase = 'none';
-    };
-
-    const holdFixedLayer = (el) => {
-      const layer = fixedLayerOf(el);
-      if (!layer) { releaseFixedLayer(); return; }
-      if (kbLayer && kbLayer !== layer) releaseFixedLayer();
-      // Фокус мог прыгнуть на соседнее поле ТОГО ЖЕ слоя — старые слушатели и таймеры
-      // снимаем всегда, иначе они копятся на каждом касании поля.
-      kbLayerCleanup?.();
-      kbLayerCleanup = null;
-      if (kbLayer !== layer) {
-        kbLayer = layer;
-        // Базу берём ДО своей правки и из инлайна её ещё нет — значит, читаем вычисленный.
-        let base = 'none';
-        try { base = window.getComputedStyle(layer).transform || 'none'; } catch { base = 'none'; }
-        kbLayerBase = base;
-      }
-      syncFixedLayer();
-      const vv = window.visualViewport;
-      vv?.addEventListener('resize', syncFixedLayer);
-      vv?.addEventListener('scroll', syncFixedLayer);
-      // Клавиатура выезжает анимацией, offsetTop доезжает позже первого кадра.
-      const timers = [120, 350, 700].map((delay) => window.setTimeout(syncFixedLayer, delay));
-      kbLayerCleanup = () => {
-        timers.forEach((id) => window.clearTimeout(id));
-        vv?.removeEventListener('resize', syncFixedLayer);
-        vv?.removeEventListener('scroll', syncFixedLayer);
-      };
-    };
-
     const handleFocusIn = (event) => {
       const el = event.target;
       if (!isPageField(el)) return;
       const scroller = el.closest('.webapp-page');
       if (scroller) scroller.classList.add('is-keyboard-open');
-      holdFixedLayer(el);
       clearTimers();
       [300, 650].forEach((delay) => {
         settleTimers.push(window.setTimeout(() => centerField(el), delay));
@@ -6394,7 +6290,6 @@ function AppInner() {
         if (isPageField(document.activeElement)) return;
         clearTimers();
         clearReserve();
-        releaseFixedLayer();
       }, 80);
     };
 
@@ -6403,7 +6298,6 @@ function AppInner() {
     return () => {
       clearTimers();
       clearReserve();
-      releaseFixedLayer();
       document.removeEventListener('focusin', handleFocusIn);
       document.removeEventListener('focusout', handleFocusOut);
     };
