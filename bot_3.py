@@ -13211,6 +13211,40 @@ async def handle_phrase_review_callback(update: Update, context: CallbackContext
                                   disable_web_page_preview=True)
 
 
+async def admin_dict_integrity_command(update: Update, context: CallbackContext):
+    """Разбивка проверки целостности словаря по правилам: что чинится само и должно
+    убывать, а что машина закрыть не может и ждёт человека.
+
+    ┌─ НАЙДЕНО 28.08.2026. КОМАНДЫ НЕ СУЩЕСТВОВАЛО. ────────────────────────────┐
+    │ Строка вердикта в утреннем отчёте звала «Разбор: /admin_dict_integrity»    │
+    │ (backend/dictionary_integrity.py:358) с 25.08.2026, но обработчика в       │
+    │ bot_3.py не было ни одного: владелец жал на ссылку и не получал ничего.    │
+    │ Готовый текст всё это время лежал в dictionary_integrity.report_lines() и  │
+    │ его никто не звал. Здесь тот самый вызов.                                  │
+    └───────────────────────────────────────────────────────────────────────────┘
+    /admin_dict_integrity"""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    note = await message.reply_text("📖 Считаю целостность словаря…")
+    try:
+        from backend.dictionary_integrity import report_lines
+        lines = await asyncio.to_thread(report_lines)
+    except Exception as exc:
+        # Проверка не отработала — это НЕ «чисто». Говорим вслух, а не показываем
+        # пустой отчёт: молчание здесь неотличимо от «нарушений нет».
+        logging.exception("dict integrity report failed user_id=%s", int(sender.id))
+        await note.edit_text(f"❌ Проверка целостности не отработала: {exc}")
+        return
+    from html import escape as _esc
+    text = "📖 <b>Целостность словаря</b>\n\n" + "\n".join(_esc(ln) for ln in lines)
+    await note.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
+
+
 async def admin_pool_quarantine_command(update: Update, context: CallbackContext):
     """Интерактивный разбор «мусора» пула: слова, которые GPT не смог собрать в карточку
     POOL_ENRICH_MAX_ATTEMPTS раз подряд (выдуманные композиты/опечатки/обрывки, спрос ~0).
@@ -44880,6 +44914,7 @@ def main():
     application.add_handler(CommandHandler("admin_spread_unit_cards", admin_spread_unit_cards_command))
     application.add_handler(CommandHandler("admin_resweep_units", admin_resweep_units_command))
     application.add_handler(CommandHandler("admin_pool_quarantine", admin_pool_quarantine_command))
+    application.add_handler(CommandHandler("admin_dict_integrity", admin_dict_integrity_command))
     application.add_handler(CallbackQueryHandler(handle_quarantine_callback, pattern=r"^qz:"))
     application.add_handler(CommandHandler("admin_phrase_review", admin_phrase_review_command))
     application.add_handler(CallbackQueryHandler(handle_phrase_review_callback, pattern=r"^pr:"))

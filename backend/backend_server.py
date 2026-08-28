@@ -11927,6 +11927,22 @@ def run_pool_night_enrichment(
     }
     if cap <= 0:
         return report
+    # ДВЕРЬ ЗАКРЫТА — НЕ ПЛАТИМ ЗА ТО, ЧТО ВСЁ РАВНО ВЫБРОСИМ.
+    #
+    # Разбор ложится на слово только через второй голос (lex_units.save_unit_card):
+    # не проверили — не записали. Если спросить его заведомо нечем, весь ночной прогон
+    # сведётся к тому, что мы оплатим 400 запросов к OpenAI и выбросим все 400 ответов.
+    # Именно это и случилось в ночь на 28.08.2026 — см. second_voice_check.unavailable_reason().
+    #
+    # Падаем ВСЛУХ, а не возвращаем пустой отчёт: heartbeat запишет status=failed, и
+    # утренняя сводка скажет «❌ Упал» с причиной вместо безымянного «Ошибок: 400».
+    if not dry_run:
+        from backend.second_voice_check import unavailable_reason
+        причина = unavailable_reason()
+        if причина:
+            raise RuntimeError(
+                f"ночной добор не начат: {причина}. Ни одного запроса к модели не сделано."
+            )
     global _POOL_NIGHT_ENRICH_RUNNING
     if not dry_run:
         with _POOL_NIGHT_ENRICH_LOCK:
