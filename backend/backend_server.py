@@ -1159,7 +1159,16 @@ SENTENCE_TRAINING_MIN_WORDS = max(3, int((os.getenv("SENTENCE_TRAINING_MIN_WORDS
 SENTENCE_TRAINING_GPT_SEED_TARGET = max(20, int((os.getenv("SENTENCE_TRAINING_GPT_SEED_TARGET") or "100").strip()))
 SENTENCE_TRAINING_GPT_SEED_MAX_GENERATE_PER_REQUEST = max(1, int((os.getenv("SENTENCE_TRAINING_GPT_SEED_MAX_GENERATE_PER_REQUEST") or "8").strip()))
 SENTENCE_TRAINING_LOOKUP_LIMIT = max(100, int((os.getenv("SENTENCE_TRAINING_LOOKUP_LIMIT") or "600").strip()))
-SENTENCE_TRAINING_LLM_MAX_PER_REQUEST = max(0, int((os.getenv("SENTENCE_TRAINING_LLM_MAX_PER_REQUEST") or "10").strip()))
+# ⛔ ДНЁМ К МОДЕЛИ НЕ ХОДИМ. По умолчанию НОЛЬ — решение владельца 28.08.2026.
+#
+# Одно задание строится 1,88 с (замер на живой модели). Строятся они ПО ОЧЕРЕДИ, внутри
+# запроса человека: прежние 10 — это 19 секунд ожидания, и всё это время занят один из
+# восьми потоков веб-сервиса. Восемь человек, открывших тренировку разом, вешали бы
+# приложение на полминуты. Владелец: «мы просто повесим сервер днём».
+#
+# Работу делает НОЧЬ. Днём набор собирается из готового; готового не хватило — набор
+# просто короче, но всё в нём настоящее. Подделок больше нет.
+SENTENCE_TRAINING_LLM_MAX_PER_REQUEST = max(0, int((os.getenv("SENTENCE_TRAINING_LLM_MAX_PER_REQUEST") or "0").strip()))
 # v4: жёсткий страж качества пропущенного слова (не филлер, а ключевая лексика) —
 # bump инвалидирует ВСЕ старые кеши, они перегенерятся с новым стражем для всех.
 SENTENCE_GAP_CACHE_VERSION = 4
@@ -4337,6 +4346,12 @@ def _capacity_flush_if_due() -> None:
         from backend.database import record_capacity
         record_capacity(service="BACKEND_WEB", kind="web_requests",
                         ceiling=_capacity_ceiling(), peak=пик, hits=упирания, total=всего)
+        # Заодно ссыпаем причины, по которым не сложились задания «Дополни предложение».
+        # Владелец 28.08.2026 спросил прямо: «если падает модель, то почему это
+        # происходит?» — раньше четыре разные причины валились в одну строку лога.
+        for причина, сколько in (take_sentence_quiz_misses() or {}).items():
+            record_capacity(service=причина[:60], kind="sentence_miss",
+                            ceiling=0, peak=0, hits=сколько)
     except Exception:
         logging.warning("замер занятости не записался (пик=%s, упираний=%s, всего=%s)",
                         пик, упирания, всего, exc_info=True)
@@ -18619,6 +18634,31 @@ def _validate_sentence_context_quiz(item: dict) -> dict:
     }
 
 
+# Почему задание не сложилось. Владелец 28.08.2026 спросил прямо: «если падает модель,
+# то почему это происходит?» — а ответа не было: код валил четыре разные причины в одну
+# строку лога, которую никто не считал. Причины действительно разные:
+#   · нет в кеше и днём мы к модели не ходим — норма, работа для ночи;
+#   · модель не ответила — сеть, лимит, таймаут;
+#   · НАШ СТРАЖ отклонил ответ модели — это не «модель упала», это мы её забраковали.
+# Числа складываются здесь и раз в сутки уходят владельцу вместе с отчётом о нагрузке.
+_SENTENCE_MISS_LOCK = threading.Lock()
+_SENTENCE_MISS: dict[str, int] = {}
+
+
+def _note_sentence_quiz_miss(причина: str) -> None:
+    ключ = str(причина or "неизвестно")[:80]
+    with _SENTENCE_MISS_LOCK:
+        _SENTENCE_MISS[ключ] = _SENTENCE_MISS.get(ключ, 0) + 1
+
+
+def take_sentence_quiz_misses() -> dict[str, int]:
+    """Забрать накопленные причины и обнулить счётчик (их складывает читающий)."""
+    with _SENTENCE_MISS_LOCK:
+        снимок = dict(_SENTENCE_MISS)
+        _SENTENCE_MISS.clear()
+    return снимок
+
+
 def _request_sentence_context_quiz_via_openai(german_sentence: str, translation_ru: str) -> dict:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY not configured")
@@ -18668,64 +18708,24 @@ def _request_sentence_context_quiz_via_openai(german_sentence: str, translation_
     return _validate_sentence_context_quiz(parsed)
 
 
-def _build_fallback_sentence_context_quiz(german_sentence: str, translation_ru: str) -> dict:
-    sentence = _normalize_space(german_sentence)
-    translation = _normalize_space(translation_ru)
-    words = re.findall(r"[A-Za-zÄÖÜäöüß]+(?:-[A-Za-zÄÖÜäöüß]+)?", sentence)
+# ⛔ ЗДЕСЬ БЫЛА `_build_fallback_sentence_context_quiz` — ПОДДЕЛЬНОЕ ЗАДАНИЕ. УБРАНА 28.08.2026.
+#
+# Она брала неверные варианты ИЗ ТОГО ЖЕ ПРЕДЛОЖЕНИЯ, а когда их не хватало — из шести
+# вшитых прямо в код глаголов (gehen, machen, geben, nehmen, stellen, tragen).
+#
+# Замер по живой базе: 162 из 260 сохранённых заданий (62%) собраны так. Что лежало:
+#   «das ___ sich nicht»  →  sich · das · eignet · nicht
+# Все четыре варианта — слова этого же предложения. Решается без знания немецкого.
+#
+# И это был НЕ редкий сбой: на набор из 15 заданий выделялось 10 обращений к модели,
+# всё сверх собиралось подделкой сразу, модель даже не спрашивали.
+#
+# Модель делает это правильно — замер на том же слове: «Das ___ sich nicht für Kinder.»
+# → eignet · passt · funktioniert · dient. Близкие по смыслу, но сюда не годятся.
+#
+# Не сложилось задание — берём следующее слово: вызывающий перебирает сотни. Молчанием
+# это не является, а подделка была хуже молчания.
 
-    # Выбираем КЛЮЧЕВОЕ смысловое слово, а не первое подходящее: существительные
-    # (с заглавной и НЕ в начале предложения — там заглавная не значит существительное)
-    # и глаголы получают приоритет; филлеры/служебные/вспомогательные исключены.
-    def _key_score(word: str, idx: int) -> int:
-        lw = word.lower()
-        if len(word) < 4 or lw in _TRIVIAL_GAP_WORDS or _contains_blocked_auxiliary_form(word):
-            return -1
-        score = len(word)                       # длиннее → обычно содержательнее
-        if word[:1].isupper() and idx > 0:      # существительное (не начало предложения)
-            score += 12
-        if lw.endswith(("en", "ern", "eln")):   # вероятный глагол/инфинитив
-            score += 6
-        return score
-
-    scored = sorted(
-        ((_key_score(w, i), -i, w) for i, w in enumerate(words)),
-        reverse=True,
-    )
-    correct_word = next((w for s, _, w in scored if s > 0), None)
-    if not correct_word:
-        # запасной путь: любое неслужебное неаукс-слово, иначе — первое слово
-        correct_word = next(
-            (w for w in words if w.lower() not in _TRIVIAL_GAP_WORDS and not _contains_blocked_auxiliary_form(w)),
-            words[0] if words else "Wort",
-        )
-    sentence_with_gap = re.sub(rf"\b{re.escape(correct_word)}\b", "___", sentence, count=1)
-    distractor_pool = [w for w in words if w.lower() != correct_word.lower() and len(w) >= 3]
-    while len(distractor_pool) < 3:
-        distractor_pool.append(random.choice(["gehen", "machen", "geben", "nehmen", "stellen", "tragen"]))
-    options = [correct_word, distractor_pool[0], distractor_pool[1], distractor_pool[2]]
-    deduped = []
-    for item in options:
-        norm = _normalize_space(item)
-        if norm and norm not in deduped:
-            deduped.append(norm)
-    while len(deduped) < 4:
-        candidate = random.choice(["gehen", "machen", "geben", "nehmen", "stellen", "tragen", "setzen", "legen"])
-        if candidate not in deduped:
-            deduped.append(candidate)
-    options = deduped[:4]
-    random.shuffle(options)
-    correct_index = options.index(correct_word) + 1
-    focus_type = "verb" if correct_word.lower().endswith("en") else ("noun" if correct_word[:1].isupper() else "preposition")
-    return {
-        "quiz_type": "sentence_gap_context",
-        "sentence_with_gap": sentence_with_gap,
-        "correct_full_sentence": sentence,
-        "translation_ru": translation,
-        "options": options,
-        "correct_index": correct_index,
-        "correct_word": correct_word,
-        "focus_type": focus_type,
-    }
 
 
 def _entry_sentence_cache_payload(response_json: dict, german_sentence: str) -> dict | None:
@@ -18743,6 +18743,66 @@ def _entry_sentence_cache_payload(response_json: dict, german_sentence: str) -> 
         return _validate_sentence_context_quiz(payload)
     except Exception:
         return None
+
+
+def _sentence_quiz_cache_record(german_sentence: str, payload: dict) -> dict:
+    return {
+        "version": SENTENCE_GAP_CACHE_VERSION,
+        "source_sentence": german_sentence,
+        "payload": payload,
+        "cached_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _pool_quiz_payload(entry: dict, german_sentence: str) -> dict | None:
+    """Готовое задание из ОБЩЕГО пула для слова этой карточки, если кто-то уже оплатил."""
+    слово = str((entry or {}).get("word_de") or (entry or {}).get("target_text") or "").strip()
+    if not слово:
+        return None
+    try:
+        from backend.database import get_pool_sentence_quiz
+        кеш = get_pool_sentence_quiz(слово, german_sentence)
+    except Exception:
+        logging.warning("не смогли прочитать задание из общего пула для %s", слово, exc_info=True)
+        return None
+    if not isinstance(кеш, dict):
+        return None
+    if int(кеш.get("version") or 0) != SENTENCE_GAP_CACHE_VERSION:
+        return None
+    payload = кеш.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return _validate_sentence_context_quiz(payload)
+    except Exception:
+        # В пуле лежит негодное — не показываем и не переносим на карточку.
+        return None
+
+
+def _remember_sentence_quiz_on_card(entry: dict, german_sentence: str, payload: dict) -> None:
+    """Запомнить задание в ЛИЧНОЙ карточке — чтобы не ходить в пул на каждый показ."""
+    entry_id = int((entry or {}).get("id") or 0)
+    if not entry_id:
+        return
+    response_json = _coerce_response_json((entry or {}).get("response_json"))
+    обновлённое = dict(response_json)
+    обновлённое["sentence_gap_v2"] = _sentence_quiz_cache_record(german_sentence, payload)
+    try:
+        update_webapp_dictionary_entry(entry_id, обновлённое)
+    except Exception as exc:
+        logging.warning("Failed to cache sentence quiz for entry %s: %s", entry_id, exc)
+
+
+def _remember_sentence_quiz_in_pool(entry: dict, german_sentence: str, payload: dict) -> None:
+    """Положить задание в ОБЩИЙ пул — следующему человеку оно достанется даром."""
+    слово = str((entry or {}).get("word_de") or (entry or {}).get("target_text") or "").strip()
+    if not слово:
+        return
+    try:
+        from backend.database import save_pool_sentence_quiz
+        save_pool_sentence_quiz(слово, _sentence_quiz_cache_record(german_sentence, payload))
+    except Exception:
+        logging.warning("не смогли положить задание в общий пул для %s", слово, exc_info=True)
 
 
 def _merge_sentence_quiz_into_entry(entry: dict, quiz_payload: dict, *, sentence_origin: str) -> dict:
@@ -18790,37 +18850,59 @@ def _build_sentence_quiz_from_dictionary_entry(
     cached = _entry_sentence_cache_payload(response_json, german_sentence)
     payload = cached
     if payload is None:
-        if allow_llm:
-            payload = None
-            # Две попытки у модели: если она пропустила филлер, страж отклонит и мы
-            # дадим ей второй шанс, прежде чем падать в простой (менее умный) fallback.
-            for _attempt in range(2):
-                try:
-                    payload = _request_sentence_context_quiz_via_openai(german_sentence, translation_ru)
-                    break
-                except Exception as exc:
-                    logging.warning("Sentence quiz generation attempt failed for entry %s: %s", entry.get("id"), exc)
-                    payload = None
-            if payload is None:
-                payload = _build_fallback_sentence_context_quiz(german_sentence, translation_ru)
-        else:
-            payload = _build_fallback_sentence_context_quiz(german_sentence, translation_ru)
+        # ⛔ ПРЕЖДЕ ЧЕМ ПЛАТИТЬ — СМОТРИМ, НЕ ОПЛАТИЛ ЛИ КТО-ТО ДРУГОЙ.
+        # Требование владельца 28.08.2026: активный тянет пул вперёд, а тот, кто
+        # заходит редко, получает ТЕ ЖЕ САМЫЕ готовые задания. Задание лежит в общем
+        # пуле (одна строка на слово, без user_id), поэтому прогретое одним достаётся
+        # всем, у кого это слово есть. До этого дня кеш был только личным, и тринадцать
+        # человек с одним словом платили тринадцать раз.
+        из_пула = _pool_quiz_payload(entry, german_sentence)
+        if из_пула is not None:
+            payload = из_пула
+            _remember_sentence_quiz_on_card(entry, german_sentence, payload)
+    if payload is None:
+        if not allow_llm:
+            # Нечего показать — и это НЕ молчание: вызывающий перебирает сотни слов и
+            # просто возьмёт следующее. Раньше здесь строилось поддельное задание.
+            _note_sentence_quiz_miss("нет в кеше, к модели не ходим")
+            return None
+        payload = None
+        # Две попытки у модели: если она пропустила филлер, страж отклонит и мы
+        # дадим ей второй шанс.
+        причина = "модель не ответила"
+        for _attempt in range(2):
+            try:
+                payload = _request_sentence_context_quiz_via_openai(german_sentence, translation_ru)
+                break
+            except Exception as exc:
+                logging.warning("Sentence quiz generation attempt failed for entry %s: %s", entry.get("id"), exc)
+                причина = f"модель не ответила: {str(exc)[:60]}"
+                payload = None
+        if payload is None:
+            # ⛔ ЗДЕСЬ СТРОИЛОСЬ ПОДДЕЛЬНОЕ ЗАДАНИЕ. УБРАНО 28.08.2026.
+            #
+            # `_build_fallback_sentence_context_quiz` брал неверные варианты ИЗ ТОГО ЖЕ
+            # предложения, а если не хватало — из шести вшитых в код глаголов. Замер по
+            # живой базе: 162 из 260 сохранённых заданий (62%) собраны так. Пример,
+            # который лежал в базе: «das ___ sich nicht» с вариантами sich / das /
+            # eignet / nicht — все четыре слова из этого же предложения. Такое решается
+            # без знания немецкого, простым сличением.
+            #
+            # И это был не редкий сбой, а обычный порядок: на набор из 15 заданий
+            # выделялось 10 обращений к модели, остальное собиралось подделкой сразу.
+            #
+            # Не сложилось — берём следующее слово. Молчанием это не является.
+            _note_sentence_quiz_miss(причина)
+            return None
         try:
             payload = _validate_sentence_context_quiz(payload)
         except Exception as exc:
             logging.warning("Sentence quiz payload failed validation for entry %s: %s", entry.get("id"), exc)
+            _note_sentence_quiz_miss(f"наш страж отклонил ответ модели: {str(exc)[:50]}")
             return None
-        updated_response_json = dict(response_json)
-        updated_response_json["sentence_gap_v2"] = {
-            "version": SENTENCE_GAP_CACHE_VERSION,
-            "source_sentence": german_sentence,
-            "payload": payload,
-            "cached_at": datetime.now(timezone.utc).isoformat(),
-        }
-        try:
-            update_webapp_dictionary_entry(int(entry.get("id") or 0), updated_response_json)
-        except Exception as exc:
-            logging.warning("Failed to cache sentence quiz for entry %s: %s", entry.get("id"), exc)
+        _remember_sentence_quiz_on_card(entry, german_sentence, payload)
+        # И В ОБЩИЙ ПУЛ — чтобы следующему за это уже не платили.
+        _remember_sentence_quiz_in_pool(entry, german_sentence, payload)
 
     return _merge_sentence_quiz_into_entry(entry, payload, sentence_origin="dictionary")
 
@@ -19102,7 +19184,23 @@ def _build_sentence_training_set(
         german_sentence, _, _ = _extract_sentence_training_pair(entry, source_lang, target_lang)
         if _looks_like_german_sentence(german_sentence):
             dictionary_candidates.append(entry)
+    # ⛔ СНАЧАЛА ТО, ЧТО УЖЕ ПРОГРЕТО. Требование владельца 28.08.2026:
+    # «человек, который активно занимается, получает задания быстрее, а тот, который
+    # менее активно, получает ТЕ ЖЕ САМЫЕ, уже прогретые для других — но новые для него
+    # не греются».
+    #
+    # Задание кешируется на СЛОВЕ, а не на человеке (таблица общего пула не знает про
+    # пользователей), поэтому прогретое одним доступно всем, у кого это слово есть.
+    # Слепое перемешивание тянуло непрогретые слова наравне с готовыми и заставляло
+    # платить там, где платить было не нужно.
+    #
+    # Перемешиваем ВНУТРИ каждой группы, чтобы набор не был одинаковым день ото дня.
     random.shuffle(dictionary_candidates)
+    прогретые, холодные = [], []
+    for entry in dictionary_candidates:
+        german_sentence, _, response_json = _extract_sentence_training_pair(entry, source_lang, target_lang)
+        (прогретые if _entry_sentence_cache_payload(response_json, german_sentence) else холодные).append(entry)
+    dictionary_candidates = прогретые + холодные
 
     selected_dict: list[dict] = []
     llm_remaining = SENTENCE_TRAINING_LLM_MAX_PER_REQUEST
@@ -28896,6 +28994,138 @@ def _run_translation_focus_pool_admin_report_scheduler_job() -> None:
         logging.exception("❌ Translation focus pool admin report scheduler failed")
 
 
+# ── Ночной прогрев САМИХ ЗАДАНИЙ «Дополни предложение» ─────────────────────
+# Днём к модели не ходим вовсе — значит задания обязана готовить ночь. Раньше ночь
+# готовила только ПРЕДЛОЖЕНИЯ (_ensure_sentence_gpt_seed_entries), а само задание
+# строилось в момент показа. Убрав дневные обращения, мы бы оставили тренировку пустой.
+#
+# Правила прогрева — решения владельца 28.08.2026:
+#   · греем ТОЛЬКО тем, кто заходил именно в эту тренировку;
+#   · добиваем каждому запас до 20 готовых заданий, не больше («прошёл вчера семь —
+#     досыпаем семь»);
+#   · УЖЕ ГОТОВОЕ СЧИТАЕТСЯ В ЭТИ 20. Задание кешируется на слове, а не на человеке,
+#     поэтому прогретое активными достаётся редко заходящим даром: «новые для него не
+#     греются, пока есть готовые»;
+#   · сверх того — стартовый запас: греем слова общего словаря, чтобы у любого нового
+#     человека первый заход был мгновенным.
+SENTENCE_QUIZ_WARM_TARGET_PER_USER = max(1, int((os.getenv("SENTENCE_QUIZ_WARM_TARGET_PER_USER") or "20").strip()))
+SENTENCE_QUIZ_WARM_NIGHTLY_CAP = max(0, int((os.getenv("SENTENCE_QUIZ_WARM_NIGHTLY_CAP") or "150").strip()))
+SENTENCE_QUIZ_WARM_STARTER_SHARE = 0.5   # половина ночного потолка — на стартовый словарь
+
+
+def _warm_one_entry_quiz(entry: dict, *, source_lang: str, target_lang: str) -> bool:
+    """Построить и сохранить задание для одной записи. True — построили."""
+    итог = _build_sentence_quiz_from_dictionary_entry(
+        entry, source_lang=source_lang, target_lang=target_lang, allow_llm=True)
+    return bool(итог)
+
+
+def _warm_sentence_quizzes_for_user(user_id: int, *, бюджет: int) -> int:
+    """Догреть человеку запас до цели. Возвращает, сколько заданий построили.
+
+    Сначала считаем, сколько у него УЖЕ готово: платить за то, что активные соседи уже
+    оплатили, не нужно. Не хватает до цели — достраиваем ровно недостающее.
+    """
+    if бюджет <= 0:
+        return 0
+    source_lang, target_lang, _ = _get_user_language_pair(int(user_id))
+    записи = get_webapp_dictionary_entries(
+        user_id=int(user_id), limit=SENTENCE_TRAINING_LOOKUP_LIMIT,
+        folder_mode="all", folder_id=None,
+        source_lang=source_lang, target_lang=target_lang,
+    )
+    готово, холодные = 0, []
+    for сырое in записи:
+        item = _decorate_dictionary_item(
+            сырое if isinstance(сырое, dict) else {},
+            source_lang=source_lang, target_lang=target_lang,
+            direction=f"{source_lang}-{target_lang}")
+        предложение, _перевод, response_json = _extract_sentence_training_pair(
+            item, source_lang, target_lang)
+        if not _looks_like_german_sentence(предложение):
+            continue
+        if _entry_sentence_cache_payload(response_json, предложение):
+            готово += 1
+        else:
+            холодные.append(item)
+    нужно = max(0, SENTENCE_QUIZ_WARM_TARGET_PER_USER - готово)
+    if нужно <= 0:
+        return 0
+    построено = 0
+    for item in холодные[: min(нужно, бюджет)]:
+        try:
+            if _warm_one_entry_quiz(item, source_lang=source_lang, target_lang=target_lang):
+                построено += 1
+        except Exception:
+            logging.warning("ночной прогрев задания не удался user_id=%s", user_id, exc_info=True)
+    return построено
+
+
+def _warm_starter_sentence_quizzes(*, бюджет: int) -> int:
+    """Прогреть слова ОБЩЕГО словаря — чтобы первый заход любого новичка был мгновенным.
+
+    Замер 28.08.2026: ~1000 слов сохранены у 10–13 человек из 13 — это стартовый
+    словарь, одинаковый у всех. Задание лежит на слове, поэтому прогретое здесь
+    достаётся каждому будущему человеку даром.
+    """
+    if бюджет <= 0:
+        return 0
+    from backend.database import get_shared_cold_words_for_quiz, get_dictionary_entry_by_id
+    try:
+        ids = get_shared_cold_words_for_quiz(min_users=5, limit=бюджет)
+    except Exception:
+        logging.warning("не смогли выбрать слова общего словаря для прогрева", exc_info=True)
+        return 0
+    построено = 0
+    for entry_id in ids:
+        try:
+            запись = get_dictionary_entry_by_id(int(entry_id))
+            if not запись:
+                continue
+            src = _normalize_short_lang_code(запись.get("source_lang") or "ru", fallback="ru")
+            tgt = _normalize_short_lang_code(запись.get("target_lang") or "de", fallback="de")
+            item = _decorate_dictionary_item(dict(запись), source_lang=src, target_lang=tgt,
+                                             direction=f"{src}-{tgt}")
+            if _warm_one_entry_quiz(item, source_lang=src, target_lang=tgt):
+                построено += 1
+        except Exception:
+            logging.warning("прогрев общего слова %s не удался", entry_id, exc_info=True)
+    return построено
+
+
+def _dispatch_sentence_quiz_warm() -> dict:
+    """Ночной прогрев заданий: сначала тем, кто тренируется, потом общий словарь."""
+    if SENTENCE_QUIZ_WARM_NIGHTLY_CAP <= 0:
+        return {"ok": True, "skipped": True, "reason": "nightly cap = 0"}
+    from backend.database import get_users_of_training_mode
+    бюджет = SENTENCE_QUIZ_WARM_NIGHTLY_CAP
+    итог = {"ok": True, "for_users": 0, "starter": 0, "users_seen": 0}
+    try:
+        люди = get_users_of_training_mode("sentence", lookback_days=30, limit=100)
+    except Exception:
+        logging.warning("не смогли прочитать, кто тренируется", exc_info=True)
+        люди = []
+    итог["users_seen"] = len(люди)
+    доля_на_старт = int(SENTENCE_QUIZ_WARM_NIGHTLY_CAP * SENTENCE_QUIZ_WARM_STARTER_SHARE)
+    for user_id in люди:
+        if бюджет <= доля_на_старт:
+            break
+        if _is_synthetic_telegram_user_id(int(user_id)) or not _is_webapp_user_allowed(int(user_id)):
+            continue
+        try:
+            построено = _warm_sentence_quizzes_for_user(int(user_id), бюджет=бюджет - доля_на_старт)
+        except Exception:
+            logging.warning("ночной прогрев для user_id=%s не удался", user_id, exc_info=True)
+            построено = 0
+        итог["for_users"] += построено
+        бюджет -= построено
+    итог["starter"] = _warm_starter_sentence_quizzes(бюджет=max(0, бюджет))
+    итог["spent"] = потрачено = итог["for_users"] + итог["starter"]
+    logging.info("ночной прогрев заданий: людям %s, стартовому словарю %s (всего %s из %s)",
+                 итог["for_users"], итог["starter"], потрачено, SENTENCE_QUIZ_WARM_NIGHTLY_CAP)
+    return итог
+
+
 def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
     if not (SENTENCE_PREWARM_ENABLED or TRANSLATION_FOCUS_POOL_PREWARM_ENABLED) and not force:
         return {"ok": True, "skipped": True, "reason": "disabled"}
@@ -28976,6 +29206,13 @@ def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN
             except Exception:
                 errors += 1
                 logging.exception("Sentence prewarm failed for user_id=%s", user_id)
+
+        # Сами задания «Дополни предложение» — днём их строить больше нельзя.
+        try:
+            quiz_warm_result = _dispatch_sentence_quiz_warm()
+        except Exception:
+            logging.exception("ночной прогрев заданий не удался")
+            quiz_warm_result = {"ok": False}
 
         if TRANSLATION_FOCUS_POOL_PREWARM_ENABLED or force:
             focus_pool_result = _dispatch_translation_focus_pool_refill(
@@ -56802,6 +57039,14 @@ def get_webapp_flashcard_set():
             queue_source=queue_source,
         )
         profile_payload["manual_selected_count"] = len(manual_selected_card_ids or [])
+        # Отмечаем, что человек открыл ИМЕННО ЭТОТ режим. Ночной прогрев греет только
+        # тем, кто сюда заходил (решение владельца 28.08.2026): открывающий словарь, но
+        # никогда не заглядывавший в тренировку, денег нам стоить не должен.
+        try:
+            from backend.database import record_training_mode_use
+            record_training_mode_use(int(user_id), training_mode)
+        except Exception:
+            logging.warning("не записали заход в режим %s", training_mode, exc_info=True)
         if training_mode == "sentence":
             decorated_items = _build_sentence_training_set(
                 user_id=int(user_id),

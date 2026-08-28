@@ -15900,6 +15900,181 @@ _ACCESS_WAITLIST_SCHEMA_DONE = False
 _WEB_CAPACITY_SCHEMA_DONE = False
 
 
+# ── Кто каким режимом тренировки пользуется ────────────────────────────────
+# Владелец 28.08.2026: греть надо тем, кто заходил ИМЕННО В ЭТУ тренировку, а не в
+# словарь вообще. До этого дня режим не записывался нигде: в базе было только «карточка
+# показана» (user_id, entry_id, seen_at), без указания, что это был за режим.
+_TRAINING_MODE_SCHEMA_DONE = False
+
+
+# ── Задание «Дополни предложение» — ОБЩЕЕ ДОСТОЯНИЕ ────────────────────────
+# Требование владельца 28.08.2026: «мы должны греть задание, и они должны быть
+# ПЕРЕИСПОЛЬЗОВАНЫ всеми остальными. Тот, кто занимается активно, получает их быстрее,
+# а тот, кто менее активно, получает те же самые, уже прогретые для других — новые для
+# него не греются».
+#
+# ⛔ ДО 28.08.2026 ЭТОГО НЕ БЫЛО. Кеш писался только в ЛИЧНУЮ карточку
+# (bt_3_webapp_dictionary_queries), и два человека с одним и тем же словом платили
+# каждый за себя. При тринадцати людях это ×13 за один и тот же текст.
+#
+# Теперь построенное задание кладётся ЕЩЁ И в общий пул (bt_3_dictionary_entries) — он
+# по устройству без user_id, одна строка на слово. Читается сначала личная карточка,
+# потом пул. Активный оплачивает прогрев один раз, остальные берут даром.
+def get_pool_sentence_quiz(word_de: str, source_sentence: str) -> dict | None:
+    """Готовое задание из общего пула для этого слова. None — в пуле его нет.
+
+    Сверяем ИМЕННО ТО предложение: у слова в карточке может стоять другой пример, и
+    подставить задание от чужого предложения значило бы показать человеку дыру не в том
+    тексте."""
+    слово = str(word_de or "").strip()
+    предложение = " ".join(str(source_sentence or "").split())
+    if not слово or not предложение:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT response_json->'sentence_gap_v2' FROM bt_3_dictionary_entries "
+                "WHERE lower(word_de) = lower(%s) AND response_json ? 'sentence_gap_v2' "
+                "LIMIT 5;",
+                (слово,),
+            )
+            for (кеш,) in (cursor.fetchall() or []):
+                if not isinstance(кеш, dict):
+                    continue
+                если = " ".join(str(кеш.get("source_sentence") or "").split())
+                if если == предложение:
+                    return кеш
+    return None
+
+
+def save_pool_sentence_quiz(word_de: str, кеш: dict) -> bool:
+    """Положить построенное задание в общий пул, чтобы оно досталось всем.
+
+    Пишем ко ВСЕМ строкам пула с этим словом: пул дедуплицируется отдельной ночной
+    работой, и до неё одно слово может лежать в нескольких строках. Пропустить их
+    значит заставить следующего человека платить за уже готовое.
+    """
+    слово = str(word_de or "").strip()
+    if not слово or not isinstance(кеш, dict):
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_dictionary_entries "
+                "SET response_json = COALESCE(response_json, '{}'::jsonb) "
+                "                    || jsonb_build_object('sentence_gap_v2', %s::jsonb) "
+                "WHERE lower(word_de) = lower(%s);",
+                (Json(кеш), слово),
+            )
+            записано = cursor.rowcount
+        conn.commit()
+    return bool(записано)
+
+
+def ensure_training_mode_usage_schema() -> None:
+    global _TRAINING_MODE_SCHEMA_DONE
+    if _TRAINING_MODE_SCHEMA_DONE:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_training_mode_usage (
+                    user_id      BIGINT NOT NULL,
+                    mode         TEXT NOT NULL,
+                    uses         BIGINT NOT NULL DEFAULT 0,
+                    first_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, mode)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_training_mode_recent
+                ON bt_3_training_mode_usage (mode, last_used_at DESC);
+            """)
+        conn.commit()
+    _TRAINING_MODE_SCHEMA_DONE = True
+
+
+def record_training_mode_use(user_id: int, mode: str) -> None:
+    """Отметить, что человек открыл этот режим тренировки. Лёгкая запись, одна строка."""
+    режим = str(mode or "").strip().lower()
+    if not режим or int(user_id) <= 0:
+        return
+    ensure_training_mode_usage_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO bt_3_training_mode_usage (user_id, mode, uses) VALUES (%s, %s, 1) "
+                "ON CONFLICT (user_id, mode) DO UPDATE SET "
+                "uses = bt_3_training_mode_usage.uses + 1, last_used_at = NOW();",
+                (int(user_id), режим),
+            )
+        conn.commit()
+
+
+def get_users_of_training_mode(mode: str, *, lookback_days: int = 30, limit: int = 200) -> list[int]:
+    """Кто заходил в этот режим за последние дни — им и греем. Свежие первыми.
+
+    Именно ЭТОТ список решает, на кого тратить деньги ночью. Человек, который открывает
+    словарь, но никогда не заходил в эту тренировку, сюда не попадает — и правильно:
+    греть ему нечего и незачем."""
+    ensure_training_mode_usage_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id FROM bt_3_training_mode_usage "
+                "WHERE mode = %s AND last_used_at > NOW() - (%s * INTERVAL '1 day') "
+                "ORDER BY last_used_at DESC LIMIT %s;",
+                (str(mode).strip().lower(), max(1, int(lookback_days)), max(1, int(limit))),
+            )
+            return [int(r[0]) for r in (cursor.fetchall() or [])]
+
+
+def get_shared_cold_words_for_quiz(*, min_users: int = 5, limit: int = 200) -> list[int]:
+    """Слова СТАРТОВОГО словаря, у которых ещё нет готового задания.
+
+    Возвращает id записей общего пула. Владелец 28.08.2026: «для каждого пользователя
+    у нас должен быть прогрет минимум 20 слов — иначе человек зайдёт впервые из
+    любопытства, увидит пустоту и больше не вернётся».
+
+    Дешевле всего это делается через общий словарь: замер того же дня показал, что
+    ~1000 слов сохранены у 10–13 человек из 13 — это стартовый словарь, одинаковый у
+    всех. Задание кешируется на СЛОВЕ, а не на человеке, поэтому прогрев этой тысячи
+    один раз обеспечивает первый заход ЛЮБОГО будущего человека — бесплатно и мгновенно.
+    """
+    # Возвращаем id ЛИЧНЫХ карточек, а не строк пула: прогрев идёт обычным путём
+    # (`_build_sentence_quiz_from_dictionary_entry`), который сам положит готовое и в
+    # карточку, и в общий пул. Брать по одной карточке на слово — платить один раз.
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH общие AS (
+                    SELECT lower(word_de) w, count(DISTINCT user_id) c
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE word_de IS NOT NULL AND word_de <> ''
+                    GROUP BY 1
+                    HAVING count(DISTINCT user_id) >= %s
+                ),
+                холодные AS (
+                    SELECT о.w, о.c
+                    FROM общие о
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM bt_3_dictionary_entries e
+                        WHERE lower(e.word_de) = о.w AND e.response_json ? 'sentence_gap_v2'
+                    )
+                )
+                SELECT DISTINCT ON (х.w) q.id
+                FROM холодные х
+                JOIN bt_3_webapp_dictionary_queries q ON lower(q.word_de) = х.w
+                ORDER BY х.w, х.c DESC, q.id
+                LIMIT %s;
+                """,
+                (max(2, int(min_users)), max(1, int(limit))),
+            )
+            return [int(r[0]) for r in (cursor.fetchall() or [])]
+
+
 def ensure_web_capacity_schema() -> None:
     global _WEB_CAPACITY_SCHEMA_DONE
     if _WEB_CAPACITY_SCHEMA_DONE:
