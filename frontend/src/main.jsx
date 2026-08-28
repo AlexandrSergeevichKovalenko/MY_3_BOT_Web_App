@@ -737,6 +737,41 @@ let __accessClosedGateShown = false;
 /** Access was closed by an admin (/deny). Same shape as the bot-left gate, amber instead of
  *  indigo: the app is not broken, someone decided this — so no red, no server text, one way
  *  out (open the bot, where «Запросить доступ» lives). */
+// Открыть чат с ботом. ⛔ НЕ ЧЕРЕЗ window.location.href.
+//
+// Замер 28.08.2026 на живом телефоне владельца: кнопка «Открыть чат с ботом» на экране
+// очереди не делала НИЧЕГО. Внутри мини-аппа Telegram переход по `tg://resolve` и по
+// `https://t.me/...` через location.href не срабатывает — оболочка его игнорирует.
+// Штатный способ ровно один: Telegram.WebApp.openTelegramLink(), им и пользуется весь
+// остальной проект (App.jsx, AnswerOverlay.jsx, SettingsScreen.jsx).
+//
+// Прежний код с location.href писался для экрана «доступ закрыт», а тот показывается
+// ТОЛЬКО вне Telegram (токенный шим выходит раньше при inTelegram()) — там location.href
+// работает, поэтому поломка и не всплывала. Экран очереди показывается ВНУТРИ мини-аппа,
+// и на нём она вылезла сразу.
+//
+// Кнопка не украшение: если человек пришёл в приложение по ссылке и с ботом ни разу не
+// переписывался, чата с ботом у него нет, и написать ему мы физически не сможем.
+// Нажатие создаёт чат — и только после этого обещание «напишу, когда откроем» выполнимо.
+function openBotChat(botUsername, startPayload) {
+  const uname = String(botUsername || 'Ich_Deutsch_bot').trim().replace(/^@/, '') || 'Ich_Deutsch_bot';
+  const suffix = startPayload ? `?start=${encodeURIComponent(startPayload)}` : '';
+  const httpsUrl = `https://t.me/${uname}${suffix}`;
+  try {
+    const tg = window.Telegram && window.Telegram.WebApp;
+    if (tg && typeof tg.openTelegramLink === 'function') {
+      tg.openTelegramLink(httpsUrl);
+      return;
+    }
+  } catch (_e) { /* не в Telegram — уходим на обычный переход ниже */ }
+  // Вне Telegram (браузер, установленное приложение) обычный переход — рабочий путь.
+  try { window.location.href = `tg://resolve?domain=${uname}${startPayload ? `&start=${encodeURIComponent(startPayload)}` : ''}`; } catch (_e) { /* ignore */ }
+  setTimeout(() => {
+    if (document.hidden) return;
+    try { window.location.href = httpsUrl; } catch (_e) { /* ignore */ }
+  }, 800);
+}
+
 function showAccessClosedGate(botUsername) {
   if (__accessClosedGateShown || __appBlockedGateShown) return;
   __accessClosedGateShown = true;
@@ -747,14 +782,7 @@ function showAccessClosedGate(botUsername) {
     ? 'Der Administrator hat den Zugang zur App geschlossen. Wenn das ein Versehen ist, öffne den Bot und stelle eine Anfrage.'
     : 'Администратор закрыл доступ к приложению. Если это ошибка — откройте бота и отправьте запрос.';
   const btn = de ? 'Bot öffnen' : 'Открыть бота';
-  const openBot = () => {
-    const https = `https://t.me/${uname}?start=access`;
-    try { window.location.href = `tg://resolve?domain=${uname}&start=access`; } catch (_e) { /* ignore */ }
-    setTimeout(() => {
-      if (document.hidden) return;
-      try { window.location.href = https; } catch (_e) { /* ignore */ }
-    }, 800);
-  };
+  const openBot = () => openBotChat(uname, 'access');
   try {
     const wrap = document.createElement('div');
     wrap.setAttribute('style', [
@@ -799,14 +827,7 @@ function showAccessQueueGate(position, botUsername) {
     ? 'Wir öffnen den Zugang portionsweise, damit die App für alle schnell bleibt. Sobald du dran bist, schreibe ich dir im Bot-Chat — du musst nichts tun.'
     : 'Мы открываем доступ порциями, чтобы приложение отвечало быстро всем, кто уже занимается. Как только очередь дойдёт до вас, я напишу в чат с ботом — делать ничего не нужно.';
   const btn = de ? 'Bot-Chat öffnen' : 'Открыть чат с ботом';
-  const openBot = () => {
-    const https = `https://t.me/${uname}?start=queue`;
-    try { window.location.href = `tg://resolve?domain=${uname}&start=queue`; } catch (_e) { /* ignore */ }
-    setTimeout(() => {
-      if (document.hidden) return;
-      try { window.location.href = https; } catch (_e) { /* ignore */ }
-    }, 800);
-  };
+  const openBot = () => openBotChat(uname, 'queue');
   try {
     const wrap = document.createElement('div');
     wrap.setAttribute('style', [
