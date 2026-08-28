@@ -3,12 +3,23 @@ import useWideScreen from './useWideScreen.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import AskOverlay from './AskOverlay.jsx';
 import SaveWordChip from './SaveWordChip.jsx';
+import { sendReviewAnswer, flushPendingReviewAnswers } from './reviewAnswerQueue';
 
 // Artikel Trainer — the self-paced LEARNING deck (companion to the timed Sprint).
 // Look at a noun, tap der/die/das, get instant ✅/❌ + a memory hint, then swipe
 // left (or tap "Дальше") to the next card. No timer. Grading is local (not
 // competitive); each answer is posted so the user's mistakes resurface later.
 const ARTICLES = ['der', 'die', 'das'];
+
+// Ключ одного нажатия: сервер по нему отбрасывает повторную доставку того же ответа.
+// crypto.randomUUID есть не во всех вебвью Telegram, поэтому запасной путь — не
+// «заглушка вместо ответа», а другой способ получить тот же уникальный ключ.
+function newAnswerId() {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  } catch (_e) { /* старый вебвью — считаем ключ сами, ниже */ }
+  return `al-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
 const ART_CLASS = { der: 'art-der', die: 'art-die', das: 'art-das' };
 const LEARN_BATCH = 15;
 
@@ -50,6 +61,9 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
     if (themeKey !== null) pickThemeRef.current = themeKey;
     setPhase('loading');
     try {
+      // Сначала досылаем ответы, не ушедшие в прошлый раз, — иначе они так и лежали бы
+      // в браузере, а ошибки человека не попали бы в работу над ошибками.
+      await flushPendingReviewAnswers(api);
       const data = await api('/api/webapp/artikel/learn/today', { offset, theme_key: pickThemeRef.current || '' });
       if (!data.ok) { setError(data.error || 'Недоступно'); setPhase('error'); return; }
       cardsRef.current = data.cards || [];
@@ -116,10 +130,19 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
     try { haptic?.(ok ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
     // Play "der/die/das + Wort" right on the tap (a user gesture → iOS allows it).
     playAudio(c.audio);
-    api('/api/webapp/artikel/learn/answer', {
+    // Ответ уходит в фоне и НЕ теряется. Раньше здесь стоял `.catch(() => {})`:
+    // моргнул интернет или свернули окно — ответ пропадал молча, ошибка не попадала
+    // в работу над ошибками, и человек её больше не видел. Теперь отправка
+    // повторяется, а совсем не ушедшее откладывается в память браузера и досылается
+    // при следующем открытии тренажёра.
+    // `answer_id` — ключ ЭТОГО нажатия, один и тот же у всех попыток: сервер по нему
+    // отбрасывает повтор. Без него повтор был бы хуже потери — «освоено» считается по
+    // числу верных ответов, и одно нажатие засчиталось бы за два.
+    sendReviewAnswer(api, '/api/webapp/artikel/learn/answer', {
       word: c.w, article: c.a, is_correct: ok,
       theme_key: meta?.theme_key || '', set_id: meta?.set_id || '',
-    }).catch(() => { /* fire-and-forget */ });
+      answer_id: newAnswerId(),
+    });
   }, [chosen, idx, api, haptic, meta, playAudio]);
 
   const next = useCallback(() => {

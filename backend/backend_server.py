@@ -3453,6 +3453,46 @@ def _self_serve_source_label(user_data: dict | None, parsed_init_data: dict | No
     return "приложение (Mini App)"
 
 
+def _access_denied_payload(user_id: int) -> dict:
+    """Что сказать человеку, которого не пустили. Ровно два законных состояния:
+
+      · он в ОЧЕРЕДИ — упёрлись в потолок впуска (PUBLIC_ACCESS_CAP). Отдаём его
+        НОМЕР: экран показывает его крупно и обещает написать в чат с ботом;
+      · ему ЗАПРЕТИЛ администратор — прежний текст и прежний экран.
+
+    Есть и третье, НЕЗАКОННОЕ состояние: мы не смогли выяснить, какое из двух. Тогда
+    нельзя ни то, ни другое. «Закрыт администратором» обвинил бы человека, которого
+    никто не запрещал, за нашу неудачу с чтением базы; «вы в очереди» пообещал бы
+    письмо, которое некому отправить, — его ведь не поставили ни в какую очередь.
+    Поэтому третий ответ говорит правду: у нас не вышло, попробуйте позже.
+    """
+    bot = str(TELEGRAM_BOT_USERNAME or "").strip().lstrip("@")
+    try:
+        from backend.database import access_waitlist_position, public_access_cap
+        потолок = public_access_cap()
+        номер = access_waitlist_position(int(user_id)) if потолок > 0 else None
+    except Exception:
+        logging.error("дверь: не смогли выяснить, очередь это или запрет (user_id=%s)",
+                      user_id, exc_info=True)
+        return {
+            "error": "Не получилось проверить доступ. Попробуйте открыть приложение через минуту.",
+            "reason": "access_check_failed",
+            "bot_username": bot,
+        }
+    if потолок > 0:
+        return {
+            "error": "Вы в очереди на подключение — мы напишем, как только откроем.",
+            "reason": "in_queue",
+            "queue_position": int(номер) if номер else None,
+            "bot_username": bot,
+        }
+    return {
+        "error": "Доступ к приложению закрыт администратором.",
+        "reason": "access_closed",
+        "bot_username": bot,
+    }
+
+
 def _grant_self_serve_webapp_access(
     user_id: int,
     user_data: dict | None = None,
@@ -3461,9 +3501,34 @@ def _grant_self_serve_webapp_access(
 ) -> bool:
     """Let a brand-new user in on their first Mini-App open, and tell the admin.
 
-    Invite share-cards open the Mini App DIRECTLY (t.me/<bot>/app?startapp=…) without ever
-    sending /start, so the bot-side self-serve grant never runs for them. Without this the
-    invite funnel would still dead-end on a 403. Returns True when access now exists.
+    ┌─ ПРОВЕРЕНО 28.08.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────┐
+    │ Здесь стояло: «Invite share-cards open the Mini App DIRECTLY               │
+    │ (t.me/<bot>/app?startapp=…) without ever sending /start». ЭТО НЕВЕРНО, и   │
+    │ на этом комментарии уже была построена лишняя конструкция с отложенной     │
+    │ досылкой писем «на случай, если чата с ботом нет».                         │
+    │                                                                            │
+    │ Перебраны ВСЕ ссылки t.me, которые проект кому-либо отдаёт. Ссылок вида    │
+    │ `t.me/<bot>/app?startapp=` нет НИ ОДНОЙ — они существовали только в этом   │
+    │ комментарии и в докстроке теста. Приглашение — `t.me/<bot>?start=ref_<id>`,│
+    │ и оно ведёт В ЧАТ С БОТОМ (backend_server.py:51023, bot_3.py:3617).        │
+    │                                                                            │
+    │ Живая база на ту же дату: впущено 16, из них самостоятельно пришли 4, а    │
+    │ настоящих людей среди них 2 (id 7 и 777 — тестовые строки, телеграмных id  │
+    │ такой длины не бывает). У ОБОИХ настоящих чат с ботом есть: один писал     │
+    │ боту, оба прошли онбординг. Людей, попавших в приложение мимо бота, в      │
+    │ живых данных НЕ найдено.                                                   │
+    │                                                                            │
+    │ ЧТО ОСТАЁТСЯ ПРАВДОЙ: эта дверь нужна, потому что мини-апп открывается     │
+    │ раньше, чем человек жмёт /start (замер: 3 из 4 самостоятельных входов      │
+    │ засчитаны здесь, а не в боте). Узкий путь в приложение мимо бота тоже      │
+    │ существует — `?startapp=share_…` и `wdiff_…`, кнопка «Поделиться» на       │
+    │ разборе слова. Но это показ одного слова другу, а не приглашение.          │
+    │                                                                            │
+    │ Как перемерить: grep -roE "t\.me/[^\"' )]+" по backend, bot_3.py,          │
+    │ frontend/src — и SELECT note FROM bt_3_allowed_users.                      │
+    └────────────────────────────────────────────────────────────────────────────┘
+
+    Returns True when access now exists.
     """
     uid = int(user_id)
     if uid <= 0 or _is_synthetic_telegram_user_id(uid):
@@ -3745,11 +3810,12 @@ def enforce_webapp_access():
     if not is_allowed:
         # `reason` lets the SPA show a calm full-screen card instead of a red error banner
         # (the same central 403 interceptor that handles the bot-left gate picks it up).
-        return jsonify({
-            "error": "Доступ к приложению закрыт администратором.",
-            "reason": "access_closed",
-            "bot_username": str(TELEGRAM_BOT_USERNAME or "").strip().lstrip("@"),
-        }), 403
+        #
+        # ДВА РАЗНЫХ СОСТОЯНИЯ, и смешивать их нельзя. Человек в ОЧЕРЕДИ пришёл по
+        # ссылке и ни в чём не виноват: он упёрся в потолок впуска, который владелец
+        # двигает ступенями. Сказать ему «доступ закрыт администратором» — соврать и
+        # обидеть. Ему полагается номер, причина и обещание написать самим.
+        return jsonify(_access_denied_payload(int(resolved_user_id))), 403
 
     g.telegram_user_id = int(resolved_user_id)
     g.telegram_user = resolved_user_data
@@ -33064,9 +33130,19 @@ def artikel_learn_themes():
 
 @app.route("/api/webapp/artikel/learn/answer", methods=["POST"])
 def artikel_learn_answer():
-    """Record one learning answer (drives the review pile + progress). The card is
-    graded client-side (not competitive), so this is fire-and-forget. `article` is
-    the CORRECT article; `is_correct` is whether the user's tap matched."""
+    """Record one learning answer (drives the review pile + progress). `article` is
+    the CORRECT article; `is_correct` is whether the user's tap matched.
+
+    ⛔ ЗДЕСЬ БЫЛО «fire-and-forget» С ОБЕИХ СТОРОН, И ЭТО ТЕРЯЛО ОТВЕТ ЧЕЛОВЕКА.
+    Клиент бросал отправку в пустоту (`.catch(() => {})`), а сервер ловил сбой записи
+    и всё равно отвечал `ok: True`. Две половины одного дефекта: даже начни клиент
+    повторять, ему бы соврали, что ответ дошёл, — и ошибка не попала бы в работу над
+    ошибками, а человек её больше не увидел бы. Теперь клиент повторяет и откладывает
+    неушедшее (`reviewAnswerQueue.js`), а сервер говорит правду: не записал — `ok: False`.
+    Повтор безопасен: `client_answer_id` — ключ одного нажатия, вторая попытка ничего
+    не добавляет (иначе одно верное нажатие засчиталось бы за два и слово объявили бы
+    выученным раньше срока).
+    """
     user_id, _user_name, err = _answer_auth_user_id()
     if user_id is None:
         return err
@@ -33082,9 +33158,13 @@ def artikel_learn_answer():
             is_correct=bool(payload.get("is_correct")),
             theme_key=str(payload.get("theme_key") or ""),
             set_id=str(payload.get("set_id") or ""),
+            client_answer_id=str(payload.get("answer_id") or "").strip() or None,
         )
     except Exception:
         logging.warning("artikel_learn_answer record failed", exc_info=True)
+        # Не записали — так и говорим. Клиент повторит, а совсем не ушедшее отложит
+        # и дошлёт при следующем открытии экрана.
+        return jsonify({"ok": False, "error": "not_recorded"}), 200
     return jsonify({"ok": True})
 
 

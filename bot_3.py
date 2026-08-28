@@ -7998,11 +7998,47 @@ async def _notify_admins_user_returned(
             logging.warning("не удалось отправить админу %s уведомление о возврате: %s", admin_id, exc)
 
 
+ТЕКСТ_ОЧЕРЕДИ = (
+    "⏳ <b>Вы в очереди на подключение.</b>\n"
+    "Ваш номер — {номер}.\n\n"
+    "Мы открываем доступ порциями, чтобы приложение отвечало быстро всем, кто уже "
+    "занимается. Как только очередь дойдёт до вас, я напишу сюда же — "
+    "<b>делать ничего не нужно</b>, просто дождитесь сообщения."
+)
+
+
+async def _send_access_queue_reply(update: Update, номер: int) -> bool:
+    """Человеку, который встал в очередь, — понятный текст с его номером.
+
+    Владелец 27.08.2026: отказанный обязан понимать, ЧТО с ним происходит и ПОЧЕМУ.
+    Прежний текст «Доступ к боту закрыт администратором» — про другое: он про
+    запрет, а не про очередь, и человеку, который просто пришёл по ссылке, он
+    сообщает, что его за что-то наказали. Это два разных состояния, и путать их нельзя.
+    """
+    message = update.effective_message
+    if not message:
+        return False
+    await message.reply_text(ТЕКСТ_ОЧЕРЕДИ.format(номер=int(номер)), parse_mode="HTML")
+    return True
+
+
 async def _send_access_closed_reply(update: Update, context: CallbackContext) -> None:
-    """Reply for the only people who still hit a closed door: those an admin denied."""
+    """Reply for a closed door. ДВА РАЗНЫХ СОСТОЯНИЯ, и они не смешиваются:
+    человек в очереди (упёрлись в потолок впуска) и человек, которому админ ЗАПРЕТИЛ.
+    Первому — его номер и обещание написать; второму — как было, кнопка запроса."""
     message = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
+    if user and not _is_group_chat_type(getattr(chat, "type", None)):
+        try:
+            from backend.database import access_waitlist_position
+            номер = await asyncio.to_thread(access_waitlist_position, int(user.id))
+        except Exception:
+            логика = "не смогли узнать номер в очереди"
+            logging.warning("access queue: %s (user_id=%s)", логика, user.id, exc_info=True)
+            номер = None
+        if номер and await _send_access_queue_reply(update, int(номер)):
+            return
     if _is_group_chat_type(getattr(chat, "type", None)):
         delivered_private = await _send_access_denied_private(context, int(user.id)) if user else False
         if message and not delivered_private:
@@ -14315,7 +14351,12 @@ async def _app_spend_ceiling_tick_job(context: CallbackContext) -> None:
     if not admin_ids:
         return
 
-    # 1) Alerts — deduped inside evaluate_ceiling via notified_thresholds (fire once/week).
+    # 1) Предупреждение владельцу. ПОМЕТКА «уведомлён» — ТОЛЬКО ПОСЛЕ ДОСТАВКИ.
+    # Раньше её ставил сам расчёт (evaluate_ceiling), до всякой отправки: Telegram
+    # моргнул или список админов не прочитался — порог уже помечен, и владелец за всю
+    # неделю не получал ни одного предупреждения (дедупликация недельная). Теперь
+    # порядок такой: отправили → Telegram принял хотя бы у одного → пометили.
+    # Не приняли ни у кого — не помечаем, и следующий тик предложит то же самое снова.
     text = None
     if decision.get("hard_newly"):
         text = _sc.format_hard_alert(decision)
@@ -14326,14 +14367,30 @@ async def _app_spend_ceiling_tick_job(context: CallbackContext) -> None:
             kb = _sc.build_appcap_keyboard()
         except Exception:
             kb = None
+        доставлено = False
         for aid in admin_ids:
             try:
                 await context.bot.send_message(
                     chat_id=aid, text=text, parse_mode="HTML",
                     reply_markup=kb, suppress_private_keyboard_attach=True,
                 )
+                доставлено = True
             except Exception:
                 logging.debug("spend-ceiling alert DM failed aid=%s", aid, exc_info=True)
+        if доставлено:
+            try:
+                await asyncio.to_thread(
+                    _sc.confirm_thresholds_notified,
+                    decision.get("pending_thresholds") or [],
+                    week=decision.get("week"),
+                )
+            except Exception:
+                logging.warning("spend-ceiling: не смогли пометить порог уведомлённым — "
+                                "письмо придёт ещё раз", exc_info=True)
+        else:
+            logging.warning("spend-ceiling: предупреждение о затратах НЕ доставлено ни одному "
+                            "администратору (порог %s%%) — повторим на следующем тике",
+                            decision.get("pct"))
 
     # 2) Auto-stop of the heavy tier — ONLY when explicitly enabled (shadow-first).
     if not _app_spend_ceiling_enforce_enabled() or not decision.get("hard"):
@@ -17670,6 +17727,225 @@ def _format_access_digest_text(snapshot: dict) -> str:
     return "\n".join(lines)
 
 
+# ── Потолок впуска: состояние владельцу и кнопки ────────────────────────────
+# Владелец 27.08.2026: «всё, что я должен вызывать командой, я забуду». Поэтому
+# состояние двери приходит САМО, вместе с утренним дайджестом подключений, и решение
+# принимается прямо в нём — кнопкой, а не командой в другом месте.
+ПОРЦИИ_ВПУСКА = (25, 50)
+
+
+def _access_gate_keyboard() -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(f"✅ Впустить {n}", callback_data=f"accessgate:admit:{n}")
+             for n in ПОРЦИИ_ВПУСКА]]
+    rows.append([InlineKeyboardButton("⏸ Подождать", callback_data="accessgate:wait")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _format_access_gate_text(состояние: dict) -> str:
+    впущено = int(состояние.get("allowed") or 0)
+    потолок = int(состояние.get("cap") or 0)
+    ждут = int(состояние.get("waiting") or 0)
+    строки = ["", "🚪 <b>Дверь</b>", f"Впущено: {впущено} из {потолок}."]
+    if ждут:
+        строки.append(f"Ждут в очереди: <b>{ждут}</b>.")
+        строки.append("Каждому из них мы пообещали написать, когда откроем.")
+    else:
+        строки.append("Очередь пуста — все, кто пришёл, внутри.")
+    if впущено < потолок:
+        строки.append(f"До потолка есть место ещё на {потолок - впущено}.")
+    return "\n".join(строки)
+
+
+async def _notify_admitted_waitlist_users(context: CallbackContext, впущенные: list) -> int:
+    """Сказать впущенным, что дверь открыта. ОДИН РАЗ, в момент впуска.
+
+    Решение владельца 28.08.2026: «мне не нужно доставлять ничего пользователю позже».
+    Раньше здесь был отложенный долг — не ушло письмо, пробуем завтра утром. Долг убран,
+    и вот почему его не жаль: ДОСТУП ОТКРЫВАЕТ СТРОКА В ТАБЛИЦЕ, А НЕ ЭТО ПИСЬМО.
+    Человек уже внутри в ту же секунду. Письмо только зовёт его вернуться; не дошло —
+    он увидит открытое приложение сам, когда откроет его в следующий раз.
+
+    Сколько НЕ ушло — владелец видит числом сразу в ответе на нажатие кнопки.
+    """
+    from backend.database import mark_waitlist_user_notified
+    сказали = 0
+    for человек in (впущенные or []):
+        try:
+            await context.bot.send_message(
+                chat_id=int(человек["user_id"]),
+                text=("🎉 <b>Дверь открыта — добро пожаловать!</b>\n\n"
+                      "Очередь дошла до вас, доступ уже работает. "
+                      "Нажмите /start, и я помогу настроить занятия."),
+                parse_mode="HTML",
+            )
+        except Exception:
+            # Человек мог заблокировать бота, пока ждал, или чата с ботом у него нет.
+            # Это не повод считать впуск неудавшимся: он ВНУТРИ, просто пока не знает.
+            logging.info("очередь: не смогли написать «открыли» user_id=%s",
+                         человек["user_id"], exc_info=True)
+            continue
+        try:
+            await asyncio.to_thread(mark_waitlist_user_notified, int(человек["user_id"]))
+            сказали += 1
+        except Exception:
+            logging.warning("очередь: написали человеку %s, но не смогли это пометить",
+                            человек["user_id"], exc_info=True)
+    return сказали
+
+
+async def admin_dver_command(update: Update, context: CallbackContext) -> None:
+    """/dver — потолок впуска и очередь: посмотреть, попробовать, подвигать.
+
+    Сделана по просьбе владельца 28.08.2026: «хочу попробовать, как работает этот
+    механизм в жизни». Без неё проверить дверь можно было только вторым аккаунтом
+    вслепую — не видя ни очереди, ни того, что именно увидит человек.
+
+      /dver              — состояние двери + ТЕ ЖЕ кнопки, что приходят утром
+      /dver cap <N>      — поставить потолок (0 = снять потолок, дверь открыта всем)
+      /dver ochered      — кто сейчас ждёт и с какими номерами
+      /dver demo         — показать ОБА текста, которые увидит человек, никого не трогая
+    """
+    user = update.effective_user
+    if not user or not _is_admin_user(user.id):
+        return
+    аргументы = [str(a).strip().lower() for a in (context.args or [])]
+    команда = аргументы[0] if аргументы else ""
+    from backend.database import (
+        access_gate_snapshot, set_access_cap, count_allowed_users, list_access_waitlist,
+    )
+
+    if команда == "cap":
+        if len(аргументы) < 2 or not аргументы[1].lstrip("-").isdigit():
+            await update.message.reply_text(
+                "Укажите число: <code>/dver cap 50</code>.\n"
+                "<code>/dver cap 0</code> — снять потолок, дверь открыта всем.",
+                parse_mode="HTML")
+            return
+        новый = await asyncio.to_thread(set_access_cap, int(аргументы[1]), admin_id=int(user.id))
+        впущено = await asyncio.to_thread(count_allowed_users)
+        if новый == 0:
+            await update.message.reply_text(
+                f"🚪 Потолок снят — дверь открыта всем. Сейчас внутри: {впущено}.")
+            return
+        состояние = ("дверь ЗАКРЫТА, новые встают в очередь"
+                     if впущено >= новый else f"есть место ещё на {новый - впущено}")
+        await update.message.reply_text(
+            f"🚪 Потолок: <b>{новый}</b>. Внутри: {впущено} — {состояние}.",
+            parse_mode="HTML")
+        return
+
+    if команда in ("ochered", "очередь", "queue"):
+        ждут = await asyncio.to_thread(list_access_waitlist, 30)
+        if not ждут:
+            await update.message.reply_text("Очередь пуста — все, кто пришёл, внутри.")
+            return
+        строки = [f"⏳ <b>Ждут: {len(ждут)}</b> (первые 30)"]
+        for i, ч in enumerate(ждут, start=1):
+            имя = html.escape(str(ч.get("username") or "без имени"))
+            строки.append(f"{i}. {имя} — <code>{ч['user_id']}</code> · {ч.get('source') or '—'}")
+        await update.message.reply_text("\n".join(строки), parse_mode="HTML")
+        return
+
+    if команда == "demo":
+        await update.message.reply_text(
+            "👇 Ровно это увидит человек В ЧАТЕ С БОТОМ, нажав /start при закрытой двери:")
+        await update.message.reply_text(ТЕКСТ_ОЧЕРЕДИ.format(номер=34), parse_mode="HTML")
+        await update.message.reply_text(
+            "👇 А это — экран В ПРИЛОЖЕНИИ (там он нарисован крупно, на весь экран):\n\n"
+            "🦊\n<b>Вы в очереди на подключение</b>\n<b>Ваш номер — 34</b>\n"
+            "Мы открываем доступ порциями, чтобы приложение отвечало быстро всем, кто уже "
+            "занимается. Как только очередь дойдёт до вас, я напишу в чат с ботом — "
+            "делать ничего не нужно.\n[ Открыть чат с ботом ]",
+            parse_mode="HTML")
+        await update.message.reply_text(
+            "👇 И это придёт ему один раз, когда вы нажмёте «Впустить»:")
+        await update.message.reply_text(
+            "🎉 <b>Дверь открыта — добро пожаловать!</b>\n\n"
+            "Очередь дошла до вас, доступ уже работает. "
+            "Нажмите /start, и я помогу настроить занятия.", parse_mode="HTML")
+        await update.message.reply_text(
+            "ℹ️ Доступ открывает СТРОКА В ТАБЛИЦЕ, а не это письмо: человек внутри в ту же "
+            "секунду, как вы нажали кнопку. Письмо только зовёт его вернуться.")
+        return
+
+    состояние = await asyncio.to_thread(access_gate_snapshot)
+    if not состояние.get("cap_enabled"):
+        await update.message.reply_text(
+            f"🚪 <b>Потолка нет — дверь открыта всем.</b>\nВнутри: {состояние.get('allowed', 0)}.\n\n"
+            "Чтобы попробовать очередь, поставьте потолок равным числу впущенных:\n"
+            f"<code>/dver cap {состояние.get('allowed', 0)}</code>\n"
+            "Тогда следующий новый человек встанет в очередь, а вы увидите его в "
+            "<code>/dver ochered</code> и впустите кнопкой.\n\n"
+            "Посмотреть тексты, никого не трогая: <code>/dver demo</code>",
+            parse_mode="HTML")
+        return
+    текст = "🚪 <b>Дверь</b>" + _format_access_gate_text(состояние)
+    await update.message.reply_text(
+        текст, parse_mode="HTML",
+        reply_markup=_access_gate_keyboard() if состояние.get("waiting") else None)
+
+
+async def handle_access_gate_callback(update: Update, context: CallbackContext) -> None:
+    """Кнопки под сообщением о двери: впустить порцию или подождать."""
+    query = update.callback_query
+    admin = update.effective_user
+    if not query:
+        return
+    if not admin or not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+    части = str(query.data or "").split(":")      # accessgate:admit:25 | accessgate:wait
+    действие = части[1] if len(части) > 1 else ""
+    if действие == "wait":
+        await query.answer("Хорошо, оставляем как есть.", show_alert=False)
+        try:
+            await query.message.reply_text("⏸ Никого не впускаю. Состояние двери придёт завтра утром.")
+        except Exception:
+            pass
+        return
+    if действие != "admit":
+        await query.answer("Не понял кнопку.", show_alert=True)
+        return
+    сколько = int(части[2]) if len(части) > 2 and str(части[2]).isdigit() else 0
+    await query.answer("Впускаю…", show_alert=False)
+    from backend.database import (
+        admit_from_access_waitlist, access_gate_snapshot, raise_access_cap,
+    )
+    try:
+        # ⚠ ПОТОЛОК ПОДНИМАЕТСЯ ВМЕСТЕ С ВПУСКОМ, И ИМЕННО НА ЭТУ ЖЕ ПОРЦИЮ.
+        # Впустить, не подняв потолок, — значит тут же упереться в него снова: впущенные
+        # займут ровно те места, которых не было, и следующий пришедший встанет в
+        # очередь при фактически открытой двери. Сначала место, потом люди.
+        новый_потолок = await asyncio.to_thread(raise_access_cap, сколько, admin_id=int(admin.id))
+        впущенные = await asyncio.to_thread(admit_from_access_waitlist, сколько)
+    except Exception:
+        logging.warning("очередь: впустить порцию не удалось", exc_info=True)
+        try:
+            await query.message.reply_text("Не получилось впустить. Подробности в логах.")
+        except Exception:
+            pass
+        return
+    сказали = await _notify_admitted_waitlist_users(context, впущенные)
+    try:
+        состояние = await asyncio.to_thread(access_gate_snapshot)
+    except Exception:
+        состояние = {}
+    не_сказали = len(впущенные) - сказали
+    хвост = ""
+    if не_сказали > 0:
+        хвост = (f"\n⚠️ Не смог написать {не_сказали} — заблокировали бота или не начинали с ним чат. "
+                 "На доступ это не влияет: они уже внутри и увидят это, когда откроют приложение.")
+    try:
+        await query.message.reply_text(
+            f"✅ Впустил: <b>{len(впущенные)}</b>. Написал об этом: {сказали}.\n"
+            f"Потолок теперь: {новый_потолок}. Осталось в очереди: {состояние.get('waiting', '?')}."
+            + хвост,
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
 async def _daily_access_digest_job(context: CallbackContext) -> None:
     """Morning «кто подключился за сутки» digest for admins.
 
@@ -17683,9 +17959,22 @@ async def _daily_access_digest_job(context: CallbackContext) -> None:
             return
         snapshot = await asyncio.to_thread(get_access_growth_snapshot, 24)
         text = _format_access_digest_text(snapshot)
+        # Состояние двери — в то же сообщение, с кнопками. Отдельным письмом оно
+        # утонуло бы, а отдельной командой владелец его бы не вызвал.
+        клавиатура = None
+        try:
+            from backend.database import access_gate_snapshot
+            дверь = await asyncio.to_thread(access_gate_snapshot)
+            if дверь.get("cap_enabled"):
+                text = f"{text}\n{_format_access_gate_text(дверь)}"
+                if дверь.get("waiting"):
+                    клавиатура = _access_gate_keyboard()
+        except Exception:
+            logging.warning("daily_access_digest: состояние двери не прочиталось", exc_info=True)
         for admin_id in admin_ids:
             try:
-                await context.bot.send_message(chat_id=int(admin_id), text=text)
+                await context.bot.send_message(chat_id=int(admin_id), text=text,
+                                               parse_mode="HTML", reply_markup=клавиатура)
             except Exception as exc:
                 logging.warning("daily_access_digest: не доставлено админу %s: %s", admin_id, exc)
     except Exception:
@@ -44534,6 +44823,8 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
     application.add_handler(CallbackQueryHandler(handle_admin_economics_callback, pattern=r"^admecon:"))
     application.add_handler(CallbackQueryHandler(handle_appcap_callback, pattern=r"^appcap:"))
+    application.add_handler(CommandHandler("dver", admin_dver_command))
+    application.add_handler(CallbackQueryHandler(handle_access_gate_callback, pattern=r"^accessgate:"))
     application.add_handler(CallbackQueryHandler(handle_article_review_callback, pattern=r"^artrev:"))
     application.add_handler(CallbackQueryHandler(handle_retire_review_callback, pattern=r"^artret:"))
     application.add_handler(CallbackQueryHandler(handle_word_review_callback, pattern=r"^wrev:"))
