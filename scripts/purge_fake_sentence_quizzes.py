@@ -52,13 +52,19 @@ def поддельное(payload: dict) -> str | None:
     return None
 
 
-def main() -> int:
-    применять = "--apply" in sys.argv
+# ⚠ ТАБЛИЦЫ ДВЕ, И ГЛАВНАЯ — ВТОРАЯ.
+# 28.08.2026 я почистил только общий пул и отчитался «готово». А задание, которое
+# ПОКАЗЫВАЮТ человеку, читается из его ЛИЧНОЙ карточки — там оставалось ещё 166
+# подделок из 336. Обе таблицы держат один и тот же ключ, чистить надо обе.
+ТАБЛИЦЫ = ("bt_3_webapp_dictionary_queries", "bt_3_dictionary_entries")
+
+
+def собрать(таблица: str) -> tuple[int, list[tuple[int, str, str]]]:
     негодные: list[tuple[int, str, str]] = []
     всего = 0
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, response_json FROM bt_3_dictionary_entries "
+            cur.execute(f"SELECT id, response_json FROM {таблица} "
                         "WHERE response_json ? 'sentence_gap_v2';")
             for id_, rj in cur.fetchall():
                 d = rj if isinstance(rj, dict) else (json.loads(rj) if rj else {})
@@ -69,33 +75,39 @@ def main() -> int:
                 причина = поддельное(payload)
                 if причина:
                     негодные.append((int(id_), str(payload.get("sentence_with_gap") or ""), причина))
+    return всего, негодные
 
-    print(f"заданий с пропуском в базе: {всего}")
-    print(f"из них поддельных:          {len(негодные)}")
-    for id_, пропуск, причина in негодные[:10]:
-        print(f"   id={id_}  «{пропуск[:56]}»  — {причина}")
-    if len(негодные) > 10:
-        print(f"   …и ещё {len(негодные) - 10}")
 
-    if not негодные:
-        print("\nЧистить нечего.")
-        return 0
+def main() -> int:
+    применять = "--apply" in sys.argv
+    итого_убрано = 0
+    for таблица in ТАБЛИЦЫ:
+        всего, негодные = собрать(таблица)
+        подпись = "личные карточки" if "queries" in таблица else "общий пул"
+        print(f"\n{подпись} ({таблица})")
+        print(f"  заданий с пропуском: {всего}")
+        print(f"  из них поддельных:   {len(негодные)}")
+        for id_, пропуск, причина in негодные[:5]:
+            print(f"     id={id_}  «{пропуск[:52]}»  — {причина}")
+        if len(негодные) > 5:
+            print(f"     …и ещё {len(негодные) - 5}")
+        if not негодные or not применять:
+            continue
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE {таблица} SET response_json = response_json - 'sentence_gap_v2' "
+                    "WHERE id = ANY(%s);",
+                    ([i for i, _, _ in негодные],),
+                )
+                итого_убрано += cur.rowcount
+            conn.commit()
+
     if not применять:
         print("\nЭто пробный прогон. Ничего не изменено. Для уборки: --apply")
         return 0
-
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE bt_3_dictionary_entries "
-                "SET response_json = response_json - 'sentence_gap_v2' "
-                "WHERE id = ANY(%s);",
-                ([i for i, _, _ in негодные],),
-            )
-            убрано = cur.rowcount
-        conn.commit()
-    print(f"\nУбрано заданий: {убрано}. Слова, разборы и всё остальное не тронуты.")
-    print("Задания пересоберутся честно, когда до них дойдёт ночной прогрев или человек.")
+    print(f"\nУбрано заданий всего: {итого_убрано}. Слова, разборы и всё прочее не тронуты.")
+    print("Они пересоберутся честно, когда до них дойдёт ночной прогрев.")
     return 0
 
 

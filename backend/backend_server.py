@@ -4346,6 +4346,12 @@ def _capacity_flush_if_due() -> None:
         from backend.database import record_capacity
         record_capacity(service="BACKEND_WEB", kind="web_requests",
                         ceiling=_capacity_ceiling(), peak=пик, hits=упирания, total=всего)
+        # Заодно ссыпаем причины, по которым не сложились задания «Дополни предложение».
+        # Владелец 28.08.2026 спросил прямо: «если падает модель, то почему это
+        # происходит?» — раньше четыре разные причины валились в одну строку лога.
+        for причина, сколько in (take_sentence_quiz_misses() or {}).items():
+            record_capacity(service=причина[:60], kind="sentence_miss",
+                            ceiling=0, peak=0, hits=сколько)
     except Exception:
         logging.warning("замер занятости не записался (пик=%s, упираний=%s, всего=%s)",
                         пик, упирания, всего, exc_info=True)
@@ -18739,6 +18745,66 @@ def _entry_sentence_cache_payload(response_json: dict, german_sentence: str) -> 
         return None
 
 
+def _sentence_quiz_cache_record(german_sentence: str, payload: dict) -> dict:
+    return {
+        "version": SENTENCE_GAP_CACHE_VERSION,
+        "source_sentence": german_sentence,
+        "payload": payload,
+        "cached_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _pool_quiz_payload(entry: dict, german_sentence: str) -> dict | None:
+    """Готовое задание из ОБЩЕГО пула для слова этой карточки, если кто-то уже оплатил."""
+    слово = str((entry or {}).get("word_de") or (entry or {}).get("target_text") or "").strip()
+    if not слово:
+        return None
+    try:
+        from backend.database import get_pool_sentence_quiz
+        кеш = get_pool_sentence_quiz(слово, german_sentence)
+    except Exception:
+        logging.warning("не смогли прочитать задание из общего пула для %s", слово, exc_info=True)
+        return None
+    if not isinstance(кеш, dict):
+        return None
+    if int(кеш.get("version") or 0) != SENTENCE_GAP_CACHE_VERSION:
+        return None
+    payload = кеш.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return _validate_sentence_context_quiz(payload)
+    except Exception:
+        # В пуле лежит негодное — не показываем и не переносим на карточку.
+        return None
+
+
+def _remember_sentence_quiz_on_card(entry: dict, german_sentence: str, payload: dict) -> None:
+    """Запомнить задание в ЛИЧНОЙ карточке — чтобы не ходить в пул на каждый показ."""
+    entry_id = int((entry or {}).get("id") or 0)
+    if not entry_id:
+        return
+    response_json = _coerce_response_json((entry or {}).get("response_json"))
+    обновлённое = dict(response_json)
+    обновлённое["sentence_gap_v2"] = _sentence_quiz_cache_record(german_sentence, payload)
+    try:
+        update_webapp_dictionary_entry(entry_id, обновлённое)
+    except Exception as exc:
+        logging.warning("Failed to cache sentence quiz for entry %s: %s", entry_id, exc)
+
+
+def _remember_sentence_quiz_in_pool(entry: dict, german_sentence: str, payload: dict) -> None:
+    """Положить задание в ОБЩИЙ пул — следующему человеку оно достанется даром."""
+    слово = str((entry or {}).get("word_de") or (entry or {}).get("target_text") or "").strip()
+    if not слово:
+        return
+    try:
+        from backend.database import save_pool_sentence_quiz
+        save_pool_sentence_quiz(слово, _sentence_quiz_cache_record(german_sentence, payload))
+    except Exception:
+        logging.warning("не смогли положить задание в общий пул для %s", слово, exc_info=True)
+
+
 def _merge_sentence_quiz_into_entry(entry: dict, quiz_payload: dict, *, sentence_origin: str) -> dict:
     item = dict(entry or {})
     response_json = _coerce_response_json(item.get("response_json"))
@@ -18784,6 +18850,17 @@ def _build_sentence_quiz_from_dictionary_entry(
     cached = _entry_sentence_cache_payload(response_json, german_sentence)
     payload = cached
     if payload is None:
+        # ⛔ ПРЕЖДЕ ЧЕМ ПЛАТИТЬ — СМОТРИМ, НЕ ОПЛАТИЛ ЛИ КТО-ТО ДРУГОЙ.
+        # Требование владельца 28.08.2026: активный тянет пул вперёд, а тот, кто
+        # заходит редко, получает ТЕ ЖЕ САМЫЕ готовые задания. Задание лежит в общем
+        # пуле (одна строка на слово, без user_id), поэтому прогретое одним достаётся
+        # всем, у кого это слово есть. До этого дня кеш был только личным, и тринадцать
+        # человек с одним словом платили тринадцать раз.
+        из_пула = _pool_quiz_payload(entry, german_sentence)
+        if из_пула is not None:
+            payload = из_пула
+            _remember_sentence_quiz_on_card(entry, german_sentence, payload)
+    if payload is None:
         if not allow_llm:
             # Нечего показать — и это НЕ молчание: вызывающий перебирает сотни слов и
             # просто возьмёт следующее. Раньше здесь строилось поддельное задание.
@@ -18823,17 +18900,9 @@ def _build_sentence_quiz_from_dictionary_entry(
             logging.warning("Sentence quiz payload failed validation for entry %s: %s", entry.get("id"), exc)
             _note_sentence_quiz_miss(f"наш страж отклонил ответ модели: {str(exc)[:50]}")
             return None
-        updated_response_json = dict(response_json)
-        updated_response_json["sentence_gap_v2"] = {
-            "version": SENTENCE_GAP_CACHE_VERSION,
-            "source_sentence": german_sentence,
-            "payload": payload,
-            "cached_at": datetime.now(timezone.utc).isoformat(),
-        }
-        try:
-            update_webapp_dictionary_entry(int(entry.get("id") or 0), updated_response_json)
-        except Exception as exc:
-            logging.warning("Failed to cache sentence quiz for entry %s: %s", entry.get("id"), exc)
+        _remember_sentence_quiz_on_card(entry, german_sentence, payload)
+        # И В ОБЩИЙ ПУЛ — чтобы следующему за это уже не платили.
+        _remember_sentence_quiz_in_pool(entry, german_sentence, payload)
 
     return _merge_sentence_quiz_into_entry(entry, payload, sentence_origin="dictionary")
 
@@ -28925,6 +28994,138 @@ def _run_translation_focus_pool_admin_report_scheduler_job() -> None:
         logging.exception("❌ Translation focus pool admin report scheduler failed")
 
 
+# ── Ночной прогрев САМИХ ЗАДАНИЙ «Дополни предложение» ─────────────────────
+# Днём к модели не ходим вовсе — значит задания обязана готовить ночь. Раньше ночь
+# готовила только ПРЕДЛОЖЕНИЯ (_ensure_sentence_gpt_seed_entries), а само задание
+# строилось в момент показа. Убрав дневные обращения, мы бы оставили тренировку пустой.
+#
+# Правила прогрева — решения владельца 28.08.2026:
+#   · греем ТОЛЬКО тем, кто заходил именно в эту тренировку;
+#   · добиваем каждому запас до 20 готовых заданий, не больше («прошёл вчера семь —
+#     досыпаем семь»);
+#   · УЖЕ ГОТОВОЕ СЧИТАЕТСЯ В ЭТИ 20. Задание кешируется на слове, а не на человеке,
+#     поэтому прогретое активными достаётся редко заходящим даром: «новые для него не
+#     греются, пока есть готовые»;
+#   · сверх того — стартовый запас: греем слова общего словаря, чтобы у любого нового
+#     человека первый заход был мгновенным.
+SENTENCE_QUIZ_WARM_TARGET_PER_USER = max(1, int((os.getenv("SENTENCE_QUIZ_WARM_TARGET_PER_USER") or "20").strip()))
+SENTENCE_QUIZ_WARM_NIGHTLY_CAP = max(0, int((os.getenv("SENTENCE_QUIZ_WARM_NIGHTLY_CAP") or "150").strip()))
+SENTENCE_QUIZ_WARM_STARTER_SHARE = 0.5   # половина ночного потолка — на стартовый словарь
+
+
+def _warm_one_entry_quiz(entry: dict, *, source_lang: str, target_lang: str) -> bool:
+    """Построить и сохранить задание для одной записи. True — построили."""
+    итог = _build_sentence_quiz_from_dictionary_entry(
+        entry, source_lang=source_lang, target_lang=target_lang, allow_llm=True)
+    return bool(итог)
+
+
+def _warm_sentence_quizzes_for_user(user_id: int, *, бюджет: int) -> int:
+    """Догреть человеку запас до цели. Возвращает, сколько заданий построили.
+
+    Сначала считаем, сколько у него УЖЕ готово: платить за то, что активные соседи уже
+    оплатили, не нужно. Не хватает до цели — достраиваем ровно недостающее.
+    """
+    if бюджет <= 0:
+        return 0
+    source_lang, target_lang, _ = _get_user_language_pair(int(user_id))
+    записи = get_webapp_dictionary_entries(
+        user_id=int(user_id), limit=SENTENCE_TRAINING_LOOKUP_LIMIT,
+        folder_mode="all", folder_id=None,
+        source_lang=source_lang, target_lang=target_lang,
+    )
+    готово, холодные = 0, []
+    for сырое in записи:
+        item = _decorate_dictionary_item(
+            сырое if isinstance(сырое, dict) else {},
+            source_lang=source_lang, target_lang=target_lang,
+            direction=f"{source_lang}-{target_lang}")
+        предложение, _перевод, response_json = _extract_sentence_training_pair(
+            item, source_lang, target_lang)
+        if not _looks_like_german_sentence(предложение):
+            continue
+        if _entry_sentence_cache_payload(response_json, предложение):
+            готово += 1
+        else:
+            холодные.append(item)
+    нужно = max(0, SENTENCE_QUIZ_WARM_TARGET_PER_USER - готово)
+    if нужно <= 0:
+        return 0
+    построено = 0
+    for item in холодные[: min(нужно, бюджет)]:
+        try:
+            if _warm_one_entry_quiz(item, source_lang=source_lang, target_lang=target_lang):
+                построено += 1
+        except Exception:
+            logging.warning("ночной прогрев задания не удался user_id=%s", user_id, exc_info=True)
+    return построено
+
+
+def _warm_starter_sentence_quizzes(*, бюджет: int) -> int:
+    """Прогреть слова ОБЩЕГО словаря — чтобы первый заход любого новичка был мгновенным.
+
+    Замер 28.08.2026: ~1000 слов сохранены у 10–13 человек из 13 — это стартовый
+    словарь, одинаковый у всех. Задание лежит на слове, поэтому прогретое здесь
+    достаётся каждому будущему человеку даром.
+    """
+    if бюджет <= 0:
+        return 0
+    from backend.database import get_shared_cold_words_for_quiz, get_dictionary_entry_by_id
+    try:
+        ids = get_shared_cold_words_for_quiz(min_users=5, limit=бюджет)
+    except Exception:
+        logging.warning("не смогли выбрать слова общего словаря для прогрева", exc_info=True)
+        return 0
+    построено = 0
+    for entry_id in ids:
+        try:
+            запись = get_dictionary_entry_by_id(int(entry_id))
+            if not запись:
+                continue
+            src = _normalize_short_lang_code(запись.get("source_lang") or "ru", fallback="ru")
+            tgt = _normalize_short_lang_code(запись.get("target_lang") or "de", fallback="de")
+            item = _decorate_dictionary_item(dict(запись), source_lang=src, target_lang=tgt,
+                                             direction=f"{src}-{tgt}")
+            if _warm_one_entry_quiz(item, source_lang=src, target_lang=tgt):
+                построено += 1
+        except Exception:
+            logging.warning("прогрев общего слова %s не удался", entry_id, exc_info=True)
+    return построено
+
+
+def _dispatch_sentence_quiz_warm() -> dict:
+    """Ночной прогрев заданий: сначала тем, кто тренируется, потом общий словарь."""
+    if SENTENCE_QUIZ_WARM_NIGHTLY_CAP <= 0:
+        return {"ok": True, "skipped": True, "reason": "nightly cap = 0"}
+    from backend.database import get_users_of_training_mode
+    бюджет = SENTENCE_QUIZ_WARM_NIGHTLY_CAP
+    итог = {"ok": True, "for_users": 0, "starter": 0, "users_seen": 0}
+    try:
+        люди = get_users_of_training_mode("sentence", lookback_days=30, limit=100)
+    except Exception:
+        logging.warning("не смогли прочитать, кто тренируется", exc_info=True)
+        люди = []
+    итог["users_seen"] = len(люди)
+    доля_на_старт = int(SENTENCE_QUIZ_WARM_NIGHTLY_CAP * SENTENCE_QUIZ_WARM_STARTER_SHARE)
+    for user_id in люди:
+        if бюджет <= доля_на_старт:
+            break
+        if _is_synthetic_telegram_user_id(int(user_id)) or not _is_webapp_user_allowed(int(user_id)):
+            continue
+        try:
+            построено = _warm_sentence_quizzes_for_user(int(user_id), бюджет=бюджет - доля_на_старт)
+        except Exception:
+            logging.warning("ночной прогрев для user_id=%s не удался", user_id, exc_info=True)
+            построено = 0
+        итог["for_users"] += построено
+        бюджет -= построено
+    итог["starter"] = _warm_starter_sentence_quizzes(бюджет=max(0, бюджет))
+    итог["spent"] = потрачено = итог["for_users"] + итог["starter"]
+    logging.info("ночной прогрев заданий: людям %s, стартовому словарю %s (всего %s из %s)",
+                 итог["for_users"], итог["starter"], потрачено, SENTENCE_QUIZ_WARM_NIGHTLY_CAP)
+    return итог
+
+
 def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
     if not (SENTENCE_PREWARM_ENABLED or TRANSLATION_FOCUS_POOL_PREWARM_ENABLED) and not force:
         return {"ok": True, "skipped": True, "reason": "disabled"}
@@ -29005,6 +29206,13 @@ def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN
             except Exception:
                 errors += 1
                 logging.exception("Sentence prewarm failed for user_id=%s", user_id)
+
+        # Сами задания «Дополни предложение» — днём их строить больше нельзя.
+        try:
+            quiz_warm_result = _dispatch_sentence_quiz_warm()
+        except Exception:
+            logging.exception("ночной прогрев заданий не удался")
+            quiz_warm_result = {"ok": False}
 
         if TRANSLATION_FOCUS_POOL_PREWARM_ENABLED or force:
             focus_pool_result = _dispatch_translation_focus_pool_refill(
@@ -56831,6 +57039,14 @@ def get_webapp_flashcard_set():
             queue_source=queue_source,
         )
         profile_payload["manual_selected_count"] = len(manual_selected_card_ids or [])
+        # Отмечаем, что человек открыл ИМЕННО ЭТОТ режим. Ночной прогрев греет только
+        # тем, кто сюда заходил (решение владельца 28.08.2026): открывающий словарь, но
+        # никогда не заглядывавший в тренировку, денег нам стоить не должен.
+        try:
+            from backend.database import record_training_mode_use
+            record_training_mode_use(int(user_id), training_mode)
+        except Exception:
+            logging.warning("не записали заход в режим %s", training_mode, exc_info=True)
         if training_mode == "sentence":
             decorated_items = _build_sentence_training_set(
                 user_id=int(user_id),
