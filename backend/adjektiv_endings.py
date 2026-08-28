@@ -13,6 +13,7 @@ preposition so the case is natural and unambiguous.
 """
 from __future__ import annotations
 
+import logging
 import random
 
 # Regular adjectives only — consonant/vowel stems that just take the ending.
@@ -136,19 +137,22 @@ ADJECTIVE_RU = {
 # Citation list for random generation (keys of ADJECTIVE_RU).
 ADJECTIVES = list(ADJECTIVE_RU.keys())
 
-# Fallback nouns (word, gender, meaning_ru) if the Artikel noun bank is empty.
-_FALLBACK_NOUNS = [
-    ("Wein", "m", "вино"), ("Mann", "m", "мужчина"), ("Tisch", "m", "стол"),
-    ("Wagen", "m", "автомобиль"), ("Berg", "m", "гора"), ("Hund", "m", "собака"),
-    ("Stuhl", "m", "стул"), ("Markt", "m", "рынок"), ("Film", "m", "фильм"),
-    ("Brief", "m", "письмо"), ("Frau", "f", "женщина"), ("Stadt", "f", "город"),
-    ("Idee", "f", "идея"), ("Reise", "f", "поездка"), ("Lampe", "f", "лампа"),
-    ("Tür", "f", "дверь"), ("Straße", "f", "улица"), ("Sprache", "f", "язык"),
-    ("Lösung", "f", "решение"), ("Frage", "f", "вопрос"), ("Buch", "n", "книга"),
-    ("Auto", "n", "автомобиль"), ("Haus", "n", "дом"), ("Bild", "n", "картина"),
-    ("Fenster", "n", "окно"), ("Zimmer", "n", "комната"), ("Problem", "n", "проблема"),
-    ("Spiel", "n", "игра"), ("Wasser", "n", "вода"), ("Geschenk", "n", "подарок"),
-]
+# ⛔ ЗДЕСЬ БЫЛИ 30 ВШИТЫХ СУЩЕСТВИТЕЛЬНЫХ. УБРАНЫ 28.08.2026.
+#
+# `_load_nouns` при любом сбое молча отдавал этот список, и тренажёр крутил одни и те
+# же тридцать слов вместо 5835 из банка. Немецкий в них был верный — но сбой прятался:
+# программа делала вид, что всё хорошо, и владелец не узнавал об этом никогда.
+#
+# РЕШЕНИЕ ВЛАДЕЛЬЦА 28.08.2026, дословно: «чего мы 30 одинаковых всегда давать будем?
+# Давай посмотрим, сколько их готовых есть, и каждый раз будем делать перемешивание. И
+# ОБЯЗАТЕЛЬНО МНЕ СООБЩАТЬ ОБ ЭТОМ, чтобы я знал, что нормальная схема не сработала.
+# Это уже не заглушка, а аварийный выход.»
+#
+# Как устроено теперь: аварийный запас — 250 РАЗНЫХ готовых заданий в банке
+# (`ensure_adjektiv_reserve` в database.py). Он собирается тем же детерминированным
+# правилом бесплатно — 250 штук за 2,8 секунды, без единого обращения к модели.
+# Не удалось взять слова из банка — берём 15 СЛУЧАЙНЫХ из этих 250 и СООБЩАЕМ владельцу.
+# Совсем ничего нет — честно ничего не отдаём, и владелец получает то же сообщение.
 
 _ART_GENDER = {"der": "m", "die": "f", "das": "n"}
 
@@ -203,9 +207,14 @@ def _load_nouns(limit: int = 400) -> list[tuple]:
                         for r in (cur.fetchall() or []) if r and r[0]]
         if rows:
             return rows
+        logging.warning("тренажёр окончаний: банк существительных вернул ПУСТО — "
+                        "включается аварийный запас готовых заданий")
     except Exception:
-        pass
-    return list(_FALLBACK_NOUNS)
+        logging.warning("тренажёр окончаний: не смогли прочитать банк существительных — "
+                        "включается аварийный запас готовых заданий", exc_info=True)
+    # Пусто — значит пусто. Вызывающий (pick_adjektiv_payloads) возьмёт аварийный запас
+    # и СООБЩИТ владельцу. Подставлять свои слова здесь мы права не имеем.
+    return []
 
 
 # The strong adjective ending "signals" the gender/case like the definite article

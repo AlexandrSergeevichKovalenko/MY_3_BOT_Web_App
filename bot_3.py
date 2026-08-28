@@ -39262,7 +39262,36 @@ async def _send_scheduled_adjektiv_sprint(context: CallbackContext) -> None:
     slot_now = _get_quiz_schedule_now()
     slot_date = slot_now.date()
     slot_hour = int(slot_now.hour) * 100 + int(slot_now.minute)
+    # Ночью держим аварийный запас полным — это бесплатно (детерминированный
+    # генератор, без модели) и делается до сборки сета, чтобы запас был готов ДО того,
+    # как он понадобится.
+    try:
+        from backend.database import ensure_adjektiv_reserve
+        await asyncio.to_thread(ensure_adjektiv_reserve)
+    except Exception:
+        logging.warning("не смогли пополнить аварийный запас окончаний", exc_info=True)
+
     set_id = await asyncio.to_thread(get_or_create_daily_adjektiv_set, slot_date, slot_hour)
+
+    # ⛔ ВЛАДЕЛЕЦ ПРОСИЛ СООБЩАТЬ ОБЯЗАТЕЛЬНО: «чтобы я знал, что нормальная схема не
+    # сработала, чтобы мы искали ошибки». Аварийный выход — не повод молчать.
+    try:
+        from backend.database import take_adjektiv_reserve_uses, count_adjektiv_reserve
+        случаи = await asyncio.to_thread(take_adjektiv_reserve_uses)
+        if случаи:
+            остаток = await asyncio.to_thread(count_adjektiv_reserve)
+            await _alert_admin_interactive(
+                context,
+                "⚠️ <b>Спринт окончаний собран из АВАРИЙНОГО запаса</b>\n\n"
+                f"Нормальная схема не сработала {len(случаи)} раз.\n"
+                f"Причина: {случаи[0]}\n\n"
+                f"В запасе осталось готовых заданий: {остаток}.\n"
+                "Задания настоящие и разные — но это значит, что банк существительных "
+                "не отдал слова. Стоит посмотреть, почему.",
+                throttle_key="adj_reserve_used")
+    except Exception:
+        logging.warning("не смогли доложить об использовании аварийного запаса", exc_info=True)
+
     if not set_id:
         await _alert_admin_interactive(
             context, "⚠️ Adjektiv Sprint: пул пуст, сет не собран.", throttle_key="adj_sprint_empty")
