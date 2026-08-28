@@ -17772,7 +17772,10 @@ def _format_access_digest_text(snapshot: dict) -> str:
 # Владелец 27.08.2026: «всё, что я должен вызывать командой, я забуду». Поэтому
 # состояние двери приходит САМО, вместе с утренним дайджестом подключений, и решение
 # принимается прямо в нём — кнопкой, а не командой в другом месте.
-ПОРЦИИ_ВПУСКА = (25, 50)
+# Порции впуска под кнопками. Владелец 28.08.2026 спросил, есть ли что-то кроме 25 и
+# 50, — есть: любое число задаётся командой «/dver cap <N>», а кнопки нужны, чтобы не
+# считать в уме. Сотня добавлена как крупный шаг для роста.
+ПОРЦИИ_ВПУСКА = (25, 50, 100)
 
 
 def _access_gate_keyboard() -> InlineKeyboardMarkup:
@@ -17794,6 +17797,9 @@ def _format_access_gate_text(состояние: dict) -> str:
         строки.append("Очередь пуста — все, кто пришёл, внутри.")
     if впущено < потолок:
         строки.append(f"До потолка есть место ещё на {потолок - впущено}.")
+    строки.append("")
+    строки.append("Кнопки поднимают потолок на 25 / 50 / 100 и впускают столько же. "
+                  "Любое другое число — <code>/dver cap N</code>.")
     return "\n".join(строки)
 
 
@@ -18145,6 +18151,49 @@ def _format_load_text(строки: list) -> str:
         else:
             out.append("🟢 Все пулы маленькие по замыслу — судить по ним нечего.")
     return "\n".join(out)
+
+
+# ── Очередь на вход: короткая сводка НЕСКОЛЬКО РАЗ В ДЕНЬ ──────────────────
+# Владелец 28.08.2026: «вначале, когда будут люди подключаться, что они будут ждать
+# сутки целые подключения?! я могу забывать вызывать этот отчёт, и мне надо, чтобы
+# 4 раза в день за световой день приходил отчёт о количестве людей, которые ждут».
+#
+# Утренний отчёт про подключения остаётся большим и один раз в сутки. А это — короткая
+# записка ТОЛЬКО про очередь, чтобы человек не ждал впуска сутками.
+#
+# ⚠ МОЛЧИМ, КОГДА МОЛЧАТЬ ПРАВИЛЬНО: если дверь открыта или очередь пуста, записка НЕ
+# шлётся вовсе. Четыре сообщения в день «никого нет» превратятся в шум, который
+# перестают читать, — и тогда пропустят настоящее.
+ЧАСЫ_СВОДКИ_ОЧЕРЕДИ = (10, 13, 16, 19)
+
+
+async def _access_queue_pulse_job(context: CallbackContext) -> None:
+    """Короткая записка: сколько человек ждут впуска. С кнопками впуска."""
+    try:
+        admin_ids = get_admin_telegram_ids()
+        if not admin_ids:
+            return
+        from backend.database import access_gate_snapshot
+        дверь = await asyncio.to_thread(access_gate_snapshot)
+        if not дверь.get("cap_enabled"):
+            return                      # двери нет — очереди быть не может
+        ждут = int(дверь.get("waiting") or 0)
+        if ждут <= 0:
+            return                      # никто не ждёт — молчим, а не шлём «ноль»
+        впущено, потолок = int(дверь.get("allowed") or 0), int(дверь.get("cap") or 0)
+        текст = (f"⏳ <b>Ждут впуска: {ждут}</b>\n"
+                 f"Внутри {впущено} из {потолок}.\n\n"
+                 "Каждый из них видит свой номер и ждёт от нас сообщения.")
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=int(admin_id), text=текст, parse_mode="HTML",
+                    reply_markup=_access_gate_keyboard(),
+                )
+            except Exception as exc:
+                logging.warning("access_queue_pulse: не доставлено админу %s: %s", admin_id, exc)
+    except Exception:
+        logging.exception("access_queue_pulse failed")
 
 
 async def _daily_access_digest_job(context: CallbackContext) -> None:
@@ -45320,6 +45369,20 @@ def main():
             logging.info("scheduled daily_access_digest at 09:05 Europe/Vienna")
         except Exception:
             logging.warning("failed to schedule daily_access_digest", exc_info=True)
+        # Сводка по очереди — четыре раза за световой день. Человек, вставший в очередь
+        # утром, не должен ждать впуска до следующего утра только потому, что владелец
+        # смотрит отчёт раз в сутки. Молчит, когда дверь открыта или очередь пуста.
+        for час in ЧАСЫ_СВОДКИ_ОЧЕРЕДИ:
+            try:
+                application.job_queue.run_daily(
+                    _access_queue_pulse_job,
+                    time=time(hour=час, minute=0, tzinfo=ZoneInfo("Europe/Vienna")),
+                    name=f"access_queue_pulse_{час}",
+                )
+            except Exception:
+                logging.warning("failed to schedule access_queue_pulse at %s", час, exc_info=True)
+        logging.info("scheduled access_queue_pulse at %s Europe/Vienna",
+                     ", ".join(f"{ч}:00" for ч in ЧАСЫ_СВОДКИ_ОЧЕРЕДИ))
         try:
             application.job_queue.run_daily(
                 _wofrage_bank_health_job,
