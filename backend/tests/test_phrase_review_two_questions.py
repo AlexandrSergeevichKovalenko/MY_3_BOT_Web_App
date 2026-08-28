@@ -198,13 +198,40 @@ class ArbiterAnswersBeforeTheScreenTests(unittest.TestCase):
 
     def test_the_screen_and_the_decision_count_variants_the_same_way(self):
         """Номер на кнопке = номер при записи. Разъедься эти два места — владелец нажмёт
-        «сохранить второй», а в словарь уедет первый, молча и без следа."""
+        «сохранить второй», а в словарь уедет первый, молча и без следа.
+
+        Речь ТОЛЬКО про экран владельца: там список полный и нумерует его сервер.
+        Экран проверки слов у обычного человека номерами не пользуется вовсе — см.
+        соседний тест ниже и `test_word_audit_applies_the_pressed_variant.py`.
+        """
         server = _src("backend/backend_server.py")
         i = server.index("def _phrase_review_payload(")
         self.assertIn("include_disputed=True", server[i:i + 2500])
+        # Границу функции берём по следующему `def` на нулевом отступе, а не окном в
+        # N символов: окно уже один раз «сломалось» от дописанной строки в докстроке,
+        # хотя проверяемое правило не менялось.
         db = _src("backend/database.py")
         j = db.index("def apply_phrase_review_decision(")
-        self.assertIn("include_disputed=True", db[j:j + 4000])
+        тело = db[j:]
+        конец = тело.index("\ndef ", 1)
+        self.assertIn("include_disputed=True", тело[:конец])
+
+    def test_the_persons_screen_sends_the_text_not_a_number(self):
+        """У экрана проверки слов список кнопок УРЕЗАН — номер оттуда врал.
+
+        Замер 28.08.2026: из 40 решений владельца за сутки два записали не тот текст,
+        который он нажал (#317, #319). Поэтому оттуда уезжает сам текст кнопки.
+        """
+        digest = _src("backend/word_confirm_digest.py")
+        i = digest.index("def _apply_phrase_decision(")
+        тело = digest[i:]
+        тело = тело[:тело.index("\ndef ", 1)]
+        self.assertIn("variant_text", тело, "экран человека снова шлёт номер варианта")
+        self.assertIn("кнопки_вариантов(", тело,
+                      "нажатое не сверяется со списком, который экран имел право показать")
+        экран = _src("frontend/src/dictionary/WordAudit.jsx")
+        self.assertIn("variant_text:", экран)
+        self.assertNotIn("variant: variant[", экран, "номер варианта вернулся на фронт")
 
     def test_the_night_calls_him_and_closes_what_is_not_a_question(self):
         block = _src("backend/phrase_night_check.py")

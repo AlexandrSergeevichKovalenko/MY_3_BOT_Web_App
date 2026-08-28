@@ -229,19 +229,50 @@ class ПисьмоНазываетТоЧтоВнутри(unittest.TestCase):
 
 
 class РешениеПоФразе(unittest.TestCase):
-    def _применить(self, item, автор=(4242, "Auftreten vonKrankheitssymptomen", 117649764)):
-        with mock.patch.object(сводка, "_phrase_owner", return_value=автор), \
+    ХОЗЯИН = (4242, "Auftreten vonKrankheitssymptomen", 117649764, СУДЬИ, None)
+
+    def _применить(self, item, автор=None):
+        with mock.patch.object(сводка, "_phrase_owner", return_value=автор or self.ХОЗЯИН), \
              mock.patch("backend.database.apply_phrase_review_decision",
                         return_value={"text": "Auftreten von Krankheitssymptomen"}) as решение:
             счёт = сводка.apply_decisions(117649764, [item])
         return счёт, решение
 
     def test_accept_goes_through_the_owners_own_machinery(self):
+        """Принятый вариант уезжает ТЕКСТОМ, а не номером кнопки.
+
+        Номер с этого экрана указывал в другой список — полный, а не урезанный, —
+        и 28.08.2026 на живой базе дважды записал не то, что человек нажал (#317,
+        #319). Текст в чужой список указать не может."""
         счёт, решение = self._применить(
             {"word": "Auftreten vonKrankheitssymptomen", "kind": "phrase",
-             "review_id": 77, "action": "fixed", "variant": 1})
-        решение.assert_called_once_with(77, "accept", "", 1, "")
+             "review_id": 77, "action": "fixed",
+             "variant_text": "Auftreten von Krankheitssymptomen"})
+        решение.assert_called_once_with(
+            77, "accept", "", 0, "", chosen_text="Auftreten von Krankheitssymptomen")
         self.assertEqual(счёт["исправлено"], 1)
+
+    def test_a_variant_the_person_was_never_shown_is_refused(self):
+        """Текст не с этого экрана не применяется, и «похожий» вместо него не берётся.
+
+        Так закрыт весь класс: если список кнопок под рукой у человека успел
+        смениться (ночь дописала судью) или текст подставлен мимо экрана, мы не
+        угадываем, а честно оставляем фразу открытой — она придёт снова."""
+        счёт, решение = self._применить(
+            {"word": "Auftreten vonKrankheitssymptomen", "kind": "phrase",
+             "review_id": 77, "action": "fixed",
+             "variant_text": "Auftreten von Krankheiten"})
+        решение.assert_not_called()
+        self.assertEqual(счёт["не применено"], 1)
+        self.assertEqual(счёт["исправлено"], 0)
+
+    def test_accept_without_any_text_does_nothing(self):
+        """Пустой выбор — не повод взять первый вариант молча."""
+        счёт, решение = self._применить(
+            {"word": "Auftreten vonKrankheitssymptomen", "kind": "phrase",
+             "review_id": 77, "action": "fixed", "variant_text": ""})
+        решение.assert_not_called()
+        self.assertEqual(счёт["не применено"], 1)
 
     def test_keep_closes_the_question(self):
         счёт, решение = self._применить(
@@ -265,7 +296,7 @@ class РешениеПоФразе(unittest.TestCase):
         """Номер пришёл из браузера. Чужой номер не должен сделать ничего."""
         счёт, решение = self._применить(
             {"word": "чужая", "kind": "phrase", "review_id": 999, "action": "keep"},
-            автор=(4242, "чужая", 514237932))
+            автор=(4242, "чужая", 514237932, СУДЬИ, None))
         решение.assert_not_called()
         self.assertEqual(sum(счёт.values()), 0)
 
@@ -302,7 +333,8 @@ class УдалениеФразы(unittest.TestCase):
         курсор = ПоддельныйКурсор([[(чужих,)]])
         соединение = ПоддельноеСоединение(курсор)
         with mock.patch.object(сводка, "_phrase_owner",
-                               return_value=(4242, "Ich überhaupt kein Talent", 7)), \
+                               return_value=(4242, "Ich überhaupt kein Talent", 7,
+                                             СУДЬИ, None)), \
              mock.patch("backend.database.get_db_connection_context",
                         return_value=соединение), \
              mock.patch("backend.database.apply_phrase_review_decision") as решение:
