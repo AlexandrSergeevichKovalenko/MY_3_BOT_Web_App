@@ -26086,6 +26086,12 @@ def phrase_review_variants(judges: list, text: str = "", arbiter: dict | None = 
     if (better and better_ok and not _phrase_same_text(better, original)
             and not any(_phrase_same_text(better, prev) for prev in seen)):
         out.append({"judge": 0, "field": "arbiter", "text": better,
+                    # Подпись самого третьего судьи: он исправил то, что было, или
+                    # переписал запись заново. Ночь по ней решений НЕ принимает —
+                    # замер 29.08.2026 показал 29% брака (см. рамку в
+                    # `phrase_night_check.settled_verdict_to_apply`). Но человеку она
+                    # печатается на кнопке: он должен видеть, что берёт, до нажатия.
+                    "better_kind": str((arbiter or {}).get("better_kind") or "").strip().lower(),
                     "ru": str((arbiter or {}).get("better_ru") or "").strip()})
     return out
 

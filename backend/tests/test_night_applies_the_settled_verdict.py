@@ -70,53 +70,38 @@ class ЧтоНочьБерётСама(unittest.TestCase):
         self.assertEqual(текст, "")
         self.assertIn("достройка", почему)
 
-    def test_an_unsigned_text_of_the_arbiter_is_not_applied(self):
-        """Вердикты до 29.08.2026 подписи не несут — их текст не применяется."""
-        текст, почему = ночь.settled_verdict_to_apply(
-            СУДЬИ_ПРАВКА, {"winner": 1, "better": "Er weigerte sich hartnäckig.",
-                           "better_check": dict(ПРОШЛА)})
-        self.assertEqual(текст, "")
-        self.assertIn("не подписал", почему)
+    def test_the_arbiters_own_text_is_never_applied_by_the_night(self):
+        """Он ЕДИНСТВЕННЫЙ, кто пишет свой текст, — и подпись его врёт в 29% случаев.
 
-    def test_the_arbiter_signs_his_text_as_a_fix_and_it_is_applied(self):
-        """Владелец 29.08.2026: «научи третьего судью самого подписывать свой текст»."""
-        текст, _ = ночь.settled_verdict_to_apply(
-            СУДЬИ_ПРАВКА, {"winner": 0, "better": "Er weigerte sich hartnäckig.",
-                           "better_kind": "fix", "better_check": dict(ПРОШЛА)})
-        self.assertEqual(текст, "Er weigerte sich hartnäckig.")
+        Замер 29.08.2026 по восьми живым вердиктам: из семи подписей «исправил» две
+        неверные, судья перестроил запись и назвал это исправлением. Снять разнобой
+        мог бы второй вопрос — но это второй запрос к модели, то есть деньги на
+        каждой спорной фразе. Владелец 29.08.2026: «если дополнительный запрос — не
+        годится», и тем же днём: случай выключить.
 
-    def test_the_arbiter_signs_a_rebuild_and_it_stays_with_the_owner(self):
-        """«Die Karriere von Null an aufgebaut» → «Ich baue die Karriere…» — его решение."""
-        текст, почему = ночь.settled_verdict_to_apply(
-            СУДЬИ_ПРАВКА, {"winner": 0, "better": "Ich baue die Karriere von Null an auf.",
-                           "better_kind": "rebuild", "better_check": dict(ПРОШЛА)})
-        self.assertEqual(текст, "")
-        self.assertIn("перестроил", почему)
-
-    def test_a_signed_fix_our_check_rejected_is_still_refused(self):
-        """Подпись судьи не отменяет приговор нашей проверки."""
-        текст, почему = ночь.settled_verdict_to_apply(
-            СУДЬИ_ПРАВКА, {"winner": 0, "better": "Er weigert sich hartnäckig.",
-                           "better_kind": "fix", "better_check": dict(НЕ_ПРОШЛА)})
-        self.assertEqual(текст, "")
-        self.assertIn("не пропустила", почему)
-
-    def test_case_and_spaces_do_not_break_the_signature(self):
-        """Модель возвращает то «Fix», то «fix » — это одна и та же подпись.
-        Регистр и пробелы снимаются и здесь, и в `openai_manager`: разъедься эти два
-        места — подпись перестала бы узнаваться молча."""
-        текст, _ = ночь.settled_verdict_to_apply(
-            СУДЬИ_ПРАВКА, {"winner": 0, "better": "Er weigerte sich.",
-                           "better_kind": "  FIX ", "better_check": dict(ПРОШЛА)})
-        self.assertEqual(текст, "Er weigerte sich.")
-
-    def test_a_made_up_signature_is_not_a_signature(self):
-        """Что угодно, кроме двух написанных слов, — это «не подписал»."""
-        for подпись in ("maybe", "правка", "", "fixed"):
-            текст, _ = ночь.settled_verdict_to_apply(
-                СУДЬИ_ПРАВКА, {"winner": 0, "better": "Er weigerte sich.",
+        Подпись при этом ЖИВЁТ: она бесплатная и печатается человеку на кнопке."""
+        for подпись in ("fix", "rebuild", "", "maybe"):
+            текст, почему = ночь.settled_verdict_to_apply(
+                СУДЬИ_ПРАВКА, {"winner": 1, "better": "Er weigerte sich hartnäckig.",
                                "better_kind": подпись, "better_check": dict(ПРОШЛА)})
             self.assertEqual(текст, "", подпись)
+            self.assertIn("написал свой текст", почему)
+
+    def test_the_signature_reaches_the_button(self):
+        """Ночь по подписи не решает, а человек её видит — иначе она была бы мусором."""
+        from backend.word_confirm_digest import кнопки_вариантов
+        арбитр = {"winner": 0, "better": "Er weigerte sich hartnäckig.",
+                  "better_kind": "rebuild", "better_ru": "Он упорно отказывался.",
+                  "better_check": dict(ПРОШЛА)}
+        кнопки = кнопки_вариантов(СУДЬИ_ПРАВКА, "hartnäckig haben er sich weigern", арбитр)
+        свой = [к for к in кнопки if к["text"] == "Er weigerte sich hartnäckig."]
+        self.assertTrue(свой, "текст третьего судьи пропал с экрана")
+        self.assertEqual(свой[0]["kind"], "третий судья: переписал заново")
+
+    def test_the_paid_re_ask_is_gone(self):
+        """Переспрос старых вердиктов ради подписи убран: подпись больше не решает,
+        а запрос стоил денег на каждой записи."""
+        self.assertFalse(hasattr(ночь, "label_unsigned_arbiter_texts"))
 
     def test_a_fix_our_check_rejected_is_never_taken(self):
         """Мнение третьего не отменяет приговор нашей проверки."""
