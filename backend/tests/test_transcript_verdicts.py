@@ -45,6 +45,14 @@ class ClassificationTests(unittest.TestCase):
                          VERDICT_INCOMPLETE)
         self.assertFalse(is_permanent(VERDICT_INCOMPLETE))
 
+    def test_unplayable_from_here_is_never_a_sentence(self):
+        """Замер 29.08.2026: девять роликов отвечали VideoUnplayable, и все девять были
+        разрешены только в Германии, а наш выход был в США. Через немецкий адрес те же
+        ролики ответили NoTranscriptFound. VideoUnplayable — это про нас, не про ролик."""
+        text = "direct[de]: VideoUnplayable; webshare[de]: VideoUnplayable"
+        self.assertEqual(classify_transcript_failure(text), VERDICT_BLOCKED)
+        self.assertFalse(is_permanent(classify_transcript_failure(text)))
+
     def test_video_gone_is_permanent(self):
         self.assertEqual(classify_transcript_failure("direct[de]: VideoUnavailable"),
                          VERDICT_UNUSABLE)
@@ -69,14 +77,13 @@ class TimeoutIsNotAVerdictTests(unittest.TestCase):
             time.sleep(5)
             raise AssertionError("не должно дойти сюда")
 
-        original = wng.__dict__.get("_fetch_youtube_transcript")
         import backend.backend_server as bs
+        original = bs._fetch_youtube_transcript
         bs._fetch_youtube_transcript = _never_returns
         try:
             data, verdict, reason = wng.fetch_transcript_or_verdict("XXX", timeout_sec=1)
         finally:
-            if original is not None:
-                bs._fetch_youtube_transcript = original
+            bs._fetch_youtube_transcript = original
         self.assertIsNone(data)
         self.assertEqual(verdict, VERDICT_TIMEOUT)
         self.assertIn("не дождались", reason)
@@ -85,3 +92,21 @@ class TimeoutIsNotAVerdictTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WebshareCountryPinTests(unittest.TestCase):
+    """Имя аккаунта webshare отдаётся библиотеке без вшитых стран.
+
+    Замер 29.08.2026: pdqlodss-AT-DE-US-1 + фильтр библиотеки = pdqlodss-AT-DE-US-1-DE-AT-rotate,
+    и выход оказывался в США в половине случаев. Имя аккаунта + фильтр библиотеки =
+    pdqlodss-DE-AT-rotate, выход AT/DE 4 из 4. Ролик, разрешённый только в Германии, из США
+    отвечает VideoUnplayable — и хороший ролик попадал бы в негодные.
+    """
+
+    def test_ladder_strips_baked_in_countries_from_the_username(self):
+        import inspect
+
+        import backend.backend_server as bs
+        src = inspect.getsource(bs._fetch_youtube_transcript)
+        self.assertIn('ws_user = str(p.username or "").split("-")[0]', src,
+                      "имя webshare снова уходит в библиотеку целиком — вернётся выход в США")

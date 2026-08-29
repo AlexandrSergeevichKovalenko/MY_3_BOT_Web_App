@@ -30420,7 +30420,16 @@ def _fetch_youtube_transcript(
     # ----------------------------
     if allow_proxy and webshare_proxy:
         p = urlparse(webshare_proxy)
-        ws_user = p.username or ""
+        # ┌─ ПРОВЕРЕНО 29.08.2026 ЗАМЕРОМ. НЕ ВОЗВРАЩАТЬ ИМЯ ИЗ ПЕРЕМЕННОЙ ЦЕЛИКОМ. ──────┐
+        # │ В переменной лежит имя с уже вшитым набором стран: pdqlodss-AT-DE-US-1.       │
+        # │ WebshareProxyConfig дописывает СВОЙ фильтр в конец, получалось                │
+        # │ pdqlodss-AT-DE-US-1-DE-AT-rotate — webshare такую смесь не понимает и выдавал │
+        # │ США в половине случаев (замер: DE, AT, US, US). А ролик, разрешённый только   │
+        # │ в Германии, из США отвечает VideoUnplayable — и мы записывали хороший ролик   │
+        # │ в негодные. Берём имя аккаунта (до первого дефиса) и даём библиотеке собрать  │
+        # │ фильтр самой: pdqlodss-DE-AT-rotate → замер AT, DE, AT, DE (4 из 4).          │
+        # └───────────────────────────────────────────────────────────────────────────────┘
+        ws_user = str(p.username or "").split("-")[0]
         ws_pass = p.password or ""
         max_attempts = 3
 

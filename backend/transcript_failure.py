@@ -47,6 +47,7 @@ _BLOCKED_MARKERS = (
     "FailedToCreateConsentCookie", "YouTubeDataUnparsable",
     "ProxyError", "ConnectionError", "ConnectTimeout", "ReadTimeout", "Timeout",
     "SSLError", "HTTPError", "MaxRetryError",
+    "VideoUnplayable",
 )
 # Ни одна ступень не запустилась — сказать о ролике нечего.
 #
@@ -59,8 +60,15 @@ _BLOCKED_MARKERS = (
 # приговора, реестр не наполнится и полка снова встанет.
 _INCOMPLETE_MARKERS = ("ни одна ступень не запускалась",)
 _UNUSABLE_MARKERS = (
-    "VideoUnavailable", "InvalidVideoId", "AgeRestricted", "VideoUnplayable",
+    "VideoUnavailable", "InvalidVideoId", "AgeRestricted",
 )
+# ┌─ ПРОВЕРЕНО 29.08.2026. VideoUnplayable СЮДА НЕ ПЕРЕНОСИТЬ. ────────────────────────┐
+# │ Он говорит «отсюда не воспроизводится», а не «ролик плохой». Девять роликов из     │
+# │ головы очереди отвечали VideoUnplayable, и все девять оказались разрешены ТОЛЬКО   │
+# │ в Германии (regionRestriction.allowed = [DE]), тогда как наш выход был в США.      │
+# │ Через немецкий адрес те же ролики ответили внятно: NoTranscriptFound. То есть по   │
+# │ VideoUnplayable судить нельзя — это про нас, а не про ролик.                       │
+# └───────────────────────────────────────────────────────────────────────────────────┘
 _NO_CAPTIONS_MARKERS = (
     "TranscriptsDisabled", "NoTranscriptFound", "TranslationLanguageNotAvailable",
     "NotTranslatable", "no transcripts for language order",
