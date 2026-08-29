@@ -11963,6 +11963,19 @@ async def admin_daily_video_recheck_command(update: Update, context: CallbackCon
     await status.edit_text("\n".join(lines), parse_mode="HTML")
 
 
+def _env_int_safe(name: str, default: int) -> int:
+    """Целое из окружения. Мусор в переменной — это ошибка настройки, а не повод молчать:
+    пишем в лог и берём значение по умолчанию, заданное здесь осознанно."""
+    raw = str(os.getenv(name) or "").strip()
+    if not raw:
+        return int(default)
+    try:
+        return int(raw)
+    except ValueError:
+        logging.warning("%s=%r — не число, беру %d", name, raw, default)
+        return int(default)
+
+
 async def run_standup_shelf_refill(context: CallbackContext):
     """Ночное пополнение полки стендапов.
 
@@ -11975,7 +11988,12 @@ async def run_standup_shelf_refill(context: CallbackContext):
     from backend.database import get_admin_telegram_ids
     try:
         from backend.standup_shelf import format_shelf_refill_report, refill_standup_shelf
-        report = await asyncio.to_thread(refill_standup_shelf)
+        # Ночью конкурентов нет, поэтому бюджет здесь щедрее, чем у ручной /standup_shelf
+        # (150 c): за ручной командой владелец сидит и смотрит на сообщение, а в 3:40 эти
+        # десять минут не стоят ничего. Дохлый ролик стоит ~91 c ОДИН раз в жизни — дальше
+        # его помнит реестр вердиктов, — и при 150 c мы разгребали бы очередь месяцами.
+        night_budget = _env_int_safe("STANDUP_SHELF_NIGHT_BUDGET_SEC", 600)
+        report = await asyncio.to_thread(refill_standup_shelf, budget_sec=night_budget)
     except Exception as exc:
         logging.exception("standup shelf refill failed")
         _record_sched_heartbeat("standup_shelf_refill_result", "failed", {"error": str(exc)[:200]})
@@ -12005,6 +12023,8 @@ async def run_standup_shelf_refill(context: CallbackContext):
         {"added": report.get("added"), "now": report.get("now_unused"),
          "target": report.get("target"), "attempted": report.get("attempted"),
          "no_transcript": report.get("no_transcript"),
+         "skipped_known": report.get("skipped_known"),
+         "registry": report.get("registry"),
          "budget_spent": bool(report.get("budget_spent"))})
     # Тишина, когда полка и так полна: сообщать не о чем.
     if not report.get("added") and not failed_to_refill:

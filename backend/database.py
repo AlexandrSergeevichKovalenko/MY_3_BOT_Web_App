@@ -11503,6 +11503,41 @@ def ensure_webapp_tables() -> None:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
+            # ── Приговоры по субтитрам (решение владельца 29.08.2026) ──────────────
+            # Полка стендапов неделю не пополнялась: очередь отсортирована одинаково
+            # каждую ночь, а первые в ней ролики отвечают «субтитров нет» по 91 секунде
+            # каждый. Ночь целиком уходила на двоих одних и тех же, и так семь ночей.
+            #
+            # Приговор выносится по ОТВЕТУ, а не по секундомеру (владелец: «мы возьмём
+            # просто за 25 секунд навсегда решим что ролик плохой?? это неправильно»):
+            #   verdict='no_captions'/'unusable' → retry_after IS NULL, больше не трогаем;
+            #   всё остальное (не пустили, не дождались, проверка неполная) → временно,
+            #   retry_after = когда вернуться. Хороший ролик, до которого не достучались,
+            #   возвращается в очередь сам.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_video_transcript_verdicts (
+                    video_id TEXT PRIMARY KEY,
+                    verdict TEXT NOT NULL,
+                    reason TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 1,
+                    first_tried_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_tried_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    retry_after TIMESTAMPTZ
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_video_transcript_verdicts_retry
+                ON bt_3_video_transcript_verdicts (retry_after);
+            """)
+            # Кто вправду приносит субтитры. Владелец платит за webshare и хочет знать,
+            # за какие ступени лестницы платит не зря, а какие можно выбросить.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_transcript_source_stats (
+                    source TEXT PRIMARY KEY,
+                    hits BIGINT NOT NULL DEFAULT 0,
+                    last_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS bt_3_youtube_watch_state (
@@ -29973,6 +30008,102 @@ def standup_shelf_video_ids() -> set:
         with conn.cursor() as cursor:
             cursor.execute("SELECT video_id FROM bt_3_standup_shelf;")
             return {str(r[0]).strip() for r in cursor.fetchall() if r and r[0]}
+
+
+def record_transcript_verdict(*, video_id: str, verdict: str, reason: str | None,
+                              retry_days: int = 14) -> None:
+    """Записать, чем кончилась попытка достать субтитры к ролику.
+
+    Приговор «навсегда» (retry_after IS NULL) имеют право получить только вердикты из
+    PERMANENT_VERDICTS — это ОТВЕТ YouTube «субтитров нет» / «ролик недоступен», а не
+    наш секундомер. Всё остальное — временно: ролик вернётся в очередь через retry_days.
+    Источник правила — backend/transcript_failure.py.
+    """
+    from backend.transcript_failure import is_permanent
+    permanent = is_permanent(verdict)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_video_transcript_verdicts
+                    (video_id, verdict, reason, attempts, first_tried_at, last_tried_at, retry_after)
+                VALUES (%s, %s, %s, 1, NOW(), NOW(),
+                        CASE WHEN %s THEN NULL ELSE NOW() + make_interval(days => %s) END)
+                ON CONFLICT (video_id) DO UPDATE SET
+                    verdict = EXCLUDED.verdict,
+                    reason = EXCLUDED.reason,
+                    attempts = bt_3_video_transcript_verdicts.attempts + 1,
+                    last_tried_at = NOW(),
+                    retry_after = EXCLUDED.retry_after;
+                """,
+                (str(video_id).strip(), str(verdict), (str(reason)[:500] if reason else None),
+                 bool(permanent), int(retry_days)),
+            )
+            conn.commit()
+
+
+def transcript_video_ids_to_skip() -> set:
+    """Ролики, которые сегодня трогать не надо: осуждённые навсегда и отложенные до срока.
+
+    Именно это расчищает голову очереди. Без него отбор каждую ночь упирается в одних и
+    тех же — порядок-то детерминированный."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT video_id FROM bt_3_video_transcript_verdicts "
+                "WHERE retry_after IS NULL OR retry_after > NOW();"
+            )
+            return {str(r[0]).strip() for r in cursor.fetchall() if r and r[0]}
+
+
+def transcript_verdict_counts() -> dict:
+    """Числа для ночного письма: сколько осуждено навсегда, сколько отложено и сколько
+    ждёт решения владельца (трижды не смогли, но приговор так и не вынесен)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE retry_after IS NULL) AS permanent,
+                    COUNT(*) FILTER (WHERE retry_after > NOW()) AS waiting,
+                    COUNT(*) FILTER (WHERE retry_after IS NOT NULL AND retry_after <= NOW()) AS due,
+                    COUNT(*) FILTER (WHERE retry_after IS NOT NULL AND attempts >= 3) AS needs_review
+                FROM bt_3_video_transcript_verdicts;
+                """
+            )
+            row = cursor.fetchone() or (0, 0, 0, 0)
+            return {"permanent": int(row[0] or 0), "waiting": int(row[1] or 0),
+                    "due": int(row[2] or 0), "needs_review": int(row[3] or 0)}
+
+
+def record_transcript_source_hit(source: str) -> None:
+    """+1 той ступени лестницы, которая вправду принесла субтитры (или строке об отказе).
+    Владелец платит за прокси и должен видеть числом, за что именно платит."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_transcript_source_stats (source, hits, last_at)
+                VALUES (%s, 1, NOW())
+                ON CONFLICT (source) DO UPDATE SET
+                    hits = bt_3_transcript_source_stats.hits + 1,
+                    last_at = NOW();
+                """,
+                (str(source or "?")[:64],),
+            )
+            conn.commit()
+
+
+def transcript_source_stats() -> list:
+    """Кто сколько раз принёс субтитры — свежие сверху."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT source, hits, last_at FROM bt_3_transcript_source_stats "
+                "ORDER BY hits DESC;"
+            )
+            return [{"source": str(r[0]), "hits": int(r[1] or 0), "last_at": r[2]}
+                    for r in cursor.fetchall()]
 
 
 def upsert_daily_video_pool_snapshot(

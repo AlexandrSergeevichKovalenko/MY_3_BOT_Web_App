@@ -60,26 +60,38 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
     """
     from backend.daily_video_rubrics import STANDUP_PROFILE
     from backend.database import (
-        get_shown_daily_video_ids, put_on_standup_shelf, standup_shelf_counts,
-        standup_shelf_video_ids,
+        get_shown_daily_video_ids, put_on_standup_shelf, record_transcript_verdict,
+        standup_shelf_counts, standup_shelf_video_ids, transcript_verdict_counts,
+        transcript_video_ids_to_skip,
     )
+    from backend.transcript_failure import VERDICT_UNUSABLE, is_permanent, verdict_ru
     from backend.world_news_generator import (
         WORLD_NEWS_MAX_TRANSCRIPT_CHARS, WORLD_NEWS_MIN_TRANSCRIPT_CHARS,
-        _fetch_transcript, _gather_candidates, _transcript_to_text, _yt_api_video_details,
+        _gather_candidates, _transcript_to_text, _yt_api_video_details,
+        fetch_transcript_or_verdict,
     )
 
-    # Бюджет по часам, а не по числу роликов. Скачивание субтитров имеет повторы, но НЕ
-    # имеет жёсткого таймаута сокета (см. инцидент 10.07.2026): один заблокированный адрес
-    # заставляет цикл ползти минутами, и вызвавший команду видит зависшее сообщение.
-    # Дошли до предела — оставляем то, что успели положить, и честно об этом говорим.
+    # Бюджет — на СКАЧИВАНИЕ СУБТИТРОВ, и отсчитывается он от начала того цикла, а не от
+    # входа в функцию (переделано 29.08.2026). Обход каналов занимает свои 32–40 секунд и
+    # не виснет; когда секундомер включали раньше него, он отрезал время не у того, кто
+    # его ворует, — до скачивания доживало 110 секунд из 150.
+    # У каждого ролика теперь есть свой таймаут (см. fetch_transcript_or_verdict), поэтому
+    # общий бюджет перестал быть затычкой и означает ровно то, что написано.
     budget_sec = int(budget_sec) if budget_sec else _env_int("STANDUP_SHELF_BUDGET_SEC", 150)
+    item_timeout_sec = _env_int("STANDUP_SHELF_ITEM_TIMEOUT_SEC", 90)
     started = time.monotonic()
 
     want = int(target or shelf_target())
     counts = standup_shelf_counts()
     report = {"had_unused": counts["unused"], "target": want, "added": 0,
               "no_transcript": 0, "short_transcript": 0, "dur_skipped": 0, "swept": 0,
-              "attempted": 0, "budget_sec": budget_sec}
+              "attempted": 0, "budget_sec": budget_sec,
+              "item_timeout_sec": item_timeout_sec,
+              # Сколько кандидатов даже не трогали: приговор уже вынесен или срок отсрочки
+              # ещё не вышел. Именно это число объясняет, почему очередь пошла дальше.
+              "skipped_known": 0,
+              # Приговоры, вынесенные ЭТОЙ ночью, по видам.
+              "verdicts": {}}
 
     if counts["unused"] >= want:
         report["reason"] = "полка полна — в YouTube не ходили"
@@ -100,10 +112,17 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
     on_shelf = standup_shelf_video_ids()
     shown = get_shown_daily_video_ids(STANDUP_PROFILE.key)
 
+    # Голова очереди расчищается ЗДЕСЬ. Порядок отбора детерминированный, поэтому без
+    # этого списка ночная работа семь раз подряд упиралась в одни и те же два ролика
+    # (замер 29.08.2026: 91 секунда на каждый, оба — «субтитров нет»).
+    skip_ids = transcript_video_ids_to_skip()
     ranked = []
     for cand in candidates:
         vid = cand["video_id"]
         if vid in on_shelf or vid in shown:
+            continue
+        if vid in skip_ids:
+            report["skipped_known"] += 1
             continue
         det = details.get(vid) or {}
         dur = int(det.get("duration_seconds") or 0)
@@ -145,10 +164,25 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
     cap = int(max_add) if max_add is not None else _env_int("STANDUP_SHELF_MAX_ADD", 12)
     need = min(need, cap)
 
+    # Секундомер стартует ЗДЕСЬ: бюджет отпущен на скачивание субтитров, а не на обход
+    # каналов, который уже позади.
+    loop_started = time.monotonic()
+
+    def _judge(video_id: str, verdict: str, reason: str | None) -> None:
+        """Записать вердикт по ролику и посчитать его для ночного письма."""
+        report["verdicts"][verdict] = int(report["verdicts"].get(verdict) or 0) + 1
+        try:
+            record_transcript_verdict(video_id=video_id, verdict=verdict, reason=reason)
+        except Exception:
+            # Реестр — это память о попытке, а не сам ответ. Если запись не удалась,
+            # ролик просто попробуют ещё раз; подменять при этом нечего.
+            logger.warning("standup shelf: вердикт %s по %s не записан", verdict, video_id,
+                           exc_info=True)
+
     for idx, item in enumerate(ranked, 1):
         if report["added"] >= need:
             break
-        if time.monotonic() - started > budget_sec:
+        if time.monotonic() - loop_started > budget_sec:
             report["budget_spent"] = True
             logger.warning("standup shelf: бюджет %ds исчерпан — положили %d, остальное в следующий раз",
                            budget_sec, report["added"])
@@ -157,13 +191,21 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
         # работу от зависания.
         logger.info("standup shelf: беру субтитры %d/%d — %s (%s)",
                     idx, len(ranked), item["video_id"], item["title"][:50])
-        data = _fetch_transcript(item["video_id"])
-        if not data or not (data.get("items") or []):
+        data, verdict, reason = fetch_transcript_or_verdict(
+            item["video_id"], timeout_sec=item_timeout_sec)
+        if not data:
             report["no_transcript"] += 1
+            _judge(item["video_id"], verdict, reason)
+            logger.info("standup shelf: %s — %s (%s)", item["video_id"], verdict_ru(verdict),
+                        "навсегда" if is_permanent(verdict) else "вернёмся позже")
             continue
         text = _transcript_to_text(data.get("items") or [])
         if len(text) < WORLD_NEWS_MIN_TRANSCRIPT_CHARS:
+            # Субтитры есть, но их слишком мало для разбора. Это свойство самого ролика,
+            # а не нашей сети, — значит вердикт окончательный, и завтра его не качаем.
             report["short_transcript"] += 1
+            _judge(item["video_id"], VERDICT_UNUSABLE,
+                   f"субтитры {len(text)} знаков < {WORLD_NEWS_MIN_TRANSCRIPT_CHARS}")
             continue
         try:
             added = put_on_standup_shelf(
@@ -191,11 +233,36 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
     # «успели попробовать одного и упёрлись в бюджет» — а это разные поломки.
     report["attempted"] = (report["added"] + report["no_transcript"]
                            + report["short_transcript"])
+    try:
+        report["registry"] = transcript_verdict_counts()
+    except Exception:
+        # Числа реестра — материал письма, а не условие работы. Не сосчитали — так и
+        # скажем в письме, но пополнение это не отменяет.
+        logger.warning("standup shelf: не сосчитали реестр вердиктов", exc_info=True)
+        report["registry"] = None
     logger.info("standup shelf: пополнение — было %d, добавлено %d, стало %d "
                 "(без субтитров %d, коротких %d)",
                 counts["unused"], report["added"], after["unused"],
                 report["no_transcript"], report["short_transcript"])
     return report
+
+
+def _registry_line(report: dict) -> list:
+    """Строка о реестре негодных — чтобы он не разрастался молча.
+
+    «Навсегда» стоит рядом с «ждёт решения» осознанно: приговор навсегда выносится только
+    по ответу YouTube, а всё, что трижды не далось по другим причинам, копится отдельно и
+    ждёт человека (владелец 29.08.2026: «чтобы мы точно знали, что хороший ролик не
+    выбросили»).
+    """
+    reg = report.get("registry")
+    if not isinstance(reg, dict):
+        return []
+    line = (f"Реестр негодных: навсегда {reg.get('permanent', 0)} · "
+            f"отложено {reg.get('waiting', 0)}")
+    if reg.get("needs_review"):
+        line += f" · <b>ждёт решения {reg['needs_review']}</b>"
+    return ["", line]
 
 
 def refill_fell_short(report: dict) -> bool:
@@ -247,11 +314,17 @@ def format_shelf_refill_report(report: dict) -> str:
             skipped.append(f"не та длительность {report['dur_skipped']}")
         if skipped:
             lines += ["Не подошли: " + ", ".join(skipped)]
+        verdicts = report.get("verdicts")
+        if isinstance(verdicts, dict) and verdicts:
+            from backend.transcript_failure import verdict_ru
+            lines += ["Почему не взяли: " + ", ".join(
+                f"{verdict_ru(v)} {n}" for v, n in sorted(verdicts.items()))]
+        if report.get("skipped_known"):
+            lines += [f"Не трогали (уже разобраны): {report['skipped_known']}"]
         if report.get("budget_spent"):
             lines += ["", f"⏳ Время вышло: за {report.get('budget_sec', 0)} c успели "
-                          f"попробовать {report.get('attempted', 0)}. Скачивание субтитров у "
-                          f"негодного ролика висит по полторы минуты и съедает всю ночную "
-                          f"попытку."]
+                          f"попробовать {report.get('attempted', 0)}."]
+        lines += _registry_line(report)
         lines += ["", "Проверить руками: /standup_shelf"]
         return "\n".join(lines)
     lines = [
@@ -274,4 +347,5 @@ def format_shelf_refill_report(report: dict) -> str:
     if report.get("budget_spent"):
         lines += ["", "⏳ Время вышло, положили сколько успели. Повтори /standup_shelf — "
                       "докладёт остальное."]
+    lines += _registry_line(report)
     return "\n".join(lines)

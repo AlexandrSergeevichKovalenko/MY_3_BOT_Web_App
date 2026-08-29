@@ -467,6 +467,51 @@ def _fetch_transcript(video_id: str) -> dict | None:
     return data
 
 
+def fetch_transcript_or_verdict(video_id: str, *, timeout_sec: int = 90):
+    """Достать субтитры — и, если не вышло, сказать ПОЧЕМУ.
+
+    Возвращает (данные, вердикт, причина): либо (dict, None, None), либо
+    (None, вердикт из backend/transcript_failure.py, текст причины).
+
+    Зачем таймаут. Лестница скачивания не имеет жёсткого таймаута сокета (инцидент
+    10.07.2026): один неотвечающий адрес заставляет её ползти минутами, и ночная работа
+    успевает попробовать один ролик вместо двенадцати. Замер 29.08.2026: хороший ролик
+    отдаёт субтитры за 1–7 секунд, полный отказ лестницы занимает 91 секунду.
+
+    Чего таймаут НЕ значит. Он НЕ приговор ролику. «Не дождались» — это про нашу сеть, а
+    не про наличие субтитров (владелец 29.08.2026: «мы за 25 секунд навсегда решим, что
+    ролик плохой?? это неправильно»). Приговор выносится только по ответу YouTube.
+
+    Поток по таймауту не убивается — в Python его нечем убить. Он доработает сам (не
+    дольше той же минуты с небольшим) и умрёт; ждать его мы просто перестаём.
+    """
+    import threading
+
+    from backend.transcript_failure import VERDICT_TIMEOUT, classify_transcript_failure
+
+    box: dict = {}
+
+    def _run() -> None:
+        try:
+            from backend.backend_server import _fetch_youtube_transcript
+            box["data"] = _fetch_youtube_transcript(video_id, lang="de", allow_proxy=True)
+        except Exception as exc:
+            box["error"] = f"{type(exc).__name__}: {exc}"
+
+    worker = threading.Thread(target=_run, name=f"transcript-{video_id}", daemon=True)
+    worker.start()
+    worker.join(float(timeout_sec))
+    if worker.is_alive():
+        return None, VERDICT_TIMEOUT, f"не дождались за {int(timeout_sec)} c"
+
+    data = box.get("data")
+    items = (data or {}).get("items") if isinstance(data, dict) else None
+    if items:
+        return data, None, None
+    reason = box.get("error") or "лестница вернула пустой ответ без ошибки"
+    return None, classify_transcript_failure(reason), reason
+
+
 def _transcript_to_text(items: list) -> str:
     import html
     parts = []

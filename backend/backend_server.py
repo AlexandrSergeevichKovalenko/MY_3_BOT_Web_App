@@ -30298,6 +30298,23 @@ def _fetch_with_ytdlp(video_id: str, proxy_url: str | None, lang: str | None) ->
     raise RuntimeError("yt-dlp fallback failed to obtain VTT subtitles")
 
 
+def _record_transcript_source_hit(source: str) -> None:
+    """Кто вправду принёс субтитры. Считаем и победы ступеней, и отказы (fail:<вердикт>).
+
+    Владелец 29.08.2026: «надо аналитику сделать, посмотреть какие варианты приносят нам
+    субтитры; если мёртвые прокси не помогают — выбросим». На глаз этот вопрос не решить,
+    поэтому счётчик стоит прямо в лестнице.
+
+    Счётчик — наблюдение, а не данные: его падение не имеет права сорвать выдачу
+    субтитров, поэтому ошибка здесь только логируется. Подменять ответ ему нечем.
+    """
+    try:
+        from backend.database import record_transcript_source_hit
+        record_transcript_source_hit(source)
+    except Exception:
+        logging.debug("transcript source stats not recorded: %s", source, exc_info=True)
+
+
 def _build_youtube_transcript_result(
     *,
     source: str,
@@ -30306,6 +30323,7 @@ def _build_youtube_transcript_result(
     is_generated: bool | None,
     ip_country: str | None = None,
 ) -> dict:
+    _record_transcript_source_hit(source)
     return {
         "success": True,
         "source": source,
@@ -30360,6 +30378,12 @@ def _fetch_youtube_transcript(
     # ----------------------------
     # 1) Direct
     # ----------------------------
+    # ┌─ 29.08.2026: ТИПЫ ОШИБОК ЗДЕСЬ НЕ ГЛУШАТСЯ. НЕ ВОЗВРАЩАТЬ `except: continue`. ─┐
+    # │ По типу — и только по нему — потом отличают «у ролика нет субтитров» (приговор │
+    # │ навсегда) от «нас не пустили» (вернуться позже). Раньше тип терялся, наружу    │
+    # │ шло «не получилось», и оба случая выглядели одинаково. Разбирает эту строку    │
+    # │ backend/transcript_failure.py: classify_transcript_failure().                  │
+    # └───────────────────────────────────────────────────────────────────────────────┘
     try:
         for code in lang_order:
             try:
@@ -30370,7 +30394,8 @@ def _fetch_youtube_transcript(
                     language=code,
                     is_generated=None,
                 )
-            except Exception:
+            except Exception as exc_code:
+                errors.append(f"direct[{code}]: {type(exc_code).__name__}")
                 continue
         raise RuntimeError(f"direct: no transcripts for language order {tuple(lang_order)}")
     except Exception as e:
@@ -30419,7 +30444,9 @@ def _fetch_youtube_transcript(
                             language=code,
                             is_generated=None,
                         )
-                    except Exception:
+                    except Exception as exc_code:
+                        # Тип ошибки не глушим — см. блок у прямой ступени.
+                        errors.append(f"webshare[{code}]: {type(exc_code).__name__}")
                         continue
                 raise RuntimeError(f"webshare: no transcripts for language order {tuple(lang_order)}")
             except Exception as e:
@@ -30453,7 +30480,9 @@ def _fetch_youtube_transcript(
                             is_generated=None,
                             ip_country=country,
                         )
-                    except Exception:
+                    except Exception as exc_code:
+                        # Тип ошибки не глушим — см. блок у прямой ступени.
+                        errors.append(f"generic[{code}]: {type(exc_code).__name__}")
                         continue
                 raise RuntimeError(f"generic: no transcripts for language order {tuple(lang_order)}")
             except Exception as e:
@@ -30470,9 +30499,19 @@ def _fetch_youtube_transcript(
             except Exception as e:
                 errors.append(f"generic yt-dlp: {e}")
         else:
+            # Ступень не запустилась: адрес не отдал страну (для наших DE/AU прокси это
+            # означает, что они мертвы — за них не платят с августа 2026). Считаем это
+            # числом, чтобы вопрос «нужна ли эта ступень» решался статистикой, а не на
+            # глаз; на вердикт по ролику пропуск НЕ влияет — см. transcript_failure.py.
+            _record_transcript_source_hit("skipped:generic")
             errors.append(f"generic rejected country {country}")
 
-    raise RuntimeError("; ".join(errors) if errors else "Не удалось получить субтитры")
+    joined = "; ".join(errors) if errors else "Не удалось получить субтитры"
+    # Отказ считаем в той же таблице, что и победы ступеней: без знаменателя проценты
+    # «кто приносит субтитры» — не аналитика, а красивые числа.
+    from backend.transcript_failure import classify_transcript_failure
+    _record_transcript_source_hit(f"fail:{classify_transcript_failure(joined)}")
+    raise RuntimeError(joined)
 
 
 def _format_youtube_transcript_user_error(raw_error: Exception | str | None) -> str:
