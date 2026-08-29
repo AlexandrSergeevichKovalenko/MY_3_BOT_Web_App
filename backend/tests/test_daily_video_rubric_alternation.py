@@ -130,8 +130,13 @@ def test_quota_estimate_is_asked_before_the_sweep(monkeypatch):
     monkeypatch.setattr(G.requests, "get", lambda *a, **kw: None)
     G._gather_candidates(STANDUP_PROFILE)
     assert asked, "сторожа вообще не спросили"
-    # 12 каналов × 8 страниц = 96 единиц на списки, плюс справка о роликах пачками по 50.
-    assert asked[0] >= 96, f"цена обхода занижена: {asked[0]}"
+    # 29.08.2026 обход стал дешёвым: одна страница на канал (12 единиц на списки) плюс
+    # справка о роликах пачками по 50. Раньше страниц было восемь и обход стоил ~152
+    # единицы — он был нужен, пока полка была единственным источником рубрики.
+    channels = len(STANDUP_PROFILE.channel_ids)
+    assert asked[0] >= channels, f"цена обхода занижена: {asked[0]}"
+    assert asked[0] < 96, ("обход снова считает весь архив — рубрике нужен ОДИН ролик, "
+                           f"а сторожу называют {asked[0]} единиц")
 
 
 def test_news_rubric_is_not_gated_by_the_archive_guard(monkeypatch):
@@ -263,26 +268,26 @@ def test_shelf_prefers_manual_subtitles_over_popularity():
     assert 'if r["has_manual_captions"] else 1' in inspect.getsource(S.refill_standup_shelf)
 
 
-def test_standup_prep_reads_the_shelf_and_does_not_fetch_anything(monkeypatch):
-    """Подготовка выпуска берёт готовое: ни YouTube, ни скачивания субтитров. 20.08.2026
-    субтитры сутки не тянулись из-за блокировки адреса — этот путь такую беду переживает."""
+def test_standup_looks_for_a_video_first_and_does_not_touch_the_reserve(monkeypatch):
+    """Решение владельца 29.08.2026: стендап ищет ролик с колёс, как новости.
+
+    Запас — пожарный склад, а не главный путь. Пока поиск даёт ролик, в запас не лезем
+    ВООБЩЕ: прежняя схема держала полку на 30 роликов и ради этого обходила весь архив
+    (3764 ролика, ~152 единицы квоты за проход) — при том что рубрике нужен один ролик.
+    """
     import backend.database as db
     import backend.world_news_generator as G
 
-    shelf_row = {
-        "video_id": "vid00000001", "video_title": "Мой номер", "channel_title": "NightWash",
-        "duration_seconds": 480, "has_manual_captions": True,
-        "transcript": [{"text": "ich hab null Bock auf Montag"} for _ in range(40)],
-        "transcript_lang": "de", "transcript_is_generated": False,
+    picked = {
+        "video_id": "vid00000001", "video_url": "https://youtu.be/vid00000001",
+        "title": "Мой номер", "channel_title": "NightWash", "duration_seconds": 480,
+        "lang": "de", "text": "ich hab null Bock auf Montag " * 40, "items": [{"text": "x"}],
+        "is_generated": False, "has_manual_captions": True,
     }
-    monkeypatch.setattr(db, "take_next_from_standup_shelf", lambda exclude=None: shelf_row)
-    monkeypatch.setattr(G, "_gather_candidates", lambda *a, **kw: (_ for _ in ()).throw(
-        AssertionError("выпуск не имеет права обходить каналы")))
-    monkeypatch.setattr(G, "_fetch_transcript", lambda vid: (_ for _ in ()).throw(
-        AssertionError("выпуск не имеет права качать субтитры")))
-    # Дальше подготовки ролика не идём — модель и запись в базу здесь не проверяются.
-    # Сборка разбора идёт по шагам (backend/daily_video_pack.py), поэтому останавливаемся
-    # на общем переносчике запросов, а не на прежнем одном большом вызове.
+    monkeypatch.setattr(G, "_pick_video_with_transcript",
+                        lambda **kw: (dict(picked), {"source": "live"}))
+    monkeypatch.setattr(db, "take_next_from_standup_shelf", lambda exclude=None: (
+        _ for _ in ()).throw(AssertionError("запас трогать нельзя: поиск дал ролик")))
     monkeypatch.setattr(G, "_ask_model", lambda *a, **kw: (_ for _ in ()).throw(
         RuntimeError("СТОП: ролик выбран")))
 
@@ -291,19 +296,47 @@ def test_standup_prep_reads_the_shelf_and_does_not_fetch_anything(monkeypatch):
     assert "СТОП: ролик выбран" in str(err.value)
 
 
-def test_empty_shelf_fails_honestly_instead_of_repeating(monkeypatch):
+def test_reserve_is_used_only_when_the_search_came_back_empty(monkeypatch):
+    """Ровно то, ради чего запас и заводили: сеть легла, квота кончилась, субтитры не
+    дались — а человек утром всё равно получает выпуск."""
+    import backend.database as db
+    import backend.world_news_generator as G
+
+    shelf_row = {
+        "video_id": "vid00000002", "video_title": "Запасной номер", "channel_title": "MySpass",
+        "duration_seconds": 480, "has_manual_captions": True,
+        "transcript": [{"text": "ich hab null Bock auf Montag"} for _ in range(40)],
+        "transcript_lang": "de", "transcript_is_generated": False,
+    }
+    taken = []
+    monkeypatch.setattr(G, "_pick_video_with_transcript",
+                        lambda **kw: (None, {"reason": "no_candidates"}))
+    monkeypatch.setattr(db, "take_next_from_standup_shelf",
+                        lambda exclude=None: taken.append(1) or shelf_row)
+    monkeypatch.setattr(G, "_ask_model", lambda *a, **kw: (_ for _ in ()).throw(
+        RuntimeError("СТОП: ролик выбран")))
+
+    with pytest.raises(RuntimeError) as err:
+        G.prepare_world_news("2026-08-22", rubric=RUBRIC_STANDUP)
+    assert "СТОП: ролик выбран" in str(err.value)
+    assert taken, "поиск вернулся пустым — обязаны были взять из запаса"
+
+
+def test_no_video_and_no_reserve_fails_honestly_instead_of_repeating(monkeypatch):
     """Повторить показанное хуже, чем не показать: человек решит, что рубрика сломалась.
-    Пустая полка обязана поднять ошибку — вечерняя подготовка на неё зовёт владельца."""
+    Пустой поиск И пустой запас обязаны поднять ошибку — вечерняя подготовка зовёт владельца."""
     import backend.database as db
     import backend.standup_shelf as S
     import backend.world_news_generator as G
 
+    monkeypatch.setattr(G, "_pick_video_with_transcript",
+                        lambda **kw: (None, {"reason": "no_candidates"}))
     monkeypatch.setattr(db, "take_next_from_standup_shelf", lambda exclude=None: None)
     monkeypatch.setattr(S, "refill_standup_shelf", lambda **kw: {"added": 0})
 
     with pytest.raises(RuntimeError) as err:
         G.prepare_world_news("2026-08-22", rubric=RUBRIC_STANDUP)
-    assert "полка пуста" in str(err.value)
+    assert "no suitable video" in str(err.value)
 
 
 # ── Кривой ответ модели: переспрашиваем, а не латаем и не сдаёмся ──────────────
@@ -325,7 +358,17 @@ def test_bad_pack_makes_us_ask_again_not_give_up(monkeypatch):
         "transcript": [{"text": _TRANSCRIPT}] * 12,
         "transcript_lang": "de", "transcript_is_generated": False,
     }
-    monkeypatch.setattr(db, "take_next_from_standup_shelf", lambda exclude=None: shelf_row)
+    # 29.08.2026 ролик берётся поиском с колёс, а запас — только на аварию, поэтому
+    # подменяем именно поиск.
+    monkeypatch.setattr(G, "_pick_video_with_transcript", lambda **kw: ({
+        "video_id": shelf_row["video_id"],
+        "video_url": "https://youtu.be/" + shelf_row["video_id"],
+        "title": shelf_row["video_title"], "channel_title": shelf_row["channel_title"],
+        "duration_seconds": shelf_row["duration_seconds"], "lang": "de",
+        "text": " ".join(i["text"] for i in shelf_row["transcript"]),
+        "items": shelf_row["transcript"], "is_generated": False,
+        "has_manual_captions": True,
+    }, {"source": "live"}))
 
     calls = {"n": 0}
 
@@ -1053,12 +1096,13 @@ def test_reformed_day_returns_the_unused_video_to_the_shelf(monkeypatch):
                         lambda d: {"video_id": "старый", "status": "ready"})
     monkeypatch.setattr(db, "release_standup_shelf_video",
                         lambda vid: (released.append(vid), True)[1])
-    monkeypatch.setattr(db, "take_next_from_standup_shelf", lambda exclude=None: {
-        "video_id": "новый", "video_title": "Номер", "channel_title": "NightWash",
-        "duration_seconds": 500, "has_manual_captions": True,
-        "transcript": [{"text": _TRANSCRIPT}] * 12,
-        "transcript_lang": "de", "transcript_is_generated": False})
-    monkeypatch.setattr(G, "_call_llm", lambda *a, **kw: (_ for _ in ()).throw(
+    monkeypatch.setattr(G, "_pick_video_with_transcript", lambda **kw: ({
+        "video_id": "новый", "video_url": "https://youtu.be/новый", "title": "Номер",
+        "channel_title": "NightWash", "duration_seconds": 500, "lang": "de",
+        "text": _TRANSCRIPT * 12, "items": [{"text": _TRANSCRIPT}] * 12,
+        "is_generated": False, "has_manual_captions": True,
+    }, {"source": "live"}))
+    monkeypatch.setattr(G, "_ask_model", lambda *a, **kw: (_ for _ in ()).throw(
         RuntimeError("СТОП: ролик выбран")))
 
     with pytest.raises(RuntimeError):
@@ -1098,17 +1142,22 @@ def test_judge_writes_labels_in_russian():
     assert "винительный падеж" in _JUDGE_SYSTEM
 
 
-def test_emergency_refill_is_not_choked_by_an_old_budget():
-    """22.08.2026 полка кончилась днём, а аварийное пополнение не справилось: у него
-    стояло «два ролика, 70 секунд» — от тех времён, когда потолок всей подготовки был 300
-    секунд. Потолок подняли до 600, а это забыли, и полка осталась на нуле до ночи."""
+def test_emergency_refill_carries_no_hand_made_limits():
+    """22.08.2026 запас кончился днём, а аварийный добор не справился: у него стояло «два
+    ролика, 70 секунд» — от тех времён, когда потолок подготовки был 300 секунд. Потолок
+    подняли, а это забыли, и запас остался на нуле до ночи.
+
+    29.08.2026 лечится в корне: добор сам считает свой потолок (сколько роликов берём ×
+    таймаут одного ролика), и передавать ему числа отсюда НЕ НАДО. Любое число, вписанное
+    здесь руками, назавтра разойдётся с настоящим — как разошлось тогда."""
     import inspect
 
     from backend.world_news_generator import prepare_world_news
 
     src = inspect.getsource(prepare_world_news)
-    assert "STANDUP_EMERGENCY_REFILL_BUDGET_SEC" in src
-    assert "max_add=2, budget_sec=70" not in src, "старый зажатый бюджет вернулся"
+    assert "refill_standup_shelf()" in src, "аварийный добор должен вызываться без чисел"
+    for forbidden in ("budget_sec=", "max_add=", "STANDUP_EMERGENCY_REFILL"):
+        assert forbidden not in src, f"в добор снова вписали число руками: {forbidden}"
 
 
 # ── Владелец должен видеть НАСТОЯЩУЮ карточку прямо из превью (22.08.2026) ────
@@ -1696,11 +1745,12 @@ def test_a_draft_can_still_be_rebuilt(monkeypatch):
                         lambda d: {"video_id": "черновик", "status": "ready"})
     monkeypatch.setattr(db, "get_shown_daily_video_ids", lambda rubric=None: set())
     monkeypatch.setattr(db, "get_assigned_daily_video_ids", lambda rubric=None: set())
+    monkeypatch.setattr(G, "_pick_video_with_transcript", lambda **kw: (None, {"reason": "нет"}))
     monkeypatch.setattr(db, "take_next_from_standup_shelf", lambda exclude=None: None)
     import backend.standup_shelf as S
     monkeypatch.setattr(S, "refill_standup_shelf", lambda **kw: {"added": 0})
 
-    # Падение будет про пустую полку, а НЕ про запрет переформирования.
+    # Падение будет про то, что ролика не нашлось, а НЕ про запрет переформирования.
     with pytest.raises(RuntimeError) as err:
         G.prepare_world_news("2026-08-24", rubric=RUBRIC_STANDUP)
     assert "уже отправлен" not in str(err.value)

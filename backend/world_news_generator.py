@@ -709,6 +709,20 @@ def _pick_video_with_transcript(*, profile=None, manual_url: str | None = None,
 
     candidates = _gather_candidates(profile)
     diag["candidates"] = len(candidates)
+    # Ролики, по которым приговор уже вынесен (субтитров нет) или срок отсрочки ещё не
+    # вышел, в поиск не берём вовсе: иначе каждый вечер тратим полторы минуты на того же.
+    try:
+        from backend.database import transcript_video_ids_to_skip
+        _skip = transcript_video_ids_to_skip()
+    except Exception:
+        # Реестр — ускоритель, а не источник ответа. Не прочитали — работаем без него,
+        # но молчать об этом нельзя: без реестра вечер снова пойдёт по кругу.
+        logger.warning("daily_video: реестр разобранных роликов не прочитан", exc_info=True)
+        _skip = set()
+    if _skip:
+        before = len(candidates)
+        candidates = [c for c in candidates if c["video_id"] not in _skip]
+        diag["skipped_known"] = before - len(candidates)
     diag["quota_exceeded"] = _QUOTA_EXCEEDED
     if not candidates:
         if _QUOTA_LOW:
@@ -782,9 +796,20 @@ def _pick_video_with_transcript(*, profile=None, manual_url: str | None = None,
         if dur and not (profile.min_seconds <= dur <= profile.max_seconds):
             diag["dur_skipped"] += 1
             continue
-        data = _fetch_transcript(vid)
+        # Таймаут и вердикт — те же, что у добора запаса (29.08.2026). Без них поиск
+        # с колёс каждый вечер спотыкался бы об одни и те же ролики: очередь строится
+        # одинаково, а лестница субтитров у негодного ролика молчит по полторы минуты.
+        # Приговор выносится по ответу YouTube, а не по секундомеру, — см.
+        # backend/transcript_failure.py.
+        data, verdict, reason = fetch_transcript_or_verdict(vid)
         if not data:
             diag["no_transcript"] += 1
+            try:
+                from backend.database import record_transcript_verdict
+                record_transcript_verdict(video_id=vid, verdict=verdict, reason=reason)
+            except Exception:
+                logger.warning("daily_video: вердикт %s по %s не записан", verdict, vid,
+                               exc_info=True)
             continue
         text = _transcript_to_text(data.get("items") or [])
         if len(text) < WORLD_NEWS_MIN_TRANSCRIPT_CHARS:
@@ -1426,62 +1451,20 @@ def prepare_world_news(
     allow_repeat_when_empty = profile.pick_strategy != "archive"
 
     picked, diag = None, {}
-    # ── ПОЛКА ───────────────────────────────────────────────────────────────────
-    # Стендап берёт готовое: ролик уже отобран, и субтитры к нему уже скачаны. В момент
-    # выпуска мы не ходим ни в YouTube, ни за субтитрами — обе эти дороги 20–21.08.2026
-    # оказались перекрыты ровно тогда, когда рубрика была нужна.
-    if not manual_url and profile.uses_shelf:
-        from backend.database import take_next_from_standup_shelf
-        shelf_item = take_next_from_standup_shelf(base_exclude)
-        if not shelf_item:
-            # Полка пуста. Пробуем пополнить ОДИН раз и берём снова: это тот же источник,
-            # просто добираем его сейчас, а не по расписанию. Если и после этого пусто —
-            # честно падаем, а не подсовываем повтор.
-            logger.warning("daily_video[%s]: полка пуста — пробую пополнить на месте", profile.key)
-            try:
-                from backend.standup_shelf import refill_standup_shelf
-                # Аварийное пополнение: добрать столько, чтобы выпуск состоялся И полка
-                # не осталась на нуле до ночи. Бюджет считается от потолка подготовки:
-                # он 600 секунд, из них ~250 нужно модели на разбор, значит пополнению
-                # можно отдать 200 и оно спокойно возьмёт несколько роликов.
-                # 22.08.2026 здесь стояло «два ролика, 70 секунд» — от тех времён, когда
-                # потолок был 300. Потолок я поднял, а это забыл, и полка, кончившаяся
-                # днём, не пополнилась вовсе.
-                refill_standup_shelf(
-                    max_add=_env_int("STANDUP_EMERGENCY_REFILL_MAX", 6),
-                    budget_sec=_env_int("STANDUP_EMERGENCY_REFILL_BUDGET_SEC", 200),
-                )
-            except Exception:
-                logger.exception("daily_video[%s]: пополнение полки не удалось", profile.key)
-            shelf_item = take_next_from_standup_shelf(base_exclude)
-        if not shelf_item:
-            raise RuntimeError(
-                f"daily_video[{profile.key}]: полка пуста и пополнить её не удалось — "
-                "нужен ролик вручную или пополнение набора каналов"
-            )
-        text = _transcript_to_text(shelf_item["transcript"])
-        if len(text) < WORLD_NEWS_MIN_TRANSCRIPT_CHARS:
-            # На полку кладутся только ролики с проверенными субтитрами, так что сюда мы
-            # попасть не должны. Если попали — это порча данных, и её надо видеть.
-            raise RuntimeError(
-                f"daily_video[{profile.key}]: у ролика {shelf_item['video_id']} с полки "
-                f"субтитры короче порога ({len(text)} симв.) — полка испорчена"
-            )
-        picked = {
-            "video_id": shelf_item["video_id"],
-            "video_url": f"https://www.youtube.com/watch?v={shelf_item['video_id']}",
-            "title": shelf_item["video_title"],
-            "channel_title": shelf_item["channel_title"],
-            "duration_seconds": shelf_item["duration_seconds"],
-            "lang": shelf_item["transcript_lang"],
-            "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
-            "items": shelf_item["transcript"],
-            "is_generated": shelf_item["transcript_is_generated"],
-            "has_manual_captions": shelf_item["has_manual_captions"],
-        }
-        diag = {"rubric": profile.key, "source": "shelf"}
-
-    if not picked and not manual_url:
+    # ┌─ ПОРЯДОК ПЕРЕСТРОЕН 29.08.2026 ПО РЕШЕНИЮ ВЛАДЕЛЬЦА. НЕ МЕНЯТЬ МЕСТАМИ. ───────┐
+    # │ «Стендап должен работать как новости: искать одно подходящее видео и выдавать.  │
+    # │ А запас нужен ТОЛЬКО на случай, когда с колёс ничего не нашлось».               │
+    # │                                                                                │
+    # │ Раньше было наоборот: полка была ЕДИНСТВЕННЫМ источником, и её требовалось      │
+    # │ держать полной на 30 роликов. Отсюда вырос обход всего архива (3764 ролика,     │
+    # │ ~152 единицы квоты за проход) и недельная возня с его отбраковкой — при том что │
+    # │ рубрике нужен ОДИН ролик в день. Новости так не делают и работают.              │
+    # │                                                                                │
+    # │ Теперь: сначала обычный поиск с колёс — тот же самый, что у новостей, он        │
+    # │ останавливается на первом же ролике с субтитрами. Запас трогаем, только если    │
+    # │ поиск вернулся пустым (сеть, квота, субтитры не дались).                        │
+    # └───────────────────────────────────────────────────────────────────────────────┘
+    if not manual_url:
         try:
             shown = get_shown_daily_video_ids(profile.key)
         except Exception:
@@ -1507,22 +1490,62 @@ def prepare_world_news(
                              profile.key)
             raise
         diag["shown_excluded"] = len(shown)
-        rotated_exclude = base_exclude | shown
-        if rotated_exclude:
-            picked, diag = _pick_video_with_transcript(
-                profile=profile, exclude_video_ids=rotated_exclude
+        picked, diag = _pick_video_with_transcript(
+            profile=profile, exclude_video_ids=base_exclude | shown
+        )
+        if not picked and allow_repeat_when_empty:
+            # У новостей разнообразие желательно, но никогда ценой пустого утра.
+            logger.info(
+                "world_news: rotation exclude (%d shown) left nothing pickable — retrying without it (diag=%s)",
+                len(shown), diag,
             )
-            if not picked and not allow_repeat_when_empty:
+            picked, diag = _pick_video_with_transcript(
+                profile=profile, exclude_video_ids=base_exclude
+            )
+
+    # ── ЗАПАС (полка) — ТОЛЬКО КОГДА ПОИСК НИЧЕГО НЕ ДАЛ ────────────────────────
+    # Это не «второй сорт»: на полке лежат такие же отобранные ролики с уже скачанными
+    # субтитрами. Это пожарный склад на день, когда YouTube недоступен, квота кончилась
+    # или субтитры не даются. Взяли — строка помечается выданной, ночью запас добирается.
+    if not picked and not manual_url and profile.uses_shelf:
+        from backend.database import take_next_from_standup_shelf
+        logger.warning("daily_video[%s]: поиск с колёс пуст (diag=%s) — беру из запаса",
+                       profile.key, diag)
+        shelf_item = take_next_from_standup_shelf(base_exclude)
+        if not shelf_item:
+            # Запас пуст. Пробуем добрать ОДИН раз и берём снова: источник тот же, просто
+            # добираем сейчас, а не ночью. Если и после этого пусто — честно падаем.
+            logger.warning("daily_video[%s]: запас пуст — пробую добрать на месте", profile.key)
+            try:
+                from backend.standup_shelf import refill_standup_shelf
+                refill_standup_shelf()
+            except Exception:
+                logger.exception("daily_video[%s]: добор запаса не удался", profile.key)
+            shelf_item = take_next_from_standup_shelf(base_exclude)
+        if shelf_item:
+            text = _transcript_to_text(shelf_item["transcript"])
+            if len(text) < WORLD_NEWS_MIN_TRANSCRIPT_CHARS:
+                # В запас кладутся только ролики с проверенными субтитрами, так что сюда мы
+                # попасть не должны. Если попали — это порча данных, и её надо видеть.
                 raise RuntimeError(
-                    f"daily_video[{profile.key}]: непоказанных роликов не осталось — "
-                    f"нужно пополнить набор каналов. diag={diag}"
+                    f"daily_video[{profile.key}]: у ролика {shelf_item['video_id']} из запаса "
+                    f"субтитры короче порога ({len(text)} симв.) — запас испорчен"
                 )
-            if not picked:
-                logger.info(
-                    "world_news: rotation exclude (%d shown) left nothing pickable — retrying without it (diag=%s)",
-                    len(shown), diag,
-                )
-    if not picked:
+            picked = {
+                "video_id": shelf_item["video_id"],
+                "video_url": f"https://www.youtube.com/watch?v={shelf_item['video_id']}",
+                "title": shelf_item["video_title"],
+                "channel_title": shelf_item["channel_title"],
+                "duration_seconds": shelf_item["duration_seconds"],
+                "lang": shelf_item["transcript_lang"],
+                "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
+                "items": shelf_item["transcript"],
+                "is_generated": shelf_item["transcript_is_generated"],
+                "has_manual_captions": shelf_item["has_manual_captions"],
+            }
+            diag = {"rubric": profile.key, "source": "shelf", "why": "поиск с колёс пуст"}
+
+    if not picked and manual_url:
         picked, diag = _pick_video_with_transcript(
             profile=profile, manual_url=manual_url, exclude_video_ids=base_exclude
         )
