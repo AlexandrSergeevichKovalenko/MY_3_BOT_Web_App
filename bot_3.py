@@ -11990,9 +11990,10 @@ async def run_standup_shelf_refill(context: CallbackContext):
         from backend.standup_shelf import format_shelf_refill_report, refill_standup_shelf
         # Ночью конкурентов нет, поэтому бюджет здесь щедрее, чем у ручной /standup_shelf
         # (150 c): за ручной командой владелец сидит и смотрит на сообщение, а в 3:40 эти
-        # десять минут не стоят ничего. Дохлый ролик стоит ~91 c ОДИН раз в жизни — дальше
-        # его помнит реестр вердиктов, — и при 150 c мы разгребали бы очередь месяцами.
-        night_budget = _env_int_safe("STANDUP_SHELF_NIGHT_BUDGET_SEC", 600)
+        # пятнадцать минут не стоят ничего. Дохлый ролик стоит ~95 c ОДИН раз в жизни —
+        # дальше его помнит реестр вердиктов, — а при 150 c мы разгребали бы очередь
+        # месяцами: за ночь успевала ровно одна попытка.
+        night_budget = _env_int_safe("STANDUP_SHELF_NIGHT_BUDGET_SEC", 900)
         report = await asyncio.to_thread(refill_standup_shelf, budget_sec=night_budget)
     except Exception as exc:
         logging.exception("standup shelf refill failed")
