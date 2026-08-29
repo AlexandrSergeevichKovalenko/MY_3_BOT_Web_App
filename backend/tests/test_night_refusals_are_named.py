@@ -76,27 +76,41 @@ class ОтчётПоказываетСлова(unittest.TestCase):
         import bot_3
         return bot_3._night_refusal_lines(meta)
 
-    def test_words_reach_the_report(self):
+    def test_words_are_collected_but_NOT_sent_to_the_owner(self):
+        """29.08.2026, решение владельца: числа — да, ПОЛОТНО ИЗ СЛОВ — нет.
+
+        Вчера я вынес забракованные слова прямо в ежедневное письмо. Владелец:
+        «я получу полотно из 63 предложений в телефоне — и что я с ним сделаю?».
+        Делать нечего: ночь пробует их заново сама. Слова по-прежнему СОБИРАЮТСЯ
+        в запись о прогоне — они нужны мне при разборе, — но в письмо не идут.
+        """
         текст = self._строки({
             "rejected_by_judge": 2, "errors": 0,
             "judge_samples": [{"word": "Spalte", "why": "пример не о том слове"}],
         })
-        self.assertIn("Spalte", текст)
-        self.assertIn("пример не о том слове", текст)
         self.assertIn("Судья забраковал", текст)
+        self.assertIn("2", текст)
+        self.assertNotIn("Spalte", текст,
+                         "слова снова уехали в письмо владельцу — это отменено")
+        self.assertNotIn("пример не о том слове", текст)
+        self.assertIn("от тебя ничего не нужно", текст.lower())
 
     def test_error_line_is_shown_even_at_zero(self):
         """Пропавшая строка неотличима от отвалившегося счётчика — это уже
         проходили на планировщике."""
         self.assertIn("Ошибок", self._строки({"errors": 0}))
 
-    def test_breakage_words_are_shown_too(self):
+    def test_breakage_is_a_number_too_not_a_wall_of_words(self):
+        """Даже у настоящей поломки в письмо идёт ЧИСЛО. Слова с причинами лежат в
+        записи о прогоне — по ним разбираюсь я, а не владелец глазами в телефоне."""
         текст = self._строки({
             "errors": 1,
             "error_samples": [{"word": "Zufall", "why": "судья не ответил: HTTP 429"}],
         })
-        self.assertIn("Zufall", текст)
-        self.assertIn("HTTP 429", текст)
+        self.assertIn("Ошибок", текст)
+        self.assertIn("1", текст)
+        self.assertNotIn("Zufall", текст)
+        self.assertNotIn("HTTP 429", текст)
 
 
 if __name__ == "__main__":

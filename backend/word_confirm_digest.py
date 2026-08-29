@@ -43,6 +43,30 @@ DONE = "done"
 # плашке при сохранении. Артикль здесь не часть имени слова, а часть карточки.
 _BARE = "regexp_replace({col}, '^(der|die|das)[[:space:]]+', '', 'i')"
 
+# ┌─ ТОЛЬКО СЛОВА. ПОЧИНЕНО 29.08.2026. ─────────────────────────────────────────────┐
+# │ Это письмо спрашивает «слово настоящее?» — и до сегодня выборка НЕ ПРОВЕРЯЛА,     │
+# │ слово перед ней или нет. Поэтому в него попадали целые предложения, и владелец    │
+# │ получал кнопки «убрать из словаря / слово настоящее» под «Ich sitze vor dem       │
+# │ Fernseher» и «Als Anlage finden Sie eine angehängte Excel-Liste». Ни один         │
+# │ справочник не знает предложения — не потому, что оно плохое, а потому что         │
+# │ предложений в словарях не бывает.                                                 │
+# │                                                                                  │
+# │ Замер 29.08.2026: из 63 ждущих ответа только 13 были словами. Остальные 50 —      │
+# │ предложения (21), обороты (13) и записи, которых в словаре нет вовсе (16).        │
+# │ Хуже того, у предложений УЖЕ ЕСТЬ свой экран разбора, и владелец их там разобрал: │
+# │ проверка по текстам показала 20 из 20 со статусом «разобрано на экране» и         │
+# │ одновременно «ЖДЁТ» здесь. Он видел одно и то же дважды и был прав.               │
+# │                                                                                  │
+# │ Признак «одно слово» здесь НЕ грамматическая догадка: многословная строка         │
+# │ словом не является по определению, и считаем мы пробелы, а не смысл. Артикль      │
+# │ снимается тем же _BARE, что и везде, иначе «die Ernte» выпало бы как «два слова». │
+# │                                                                                  │
+# │ Фильтр живёт ОДНОЙ строкой на все три выборки этого модуля: скопированное         │
+# │ условие расходится с оригиналом на первой же правке, а цена расхождения тут —     │
+# │ снова присланное владельцу предложение.                                           │
+# └──────────────────────────────────────────────────────────────────────────────────┘
+_ТОЛЬКО_СЛОВА = "position(' ' in btrim({bare})) = 0"
+
 # ⚠ КАКИЕ ВОПРОСЫ ИЗ `bt_3_phrase_review` АДРЕСОВАНЫ ЧЕЛОВЕКУ.
 # В таблице три вида: 'grammar' (немецкий самой фразы), 'panel' (карточка тремя
 # голосами) и 'translation' (перевод карточки перед подъёмом в общий слой). Третий
@@ -131,12 +155,15 @@ def words_for_user(user_id: int, limit: int = BATCH) -> list[tuple[str, str]]:
                       JOIN bt_3_word_check w ON w.asked = {bare}
                      WHERE q.user_id = %s
                        AND w.status IN ('не подтверждено', 'не слово')
+                       AND {только_слова}
                        AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
                                         WHERE d.user_id = q.user_id AND d.word = {bare}
                                           AND d.closed_at IS NOT NULL)
                      ORDER BY 1
                      LIMIT %s;
-                    """.format(bare=_BARE.format(col="q.word_de")),
+                    """.format(bare=_BARE.format(col="q.word_de"),
+                             только_слова=_ТОЛЬКО_СЛОВА.format(
+                                 bare=_BARE.format(col="q.word_de"))),
                     (int(user_id), int(limit)),
                 )
                 найдено = [(str(a), str(b)) for a, b in (cur.fetchall() or [])]
@@ -476,12 +503,15 @@ def audit_items(user_id: int, limit: int = 200) -> list[dict[str, Any]]:
                       LEFT JOIN bt_3_word_suggestion s ON s.asked = {bare}
                      WHERE q.user_id = %s
                        AND w.status IN ('не подтверждено', 'не слово')
+                       AND {только_слова}
                        AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
                                         WHERE d.user_id = q.user_id AND d.word = {bare}
                                           AND d.closed_at IS NOT NULL)
                      ORDER BY 1
                      LIMIT %s;
-                    """.format(bare=_BARE.format(col="q.word_de")),
+                    """.format(bare=_BARE.format(col="q.word_de"),
+                             только_слова=_ТОЛЬКО_СЛОВА.format(
+                                 bare=_BARE.format(col="q.word_de"))),
                     (int(user_id), int(limit)),
                 )
                 rows = cur.fetchall() or []
@@ -1170,11 +1200,14 @@ def send_word_audit_reminders(*, force: bool = False) -> dict[str, Any]:
                       FROM bt_3_webapp_dictionary_queries q
                       JOIN bt_3_word_check w ON w.asked = {bare}
                      WHERE w.status IN ('не подтверждено', 'не слово')
+                       AND {только_слова}
                        AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
                                         WHERE d.user_id = q.user_id AND d.word = {bare}
                                           AND d.closed_at IS NOT NULL)
                      GROUP BY q.user_id;
-                    """.format(bare=_BARE.format(col="q.word_de"))
+                    """.format(bare=_BARE.format(col="q.word_de"),
+                             только_слова=_ТОЛЬКО_СЛОВА.format(
+                                 bare=_BARE.format(col="q.word_de")))
                 )
                 слов: dict[int, int] = {int(a): int(b) for a, b in (cur.fetchall() or [])}
                 # Фразы — тем же счётом, что и на экране (см. _phrase_counts_by_author).
