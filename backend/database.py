@@ -16599,9 +16599,18 @@ def record_capacity(*, service: str, kind: str, ceiling: int, peak: int,
     # сервиса берётся из RAILWAY_SERVICE_NAME, а вне Railway её просто нет. В этом
     # проекте на таком уже горели — прогоны кода по боевой базе оставляли призраков в
     # списке пользователей. Замер обязан отражать ПРОД, иначе он не замер.
+    # ⛔ ЛОКАЛЬНЫЙ ПРОГОН В БОЕВУЮ ВЕДОМОСТЬ НЕ ПИШЕТ. Проверяем НЕ имя, переданное
+    # вызывающим, а само окружение: у части замеров имя сервиса захардкожено
+    # («BACKEND_WEB»), и прежняя проверка их пропускала. Итог 28.08.2026 в ведомости:
+    # «BACKGROUND_JOBS: пик 9 из 6» и «BACKEND_WEB: пик 8 при потолке 2» — числа,
+    # невозможные в проде. Это писал я со своего ноутбука, со своими настройками пула
+    # и потоков. Замер, отражающий чужую машину, — не замер.
+    if not (os.getenv("RAILWAY_SERVICE_NAME") or "").strip():
+        logging.debug("замер занятости не записан: не боевое окружение")
+        return
     имя = str(service or "").strip()
     if not имя or имя == "-":
-        logging.debug("замер занятости не записан: сервис не назван (локальный прогон?)")
+        logging.debug("замер занятости не записан: сервис не назван")
         return
     ensure_web_capacity_schema()
     with get_db_connection_context() as conn:
@@ -16630,7 +16639,11 @@ def get_capacity_days(days: int = 7) -> list[dict]:
             cursor.execute(
                 "SELECT day, service, kind, ceiling, peak, hits, total "
                 "FROM bt_3_capacity_daily "
-                "WHERE day >= CURRENT_DATE - (%s * INTERVAL '1 day') "
+                # ⚠ ТОЛЬКО ПОЛНЫЕ СУТКИ НАЗАД, СЧИТАЯ ОТ СЕГОДНЯ. `days=1` обязано
+                # означать «сегодня», а не «сегодня и вчера»: 29.08.2026 отчёт из-за
+                # этого показал владельцу вчерашний голод бота как сегодняшний и назвал
+                # MY_3_BOT дважды — один раз жёлтым (сегодня), другой красным (вчера).
+                "WHERE day > CURRENT_DATE - (%s * INTERVAL '1 day') "
                 "ORDER BY day DESC, kind, service;",
                 (max(1, int(days)),),
             )

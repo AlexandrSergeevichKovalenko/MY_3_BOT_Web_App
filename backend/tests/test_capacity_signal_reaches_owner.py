@@ -129,6 +129,48 @@ class ОтчётРазличаетДваПотолка(unittest.TestCase):
         self.assertEqual(bot_3._format_load_text([]), "")
 
 
+class ОтчётПоказываетТОЛЬКО_СЕГОДНЯ(unittest.TestCase):
+    """⛔ РАЗОБРАНО ПО ЖИВОМУ ОТЧЁТУ ВЛАДЕЛЬЦА 29.08.2026.
+
+    Выборка брала `day >= CURRENT_DATE - 1 day`, то есть СЕГОДНЯ И ВЧЕРА. Владелец
+    получил письмо, где MY_3_BOT назван дважды: жёлтым (сегодня, голода нет) и красным
+    («11 раз соединения не хватило») — а это были ВЧЕРАШНИЕ данные, поданные как
+    сегодняшние. По такому отчёту решение принимать нельзя.
+    """
+
+    def test_один_день_означает_сегодня(self):
+        import inspect
+        from backend import database as db
+        код = inspect.getsource(db.get_capacity_days)
+        self.assertIn("day > CURRENT_DATE", код)
+        self.assertNotIn("day >= CURRENT_DATE", код)
+
+
+class ЛокальныйПрогонВВедомостьНеПишет(unittest.TestCase):
+    """⛔ ВТОРОЙ ДЕФЕКТ ИЗ ТОГО ЖЕ ПИСЬМА: «BACKGROUND_JOBS: занято до 9 из 6».
+
+    Пик больше потолка физически невозможен. Это писал я со своего ноутбука: часть
+    замеров называет сервис захардкоженной строкой («BACKEND_WEB»), и прежняя проверка
+    «имя не пустое» их пропускала. Теперь проверяется САМО ОКРУЖЕНИЕ.
+    """
+
+    def test_без_боевого_окружения_не_пишем(self):
+        import os
+        from unittest import mock
+        from backend import database as db
+        with mock.patch.dict(os.environ, {"RAILWAY_SERVICE_NAME": ""}, clear=False), \
+             mock.patch.object(db, "ensure_web_capacity_schema") as схема:
+            db.record_capacity(service="BACKEND_WEB", kind="web_requests",
+                               ceiling=2, peak=8, hits=1, total=10)
+        схема.assert_not_called()
+
+    def test_проверяется_окружение_а_не_переданное_имя(self):
+        import inspect
+        from backend import database as db
+        код = inspect.getsource(db.record_capacity)
+        self.assertIn('os.getenv("RAILWAY_SERVICE_NAME")', код)
+
+
 class ЗамерПриходитСамВУтреннемОтчёте(unittest.TestCase):
 
     def test_блок_нагрузки_встроен_в_дайджест_а_не_в_команду(self):
