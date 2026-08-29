@@ -179,7 +179,9 @@ def test_rate_limit_is_retried_not_surrendered(monkeypatch):
 
     monkeypatch.setattr(G.requests, "get", _fake_get)
     monkeypatch.setattr(G.time, "sleep", lambda *_: None)
-    monkeypatch.setattr(G, "_quota_spent", lambda units: None)
+    # endpoint добавлен 29.08.2026: трата уходит в ведомость с именем вызова, чтобы
+    # расход рубрики было видно в отчётах, а не только в счётчике внутри процесса.
+    monkeypatch.setattr(G, "_quota_spent", lambda units, endpoint="": None)
     G._QUOTA_EXCEEDED = False
 
     payload = G._yt_get("https://example/api", {}, cost=1, what="проверка")
@@ -201,7 +203,9 @@ def test_daily_quota_is_not_retried(monkeypatch):
 
     monkeypatch.setattr(G.requests, "get", _fake_get)
     monkeypatch.setattr(G.time, "sleep", lambda *_: None)
-    monkeypatch.setattr(G, "_quota_spent", lambda units: None)
+    # endpoint добавлен 29.08.2026: трата уходит в ведомость с именем вызова, чтобы
+    # расход рубрики было видно в отчётах, а не только в счётчике внутри процесса.
+    monkeypatch.setattr(G, "_quota_spent", lambda units, endpoint="": None)
     G._QUOTA_EXCEEDED = False
 
     assert G._yt_get("https://example/api", {}, cost=1, what="проверка") is None
