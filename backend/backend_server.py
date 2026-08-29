@@ -30362,6 +30362,7 @@ def _fetch_youtube_transcript(
     lang: str | None = None,
     *,
     allow_proxy: bool = True,
+    proxy_first: bool = False,
 ) -> dict:
     """
     Production pipeline:
@@ -30393,50 +30394,40 @@ def _fetch_youtube_transcript(
         or None
     )
 
-    # ----------------------------
-    # 1) Direct
-    # ----------------------------
-    # ┌─ 29.08.2026: ТИПЫ ОШИБОК ЗДЕСЬ НЕ ГЛУШАТСЯ. НЕ ВОЗВРАЩАТЬ `except: continue`. ─┐
-    # │ По типу — и только по нему — потом отличают «у ролика нет субтитров» (приговор │
-    # │ навсегда) от «нас не пустили» (вернуться позже). Раньше тип терялся, наружу    │
-    # │ шло «не получилось», и оба случая выглядели одинаково. Разбирает эту строку    │
-    # │ backend/transcript_failure.py: classify_transcript_failure().                  │
-    # └───────────────────────────────────────────────────────────────────────────────┘
-    try:
-        for code in lang_order:
-            try:
-                subs = _fetch_with_yta(video_id, code, proxy_config=None)
-                return _build_youtube_transcript_result(
-                    source="direct",
-                    items=subs,
-                    language=code,
-                    is_generated=None,
-                )
-            except Exception as exc_code:
-                errors.append(f"direct[{code}]: {type(exc_code).__name__}")
-                continue
-        raise RuntimeError(f"direct: no transcripts for language order {tuple(lang_order)}")
-    except Exception as e:
-        errors.append(f"direct: {e}")
+    def _rung_direct():
+        """Ступени 1–2: напрямую с нашего адреса (США) и yt-dlp оттуда же."""
+        # ┌─ 29.08.2026: ТИПЫ ОШИБОК ЗДЕСЬ НЕ ГЛУШАТСЯ. НЕ ВОЗВРАЩАТЬ `except: continue`. ─┐
+        # │ По типу — и только по нему — потом отличают «у ролика нет субтитров» (приговор │
+        # │ навсегда) от «нас не пустили» (вернуться позже). Раньше тип терялся, наружу    │
+        # │ шло «не получилось», и оба случая выглядели одинаково. Разбирает эту строку    │
+        # │ backend/transcript_failure.py: classify_transcript_failure().                  │
+        # └───────────────────────────────────────────────────────────────────────────────┘
+        try:
+            for code in lang_order:
+                try:
+                    subs = _fetch_with_yta(video_id, code, proxy_config=None)
+                    return _build_youtube_transcript_result(
+                        source="direct", items=subs, language=code, is_generated=None,
+                    )
+                except Exception as exc_code:
+                    errors.append(f"direct[{code}]: {type(exc_code).__name__}")
+                    continue
+            raise RuntimeError(f"direct: no transcripts for language order {tuple(lang_order)}")
+        except Exception as e:
+            errors.append(f"direct: {e}")
+        try:
+            items, detected_lang, is_generated = _fetch_with_ytdlp(video_id, None, lang)
+            return _build_youtube_transcript_result(
+                source="yt-dlp", items=items, language=detected_lang, is_generated=is_generated,
+            )
+        except Exception as e:
+            errors.append(f"yt-dlp: {e}")
+        return None
 
-    # ----------------------------
-    # 2) yt-dlp direct
-    # ----------------------------
-    try:
-        items, detected_lang, is_generated = _fetch_with_ytdlp(video_id, None, lang)
-        return _build_youtube_transcript_result(
-            source="yt-dlp",
-            items=items,
-            language=detected_lang,
-            is_generated=is_generated,
-        )
-    except Exception as e:
-        errors.append(f"yt-dlp: {e}")
-
-    # ----------------------------
-    # 3) Webshare rotation (DE/AT)
-    # ----------------------------
-    if allow_proxy and webshare_proxy:
+    def _rung_webshare():
+        """Ступень 3: немецкий/австрийский адрес. Платный, единственный оплаченный."""
+        if not (allow_proxy and webshare_proxy):
+            return None
         p = urlparse(webshare_proxy)
         # ┌─ ПРОВЕРЕНО 29.08.2026 ЗАМЕРОМ. НЕ ВОЗВРАЩАТЬ ИМЯ ИЗ ПЕРЕМЕННОЙ ЦЕЛИКОМ. ──────┐
         # │ В переменной лежит имя с уже вшитым набором стран: pdqlodss-AT-DE-US-1.       │
@@ -30449,27 +30440,18 @@ def _fetch_youtube_transcript(
         # └───────────────────────────────────────────────────────────────────────────────┘
         ws_user = str(p.username or "").split("-")[0]
         ws_pass = p.password or ""
-        max_attempts = 3
-
-        for attempt in range(1, max_attempts + 1):
-            proxy_config = None
+        for attempt in range(1, 4):
             try:
                 # WebshareProxyConfig performs location-aware rotation itself.
-                # The raw gateway IP can resolve to a non-DE/AT country even when
-                # the requested exit node is filtered to Germany/Austria.
                 proxy_config = WebshareProxyConfig(
-                    proxy_username=ws_user,
-                    proxy_password=ws_pass,
+                    proxy_username=ws_user, proxy_password=ws_pass,
                     filter_ip_locations=["de", "at"],
                 )
                 for code in lang_order:
                     try:
                         subs = _fetch_with_yta(video_id, code, proxy_config=proxy_config)
                         return _build_youtube_transcript_result(
-                            source="webshare",
-                            items=subs,
-                            language=code,
-                            is_generated=None,
+                            source="webshare", items=subs, language=code, is_generated=None,
                         )
                     except Exception as exc_code:
                         # Тип ошибки не глушим — см. блок у прямой ступени.
@@ -30481,13 +30463,28 @@ def _fetch_youtube_transcript(
             try:
                 items, detected_lang, is_generated = _fetch_with_ytdlp(video_id, webshare_proxy, lang)
                 return _build_youtube_transcript_result(
-                    source="webshare-yt-dlp",
-                    items=items,
-                    language=detected_lang,
+                    source="webshare-yt-dlp", items=items, language=detected_lang,
                     is_generated=is_generated,
                 )
             except Exception as e:
                 errors.append(f"webshare yt-dlp attempt {attempt}: {e}")
+        return None
+
+    # ┌─ ПОРЯДОК СТУПЕНЕЙ. ЗАМЕР 29.08.2026. ─────────────────────────────────────────┐
+    # │ Обычный порядок — сначала бесплатно и напрямую, платный адрес в запасе.        │
+    # │ Но у ролика, разрешённого ТОЛЬКО в Германии, прямая ступень отвечает           │
+    # │ «недоступен в вашей стране», и лестница тратит на это ~90 секунд, прежде чем   │
+    # │ дойдёт до немецкого адреса, где тот же ролик отдаёт субтитры за секунду.       │
+    # │ Таких роликов у стендапа 114 из 643, и в них 99 из 102 с человеческими         │
+    # │ субтитрами — то есть по обычному порядку рубрика тратила время ровно на самом  │
+    # │ ценном. Про ограничение известно заранее и бесплатно (regionRestriction в той  │
+    # │ же справке, что и длительность), поэтому для таких роликов идём сразу немцем.  │
+    # └───────────────────────────────────────────────────────────────────────────────┘
+    rungs = ((_rung_webshare, _rung_direct) if proxy_first else (_rung_direct, _rung_webshare))
+    for rung in rungs:
+        result = rung()
+        if result is not None:
+            return result
 
     # ┌─ ЧЕТВЁРТАЯ СТУПЕНЬ УБРАНА 29.08.2026 ПО РЕШЕНИЮ ВЛАДЕЛЬЦА. НЕ ВОЗВРАЩАТЬ. ─────┐
     # │ Это был свой прокси (YOUTUBE_TRANSCRIPT_PROXY_DE / _AU). Замер 29.08.2026:      │

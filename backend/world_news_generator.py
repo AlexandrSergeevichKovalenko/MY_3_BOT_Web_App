@@ -440,6 +440,16 @@ def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dic
             # машинная расшифровка в этот флаг не попадает. По нему рубрика ставит ролики
             # с ручными субтитрами первыми (решение владельца 20.08.2026).
             "has_manual_captions": str(content.get("caption") or "").strip().lower() == "true",
+            # ┌─ ЗАМЕР 29.08.2026. ЭТО ПОЛЕ ЭКОНОМИТ ПОЛТОРЫ МИНУТЫ НА РОЛИК. ──────────┐
+            # │ 114 из 643 стендап-роликов доступны ТОЛЬКО в Германии, и именно в них   │
+            # │ 99 из 102 роликов с человеческими субтитрами. Наши серверы в США:       │
+            # │ прямой запрос к такому ролику отвечает «недоступен в вашей стране»,     │
+            # │ и лестница тратит ~90 секунд, прежде чем дойдёт до немецкого адреса.    │
+            # │ Зная про ограничение заранее, мы сразу идём через немецкий выход.       │
+            # │ Признак приходит в той же справке, что и длительность, — платить за     │
+            # │ него не нужно.                                                          │
+            # └───────────────────────────────────────────────────────────────────────┘
+            "region_locked": bool(content.get("regionRestriction")),
             "view_count": _as_int_or_none((item.get("statistics") or {}).get("viewCount")),
         }
 
@@ -480,7 +490,8 @@ def _fetch_transcript(video_id: str) -> dict | None:
     return data
 
 
-def fetch_transcript_or_verdict(video_id: str, *, timeout_sec: int = 150):
+def fetch_transcript_or_verdict(video_id: str, *, timeout_sec: int = 150,
+                                proxy_first: bool = False):
     """Достать субтитры — и, если не вышло, сказать ПОЧЕМУ.
 
     Возвращает (данные, вердикт, причина): либо (dict, None, None), либо
@@ -510,7 +521,8 @@ def fetch_transcript_or_verdict(video_id: str, *, timeout_sec: int = 150):
     def _run() -> None:
         try:
             from backend.backend_server import _fetch_youtube_transcript
-            box["data"] = _fetch_youtube_transcript(video_id, lang="de", allow_proxy=True)
+            box["data"] = _fetch_youtube_transcript(video_id, lang="de", allow_proxy=True,
+                                                    proxy_first=bool(proxy_first))
         except Exception as exc:
             box["error"] = f"{type(exc).__name__}: {exc}"
 
@@ -801,7 +813,8 @@ def _pick_video_with_transcript(*, profile=None, manual_url: str | None = None,
         # одинаково, а лестница субтитров у негодного ролика молчит по полторы минуты.
         # Приговор выносится по ответу YouTube, а не по секундомеру, — см.
         # backend/transcript_failure.py.
-        data, verdict, reason = fetch_transcript_or_verdict(vid)
+        data, verdict, reason = fetch_transcript_or_verdict(
+            vid, proxy_first=bool(det.get("region_locked")))
         if not data:
             diag["no_transcript"] += 1
             try:

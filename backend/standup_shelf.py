@@ -146,6 +146,7 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
             report["dur_skipped"] += 1
             continue
         ranked.append({
+            "region_locked": bool(det.get("region_locked")),
             "video_id": vid,
             "title": det.get("title") or cand.get("title") or "",
             "channel_title": det.get("channel_title") or cand.get("channel_title") or "",
@@ -207,7 +208,10 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
         logger.info("standup shelf: беру субтитры %d/%d — %s (%s)",
                     idx, len(ranked), item["video_id"], item["title"][:50])
         data, verdict, reason = fetch_transcript_or_verdict(
-            item["video_id"], timeout_sec=item_timeout_sec)
+            item["video_id"], timeout_sec=item_timeout_sec,
+            # Ролик, разрешённый только в Германии, из США отвечает «недоступен» и жжёт
+            # полторы минуты. Про замок известно заранее и даром — идём сразу немцем.
+            proxy_first=bool(item.get("region_locked")))
         if not data:
             report["no_transcript"] += 1
             _judge(item["video_id"], verdict, reason)

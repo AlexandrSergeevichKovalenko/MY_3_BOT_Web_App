@@ -94,7 +94,7 @@ class QueueHeadIsClearedTests(unittest.TestCase):
         _stub(wng, "_gather_candidates", lambda profile=None: list(cands))
         _stub(wng, "_yt_api_video_details", lambda ids: details)
         _stub(wng, "fetch_transcript_or_verdict",
-              lambda vid, timeout_sec=90: fetch_results[vid])
+              lambda vid, timeout_sec=150, proxy_first=False: fetch_results[vid])
         _stub(db, "standup_shelf_counts", lambda: {"total": 0, "unused": 0, "unused_manual": 0})
         _stub(db, "standup_shelf_video_ids", lambda: set())
         _stub(db, "get_shown_daily_video_ids", lambda rubric: set())
