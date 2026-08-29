@@ -1704,14 +1704,35 @@ def _second_voice_disabled() -> bool:
     return str(os.getenv("SECOND_VOICE_CHECK_DISABLED") or "").strip() == "1"
 
 
-def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащение", cursor=None) -> bool:
+def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащение", cursor=None,
+                   reasons: list | None = None) -> bool:
     """Положить разбор НА единицу. Пишем только в слой; общий банк не трогаем.
 
     cursor передаёт тот, кто уже держит транзакцию (выдача слова по подписке): иначе
     из пула берётся второе соединение, пока первое не отпущено. Коммит в этом случае
-    делает вызывающий — запись должна попасть в ту же транзакцию, что и карточка."""
-    if not isinstance(card, dict) or not card:
+    делает вызывающий — запись должна попасть в ту же транзакцию, что и карточка.
+
+    `reasons` — сюда дописывается ПРИЧИНА отказа, если запись не состоялась.
+
+    ┌─ ЗАЧЕМ ПОЯВИЛСЯ reasons, 29.08.2026. ───────────────────────────────────────┐
+    │ Функция возвращала голое False, и ночной добор считал все отказы одним      │
+    │ числом «Ошибок». Утром 29.08 владелец увидел «Ошибок: 63» и потребовал      │
+    │ показать слова — а показать было нечего: примеры хранились только для       │
+    │ «пропущено», логи за 03:10 к утру уже вытеснены.                            │
+    │                                                                            │
+    │ При этом отказы тут РАЗНОЙ природы, и валить их в кучу неверно: «судья      │
+    │ забраковал кривой пример» — это дверь работает, а «судья не ответил» или    │
+    │ «база не приняла» — это поломка. Одно число не отличало одно от другого.    │
+    │ Владелец, дословно: «на хуя ты разговариваешь про ошибки, не показывая их?» │
+    └────────────────────────────────────────────────────────────────────────────┘
+    """
+    def отказ(причина: str) -> bool:
+        if reasons is not None:
+            reasons.append(причина)
         return False
+
+    if not isinstance(card, dict) or not card:
+        return отказ("пустой разбор")
     # РАЗБОР ЛОЖИТСЯ ЛИЦОМ К ЯЗЫКУ СЛОВА, всегда. Это единственная дверь, через которую
     # разбор попадает на единицу (save_unit_card_if_richer зовёт её же), поэтому правило
     # стоит здесь, а не копией у каждого пишущего.
@@ -1745,7 +1766,7 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
     if порча:
         logging.warning("разбор слова %s не записан — текст размножен сам на себя: %s",
                         unit_id, " | ".join(x[:70] for x in порча[:3]))
-        return False
+        return отказ("текст размножен сам на себя")
     # ВТОРОЙ ГОЛОС НА ЗАПИСИ — там, где текст ПРИДУМАЛИ МЫ.
     #
     # Проход по всей базе 23.08.2026: из 5 073 фраз у 655 (13%) кривые примеры. Все они
@@ -1771,7 +1792,7 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
             logging.warning(
                 "разбор слова %s (%s) пришёл внутри чужой транзакции — второй голос "
                 "спросить нельзя, запись отклонена", unit_id, source)
-            return False
+            return отказ("судью нельзя спросить внутри чужой транзакции")
         from backend.second_voice_check import review_new_card
         cur_display = ""
         try:
@@ -1783,18 +1804,20 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
                     cur_display, _kind = str(_r[0] or ""), str(_r[1] or "word")
         except Exception as exc:
             logging.warning("второй голос: не смог прочитать слово %s: %s", unit_id, exc)
-            return False
+            return отказ("не смогли прочитать слово из базы")
         review = review_new_card(headword=cur_display, card=card, kind=_kind)
         if not review.get("checked"):
             # «Не проверено» — это НЕ «хорошо». Слово остаётся кандидатом и вернётся
             # следующей ночью: непроверенный выдуманный текст в базу не идёт.
             logging.warning("разбор слова %s не записан — второй голос не ответил (%s)",
                             unit_id, review.get("why"))
-            return False
+            return отказ(f"судья не ответил: {review.get('why') or 'без причины'}")
         if not review.get("ok"):
             logging.info("разбор слова %s забракован вторым голосом (%s): %s",
                          unit_id, ", ".join(review.get("fields") or []), review.get("why"))
-            return False
+            # НЕ «ошибка», а работа двери: судья нашёл кривой пример или несовпадение
+            # со смыслом и не пустил текст к людям. Причина называется его словами.
+            return отказ(f"судья забраковал: {review.get('why') or 'без объяснения'}")
 
     sql = ("UPDATE bt_3_lex_units SET card = %s::jsonb, card_source = %s, updated_at = NOW() "
            "WHERE id = %s;")
@@ -1812,7 +1835,7 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
         return True
     except Exception as exc:
         logging.debug("save unit card failed for %s: %s", unit_id, exc)
-        return False
+        return отказ(f"база не приняла запись: {type(exc).__name__}")
 
 
 # Оценка полноты разбора (CARD_CONTENT_KEYS / card_content_score) живёт в слое БД:

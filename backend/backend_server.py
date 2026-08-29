@@ -11702,7 +11702,12 @@ def _run_units_night_enrichment(
                 if len(report["skipped_samples"]) < 15:
                     report["skipped_samples"].append({"word": german, "reason": "thin"})
                 continue
-            if lex_units.save_unit_card(unit["id"], enrich_data):
+            # ПРИЧИНА ОТКАЗА НАЗЫВАЕТСЯ СЛОВАМИ, 29.08.2026. Раньше запись, которую не
+            # приняли, увеличивала голое «Ошибок», и утром это число нечем было
+            # объяснить: примеры хранились только для «пропущено», а логи к утру
+            # вытесняются. Владелец 29.08: «покажи их, что это за ошибки».
+            причины: list[str] = []
+            if lex_units.save_unit_card(unit["id"], enrich_data, reasons=причины):
                 report["enriched"] += 1
                 # Артикль из свежего разбора сразу делает слово существительным с родом.
                 # Без этого шага слово остаётся «неизвестно чем»: род требуется только
@@ -11730,10 +11735,28 @@ def _run_units_night_enrichment(
                     unit["id"], enrich_data, native_lang=native_lang,
                 )
             else:
-                report["errors"] += 1
-        except Exception:
+                # ДВА РАЗНЫХ МИРА, И СМЕШИВАТЬ ИХ НЕЛЬЗЯ:
+                #   «судья забраковал» — дверь СРАБОТАЛА, кривой текст не ушёл к людям.
+                #                        Это норма работы, а не авария.
+                #   всё остальное      — поломка: судья молчит, база не приняла.
+                # До 29.08.2026 и то и другое падало в одно число «Ошибок», и отличить
+                # рабочую ночь от сломанной было невозможно.
+                причина = причины[0] if причины else "причина не названа"
+                if причина.startswith("судья забраковал"):
+                    report["rejected_by_judge"] = report.get("rejected_by_judge", 0) + 1
+                    куда = "judge_samples"
+                else:
+                    report["errors"] += 1
+                    куда = "error_samples"
+                образцы = report.setdefault(куда, [])
+                if len(образцы) < 20:
+                    образцы.append({"word": german, "why": причина[:200]})
+        except Exception as exc:
             logging.warning("units night enrich failed for %r", german, exc_info=True)
             report["errors"] += 1
+            образцы = report.setdefault("error_samples", [])
+            if len(образцы) < 20:
+                образцы.append({"word": german, "why": f"упало: {type(exc).__name__}"})
     # Остаток берём отдельным подсчётом, а не из выборки: она ограничена ночным
     # потолком, и сводка отчиталась бы «осталось 86» при 3356 неразобранных.
     report["remaining"] = lex_units.count_units_needing_card(lang=learning_lang)
