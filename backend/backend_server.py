@@ -422,6 +422,9 @@ from backend.database import (
     get_pool_dictionary_entry,
     get_pool_dictionary_candidates,
     note_pool_entry_hit,
+    note_unit_enrich_refusal,
+    forget_unit_enrich_refusals,
+    count_units_paused_after_refusals,
     get_pool_dictionary_entry_reverse,
     upsert_dictionary_pool_entry,
     get_dictionary_entries_for_metainfo_scan,
@@ -11709,6 +11712,9 @@ def _run_units_night_enrichment(
             причины: list[str] = []
             if lex_units.save_unit_card(unit["id"], enrich_data, reasons=причины):
                 report["enriched"] += 1
+                # Разбор собрался — прошлые отказы забываем: слово доказало годность,
+                # и метка на нём была бы приговором за одну плохую ночь.
+                forget_unit_enrich_refusals(unit["id"])
                 # Артикль из свежего разбора сразу делает слово существительным с родом.
                 # Без этого шага слово остаётся «неизвестно чем»: род требуется только
                 # существительным, и в отчётах оно так и висит без артикля.
@@ -11742,7 +11748,8 @@ def _run_units_night_enrichment(
                 # До 29.08.2026 и то и другое падало в одно число «Ошибок», и отличить
                 # рабочую ночь от сломанной было невозможно.
                 причина = причины[0] if причины else "причина не названа"
-                if причина.startswith("судья забраковал"):
+                про_слово = причина.startswith("судья забраковал")
+                if про_слово:
                     report["rejected_by_judge"] = report.get("rejected_by_judge", 0) + 1
                     куда = "judge_samples"
                 else:
@@ -11751,12 +11758,18 @@ def _run_units_night_enrichment(
                 образцы = report.setdefault(куда, [])
                 if len(образцы) < 20:
                     образцы.append({"word": german, "why": причина[:200]})
+                # ОТКАЗ ЗАПОМИНАЕТСЯ — но наказывает слово только тогда, когда дело
+                # в слове. Наша поломка (судья молчит, база, сеть) слово не метит.
+                note_unit_enrich_refusal(unit["id"], причина, наша_вина=not про_слово)
         except Exception as exc:
             logging.warning("units night enrich failed for %r", german, exc_info=True)
             report["errors"] += 1
             образцы = report.setdefault("error_samples", [])
             if len(образцы) < 20:
                 образцы.append({"word": german, "why": f"упало: {type(exc).__name__}"})
+            # Исключение — всегда НАША вина: слово за наше падение не отвечает.
+            note_unit_enrich_refusal(unit["id"], f"упало: {type(exc).__name__}",
+                                     наша_вина=True)
     # Остаток берём отдельным подсчётом, а не из выборки: она ограничена ночным
     # потолком, и сводка отчиталась бы «осталось 86» при 3356 неразобранных.
     report["remaining"] = lex_units.count_units_needing_card(lang=learning_lang)
@@ -11776,6 +11789,10 @@ def _run_units_night_enrichment(
     if not dry_run:
         from backend.second_voice_check import stats as _voice_stats
         report["second_voice"] = _voice_stats()
+        # Сколько слов ночь СЕЙЧАС не берёт из-за накопленных отказов. Механизм,
+        # который молча перестаёт брать слова, неотличим от сломанного — число идёт
+        # в утренний отчёт.
+        report["paused_after_refusals"] = count_units_paused_after_refusals()
     return report
 
 

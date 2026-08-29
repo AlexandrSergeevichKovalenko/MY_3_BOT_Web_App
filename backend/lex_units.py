@@ -699,6 +699,10 @@ def units_needing_card(limit: int, *, lang: str = "de", native_lang: str = "ru")
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
+                # Память отказов заводится на месте: выборка ниже на неё опирается, и
+                # на чистой базе её ещё нет.
+                from backend.database import ensure_unit_refusal_table
+                ensure_unit_refusal_table(cur)
                 cur.execute(
                     """
                     SELECT u.id, u.display, u.lemma, u.gender, u.pos,
@@ -739,6 +743,18 @@ def units_needing_card(limit: int, *, lang: str = "de", native_lang: str = "ru")
                     -- очередь ВООБЩЕ и копились пустыми: замер 25.08.2026 — 1 793 штуки,
                     -- на них подписаны живые люди.
                     WHERE u.lang = %s AND u.kind IN ('word', 'collocation') AND u.card IS NULL
+                      -- ОТЛОЖЕННЫЕ ПОСЛЕ ТРЁХ ОТКАЗОВ. Доказано 29.08.2026: из 20 слов
+                      -- вчерашнего прогона у 4 разбор не появился, и все 4 стояли в
+                      -- очереди снова — памяти об отказах не было вовсе, и слово
+                      -- бралось бесконечно по два платных запроса за ночь.
+                      -- Отказ засчитывается ТОЛЬКО когда дело в самом слове; наши
+                      -- поломки его не метят (database.note_unit_enrich_refusal).
+                      -- Через неделю слово возвращается само: справочники и модель
+                      -- меняются, и вечная ссылка была бы тем же приговором без суда.
+                      AND NOT EXISTS (
+                          SELECT 1 FROM bt_3_unit_enrich_refusals f
+                           WHERE f.unit_id = u.id AND f.refusals >= 3
+                             AND f.last_at > NOW() - INTERVAL '7 days')
                     ORDER BY (d.due_at IS NULL), d.due_at, saved DESC, sources DESC, u.id
                     LIMIT %s;
                     """,

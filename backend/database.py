@@ -36965,6 +36965,102 @@ def search_shared_dictionary(
     return units + extra
 
 
+def ensure_unit_refusal_table(cursor) -> None:
+    """Память ночи об отказах по слову. Заводится на месте, как и прочие рантайм-таблицы."""
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bt_3_unit_enrich_refusals (
+            unit_id     BIGINT PRIMARY KEY,
+            refusals    INT NOT NULL DEFAULT 0,
+            last_reason TEXT NOT NULL DEFAULT '',
+            last_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """)
+
+
+# ┌─ ПОЧЕМУ ЭТО ПОЯВИЛОСЬ, 29.08.2026. ДОКАЗАНО НА ЖИВЫХ ДАННЫХ. ────────────────────┐
+# │ Ночь НЕ ПОМНИЛА отказов. Проверка: у слоя слов нет ни одной колонки про неудачные │
+# │ попытки и нет отдельной таблицы; выборка `units_needing_card` смотрит только      │
+# │ «разбора нет». Из 20 слов, взятых ночью 29.08, у 4 разбор так и не появился — и   │
+# │ ВСЕ 4 ИЗ 4 снова стояли в очереди на следующую ночь. То есть слово, которое не    │
+# │ собирается, берётся заново каждую ночь: два платных запроса (модель + судья) за   │
+# │ заведомый отказ, и так бесконечно.                                                │
+# │                                                                                  │
+# │ ⚠ И ГЛАВНОЕ — ПОЧЕМУ НЕ ПРОСТО СЧЁТЧИК. Старый счётчик пула (`enrich_attempts`)   │
+# │ считал ЛЮБУЮ неудачу и потому наказывал слово за НАШИ поломки: пока второй голос  │
+# │ молчал без ключа, отклонялось всё подряд. Здесь причина делится надвое:           │
+# │    про СЛОВО — модель не дала карточку, судья забраковал текст по существу;       │
+# │    про НАС   — судью нельзя спросить, сеть, база, упало исключение.               │
+# │ Считаются ТОЛЬКО первые. Наша поломка молчит в логе и слово не трогает.           │
+# └──────────────────────────────────────────────────────────────────────────────────┘
+def note_unit_enrich_refusal(unit_id, reason: str, *, наша_вина: bool) -> None:
+    """Запомнить отказ по слову. Наши поломки не считаются и слово не наказывают."""
+    try:
+        uid = int(unit_id)
+    except (TypeError, ValueError):
+        return
+    if uid <= 0:
+        return
+    if наша_вина:
+        # Ничего не пишем: слово не виновато. Но и не молчим — иначе своя поломка
+        # станет невидимой ровно так же, как была невидима до 28.08.2026.
+        logging.warning("ночной добор: слово %s не записано ПО НАШЕЙ вине (%s) — "
+                        "отказ не засчитан", uid, str(reason)[:120])
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                ensure_unit_refusal_table(cursor)
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_unit_enrich_refusals (unit_id, refusals, last_reason)
+                    VALUES (%s, 1, %s)
+                    ON CONFLICT (unit_id) DO UPDATE
+                       SET refusals = bt_3_unit_enrich_refusals.refusals + 1,
+                           last_reason = EXCLUDED.last_reason,
+                           last_at = NOW();
+                    """,
+                    (uid, str(reason or "")[:300]),
+                )
+            conn.commit()
+    except Exception as exc:
+        logging.warning("отказ по слову %s не записан: %s", uid, exc)
+
+
+def forget_unit_enrich_refusals(unit_id) -> None:
+    """Разбор собрался — прошлые отказы забываем. Слово доказало, что оно годное,
+    и висеть с отметкой оно не должно: иначе одна плохая ночь метит его навсегда."""
+    try:
+        uid = int(unit_id)
+    except (TypeError, ValueError):
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                ensure_unit_refusal_table(cursor)
+                cursor.execute("DELETE FROM bt_3_unit_enrich_refusals WHERE unit_id=%s;",
+                               (uid,))
+            conn.commit()
+    except Exception as exc:
+        logging.debug("не удалось забыть отказы слова %s: %s", uid, exc)
+
+
+def count_units_paused_after_refusals(*, порог: int = 3) -> int:
+    """Сколько слов ночь сейчас НЕ берёт из-за накопленных отказов — для отчёта."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                ensure_unit_refusal_table(cursor)
+                cursor.execute(
+                    "SELECT count(*) FROM bt_3_unit_enrich_refusals "
+                    "WHERE refusals >= %s AND last_at > NOW() - INTERVAL '7 days';",
+                    (int(порог),),
+                )
+                return int((cursor.fetchone() or [0])[0])
+    except Exception as exc:
+        logging.warning("счётчик отложенных слов не сработал: %s", exc)
+        return 0
+
+
 def note_pool_entry_hit(entry_id) -> None:
     """Отметить, что строка кеша ВПРАВДУ пригодилась: её отдали вместо похода в GPT.
 
