@@ -7755,6 +7755,11 @@ function AppInner() {
   const youtubePlayerShellRef = useRef(null);
   const youtubeTimeIntervalRef = useRef(null);
   const youtubeCurrentTimeRef = useRef(0);
+  // Играл ли плеер РЕАЛЬНО в этом заходе на этот ролик. Нужен именно ref, а не state:
+  // его читают обработчики, живущие вне рендера (pagehide, onStateChange, эффект выхода
+  // из раздела) — в state они видели бы значение, замороженное на момент подписки.
+  // Сбрасывается при смене youtubeId. Зачем — см. блок ИСПРАВЛЕНО 29.08.2026 ниже.
+  const youtubePlaybackStartedRef = useRef(false);
   const youtubeInputDraftRef = useRef('');
   const youtubeChangeQueryDraftRef = useRef('');
   const youtubeTranscriptVideoIdRef = useRef('');
@@ -8449,12 +8454,58 @@ function AppInner() {
       }
     };
   }, []);
+  // ┌─ ИСПРАВЛЕНО 29.08.2026. Кеш просмотра помнит НЕ ОДИН ролик, а последние 50. ────┐
+  // │ Раньше в localStorage лежал один объект {input, id, currentTime}: переключился   │
+  // │ на другое видео — позиция предыдущего затиралась насмерть. Человек возвращался   │
+  // │ к первому ролику и начинал с начала, даже когда сервер ещё не ответил.           │
+  // │ Теперь рядом живёт карта byId: {<video_id>: {t: секунды, at: когда}}.            │
+  // │ Верхние поля id/currentTime сохранены как есть — на них завязано восстановление  │
+  // │ «последнего ролика» при запуске и старые бандлы в кеше телефона.                 │
+  // └─────────────────────────────────────────────────────────────────────────────────┘
+  const YOUTUBE_RESUME_MEMORY_LIMIT = 50;
+  const readYoutubeResumeBlob = useCallback(() => {
+    const raw = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return (parsed && typeof parsed === 'object') ? parsed : null;
+    } catch (_error) {
+      return null;
+    }
+  }, [youtubeResumeStorageKey]);
+  const readYoutubeResumeSecondsFor = useCallback((videoId) => {
+    const id = String(videoId || '').trim();
+    if (!id) return 0;
+    const blob = readYoutubeResumeBlob();
+    if (!blob) return 0;
+    if (String(blob.id || '').trim() === id) return Math.max(0, Number(blob.currentTime || 0));
+    const entry = blob.byId && typeof blob.byId === 'object' ? blob.byId[id] : null;
+    return Math.max(0, Number(entry?.t || 0));
+  }, [readYoutubeResumeBlob]);
   const writeYoutubeResumeToLocalCache = useCallback((payload) => {
     if (!payload || typeof payload !== 'object') return;
-    const serialized = JSON.stringify(payload);
+    const id = String(payload.id || '').trim();
+    const previous = readYoutubeResumeBlob();
+    const previousMap = (previous?.byId && typeof previous.byId === 'object') ? previous.byId : {};
+    const nextMap = { ...previousMap };
+    if (id) {
+      nextMap[id] = {
+        t: Math.max(0, Math.floor(Number(payload.currentTime || 0))),
+        at: Number(payload.updatedAt || Date.now()),
+      };
+    }
+    // Не даём карте расти бесконечно: держим самые свежие ролики, остальное отпускаем.
+    const ids = Object.keys(nextMap);
+    if (ids.length > YOUTUBE_RESUME_MEMORY_LIMIT) {
+      ids
+        .sort((a, b) => Number(nextMap[b]?.at || 0) - Number(nextMap[a]?.at || 0))
+        .slice(YOUTUBE_RESUME_MEMORY_LIMIT)
+        .forEach((staleId) => { delete nextMap[staleId]; });
+    }
+    const serialized = JSON.stringify({ ...payload, byId: nextMap });
     safeStorageSet(youtubeResumeStorageKey, serialized);
     safeStorageSet('webapp_youtube', serialized);
-  }, [youtubeResumeStorageKey]);
+  }, [readYoutubeResumeBlob, youtubeResumeStorageKey]);
   const buildTranslationDraftPayload = useCallback((draftMap) => {
     const sentenceIds = Array.from(translationDraftSentenceIdsRef.current);
     if (!sentenceIds.length) return [];
@@ -8617,25 +8668,47 @@ function AppInner() {
       return null;
     }
   }, [initData, translationDraftScopeKey]);
+  // ┌─ ИСПРАВЛЕНО 29.08.2026. НЕ СНИМАТЬ ЭТУ ПРОВЕРКУ. ────────────────────────────────┐
+  // │ Жалоба владельца: «каждый раз захожу — смотрю всё заново».                       │
+  // │ Причина была здесь. При запуске мини-аппа восстанавливается последний ролик       │
+  // │ (эффект «стартовое восстановление» выше), youtubeId получает значение ещё НА      │
+  // │ ГЛАВНОМ экране — плеера нет, youtubeCurrentTimeRef равен нулю. Эффект «человек    │
+  // │ вне раздела видео → дозапиши позицию» тут же срабатывал и записывал ноль И в      │
+  // │ localStorage, И на сервер, поверх реальной позиции. Сохранённые 449 секунд        │
+  // │ умирали ДО того, как человек вообще открывал видео.                              │
+  // │ Замер живой базы 29.08.2026 (bt_3_youtube_watch_state): 51 строка из 56           │
+  // │ переписывалась позже, и в 37 из них после этого лежал ноль.                      │
+  // │ Правило: ноль — это ПОЗИЦИЯ, а не «нет данных». Записывать его можно только       │
+  // │ тогда, когда плеер реально играл и человек сам отмотал в начало.                  │
+  // │ Тот же корень, что дефект №3 читалки от 27.08.2026 («открытие СТИРАЛО прогресс»). │
+  // └─────────────────────────────────────────────────────────────────────────────────┘
+  const youtubeResumeValueIsWritable = useCallback((safeTime) => {
+    if (safeTime > 0) return true;              // настоящая позиция — пишем всегда
+    return Boolean(youtubePlaybackStartedRef.current); // ноль — только после реального старта
+  }, []);
   const persistYoutubeResumeState = useCallback((timeValue) => {
     const trimmed = String(youtubeInput || '').trim();
     const resolvedId = String(youtubeId || extractYoutubeId(trimmed) || '').trim();
     if (!trimmed || !resolvedId) return;
     const sourceTime = timeValue ?? youtubeCurrentTimeRef.current;
     const safeTime = Math.max(0, Math.floor(Number(sourceTime || 0)));
+    if (!youtubeResumeValueIsWritable(safeTime)) return;
     writeYoutubeResumeToLocalCache({
       input: trimmed,
       id: resolvedId,
       currentTime: safeTime,
       updatedAt: Date.now(),
     });
-  }, [writeYoutubeResumeToLocalCache, youtubeId, youtubeInput]);
+  }, [writeYoutubeResumeToLocalCache, youtubeId, youtubeInput, youtubeResumeValueIsWritable]);
   const syncYoutubeResumeState = useCallback(async (timeValue, options = {}) => {
     const trimmed = String(youtubeInput || '').trim();
     const resolvedId = String(youtubeId || extractYoutubeId(trimmed) || '').trim();
     if (!trimmed || !resolvedId || !initData) return;
     const sourceTime = timeValue ?? youtubeCurrentTimeRef.current;
     const safeTime = Math.max(0, Math.floor(Number(sourceTime || 0)));
+    // Тот же запрет, что и в persistYoutubeResumeState: ноль без реального
+    // воспроизведения — это «мы ещё не знаем», а не «человек в начале ролика».
+    if (!youtubeResumeValueIsWritable(safeTime)) return;
     persistYoutubeResumeState(safeTime);
     try {
       await fetch('/api/webapp/youtube/state', {
@@ -8646,13 +8719,15 @@ function AppInner() {
           videoId: resolvedId,
           input: trimmed,
           current_time_seconds: safeTime,
+          // Второй пояс живёт на сервере: без этого флага он не примет ноль.
+          playback_started: Boolean(youtubePlaybackStartedRef.current),
         }),
         keepalive: Boolean(options?.keepalive),
       });
     } catch (_error) {
       // ignore sync errors; local cache already has the latest position
     }
-  }, [initData, persistYoutubeResumeState, youtubeId, youtubeInput]);
+  }, [initData, persistYoutubeResumeState, youtubeId, youtubeInput, youtubeResumeValueIsWritable]);
   const commitYoutubeInputDraft = useCallback((nextValue = youtubeInputDraftRef.current) => {
     const normalized = String(nextValue ?? '');
     youtubeInputDraftRef.current = normalized;
@@ -26171,11 +26246,18 @@ function AppInner() {
       // Удалённое видео нужно забыть и на устройстве: приложение восстанавливает
       // последнее просмотренное при каждом запуске, и удалённый фильм так возвращался.
       try {
-        const storedRaw = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
-        const storedId = storedRaw ? String(JSON.parse(storedRaw)?.id || '').trim() : '';
+        const storedBlob = readYoutubeResumeBlob();
+        const storedId = String(storedBlob?.id || '').trim();
         if (storedId && removed.has(storedId)) {
           safeStorageRemove(youtubeResumeStorageKey);
           safeStorageRemove('webapp_youtube');
+        } else if (storedBlob?.byId && Object.keys(storedBlob.byId).some((id) => removed.has(id))) {
+          // Текущий ролик остался, но удалённые нужно забыть и в карте позиций.
+          const cleanedMap = { ...storedBlob.byId };
+          removed.forEach((id) => { delete cleanedMap[id]; });
+          const cleaned = JSON.stringify({ ...storedBlob, byId: cleanedMap });
+          safeStorageSet(youtubeResumeStorageKey, cleaned);
+          safeStorageSet('webapp_youtube', cleaned);
         }
       } catch (_error) {
         safeStorageRemove(youtubeResumeStorageKey);
@@ -33120,16 +33202,9 @@ function AppInner() {
       setYoutubeId(id);
       setYoutubeError('');
       setYoutubeEmptyState(null);
-      const existingRaw = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
-      let existingTime = 0;
-      try {
-        const parsed = existingRaw ? JSON.parse(existingRaw) : null;
-        if (parsed?.id === id) {
-          existingTime = Math.max(0, Number(parsed?.currentTime || 0));
-        }
-      } catch (_error) {
-        existingTime = 0;
-      }
+      // Позиция этого ролика могла быть записана давно, до нескольких переключений —
+      // берём её из карты byId, а не только из «последнего просмотренного».
+      const existingTime = readYoutubeResumeSecondsFor(id);
       writeYoutubeResumeToLocalCache({
         input: trimmed,
         id,
@@ -33143,7 +33218,7 @@ function AppInner() {
       setYoutubeError('');
       setYoutubeId('');
     }
-  }, [tr, writeYoutubeResumeToLocalCache, youtubeInput, youtubeResumeStorageKey]);
+  }, [readYoutubeResumeSecondsFor, tr, writeYoutubeResumeToLocalCache, youtubeInput, youtubeResumeStorageKey]);
 
   const searchYoutubeVideos = async (overrideQuery = null) => {
     const committedInput = commitYoutubeInputDraft(
@@ -33797,6 +33872,7 @@ function AppInner() {
     youtubeResumeLastSavedSecondRef.current = -1;
     youtubeResumeLastSyncedSecondRef.current = -1;
     youtubeResumeAppliedForVideoRef.current = '';
+    youtubePlaybackStartedRef.current = false;
   }, [youtubeId]);
 
   useEffect(() => {
@@ -34051,20 +34127,11 @@ function AppInner() {
             setYoutubeIsPaused(true);
             setYoutubePlaybackStarted(false);
             try {
-              const stored = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
-              if (stored) {
-                const parsed = JSON.parse(stored);
-                const savedId = String(parsed?.id || '').trim();
-                const savedTime = Math.max(0, Number(parsed?.currentTime || 0));
-                if (
-                  savedId === youtubeId
-                  && savedTime >= 2
-                  && youtubeResumeAppliedForVideoRef.current !== youtubeId
-                ) {
-                  youtubePlayerRef.current?.seekTo?.(savedTime, true);
-                  setYoutubeCurrentTime(savedTime);
-                  youtubeResumeAppliedForVideoRef.current = youtubeId;
-                }
+              const savedTime = readYoutubeResumeSecondsFor(youtubeId);
+              if (savedTime >= 2 && youtubeResumeAppliedForVideoRef.current !== youtubeId) {
+                youtubePlayerRef.current?.seekTo?.(savedTime, true);
+                setYoutubeCurrentTime(savedTime);
+                youtubeResumeAppliedForVideoRef.current = youtubeId;
               }
             } catch (_error) {
               // ignore
@@ -34090,6 +34157,12 @@ function AppInner() {
               youtubePausedBySelectionRef.current = false;
               setYoutubeIsPaused(false);
               setYoutubePlaybackStarted(true);
+              // Флаг ведётся по РЕАЛЬНОМУ событию плеера, а не зеркалом состояния
+              // youtubePlaybackStarted: то состояние живёт дольше ролика (оно держит
+              // watch-раскладку), и при смене видео через cueVideoById оставалось
+              // истинным от предыдущего — тогда ноль нового ролика снова стирал бы
+              // его сохранённую позицию. Сбрасывается в эффекте по [youtubeId].
+              youtubePlaybackStartedRef.current = true;
               setYoutubeForceShowPanel(false);
               // YouTube иногда сам подгружает CC при старте — гасим их, если тумблер выкл.
               applyYoutubeNativeCc(youtubeNativeCcOnRef.current);
@@ -34123,7 +34196,7 @@ function AppInner() {
     };
     // worldNewsStage: in news mode the player host only mounts in the 'video' stage, so re-run
     // when the stage changes to (re)create the player once its host is in the DOM.
-  }, [persistYoutubeResumeState, syncYoutubeResumeState, youtubeId, youtubeResumeStorageKey, youtubeSectionVisible, worldNewsStage]);
+  }, [persistYoutubeResumeState, readYoutubeResumeSecondsFor, syncYoutubeResumeState, youtubeId, youtubeResumeStorageKey, youtubeSectionVisible, worldNewsStage]);
 
   useEffect(() => {
     if (!youtubePlayerReady || !youtubeId || !initData || !youtubePlayerRef.current?.seekTo) return;
@@ -34143,16 +34216,7 @@ function AppInner() {
         const savedId = String(state?.video_id || '').trim();
         const savedTime = Math.max(0, Number(state?.current_time_seconds || 0));
         if (savedId !== youtubeId || savedTime < 2) return;
-        const localRaw = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
-        let localTime = 0;
-        try {
-          const parsed = localRaw ? JSON.parse(localRaw) : null;
-          if (String(parsed?.id || '').trim() === youtubeId) {
-            localTime = Math.max(0, Number(parsed?.currentTime || 0));
-          }
-        } catch (_error) {
-          localTime = 0;
-        }
+        const localTime = readYoutubeResumeSecondsFor(youtubeId);
         writeYoutubeResumeToLocalCache({
           input: String(state?.input_text || '').trim() || `https://youtu.be/${youtubeId}`,
           id: youtubeId,
@@ -34175,7 +34239,7 @@ function AppInner() {
     return () => {
       cancelled = true;
     };
-  }, [initData, writeYoutubeResumeToLocalCache, youtubeId, youtubePlayerReady, youtubeResumeStorageKey]);
+  }, [initData, readYoutubeResumeSecondsFor, writeYoutubeResumeToLocalCache, youtubeId, youtubePlayerReady, youtubeResumeStorageKey]);
 
   useEffect(() => {
     if (youtubeTranscript.length > 0 && youtubeSubtitlesRef.current) {

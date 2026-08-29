@@ -59901,6 +59901,14 @@ def youtube_watch_state():
         video_id = str(payload.get("videoId") or "").strip()
         input_text = str(payload.get("input") or "").strip()
         current_time_seconds = payload.get("current_time_seconds")
+        # Присылает ли клиент «воспроизведение реально начиналось». Три РАЗНЫХ состояния,
+        # и путать их нельзя (ловушка «старый бандл против нуля», см. project_miniapp_stale_bundle_trap):
+        #   True    — новый бандл, человек правда играл ролик;
+        #   False   — новый бандл, человек НЕ играл (позицию 0 писать нельзя);
+        #   absent  — старый закешированный бандл, поля ещё не знает.
+        raw_playback_started = payload.get("playback_started")
+        playback_started_present = raw_playback_started is not None
+        playback_started = bool(raw_playback_started) if playback_started_present else False
 
         if not init_data:
             _log_flow_observation(
@@ -60022,11 +60030,24 @@ def youtube_watch_state():
             )
             return jsonify({"error": "current_time_seconds должен быть числом"}), 400
 
-        # The YouTube block is a viewing surface, not storage: regular users must
-        # not accumulate a server-side watch history (resume stays client-side in
-        # localStorage). Only the admin's progress is persisted — the admin's
-        # watched videos legitimately populate the «Фильмы» catalog / «просмотрено».
-        if user_id_int != YOUTUBE_LIBRARY_ADMIN_USER_ID:
+        # ┌─ РЕШЕНИЕ ВЛАДЕЛЬЦА 29.08.2026. НЕ ВОЗВРАЩАТЬ ОГРАНИЧЕНИЕ «ТОЛЬКО АДМИН». ──────┐
+        # │ Здесь стояло: сохранять позицию просмотра ТОЛЬКО пользователю                 │
+        # │ YOUTUBE_LIBRARY_ADMIN_USER_ID, остальным отвечать {"ok": true, "state": null}. │
+        # │ Клиент считал это успехом, а памяти у человека не было НИКОГДА: замер          │
+        # │ 29.08.2026 — в bt_3_youtube_watch_state 56 строк и РОВНО ОДИН user_id.         │
+        # │ Для всех остальных «продолжить с места» держалось только на localStorage       │
+        # │ телефона: переустановка, чистка Telegram, другое устройство — и просмотр       │
+        # │ начинался сначала. Владелец 29.08.2026: сохраняем всем.                        │
+        # └───────────────────────────────────────────────────────────────────────────────┘
+
+        # ВТОРОЙ ПОЯС ПРОТИВ НУЛЯ. Первый пояс — на клиенте (App.jsx не отправляет позицию,
+        # пока плеер её не назвал). Этот — на случай старого закешированного бандла.
+        # Почему он нужен: upsert кладёт присланное значение как есть, поэтому один
+        # запрос «я на нулевой секунде» стирал реальные 449 секунд. Замер 29.08.2026:
+        # 51 строка из 56 переписывалась позже, и в 37 из них лежал ноль.
+        # Ноль принимается ТОЛЬКО от клиента, который прямо сказал: воспроизведение было
+        # (то есть человек сам отмотал в начало — это его осознанное действие).
+        if safe_seconds == 0 and not playback_started:
             _log_flow_observation(
                 "youtube_state",
                 "youtube_state_completed",
@@ -60035,14 +60056,17 @@ def youtube_watch_state():
                 user_id=user_id_int,
                 video_id=video_id,
                 mode="save",
-                current_time_seconds=safe_seconds,
+                current_time_seconds=0,
                 persisted=False,
+                # absent = старый бандл (поля не знает), false = новый бандл, плеер молчал.
+                playback_started="absent" if not playback_started_present else "false",
+                skip_reason="zero_without_playback",
                 final_status="success",
                 duration_ms=_elapsed_ms_since(started_perf),
                 http_status=200,
                 **summarize_db_acquire_events(db_acquire_events),
             )
-            return jsonify({"ok": True, "state": None})
+            return jsonify({"ok": True, "state": None, "skipped": "zero_without_playback"})
 
         save_started_perf = time.perf_counter()
         try:

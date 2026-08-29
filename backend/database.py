@@ -30603,6 +30603,15 @@ def upsert_youtube_watch_state(
                 ON CONFLICT (user_id, video_id) DO UPDATE
                 SET
                     input_text = COALESCE(NULLIF(EXCLUDED.input_text, ''), bt_3_youtube_watch_state.input_text),
+                    -- ┌─ ПРОВЕРЕНО 29.08.2026. НЕ ПЕРЕДЕЛЫВАТЬ В GREATEST(старое, новое). ──────┐
+                    -- │ GREATEST(..., 0) здесь = «не ниже нуля», то есть берётся ПРИСЛАННОЕ    │
+                    -- │ значение. Это верно: человек имеет право отмотать назад, и позиция     │
+                    -- │ обязана уехать назад вместе с ним. Соблазн «брать большее из старого   │
+                    -- │ и нового» ломает перемотку назад — и молча, человек этого не увидит.   │
+                    -- │ От ложного нуля защищает не эта строка, а страж на входе               │
+                    -- │ (backend_server.py, skip_reason="zero_without_playback") и клиент,     │
+                    -- │ который не отправляет позицию, пока плеер её не назвал.                │
+                    -- └────────────────────────────────────────────────────────────────────────┘
                     current_time_seconds = GREATEST(EXCLUDED.current_time_seconds, 0),
                     last_opened_at = NOW(),
                     updated_at = NOW()
