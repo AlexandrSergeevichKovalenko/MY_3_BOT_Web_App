@@ -30368,11 +30368,12 @@ def _fetch_youtube_transcript(
     1) Direct
     2) yt-dlp direct
     3) Webshare rotation + DE/AT filter (only if allow_proxy=True)
-    4) Generic proxy + DE/AT filter (only if allow_proxy=True)
+
+    Четвёртой ступени (свой прокси) больше нет — убрана 29.08.2026, см. комментарий ниже.
     """
-    # Прокси-конфиги нужны только здесь; импорт локальный, чтобы не тянуть пакет в процессы,
+    # Прокси-конфиг нужен только здесь; импорт локальный, чтобы не тянуть пакет в процессы,
     # которые субтитрами не занимаются (см. комментарий у модульных импортов выше).
-    from youtube_transcript_api.proxies import GenericProxyConfig, WebshareProxyConfig
+    from youtube_transcript_api.proxies import WebshareProxyConfig
 
     # SYNTHETIC_LOAD_MODE: return a fixed transcript fixture, no YouTube network.
     from backend.synthetic_load import synthetic_youtube_transcript_or_none
@@ -30389,12 +30390,6 @@ def _fetch_youtube_transcript(
     webshare_proxy = (
         (os.getenv("WEBSHARE_PROXY_URL") or "").strip()
         or (os.getenv("YOUTUBE_TRANSCRIPT_WEBSHARE_PROXY_URL") or "").strip()
-        or None
-    )
-    generic_proxy = (
-        (os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or "").strip()
-        or (os.getenv("YOUTUBE_TRANSCRIPT_PROXY_DE") or "").strip()
-        or (os.getenv("YOUTUBE_TRANSCRIPT_PROXY_AU") or "").strip()
         or None
     )
 
@@ -30494,50 +30489,15 @@ def _fetch_youtube_transcript(
             except Exception as e:
                 errors.append(f"webshare yt-dlp attempt {attempt}: {e}")
 
-    # ----------------------------
-    # 4) Generic proxy (DE/AT)
-    # ----------------------------
-    if allow_proxy and generic_proxy:
-        country = _check_ip_country(generic_proxy)
-        if country in ALLOWED_COUNTRIES:
-            try:
-                proxy_config = GenericProxyConfig(http_url=generic_proxy, https_url=generic_proxy)
-                for code in lang_order:
-                    try:
-                        subs = _fetch_with_yta(video_id, code, proxy_config=proxy_config)
-                        return _build_youtube_transcript_result(
-                            source="generic",
-                            items=subs,
-                            language=code,
-                            is_generated=None,
-                            ip_country=country,
-                        )
-                    except Exception as exc_code:
-                        # Тип ошибки не глушим — см. блок у прямой ступени.
-                        errors.append(f"generic[{code}]: {type(exc_code).__name__}")
-                        continue
-                raise RuntimeError(f"generic: no transcripts for language order {tuple(lang_order)}")
-            except Exception as e:
-                errors.append(f"generic: {e}")
-            try:
-                items, detected_lang, is_generated = _fetch_with_ytdlp(video_id, generic_proxy, lang)
-                return _build_youtube_transcript_result(
-                    source="generic-yt-dlp",
-                    items=items,
-                    language=detected_lang,
-                    is_generated=is_generated,
-                    ip_country=country,
-                )
-            except Exception as e:
-                errors.append(f"generic yt-dlp: {e}")
-        else:
-            # Ступень не запустилась: адрес не отдал страну (для наших DE/AU прокси это
-            # означает, что они мертвы — за них не платят с августа 2026). Считаем это
-            # числом, чтобы вопрос «нужна ли эта ступень» решался статистикой, а не на
-            # глаз; на вердикт по ролику пропуск НЕ влияет — см. transcript_failure.py.
-            _record_transcript_source_hit("skipped:generic")
-            errors.append(f"generic rejected country {country}")
-
+    # ┌─ ЧЕТВЁРТАЯ СТУПЕНЬ УБРАНА 29.08.2026 ПО РЕШЕНИЮ ВЛАДЕЛЬЦА. НЕ ВОЗВРАЩАТЬ. ─────┐
+    # │ Это был свой прокси (YOUTUBE_TRANSCRIPT_PROXY_DE / _AU). Замер 29.08.2026:      │
+    # │ проверка страны у DE возвращала пусто мгновенно (адрес мёртв), у AU — пусто     │
+    # │ через 10 секунд ожидания. Ступень не запускалась НИ РАЗУ, но каждый отказ       │
+    # │ лестницы стоил этих десяти секунд впустую. Владелец за оба адреса платить       │
+    # │ перестал, платный остаётся один — webshare (ступень 3).                         │
+    # │ Возвращать эту ступень имеет смысл только вместе с оплаченным рабочим адресом,  │
+    # │ и тогда её надо проверить замером страны, а не поверить переменной окружения.   │
+    # └───────────────────────────────────────────────────────────────────────────────┘
     joined = "; ".join(errors) if errors else "Не удалось получить субтитры"
     # Отказ считаем в той же таблице, что и победы ступеней: без знаменателя проценты
     # «кто приносит субтитры» — не аналитика, а красивые числа.

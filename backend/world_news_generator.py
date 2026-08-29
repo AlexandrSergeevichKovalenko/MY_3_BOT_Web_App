@@ -164,7 +164,7 @@ def _model(profile=None) -> str:
     ).strip()
 
 
-def _quota_spent(units: float) -> None:
+def _quota_spent(units: float, endpoint: str = "") -> None:
     """Сообщить о потраченных единицах квоты YouTube в общий суточный счётчик.
 
     До 21.08.2026 рубрика ходила в YouTube МИМО счётчика: не сообщала о тратах и не
@@ -175,9 +175,22 @@ def _quota_spent(units: float) -> None:
     Сбой самого счётчика не должен ронять подготовку выпуска — но и молчать о нём нельзя,
     иначе мы снова считаем вслепую.
     """
+    # ┌─ ПОЧИНЕНО 29.08.2026. НЕ ВОЗВРАЩАТЬ ТОЛЬКО _youtube_quota_local_add. ──────────┐
+    # │ Прежде трата писалась ТОЛЬКО в счётчик внутри процесса. Он живёт до перезапуска │
+    # │ и у каждой службы свой, а ведомость bt_3_billing_events этих трат не видела     │
+    # │ вовсе: 29.08.2026 в ведомости за день стоял ноль при десятке обходов каналов    │
+    # │ (~152 единицы каждый). Значит «712 единиц в день» в отчётах — не весь расход, а │
+    # │ только та часть, которую учёт замечает, и в день, когда квота кончится, причину │
+    # │ по ведомости не найти. Пишем в ведомость; локальный счётчик обновляется внутри  │
+    # │ _billing_log_youtube_quota_usage, поэтому сторож видит трату сразу.             │
+    # └───────────────────────────────────────────────────────────────────────────────┘
     try:
-        from backend.backend_server import _youtube_quota_local_add
-        _youtube_quota_local_add(float(units))
+        from backend.backend_server import _billing_log_youtube_quota_usage
+        _billing_log_youtube_quota_usage(
+            user_id=None, source_lang=None, target_lang=None,
+            action_type="daily_video_rubric", endpoint=str(endpoint or "youtube_api"),
+            quota_units=float(units),
+        )
     except Exception:
         logger.warning("daily_video: не удалось учесть %s единиц квоты YouTube", units,
                        exc_info=True)
@@ -256,7 +269,7 @@ def _yt_get(url: str, params: dict, *, cost: float, what: str) -> dict | None:
         except Exception:
             logger.warning("daily_video: сетевой сбой на %s", what, exc_info=True)
             return None
-        _quota_spent(cost)
+        _quota_spent(cost, what)
         if resp.status_code < 400:
             try:
                 return resp.json()
