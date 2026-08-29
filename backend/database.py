@@ -36984,6 +36984,13 @@ def ensure_unit_refusal_table(cursor) -> None:
             last_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
     """)
+    # Решение владельца по слову. Пока его нет — слово приходит в воскресном разборе;
+    # принял решение — больше не приходит. Без этой отметки список превратился бы в
+    # то, от чего владелец и уходил: одно и то же каждую неделю.
+    cursor.execute("ALTER TABLE bt_3_unit_enrich_refusals "
+                   "ADD COLUMN IF NOT EXISTS decided_at TIMESTAMPTZ;")
+    cursor.execute("ALTER TABLE bt_3_unit_enrich_refusals "
+                   "ADD COLUMN IF NOT EXISTS decision TEXT NOT NULL DEFAULT '';")
 
 
 # ┌─ ПОЧЕМУ ЭТО ПОЯВИЛОСЬ, 29.08.2026. ДОКАЗАНО НА ЖИВЫХ ДАННЫХ. ────────────────────┐
@@ -37053,7 +37060,91 @@ def forget_unit_enrich_refusals(unit_id) -> None:
         logging.debug("не удалось забыть отказы слова %s: %s", uid, exc)
 
 
-def count_units_paused_after_refusals(*, порог: int = 3) -> int:
+def get_units_awaiting_owner_decision(limit: int = 160, *, порог: int = 2) -> list[dict]:
+    """Слова, которые ночь больше не берёт и по которым нужен ответ владельца.
+
+    Приходят воскресным разбором с двумя кнопками (решение владельца 29.08.2026):
+    «оставить как есть» — слово живёт в словаре без разбора, это не поломка: человек
+    видит слово и перевод; «удалить» — слова в словаре быть не должно.
+
+    Уже решённые не возвращаются никогда: список, показывающий одно и то же каждую
+    неделю, перестают читать — это мы проходили на других отчётах.
+    """
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                ensure_unit_refusal_table(cursor)
+                cursor.execute(
+                    """
+                    SELECT f.unit_id, u.display, f.refusals, f.last_reason,
+                           (SELECT v.display FROM bt_3_lex_links l
+                              JOIN bt_3_lex_units v ON v.id = l.to_unit
+                             WHERE l.from_unit = u.id AND v.lang = 'ru'
+                             ORDER BY l.rank LIMIT 1) AS перевод,
+                           (SELECT count(*) FROM bt_3_webapp_dictionary_queries q
+                             WHERE q.lex_unit_id = u.id) AS сохранений
+                      FROM bt_3_unit_enrich_refusals f
+                      JOIN bt_3_lex_units u ON u.id = f.unit_id
+                     WHERE f.refusals >= %s AND f.decided_at IS NULL
+                       AND u.card IS NULL
+                     ORDER BY сохранений DESC, f.last_at
+                     LIMIT %s;
+                    """,
+                    (int(порог), int(limit)),
+                )
+                return [
+                    {"unit_id": int(r[0]), "display": str(r[1] or ""),
+                     "refusals": int(r[2] or 0), "reason": str(r[3] or ""),
+                     "translation": str(r[4] or ""), "saved": int(r[5] or 0)}
+                    for r in (cursor.fetchall() or [])
+                ]
+    except Exception as exc:
+        logging.warning("список слов на решение владельца не собрался: %s", exc)
+        return []
+
+
+def apply_unit_refusal_decisions(*, keep_ids: list[int], delete_ids: list[int]) -> dict:
+    """Применить решения владельца: оставить как есть либо удалить слово из словаря.
+
+    «Оставить» НИЧЕГО не делает со словом — только помечает вопрос закрытым. Слово
+    остаётся в словаре без разбора, и это нормальное состояние: человек видит слово и
+    перевод. «Удалить» снимает строку словаря штатным путём проекта — личные карточки
+    людей при этом остаются, у них лишь отвязывается указатель.
+
+    Молчание не делает НИЧЕГО: не отмеченное владельцем слово придёт в следующий раз.
+    """
+    оставлено, удалено = 0, 0
+    чистые_keep = [int(x) for x in (keep_ids or []) if str(x).lstrip("-").isdigit()]
+    чистые_del = [int(x) for x in (delete_ids or []) if str(x).lstrip("-").isdigit()]
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                ensure_unit_refusal_table(cursor)
+                if чистые_keep:
+                    cursor.execute(
+                        "UPDATE bt_3_unit_enrich_refusals SET decided_at = NOW(), "
+                        "decision = 'оставлено' WHERE unit_id = ANY(%s);",
+                        (чистые_keep,),
+                    )
+                    оставлено = cursor.rowcount or 0
+                if чистые_del:
+                    from backend.word_gate_apply import _снять_строку
+                    for uid in чистые_del:
+                        _снять_строку(cursor, uid)
+                        удалено += 1
+                    cursor.execute(
+                        "UPDATE bt_3_unit_enrich_refusals SET decided_at = NOW(), "
+                        "decision = 'удалено' WHERE unit_id = ANY(%s);",
+                        (чистые_del,),
+                    )
+            conn.commit()
+    except Exception as exc:
+        logging.exception("решения владельца по словам не применились: %s", exc)
+        return {"оставлено": 0, "удалено": 0, "ошибка": str(exc)[:200]}
+    return {"оставлено": оставлено, "удалено": удалено}
+
+
+def count_units_paused_after_refusals(*, порог: int = 2) -> int:
     """Сколько слов ночь сейчас НЕ берёт из-за накопленных отказов — для отчёта."""
     try:
         with get_db_connection_context() as conn:
@@ -37061,7 +37152,7 @@ def count_units_paused_after_refusals(*, порог: int = 3) -> int:
                 ensure_unit_refusal_table(cursor)
                 cursor.execute(
                     "SELECT count(*) FROM bt_3_unit_enrich_refusals "
-                    "WHERE refusals >= %s AND last_at > NOW() - INTERVAL '7 days';",
+                    "WHERE refusals >= %s AND decided_at IS NULL;",
                     (int(порог),),
                 )
                 return int((cursor.fetchone() or [0])[0])

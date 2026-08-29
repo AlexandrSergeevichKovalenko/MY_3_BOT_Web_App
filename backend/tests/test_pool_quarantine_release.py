@@ -35,19 +35,31 @@ class ReleaseResetsTheCounterTests(unittest.TestCase):
 
 
 class ApplyDoesBothTests(unittest.TestCase):
+    """┌─ ПРИВЯЗКА ИСПРАВЛЕНА 29.08.2026. НЕ ВОЗВРАЩАТЬ ПОИСК ПО ВСЕМУ ФАЙЛУ. ────────┐
+    │ Тесты искали `elif action == "go":` в bot_3.py ОТ НАЧАЛА ФАЙЛА. Пока обработчик │
+    │ карантина был единственным с такими ветками, это работало. 29.08.2026 появился  │
+    │ второй экран с кнопками (`handle_unit_decision_callback`, слова после двух      │
+    │ отказов), он встал в файле выше — и тесты стали проверять ЧУЖОЙ блок, покраснев │
+    │ на нетронутом карантине. Продукт был исправен, ломалась привязка.               │
+    │ Теперь блок берётся ВНУТРИ своей функции, а не первый попавшийся в файле.       │
+    └────────────────────────────────────────────────────────────────────────────────┘
+    """
+
+    def _карантинный_блок(self, метка: str, длина: int) -> str:
+        src = BOT.read_text(encoding="utf-8")
+        начало_функции = src.index("async def handle_quarantine_callback")
+        сдвиг = src.index(метка, начало_функции)
+        return src[сдвиг:сдвиг + длина]
+
     def test_apply_button_deletes_and_releases(self):
         """Кнопка внизу разбора должна делать оба действия за один тап: иначе
         «оставленные» слова тихо остаются в карантине и возвращаются через неделю."""
-        src = BOT.read_text(encoding="utf-8")
-        start = src.index('elif action == "go":')
-        block = src[start:start + 1200]
+        block = self._карантинный_блок('elif action == "go":', 1200)
         self.assertIn("delete_pool_entries_by_ids", block)
         self.assertIn("release_pool_entries_from_quarantine", block)
 
     def test_close_changes_nothing_and_says_so(self):
-        src = BOT.read_text(encoding="utf-8")
-        start = src.index('elif action == "x":')
-        block = src[start:start + 600]
+        block = self._карантинный_блок('elif action == "x":', 600)
         self.assertIn("остались в карантине", block,
                       "«Закрыть» не должно выглядеть как решение — оно ничего не меняет")
 

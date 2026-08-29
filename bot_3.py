@@ -13090,6 +13090,212 @@ _QUARANTINE_PAGE_SIZE = 8
 _QUARANTINE_MAX_CANDIDATES = 160  # верхняя граница на одну сессию разбора
 
 
+_UNIT_DECISION_PAGE_SIZE = 8
+_UNIT_DECISION_MAX = 160
+
+
+def _unit_decision_candidates() -> list[dict]:
+    """Слова на решение владельца в том виде, какой понимает хранилище сессий."""
+    from backend.database import get_units_awaiting_owner_decision
+    rows = get_units_awaiting_owner_decision(_UNIT_DECISION_MAX)
+    return [{"id": r["unit_id"], "w": r["display"], "t": r["translation"],
+             "r": r["reason"], "d": r["saved"]} for r in rows]
+
+
+async def admin_words_decide_command(update: Update, context: CallbackContext):
+    """Слова, которые ночь больше не разбирает: оставить как есть или удалить.
+
+    Тот же экран, что приходит сам по воскресеньям. Кнопок две, «вернуть в работу»
+    среди них нет намеренно — бесконечный повтор владелец просил убрать 29.08.2026.
+    /admin_words_decide"""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    from backend.database import create_quarantine_review_session
+    rows = await asyncio.to_thread(_unit_decision_candidates)
+    if not rows:
+        await message.reply_text(
+            "✅ Решать нечего: слов, которые ночь не смогла разобрать дважды, нет.")
+        return
+    sid = await asyncio.to_thread(create_quarantine_review_session, int(sender.id), rows)
+    session = {"admin_id": int(sender.id), "candidates": rows, "kept_ids": []}
+    text, markup = _build_unit_decision_review(session, sid, 0)
+    await message.reply_text(text, parse_mode="HTML", reply_markup=markup,
+                             disable_web_page_preview=True)
+
+
+async def handle_unit_decision_callback(update: Update, context: CallbackContext) -> None:
+    """Тапы по экрану «Слова без разбора». Отмеченные удаляются, остальные остаются."""
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    if not _is_admin_user(user.id):
+        await query.answer("Только для администратора.", show_alert=True)
+        return
+    from backend.database import (
+        apply_unit_refusal_decisions, delete_quarantine_review_session,
+        get_quarantine_review_session, toggle_quarantine_review_keep,
+    )
+    parts = str(query.data or "").split(":")     # uw:<action>:<sid>[:...]
+    action = parts[1] if len(parts) > 1 else ""
+    sid = parts[2] if len(parts) > 2 else ""
+    session = await asyncio.to_thread(get_quarantine_review_session, sid)
+    if not session:
+        await query.answer("Список устарел — вызови /admin_words_decide заново.",
+                           show_alert=True)
+        return
+    if action == "t":
+        page, gidx = int(parts[3]), int(parts[4])
+        cands = session.get("candidates") or []
+        if 0 <= gidx < len(cands):
+            session = await asyncio.to_thread(
+                toggle_quarantine_review_keep, sid, int(cands[gidx]["id"]))
+        await query.answer()
+        text, markup = _build_unit_decision_review(session, sid, page)
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup,
+                                      disable_web_page_preview=True)
+    elif action == "p":
+        await query.answer()
+        text, markup = _build_unit_decision_review(session, sid, int(parts[3]))
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup,
+                                      disable_web_page_preview=True)
+    elif action == "go":
+        cands = session.get("candidates") or []
+        удалить = sorted(set(int(x) for x in (session.get("kept_ids") or [])))
+        оставить = [int(c["id"]) for c in cands if int(c["id"]) not in set(удалить)]
+        await query.answer()
+        итог = await asyncio.to_thread(
+            apply_unit_refusal_decisions, keep_ids=оставить, delete_ids=удалить)
+        await asyncio.to_thread(delete_quarantine_review_session, sid)
+        if итог.get("ошибка"):
+            await query.edit_message_text(
+                f"❌ Не удалось применить: {итог['ошибка']}", parse_mode="HTML")
+            return
+        await query.edit_message_text(
+            f"✅ Готово. Оставлено как есть: <b>{итог['оставлено']}</b>, "
+            f"удалено: <b>{итог['удалено']}</b>.\n\n"
+            f"<i>Оставленные живут в словаре без разбора — человек видит слово и "
+            f"перевод. Больше по ним не спрошу.</i>",
+            parse_mode="HTML")
+    elif action == "x":
+        await asyncio.to_thread(delete_quarantine_review_session, sid)
+        await query.answer("Закрыто, ничего не изменилось.")
+        await query.edit_message_text(
+            "✖ Закрыто без изменений — слова придут в следующий раз.")
+
+
+def _send_unit_decision_review_weekly() -> None:
+    """Воскресный разбор слов, которые ночь не смогла собрать дважды.
+
+    Шлём, только если есть что решать: сообщение «решать нечего» каждую неделю
+    приучает не открывать письмо, и тогда мы потеряем и нужные."""
+    try:
+        from backend.database import (
+            create_quarantine_review_session, get_admin_telegram_ids,
+        )
+        rows = _unit_decision_candidates()
+        if not rows:
+            logging.info("недельный разбор слов: решать нечего, не шлём")
+            return
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
+        if not token or not admin_ids:
+            return
+        for uid in admin_ids:
+            try:
+                sid = create_quarantine_review_session(uid, rows)
+                session = {"admin_id": uid, "candidates": rows, "kept_ids": []}
+                text, markup = _build_unit_decision_review(session, sid, 0)
+                ok, reason = send_telegram_message(
+                    chat_id=uid, text=text, token=token,
+                    reply_markup={"inline_keyboard": _inbox_kb_json(markup) or []},
+                    what="недельный разбор слов без разбора")
+                if not ok:
+                    logging.warning("недельный разбор слов не дошёл admin=%s: %s",
+                                    uid, reason)
+            except Exception:
+                logging.warning("недельный разбор слов упал для admin=%s", uid,
+                                exc_info=True)
+    except Exception:
+        logging.exception("недельный разбор слов: работа упала целиком")
+
+
+def _build_unit_decision_review(session: dict, sid: str, page: int) -> tuple:
+    """Слова, которые ночь больше не берёт: два отказа судьи по существу.
+
+    ┌─ РЕШЕНИЕ ВЛАДЕЛЬЦА 29.08.2026. ──────────────────────────────────────────────┐
+    │ «Если по какой-то причине оно не может быть обработано — в чём смысл ещё      │
+    │ ждать и его запускать и тратить деньги? Нужен список таких слов с кнопками,   │
+    │ чтобы я принял решение: оставить как есть или удалить.»                       │
+    │                                                                              │
+    │ Кнопок ДВЕ, и «вернуть в работу» среди них НЕТ намеренно: именно бесконечный  │
+    │ повтор владелец и просил убрать.                                              │
+    │                                                                              │
+    │ ⚠ УМОЛЧАНИЕ — «ОСТАВИТЬ», А НЕ «УДАЛИТЬ», и это противоположно карантину      │
+    │ пула. Правило владельца от 25.08.2026: молчание не удаляет, удаляет только    │
+    │ явная кнопка. Список приходит на десятки слов, палец скользит, и пропустить   │
+    │ строку — норма поведения, а не решение. Цена ошибки несимметрична: лишнее     │
+    │ слово без разбора просто полежит, стёртое нужное не вернуть ничем.            │
+    │                                                                              │
+    │ «Оставить как есть» — НЕ поражение: слово живёт в словаре, человек видит его  │
+    │ и перевод, нет только подробного разбора.                                     │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    """
+    from html import escape as _esc
+    cands = session.get("candidates") or []
+    к_удалению = set(session.get("kept_ids") or [])   # здесь «отмечен» = удалить
+    total = len(cands)
+    n_pages = max(1, (total + _UNIT_DECISION_PAGE_SIZE - 1) // _UNIT_DECISION_PAGE_SIZE)
+    page = max(0, min(page, n_pages - 1))
+    start = page * _UNIT_DECISION_PAGE_SIZE
+    chunk = cands[start:start + _UNIT_DECISION_PAGE_SIZE]
+
+    head = [
+        f"🔤 <b>Слова без разбора</b> — {total}",
+        "<i>Судья дважды забраковал карточку по существу, и ночь больше не тратит на "
+        "них деньги. От тебя нужно одно решение на слово.</i>",
+        "",
+        "<i>По умолчанию всё остаётся как есть — слово живёт в словаре, человек видит "
+        "его и перевод, нет только подробного разбора. Тап отмечает слово 🗑 на "
+        "удаление. Ничего не трогать — тоже ответ: ничего не изменится.</i>",
+        f"Отмечено на удаление: <b>{len(к_удалению)}</b> · стр. {page + 1}/{n_pages}",
+        "",
+    ]
+    rows_kb: list[list] = []
+    for local_i, c in enumerate(chunk):
+        gidx = start + local_i
+        cid = int(c.get("id"))
+        отметка = "🗑" if cid in к_удалению else "✅"
+        слово = str(c.get("w") or "")
+        head.append(
+            f"{gidx + 1}. <b>{_esc(слово)}</b> — {_esc(str(c.get('t') or '—'))}\n"
+            f"    <i>{_esc(str(c.get('r') or 'судья забраковал'))[:110]}</i>"
+        )
+        label = f"{отметка} {gidx + 1}. {слово}"
+        rows_kb.append([InlineKeyboardButton(
+            label[:59] + "…" if len(label) > 60 else label,
+            callback_data=f"uw:t:{sid}:{page}:{gidx}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀", callback_data=f"uw:p:{sid}:{page - 1}"))
+    if page < n_pages - 1:
+        nav.append(InlineKeyboardButton("▶", callback_data=f"uw:p:{sid}:{page + 1}"))
+    if nav:
+        rows_kb.append(nav)
+    rows_kb.append([InlineKeyboardButton(
+        f"✅ Применить: оставить {total - len(к_удалению)}, удалить {len(к_удалению)}",
+        callback_data=f"uw:go:{sid}")])
+    rows_kb.append([InlineKeyboardButton("✖ Закрыть без изменений",
+                                         callback_data=f"uw:x:{sid}")])
+    return "\n".join(head), InlineKeyboardMarkup(rows_kb)
+
+
 def _build_quarantine_review(session: dict, sid: str, page: int) -> tuple[str, "InlineKeyboardMarkup"]:
     from html import escape as _esc
     reason_ru = {"empty": "пусто", "thin": "неполн"}
@@ -45224,6 +45430,9 @@ def main():
     application.add_handler(CommandHandler("admin_spread_unit_cards", admin_spread_unit_cards_command))
     application.add_handler(CommandHandler("admin_resweep_units", admin_resweep_units_command))
     application.add_handler(CommandHandler("admin_pool_quarantine", admin_pool_quarantine_command))
+    application.add_handler(CommandHandler("admin_words_decide", admin_words_decide_command))
+    application.add_handler(CallbackQueryHandler(handle_unit_decision_callback,
+                                                pattern=r"^uw:"))
     application.add_handler(CommandHandler("admin_dict_integrity", admin_dict_integrity_command))
     application.add_handler(CallbackQueryHandler(handle_quarantine_callback, pattern=r"^qz:"))
     application.add_handler(CommandHandler("admin_phrase_review", admin_phrase_review_command))
@@ -46090,6 +46299,22 @@ def main():
         # DM со списком «мусора» (слова, что GPT не собрать) + чекбоксами: всё отмечено на
         # удаление, админ отжимает нужное и жмёт «Удалить отмеченные». Шлётся только если
         # карантин непуст. Тапы обрабатывает handle_quarantine_callback.
+        # -- Вс, 09:15 Вена: слова, которые ночь не смогла собрать ДВАЖДЫ --
+        # Две кнопки: оставить как есть либо удалить. «Вернуть в работу» здесь нет
+        # намеренно — бесконечный повтор владелец просил убрать (29.08.2026).
+        # Отдельным сообщением от карантина пула и на 15 минут позже: два списка в
+        # одну минуту читаются как один, и второй закрывают не глядя.
+        scheduler.add_job(
+            _send_unit_decision_review_weekly,
+            "cron",
+            day_of_week=(os.getenv("UNIT_DECISION_REVIEW_DAYS") or "sun").strip() or "sun",
+            hour=int((os.getenv("UNIT_DECISION_REVIEW_HOUR") or "9").strip() or "9"),
+            minute=int((os.getenv("UNIT_DECISION_REVIEW_MINUTE") or "15").strip() or "15"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
         scheduler.add_job(
             _send_quarantine_review_weekly,
             "cron",
