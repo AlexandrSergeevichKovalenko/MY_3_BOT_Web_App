@@ -3482,6 +3482,58 @@ function PerfProfiler({ id, children }) {
   );
 }
 
+// ┌─ Заглавная в начале предложения — НАША, а не системная. 29.08.2026 ──────────────┐
+// │ Клавиатура айфона внутри Telegram — это WKWebView: полем она не владеет и, чтобы  │
+// │ решить, поднимать ли Shift, СПРАШИВАЕТ у страницы текст слева от курсора. Запрос  │
+// │ периодически возвращается пустым — тогда клавиатура считает поле пустым, решает   │
+// │ «начало предложения» и даёт заглавную посреди фразы. Видео владельца 29.08.2026:  │
+// │ полоска подсказок шесть секунд подряд показывала «Ich | Hallo | Ja» — набор для   │
+// │ ПУСТОГО поля — хотя в поле лежали три строки текста; после каждого пробела буквы  │
+// │ на клавишах становились заглавными, но НЕ каждый раз (гонка, а не правило).       │
+// │ Починить это в вебвью нельзя, оно не наше: та же жалоба годами висит на Google    │
+// │ Docs в Safari (support.google.com/docs/thread/50774547), родственный подтверждён- │
+// │ ный баг WebKit — 148504. Поэтому системную капитализацию выключаем везде          │
+// │ (autoCapitalize="off" — на Android так и было) и ставим заглавную сами: только    │
+// │ начало поля и только после . ! ? … или переноса строки.                           │
+// │ Немецкие существительные посреди предложения НЕ трогаем — это была бы выдумка за  │
+// │ человека, и системная капитализация их тоже никогда не ставила.                   │
+// └──────────────────────────────────────────────────────────────────────────────────┘
+const SENTENCE_END_CHARS = new Set(['.', '!', '?', '\u2026']);
+
+function isAtSentenceStart(text, index) {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const ch = text[i];
+    if (ch === ' ' || ch === '\t') continue;
+    if (ch === '\n' || ch === '\r') return true;
+    return SENTENCE_END_CHARS.has(ch);
+  }
+  return true; // дошли до начала поля — это начало первого предложения
+}
+
+// Возвращает true, если букву подняли (значение поля изменилось прямо в узле).
+function applyOwnSentenceCase(node, nativeEvent) {
+  if (!node || !nativeEvent) return false;
+  // Набор иероглифов/диктовка/подстановка автозамены — не наше дело, трогать нельзя.
+  if (nativeEvent.isComposing) return false;
+  if (nativeEvent.inputType !== 'insertText') return false;
+  const typed = nativeEvent.data;
+  if (typeof typed !== 'string' || typed.length !== 1) return false;
+  const upper = typed.toUpperCase();
+  // upper === typed — не буква либо уже заглавная; длина > 1 — это ß → SS, его не трогаем.
+  if (upper === typed || upper.length !== 1) return false;
+  const caret = node.selectionStart;
+  if (caret == null || caret !== node.selectionEnd) return false;
+  const index = caret - 1;
+  if (index < 0) return false;
+  const value = String(node.value || '');
+  // Курсор обязан стоять ровно за только что напечатанной буквой: иначе это не вставка,
+  // а что-то другое (удаление, перенос курсора), и поднимать регистр нельзя.
+  if (value[index] !== typed) return false;
+  if (!isAtSentenceStart(value, index)) return false;
+  node.setRangeText(upper, index, index + 1, 'end');
+  return true;
+}
+
 const TranslationDraftField = React.memo(function TranslationDraftField({
   sentenceId,
   sentenceNumber,
@@ -3690,6 +3742,8 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     }
     const eventName = isChangeDrivenAndroidExperiment ? 'change' : 'input';
     const handler = (event) => {
+      // Заглавную ставим ДО чтения значения — иначе наверх уйдёт строчная буква.
+      applyOwnSentenceCase(node, event);
       const targetValue = event?.target && 'value' in event.target
         ? String(event.target.value || '')
         : String(node.value || '');
@@ -3707,12 +3761,19 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   ]);
 
   const handleInput = useCallback((event) => {
-    processInputValue(String(event.target.value || ''), 'input');
+    const node = textareaRef.current;
+    // Заглавную ставим ДО чтения значения — иначе наверх уйдёт строчная буква.
+    applyOwnSentenceCase(node, event.nativeEvent);
+    const value = node ? String(node.value || '') : String(event.target.value || '');
+    processInputValue(value, 'input');
   }, [processInputValue]);
 
   const handleChange = useCallback((event) => {
     if (isChangeDrivenAndroidExperiment) {
-      processInputValue(String(event.target.value || ''), 'change');
+      const node = textareaRef.current;
+      applyOwnSentenceCase(node, event.nativeEvent);
+      const value = node ? String(node.value || '') : String(event.target.value || '');
+      processInputValue(value, 'change');
     }
   }, [isChangeDrivenAndroidExperiment, processInputValue]);
 
@@ -3744,8 +3805,13 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     'data-translation-draft-field': 'true',
   };
 
+  // Системную капитализацию выключаем ВЕЗДЕ (разбор — у applyOwnSentenceCase выше):
+  // на айфоне она и была причиной заглавной посреди предложения, на Android так и было.
+  // Заглавную в начале предложения ставим сами. Автозамену/проверку орфографии трогаем
+  // по-прежнему только на Android — это отдельное решение, к капитализации отношения нет.
+  textareaProps.autoCapitalize = 'off';
+
   if (isAndroidClient) {
-    textareaProps.autoCapitalize = 'off';
     textareaProps.autoComplete = 'off';
     textareaProps.autoCorrect = 'off';
     textareaProps.spellCheck = false;
