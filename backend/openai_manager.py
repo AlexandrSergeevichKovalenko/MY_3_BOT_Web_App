@@ -10007,8 +10007,22 @@ def run_phrase_dispute_verdict(*, text: str, variants: list, translation: str = 
         "say what actually differs between the proposals and why the winner is right. "
         "Name the rule in plain Russian, never in grammar jargon alone. Do not restate "
         "the proposals - the reader already sees them.\n"
+        # ⚠ ПОДПИСЬ СВОЕГО ТЕКСТА. Без неё его текст нельзя применять без человека.
+        # У правок первых двух судей подпись есть всегда: судья кладёт правку либо в
+        # `corrected` (исправил то, что было), либо в `proposal` (дописал слова). У
+        # третьего такого разделения не было — он просто писал текст, и отличить
+        # исправление от перестройки можно было только счётом слов, то есть догадкой.
+        # Владелец 29.08.2026: «научи третьего судью самого подписывать свой текст».
+        "- Label your own `better` in `better_kind`. Use \"fix\" ONLY when you corrected "
+        "what was already there - spelling, case, agreement, preposition, word order, "
+        "an article the phrase was missing - and the entry still denotes the same thing "
+        "in the same form. Use \"rebuild\" when you turned it into something structurally "
+        "different: added a subject or a finite verb, made a dictionary phrase into a "
+        "full sentence, or changed which words carry the meaning. When in doubt, "
+        "\"rebuild\". If `better` is empty, leave `better_kind` empty.\n"
         "Answer STRICT JSON only: {\"winner\":<int>,\"why\":\"<RUSSIAN>\","
-        "\"better\":\"<German text or empty>\",\"better_ru\":\"<RUSSIAN or empty>\"}"
+        "\"better\":\"<German text or empty>\",\"better_ru\":\"<RUSSIAN or empty>\","
+        "\"better_kind\":\"fix|rebuild|\"}"
     )
     payload = {"text": t, "kind": kind, "meaning_ru": str(translation or ""),
                "proposals": clean}
@@ -10057,7 +10071,14 @@ def run_phrase_dispute_verdict(*, text: str, variants: list, translation: str = 
     why = str(data.get("why") or "").strip()
     if not why and not winner and not better:
         return {}
+    # Подпись своего текста принимаем ТОЛЬКО в двух написанных значениях. Что угодно
+    # другое (пусто, «maybe», выдуманное слово) — это «не подписал», и такой текст
+    # ночь применять не станет: неизвестная подпись не согласие.
+    better_kind = str(data.get("better_kind") or "").strip().lower()
+    if better_kind not in ("fix", "rebuild"):
+        better_kind = ""
     return {"winner": winner, "why": why, "better": better,
+            "better_kind": (better_kind if better else ""),
             "better_ru": (str(data.get("better_ru") or "").strip() if better else "")}
 
 

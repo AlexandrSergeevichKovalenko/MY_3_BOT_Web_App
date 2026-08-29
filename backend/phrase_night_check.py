@@ -516,25 +516,40 @@ def settled_verdict_to_apply(judges: list, arbiter: dict | None) -> tuple[str, s
     — правило его же, от 06.08.2026, оно записано в `_both_agree` и здесь не
     отменяется. Замер 28.08.2026: таких вердиктов 22 из 104, они по-прежнему его.
 
-    ⛔ СВОЙ ТЕКСТ ТРЕТЬЕГО СУДЬИ ТОЖЕ НЕ БЕРЁМ, И ВОТ ПОЧЕМУ.
-    У правки судьи есть подпись самого судьи, чем она является: `corrected` (правка)
-    или `proposal` (достройка). У текста, который третий судья написал сам, такой
-    подписи НЕТ — он просто текст. Разбор всех 14 таких вердиктов на живой базе
-    29.08.2026: семь из них перестраивают запись ровно так же, как достройка —
-    «ganz vorbei sein der Gefahr aber nicht» → «Es ist ganz vorbei, aber die Gefahr
-    besteht noch.», «Die Karriere von Null an aufgebaut» → «Ich baue die Karriere
-    von Null an auf.». Отличить их от настоящих правок можно только счётом слов, а
-    счёт слов — это догадка: «Gesamtsumme sich belaufen auf» → «Die Gesamtsumme
-    beläuft sich auf» тоже длиннее на слово и при этом чистая правка артикля.
-    Гадать нельзя, поэтому эти 14 остаются владельцу до его отдельного решения.
+    СВОЙ ТЕКСТ ТРЕТЬЕГО СУДЬИ — ТОЛЬКО С ЕГО ПОДПИСЬЮ «ПРАВКА».
+    ┌─ РАСШИРЕНО 29.08.2026 ПО РЕШЕНИЮ ВЛАДЕЛЬЦА. ─────────────────────────────────┐
+    │ Сначала свой текст третьего судьи сюда не пускался вовсе: у правок первых     │
+    │ двух подпись есть всегда (`corrected` — исправил, `proposal` — дописал), а он │
+    │ просто писал текст. Разбор всех 14 таких вердиктов 29.08.2026: семь           │
+    │ перестраивают запись ровно как достройка — «Die Karriere von Null an          │
+    │ aufgebaut» → «Ich baue die Karriere von Null an auf.». Отличить можно было    │
+    │ только счётом слов, а это догадка: «Gesamtsumme sich belaufen auf» → «Die     │
+    │ Gesamtsumme beläuft sich auf» тоже длиннее на слово и при этом чистая правка  │
+    │ артикля.                                                                      │
+    │ Владелец 29.08.2026: «научи третьего судью самого подписывать свой текст».    │
+    │ Теперь он кладёт подпись в `better_kind`: "fix" — исправил то, что было,      │
+    │ "rebuild" — перестроил. Это НЕ наша догадка, а ответ источника, и планка та   │
+    │ же, что у судей: подпись + наша проверка текста.                              │
+    │ Не подписал (старая запись, чужое слово, пусто) — не применяем: неизвестная   │
+    │ подпись это не согласие.                                                      │
+    └──────────────────────────────────────────────────────────────────────────────┘
 
     Возвращает (текст, почему) — или ("", причина отказа).
     """
     arbiter = arbiter if isinstance(arbiter, dict) else None
     if not arbiter:
         return "", "третий судья не высказался"
-    if str(arbiter.get("better") or "").strip():
-        return "", "свой текст третьего судьи — решает владелец"
+    свой = str(arbiter.get("better") or "").strip()
+    if свой:
+        подпись = str(arbiter.get("better_kind") or "").strip().lower()
+        if подпись == "rebuild":
+            return "", "третий судья перестроил запись — решает владелец"
+        if подпись != "fix":
+            return "", "третий судья не подписал свой текст"
+        if fix_passed_check({"better_check": arbiter.get("better_check")},
+                            "better") is not True:
+            return "", "наша проверка текст третьего не пропустила"
+        return свой, str(arbiter.get("why") or "").strip()
     try:
         winner = int(arbiter.get("winner") or 0)
     except (TypeError, ValueError):
@@ -553,6 +568,43 @@ def settled_verdict_to_apply(judges: list, arbiter: dict | None) -> tuple[str, s
         if str(judge.get("proposal") or "").strip() == chosen:
             return "", "достройка — дописаны слова, решает владелец"
     return "", "выбранный текст не нашёлся у судей"
+
+
+def label_unsigned_arbiter_texts(limit: int | None = None) -> dict:
+    """Дописать подпись «правка / перестройка» вердиктам, вынесенным ДО 29.08.2026.
+
+    Подпись (`better_kind`) третий судья ставит с 29.08.2026, а вердикты, вынесенные
+    раньше, её не имеют — и без неё их текст не применяется никогда. Молча оставить
+    их лежать значит завести вечную кучу: ровно тот «список, который никто не
+    выполняет», который здесь запрещён. Поэтому ночь переспрашивает их одной порцией.
+
+    Переспрашиваем ТЕМ ЖЕ вопросом (`settle_dispute`), а не дописываем подпись сами:
+    подпись — ответ источника, а не наша догадка о чужом ответе. Замер 29.08.2026:
+    таких записей 16, то есть одна ночь.
+    """
+    from backend.database import get_db_connection_context
+
+    cap = int(limit if limit is not None else ARBITER_CAP)
+    out = {"взято": 0, "подписано": 0, "не вышло": 0}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id FROM bt_3_phrase_review
+                    WHERE status = 'open' AND kind = 'grammar'
+                      AND arbiter IS NOT NULL
+                      AND COALESCE(btrim(arbiter->>'better'), '') <> ''
+                      AND COALESCE(btrim(arbiter->>'better_kind'), '') = ''
+                    ORDER BY id LIMIT %s;""",
+                (cap,))
+            ids = [int(r[0]) for r in (cur.fetchall() or [])]
+    out["взято"] = len(ids)
+    if not ids:
+        return out
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        for ok in pool.map(settle_dispute, ids):
+            out["подписано" if ok else "не вышло"] += 1
+    logging.info("подписи текстам третьего судьи: %s", out)
+    return out
 
 
 def apply_settled_disputes(limit: int | None = None) -> dict:
@@ -803,6 +855,11 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
         # …а разрешённый спор — это уже ОТВЕТ, а не вопрос. Держать его в очереди
         # владельца значит спрашивать о том, на что ответ уже получен и оплачен.
         # Решение владельца 28.08.2026: «если третий судья рассудил — принимаем».
+        # Вердикты без подписи — переспросить, иначе их текст не применится никогда.
+        try:
+            report["labelled"] = label_unsigned_arbiter_texts()
+        except Exception as exc:
+            logging.warning("подписи вердиктам не дописались: %s", exc)
         try:
             report["applied"] = apply_settled_disputes()
         except Exception as exc:
