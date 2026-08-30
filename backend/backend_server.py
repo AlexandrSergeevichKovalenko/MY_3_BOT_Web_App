@@ -44513,6 +44513,61 @@ def _word_diff_gaps(diff: dict, words: list[str]) -> list[str]:
     return gaps
 
 
+def _word_diff_tautologies(diff: dict) -> list[str]:
+    """Русские переводы, где буквальность дала однокоренной плеоназм. Считаем их.
+
+    Владелец 30.08.2026, с экрана «anbieten ↔ unterbreiten»:
+        «Die Firma unterbreitete ein neues Angebot.» → «Компания предложила новое
+        предложение.» и «Wir möchten Ihnen ein Angebot anbieten.» → «Мы хотели бы
+        предложить вам предложение.»
+    Немецкий верный, ломается русская сторона: модель перевела слово в слово. Правильно
+    — «сделала новое предложение», «сделать вам предложение». Ученик читает русскую
+    строку как образец смысла, и такой перевод учит его неверно понимать саму фразу.
+
+    Проверяется ТО, ЧТО УХОДИТ НА ЭКРАН, — собранный разбор, а не ответ модели по
+    отдельности: перевод приходит из двух источников (картина употребления слова и
+    сравнение), а человек видит их вместе.
+
+    Страж НИЧЕГО НЕ РЕЖЕТ. Он пишет находку в счётчик «не смогли» (reason
+    «tautology»), и владелец видит её числом в недельном отчёте — там же, где
+    «не нашли слово» и «неполный разбор». Резать нельзя: правило узкое, но не
+    безошибочное («он открыл открытку» оно тоже пометит), а выброшенный пример — это
+    пустое место на экране, то есть дефект того же ранга.
+    """
+    try:
+        from backend.russian_tautology import looks_tautological
+    except Exception:
+        logging.warning("тавтология: страж недоступен", exc_info=True)
+        return []
+    if not isinstance(diff, dict):
+        return []
+
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def check(text: str, where: str) -> None:
+        value = " ".join(str(text or "").split())
+        if not value or value in seen:
+            return
+        seen.add(value)
+        if looks_tautological(value):
+            found.append(f"{where}: {value}")
+
+    for row in (diff.get("examples") or []):
+        if not isinstance(row, dict):
+            continue
+        check(row.get("translation"), "пример")
+        contrast = row.get("contrast") if isinstance(row.get("contrast"), dict) else {}
+        check(contrast.get("translation"), "контраст")
+    for row in (diff.get("constructions") or []):
+        if isinstance(row, dict):
+            check(row.get("example_ru"), "конструкция")
+    for row in (diff.get("collocations") or []):
+        if isinstance(row, dict):
+            check(row.get("translation"), "сочетание")
+    return found
+
+
 def _word_diff_is_admin(user_id: int) -> bool:
     """Хозяин общей полки разборов. Он же владелец приложения."""
     try:
@@ -44825,6 +44880,10 @@ def get_webapp_dictionary_word_diff():
     gaps = _word_diff_gaps(diff, ctx["words"])
     if gaps:
         record_word_diff_miss(ctx["user_id"], ctx["words"], "gaps", detail="; ".join(gaps)[:400])
+    tautologies = _word_diff_tautologies(diff)
+    if tautologies:
+        record_word_diff_miss(ctx["user_id"], ctx["words"], "tautology",
+                              detail="; ".join(tautologies)[:400])
 
     _word_diff_store(ctx, diff)
     return jsonify({
@@ -44911,6 +44970,10 @@ def stream_webapp_dictionary_word_diff():
             gaps = _word_diff_gaps(diff, ctx["words"])
             if gaps:
                 record_word_diff_miss(ctx["user_id"], ctx["words"], "gaps", detail="; ".join(gaps)[:400])
+            tautologies = _word_diff_tautologies(diff)
+            if tautologies:
+                record_word_diff_miss(ctx["user_id"], ctx["words"], "tautology",
+                                      detail="; ".join(tautologies)[:400])
 
             _word_diff_store(ctx, diff)
             yield _sse_pack("done", {

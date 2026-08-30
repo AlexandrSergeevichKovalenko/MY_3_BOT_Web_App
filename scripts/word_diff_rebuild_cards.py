@@ -44,6 +44,23 @@ from backend.database import get_db_connection_context  # noqa: E402
 APPLY = "--apply" in sys.argv
 
 
+def db():
+    """Соединение с базой, с честными повторами.
+
+    Проверено 30.08.2026: первый коннект к `zephyr.proxy.rlwy.net` из внешней сети
+    таймаутится примерно через раз, второй проходит. Это ретрай сети, а не fallback:
+    после трёх неудач скрипт падает и НИЧЕГО не делает вида, что отработал.
+    """
+    last = None
+    for attempt in range(3):
+        try:
+            return get_db_connection_context()
+        except Exception as exc:
+            last = exc
+            print(f"  … база не ответила (попытка {attempt + 1}/3): {str(exc)[:70]}")
+    raise last
+
+
 def rebuild_constructions(payload: dict) -> int:
     """Пересобрать записи конструкций. Возвращает число изменённых строк."""
     changed = 0
@@ -90,7 +107,7 @@ def rebuild_separability(payload: dict) -> tuple[int, int]:
 
 
 def main() -> None:
-    with get_db_connection_context() as conn:
+    with db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT pair_key, payload FROM bt_3_word_diff_cards ORDER BY pair_key;")
             rows = cur.fetchall()
@@ -130,7 +147,7 @@ def main() -> None:
     if not APPLY:
         print("\nЭто показ. Записать: добавьте --apply")
         return
-    with get_db_connection_context() as conn:
+    with db() as conn:
         with conn.cursor() as cur:
             for pair_key, payload in updates:
                 # payload — JSONB, поэтому Json(), а не строка: иначе Postgres
