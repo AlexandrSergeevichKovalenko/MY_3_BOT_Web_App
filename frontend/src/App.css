@@ -9153,9 +9153,26 @@ body:has(.webapp-page.is-theme-light),
 }
 
 /* Edit bottom sheet */
+/* ┌─ ИЗМЕРЕНО 30.08.2026, iPhone, приложение с иконки (standalone PWA) ─────────────┐
+   │ Дефект: карточка слова → «Редактировать» → касание в поле → лист с полями     │
+   │ уходит ПОД клавиатуру, на экране остаётся только его заголовок (видео владельца). │
+   │ Причина: слой прибит к экрану во весь его рост (inset:0 — это 894 px), а лист  │
+   │ прижат к НИЗУ слоя (align-items:flex-end); клавиатура забирает нижние 413 px.  │
+   │ До 28.08 это пряталось СЛУЧАЙНОСТЬЮ: iOS прокручивал страницу ровно на высоту     │
+   │ клавиатуры, слой уезжал вверх на те же 413 — и лист оказывался над клавишами.   │
+   │ С 28.08 прокрутку мы ДЕРЖИМ (App.jsx, holdScrollForFixedField, коммит 0c2d7f89 —        │
+   │ иначе той же прокруткой уносило высокую карточку «Добавить своё») — случайности   │
+   │ больше нет, и лист остался там, где его не видно.                                   │
+   │ Лечение: рост слоя — не весь экран, а ВИДИМАЯ часть окна. Её уже считает      │
+   │ --app-height (= visualViewport.height, замер прибором 28.08: app481px при экране    │
+   │ 894), по ней же живёт сама карточка слова (.vocab-word-fullscreen-card выше).  │
+   │ top+height+bottom вместе — переопределённость, браузер отбрасывает bottom из     │
+   │ inset:0, что нам и нужно. Без клавиатуры --app-height равен экрану — вид прежний. │
+   └─────────────────────────────────────────────────────────────────────────────┘ */
 .vocab-modal-overlay {
   position: fixed;
   inset: 0;
+  height: var(--app-height, 100dvh);
   background: rgba(0,0,0,0.6);
   backdrop-filter: blur(4px);
   display: flex;
@@ -9166,6 +9183,12 @@ body:has(.webapp-page.is-theme-light),
 .vocab-modal-sheet {
   width: 100%;
   max-width: 480px;
+  /* Лист с тремя значениями выше видимой части (≈510 px при 481) — без этого он
+     вылезет за ВЕРХ слоя (flex-end прижимает к низу), и верхние поля станут
+     недоступны: у самого слоя прокрутки нет. Прокручивается сам лист. */
+  max-height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   background: #111827;
   border-radius: 22px 22px 0 0;
   padding: 20px 20px 40px;
@@ -19181,9 +19204,13 @@ body.worldnews-active .webapp-topbar {
   background: var(--yt-bg-hover);
 }
 
+/* Тот же класс дефекта, что у .vocab-modal-overlay (разбор там же, 30.08.2026): лист,
+   прижатый к низу прибитого слоя во весь экран, уходит под клавиатуру. Здесь есть поле
+   ручной транскрипции (textarea), то есть клавиатура сюда выезжает. Лечится тем же. */
 .youtube-settings-overlay {
   position: fixed;
   inset: 0;
+  height: var(--app-height, 100dvh);
   z-index: 120;
   background: var(--yt-bg-overlay);
   display: flex;
@@ -19194,7 +19221,7 @@ body.worldnews-active .webapp-topbar {
 
 .youtube-settings-sheet {
   width: min(100%, 560px);
-  max-height: min(88dvh, 760px);
+  max-height: min(88dvh, 760px, 100%);
   overflow: auto;
   border-radius: 28px;
   border: 1px solid var(--yt-border-default);
