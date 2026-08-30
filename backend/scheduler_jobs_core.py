@@ -18,6 +18,7 @@ from backend.translation_workflow import finalize_open_translation_sessions
 from backend.tts_cache_cleanup import run_tts_r2_cache_cleanup
 from backend.r2_storage import r2_bucket_usage_summary
 from backend.job_queue import clear_translation_check_session_state
+from backend.job_queue import get_session_presence_verify_unknown_count
 
 
 def _heartbeat(job_key: str):
@@ -57,9 +58,50 @@ def run_translation_sessions_auto_close_job() -> None:
     try:
         result = finalize_open_translation_sessions()
         logging.info("✅ Translation sessions auto-close finished: %s", result)
+        _report_session_presence_health_to_admins(result)
     except Exception:
         logging.exception("❌ Translation sessions auto-close failed")
         raise
+
+
+def _report_session_presence_health_to_admins(result: dict) -> None:
+    """Владелец не должен ничего вызывать командой, чтобы узнать, что плашка «набор не
+    закончен» опять начала врать. Пишем ему сами и ТОЛЬКО когда есть о чём:
+
+      • погашенные лживые указатели > 0 — значит какой-то путь закрытия сессии снова
+        забыл про указатель (после правки 30.08.2026 здесь должен быть ноль);
+      • «не смогли проверить» > 0 — база не отвечала в момент открытия приложения,
+        и людям в эти разы плашку не показывали.
+
+    Тишина здесь означает «всё чисто», а не «механизм молчит»: ночное задание пишет
+    свой итог в лог каждый раз, даже когда сообщения нет.
+    """
+    cleared_markers = int((result or {}).get("cleared_presence_markers") or 0)
+    unknown_verifies = get_session_presence_verify_unknown_count()
+    if cleared_markers <= 0 and not unknown_verifies:
+        return
+    admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+    if not admin_ids:
+        logging.warning("⚠️ Session-presence health report skipped: no admin ids configured")
+        return
+    lines = ["🔎 Плашка «набор переводов не закончен» — проверка за сутки"]
+    if cleared_markers > 0:
+        user_ids = list((result or {}).get("presence_marker_user_ids") or [])
+        lines.append(
+            f"• Погашено указателей, которые врали: {cleared_markers}"
+            + (f" (люди: {', '.join(str(item) for item in user_ids[:20])})" if user_ids else "")
+        )
+        lines.append("  Это значит, что какой-то путь закрытия сессии снова не гасит указатель.")
+    if unknown_verifies:
+        lines.append(f"• Не смогли проверить сессию (база не ответила): {unknown_verifies}")
+        lines.append("  В эти разы плашку не показывали — люди ничего лишнего не увидели.")
+    report_text = "\n".join(lines)
+    for admin_id in admin_ids:
+        _send_private_message_chunks(int(admin_id), report_text)
+    logging.info(
+        "✅ Session-presence health report sent: admins=%s cleared_markers=%s unknown_verifies=%s",
+        len(admin_ids), cleared_markers, unknown_verifies,
+    )
 
 
 @_heartbeat("world_news_purge")

@@ -2289,3 +2289,52 @@ def enqueue_translation_result_side_effects_job(
             sentence_id_for_mistake,
         )
         raise
+
+
+# ─── Счётчик «не смогли проверить, открыт ли у человека набор переводов» ────────────
+#
+# Плашку «набор не закончен» на главном экране показывает указатель, а правду про
+# сессию знает только база. Если база в этот момент не ответила, мы отвечаем «не знаю»
+# и плашку НЕ показываем (раньше отвечали «активна», и 30.08.2026 это показало владельцу
+# вчерашние «5 из 7»). «Не знаю» — не нормальный исход, а незакрытая задача, поэтому оно
+# считается: число копится по дням в Redis, чтобы его увидел не только лог, но и владелец
+# в ночном отчёте о закрытии сессий (разные сервисы, общий счётчик).
+
+_SESSION_PRESENCE_VERIFY_UNKNOWN_PREFIX = "session_presence_verify_unknown"
+_SESSION_PRESENCE_VERIFY_UNKNOWN_TTL_SEC = 14 * 24 * 3600
+
+
+def _session_presence_verify_unknown_key(day: str | None = None) -> str:
+    day_key = str(day or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"{_SESSION_PRESENCE_VERIFY_UNKNOWN_PREFIX}:{day_key}"
+
+
+def increment_session_presence_verify_unknown() -> int | None:
+    """Отметить один случай «не смогли проверить». Возвращает счёт за сегодня или None,
+    если счётчик недоступен, — тогда число останется только в логе, и это видно по None."""
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        key = _session_presence_verify_unknown_key()
+        value = int(client.incr(key))
+        client.expire(key, _SESSION_PRESENCE_VERIFY_UNKNOWN_TTL_SEC)
+        return value
+    except Exception:
+        logging.warning("increment_session_presence_verify_unknown failed", exc_info=True)
+        return None
+
+
+def get_session_presence_verify_unknown_count(day: str | None = None) -> int | None:
+    """Сколько раз за день мы не смогли проверить сессию. None — счётчик недоступен."""
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(_session_presence_verify_unknown_key(day))
+        if raw is None:
+            return 0
+        return int(raw)
+    except Exception:
+        logging.warning("get_session_presence_verify_unknown_count failed", exc_info=True)
+        return None

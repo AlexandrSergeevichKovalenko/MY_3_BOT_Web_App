@@ -7021,18 +7021,64 @@ function AppInner() {
   const [historyError, setHistoryError] = useState('');
   const [historyVisible, setHistoryVisible] = useState(false);
   const [finishStatus, setFinishStatus] = useState('idle');
-  // Незакрытая сессия переводов, увиденная при старте приложения: {translated, total}.
+  const getLocalDateKey = () => {
+    const now = new Date();
+    const yyyy = String(now.getFullYear());
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+  // Какой сегодня день — как СОСТОЯНИЕ, а не как вычисление на лету. Приложение может
+  // висеть открытым через полночь, и без этого плашка «набор не закончен» дожила бы до
+  // следующей перезагрузки: пересчитать её было нечему.
+  const [todayDateKey, setTodayDateKey] = useState(() => getLocalDateKey());
+  useEffect(() => {
+    const syncDay = () => {
+      setTodayDateKey((prev) => {
+        const now = getLocalDateKey();
+        return prev === now ? prev : now;
+      });
+    };
+    const timer = window.setInterval(syncDay, 60000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') syncDay();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', syncDay);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', syncDay);
+    };
+  }, []);
+  // Незакрытая сессия переводов, увиденная при старте приложения: {translated, total, dayKey}.
   // Нужна главному экрану, пока раздел переводов ещё не открывали в этом запуске.
   const [bootstrapTranslationSession, setBootstrapTranslationSession] = useState(null);
+  // День, когда набор предложений реально пришёл с сервера. Приложение живёт неделями,
+  // не перезагружаясь (в PWA и в свёрнутом Телеграме), а сервер закрывает набор в 23:59.
+  // Без этой отметки вчерашние предложения продолжали бы звать доделать их сегодня.
+  const [translationSetDayKey, setTranslationSetDayKey] = useState(null);
   // Что показать на главной: живые счётчики, пока человек в разделе переводов, иначе то,
   // что отдал бутстрап. Завершённая сессия плашку не показывает.
+  // Наборы прошлых дней не показываем вообще: сервер их уже закрыл, и звать доделать
+  // закрытый набор — обманывать человека (проверено 30.08.2026: «5 из 7» от вчера).
   const pausedTranslationSession = useMemo(() => {
     if (finishStatus === 'done') return null;
-    if (sentences.length > 0) {
+    if (sentences.length > 0 && translationSetDayKey === todayDateKey) {
       return { translated: results.length, total: results.length + sentences.length };
     }
-    return bootstrapTranslationSession;
-  }, [bootstrapTranslationSession, finishStatus, results.length, sentences.length]);
+    if (bootstrapTranslationSession && bootstrapTranslationSession.dayKey === todayDateKey) {
+      return bootstrapTranslationSession;
+    }
+    return null;
+  }, [
+    bootstrapTranslationSession,
+    finishStatus,
+    results.length,
+    sentences.length,
+    todayDateKey,
+    translationSetDayKey,
+  ]);
   const [explanations, setExplanations] = useState({});
   // Teacher-grade structured explanation modal (replaces the old inline text blocks).
   const [explainModalKey, setExplainModalKey] = useState(null);   // which sentence's modal is open
@@ -8074,13 +8120,6 @@ function AppInner() {
     } catch (error) {
       console.warn('localStorage unavailable', error);
     }
-  };
-  const getLocalDateKey = () => {
-    const now = new Date();
-    const yyyy = String(now.getFullYear());
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const dd = String(now.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
   };
   function getInitDataUserId(rawInitData) {
     const value = String(rawInitData || '').trim();
@@ -19066,7 +19105,9 @@ function AppInner() {
           const openTranslated = Math.max(0, Number(openTranslationSession.translated_count || 0) || 0);
           setBootstrapTranslationSession(
             openTotal > 0 && openTranslated < openTotal
-              ? { translated: openTranslated, total: openTotal }
+              // День проставляем здесь же: приложение может провисеть открытым до
+              // следующих суток, а сервер закрывает набор в 23:59.
+              ? { translated: openTranslated, total: openTotal, dayKey: getLocalDateKey() }
               : null
           );
         } else {
@@ -20878,6 +20919,8 @@ function AppInner() {
       } else {
         pendingProgressiveSentencesRef.current = null;
         setSentences(items);
+        // Набор пришёл сегодня — помечаем днём, чтобы завтра он не звал доделать себя.
+        setTranslationSetDayKey(getLocalDateKey());
       }
       if (!options?.preserveResults) {
         setResults([]);
@@ -22162,6 +22205,7 @@ function AppInner() {
       translationSessionIdRef.current = nextSessionId || '';
       setTranslationSessionId(nextSessionId);
       setSentences(nextItems);
+      setTranslationSetDayKey(getLocalDateKey());
       setResults([]);
       setTranslationAudioGrammarOptIn({});
       setTranslationAudioGrammarSaving({});
@@ -22673,6 +22717,7 @@ function AppInner() {
         if (pending && !hasFocusedTranslationDraftField()) {
           pendingProgressiveSentencesRef.current = null;
           setSentences(pending);
+          setTranslationSetDayKey(getLocalDateKey());
         }
       }, 250);
     }

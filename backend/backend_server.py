@@ -162,6 +162,7 @@ from backend.job_queue import (
     get_redis_client,
     get_reader_audio_page_job_status,
     get_session_presence_card,
+    increment_session_presence_verify_unknown,
     get_skills_card,
     get_today_card,
     get_translation_session_card,
@@ -46634,8 +46635,20 @@ def _validate_session_presence_projection_payload(payload: dict[str, Any] | None
     return safe_payload
 
 
-def _is_translation_session_active_in_db(user_id: int, session_id: str) -> bool:
-    """Return True iff the session exists in bt_3_user_progress with completed=FALSE and date=CURRENT_DATE."""
+def _is_translation_session_active_in_db(user_id: int, session_id: str) -> bool | None:
+    """Активна ли сессия НА САМОМ ДЕЛЕ: строка в bt_3_user_progress с completed = FALSE
+    и предложениями на сегодня.
+
+    Три исхода, и третий — не то же самое, что второй:
+      True  — сессия открыта, указатель честен;
+      False — сессия закрыта или вчерашняя, указатель врёт;
+      None  — СПРОСИТЬ НЕ УДАЛОСЬ (база не ответила). Это не «активна» и не «закрыта».
+
+    Раньше здесь на ошибке стояло `return True` («fail-open»), и любая заминка базы
+    в момент открытия приложения превращалась в приглашение доделать вчерашний набор.
+    Спрашиваем один раз без повторов: этот вызов стоит на пути открытия приложения,
+    и держать человека ради подтверждения плашки нельзя.
+    """
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -46658,8 +46671,16 @@ def _is_translation_session_active_in_db(user_id: int, session_id: str) -> bool:
                 )
                 return cursor.fetchone() is not None
     except Exception:
-        logging.warning("_is_translation_session_active_in_db failed for user_id=%s", user_id, exc_info=True)
-        return True  # fail-open: don't evict on DB error
+        today_unknown_count = increment_session_presence_verify_unknown()
+        logging.warning(
+            "session_presence_verify_unknown: не смогли проверить сессию user_id=%s session_id=%s "
+            "(таких случаев за сегодня: %s) — плашку «набор не закончен» не показываем",
+            user_id,
+            session_id,
+            "счётчик недоступен" if today_unknown_count is None else today_unknown_count,
+            exc_info=True,
+        )
+        return None
 
 
 def _evict_stale_session_presence_card(user_id: int) -> None:
@@ -46678,7 +46699,17 @@ def _load_session_presence_projection_with_source(user_id: int) -> tuple[dict[st
         # when the DB session was already closed by the nightly job but Redis TTL is still alive.
         if str(redis_payload.get("state") or "").strip().lower() == "active":
             session_id_val = str(redis_payload.get("session_id") or "").strip()
-            if session_id_val and not _is_translation_session_active_in_db(int(user_id), session_id_val):
+            verdict = (
+                _is_translation_session_active_in_db(int(user_id), session_id_val)
+                if session_id_val
+                else False
+            )
+            if verdict is None:
+                # Спросить не удалось. Карточку НЕ гасим (вдруг она честна), но и наружу
+                # не отдаём, и во вторую копию не идём: там тот же вопрос к той же базе,
+                # которая только что не ответила. Молчание дешевле вчерашнего набора.
+                return None, None
+            if verdict is False:
                 logging.info(
                     "Evicting stale session presence card: user_id=%s session_id=%s (DB shows closed/previous-day)",
                     user_id, session_id_val,
@@ -46699,10 +46730,17 @@ def _load_session_presence_projection_with_source(user_id: int) -> tuple[dict[st
         # Same stale-card guard for the DB snapshot fallback.
         if str(snapshot_payload.get("state") or "").strip().lower() == "active":
             session_id_val = str(snapshot_payload.get("session_id") or "").strip()
-            if session_id_val and not _is_translation_session_active_in_db(int(user_id), session_id_val):
+            verdict = (
+                _is_translation_session_active_in_db(int(user_id), session_id_val)
+                if session_id_val
+                else False
+            )
+            if verdict is not True:
+                # False — карточка врёт; None — спросить не удалось. Наружу не идёт ни то,
+                # ни другое: «не знаю» не имеет права выглядеть как открытый набор.
                 logging.info(
-                    "Ignoring stale snapshot session presence card: user_id=%s session_id=%s",
-                    user_id, session_id_val,
+                    "Ignoring stale snapshot session presence card: user_id=%s session_id=%s (verdict=%s)",
+                    user_id, session_id_val, verdict,
                 )
                 snapshot_payload = None
         if isinstance(snapshot_payload, dict):

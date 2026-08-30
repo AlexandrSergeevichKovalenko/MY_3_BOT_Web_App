@@ -45,6 +45,9 @@ from backend.database import (
     note_db_provider_wait,
     summarize_db_acquire_events,
     apply_skill_events_for_error,
+    clear_stale_translation_session_presence_markers,
+    clear_stale_translation_session_presence_markers_with_cursor,
+    clear_session_presence_fast_copies,
     close_stale_open_translation_sessions_for_user,
     get_skill_mapping_for_error,
     prefetch_skill_mappings_for_error_pairs_with_cursor,
@@ -485,9 +488,19 @@ def finalize_open_translation_sessions() -> dict[str, int]:
         except Exception:
             logging.warning("Failed to clear session presence card for user %s", user_id, exc_info=True)
 
+    # Гасить одну быструю копию мало: указатель лежит ещё и в долгом хранилище
+    # (bt_3_user_api_snapshots / session_presence_card), и до 30.08.2026 закрытие сессии
+    # его не трогало — наутро главный экран звал доделывать вчерашний набор.
+    # Метём ВСЕ карточки, разошедшиеся с источником истины, а не только у закрытых сейчас:
+    # ненулевое число здесь означает, что какой-то путь закрытия снова забыл про указатель,
+    # и оно уходит владельцу сообщением из ночного задания.
+    lying_markers = clear_stale_translation_session_presence_markers()
+
     return {
         "closed_sessions": closed_sessions,
         "closed_empty_sessions": closed_empty_sessions,
+        "cleared_presence_markers": int(lying_markers.get("cleared_snapshots") or 0),
+        "presence_marker_user_ids": list(lying_markers.get("user_ids") or []),
     }
 
 
@@ -713,7 +726,16 @@ def _close_stale_open_translation_sessions_for_user_with_cursor(
         """,
         (int(user_id), source_lang, target_lang, source_lang, target_lang),
     )
-    return int(cursor.rowcount or 0)
+    closed_rows = int(cursor.rowcount or 0)
+    # Закрытие сессии и гашение указателя на неё идут ОДНОЙ транзакцией: разъедутся —
+    # и наутро главный экран снова позовёт доделывать вчерашний набор (30.08.2026).
+    if closed_rows > 0:
+        cleared_user_ids = clear_stale_translation_session_presence_markers_with_cursor(
+            cursor,
+            user_ids=[int(user_id)],
+        )
+        clear_session_presence_fast_copies(cleared_user_ids)
+    return closed_rows
 
 
 def correct_numbering(sentences: list[str]) -> list[str]:
