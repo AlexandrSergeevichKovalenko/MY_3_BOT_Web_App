@@ -3,6 +3,7 @@ import '../answer/answer.css';
 import './dict.css';
 import { WordBreakdown, useTts, SpeakButton, genderClass, resolveArticle, resolveNumber, resolveLemma, clean, cleanArticle as cleanArticleText, stripLeadingArticle, api, haptic, getInitData, getDictToken } from './WordBreakdown';
 import BreakdownSkeleton from './BreakdownSkeleton';
+import { streamDictionaryLookup } from './lookupStream';
 import LiveExamples from './LiveExamples';
 import { guessPair, buildDictionarySavePayload, saveLookedUpWord, savePhraseWithTranslation } from './saveUtils';
 import { languageName, resolvePair, parsePairCode, displayPair } from './langPair.js';
@@ -754,78 +755,24 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
     const mySeq = seqRef.current;
     const controller = new AbortController();
     streamAbortRef.current = controller;
-
-    const dictToken = getDictToken();
-    const streamHeaders = { 'Content-Type': 'application/json', 'X-Telegram-InitData': getInitData() };
-    if (dictToken) streamHeaders['X-Dict-Token'] = dictToken;
-    const resp = await fetch('/api/webapp/dictionary/stream', {
-      method: 'POST',
-      headers: streamHeaders,
-      body: JSON.stringify({ initData: getInitData(), ...(dictToken ? { dqt: dictToken } : {}), word: w, lookup_lang: lookupLang }),
+    // Транспорт общий с попапом выделения в видео/читалке (dictionary/lookupStream.js):
+    // разбор один на всё приложение, поэтому и клиент к нему один.
+    const { result } = await streamDictionaryLookup({
+      word: w,
+      lookupLang,
       signal: controller.signal,
+      isStale: () => mySeq !== seqRef.current,
+      onStreamStart: () => {
+        if (mySeq === seqRef.current) { setEnrich('streaming'); setStreamSections(new Set()); }
+      },
+      onSection: ({ name, fields }) => {
+        if (mySeq !== seqRef.current) return;
+        setItem((prev) => ({ ...(prev || {}), ...fields }));
+        setStreamSections((prev) => new Set(prev).add(name));
+      },
+      onDone: (payload) => applyDeep(payload),
     });
-    if (!resp.ok) {
-      const data = await resp.json().catch(() => ({}));
-      const err = new Error(data?.error || 'Fehler');
-      err.status = resp.status; err.payload = data;
-      throw err;
-    }
-    // Cached hit / immediate result comes back as plain JSON, not a stream.
-    if ((resp.headers.get('Content-Type') || '').includes('application/json')) {
-      const data = await resp.json().catch(() => ({}));
-      return applyDeep(data);
-    }
-    if (!resp.body || typeof resp.body.getReader !== 'function') {
-      throw new Error('stream unsupported');
-    }
-
-    if (mySeq === seqRef.current) { setEnrich('streaming'); setStreamSections(new Set()); }
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let sawSection = false;
-    let finalRich = null;
-
-    const handleFrame = (block) => {
-      let ev = 'message';
-      const dataLines = [];
-      for (const line of block.split('\n')) {
-        if (line.startsWith('event:')) ev = line.slice(6).trim();
-        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
-      }
-      if (!dataLines.length) return;
-      let payload;
-      try { payload = JSON.parse(dataLines.join('\n')); } catch (_e) { return; }
-      if (ev === 'section') {
-        sawSection = true;
-        const fields = (payload && payload.fields) || {};
-        if (mySeq === seqRef.current) {
-          setItem((prev) => ({ ...(prev || {}), ...fields }));
-          setStreamSections((prev) => new Set(prev).add(String(payload?.name || '')));
-        }
-      } else if (ev === 'done') {
-        finalRich = applyDeep(payload);
-      } else if (ev === 'error') {
-        throw new Error(payload?.error || 'stream error');
-      }
-    };
-
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (mySeq !== seqRef.current) { try { controller.abort(); } catch (_e) { /* ignore */ } return finalRich; }
-      buffer += decoder.decode(value, { stream: true });
-      let idx;
-      while ((idx = buffer.indexOf('\n\n')) >= 0) {
-        const frame = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        handleFrame(frame);
-      }
-    }
-    if (buffer.trim()) handleFrame(buffer);
-    if (!finalRich && !sawSection) throw new Error('empty stream');
-    return finalRich;
+    return result || null;
   }, [query, applyDeep]);
 
   // Full GPT breakdown. Streams by default; falls back to the atomic path on any

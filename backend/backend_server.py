@@ -387,7 +387,6 @@ from backend.openai_manager import (
     run_dictionary_enrichment_multilang,
     run_dictionary_lookup_multilang,
     run_dictionary_lookup_multilang_core_fast,
-    run_dictionary_lookup_multilang_reader,
     run_dictionary_collocations,
     run_dictionary_collocations_multilang,
     run_translate_subtitles_ru,
@@ -41435,6 +41434,13 @@ def _serve_dictionary_item(item):
             source_lang=str((item.get("language_pair") or {}).get("source_lang") or "de"),
             target_lang=str((item.get("language_pair") or {}).get("target_lang") or "ru"),
         )
+        # Стражи примеров — здесь же, по той же причине, что и снятие артикля выше:
+        # это единственное место, общее для всех путей ответа. До 30.08.2026 они стояли
+        # только на пути попапа выделения, и весь остальной словарь шёл мимо них.
+        item = sanitize_dictionary_item_examples(
+            item,
+            native_lang=str((item.get("language_pair") or {}).get("source_lang") or "ru"),
+        )
     return _with_corpus_examples(_with_grammar_tables(item))
 
 
@@ -72803,412 +72809,143 @@ def _clean_example_pair(*, learning_sentence: str, native_sentence: str,
     return learning, native
 
 
-def sanitize_dictionary_payload_examples(result: dict, *, source_lang: str, target_lang: str) -> dict:
-    """Чистим примеры В САМИХ ДАННЫХ, а не только в собранном тексте разбора.
+def _example_halves_by_script(a: str, b: str, native_lang: str) -> tuple[str, str] | None:
+    """(изучаемая половина, родная половина) — или None, если различить нельзя.
 
-    Фронт рисует блок «Примеры» с галочками из сырого ответа, поэтому чистка одного
-    лишь текста оставляла на экране ровно ту же кашу («На дороге внезапно rast ein
-    LKW»), от которой текст уже был избавлен."""
-    if not isinstance(result, dict) or not result:
-        return result
-    headword = str(result.get("word_target") or result.get("word_source") or "").strip()
-    translated = str(result.get("word_source") or "").strip()
-    # Слово, которое и по-русски пишется латиницей (Netflix, Google), законно
+    Различаем ПО ПИСЬМУ, а не по именам полей: имена полей у примера зависят от того,
+    в какую сторону шёл запрос (`source`/`target` меняются местами при обратном поиске),
+    и модель их иногда путает между собой. Кириллица против латиницы — признак прямой.
+
+    Родной язык не кириллический — письмо у обеих половин одно, различить нечем.
+    Тогда возвращаем None и НЕ ТРОГАЕМ пример: гадать, где какая половина, нельзя."""
+    left = re.sub(r"\s+", " ", str(a or "")).strip()
+    right = re.sub(r"\s+", " ", str(b or "")).strip()
+    if not left and not right:
+        return None
+    if str(native_lang or "").strip().lower() != "ru":
+        return None
+    left_cyr = bool(_CYRILLIC_TEXT_RE.search(left))
+    right_cyr = bool(_CYRILLIC_TEXT_RE.search(right))
+    if left_cyr == right_cyr:
+        return None
+    return (right, left) if left_cyr else (left, right)
+
+
+def sanitize_dictionary_item_examples(item: dict, *, native_lang: str) -> dict:
+    """Стражи примеров на КАРТОЧКЕ, которая уходит человеку.
+
+    Что ловим (оба случая — «модель не довела перевод до конца»):
+      • родная половина несёт непереведённое искомое слово: «разные Auffassungen»;
+      • родная половина не переведена кусками: «На дороге внезапно rast ein LKW».
+    Испорченный перевод обнуляем, а не выбрасываем пример целиком: немецкая фраза без
+    перевода полезнее каши. Немецкая половина с вклинившейся кириллицей выбрасывается —
+    такое читать нельзя.
+
+    ┌─ ПРОВЕРЕНО 30.08.2026. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ────────────────────────┐
+    │ Раньше эти стражи стояли ТОЛЬКО на пути попапа выделения (mode=selection_      │
+    │ context), а весь остальной словарь шёл мимо них. При переезде попапа на общий   │
+    │ путь словаря 30.08.2026 стражи перенесены СЮДА — в единственную точку выдачи    │
+    │ карточки (`_serve_dictionary_item`), через которую идут все семь путей ответа:  │
+    │ кеш, общий пул, обратная сторона, фон, свежий поход к модели, поток, сохранённая │
+    │ карточка. Отдельного стража у попапа больше нет и быть не должно.               │
+    │                                                                                │
+    │ Транслитерация («миллионенфах» вместо «в миллионы раз») этими стражами НЕ       │
+    │ ловится: они смотрят латиницу. Это ОТДЕЛЬНАЯ незакрытая задача — см. отчёт      │
+    │ 30.08.2026; наивное сравнение с практической транскрипцией резало бы верные     │
+    │ переводы-когнаты («Kultur» → «культура»), поэтому оно здесь не сделано.         │
+    └────────────────────────────────────────────────────────────────────────────────┘"""
+    if not isinstance(item, dict) or not item:
+        return item
+
+    # Заголовок на изучаемом языке — та половина карточки, что написана не кириллицей.
+    head_pair = _example_halves_by_script(
+        item.get("source_text") or item.get("word_de") or "",
+        item.get("target_text") or item.get("word_ru") or "",
+        native_lang,
+    )
+    if not head_pair:
+        return item
+    headword, headword_native = head_pair
+    if not headword:
+        return item
+    # Слово, которое и на родном языке пишется латиницей (Netflix, Google), законно
     # повторяется в переводе — тогда страж заголовка не применяем.
-    headword_is_loanword = _native_half_leaks_headword(translated, headword)
+    headword_is_loanword = _native_half_leaks_headword(headword_native, headword)
 
-    cleaned = dict(result)
+    def _fix_example(example: object, fields: tuple[str, str]) -> object:
+        if not isinstance(example, dict):
+            return example
+        left_key, right_key = fields
+        left_raw = re.sub(r"\s+", " ", str(example.get(left_key) or "")).strip()
+        right_raw = re.sub(r"\s+", " ", str(example.get(right_key) or "")).strip()
+        # ОБЕ половины кириллицей при русском родном — значит, в изучаемое предложение
+        # вклинилась кириллица («…dich auch так.»). Читать такое нельзя, и починить
+        # нечем: пример выбрасываем целиком, как это делал прежний страж попапа.
+        if (
+            str(native_lang or "").strip().lower() == "ru"
+            and left_raw and right_raw
+            and _CYRILLIC_TEXT_RE.search(left_raw) and _CYRILLIC_TEXT_RE.search(right_raw)
+        ):
+            return {**example, left_key: "", right_key: ""}
+        halves = _example_halves_by_script(left_raw, right_raw, native_lang)
+        if not halves:
+            return example
+        learning, native = _clean_example_pair(
+            learning_sentence=halves[0], native_sentence=halves[1],
+            headword=headword, native_lang=native_lang, learning_lang="",
+            headword_is_loanword=headword_is_loanword,
+        )
+        left_is_native = bool(_CYRILLIC_TEXT_RE.search(str(example.get(left_key) or "")))
+        return {
+            **example,
+            left_key: native if left_is_native else learning,
+            right_key: learning if left_is_native else native,
+        }
+
+    cleaned = dict(item)
     examples = cleaned.get("usage_examples")
     if isinstance(examples, list):
         fixed: list = []
-        for item in examples:
-            if not isinstance(item, dict):
+        for example in examples:
+            if not isinstance(example, dict):
+                fixed.append(example)
                 continue
-            learning, native = _clean_example_pair(
-                learning_sentence=item.get("target"), native_sentence=item.get("source"),
-                headword=headword, native_lang=source_lang, learning_lang=target_lang,
-                headword_is_loanword=headword_is_loanword,
-            )
-            if not learning:
+            repaired = _fix_example(example, ("source", "target"))
+            # Обе половины пусты — изучаемое предложение было испорчено и выброшено.
+            if isinstance(repaired, dict) and not str(repaired.get("source") or "").strip() \
+                    and not str(repaired.get("target") or "").strip():
                 continue
-            fixed.append({**item, "target": learning, "source": native})
+            fixed.append(repaired)
         cleaned["usage_examples"] = fixed
 
     meanings = cleaned.get("meanings")
     if isinstance(meanings, dict):
-        def _fix_meaning(meaning: object) -> object:
-            if not isinstance(meaning, dict):
-                return meaning
-            learning, native = _clean_example_pair(
-                learning_sentence=meaning.get("example_target"),
-                native_sentence=meaning.get("example_source"),
-                headword=headword, native_lang=source_lang, learning_lang=target_lang,
-                headword_is_loanword=headword_is_loanword,
-            )
-            return {**meaning, "example_target": learning, "example_source": native}
-
         fixed_meanings = dict(meanings)
         if "primary" in fixed_meanings:
-            fixed_meanings["primary"] = _fix_meaning(fixed_meanings.get("primary"))
+            fixed_meanings["primary"] = _fix_example(fixed_meanings.get("primary"), ("example_source", "example_target"))
         if isinstance(fixed_meanings.get("secondary"), list):
-            fixed_meanings["secondary"] = [_fix_meaning(m) for m in fixed_meanings["secondary"]]
+            fixed_meanings["secondary"] = [
+                _fix_example(m, ("example_source", "example_target")) for m in fixed_meanings["secondary"]
+            ]
         cleaned["meanings"] = fixed_meanings
     return cleaned
 
 
-def _format_selection_dictionary_explanation(result: dict, source_lang: str, target_lang: str) -> str:
-    if not isinstance(result, dict):
-        return "📘 **Перевод**\n—"
-
-    def _clean(value: object) -> str:
-        return str(value or "").strip()
-
-    def _normalize_space(value: object) -> str:
-        return re.sub(r"\s+", " ", _clean(value)).strip()
-
-    def _has_expected_script(text: str, lang: str) -> bool:
-        cleaned = _normalize_space(text)
-        if not cleaned:
-            return False
-        normalized_lang = _normalize_short_lang_code(lang, fallback="")
-        if normalized_lang == "ru":
-            letters = re.findall(r"[A-Za-zА-Яа-яЁё]", cleaned)
-            if len(letters) < 6:
-                return True
-            cyrillic = re.findall(r"[А-Яа-яЁё]", cleaned)
-            return (len(cyrillic) / max(1, len(letters))) >= 0.25
-        return True
-
-    def _native_text(value: object, lang: str) -> str:
-        text = _normalize_space(value)
-        if not text:
-            return ""
-        return text if _has_expected_script(text, lang) else ""
-
-    def _shorten(text: str, limit: int = 220) -> str:
-        clean_text = _normalize_space(text)
-        if len(clean_text) <= limit:
-            return clean_text
-        return clean_text[: max(0, limit - 1)].rstrip() + "…"
-
-    def _labels(lang: str) -> dict[str, str]:
-        normalized = _normalize_short_lang_code(lang, fallback="ru")
-        bundles = {
-            "ru": {
-                "translation": "Перевод",
-                "variants": "Варианты",
-                "meaning": "Смысл",
-                "collocations": "Типичные сочетания",
-                "examples": "Примеры",
-                "grammar": "Грамматика",
-                "note": "Примечание",
-                "hint": "Подсказка",
-                "origin": "Происхождение",
-                "part_of_speech": "часть речи",
-                "article": "артикль",
-                "plural": "plural",
-                "praeteritum": "Prateritum",
-                "perfekt": "Perfekt",
-            },
-            "de": {
-                "translation": "Uebersetzung",
-                "variants": "Varianten",
-                "meaning": "Bedeutung",
-                "collocations": "Typische Verbindungen",
-                "examples": "Beispiele",
-                "grammar": "Grammatik",
-                "note": "Hinweis",
-                "hint": "Merkhilfe",
-                "origin": "Herkunft",
-                "part_of_speech": "Wortart",
-                "article": "Artikel",
-                "plural": "Plural",
-                "praeteritum": "Prateritum",
-                "perfekt": "Perfekt",
-            },
-            "en": {
-                "translation": "Translation",
-                "variants": "Variants",
-                "meaning": "Meaning",
-                "collocations": "Typical Collocations",
-                "examples": "Examples",
-                "grammar": "Grammar",
-                "note": "Note",
-                "hint": "Hint",
-                "origin": "Origin",
-                "part_of_speech": "part of speech",
-                "article": "article",
-                "plural": "plural",
-                "praeteritum": "Prateritum",
-                "perfekt": "Perfekt",
-            },
-            "es": {
-                "translation": "Traduccion",
-                "variants": "Variantes",
-                "meaning": "Significado",
-                "collocations": "Combinaciones tipicas",
-                "examples": "Ejemplos",
-                "grammar": "Gramatica",
-                "note": "Nota",
-                "hint": "Pista",
-                "origin": "Origen",
-                "part_of_speech": "categoria gramatical",
-                "article": "articulo",
-                "plural": "plural",
-                "praeteritum": "Prateritum",
-                "perfekt": "Perfekt",
-            },
-            "it": {
-                "translation": "Traduzione",
-                "variants": "Varianti",
-                "meaning": "Significato",
-                "collocations": "Combinazioni tipiche",
-                "examples": "Esempi",
-                "grammar": "Grammatica",
-                "note": "Nota",
-                "hint": "Suggerimento",
-                "origin": "Origine",
-                "part_of_speech": "parte del discorso",
-                "article": "articolo",
-                "plural": "plural",
-                "praeteritum": "Prateritum",
-                "perfekt": "Perfekt",
-            },
-        }
-        return bundles.get(normalized, bundles["ru"])
-
-    def _extract_collocation(sentence: str, target_word: str) -> str:
-        sent = _normalize_space(sentence)
-        target = _normalize_space(target_word)
-        if not sent or not target:
-            return ""
-        token_pattern = r"[A-Za-zÀ-ÖØ-öø-ÿÄÖÜäöüßА-Яа-яЁё]+(?:'[A-Za-zÀ-ÖØ-öø-ÿÄÖÜäöüßА-Яа-яЁё]+)?"
-        sentence_tokens = re.findall(token_pattern, sent)
-        target_tokens = re.findall(token_pattern, target)
-        if not sentence_tokens or not target_tokens:
-            return ""
-        lower_sent = [item.casefold() for item in sentence_tokens]
-        lower_target = [item.casefold() for item in target_tokens]
-
-        match_index = -1
-        for idx in range(0, len(lower_sent) - len(lower_target) + 1):
-            if lower_sent[idx: idx + len(lower_target)] == lower_target:
-                match_index = idx
-                break
-
-        if match_index < 0:
-            anchor = lower_target[0]
-            min_prefix = max(3, min(5, len(anchor)))
-            for idx, token in enumerate(lower_sent):
-                if token.startswith(anchor[:min_prefix]) or anchor.startswith(token[:min_prefix]):
-                    match_index = idx
-                    lower_target = [token]
-                    break
-
-        if match_index < 0:
-            return ""
-
-        start = max(0, match_index - 1)
-        end = min(len(sentence_tokens), match_index + len(lower_target) + 1)
-        chunk = _normalize_space(" ".join(sentence_tokens[start:end]))
-        if len(re.findall(token_pattern, chunk)) < 2:
-            return ""
-        return chunk
-
-    labels = _labels(source_lang)
-    source_text = _normalize_space(result.get("word_source"))
-    target_text = _normalize_space(result.get("word_target"))
-    detected = _normalize_space(result.get("detected_language")).lower()
-    detected_side = "source" if detected == "source" else ("target" if detected == "target" else "source")
-    translated_text = source_text if detected_side == "target" else target_text
-
-    sections: list[str] = []
-
-    translation_lines = [f"📘 **{labels['translation']}**", translated_text or "—"]
-    translations = result.get("translations")
-    extra_variants: list[str] = []
-    if isinstance(translations, list):
-        seen_variants: set[str] = set()
-        main_lower = translated_text.casefold()
-        for item in translations:
-            if not isinstance(item, dict):
-                continue
-            value = _native_text(item.get("value"), source_lang)
-            if not value:
-                continue
-            value_key = value.casefold()
-            if value_key in seen_variants or value_key == main_lower:
-                continue
-            seen_variants.add(value_key)
-            extra_variants.append(value)
-            if len(extra_variants) >= 2:
-                break
-    if extra_variants:
-        translation_lines.append(f"- {labels['variants']}:")
-        for value in extra_variants:
-            translation_lines.append(f"  - {value}")
-    sections.append("\n".join(translation_lines))
-
-    meanings = result.get("meanings") if isinstance(result.get("meanings"), dict) else {}
-    primary = meanings.get("primary") if isinstance(meanings, dict) and isinstance(meanings.get("primary"), dict) else {}
-    meaning_value = _native_text(primary.get("value"), source_lang)
-    meaning_context = _native_text(primary.get("context"), source_lang)
-    meaning_text = meaning_value or meaning_context
-    if meaning_text:
-        if meaning_context and meaning_context.casefold() != meaning_value.casefold() and meaning_value:
-            meaning_text = f"{meaning_value} ({meaning_context})"
-        sections.append(f"🧠 **{labels['meaning']}**\n{_shorten(meaning_text, 260)}")
-
-    collocation_candidates: list[str] = []
-    usage_examples = result.get("usage_examples") if isinstance(result.get("usage_examples"), list) else []
-    for item in usage_examples[:4]:
-        if not isinstance(item, dict):
-            continue
-        target_sentence = _normalize_space(item.get("target"))
-        collocation = _extract_collocation(target_sentence, target_text)
-        if collocation:
-            collocation_candidates.append(collocation)
-
-    if isinstance(primary, dict):
-        collocation = _extract_collocation(_normalize_space(primary.get("example_target")), target_text)
-        if collocation:
-            collocation_candidates.append(collocation)
-    secondary = meanings.get("secondary") if isinstance(meanings, dict) else []
-    if isinstance(secondary, list):
-        for item in secondary[:2]:
-            if not isinstance(item, dict):
-                continue
-            collocation = _extract_collocation(_normalize_space(item.get("example_target")), target_text)
-            if collocation:
-                collocation_candidates.append(collocation)
-
-    collocations: list[str] = []
-    seen_collocations: set[str] = set()
-    for value in collocation_candidates:
-        key = value.casefold()
-        if key in seen_collocations:
-            continue
-        seen_collocations.add(key)
-        collocations.append(value)
-        if len(collocations) >= 3:
-            break
-    if collocations:
-        block = [f"🧩 **{labels['collocations']}**"]
-        block.extend([f"- {value}" for value in collocations])
-        sections.append("\n".join(block))
-
-    _cyrillic_re = re.compile(r"[А-Яа-яЁё]")
-
-    def _split_example_fields(item: dict) -> tuple[str, str]:
-        """Return (learning_lang_sentence, native_lang_sentence).
-
-        The LLM occasionally swaps source/target fields.  For Cyrillic-based
-        source languages we detect the swap via script analysis: the learning
-        language sentence (target_lang, e.g. German) will have no Cyrillic.
-        """
-        field_a = _normalize_space(item.get("source") or "")
-        field_b = _normalize_space(item.get("target") or "")
-        if source_lang == "ru":
-            a_cyrillic = bool(_cyrillic_re.search(field_a))
-            b_cyrillic = bool(_cyrillic_re.search(field_b))
-            if a_cyrillic and not b_cyrillic:
-                return field_b, field_a  # correct: source=ru, target=de
-            if not a_cyrillic and b_cyrillic:
-                return field_a, field_b  # swapped: source=de, target=ru → fix
-        return field_b, field_a  # default: trust field names
-
-    def _shared_prefix_len(a: str, b: str) -> int:
-        length = 0
-        for x, y in zip(a, b):
-            if x != y:
-                break
-            length += 1
-        return length
-
-    # Страж вынесен на уровень модуля: этим же кодом чистятся САМИ ДАННЫЕ перед
-    # отправкой на фронт, иначе блок «Примеры» с галочками остаётся грязным.
-    _native_side_leaks_headword = _native_half_leaks_headword
-
-    # Untranslatable headwords (brands, loanwords: Netflix, Google) legitimately reappear
-    # in the native example — the word IS its own translation. Detect that so the leak
-    # guard below never strips a genuine loanword.
-    _headword_is_loanword = _native_side_leaks_headword(translated_text, target_text)
-
-    example_lines: list[str] = []
-    for item in usage_examples[:3]:
-        if not isinstance(item, dict):
-            continue
-        learning_sentence, native_sentence_raw = _split_example_fields(item)
-        if not learning_sentence:
-            continue
-        # Corrupted learning sentence (German with Cyrillic spliced in, e.g. "…dich auch
-        # так.") — a learner must never read that. Drop the whole example.
-        if target_lang != "ru" and _cyrillic_re.search(learning_sentence):
-            continue
-        native_sentence = _native_text(native_sentence_raw, source_lang) if native_sentence_raw else ""
-        # Native half still carries the (translatable) foreign headword → GPT left the
-        # looked-up word untranslated. Drop the corrupted half; show German-only.
-        if (
-            native_sentence
-            and not _headword_is_loanword
-            and _native_side_leaks_headword(native_sentence, target_text)
-        ):
-            native_sentence = ""
-        # Перевод недоделан наполовину: «На дороге внезапно rast ein LKW». Заголовок тут
-        # ни при чём — просто кусок изучаемого языка остался внутри русской фразы.
-        if native_sentence and _native_half_is_untranslated(native_sentence, source_lang):
-            native_sentence = ""
-        if native_sentence:
-            example_lines.append(f"{len(example_lines) + 1}. {learning_sentence} — {native_sentence}")
-        else:
-            example_lines.append(f"{len(example_lines) + 1}. {learning_sentence}")
-    if example_lines:
-        examples_block = [f"📝 **{labels['examples']}**", f"{labels['examples']}:"]
-        examples_block.extend(example_lines)
-        sections.append("\n".join(examples_block))
-
-    part_of_speech = _normalize_space(result.get("part_of_speech")).lower()
-    article = _normalize_space(result.get("article"))
-    forms = result.get("forms") if isinstance(result.get("forms"), dict) else {}
-    plural = _normalize_space(forms.get("plural"))
-    praeteritum = _normalize_space(forms.get("praeteritum"))
-    perfekt = _normalize_space(forms.get("perfekt"))
-
-    is_noun = bool(re.search(r"\b(noun|substantiv|nomen|sostantiv|sustantiv)\b", part_of_speech)) or bool(article)
-    is_verb = bool(re.search(r"\b(verb|verbo)\b", part_of_speech)) or bool(praeteritum or perfekt)
-    grammar_lines: list[str] = []
-    if is_noun or is_verb:
-        if part_of_speech:
-            grammar_lines.append(f"- {labels['part_of_speech']}: {part_of_speech}")
-        if is_noun:
-            if article:
-                grammar_lines.append(f"- {labels['article']}: {article}")
-            if plural:
-                grammar_lines.append(f"- {labels['plural']}: {plural}")
-        if is_verb:
-            if praeteritum:
-                grammar_lines.append(f"- {labels['praeteritum']}: {praeteritum}")
-            if perfekt:
-                grammar_lines.append(f"- {labels['perfekt']}: {perfekt}")
-    if grammar_lines:
-        sections.append("\n".join([f"⚙ **{labels['grammar']}**", *grammar_lines]))
-
-    usage_note = _native_text(result.get("usage_note"), source_lang)
-    if usage_note:
-        sections.append(f"💡 **{labels['note']}**\n{_shorten(usage_note, 220)}")
-
-    memory_tip = _native_text(result.get("memory_tip"), source_lang)
-    if memory_tip:
-        sections.append(f"🧠 **{labels['hint']}**\n{_shorten(memory_tip, 180)}")
-
-    etymology_note = _native_text(result.get("etymology_note"), source_lang)
-    if etymology_note:
-        sections.append(f"🌍 **{labels['origin']}**\n{_shorten(etymology_note, 180)}")
-
-    compact_sections = [section for section in sections if _normalize_space(section)]
-    if not compact_sections:
-        return "📘 **Перевод**\n—"
-    return "\n\n".join(compact_sections)
+# ┌─ УДАЛЕНО 30.08.2026: _format_selection_dictionary_explanation (≈370 строк). ─────┐
+# │ Она склеивала ответ модели в один текст с эмодзи для попапа выделения. Оттуда    │
+# │ шли ЧЕТЫРЕ дефекта, показанные владельцем на экране 30.08.2026:                  │
+# │  • строка «Перевод» брала половину карточки по полю detected_language от модели  │
+# │    и слепо ему верила — на ошибке модели туда попадало немецкое слово            │
+# │    («Перевод: millionenfach», «Перевод: Menetekel»);                             │
+# │  • служебная строка-метка «Примеры:» печаталась ДЛЯ ПАРСЕРА фронта и уходила      │
+# │    на экран второй строкой заголовка;                                            │
+# │  • примеры показывались дважды: в тексте и в блоке с галочками ниже;             │
+# │  • «Типичные сочетания» нарезались механически — окном ±1 слово вокруг искомого  │
+# │    в примере, отсюда «Das war» и «für das Team». Это прямое нарушение правила     │
+# │    ноль: лингвистика, выведенная арифметикой.                                    │
+# │ Не возвращать. Разбор собирается ОДИН раз — общей карточкой словаря              │
+# │ (`WordBreakdown` на фронте), и попап показывает именно её.                       │
+# └──────────────────────────────────────────────────────────────────────────────────┘
 
 
 @app.route("/api/webapp/explain", methods=["POST"])
@@ -73223,7 +72960,7 @@ def explain_webapp_translation():
         return jsonify({"error": "initData обязателен"}), 400
     if not original_text:
         return jsonify({"error": "original_text обязателен"}), 400
-    if mode != "selection_context" and not user_translation:
+    if not user_translation:
         return jsonify({"error": "original_text и user_translation обязательны"}), 400
 
     if not _telegram_hash_is_valid(init_data):
@@ -73266,36 +73003,18 @@ def explain_webapp_translation():
     req_explain_lang = str(payload.get("explanation_language") or "").strip().lower()
     if req_explain_lang not in {"ru", "de", "en", "es", "it"}:
         req_explain_lang = source_lang
-    dictionary_result_payload = None
-    dictionary_direction = None
+    # ┌─ УБРАНО 30.08.2026: mode="selection_context". ─────────────────────────────────┐
+    # │ Разбор выделенного слова в видео и читалке ходил СЮДА и получал свой,          │
+    # │ урезанный разбор: отдельный промпт `dictionary_assistant_multilang_reader`,    │
+    # │ склейка ответа в текст с эмодзи и парсер примеров регуляркой на фронте.        │
+    # │ Один и тот же словарь отвечал двумя разными качествами, и попап шёл мимо       │
+    # │ общего пула — то есть платил модели за слова, которые у нас уже лежали.        │
+    # │ Теперь попап зовёт `/api/webapp/dictionary/stream`, ту же карточку, что словарь.│
+    # │ Не заводить эту ветку заново: у разбора одно место, и оно там.                 │
+    # └────────────────────────────────────────────────────────────────────────────────┘
     explanation_json = None
     try:
-        if mode == "selection_context":
-            dictionary_result = asyncio.run(
-                run_dictionary_lookup_multilang_reader(
-                    word=original_text,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                )
-            )
-            if isinstance(dictionary_result, dict):
-                # Чистим примеры в САМИХ данных: блок «Примеры» с галочками фронт
-                # рисует из этого ответа напрямую, мимо собранного ниже текста.
-                dictionary_result = sanitize_dictionary_payload_examples(
-                    dictionary_result, source_lang=source_lang, target_lang=target_lang,
-                )
-                dictionary_result_payload = dictionary_result
-                detected = str(dictionary_result.get("detected_language") or "").strip().lower()
-                if detected == "target":
-                    dictionary_direction = f"{target_lang}-{source_lang}"
-                elif detected == "source":
-                    dictionary_direction = f"{source_lang}-{target_lang}"
-            explanation = _format_selection_dictionary_explanation(
-                dictionary_result,
-                source_lang=source_lang,
-                target_lang=target_lang,
-            )
-        elif mode == "grammar":
+        if mode == "grammar":
             # Progressive companion block: A1-A2 grammar walk-through of the CORRECT
             # sentence, fetched in parallel by the modal so the error breakdown paints first.
             explanation_json = asyncio.run(
@@ -73360,7 +73079,7 @@ def explain_webapp_translation():
         translation_id = int(payload.get("translation_id") or 0)
     except (TypeError, ValueError):
         translation_id = 0
-    if mode != "selection_context" and explanation_json and translation_id > 0:
+    if explanation_json and translation_id > 0:
         try:
             purge_stale_translation_explanations(user_id=int(user_id))
             save_translation_explanation(
@@ -73378,7 +73097,7 @@ def explain_webapp_translation():
                 translation_id,
                 mode or "translation",
             )
-    elif mode != "selection_context" and explanation_json and translation_id <= 0:
+    elif explanation_json and translation_id <= 0:
         # Разбор получен, но привязать его не к чему: фронт не прислал translation_id.
         # Тихо это не проглатываем — иначе значок «разбор сохранён» просто не появится,
         # и никто не узнает, почему.
@@ -73395,8 +73114,6 @@ def explain_webapp_translation():
             "explanation_json": explanation_json,
             "explanation_language": req_explain_lang,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
-            "dictionary_item": dictionary_result_payload,
-            "direction": dictionary_direction,
             "saved_for_replay": saved_for_replay,
         }
     )
