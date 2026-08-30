@@ -26,6 +26,8 @@ import BonusProDaysModal from './components/BonusProDaysModal';
 import VocabSearchOverlay from './components/VocabSearchOverlay';
 import CardOwnNotes from './components/CardOwnNotes';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass, splitLeadingArticle, getInitData as getDictInitData, getDictToken } from './dictionary/WordBreakdown';
+import { streamDictionaryLookup } from './dictionary/lookupStream';
+import BreakdownSkeleton from './dictionary/BreakdownSkeleton';
 import { splitTranslationSenses } from './dictionary/senses';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
@@ -182,6 +184,32 @@ function EmbeddedWordCard({ item, hideMeanings }) {
   return (
     <div className="dq-card vocab-rich-card">
       <WordBreakdown item={item} tts={tts} hideMeanings={hideMeanings} onSaveChip={saveChip} onSaveExample={saveExample} savedChips={savedChips} />
+    </div>
+  );
+}
+
+// Карточка разбора в попапе выделенного слова (видео и читалка).
+//
+// Это ТОТ ЖЕ `WordBreakdown`, что в словаре: значения, формы, грамматика, управление,
+// состав слова, устойчивые сочетания, синонимы, антонимы, примеры. До 30.08.2026 попап
+// рисовал вместо неё самодельную простыню из склеенного на бэкенде текста — оттуда шли
+// и «Примеры» дважды, и служебная строка-метка на экране, и «типичные сочетания»,
+// нарезанные окном ±1 слово вокруг искомого.
+//
+// Сохранение НЕ берётся из общего `EmbeddedWordCard`: у попапа свой путь сохранения —
+// он кладёт слово в автопапку ролика (origin_process='youtube'), а общий кладёт в корень.
+function SelectionGptCard({ item, onSaveChip, onSaveExample, savedChips }) {
+  const tts = useDictTts();
+  if (!item || typeof item !== 'object') return null;
+  return (
+    <div className="dq-card vocab-rich-card">
+      <WordBreakdown
+        item={item}
+        tts={tts}
+        onSaveChip={onSaveChip}
+        onSaveExample={onSaveExample}
+        savedChips={savedChips}
+      />
     </div>
   );
 }
@@ -6965,9 +6993,19 @@ function AppInner() {
     if (appToastTimerRef.current) clearTimeout(appToastTimerRef.current);
     setAppToast(null);
   }, []);
-  const [selectionGptData, setSelectionGptData] = useState({ translation: '', notes: '', examples: [] });
+  const [selectionGptData, setSelectionGptData] = useState({ translation: '', dictionaryItem: null, direction: '', languagePair: null });
+  // Состояние ИМЕННО карточки разбора, отдельно от быстрого перевода: перевод приходит
+  // сразу, карточка достраивается секциями. Одним флагом это описать нельзя — человек
+  // должен видеть перевод, пока грамматика ещё едет.
+  const [selectionGptCardStatus, setSelectionGptCardStatus] = useState('idle'); // idle|loading|streaming|done|error
+  // Отказ по дневному лимиту — не ошибка, а ответ сервера. Показывается янтарной
+  // плашкой, а НЕ красной: правило интерфейса (CLAUDE.md, «Тарифы / paywall»).
+  const [selectionGptCardLimit, setSelectionGptCardLimit] = useState('');
+  const [selectionGptCardSections, setSelectionGptCardSections] = useState(() => new Set());
+  const [selectionGptSavedChips, setSelectionGptSavedChips] = useState(() => new Set());
+  const selectionGptSeqRef = useRef(0);
+  const selectionGptAbortRef = useRef(null);
   const [selectionGptSaveOriginalChecked, setSelectionGptSaveOriginalChecked] = useState(true);
-  const [selectionGptSaveExamplesChecked, setSelectionGptSaveExamplesChecked] = useState({});
   const [selectionGptSaveLoading, setSelectionGptSaveLoading] = useState(false);
   const [selectionGptSaveError, setSelectionGptSaveError] = useState('');
   const [selectionGptSaveMessage, setSelectionGptSaveMessage] = useState('');
@@ -24232,80 +24270,11 @@ function AppInner() {
     await handleSelectionOpenDictionary(text);
   };
 
-  const parseSelectionGptPayload = (explanationRaw, quickTranslationRaw, explainPayload = {}) => {
-    const quickTranslation = String(quickTranslationRaw || '').trim();
-    const explanation = String(explanationRaw || '').trim();
-    const lines = explanation
-      .split(/\r?\n/)
-      .map((line) => String(line || '').trim())
-      .filter(Boolean);
-    const explanationLinesRaw = explanation.split(/\r?\n/);
-    const exampleSectionTitles = new Set([
-      'примеры:',
-      'beispiele:',
-      'examples:',
-      'ejemplos:',
-      'esempi:',
-    ]);
-    const examples = [];
-    const exampleSectionStart = explanationLinesRaw.findIndex((line) => (
-      exampleSectionTitles.has(String(line || '').trim().toLowerCase())
-    ));
-    if (exampleSectionStart >= 0) {
-      for (let index = exampleSectionStart + 1; index < explanationLinesRaw.length; index += 1) {
-        const rawLine = String(explanationLinesRaw[index] || '');
-        const trimmed = rawLine.trim();
-        if (!trimmed) {
-          if (examples.length > 0) break;
-          continue;
-        }
-        const isExampleItem = /^[-•*]\s+/.test(trimmed) || /^\d+\.\s+/.test(trimmed);
-        if (!isExampleItem) {
-          if (examples.length > 0) break;
-          continue;
-        }
-        const normalized = trimmed
-          .replace(/^[-•*]\s+/, '')
-          .replace(/^\d+\.\s+/, '')
-          .trim();
-        if (!normalized) continue;
-        examples.push(normalized);
-        if (examples.length >= 4) break;
-      }
-    }
-    return {
-      translation: quickTranslation || lines[0] || '',
-      notes: explanation,
-      examples,
-      dictionaryItem: explainPayload?.dictionary_item && typeof explainPayload.dictionary_item === 'object'
-        ? explainPayload.dictionary_item
-        : null,
-      direction: String(explainPayload?.direction || '').trim().toLowerCase(),
-      languagePair: resolveLanguagePairForUI(explainPayload?.language_pair || dictionaryLanguagePair),
-    };
-  };
-
   const isYoutubeSelectionContext = () => Boolean(
     youtubeAppFullscreen
     || String(selectionType || '').startsWith('youtube_')
     || String(selectionInlineLookup?.direction || '').startsWith('youtube_')
   );
-
-  const splitBilingualGptLine = (value) => {
-    const text = normalizeSelectionText(value)
-      .replace(/^["“”„«»]+/, '')
-      .replace(/["“”„«»]+$/, '')
-      .trim();
-    if (!text) return { left: '', right: '' };
-    const parts = text
-      .split(/\s+(?:—|–|-|->|→)\s+/)
-      .map((part) => part.trim())
-      .filter(Boolean);
-    if (parts.length >= 2) {
-      return { left: parts[0], right: parts.slice(1).join(' — ') };
-    }
-    return { left: text, right: '' };
-  };
 
   const getSelectionGptDictionarySemanticCategory = () => {
     const item = selectionGptData?.dictionaryItem;
@@ -24327,7 +24296,7 @@ function AppInner() {
 
   const resetSelectionGptSaveState = () => {
     setSelectionGptSaveOriginalChecked(true);
-    setSelectionGptSaveExamplesChecked({});
+    setSelectionGptSavedChips(new Set());
     setSelectionGptSaveLoading(false);
     setSelectionGptSaveError('');
     setSelectionGptSaveMessage('');
@@ -24456,6 +24425,17 @@ function AppInner() {
         return true;
       }
     }
+    return saveSelectionGptWordByLookup(cleaned, { source_kind: 'original_word' });
+  };
+
+  // Спросить словарь про слово и сохранить его КАРТОЧКОЙ, а не голой строкой.
+  // Этим путём кладутся: выделенное слово (когда разбор ещё не приехал) и любой
+  // синоним / антоним / родственное слово, по которому человек тапнул в карточке.
+  // Тонкую запись «слово + перевод» здесь не создаём: сохранённое должно нести тот же
+  // разбор, что человек видел на экране.
+  const saveSelectionGptWordByLookup = async (rawText, originMeta) => {
+    const cleaned = normalizeSelectionText(rawText);
+    if (!cleaned) return false;
     const normalized = await normalizeForLookup(cleaned);
     const lookupParams = resolveQuickTranslateParams(normalized);
     const lookupLangHint = normalizeLangCode(lookupParams.sourceLangHint || '');
@@ -24526,22 +24506,24 @@ function AppInner() {
       targetLang: directionTargetLang,
       direction,
       responseJson: buildSelectionGptResponseJson(responseJson),
-      originMeta: {
-        source_kind: 'original_word',
-      },
+      originMeta: (originMeta && typeof originMeta === 'object')
+        ? originMeta
+        : { source_kind: 'original_word' },
     });
     return true;
   };
 
-  const saveSelectionGptExample = async (exampleText, exampleIndex) => {
+  // Пример сохраняется тапом прямо в карточке — как в словаре. Перевод берём тот,
+  // что человек ВИДИТ рядом с примером; своего не сочиняем, а если его нет — спрашиваем
+  // быстрый перевод и честно падаем, когда и он молчит.
+  const saveSelectionGptExample = async (exampleDe, exampleRu) => {
     const pair = resolveLanguagePairForUI(selectionGptData?.languagePair || dictionaryLanguagePair);
-    const bilingual = splitBilingualGptLine(exampleText);
-    const cleaned = bilingual.left;
+    const cleaned = normalizeSelectionText(exampleDe);
     if (!cleaned) return false;
     let sourceLang = pair.target_lang;
     let targetLang = pair.source_lang;
     let sourceText = cleaned;
-    let targetText = String(bilingual.right || '').trim();
+    let targetText = normalizeSelectionText(exampleRu);
     if (!targetText) {
       const quick = await requestQuickTranslation(cleaned);
       sourceLang = normalizeLangCode(quick.detectedSource || quick.sourceLangHint || pair.target_lang) || pair.target_lang;
@@ -24566,84 +24548,119 @@ function AppInner() {
       originMeta: {
         source_kind: 'gpt_example',
         source_word: getSelectionGptWordText(),
-        example_index: exampleIndex + 1,
       },
     });
     return true;
   };
 
+  // Тап по примеру / синониму / родственному слову в карточке. Отмечаем галочкой сразу,
+  // пишем в фоне: ждать сервера человеку незачем. Не легло — галочку снимаем обратно,
+  // а не оставляем ложную отметку «сохранено».
+  const handleSelectionGptCardSave = (text, saver) => {
+    const key = String(text || '').trim();
+    if (!key) return;
+    if (!initData) {
+      showAppToast(initDataMissingMsg);
+      return;
+    }
+    setSelectionGptSavedChips((prev) => {
+      if (prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+    (async () => {
+      try {
+        await saver();
+      } catch (error) {
+        setSelectionGptSavedChips((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+        const message = String(error?.message || '').trim();
+        if (isDictionarySaveLimitError(message)) {
+          showDictionarySaveLimitToast();
+          return;
+        }
+        console.warn('[selection-card-save]', message);
+        showAppToast(tr('Не удалось сохранить. Попробуйте ещё раз.', 'Speichern hat nicht geklappt. Bitte erneut versuchen.'));
+      }
+    })();
+  };
+
+  const handleSelectionGptSaveExampleTap = (exampleDe, exampleRu) => {
+    handleSelectionGptCardSave(exampleDe, () => saveSelectionGptExample(exampleDe, exampleRu));
+  };
+
+  const handleSelectionGptSaveChipTap = (chipText) => {
+    handleSelectionGptCardSave(chipText, () => saveSelectionGptWordByLookup(chipText, {
+      source_kind: 'related_word',
+      source_word: getSelectionGptWordText(),
+    }));
+  };
+
+  // Кнопка «Сохранить в словарь» кладёт САМО СЛОВО. Примеры и синонимы сохраняются
+  // тапом прямо в карточке (как в словаре) — отдельного списка с галочками здесь больше
+  // нет: он показывал те же примеры второй раз, сразу под теми, что уже стоят в карточке.
   const handleSelectionGptSaveToDictionary = () => {
     if (!initData) {
       setSelectionGptSaveError(initDataMissingMsg);
       return;
     }
-    const selectedExamples = (Array.isArray(selectionGptData.examples) ? selectionGptData.examples : [])
-      .map((item, index) => ({ text: String(item || '').trim(), index }))
-      .filter((item) => Boolean(selectionGptSaveExamplesChecked[item.index]) && Boolean(item.text));
     const originalWord = getSelectionGptWordText();
-    const shouldSaveOriginal = Boolean(selectionGptSaveOriginalChecked && originalWord);
-    if (!shouldSaveOriginal && selectedExamples.length === 0) {
+    if (!selectionGptSaveOriginalChecked || !originalWord) {
       showNoticeModal({
         emoji: '✅',
         title: tr('Ничего не отмечено', 'Nichts markiert'),
         message: tr(
-          'Отметьте галочкой само слово или хотя бы один пример — и тогда сохраним.',
-          'Markiere das Wort selbst oder mindestens ein Beispiel — dann speichern wir es.'
+          'Отметьте галочкой само слово — и тогда сохраним. Примеры и синонимы сохраняются нажатием прямо в разборе.',
+          'Markiere das Wort selbst — dann speichern wir es. Beispiele und Synonyme speicherst du direkt in der Analyse per Tippen.'
         ),
       });
       setSelectionGptSaveMessage('');
       return;
     }
-    // Optimistic: release the user immediately, save in background
+    // Подтверждаем сразу, пишем в фоне: ждать сервера человеку незачем.
     const label = tr('Сохранено в словарь ✅', 'Gespeichert ✅');
     setSelectionGptSaveMessage(label);
     setSelectionGptSaveError('');
     showInlineToast(label);
-    // Close the panel so the user can continue reading
     setTimeout(() => setSelectionGptOpen(false), 900);
-    // Background save — errors shown as toast, never block UI
     (async () => {
-      let savedCount = 0;
-      const failedItems = [];
-      if (shouldSaveOriginal) {
-        try {
-          const saved = await saveSelectionGptOriginalWord(originalWord);
-          if (saved) savedCount += 1;
-        } catch (error) {
-          failedItems.push(tr(
-            `Оригинальное слово: ${String(error?.message || '').trim()}`,
-            `Originalwort: ${String(error?.message || '').trim()}`
-          ));
-        }
-      }
-      for (const item of selectedExamples) {
-        try {
-          const saved = await saveSelectionGptExample(item.text, item.index);
-          if (saved) savedCount += 1;
-        } catch (error) {
-          failedItems.push(tr(
-            `Пример ${item.index + 1}: ${String(error?.message || '').trim()}`,
-            `Beispiel ${item.index + 1}: ${String(error?.message || '').trim()}`
-          ));
-        }
-      }
-      if (failedItems.length > 0) {
-        const hasLimitError = failedItems.some((item) => (
-          isDictionarySaveLimitError(item) || normalizeSelectionText(item).includes(normalizeSelectionText(getDictionarySaveLimitText()))
-        ));
-        if (hasLimitError) {
+      try {
+        await saveSelectionGptOriginalWord(originalWord);
+      } catch (error) {
+        const message = String(error?.message || '').trim();
+        if (isDictionarySaveLimitError(message) || normalizeSelectionText(message).includes(normalizeSelectionText(getDictionarySaveLimitText()))) {
           showDictionarySaveLimitToast();
           setSelectionGptSaveMessage('');
           setSelectionGptSaveError(getDictionarySaveLimitText());
         } else {
-          showInlineToast((console.warn('[examples-save]', failedItems), tr('Не удалось сохранить некоторые примеры. Попробуйте ещё раз.', 'Einige Beispiele konnten nicht gespeichert werden. Bitte erneut versuchen.')));
-          setSelectionGptSaveError(failedItems.join('\n'));
+          console.warn('[selection-word-save]', message);
+          showInlineToast(tr('Не удалось сохранить слово. Попробуйте ещё раз.', 'Das Wort konnte nicht gespeichert werden. Bitte erneut versuchen.'));
+          setSelectionGptSaveMessage('');
+          setSelectionGptSaveError(tr('Не удалось сохранить слово. Попробуйте ещё раз.', 'Das Wort konnte nicht gespeichert werden. Bitte erneut versuchen.'));
         }
         setSelectionGptOpen(true);
       }
     })();
   };
 
+  // «Разбор» по выделенному слову в видео и читалке.
+  //
+  // ДВА ЭТАПА, И ОНИ НЕЗАВИСИМЫ:
+  //   1) быстрый перевод — он приходит первым и стоит в шапке шита;
+  //   2) полноценная карточка словаря — та же, что в самом словаре, потоком по секциям
+  //      (`/api/webapp/dictionary/stream`: кеш → FreeDict → общий пул → модель).
+  //
+  // Своего пути к модели у попапа больше НЕТ. До 30.08.2026 он ходил в
+  // `/api/webapp/explain` с mode=selection_context, где отдельный урезанный промпт
+  // отдавал JSON, бэкенд склеивал из него текст с эмодзи, а фронт регуляркой выпарсивал
+  // из этого текста примеры обратно. Оттуда шли все четыре дефекта, которые владелец
+  // показал на экране 30.08.2026: немецкое слово в строке «Перевод», служебная метка
+  // «Примеры:» на экране, примеры дважды и «типичные сочетания», нарезанные окном
+  // ±1 слово вокруг искомого («Das war», «für das Team»).
   const handleSelectionGptLookup = async () => {
     const cleaned = normalizeSelectionText(selectionText);
     if (!cleaned) return;
@@ -24651,29 +24668,32 @@ function AppInner() {
       setWebappError(initDataMissingMsg);
       return;
     }
+    const mySeq = (selectionGptSeqRef.current += 1);
+    const isStale = () => mySeq !== selectionGptSeqRef.current;
+    try { selectionGptAbortRef.current?.abort(); } catch (_e) { /* предыдущий запрос уже закрыт */ }
+    const controller = new AbortController();
+    selectionGptAbortRef.current = controller;
+
     setSelectionGptWord(cleaned);
     setSelectionGptOpen(true);
     setSelectionGptLoading(true);
     setSelectionGptError('');
+    setSelectionGptCardLimit('');
+    setSelectionGptCardStatus('loading');
+    setSelectionGptCardSections(new Set());
     resetSelectionGptSaveState();
-    setSelectionGptData({ translation: '', notes: '', examples: [] });
+    setSelectionGptData({ translation: '', dictionaryItem: null, direction: '', languagePair: null });
+
+    // ЭТАП 1 — перевод. Он и есть ответ на вопрос «что это значит»; карточка идёт следом.
+    let quick = null;
     try {
-      const quick = await requestQuickTranslation(cleaned);
-      const explainResponse = await fetch('/api/webapp/explain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          mode: 'selection_context',
-          original_text: cleaned,
-          user_translation: quick.translation || cleaned,
-        }),
-      });
-      if (!explainResponse.ok) {
-        throw new Error(await readApiError(explainResponse, 'Объяснение не собралось. Попробуйте ещё раз.', 'Die Erklärung ist nicht fertig geworden. Versuch es noch einmal.'));
-      }
-      const explainData = await explainResponse.json();
-      setSelectionGptData(parseSelectionGptPayload(explainData?.explanation, quick.translation, explainData));
+      quick = await requestQuickTranslation(cleaned);
+    } catch (error) {
+      console.warn('[selection-gpt] быстрый перевод не ответил', error);
+    }
+    if (isStale()) return;
+    if (quick) {
+      setSelectionGptData((prev) => ({ ...prev, translation: String(quick.translation || '').trim() }));
       setSelectionInlineLookup({
         loading: false,
         word: cleaned,
@@ -24681,24 +24701,107 @@ function AppInner() {
         direction: `${String(quick.detectedSource || quick.sourceLangHint || 'auto').toLowerCase()}-${String(quick.targetLang).toLowerCase()}`,
         provider: quick.provider || '',
       });
+    }
+    setSelectionGptLoading(false);
+
+    // ЭТАП 2 — карточка. Подсказку о языке запроса берём из того же определителя, что и
+    // быстрый словарь: слово из немецких субтитров разбирается как немецкое.
+    const lookupLangHint = normalizeLangCode(
+      (quick && (quick.detectedSource || quick.sourceLangHint)) || resolveQuickTranslateParams(cleaned).sourceLangHint || ''
+    ) || undefined;
+    const applyCard = (data) => {
+      const item = data?.item && typeof data.item === 'object' ? data.item : null;
+      if (!item) return null;
+      if (isStale()) return item;
+      setSelectionGptData((prev) => ({
+        ...prev,
+        dictionaryItem: item,
+        direction: String(data?.direction || prev.direction || '').trim().toLowerCase(),
+        languagePair: resolveLanguagePairForUI(data?.language_pair || dictionaryLanguagePair),
+      }));
+      setSelectionGptCardStatus('done');
+      return item;
+    };
+    try {
+      const { result } = await streamDictionaryLookup({
+        word: cleaned,
+        lookupLang: lookupLangHint,
+        signal: controller.signal,
+        isStale,
+        onStreamStart: () => { if (!isStale()) setSelectionGptCardStatus('streaming'); },
+        onSection: ({ name, fields }) => {
+          if (isStale()) return;
+          setSelectionGptCardSections((prev) => new Set(prev).add(name));
+          // Секция приезжает куском карточки — доклеиваем к тому, что уже стоит на экране.
+          setSelectionGptData((prev) => ({
+            ...prev,
+            dictionaryItem: { ...(prev.dictionaryItem || {}), ...fields },
+          }));
+        },
+        onDone: applyCard,
+      });
+      if (!result && !isStale()) {
+        // Поток оборвался, не отдав собранную карточку. Это сбой ТРАНСПОРТА, а не
+        // «разбора нет»: спрашиваем тем же путём обычным запросом.
+        const data = await dictApi('/api/webapp/dictionary', { word: cleaned, lookup_lang: lookupLangHint });
+        if (!applyCard(data) && !isStale()) setSelectionGptCardStatus('error');
+      }
     } catch (error) {
-      // Soft toast instead of a raw red banner inside the sheet — there's nothing to
-      // show on error, so close the sheet and float a friendly self-dismissing message.
-      const msg = tr('Объяснение не собралось. Попробуйте ещё раз.', 'Die Erklärung ist nicht fertig geworden. Versuch es noch einmal.');
-      setSelectionGptOpen(false);
-      setSelectionGptWord('');
-      resetSelectionGptSaveState();
-      showAppToast(msg);
-    } finally {
-      setSelectionGptLoading(false);
+      if (isStale() || error?.name === 'AbortError') return;
+      const status = Number(error?.status || 0);
+      if (status === 429 || String(error?.payload?.error || '') === 'free_limit_exceeded') {
+        // Дневной лимит — это ОТВЕТ, а не поломка: показываем словами и не прячем.
+        setSelectionGptCardStatus('error');
+        setSelectionGptCardLimit(
+          String(error?.payload?.message || '').trim()
+          || tr('Бесплатный лимит разборов на сегодня исчерпан.', 'Das kostenlose Tageslimit für Analysen ist erreicht.')
+        );
+        return;
+      }
+      if (status >= 400 && status < 500) {
+        console.warn('[selection-gpt] разбор отклонён', status, error?.message);
+        setSelectionGptCardStatus('error');
+        return;
+      }
+      try {
+        const data = await dictApi('/api/webapp/dictionary', { word: cleaned, lookup_lang: lookupLangHint });
+        if (!applyCard(data) && !isStale()) setSelectionGptCardStatus('error');
+      } catch (fallbackError) {
+        if (isStale()) return;
+        setSelectionGptCardStatus('error');
+        const fallbackStatus = Number(fallbackError?.status || 0);
+        if (fallbackStatus === 429 || String(fallbackError?.payload?.error || '') === 'free_limit_exceeded') {
+          setSelectionGptCardLimit(
+            String(fallbackError?.payload?.message || '').trim()
+            || tr('Бесплатный лимит разборов на сегодня исчерпан.', 'Das kostenlose Tageslimit für Analysen ist erreicht.')
+          );
+          return;
+        }
+        console.warn('[selection-gpt] разбор не собрался', fallbackError);
+        if (!quick || !String(quick.translation || '').trim()) {
+          // Показывать нечего вообще — ни перевода, ни разбора. Держать пустой шит
+          // на экране нельзя: человек читает пустоту как поломку, и он прав.
+          setSelectionGptOpen(false);
+          setSelectionGptWord('');
+          resetSelectionGptSaveState();
+          showAppToast(tr('Разбор не собрался. Попробуйте ещё раз.', 'Die Analyse ist nicht fertig geworden. Versuch es noch einmal.'));
+        }
+      }
     }
   };
 
   const closeSelectionGptSheet = () => {
+    try { selectionGptAbortRef.current?.abort(); } catch (_e) { /* уже закрыт */ }
+    selectionGptAbortRef.current = null;
+    selectionGptSeqRef.current += 1;
     setSelectionGptOpen(false);
     setSelectionGptWord('');
     setSelectionGptLoading(false);
     setSelectionGptError('');
+    setSelectionGptCardStatus('idle');
+    setSelectionGptCardSections(new Set());
+    setSelectionGptCardLimit('');
+    setSelectionGptData({ translation: '', dictionaryItem: null, direction: '', languagePair: null });
     resetSelectionGptSaveState();
   };
 
@@ -31223,18 +31326,6 @@ function AppInner() {
     } finally {
       setTranslationAudioGrammarSaving((prev) => ({ ...prev, [translationId]: false }));
     }
-  };
-
-  const renderRichText = (text) => {
-    if (!text) return '';
-    const escaped = text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-    return escaped
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.+?)\*/g, '<strong>$1</strong>')
-      .replace(/\n/g, '<br />');
   };
 
   // Ответы модели приходят телеграм-разметкой: *жирный*, _курсив_, `код`. Так требует
@@ -45059,7 +45150,7 @@ function AppInner() {
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                    <strong style={{ fontSize: 17 }}>{tr('GPT Объяснение', 'GPT-Erklärung')}</strong>
+                    <strong style={{ fontSize: 17 }}>{tr('Разбор слова', 'Wortanalyse')}</strong>
                     <button type="button" className="secondary-button" onClick={closeSelectionGptSheet}>
                       {tr('Закрыть', 'Schließen')}
                     </button>
@@ -45067,7 +45158,7 @@ function AppInner() {
                   <div className="webapp-muted" style={{ fontSize: 13, fontStyle: 'italic' }}>
                     {getSelectionGptWordText()}
                   </div>
-                  {selectionGptLoading && <div className="webapp-muted" style={{ fontSize: 14 }}>{tr('Готовим объяснение...', 'Erklärung wird vorbereitet...')}</div>}
+                  {selectionGptLoading && <div className="webapp-muted" style={{ fontSize: 14 }}>{tr('Готовим разбор…', 'Analyse wird vorbereitet…')}</div>}
                   {selectionGptError && <div className="webapp-error">{selectionGptError}</div>}
                   {!selectionGptLoading && !selectionGptError && (
                     <>
@@ -45075,40 +45166,36 @@ function AppInner() {
                         <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Перевод', 'Übersetzung')}</div>
                         <div style={{ fontSize: 16, fontWeight: 600 }}>{selectionGptData.translation || '—'}</div>
                       </div>
-                      <div className="webapp-selection-translation">
-                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Смысл / заметки', 'Bedeutung / Hinweise')}</div>
-                        <div
-                          style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.6 }}
-                          dangerouslySetInnerHTML={{ __html: renderRichText(selectionGptData.notes || '—') }}
+                      {/* Разбор — ТА ЖЕ карточка, что в словаре. Пока секции едут, вместо
+                          неё стоит скелет, а не пустое место. */}
+                      {selectionGptData.dictionaryItem ? (
+                        <SelectionGptCard
+                          item={selectionGptData.dictionaryItem}
+                          onSaveChip={handleSelectionGptSaveChipTap}
+                          onSaveExample={handleSelectionGptSaveExampleTap}
+                          savedChips={selectionGptSavedChips}
                         />
-                      </div>
-                      <div className="webapp-selection-translation">
-                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Примеры', 'Beispiele')}</div>
-                        {Array.isArray(selectionGptData.examples) && selectionGptData.examples.length > 0 ? (
-                          <div style={{ display: 'grid', gap: 8 }}>
-                            {selectionGptData.examples.map((item, index) => (
-                              <label key={`gpt-example-${index}`} className="webapp-gpt-save-option" style={{ fontSize: 14, lineHeight: 1.5 }}>
-                                <input
-                                  type="checkbox"
-                                  checked={Boolean(selectionGptSaveExamplesChecked[index])}
-                                  onChange={(event) => {
-                                    const checked = event.target.checked;
-                                    setSelectionGptSaveExamplesChecked((prev) => ({
-                                      ...prev,
-                                      [index]: checked,
-                                    }));
-                                    setSelectionGptSaveError('');
-                                    setSelectionGptSaveMessage('');
-                                  }}
-                                />
-                                <span>{item}</span>
-                              </label>
-                            ))}
+                      ) : null}
+                      {(selectionGptCardStatus === 'loading' || selectionGptCardStatus === 'streaming') && (
+                        <BreakdownSkeleton arrived={selectionGptCardSections} />
+                      )}
+                      {selectionGptCardStatus === 'error' && selectionGptCardLimit && (
+                        <div className="paid-feature-card">
+                          <div className="paid-feature-card-icon" aria-hidden="true">📚</div>
+                          <div className="paid-feature-card-copy">
+                            <strong>{tr('Разборы на сегодня закончились', 'Analysen für heute aufgebraucht')}</strong>
+                            <span>{selectionGptCardLimit}</span>
                           </div>
-                        ) : (
-                          <div style={{ opacity: 0.5 }}>—</div>
-                        )}
-                      </div>
+                        </div>
+                      )}
+                      {selectionGptCardStatus === 'error' && !selectionGptCardLimit && (
+                        <div className="webapp-muted" style={{ fontSize: 13.5, lineHeight: 1.5 }}>
+                          {tr(
+                            'Подробный разбор сейчас не собрался. Перевод выше можно сохранить, а разбор попробуйте открыть ещё раз чуть позже.',
+                            'Die ausführliche Analyse ist gerade nicht zustande gekommen. Die Übersetzung oben kannst du speichern, die Analyse später noch einmal öffnen.'
+                          )}
+                        </div>
+                      )}
                       <div className="webapp-selection-translation webapp-gpt-save-block">
                         <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Сохранить в словарь', 'Im Wörterbuch speichern')}</div>
                         <label className="webapp-gpt-save-option">
@@ -45142,7 +45229,7 @@ function AppInner() {
                               : tr('Сохранить в словарь', 'Ins Wörterbuch speichern')}
                           </button>
                           <span className="webapp-muted" style={{ fontSize: 11 }}>
-                            {tr('Примеры — по желанию: можно сохранить только слово', 'Beispiele sind optional: du kannst nur das Wort speichern')}
+                            {tr('Примеры и синонимы сохраняются нажатием прямо в разборе', 'Beispiele und Synonyme speicherst du direkt in der Analyse per Tippen')}
                           </span>
                         </div>
                         {selectionGptSaveMessage && (

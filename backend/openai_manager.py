@@ -145,7 +145,6 @@ _DEFAULT_RESPONSES_TASKS = {
     "dictionary_enrichment_multilang",
     "dictionary_enrichment_multilang_word_compact",
     "dictionary_enrichment_multilang_phrase_compact",
-    "dictionary_assistant_multilang_reader",
     "dictionary_collocations",
     "dictionary_collocations_multilang",
     "feel_word",
@@ -3595,131 +3594,6 @@ Rules:
     "plural_only" (no singular at all: Eltern, Ferien, Kosten).
     For "mostly_plural" and "plural_only" keep the PLURAL as the headword and use "die".
 - Do not include etymology, memory tips, long notes, collocation lists, prefixes, pronunciation, or extended grammar commentary here.
-- If information is unknown, use null.
-""",
-"dictionary_assistant_multilang_reader": """
-You are a multilingual dictionary assistant for reading popups.
-
-Input JSON:
-{
-  "source_language": "ru|en|de|es|it",
-  "target_language": "ru|en|de|es|it",
-  "explanation_language": "ru|en|de|es|it",
-  "word": "<user input>"
-}
-
-Task:
-- Detect whether "word" belongs to source_language or target_language.
-- Translate to the opposite language.
-- Keep output optimized for a compact reading popup: concise, practical, easy to scan.
-- Prioritize reading comprehension and high-frequency real usage.
-- If input is a full sentence, translate the FULL sentence literally and keep full-sentence mapping in word_source/word_target.
-- Never collapse sentence input to a single word/lemma.
-- If the main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun".
-- If the main German word is a standalone verb, normalize it to the infinitive.
-
-Return STRICT JSON with keys:
-{
-  "detected_language": "source" | "target",
-  "word_source": "<normalized word/phrase in source_language>",
-  "word_target": "<normalized word/phrase in target_language>",
-  "translations": [
-    {"value": "...", "context": "...", "is_primary": true}
-  ],
-  // NO REPEATED MEANINGS. Every "value" in translations/meanings must be a DIFFERENT
-  // word. Do not list the same equivalent twice with a different "context" — that is
-  // what you did for "entsorgen" (утилизировать, избавляться, утилизировать,
-  // избавляться, вывозить мусор): five entries, three real meanings. Give three then.
-  "meanings": {
-    "primary": {
-      "value": "...",
-      "priority": 1,
-      "context": "...",
-      "example_source": "...",
-      "example_target": "..."
-    },
-    "secondary": [
-      {
-        "value": "...",
-        "priority": 2,
-        "context": "...",
-        "example_source": "...",
-        "example_target": "..."
-      }
-    ]
-  },
-  "etymology_note": "string|null",
-  "usage_note": "string|null",
-  "memory_tip": "string|null",
-  "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
-  "article": "<language-appropriate article or null>",
-  "pronunciation": {
-    "ipa": "string|null",
-    "stress": "string|null",
-    "audio_text": "string|null"
-  },
-  "forms": {
-    "plural": string|null,
-    "praeteritum": string|null,
-    "perfekt": string|null,
-    "konjunktiv1": string|null,
-    "konjunktiv2": string|null
-  },
-  "usage_examples": [
-    {"source": "...", "target": "..."},
-    {"source": "...", "target": "..."}
-  ],
-  "raw_text": "<optional short note>"
-}
-
-Reader-focused rules:
-- Output ONLY JSON.
-- Keep all text compact and learner-friendly; avoid encyclopedic wording.
-- LANGUAGE SPLIT — CRITICAL:
-  - WORD/TRANSLATION values are the foreign words being learned and stay in target_language:
-    word_target, translations[].value, meanings.primary.value, meanings.secondary[].value.
-  - EXPLANATIONS the learner reads must ALWAYS be in explanation_language (the user's base/native
-    language, INDEPENDENT of source/target which only set the translation direction; fall back to
-    source_language if explanation_language is missing), NEVER in target_language:
-    translations[].context, meanings.primary.context, meanings.secondary[].context, etymology_note,
-    usage_note, memory_tip, raw_text.
-  - Do not infer the explanation language from the foreign value fields. E.g. explanation_language=ru,
-    target_language=de → values in German, all context/notes in Russian.
-- forms: если формы нет (слово без множественного числа и т. п.) — ставь null.
-  НЕ пиши в графу формы пояснение вроде «— (обычно не употребляется во множественном
-  числе)»: это попадает на экран как форма слова и выглядит ошибкой.
-- Meanings:
-  - primary meaning must be short, simple, practical.
-  - include no more than 2 secondary meanings.
-  - include secondary meanings only if they are frequent and genuinely useful for understanding real texts.
-- Translations:
-  - first variant must be the most practical/common one.
-  - keep variants relevant and concise; avoid bloated lists.
-- Usage note:
-  - short and concrete: where/how this is commonly used (tone/register/context).
-- Context fields:
-  - keep context short, concrete, and learner-friendly.
-  - avoid abstract lexicographic definitions and overly academic wording.
-- Examples must help the learner read target language:
-  meanings.primary.example_target and meanings.secondary[].example_target must be in target_language.
-  meanings.primary.example_source and meanings.secondary[].example_source must be in source_language.
-  usage_examples[].target must be in target_language and usage_examples[].source must be in source_language.
-- NEVER leave a half-translated sentence. The source_language side must be FULLY in
-  source_language: no target_language words, phrases or verb chunks may remain inside it.
-  Wrong: "На дороге внезапно rast ein LKW." Right: "По дороге внезапно мчится грузовик."
-  This applies even when the looked-up input is a multi-word chunk taken from a subtitle
-  or a sentence — translate that chunk too, do not carry it over verbatim.
-- Usage examples:
-  - provide 2-3 examples maximum.
-  - examples must prefer the most typical real-life collocations of the word.
-  - avoid generic filler examples that do not teach how the word is commonly used.
-  - avoid artificial classroom-style sentences unless no better natural example exists.
-  - examples should be short enough for a popup and easy to scan quickly.
-- For sentence input, translations[0].value must be full-sentence translation and is_primary=true.
-- Keep memory_tip and etymology_note only if genuinely helpful; keep them short.
-- raw_text:
-  - use only for one very short practical note if truly needed.
-  - otherwise return null.
 - If information is unknown, use null.
 """,
 "dictionary_synonyms_backfill": """
@@ -7651,18 +7525,16 @@ async def run_dictionary_lookup_multilang(
     }
 
 
-async def run_dictionary_lookup_multilang_reader(
-    word: str,
-    source_lang: str,
-    target_lang: str,
-) -> dict:
-    return await run_dictionary_lookup_multilang(
-        word=word,
-        source_lang=source_lang,
-        target_lang=target_lang,
-        task_name="dictionary_assistant_multilang_reader",
-        system_instruction_key="dictionary_assistant_multilang_reader",
-    )
+# ┌─ УДАЛЕНО 30.08.2026: run_dictionary_lookup_multilang_reader + промпт ───────────┐
+# │ `dictionary_assistant_multilang_reader`. Это был ВТОРОЙ, урезанный разбор слова: │
+# │ им пользовался только попап выделения в видео и читалке. В нём не спрашивались   │
+# │ ни состав слова, ни управление, ни отделяемость, ни уровень, ни устойчивость     │
+# │ выражения, ни синонимы — то есть ровно то, чего владельцу не хватало на экране   │
+# │ 30.08.2026. Хуже того: попап шёл мимо общего пула и платил модели за слова,      │
+# │ которые у нас уже лежали.                                                       │
+# │ Попап переведён на `/api/webapp/dictionary/stream` — тот же разбор, что в        │
+# │ словаре. Второго разбора одного слова в приложении быть не должно.               │
+# └─────────────────────────────────────────────────────────────────────────────────┘
 
 
 async def run_dictionary_lookup_multilang_core_fast(
