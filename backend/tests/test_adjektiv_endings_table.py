@@ -18,7 +18,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
+from backend import adjektiv_endings
 from backend.adjektiv_endings import _TABLES, build_adjektiv_items
 from backend.database import adjektiv_gap_rebuilds, derive_adjektiv_split
 
@@ -126,8 +128,29 @@ class ПропускСклеиваетсяОбратноTest(unittest.TestCase):
 
 
 class ГенераторВыдаётТолькоЦелоеTest(unittest.TestCase):
+    # ┌─ ПРОВЕРЕНО 30.08.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────────┐
+    # │ Тест падал 2 прогона из 3 при НЕИЗМЕННОМ коде, и это не поломка генератора.    │
+    # │ Признак в сводке pytest: 295 подтестов вместо 395 — ровно на 100 меньше,       │
+    # │ то есть список заданий пришёл ПУСТОЙ и падение было на первой же строке.       │
+    # │ Причина: _load_nouns ходил в БОЕВУЮ базу, а связь с неё скачет — замер с       │
+    # │ машины владельца: 15 обращений, среднее 1,3 c, самое долгое 15,5 c.            │
+    # │ Чиним не подгонкой ожидания, а корнем: слова тесту даёт фикстура, база больше  │
+    # │ не участвует. Сам генератор (склейка + таблица окончаний) проверяется целиком. │
+    # └────────────────────────────────────────────────────────────────────────────────┘
+    # Слова взяты из боевого банка bt_3_article_sprint_nouns (все три рода) и здесь
+    # зафиксированы: тест проверяет ПРАВИЛО склонения, а не наполненность банка.
+    СЛОВА = [
+        ("Tisch", "m", "стол"),
+        ("Hund", "m", "собака"),
+        ("Lampe", "f", "лампа"),
+        ("Blume", "f", "цветок"),
+        ("Buch", "n", "книга"),
+        ("Fenster", "n", "окно"),
+    ]
+
     def test_сто_заданий_подряд_склеиваются_и_сходятся_с_таблицей(self):
-        items = build_adjektiv_items(100)
+        with mock.patch.object(adjektiv_endings, "_load_nouns", return_value=list(self.СЛОВА)):
+            items = build_adjektiv_items(100)
         self.assertTrue(items)
         for it in items:
             with self.subTest(full=it.get("full")):

@@ -3488,13 +3488,20 @@ def ensure_adjektiv_reserve(target: int | None = None) -> dict:
     надо = цель - есть
     if надо <= 0:
         return {"ok": True, "have": есть, "added": 0}
-    from backend.adjektiv_endings import build_adjektiv_items
+    from backend.adjektiv_endings import NounBankUnavailable, build_adjektiv_items
     # Просим с запасом: часть отсеется как повтор или как несклеивающееся.
-    items = build_adjektiv_items(int(надо * 2))
+    # «Банк пуст» и «база не ответила» разделены: по первому надо идти пополнять банк,
+    # по второму — смотреть связь, а слова на месте (разобрано 30.08.2026).
+    try:
+        items = build_adjektiv_items(int(надо * 2))
+    except NounBankUnavailable as exc:
+        logging.error("аварийный запас окончаний НЕ пополнен: база не ответила про банк "
+                      "существительных (%s). Это НЕ «слова пропали».", exc)
+        return {"ok": False, "have": есть, "added": 0, "reason": "база не ответила"}
     if not items:
-        logging.error("аварийный запас окончаний НЕ пополнен: генератор не дал заданий "
-                      "(банк существительных пуст или недоступен)")
-        return {"ok": False, "have": есть, "added": 0}
+        logging.error("аварийный запас окончаний НЕ пополнен: банк существительных ПУСТ "
+                      "(база ответила, слов в банке нет)")
+        return {"ok": False, "have": есть, "added": 0, "reason": "банк пуст"}
     добавлено = 0
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -3528,13 +3535,21 @@ def pick_adjektiv_payloads(n: int = 15) -> list[dict]:
     """`n` adjective items. Primary source: the DETERMINISTIC rule-based generator
     (unlimited, 100% correct, no LLM). Falls back to the aufgabe bank only if that
     ever fails."""
+    # Импорт до try: имя NounBankUnavailable нужно самой ветке except, иначе при сбое
+    # импорта разбор ошибки упал бы на NameError вместо честной причины.
+    from backend.adjektiv_endings import NounBankUnavailable, build_adjektiv_items
     причина = ""
     try:
-        from backend.adjektiv_endings import build_adjektiv_items
         items = build_adjektiv_items(int(n))
         if items:
             return items
+        # Сюда попадаем ТОЛЬКО когда база ответила и слов в банке правда нет.
+        # Недоступность базы приходит отдельной ошибкой ниже — иначе владельцу уходил
+        # неверный диагноз «банк пуст» при целом банке (разобрано 30.08.2026).
         причина = "банк существительных пуст"
+    except NounBankUnavailable as exc:
+        logging.warning("pick_adjektiv_payloads: банк существительных недоступен", exc_info=True)
+        причина = f"база не ответила про банк существительных: {str(exc)[:70]}"
     except Exception as exc:
         logging.warning("pick_adjektiv_payloads: deterministic gen failed", exc_info=True)
         причина = f"генератор упал: {str(exc)[:70]}"

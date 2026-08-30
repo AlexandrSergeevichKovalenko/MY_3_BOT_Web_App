@@ -190,11 +190,36 @@ _TYPE_SHORT = {"weak": "слабое", "mixed": "смешанное", "strong": 
 _GENDER_ART = {"m": "der", "f": "die", "n": "das"}
 
 
+class NounBankUnavailable(RuntimeError):
+    """База не ответила на запрос к банку существительных.
+
+    Это НЕ «банк пуст». Про банк в этом случае мы не знаем ВООБЩЕ ничего, и подавать
+    незнание как знание нельзя: владельцу уйдёт доклад «банк существительных пуст»,
+    он полезет искать пропавшие слова, а слова на месте — молчала база.
+    """
+
+
 def _load_nouns(limit: int = 400) -> list[tuple]:
     """(word, gender, meaning_ru). meaning_ru lets the trainer show an accurate
-    per-word translation on tap (and save the noun with its article)."""
+    per-word translation on tap (and save the noun with its article).
+
+    Два исхода, и путать их нельзя:
+      • список (возможно, пустой) — база ОТВЕТИЛА, и это правда о банке;
+      • NounBankUnavailable — база не ответила, про банк мы ничего не знаем.
+
+    ┌─ ПОЧЕМУ ЗДЕСЬ БОЛЬШЕ НЕТ `except: return []` (30.08.2026) ────────────────────┐
+    │ Было: любая ошибка базы превращалась в пустой список. Пустой список от ошибки  │
+    │ неотличим от пустого банка, и pick_adjektiv_payloads докладывал владельцу      │
+    │ «банк существительных пуст» — неверный диагноз при целом банке.                │
+    │ Замер связи с машины владельца 30.08: 15 обращений, среднее 1,3 c, самое       │
+    │ долгое 15,5 c — всплеск случается, и он не значит, что слова пропали.          │
+    │ Решение владельца 28.08 («не подставлять свои слова, взять аварийный запас и   │
+    │ ОБЯЗАТЕЛЬНО сообщить») в силе и не тронуто: вызывающий по-прежнему берёт запас  │
+    │ и по-прежнему докладывает — просто теперь называет НАСТОЯЩУЮ причину.          │
+    └───────────────────────────────────────────────────────────────────────────────┘
+    """
+    from backend.database import get_db_connection_context
     try:
-        from backend.database import get_db_connection_context
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -205,16 +230,16 @@ def _load_nouns(limit: int = 400) -> list[tuple]:
                 )
                 rows = [(str(r[0]).strip(), _ART_GENDER.get(str(r[1]), "n"), str(r[2] or "").strip())
                         for r in (cur.fetchall() or []) if r and r[0]]
-        if rows:
-            return rows
+    except Exception as exc:
+        logging.warning("тренажёр окончаний: банк существительных НЕДОСТУПЕН (%s) — "
+                        "это не «банк пуст», слова могут быть на месте", exc, exc_info=True)
+        raise NounBankUnavailable(f"банк существительных недоступен: {exc}") from exc
+    if not rows:
+        # Банк правда пуст. Подставлять свои слова здесь мы права не имеем:
+        # вызывающий возьмёт аварийный запас и СООБЩИТ владельцу.
         logging.warning("тренажёр окончаний: банк существительных вернул ПУСТО — "
                         "включается аварийный запас готовых заданий")
-    except Exception:
-        logging.warning("тренажёр окончаний: не смогли прочитать банк существительных — "
-                        "включается аварийный запас готовых заданий", exc_info=True)
-    # Пусто — значит пусто. Вызывающий (pick_adjektiv_payloads) возьмёт аварийный запас
-    # и СООБЩИТ владельцу. Подставлять свои слова здесь мы права не имеем.
-    return []
+    return rows
 
 
 # The strong adjective ending "signals" the gender/case like the definite article

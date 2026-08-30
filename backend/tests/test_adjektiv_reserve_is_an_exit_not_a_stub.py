@@ -42,11 +42,60 @@ class ВшитыхСловБольшеНет(unittest.TestCase):
         self.assertFalse(hasattr(ae, "_FALLBACK_NOUNS"),
                          "вернулся вшитый список — вместе с ним вернётся и спрятанный сбой")
 
-    def test_пусто_значит_пусто(self):
-        """Подставлять свои слова здесь мы права не имеем: вызывающий возьмёт запас."""
+    def test_пустой_банк_значит_пусто(self):
+        """Банк правда пуст: подставлять свои слова мы права не имеем — вызывающий
+        возьмёт аварийный запас. Решение владельца 28.08.2026, в силе."""
+        class _Cur:
+            def execute(self, *_a, **_k): pass
+            def fetchall(self): return []
+            def __enter__(self): return self
+            def __exit__(self, *_e): return False
+
+        class _Conn:
+            def cursor(self): return _Cur()
+            def __enter__(self): return self
+            def __exit__(self, *_e): return False
+
+        with mock.patch("backend.database.get_db_connection_context", lambda *a, **k: _Conn()):
+            self.assertEqual(ae._load_nouns(), [])
+
+    def test_база_молчит_это_НЕ_пустой_банк(self):
+        """Уточнение 30.08.2026. Раньше молчащая база отдавала тот же пустой список, что и
+        пустой банк, и владельцу уходил доклад «банк существительных пуст» — при целом
+        банке. Он полез бы искать пропавшие слова, а пропала связь.
+
+        Решение владельца 28.08 не тронуто: слов мы по-прежнему не выдумываем, вызывающий
+        по-прежнему берёт аварийный запас и по-прежнему докладывает. Меняется только то,
+        что теперь называется НАСТОЯЩАЯ причина."""
         with mock.patch("backend.database.get_db_connection_context",
                         side_effect=RuntimeError("база молчит")):
-            self.assertEqual(ae._load_nouns(), [])
+            with self.assertRaises(ae.NounBankUnavailable):
+                ae._load_nouns()
+
+    def test_молчащая_база_докладывается_своей_причиной(self):
+        """Владелец должен по тексту доклада понять, куда идти: в банк или в связь."""
+        db.take_adjektiv_reserve_uses()
+        with mock.patch.object(ae, "_load_nouns",
+                               side_effect=ae.NounBankUnavailable("база молчит")), \
+             mock.patch("backend.database.get_db_connection_context",
+                        side_effect=RuntimeError("и запас недоступен")):
+            db.pick_adjektiv_payloads(3)
+        случаи = db.take_adjektiv_reserve_uses()
+        self.assertEqual(len(случаи), 1)
+        self.assertIn("база не ответила", случаи[0])
+        self.assertNotIn("пуст", случаи[0], "молчащая база не смеет называться пустым банком")
+
+    def test_пустой_банк_докладывается_как_пустой_банк(self):
+        """Обратная сторона: настоящий пустой банк обязан остаться пустым банком,
+        иначе владелец пойдёт чинить связь вместо того, чтобы пополнить слова."""
+        db.take_adjektiv_reserve_uses()
+        with mock.patch.object(ae, "_load_nouns", return_value=[]), \
+             mock.patch("backend.database.get_db_connection_context",
+                        side_effect=RuntimeError("запас недоступен")):
+            db.pick_adjektiv_payloads(3)
+        случаи = db.take_adjektiv_reserve_uses()
+        self.assertEqual(len(случаи), 1)
+        self.assertIn("банк существительных пуст", случаи[0])
 
     def test_генератор_ничего_не_строит_без_слов(self):
         with mock.patch.object(ae, "_load_nouns", return_value=[]):
