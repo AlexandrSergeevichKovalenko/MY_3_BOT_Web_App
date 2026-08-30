@@ -255,6 +255,118 @@ def split_separable_verb(word: str) -> tuple[str, str]:
     return "", body
 
 
+# Неотделяемые приставки немецкого. Это ЗАКРЫТЫЙ класс морфем из грамматики, а не
+# догадка по хвосту слова: список не растёт и не «дополняется на глаз». Нужен он ровно
+# для одного — понять, ЕСТЬ ЛИ у глагола приставка вообще. Отделяется она или нет,
+# отвечает справочник напечатанной формой, а не этот список.
+_INSEPARABLE_PREFIXES = ("be", "emp", "ent", "er", "ge", "miss", "ver", "zer")
+
+
+def leading_verb_prefix(word: str) -> str:
+    """Приставка, которой начинается глагол, или '' — если её нет или она не опознана.
+
+    Вопрос «отделяемая ли приставка» имеет смысл только там, где приставка есть:
+    у «machen» её нет, и строка про отделяемость была бы враньём о морфологии.
+    Здесь НЕ решается, отделяется она или нет: решает справочник (см.
+    `verb_prefix_separability`). Здесь только «есть, что решать».
+    """
+    body = str(word or "").strip()
+    low = body.casefold()
+    if not low or " " in low or not low.endswith(("en", "eln", "ern")):
+        return ""
+    # Настоящих глаголов на «ge-» в языке закрытый десяток; у них «ge» не приставка,
+    # а часть основы. Тот же список стережёт разбор в `split_separable_verb`.
+    if low in _GE_VERBS:
+        return ""
+    candidates = sorted(
+        set(_SEPARABLE_PREFIXES) | set(_COMPOUND_SEPARABLE_PREFIXES)
+        | set(_AMBIGUOUS_SEPARABLE_PREFIXES) | set(_INSEPARABLE_PREFIXES),
+        key=len, reverse=True,
+    )
+    for prefix in candidates:
+        if low.startswith(prefix) and len(low) - len(prefix) >= 4:
+            return body[:len(prefix)]
+    return ""
+
+
+def _separability_verdict(prefix: str, reading: dict) -> dict:
+    """Вердикт по ОДНОМУ прочтению. Читается, а не вычисляется.
+
+    Порядок свидетелей — от прямого к косвенному:
+      1. помета самой статьи «trennbar» / «untrennbar» — прямой ответ источника;
+      2. третье лицо Präsens: «bietet an» — два слова, приставка уехала;
+      3. Partizip II без «ge-» в начале — подтверждение, что приставка вообще есть
+         («begonnen»); с «ge-» («geerntet») это опровержение: «ernten» — не «er+nten».
+    """
+    present = " ".join(str(reading.get("present") or "").split())
+    partizip = " ".join(str(reading.get("partizip2") or "").split())
+    label = str(reading.get("label") or "")
+    parts = present.split()
+
+    if label == "trennbar" or (len(parts) >= 2 and parts[-1].casefold() == prefix.casefold()):
+        if len(parts) < 2:
+            return {}
+        return {"value": "separable", "present": present, "partizip2": partizip,
+                "example": f"er {' '.join(parts[:-1])} … {parts[-1]}"}
+    if len(parts) != 1 or not present:
+        return {}
+    if label != "untrennbar":
+        # Пометы нет — нужен второй свидетель, иначе мы бы назвали приставкой то,
+        # что ею не является.
+        if not partizip or partizip == "—" or partizip.casefold().startswith("ge"):
+            return {}
+    return {"value": "inseparable", "present": present, "partizip2": partizip,
+            "example": f"er {present}"}
+
+
+def verb_prefix_separability(infinitive: str, *, allow_network: bool = False) -> dict[str, Any]:
+    """Отделяемая у глагола приставка или нет — ЧИТАЕТСЯ из справочника.
+
+    Владелец 30.08.2026: «если мы описываем глаголы, то не только возвратный или нет
+    нужно рассматривать, но и отделяемая приставка у него или нет. И показывать это
+    на примере в том числе». На экране сравнения «anbieten ↔ unterbreiten» этого не
+    было ни словом, хотя различаются они в речи именно этим.
+
+    ПО НАПИСАНИЮ ЭТО НЕ РЕШАЕТСЯ, и мы этого не делаем: «unterbringen» приставку
+    отделяет, «unterbreiten» — нет, «unter-» у обоих одна. Больше того, одним
+    написанием бывают записаны ДВА РАЗНЫХ ГЛАГОЛА: «unterbreiten» — и «подстилать»
+    (отделяемый), и «предлагать» (неотделяемый); «umfahren» — «объезжать» и «сбивать».
+    Тогда одного ответа не существует, и выбирать за человека мы не будем (правило
+    «не решаем за пользователя», 26.08.2026): показываем оба прочтения с их формами.
+
+    Возвращает {} — «не знаем»: справочник молчит, приставки нет, или формы не дают
+    однозначного чтения. Пустой ответ считается в `_word_diff_gaps`, а не выдаётся
+    за ответ.
+    """
+    verb = str(infinitive or "").strip()
+    if not verb or " " in verb:
+        return {}
+    # Спрягаемый глагол пишется со строчной; в базе заголовок бывает с заглавной.
+    verb = verb[:1].lower() + verb[1:]
+    prefix = leading_verb_prefix(verb)
+    if not prefix:
+        return {}
+    try:
+        from backend.german_verb_paradigms import verb_readings
+        readings = verb_readings(verb, allow_network=allow_network)
+    except Exception:
+        logging.warning("справочник не ответил про приставку %s", verb, exc_info=True)
+        return {}
+    if not readings:
+        return {}
+
+    variants = [v for v in (_separability_verdict(prefix, r) for r in readings) if v]
+    if not variants:
+        return {}
+    values = {v["value"] for v in variants}
+    if len(values) == 1:
+        answer = dict(variants[0])
+        answer["prefix"] = prefix
+        return answer
+    # Два разных глагола под одним написанием. Ответ честный: их два.
+    return {"value": "both_readings", "prefix": prefix, "readings": variants}
+
+
 def looks_like_zu_infinitive(word: str) -> bool:
     """«klarzukommen», «anzulehnen» — это zu-инфинитив, а не словарная форма глагола.
 

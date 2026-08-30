@@ -32,6 +32,18 @@ const REFLEXIVITY_LABEL = {
   not_applicable: '',
 };
 
+// Отделяемая приставка — вторая половина ответа на вопрос «как этот глагол ведёт себя
+// в предложении». Первая (возвратность) была здесь с самого начала, второй не было
+// вовсе: владелец 30.08.2026 открыл «anbieten ↔ unterbreiten» и не нашёл ни слова о
+// том, что у одного приставка уезжает в конец, а у другого нет. Вердикт приходит из
+// справочника напечатанных форм, а не из ответа модели.
+const SEPARABILITY_LABEL = {
+  separable: 'отделяемая — уходит в конец предложения',
+  inseparable: 'неотделяемая — остаётся при глаголе',
+};
+
+const SEPARABILITY_SHORT = { separable: 'отделяемая', inseparable: 'неотделяемая' };
+
 const INTERCHANGEABLE_LABEL = {
   no: 'Заменять нельзя',
   sometimes: 'Иногда заменяют',
@@ -550,7 +562,7 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
                                   <span className="wd-construction" key={c.id}>
                                     <b>{c.pattern}</b>
                                     {c.bare ? <span className="wd-bare"> — без дополнения</span> : null}
-                                    {!c.bare && c.case ? ` · ${c.case}` : ''}
+                                    {!c.bare && c.case_note ? ` · ${c.case_note}` : ''}
                                     {c.obligatory ? <span className="wd-oblig"> без предлога не употребляется</span> : null}
                                     {c.example_de && (
                                       <span className="wd-construction-ex">
@@ -576,7 +588,7 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
                           <span className="wd-construction" key={c.id}>
                             <b>{c.pattern}</b>
                             {c.bare ? <span className="wd-bare"> — без дополнения</span> : null}
-                            {!c.bare && c.case ? ` · ${c.case}` : ''}
+                            {!c.bare && c.case_note ? ` · ${c.case_note}` : ''}
                             {c.obligatory ? <span className="wd-oblig"> без предлога не употребляется</span> : null}
                             {c.example_de && (
                               <span className="wd-construction-ex">
@@ -664,17 +676,55 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
         )}
 
         {/* 5. КАК СЛОВО УПОТРЕБЛЯЕТСЯ — возвратность и родня по приставкам */}
-        {usage.some((u) => (u.reflexivity || {}).value || (u.word_family || []).length) && (
+        {usage.some((u) => (u.reflexivity || {}).value || (u.word_family || []).length
+          || (u.separability || {}).value) && (
           <div className="wd-block">
             <div className="wd-label"><span className="wd-ic">🔗</span>Как слово употребляется</div>
             {usage.map((u) => {
               const refl = u.reflexivity || {};
               const forms = Array.isArray(refl.forms) ? refl.forms : [];
               const family = Array.isArray(u.word_family) ? u.word_family : [];
-              if (!refl.value && !family.length) return null;
+              const sep = u.separability || {};
+              if (!refl.value && !family.length && !sep.value) return null;
               return (
                 <div className="wd-usage" key={`usage-${u.word}`}>
                   <div className="wd-ex-group-title">{u.word}</div>
+                  {sep.value && (
+                    <div className="wd-usage-row">
+                      <span className="k">Приставка</span>
+                      <span className="v">
+                        <b className="wd-em">{sep.prefix}-</b>
+                        {/* Одним написанием бывают записаны ДВА глагола: «unterbreiten» —
+                            и «подстилать» (приставка уезжает), и «предлагать» (не
+                            уезжает). Какой из них имеет в виду человек, мы не решаем за
+                            него — показываем оба, как их печатает справочник. */}
+                        {sep.value === 'both_readings' ? (
+                          <>
+                            {' у этого написания два глагола, и ведут они себя по-разному:'}
+                            {(sep.readings || []).map((r, i) => (
+                              <span className="wd-sep-forms" key={`sep-${i}`}>
+                                {`${SEPARABILITY_SHORT[r.value] || ''} — ${r.example || ''}`}
+                                {r.partizip2 ? `, Partizip II: ${r.partizip2}` : ''}
+                              </span>
+                            ))}
+                          </>
+                        ) : (
+                          <>
+                            {` ${SEPARABILITY_LABEL[sep.value] || ''}`}
+                            {/* Пример — не наш пересказ, а форма из справочника: третье
+                                лицо и Partizip II. В них разница и видна глазом. */}
+                            {(sep.example || sep.partizip2) && (
+                              <span className="wd-sep-forms">
+                                {sep.example}
+                                {sep.example && sep.partizip2 ? ' · ' : ''}
+                                {sep.partizip2 ? `Partizip II: ${sep.partizip2}` : ''}
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </span>
+                    </div>
+                  )}
                   {refl.value && (
                     <div className="wd-usage-row">
                       <span className="k">Возвратность</span>
@@ -706,7 +756,11 @@ export default function WordDiff({ sharedToken = '', tts = null, onNeedFullAcces
                     <div className="wd-usage-row">
                       <span className="k">Родня</span>
                       <span className="v">
-                        {family.map((row) => `${row.word} — ${row.meaning}`).join('; ')}
+                        {family
+                          .map((row) => `${row.word} — ${row.meaning}`
+                            + (row.separable === true ? ' (приставка отделяемая)' : '')
+                            + (row.separable === false ? ' (приставка неотделяемая)' : ''))
+                          .join('; ')}
                       </span>
                     </div>
                   )}

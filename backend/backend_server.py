@@ -43828,30 +43828,111 @@ def _word_diff_construction_key(word: str, pattern: str, case: str, preposition:
     return "|".join(parts)
 
 
-def _word_diff_construction_text(word: str, pattern: str, case: str, preposition: str) -> str:
-    """Запись конструкции в одном виде: «слово + предлог + падеж».
+def _word_diff_case_text(case: str) -> str:
+    """Падеж в одной записи и БЕЗ ПОВТОРОВ.
 
-    Владелец 26.08.2026: «непонятно, что такое слово, а потом стоит · Nominativ».
-    Читается как формула, поэтому и собираем её формулой, а не двумя полями через точку.
+    Владелец 30.08.2026 прислал с экрана «Akkusativ + Akkusativ»: модель иногда
+    называет падеж по разу на каждое дополнение образца. Дважды напечатанный
+    Akkusativ не сообщает ничего сверх одного — повтор убираем, порядок храним.
+    """
+    parts = [p.strip() for p in re.split(r"[+,/]", str(case or "")) if p.strip()]
+    out: list[str] = []
+    for part in parts:
+        text = _CASE_SHORT.get(part.casefold(), part)
+        if text and all(text.casefold() != seen.casefold() for seen in out):
+            out.append(text)
+    return " + ".join(out)
+
+
+def _word_diff_construction_view(word: str, pattern: str, case: str,
+                                 preposition: str) -> tuple[str, str]:
+    """Как конструкция выглядит на экране: (запись, подпись падежа).
+
+    ┌─ ПЕРЕДЕЛАНО 30.08.2026. НЕ ВОЗВРАЩАТЬ ПРЕЖНЮЮ СКЛЕЙКУ. ────────────────────┐
+    │ Было: мы собирали формулу «образец + предлог + падеж» ВСЕГДА, а фронт      │
+    │ печатал рядом ещё и поле case через «·». Владелец увидел на экране:        │
+    │   «jdm. etw. anbieten + Dativ + Akkusativ · Dativ + Akkusativ»             │
+    │   «etw. zum Verkauf anbieten + zum + Akkusativ + Akkusativ · Akkusativ…»   │
+    │ Два дефекта. Первый: падеж печатался ДВАЖДЫ — в формуле и подписью.        │
+    │ Второй, тяжёлый: предлог приписывался в хвост, даже когда он уже стоял     │
+    │ ВНУТРИ образца («zum Verkauf»), и падеж прирастал к нему. «zum + Akkusativ»│
+    │ — грамматическая ложь: zum = zu dem, это Dativ. Падеж относился к «etw.»,  │
+    │ а мы своей арифметикой пришили его к предлогу. Правило ноль: немецкую      │
+    │ форму мы не выводим из другой формы своим счётом.                          │
+    │ Стало: падеж печатается РОВНО ОДИН РАЗ, и мы ничего не приклеиваем к тому, │
+    │ что источник уже написал.                                                  │
+    │   • образец богаче самого глагола («jdm. etw. anbieten») — показываем его  │
+    │     как есть, падеж уходит подписью;                                       │
+    │   • образец голый («unterbreiten», «warten auf») — вот там и только там    │
+    │     собираем читаемую формулу «warten auf + Akkusativ»;                    │
+    │   • предлога нет в образце, но источник его назвал — дописываем формулой.  │
+    │ Проверять: backend/tests/test_word_diff_constructions.py                   │
+    └────────────────────────────────────────────────────────────────────────────┘
     """
     head = " ".join(str(word or "").split())
     prep = " ".join(str(preposition or "").split())
-    case_text = _CASE_SHORT.get(str(case or "").strip().casefold(), str(case or "").strip())
-    if not head:
-        return " ".join(str(pattern or "").split())
-    # Голову берём из образца, если она богаче самого слова: «sich ausweisen» и
-    # «jdn. ausweisen» — это и есть смысл, и терять их нельзя.
+    case_text = _word_diff_case_text(case)
     base = " ".join(str(pattern or "").split())
-    base = re.sub(r"\s*\+?\s*(nominativ|akkusativ|dativ|genitiv)\s*$", "", base, flags=re.IGNORECASE)
-    if prep:
-        base = re.sub(rf"\s*\+?\s*{re.escape(prep)}\s*$", "", base, flags=re.IGNORECASE)
-    base = base.strip(" +") or head
+    if not head:
+        return base, ""
+    # Хвостовой падеж внутри образца — наша же запись, а не часть немецкой фразы.
+    while True:
+        stripped = re.sub(r"\s*\+?\s*(nominativ|akkusativ|dativ|genitiv)\s*$", "",
+                          base, flags=re.IGNORECASE).strip(" +")
+        if stripped == base:
+            break
+        base = stripped
+    base = base or head
 
-    # Есть предлог — собираем формулу сами, как бы её ни записала модель. Иначе одна и
-    # та же конструкция приходит то «laufen zu + Dativ», то «laufen + zu + Dativ».
+    prep_in_base = bool(prep) and bool(
+        re.search(rf"(?<!\w){re.escape(prep)}(?!\w)", base, flags=re.IGNORECASE))
+    if prep and not prep_in_base:
+        # Источник назвал предлог, а образец его не содержит: это и есть управление,
+        # падеж в нём относится к предлогу. Единственный случай, где формулу собираем.
+        return " + ".join(x for x in (base, prep, case_text) if x), ""
+
+    # Что в образце есть, кроме самого глагола и предлога: «jdm. etw.», «zum Verkauf».
+    rest = re.sub(rf"(?<!\w){re.escape(head)}(?!\w)", " ", base, flags=re.IGNORECASE)
     if prep:
-        return f"{base} + {prep} + {case_text}".strip(" +")
-    return f"{base} + {case_text}".strip(" +") if case_text else base
+        rest = re.sub(rf"(?<!\w){re.escape(prep)}(?!\w)", " ", rest, flags=re.IGNORECASE)
+    rest = " ".join(re.sub(r"[+.…]", " ", rest).split())
+    if not rest:
+        # Голый образец. «unterbreiten · Akkusativ» владелец уже забраковал 26.08.2026
+        # («непонятно, что такое слово, а потом стоит · Nominativ») — здесь формула
+        # читается, и падеж в ней один.
+        return (f"{base} + {case_text}" if case_text else base), ""
+    return base, case_text
+
+
+def _word_diff_construction_unglue(pattern: str, case: str, preposition: str) -> str:
+    """Снять с готовой записи НАШУ прежнюю приписку и вернуть исходный образец.
+
+    Нужна для уборки уже накопленного: в `bt_3_word_diff_cards` лежат разборы пар,
+    собранные до 30.08.2026, и в них записано «etw. zum Verkauf anbieten + zum +
+    Akkusativ + Akkusativ». Заново спрашивать модель незачем — приписка делалась
+    детерминированно и с КОНЦА строки, поэтому снимается тоже с конца:
+      • хвостовые «+ Kasus» — сколько бы их ни было;
+      • хвостовой «+ предлог», но ТОЛЬКО если тот же предлог стоит в строке ещё
+        раз — тогда он и есть наша добавка. Одиночный «laufen + zu» не трогаем:
+        там предлог единственный и он часть управления.
+    Дальше расклеенный образец идёт в `_word_diff_construction_view`, то есть уборка
+    и новая сборка живут по одному правилу и разойтись не могут.
+    """
+    base = " ".join(str(pattern or "").split())
+    prep = " ".join(str(preposition or "").split())
+    while True:
+        stripped = re.sub(r"\s*\+\s*(nominativ|akkusativ|dativ|genitiv)\s*$", "",
+                          base, flags=re.IGNORECASE).strip()
+        if stripped == base:
+            break
+        base = stripped
+    if prep:
+        tail = re.compile(rf"\s*\+\s*{re.escape(prep)}\s*$", flags=re.IGNORECASE)
+        if tail.search(base):
+            head = tail.sub("", base).strip()
+            if re.search(rf"(?<!\w){re.escape(prep)}(?!\w)", head, flags=re.IGNORECASE):
+                base = head
+    return base
 
 
 def _word_diff_construction_is_bare(pattern: str, case: str, preposition: str) -> bool:
@@ -43908,6 +43989,7 @@ def _word_diff_build_article(payload: dict) -> dict:
             if not pattern:
                 continue
             bare = _word_diff_construction_is_bare(pattern, case, preposition)
+            view_text, view_case = _word_diff_construction_view(word, pattern, case, preposition)
             # Без дополнения и без примера показывать нечего — там пусто по существу.
             if bare and not str(item.get("example_de") or "").strip():
                 continue
@@ -43917,10 +43999,13 @@ def _word_diff_build_article(payload: dict) -> dict:
             seen_keys.add(key)
             constructions.append({
                 "id": f"c{len(constructions) + 1}",
-                "pattern": word if bare else _word_diff_construction_text(word, pattern, case, preposition),
+                "pattern": word if bare else view_text,
                 # «Без дополнения» — человеческое имя для голого именительного.
                 "bare": bare,
-                "case": "" if bare else case,
+                "case": "" if bare else _word_diff_case_text(case),
+                # Падеж для показа рядом с записью. Пустой — значит он УЖЕ внутри
+                # записи, и печатать его второй раз нельзя (см. _word_diff_construction_view).
+                "case_note": "" if bare else view_case,
                 "preposition": preposition or None,
                 # «Обязательна» имеет смысл только там, где есть предлог: без него это
                 # утверждение про подлежащее, а оно есть всегда.
@@ -43951,13 +44036,28 @@ def _word_diff_build_article(payload: dict) -> dict:
         if len(collocations) >= 6:
             break
 
+    pos = str(payload.get("pos") or usage.get("pos") or "").strip()
+    # ОТДЕЛЯЕМАЯ ПРИСТАВКА — такой же признак глагола, как возвратность, и владелец
+    # 30.08.2026 не нашёл его на экране «anbieten ↔ unterbreiten». Берётся ТОЛЬКО из
+    # справочника напечатанных форм: по написанию «unter-» решить нельзя
+    # («unterbringen» отделяет, «unterbreiten» нет). Справочник молчит — остаётся {},
+    # и это считается пробелом в _word_diff_gaps, а не выдаётся за ответ.
+    separability: dict = {}
+    if pos == "verb":
+        try:
+            from backend.german_grammar_tables import verb_prefix_separability
+            separability = verb_prefix_separability(word, allow_network=True) or {}
+        except Exception:
+            logging.exception("word_diff: справочник не ответил про приставку %r", word)
+
     return {
         "word": word,
         "headword": str(payload.get("headword") or word),
         "entry_key": str(payload.get("entry_key") or ""),
-        "pos": str(payload.get("pos") or usage.get("pos") or ""),
+        "pos": pos,
         "senses": senses[:6],
         "reflexivity": usage.get("reflexivity") if isinstance(usage.get("reflexivity"), dict) else {},
+        "separability": separability,
         "constructions": constructions,
         "collocations": collocations[:6],
         "word_family": [x for x in (usage.get("word_family") or []) if isinstance(x, dict)][:4],
@@ -44334,11 +44434,15 @@ def _word_diff_validate(
         source = by_word.get(key) or {}
         reflexivity = source.get("reflexivity") if isinstance(source.get("reflexivity"), dict) else {}
         family = source.get("word_family") or []
-        if not reflexivity and not family:
+        separability = source.get("separability") if isinstance(source.get("separability"), dict) else {}
+        if not reflexivity and not family and not separability:
             continue
         usage_blocks.append({
             "word": display,
+            "pos": str(source.get("pos") or ""),
             "reflexivity": reflexivity,
+            # Отделяемая приставка — из справочника форм, не из ответа модели.
+            "separability": separability,
             # Родня по приставкам показывается, только когда сравниваемые слова сами
             # родственники: человек, открывший «abschieben», не должен вдруг учить
             # «verschieben» (решение владельца 25.08.2026).
@@ -44381,6 +44485,16 @@ def _word_diff_gaps(diff: dict, words: list[str]) -> list[str]:
     colloc_words = {str(row.get("word") or "").casefold() for row in (diff.get("collocations") or [])}
     construction_words = {str(row.get("word") or "").casefold() for row in (diff.get("constructions") or [])}
 
+    # Глагол, про приставку которого справочник ещё не спросили. Это НЕ «приставки
+    # нет»: у слова без приставки блок и не заводится. Считаем, чтобы владелец видел
+    # числом, скольким глаголам справочник ещё не отвечал (добор — ночной прогрев
+    # warm_verb_paradigms).
+    separability_gaps = {
+        str(row.get("word") or "").casefold()
+        for row in (diff.get("usage") or [])
+        if str(row.get("pos") or "") == "verb" and not (row.get("separability") or {})
+    }
+
     for word in (shown or {w.casefold() for w in words}):
         if word not in example_words:
             gaps.append(f"нет примера: {word}")
@@ -44388,6 +44502,8 @@ def _word_diff_gaps(diff: dict, words: list[str]) -> list[str]:
             gaps.append(f"нет сочетаний: {word}")
         if word not in construction_words:
             gaps.append(f"нет конструкций: {word}")
+        if word in separability_gaps:
+            gaps.append(f"нет отделяемости: {word}")
     return gaps
 
 

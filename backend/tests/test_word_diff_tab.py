@@ -359,7 +359,11 @@ def test_thin_entry_is_enriched_before_the_comparison(monkeypatch):
     assert enriched_calls == ["abschieben"], "бедную статью не достроили"
     assert saved == [42], "достроенная карточка не сохранена — починка не осталась всем"
     assert [x["meaning"] for x in article["senses"]] == ["выдворять"]
-    assert article["constructions"][0]["pattern"] == "jdn. abschieben + Akkusativ"
+    # 30.08.2026: падеж больше НЕ вклеивается в запись, когда образец и без него
+    # читается («jdn.» — это и есть Akkusativ). Он уходит в подпись `case_note` и
+    # печатается ровно один раз; до этого дня фронт печатал его вторым разом рядом.
+    assert article["constructions"][0]["pattern"] == "jdn. abschieben"
+    assert article["constructions"][0]["case_note"] == "Akkusativ"
 
 
 def _stub_unit_row(monkeypatch, row):
@@ -839,7 +843,11 @@ def test_same_construction_written_two_ways_is_shown_once():
         ]},
     })
     patterns = [c["pattern"] for c in article["constructions"]]
-    assert patterns == ["laufen + zu + Dativ"], f"дубль не схлопнулся: {patterns}"
+    # Проверяется ОДНА строка вместо двух. Сама запись с 30.08.2026 выглядит как в
+    # словарях управления — «laufen zu + Dativ», глагол с предлогом вместе, — и падеж
+    # в ней один: подпись рядом не печатается (case_note пуст).
+    assert patterns == ["laufen zu + Dativ"], f"дубль не схлопнулся: {patterns}"
+    assert article["constructions"][0]["case_note"] == ""
 
 
 def test_bare_nominative_is_named_in_human_words_not_dropped_blindly():

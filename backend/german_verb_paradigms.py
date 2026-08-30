@@ -677,6 +677,87 @@ def paradigm_from_model(verb: str) -> tuple[dict | None, str]:
     return None, DISAGREED
 
 
+# Ключ, под которым в справочнике лежат ПРОЧТЕНИЯ написания (сколько глаголов этим
+# написанием пишется и как каждый спрягается). Приём тот же, что у `_MODEL_KEY_PREFIX`.
+_READINGS_KEY_PREFIX = "прочтения:"
+
+# Блок глагола в статье de.wiktionary: «=== {{Wortart|Verb|Deutsch}}, trennbar ===».
+# Помета «trennbar»/«untrennbar» стоит там НЕ всегда — она появляется, когда одним
+# написанием пишутся два разных глагола и их надо развести («umfahren», «unterbreiten»).
+_ARTICLE_VERB_HEAD = re.compile(r"^===[^=\n]*\{\{Wortart\|Verb\|Deutsch\}\}[^=\n]*", re.M)
+_ARTICLE_PRESENT = re.compile(r"\|Präsens_er, sie, es\s*=\s*([^\n|]*)")
+_ARTICLE_PARTICIPLE = re.compile(r"\|Partizip II\s*=\s*([^\n|]*)")
+
+
+def fetch_verb_readings(verb: str) -> list[dict] | None:
+    """Сколько ГЛАГОЛОВ пишется этим написанием и как каждый выглядит в формах.
+
+    ┌─ ЗАВЕДЕНО 30.08.2026. СТРАНИЦА Flexion ОТВЕЧАЕТ НЕ ЗА ВСЁ НАПИСАНИЕ. ────────┐
+    │ Замер в тот день: «Flexion:unterbreiten» отдаёт «breitet unter» и            │
+    │ «untergebreitet» — это ОТДЕЛЯЕМЫЙ глагол «подстилать». А владелец смотрел на │
+    │ неотделяемый «unterbreiten» — «предлагать, представлять», «er unterbreitet». │
+    │ Второй страницы Flexion у написания нет вовсе (поиск по intitle дал одну).   │
+    │ То есть справочник форм отвечает уверенно и НЕ ПРО ТОТ глагол — ровно тот    │
+    │ случай, когда «верный факт» даёт неверный вывод.                             │
+    │ Статья же разводит их явно, двумя блоками с пометами «trennbar» и            │
+    │ «untrennbar», и у каждого печатает свои формы. Её и спрашиваем.              │
+    └──────────────────────────────────────────────────────────────────────────────┘
+
+    None — справочник молчит (сеть, 429). [] — статьи нет или глагол в ней не описан.
+    """
+    name = str(verb or "").strip()
+    if not name:
+        return []
+    payload = _api({"action": "parse", "page": name, "prop": "wikitext",
+                    "format": "json", "formatversion": "2"})
+    if payload is None:
+        return None
+    if payload.get("error"):
+        return []
+    text = (payload.get("parse") or {}).get("wikitext") or ""
+    heads = list(_ARTICLE_VERB_HEAD.finditer(text))
+    readings: list[dict] = []
+    for index, head in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(text)
+        body = text[head.start():end]
+        present = _ARTICLE_PRESENT.search(body)
+        participle = _ARTICLE_PARTICIPLE.search(body)
+        if not present:
+            continue
+        label = ""
+        if re.search(r"untrennbar", head.group(0)):
+            label = "untrennbar"
+        elif re.search(r"trennbar", head.group(0)):
+            label = "trennbar"
+        readings.append({
+            "present": " ".join(present.group(1).split()),
+            "partizip2": " ".join(participle.group(1).split()) if participle else "",
+            "label": label,
+        })
+    return readings
+
+
+def verb_readings(verb: str, *, allow_network: bool = False) -> list[dict] | None:
+    """Прочтения написания из справочника: сперва память, потом сеть. None — не знаем."""
+    key = _READINGS_KEY_PREFIX + str(verb or "").strip().lower()
+    remembered = load_paradigm(key)
+    if isinstance(remembered, dict) and remembered.get("readings") is not None:
+        return list(remembered.get("readings") or [])
+    if remembered == {}:
+        # Уже спрашивали, и это был ОТВЕТ: статьи нет. Второй раз не ходим.
+        return []
+    if not allow_network:
+        return None
+    fetched = fetch_verb_readings(verb)
+    if fetched is None:
+        return None
+    # Запоминаем навсегда. «praesens» кладём не для красоты: по нему справочник
+    # отличает записанный ответ от пустого (см. store_paradigm/load_paradigm).
+    store_paradigm(key, {"readings": fetched,
+                         "praesens": {"er/sie/es": fetched[0]["present"]} if fetched else {}})
+    return fetched
+
+
 def paradigm_for_verb(infinitive: str, *, allow_network: bool = False,
                       allow_model: bool = False) -> dict | None:
     """Документированная таблица спряжения или None, если справочник её не подтвердил.

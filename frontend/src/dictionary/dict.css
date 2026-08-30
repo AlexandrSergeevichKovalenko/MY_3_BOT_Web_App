@@ -1931,6 +1931,9 @@ html[data-scheme="light"] .dq-gt > summary,
 .wd-usage-row { display: flex; gap: 8px; font-size: 13.5px; }
 .wd-usage-row .k { flex: 0 0 104px; color: var(--dmps-text-muted, #94a3b8); font-weight: 600; }
 .wd-usage-row .v { flex: 1 1 auto; color: var(--dmps-text-secondary, #cbd5e1); }
+/* Формы из справочника под строкой «Приставка»: «er bietet … an · Partizip II:
+   angeboten». Отдельной строкой и приглушённо — это пример, а не сам вердикт. */
+.wd-sep-forms { display: block; margin-top: 2px; font-size: 12.5px; color: var(--dmps-text-muted, #94a3b8); }
 .wd-oblig { font-size: 11.5px; font-weight: 700; color: var(--dq-warn); }
 .wd-construction-ru { display: block; color: var(--dmps-text-muted, #94a3b8); }
 .wd-swap-pair { font-size: 13px; font-weight: 700; color: var(--dmps-text-title, #f1f5f9); }
