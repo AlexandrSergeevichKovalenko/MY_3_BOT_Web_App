@@ -72903,6 +72903,8 @@ def sanitize_dictionary_item_examples(item: dict, *, native_lang: str) -> dict:
         }
 
     cleaned = dict(item)
+    dropped = 0        # пример выброшен целиком
+    stripped = 0       # перевод примера обнулён, немецкая фраза осталась
     examples = cleaned.get("usage_examples")
     if isinstance(examples, list):
         fixed: list = []
@@ -72914,7 +72916,10 @@ def sanitize_dictionary_item_examples(item: dict, *, native_lang: str) -> dict:
             # Обе половины пусты — изучаемое предложение было испорчено и выброшено.
             if isinstance(repaired, dict) and not str(repaired.get("source") or "").strip() \
                     and not str(repaired.get("target") or "").strip():
+                dropped += 1
                 continue
+            if isinstance(repaired, dict) and repaired != example:
+                stripped += 1
             fixed.append(repaired)
         cleaned["usage_examples"] = fixed
 
@@ -72928,6 +72933,14 @@ def sanitize_dictionary_item_examples(item: dict, *, native_lang: str) -> dict:
                 _fix_example(m, ("example_source", "example_target")) for m in fixed_meanings["secondary"]
             ]
         cleaned["meanings"] = fixed_meanings
+    # МОЛЧА ЧИСТИТЬ НЕЛЬЗЯ. Выброшенный пример неотличим от «примеров и не было»:
+    # владелец 30.08.2026 сказал «очень часто нет примеров» — вот по этой строке и
+    # будет видно, сколько из них выкинули МЫ, а сколько модель не дала вовсе.
+    if dropped or stripped:
+        logging.warning(
+            "стражи примеров: заголовок=%r выброшено=%d обнулён перевод=%d",
+            headword[:60], dropped, stripped,
+        )
     return cleaned
 
 
