@@ -34,6 +34,7 @@ import time
 from uuid import uuid4
 from calendar import monthrange
 from zoneinfo import ZoneInfo
+from collections.abc import Iterable
 from typing import Any
 from urllib.parse import parse_qsl, urlparse
 from dotenv import load_dotenv
@@ -52865,6 +52866,119 @@ def get_latest_daily_sentences(user_id: int, limit: int = 7) -> list[dict]:
             ]
 
 
+def clear_stale_translation_session_presence_markers(
+    *,
+    user_ids: Iterable[int] | None = None,
+) -> dict[str, Any]:
+    """Погасить указатель «у человека открыт набор переводов» там, где он ВРЁТ.
+
+    Источник истины — сама сессия: строка `bt_3_user_progress` с `completed = FALSE`,
+    у которой есть предложения на СЕГОДНЯ. Указатель — производная от неё, и он живёт
+    в двух хранилищах: быстрая копия в Redis и долгая копия в `bt_3_user_api_snapshots`
+    (kind `session_presence_card`). Закрытие сессии раньше гасило только Redis, и долгая
+    копия оставалась со словом "active" навсегда: 30.08.2026 она показала владельцу
+    «5 из 7» от сессии, закрытой сутки назад (сессия 812051317516 от 29.08).
+
+    Функция трогает ТОЛЬКО те карточки, которые расходятся с источником истины, —
+    сравнение идёт запросом, а не догадкой, и карточка живой сессии не пострадает.
+    Состояние пишется явное ("none"), а не пустое: «набора нет» и «мы не знаем» —
+    разные вещи, и вторая не должна выглядеть как первая.
+
+    Возвращает, сколько карточек погашено и у кого, — число нужно ночному заданию,
+    чтобы владелец увидел, если какой-то путь закрытия сессии снова забыл про указатель.
+    """
+    safe_user_ids = sorted({int(item) for item in (user_ids or []) if int(item) > 0})
+    if user_ids is not None and not safe_user_ids:
+        return {"cleared_snapshots": 0, "user_ids": [], "redis_failures": 0}
+    _ensure_phase1_projection_schema_for_snapshot_access()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cleared_user_ids = clear_stale_translation_session_presence_markers_with_cursor(
+                cursor,
+                user_ids=safe_user_ids or None,
+            )
+    return clear_session_presence_fast_copies(cleared_user_ids)
+
+
+def clear_stale_translation_session_presence_markers_with_cursor(
+    cursor,
+    *,
+    user_ids: Iterable[int] | None = None,
+) -> list[int]:
+    """Та же уборка, но на ЧУЖОМ курсоре — чтобы закрытие сессии и гашение указателя
+    попали в одну транзакцию и не могли разъехаться. Быструю копию гасит вызывающий."""
+    safe_user_ids = sorted({int(item) for item in (user_ids or []) if int(item) > 0})
+    if user_ids is not None and not safe_user_ids:
+        return []
+    filter_sql = "AND s.user_id = ANY(%s)" if safe_user_ids else ""
+    params: list[Any] = []
+    if safe_user_ids:
+        params.append(safe_user_ids)
+    cursor.execute(
+        f"""
+        UPDATE bt_3_user_api_snapshots s
+        SET
+            payload = s.payload || jsonb_build_object(
+                'state', 'none',
+                'session_id', NULL::text,
+                'session_type', NULL::text,
+                'updated_at_ms', (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT
+            ),
+            meta = COALESCE(s.meta, '{{}}'::jsonb) || jsonb_build_object(
+                'state', 'none',
+                'projection_status', 'ready'
+            ),
+            refreshed_at = NOW(),
+            updated_at = NOW()
+        WHERE s.snapshot_kind = 'session_presence_card'
+          AND s.snapshot_key = 'current'
+          AND s.payload->>'state' = 'active'
+          {filter_sql}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM bt_3_user_progress up
+            WHERE up.user_id = s.user_id
+              AND up.session_id::text = s.payload->>'session_id'
+              AND up.completed = FALSE
+              AND EXISTS (
+                SELECT 1
+                FROM bt_3_daily_sentences ds
+                WHERE ds.user_id = up.user_id
+                  AND ds.session_id = up.session_id
+                  AND ds.date = CURRENT_DATE
+              )
+          )
+        RETURNING s.user_id;
+        """,
+        tuple(params) if params else None,
+    )
+    return sorted({int(row[0]) for row in cursor.fetchall() if row[0] is not None})
+
+
+def clear_session_presence_fast_copies(user_ids: Iterable[int]) -> dict[str, Any]:
+    """Погасить быструю копию (Redis) для тех же людей. Ошибка Redis не проглатывается:
+    долгая копия уже честна, а про непогашенную быструю мы обязаны сказать в лог."""
+    cleared_user_ids = sorted({int(item) for item in (user_ids or []) if int(item) > 0})
+    redis_failures = 0
+    for cleared_user_id in cleared_user_ids:
+        try:
+            from backend.job_queue import clear_session_presence_card
+
+            clear_session_presence_card(int(cleared_user_id))
+        except Exception:
+            redis_failures += 1
+            logging.warning(
+                "session_presence_marker: не смогли погасить быструю копию user_id=%s",
+                cleared_user_id,
+                exc_info=True,
+            )
+    return {
+        "cleared_snapshots": len(cleared_user_ids),
+        "user_ids": cleared_user_ids,
+        "redis_failures": redis_failures,
+    }
+
+
 def close_stale_open_translation_sessions_for_user(
     *,
     user_id: int,
@@ -52914,7 +53028,12 @@ def close_stale_open_translation_sessions_for_user(
                 """,
                 (int(user_id), source_lang, target_lang, source_lang, target_lang),
             )
-            return int(cursor.rowcount or 0)
+            closed_rows = int(cursor.rowcount or 0)
+    # Закрыли сессию — обязаны погасить и указатель на неё. Иначе главный экран будет
+    # звать человека доделывать вчерашний набор (проверено 30.08.2026, «5 из 7»).
+    if closed_rows > 0:
+        clear_stale_translation_session_presence_markers(user_ids=[int(user_id)])
+    return closed_rows
 
 
 def get_pending_daily_sentences(
