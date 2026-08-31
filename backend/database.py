@@ -14006,6 +14006,23 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_rebus_component_review
                 ON bt_3_rebus_component_images (review_status, updated_at);
             """)
+            # Версия содержимого картинки (md5 = ETag объекта в R2). Живёт рядом с
+            # ключом, потому что ключ детерминирован и при перерисовке НЕ меняется, а
+            # Telegram кеширует картинку по адресу — см. `backend/r2_storage.py`,
+            # `r2_public_url`. NULL = «версия ещё не посчитана», а не «версии нет».
+            cursor.execute("""
+                ALTER TABLE bt_3_rebus_component_images
+                ADD COLUMN IF NOT EXISTS image_version TEXT;
+            """)
+            # Когда МАШИНА последний раз смотрела на эту картинку. NULL = не смотрела
+            # ни разу. Нужно из-за того, что колонка review_status выше раздала
+            # «принято» ВСЕМ существовавшим строкам (225 штук) — приёмки владельца у
+            # них не было, и отличить их иначе нельзя. Ночной проход разбирает их
+            # порциями и то, что вызывает сомнение, кладёт владельцу в очередь приёмки.
+            cursor.execute("""
+                ALTER TABLE bt_3_rebus_component_images
+                ADD COLUMN IF NOT EXISTS gate_checked_at TIMESTAMPTZ;
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_rebus_bank (
                     compound_id             TEXT PRIMARY KEY,
@@ -14030,6 +14047,19 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_rebus_bank_available
                 ON bt_3_rebus_bank (composed_status, retired, last_sent_at NULLS FIRST, difficulty);
+            """)
+            # Версия собранной карточки — см. комментарий у component_images выше.
+            cursor.execute("""
+                ALTER TABLE bt_3_rebus_bank
+                ADD COLUMN IF NOT EXISTS composed_image_version TEXT;
+            """)
+            # Отпечаток половинок на момент сборки: «слово:версия|слово:версия».
+            # 13.06.2026 у `eieruhr_001` поменяли ЧАСТИ (Birne → Ei), а склейку никто не
+            # пересобрал: подпись строится живьём при отправке, картинка — замороженный
+            # файл. Отпечаток делает это расхождение видимым НА ОТПРАВКЕ.
+            cursor.execute("""
+                ALTER TABLE bt_3_rebus_bank
+                ADD COLUMN IF NOT EXISTS parts_fingerprint TEXT;
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_rebus_slot_assignments (
@@ -14115,6 +14145,14 @@ def ensure_webapp_tables() -> None:
                 ALTER TABLE bt_3_article_quiz_bank
                 ADD COLUMN IF NOT EXISTS gender_hint TEXT NOT NULL DEFAULT '';
             """)
+            # Версия содержимого картинки — см. тот же комментарий у ребуса и
+            # кроссворда: адрес детерминирован, Telegram кеширует по адресу.
+            # Замер 31.08.2026: у артикль-квиза застрявших сегодня ноль из 160, но
+            # проводка та же, и без версии первая же перерисовка не доедет.
+            cursor.execute("""
+                ALTER TABLE bt_3_article_quiz_bank
+                ADD COLUMN IF NOT EXISTS image_version TEXT;
+            """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_aq_bank_available
                 ON bt_3_article_quiz_bank (image_status, retired, last_sent_at NULLS FIRST);
@@ -14190,6 +14228,14 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_crossword_bank
                 ADD COLUMN IF NOT EXISTS image_rule_version SMALLINT NOT NULL DEFAULT 0;
+            """)
+            # Версия содержимого картинки — та же беда, что у ребуса: ключ
+            # (`crossword/cards/<id>.png`) детерминирован, перерисовка ложится в тот же
+            # адрес, а Telegram кеширует картинку по адресу и второй раз не приходит.
+            # Замер 31.08.2026: у кроссворда так застряла 1 карточка из 154.
+            cursor.execute("""
+                ALTER TABLE bt_3_crossword_bank
+                ADD COLUMN IF NOT EXISTS image_version TEXT;
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_crossword_bank_available
@@ -55757,7 +55803,17 @@ def get_visual_riddle_quiz_type_distribution(*, lookback_count: int = 30) -> dic
 # ─────────────────────────────────────────────────────────────────────────────
 
 def upsert_rebus_bank_entry(entry: dict) -> None:
-    """Insert or update a single compound entry from REBUS_COMPOUND_BANK."""
+    """Insert or update a single compound entry from REBUS_COMPOUND_BANK.
+
+    ┌─ ПОМЕНЯЛИСЬ ЧАСТИ — КАРТИНКА ОТПРАВЛЯЕТСЯ НА ПЕРЕСБОРКУ. Правка 31.08.2026.─┐
+    │ Раньше здесь обновлялся `parts_json`, а `composed_status` и ключ картинки   │
+    │ не трогались. 13.06.2026 у `eieruhr_001` починили части (Birne → Ei), текст │
+    │ поехал вперёд, июньская склейка осталась стоять — и 79 дней люди видели     │
+    │ «яйцо + часы» над грушей. Теперь смена частей сама сбрасывает склейку в     │
+    │ 'pending': ночной пул соберёт её заново, а до тех пор карточка не выдаётся  │
+    │ (`pick_next_rebus` берёт только 'ready').                                   │
+    └────────────────────────────────────────────────────────────────────────────┘
+    """
     import json
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -55777,6 +55833,12 @@ def upsert_rebus_bank_entry(entry: dict) -> None:
                     parts_json          = EXCLUDED.parts_json,
                     wrong_options_json  = EXCLUDED.wrong_options_json,
                     explanation_ru      = EXCLUDED.explanation_ru,
+                    composed_status     = CASE
+                        WHEN bt_3_rebus_bank.parts_json IS DISTINCT FROM EXCLUDED.parts_json
+                        THEN 'pending' ELSE bt_3_rebus_bank.composed_status END,
+                    parts_fingerprint   = CASE
+                        WHEN bt_3_rebus_bank.parts_json IS DISTINCT FROM EXCLUDED.parts_json
+                        THEN NULL ELSE bt_3_rebus_bank.parts_fingerprint END,
                     updated_at          = NOW()
                 """,
                 (
@@ -55853,7 +55915,7 @@ def get_rebus_component_image(word: str) -> dict | None:
             cursor.execute(
                 """
                 SELECT word, image_object_key, generation_status, dalle_prompt,
-                       review_status, review_reason, redraw_count
+                       review_status, review_reason, redraw_count, image_version
                 FROM bt_3_rebus_component_images
                 WHERE word = %s
                 """,
@@ -55865,8 +55927,14 @@ def get_rebus_component_image(word: str) -> dict | None:
     return {
         "word": row[0], "image_object_key": row[1],
         "generation_status": row[2], "dalle_prompt": row[3],
-        "review_status": row[4] or "approved", "review_reason": row[5] or "",
+        # Колонка NOT NULL DEFAULT 'approved', пустой она не бывает — поэтому здесь
+        # не подставляем «принято», а честно отдаём то, что лежит. Подстановка
+        # смысла в это место = разрешение отправить непринятую картинку.
+        "review_status": row[4], "review_reason": row[5] or "",
         "redraw_count": int(row[6] or 0),
+        # Пусто = «версию ещё не посчитали». НЕ подставляем ничего: пустая версия
+        # даёт голую ссылку, а не выдуманную.
+        "image_version": str(row[7] or ""),
     }
 
 
@@ -56344,29 +56412,50 @@ def upsert_rebus_component_image(
     dalle_prompt: str | None = None,
     review_status: str | None = None,
     count_attempt: bool = False,
+    image_version: str | None = None,
 ) -> None:
     """count_attempt=True — это была НЕУДАЧНАЯ попытка нарисовать (проверка предмета
     забраковала). Считаем её так же, как отказ владельца: попытка стоит денег, и
-    бесконечно повторять её нельзя."""
+    бесконечно повторять её нельзя.
+
+    image_version — версия содержимого картинки (md5 = ETag в R2). Идёт вместе с новым
+    ключом и НИКОГДА не подставляется по догадке: без неё ссылка строится голой, и это
+    честное «версия неизвестна»."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO bt_3_rebus_component_images
                     (word, image_object_key, generation_status, failure_reason, dalle_prompt,
-                     review_status, updated_at)
-                VALUES (%s, %s, %s, %s, %s, COALESCE(%s, 'approved'), NOW())
+                     review_status, image_version, updated_at)
+                VALUES (%(word)s, %(key)s, %(gen)s, %(fail)s, %(prompt)s,
+                        COALESCE(%(review)s, 'approved'), %(version)s, NOW())
                 ON CONFLICT (word) DO UPDATE SET
                     image_object_key  = COALESCE(EXCLUDED.image_object_key, bt_3_rebus_component_images.image_object_key),
                     generation_status = EXCLUDED.generation_status,
                     failure_reason    = EXCLUDED.failure_reason,
                     dalle_prompt      = COALESCE(EXCLUDED.dalle_prompt, bt_3_rebus_component_images.dalle_prompt),
-                    review_status     = COALESCE(%s, bt_3_rebus_component_images.review_status),
-                    redraw_count      = bt_3_rebus_component_images.redraw_count + %s,
+                    review_status     = COALESCE(%(review)s, bt_3_rebus_component_images.review_status),
+                    redraw_count      = bt_3_rebus_component_images.redraw_count + %(attempt)s,
+                    -- Новый ключ пришёл без версии — старая версия ОБНУЛЯЕТСЯ: держать
+                    -- версию от прежних байтов опаснее, чем не иметь её вовсе.
+                    image_version     = CASE
+                        WHEN %(version)s IS NOT NULL THEN %(version)s
+                        WHEN EXCLUDED.image_object_key IS NOT NULL THEN NULL
+                        ELSE bt_3_rebus_component_images.image_version
+                    END,
                     updated_at        = NOW()
                 """,
-                (str(word), image_object_key, str(generation_status), failure_reason, dalle_prompt,
-                 review_status, review_status, 1 if count_attempt else 0),
+                {
+                    "word": str(word),
+                    "key": image_object_key,
+                    "gen": str(generation_status),
+                    "fail": failure_reason,
+                    "prompt": dalle_prompt,
+                    "review": review_status,
+                    "version": image_version,
+                    "attempt": 1 if count_attempt else 0,
+                },
             )
         conn.commit()
 
@@ -56379,7 +56468,8 @@ def get_rebus_bank_entry(compound_id: str) -> dict | None:
                 SELECT compound_id, compound_word, article, meaning_ru, difficulty,
                        parts_json, wrong_options_json, explanation_ru,
                        composed_image_object_key, composed_status,
-                       send_count, last_sent_at, retired
+                       send_count, last_sent_at, retired,
+                       composed_image_version, parts_fingerprint
                 FROM bt_3_rebus_bank
                 WHERE compound_id = %s
                 """,
@@ -56397,6 +56487,8 @@ def get_rebus_bank_entry(compound_id: str) -> dict | None:
         "composed_image_object_key": row[8], "composed_status": row[9],
         "send_count": int(row[10] or 0), "last_sent_at": row[11],
         "retired": bool(row[12]),
+        "composed_image_version": str(row[13] or ""),
+        "parts_fingerprint": str(row[14] or ""),
     }
 
 
@@ -56441,18 +56533,82 @@ def audit_rebus_bank_consistency(*, retire: bool = False) -> dict:
     return {"checked": checked, "bad": bad, "retired": retired}
 
 
-def mark_rebus_composed(compound_id: str, *, image_object_key: str) -> None:
+def list_rebus_images_without_version() -> dict:
+    """Картинки ребуса, у которых ещё нет версии содержимого (или отпечатка половинок).
+
+    Отбирает ТОЛЬКО строки с ключом: без ключа версии быть не может, это не пробел,
+    а «картинки ещё нет». См. `backend/rebus_generator.py:fill_missing_rebus_image_versions`.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word, image_object_key
+                FROM bt_3_rebus_component_images
+                WHERE image_object_key IS NOT NULL AND image_object_key <> ''
+                  AND (image_version IS NULL OR image_version = '')
+                ORDER BY word
+                """
+            )
+            components = [(r[0], r[1]) for r in (cursor.fetchall() or [])]
+            cursor.execute(
+                """
+                SELECT compound_id, composed_image_object_key, parts_json
+                FROM bt_3_rebus_bank
+                WHERE composed_image_object_key IS NOT NULL AND composed_image_object_key <> ''
+                  AND (composed_image_version IS NULL OR composed_image_version = ''
+                       OR parts_fingerprint IS NULL OR parts_fingerprint = '')
+                ORDER BY compound_id
+                """
+            )
+            cards = [(r[0], r[1], r[2] if isinstance(r[2], list) else []) for r in (cursor.fetchall() or [])]
+    return {"components": components, "cards": cards}
+
+
+def set_rebus_component_image_version(word: str, image_version: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_rebus_component_images SET image_version = %s, updated_at = NOW() "
+                "WHERE word = %s",
+                (str(image_version), str(word)),
+            )
+        conn.commit()
+
+
+def set_rebus_card_image_version(compound_id: str, image_version: str,
+                                 parts_fingerprint: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_rebus_bank SET composed_image_version = %s, "
+                "       parts_fingerprint = %s, updated_at = NOW() "
+                "WHERE compound_id = %s",
+                (str(image_version), str(parts_fingerprint).strip() or None, str(compound_id)),
+            )
+        conn.commit()
+
+
+def mark_rebus_composed(compound_id: str, *, image_object_key: str,
+                        image_version: str = "", parts_fingerprint: str = "") -> None:
+    """Карточка собрана. Вместе с ключом записываются ВЕРСИЯ содержимого (иначе
+    перерисовка не доедет до людей — Telegram кеширует по адресу) и ОТПЕЧАТОК
+    половинок, из которых она склеена (иначе правка частей не будет видна на отправке).
+    Пустые значения записываются как NULL — «не знаем», а не выдуманное."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 UPDATE bt_3_rebus_bank
                 SET composed_image_object_key = %s,
+                    composed_image_version = %s,
+                    parts_fingerprint = %s,
                     composed_status = 'ready',
                     updated_at = NOW()
                 WHERE compound_id = %s
                 """,
-                (str(image_object_key), str(compound_id)),
+                (str(image_object_key), str(image_version).strip() or None,
+                 str(parts_fingerprint).strip() or None, str(compound_id)),
             )
         conn.commit()
 
@@ -56468,12 +56624,56 @@ def list_ready_rebus_component_images(limit: int = 200, *, pregate_only: bool = 
         "WHERE generation_status = 'ready' AND image_object_key IS NOT NULL "
     )
     if pregate_only:
-        sql += "AND dalle_prompt IS NULL "
+        # До-гейтовые: промпта нет (рисовались до появления проверки) И машина их с
+        # тех пор ни разу не смотрела. Второе условие важно, иначе ночной проход
+        # каждую ночь брал бы те же самые картинки и жёг деньги по кругу.
+        sql += "AND dalle_prompt IS NULL AND gate_checked_at IS NULL "
     sql += "ORDER BY word LIMIT %s"
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(sql, (int(limit),))
             return [{"word": r[0], "image_object_key": r[1]} for r in (cursor.fetchall() or [])]
+
+
+def mark_rebus_component_gate_checked(word: str) -> None:
+    """Машина посмотрела на картинку и претензий не имеет. Отметка нужна, чтобы
+    ночной проход не брал одну и ту же картинку каждую ночь за деньги."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_rebus_component_images SET gate_checked_at = NOW() WHERE word = %s",
+                (str(word),),
+            )
+        conn.commit()
+
+
+def send_rebus_component_to_owner_review(word: str, reason: str) -> None:
+    """Машина усомнилась — картинка уходит ВЛАДЕЛЬЦУ в ту же очередь приёмки, где у
+    него уже есть кнопки «годится / перерисовать / снять пару», и до его решения
+    не выдаётся (`pick_next_rebus` требует 'approved'). Мы не удаляем её сами:
+    приговор машины — повод спросить человека, а не заменить его."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_rebus_component_images "
+                "SET review_status = 'pending', review_reason = %s, "
+                "    gate_checked_at = NOW(), updated_at = NOW() "
+                "WHERE word = %s AND review_status <> 'blocked'",
+                (str(reason)[:500], str(word)),
+            )
+        conn.commit()
+
+
+def count_rebus_pregate_backlog() -> int:
+    """Сколько до-гейтовых картинок машина ещё не смотрела — число для отчёта."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_rebus_component_images "
+                "WHERE generation_status = 'ready' AND image_object_key IS NOT NULL "
+                "  AND dalle_prompt IS NULL AND gate_checked_at IS NULL"
+            )
+            return int((cursor.fetchone() or [0])[0])
 
 
 def get_rebus_part_meanings() -> dict:
@@ -56599,6 +56799,23 @@ def reset_rebus_compounds_for_part(word: str) -> int:
     return int(n or 0)
 
 
+def mark_rebus_needs_recompose(compound_id: str) -> None:
+    """Склейка разошлась со своими половинками — снять с «готово» и стереть отпечаток,
+    чтобы ночной пул собрал карточку заново. Промолчать вместо этого нельзя: карточка
+    осталась бы сломанной навсегда, а человек не получал бы её без объяснения."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_rebus_bank
+                SET composed_status = 'pending', parts_fingerprint = NULL, updated_at = NOW()
+                WHERE compound_id = %s
+                """,
+                (str(compound_id),),
+            )
+        conn.commit()
+
+
 def mark_rebus_compose_failed(compound_id: str) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -56626,13 +56843,29 @@ def pick_next_rebus(*, cooldown_days: int = 30, exclude_ids: list | None = None)
                 """
                 SELECT compound_id, compound_word, article, meaning_ru, difficulty,
                        parts_json, wrong_options_json, explanation_ru,
-                       composed_image_object_key, composed_status, send_count, last_sent_at
-                FROM bt_3_rebus_bank
+                       composed_image_object_key, composed_status, send_count, last_sent_at,
+                       composed_image_version, parts_fingerprint
+                FROM bt_3_rebus_bank b
                 WHERE composed_status = 'ready'
                   AND retired = FALSE
                   AND (
                       last_sent_at IS NULL
                       OR last_sent_at < NOW() - (%s || ' days')::INTERVAL
+                  )
+                  -- Приёмка владельца действует и НА ВЫДАЧЕ, а не только на сборке.
+                  -- До 31.08.2026 её здесь не было вовсе: однажды собранная карточка
+                  -- уходила вечно, что бы потом ни случилось с её половинками —
+                  -- отказ владельца или блокировка слова её не останавливали.
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements(b.parts_json) AS part
+                      LEFT JOIN bt_3_rebus_component_images c
+                             ON c.word = part->>'word'
+                      -- IS DISTINCT FROM, а не COALESCE(...,'approved'): половинки без
+                      -- строки в базе картинок мы НЕ считаем принятой — «не знаем» это
+                      -- не «годится». Замер 31.08.2026: таких сегодня ноль, оба правила
+                      -- дают одни и те же 77 карточек, поэтому строгое ничего не стоит.
+                      WHERE c.review_status IS DISTINCT FROM 'approved'
                   )
                 """
                 + ("  AND compound_id::text <> ALL(%s)\n" if skip else "")
@@ -56654,6 +56887,8 @@ def pick_next_rebus(*, cooldown_days: int = 30, exclude_ids: list | None = None)
         "composed_image_object_key": row[8],
         "composed_status": row[9],
         "send_count": int(row[10] or 0), "last_sent_at": row[11],
+        "composed_image_version": str(row[12] or ""),
+        "parts_fingerprint": str(row[13] or ""),
     }
 
 
@@ -57023,16 +57258,20 @@ def get_article_quiz_words_missing_hint(limit: int = 200) -> list[dict]:
     ]
 
 
-def mark_article_quiz_image_ready(word_id: str, *, image_object_key: str) -> None:
+def mark_article_quiz_image_ready(word_id: str, *, image_object_key: str,
+                                 image_version: str = "") -> None:
+    """Версия содержимого пишется рядом с ключом: без неё перерисованная картинка не
+    доедет до людей — Telegram кеширует по адресу, а адрес детерминирован."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 UPDATE bt_3_article_quiz_bank
-                SET image_object_key = %s, image_status = 'ready', updated_at = NOW()
+                SET image_object_key = %s, image_version = %s,
+                    image_status = 'ready', updated_at = NOW()
                 WHERE word_id = %s
                 """,
-                (str(image_object_key), str(word_id)),
+                (str(image_object_key), str(image_version).strip() or None, str(word_id)),
             )
         conn.commit()
 
@@ -57077,7 +57316,7 @@ def pick_next_article_quiz(
         sql = (
             "SELECT word_id, word, article, meaning_ru, difficulty, category, "
             "       image_object_key, image_status, send_count, last_sent_at, "
-            "       retired, dalle_prompt "
+            "       retired, dalle_prompt, image_version "
             "FROM bt_3_article_quiz_bank "
             "WHERE " + " AND ".join(where) + " "
             "ORDER BY last_sent_at NULLS FIRST, send_count ASC LIMIT 1"
@@ -57099,6 +57338,7 @@ def pick_next_article_quiz(
         "difficulty": row[4], "category": row[5], "image_object_key": row[6],
         "image_status": row[7], "send_count": row[8], "last_sent_at": row[9],
         "retired": row[10], "dalle_prompt": row[11],
+        "image_version": str(row[12] or ""),
     }
 
 
@@ -57435,17 +57675,22 @@ def get_crossword_bank_entry(crossword_id: str) -> dict | None:
 CROSSWORD_IMAGE_RULE_VERSION = 1
 
 
-def mark_crossword_image_ready(crossword_id: str, *, image_object_key: str) -> None:
+def mark_crossword_image_ready(crossword_id: str, *, image_object_key: str,
+                               image_version: str = "") -> None:
+    """Версия содержимого пишется рядом с ключом: без неё перерисованная картинка не
+    доедет до людей — Telegram кеширует по адресу, а адрес детерминирован."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 UPDATE bt_3_crossword_bank
-                SET image_object_key = %s, image_status = 'ready', updated_at = NOW(),
+                SET image_object_key = %s, image_version = %s,
+                    image_status = 'ready', updated_at = NOW(),
                     image_rule_version = %s
                 WHERE crossword_id = %s
                 """,
-                (str(image_object_key), CROSSWORD_IMAGE_RULE_VERSION, str(crossword_id)),
+                (str(image_object_key), str(image_version).strip() or None,
+                 CROSSWORD_IMAGE_RULE_VERSION, str(crossword_id)),
             )
         conn.commit()
 
@@ -57496,7 +57741,7 @@ def pick_next_crossword(*, exclude_ids: list | None = None) -> dict | None:
             cursor.execute(
                 """
                 SELECT crossword_id, topic, difficulty, grid_json, words_json,
-                       image_object_key, send_count
+                       image_object_key, send_count, image_version
                 FROM bt_3_crossword_bank
                 WHERE image_status = 'ready'
                   AND retired = FALSE
@@ -57510,7 +57755,7 @@ def pick_next_crossword(*, exclude_ids: list | None = None) -> dict | None:
             )
             rows = cursor.fetchall() or []
     cols = ["crossword_id", "topic", "difficulty", "grid_json", "words_json",
-            "image_object_key", "send_count"]
+            "image_object_key", "send_count", "image_version"]
     for row in rows:
         entry = dict(zip(cols, row))
         problem = giveaway_problem(entry.get("words_json"))

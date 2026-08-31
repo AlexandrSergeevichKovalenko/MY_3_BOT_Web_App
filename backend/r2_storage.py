@@ -75,11 +75,70 @@ def _normalize_object_key(object_key: str) -> str:
     return normalized
 
 
-def r2_public_url(object_key: str) -> str:
+def r2_public_url(object_key: str, *, version: str = "") -> str:
+    """Public address of an object. With `version` — an address that CHANGES when the
+    bytes change.
+
+    ┌─ ПОЧЕМУ ЗДЕСЬ ВООБЩЕ ЕСТЬ ВЕРСИЯ. Замер 31.08.2026. ─────────────────────┐
+    │ Бот шлёт Telegram не файл, а ССЫЛКУ (`send_photo(photo=<url>)`).          │
+    │ Telegram скачивает по ссылке ОДИН раз и дальше вечно отдаёт свою копию.   │
+    │ Ключи заданий детерминированы (`rebus/composed/<id>.png`), поэтому        │
+    │ перерисовка ложится в ТОТ ЖЕ адрес — и до людей не доезжает никогда.      │
+    │ Живой случай: картинку «Ei» починили 13.06.2026, правильный файл лежит в  │
+    │ R2 с 03.08.2026 — а 31.08.2026 двенадцати людям снова ушла июньская груша.│
+    │ Замер: 79 из 126 отправлявшихся ребусов имели файл новее первой отправки. │
+    │ Версия в адресе — единственное, что заставляет Telegram скачать заново.   │
+    │ Пустая версия = «не знаем» и даёт голый адрес: это честное отсутствие,    │
+    │ а не выдуманное значение. Такие случаи считает вызывающая сторона.        │
+    └──────────────────────────────────────────────────────────────────────────┘
+    """
     cfg = load_r2_config_from_env()
     normalized_key = _normalize_object_key(object_key)
     escaped_key = quote(normalized_key, safe="/-_.~")
-    return f"{cfg.public_base_url}/{escaped_key}"
+    url = f"{cfg.public_base_url}/{escaped_key}"
+    version = str(version or "").strip()
+    if version:
+        url = f"{url}?v={quote(version, safe='')}"
+    return url
+
+
+def r2_content_version(data: bytes) -> str:
+    """Версия содержимого — то же, чем R2 заполняет ETag (md5 целого объекта).
+    Одинаковые байты дают одинаковую версию, поэтому добор для уже лежащих файлов
+    может взять её из `head_object`, ничего не скачивая."""
+    import hashlib
+
+    payload = bytes(data or b"")
+    if not payload:
+        raise ValueError("data must be non-empty bytes")
+    return hashlib.md5(payload).hexdigest()
+
+
+def r2_object_version(object_key: str) -> str | None:
+    """Версия УЖЕ лежащего объекта, взятая из ETag. None — объекта нет.
+
+    Составные (multipart) загрузки дают ETag с суффиксом `-N`; он тоже меняется
+    вместе с содержимым, поэтому годится как версия. Ошибку доступа НЕ глушим —
+    иначе «не смогли спросить» стало бы неотличимо от «файла нет».
+    """
+    cfg = load_r2_config_from_env()
+    key = _normalize_object_key(object_key)
+    client = _r2_client()
+    try:
+        from botocore.exceptions import ClientError
+    except Exception as exc:
+        raise RuntimeError(
+            "boto3/botocore are required for R2 support. Add boto3 to requirements."
+        ) from exc
+    try:
+        head = client.head_object(Bucket=cfg.bucket_name, Key=key)
+    except ClientError as exc:
+        code = str((exc.response or {}).get("Error", {}).get("Code", "")).strip()
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            return None
+        raise
+    etag = str(head.get("ETag") or "").strip().strip('"')
+    return etag or None
 
 
 def r2_key_from_public_url(url: str) -> str | None:
@@ -88,6 +147,9 @@ def r2_key_from_public_url(url: str) -> str | None:
     url = str(url or "").strip()
     if not url:
         return None
+    # Версия живёт в query (`?v=…`) и частью ключа не является — иначе удаление
+    # объекта по сохранённой ссылке промахнулось бы мимо файла.
+    url = url.split("?", 1)[0]
     try:
         base = load_r2_config_from_env().public_base_url.rstrip("/")
     except Exception:
@@ -123,7 +185,9 @@ def r2_put_bytes(
     *,
     content_type: str = "audio/mpeg",
     cache_control: str = "public, max-age=31536000, immutable",
-) -> None:
+) -> str:
+    """Кладёт объект и ВОЗВРАЩАЕТ версию содержимого — её место рядом с ключом в базе,
+    чтобы ссылка на перезаписанный файл отличалась от прежней (см. `r2_public_url`)."""
     cfg = load_r2_config_from_env()
     key = _normalize_object_key(object_key)
     payload = bytes(data or b"")
@@ -137,6 +201,7 @@ def r2_put_bytes(
         ContentType=content_type,
         CacheControl=cache_control,
     )
+    return r2_content_version(payload)
 
 
 def r2_generate_presigned_put_url(

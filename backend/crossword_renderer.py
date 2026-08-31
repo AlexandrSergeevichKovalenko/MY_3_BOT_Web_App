@@ -256,7 +256,11 @@ def prepare_crossword_image(crossword_id: str) -> str:
     object_key = f"crossword/cards/{safe_id}.png"
 
     try:
-        r2_put_bytes(
+        # Ключ детерминирован (от номера кроссворда), поэтому перерисовка ложится в тот
+        # же адрес. Версия содержимого — единственное, чем новая картинка отличается от
+        # старой для Telegram; без неё «immutable, max-age=год» ниже означал бы, что
+        # перерисованную сетку не увидит никто. См. backend/r2_storage.py:r2_public_url.
+        image_version = r2_put_bytes(
             object_key,
             png_bytes,
             content_type="image/png",
@@ -266,7 +270,8 @@ def prepare_crossword_image(crossword_id: str) -> str:
         mark_crossword_image_failed(crossword_id)
         raise RuntimeError(f"R2 upload failed: {exc}") from exc
 
-    mark_crossword_image_ready(crossword_id, image_object_key=object_key)
+    mark_crossword_image_ready(crossword_id, image_object_key=object_key,
+                               image_version=image_version)
     logging.info(
         "crossword_renderer: ready crossword_id=%s key=%s bytes=%d",
         crossword_id, object_key, len(png_bytes),

@@ -193,11 +193,13 @@ def generate_article_quiz_card(word_id: str) -> str:
     try:
         png = render_article_quiz_card(entry.get("word", ""), entry.get("meaning_ru", ""))
         object_key = _object_key(word_id)
-        r2_put_bytes(
+        # Версия содержимого в адрес — см. backend/r2_storage.py:r2_public_url.
+        image_version = r2_put_bytes(
             object_key, png, content_type="image/png",
             cache_control="public, max-age=31536000, immutable",
         )
-        mark_article_quiz_image_ready(word_id, image_object_key=object_key)
+        mark_article_quiz_image_ready(word_id, image_object_key=object_key,
+                                      image_version=image_version)
         logging.info("article_quiz_card: ready word_id=%s key=%s bytes=%s", word_id, object_key, len(png))
         return object_key
     except Exception as exc:

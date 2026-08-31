@@ -52,7 +52,9 @@ class GroupSlotTests(unittest.IsolatedAsyncioTestCase):
                           new=AsyncMock(return_value=[{"chat_id": 1}, {"chat_id": 2}])), \
              patch.object(bot_3, "_drip_blocked_ids", new=_blocked), \
              patch.object(bot_3, "pick_next_crossword", new=_pick), \
-             patch.object(bot_3, "r2_public_url", side_effect=lambda k: f"https://x/{k}"), \
+             patch.object(bot_3, "r2_public_url",
+                          side_effect=lambda k, *, version="": f"https://x/{k}"
+                                                               + (f"?v={version}" if version else "")), \
              patch.object(bot_3, "send_crossword_to_chat", new=_send), \
              patch.object(bot_3, "mark_crossword_sent", return_value=None), \
              patch.object(bot_3, "mark_crossword_send_failed", return_value=None), \

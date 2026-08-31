@@ -10049,14 +10049,23 @@ def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", f
     plain literal meaning, that `expected` and its Russian `meaning` denote the
     SAME object (catches word/meaning desync like Birne=pear mislabelled «яйцо»),
     and that the image does NOT reveal `forbid` (the puzzle's hidden compound answer).
-    Returns {"ok": bool, "reason": str}. ok=False → reject the item (no silent
-    fallback). On a vision INFRA error we return ok=True (degrade, don't starve
-    the pool) — only a real negative verdict rejects."""
+    Возвращает {"ok": bool, "reason": str, "unknown": bool}.
+
+    ┌─ ПОЧЕМУ ЗДЕСЬ НЕТ «ok=True ПРИ ОШИБКЕ». Правка 31.08.2026. ────────────────┐
+    │ До этой даты судья при своей поломке (нет ключа, сеть, таймаут, кривой     │
+    │ JSON) отвечал {"ok": True, "reason": "vision_error"} — «деградируем, но не │
+    │ морим пул голодом». То есть картинка, которую НИКТО не смотрел, входила в  │
+    │ банк как проверенная, и отличить её от проверенной было нельзя ничем.      │
+    │ Это ровно запрещённая правилом ноль молчаливая деградация.                 │
+    │ Теперь поломка судьи = unknown: картинка НЕ принимается, но и попытка НЕ   │
+    │ засчитывается — иначе три обрыва сети сожгли бы лимит перерисовок слова.   │
+    └───────────────────────────────────────────────────────────────────────────┘
+    """
     import base64
     from backend.synthetic_load import build_sync_openai_client
     api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key or not image_bytes:
-        return {"ok": True, "reason": "no_vision"}
+        return {"ok": False, "unknown": True, "reason": "vision_unavailable: no_key_or_image"}
     b64 = base64.b64encode(bytes(image_bytes)).decode("ascii")
     data_url = f"data:{mime};base64,{b64}"
     forbid_line = (
@@ -10119,8 +10128,9 @@ def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", f
         data = json.loads(str(resp.choices[0].message.content or "").strip())
     except Exception:
         logging.warning("run_image_depicts failed expected=%s", expected, exc_info=True)
-        return {"ok": True, "reason": "vision_error"}
-    return {"ok": bool(data.get("ok")), "reason": str(data.get("reason") or "")[:80]}
+        return {"ok": False, "unknown": True, "reason": "vision_unavailable: request_failed"}
+    return {"ok": bool(data.get("ok")), "unknown": False,
+            "reason": str(data.get("reason") or "")[:80]}
 
 
 def run_image_quiz_render_check(
