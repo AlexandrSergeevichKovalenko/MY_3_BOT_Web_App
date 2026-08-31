@@ -6251,6 +6251,7 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
     origin_process: str | None = None,
     origin_meta: dict | None = None,
     semantic_tag: str | None = None,
+    source_id: int | None = None,
 ) -> tuple[int, bool]:
     normalized_origin = _normalize_dictionary_origin_process(origin_process)
     normalized_meta = _coerce_json_object(origin_meta)
@@ -6289,13 +6290,19 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
                 semantic_tag,
                 response_json,
                 frequency_rank,
-                is_phrase
+                is_phrase,
+                source_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (user_id, canonical_entry_id) WHERE canonical_entry_id IS NOT NULL
             DO UPDATE SET
                 frequency_rank = COALESCE(EXCLUDED.frequency_rank, bt_3_webapp_dictionary_queries.frequency_rank),
                 is_phrase = COALESCE(EXCLUDED.is_phrase, bt_3_webapp_dictionary_queries.is_phrase),
+                -- ПЕРВЫЙ источник побеждает, а не последний. Встретив то же слово в другом
+                -- ролике, человек видит «уже есть» — и список первого ролика, который он
+                -- уже проходил, не должен из-за этого потерять слово. Ровно от такого
+                -- «папки пустеют» и начался весь разговор 31.08.2026.
+                source_id = COALESCE(bt_3_webapp_dictionary_queries.source_id, EXCLUDED.source_id),
                 folder_id = COALESCE(EXCLUDED.folder_id, bt_3_webapp_dictionary_queries.folder_id),
                 origin_process = EXCLUDED.origin_process,
                 origin_meta = COALESCE(EXCLUDED.origin_meta, bt_3_webapp_dictionary_queries.origin_meta),
@@ -6328,6 +6335,7 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
                 Json(normalized_response_json),
                 freq_rank,
                 is_phrase_value,
+                int(source_id) if source_id is not None else None,
             ),
         )
         row = cursor.fetchone()
@@ -6352,9 +6360,16 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
             origin_meta,
             semantic_tag,
             response_json,
-            frequency_rank
+            frequency_rank,
+            -- ⚠ is_phrase СТОЯЛ В КОРТЕЖЕ, НО НЕ В СПИСКЕ КОЛОНОК (найдено 31.08.2026).
+            -- 14 значений на 13 плейсхолдеров — psycopg2 отвечает на это TypeError
+            -- «not all arguments converted», то есть ветка падала целиком, а не «теряла
+            -- поле». Незаметно это осталось потому, что ветка почти не работает: записей
+            -- без canonical_entry_id в базе 292 из 26 333, последняя от 24.08.2026.
+            is_phrase,
+            source_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """,
         (
@@ -6372,6 +6387,7 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
             Json(normalized_response_json),
             freq_rank,
             is_phrase_value,
+            int(source_id) if source_id is not None else None,
         ),
     )
     row = cursor.fetchone()
@@ -6505,6 +6521,7 @@ def _save_webapp_dictionary_query_returning_id_with_conn(
     origin_process: str | None = None,
     origin_meta: dict | None = None,
     semantic_tag: str | None = None,
+    source_id: int | None = None,
 ) -> tuple[int, bool]:
     normalized_response_json = _coerce_json_object(response_json)
     # Заголовок приводится к словарной форме ЗДЕСЬ — это единственное место, через
@@ -6575,6 +6592,7 @@ def _save_webapp_dictionary_query_returning_id_with_conn(
             origin_process=origin_process,
             origin_meta=origin_meta,
             semantic_tag=semantic_tag,
+            source_id=source_id,
         )
 
 
@@ -9901,6 +9919,48 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_folder
                 ON bt_3_webapp_dictionary_queries (user_id, folder_id);
+            """)
+            # ── ОТКУДА ПРИШЛО СЛОВО ─────────────────────────────────────────────────
+            #
+            # Решение владельца 31.08.2026: тема — это ДОМ слова (одна папка), а ролик,
+            # книга или статья — его СВОЙСТВО. До этого дня источник изображали папкой с
+            # названием ролика, и обе роли дрались за одно поле `folder_id`: сохранение
+            # клало слово в папку ролика, а сервер тут же переписывал её на тематическую.
+            # Замер 31.08.2026 по живой базе: из 240 слов, сохранённых из плеера, в папке
+            # ролика осталось 25, остальные 215 уехали в темы, а 16 папок стояли пустыми.
+            #
+            # `title` НАМЕРЕННО NULL-able. Плеер не всегда отдаёт заголовок, и выдумывать
+            # его («YouTube nLiOMh») запрещено: пустой title — честное «названия не знаем»,
+            # оно считается (см. get_dictionary_sources_with_counts → without_title) и
+            # дозаполняется, когда заголовок придёт. `title_source` называет источник
+            # названия вслух: player | catalog | recommendations.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_dictionary_sources (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    kind TEXT NOT NULL,
+                    external_key TEXT NOT NULL,
+                    title TEXT NULL,
+                    title_source TEXT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_dictionary_sources_user_key
+                ON bt_3_dictionary_sources (user_id, kind, external_key);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_dictionary_sources_user_seen
+                ON bt_3_dictionary_sources (user_id, updated_at DESC);
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS source_id BIGINT;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_source
+                ON bt_3_webapp_dictionary_queries (user_id, source_id);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_telegram_dictionary_folder_preferences (
@@ -20878,6 +20938,7 @@ def save_webapp_dictionary_query(
     origin_process: str | None = None,
     origin_meta: dict | None = None,
     semantic_tag: str | None = None,
+    source_id: int | None = None,
 ) -> None:
     save_webapp_dictionary_query_returning_id(
         user_id=user_id,
@@ -20892,6 +20953,7 @@ def save_webapp_dictionary_query(
         origin_process=origin_process,
         origin_meta=origin_meta,
         semantic_tag=semantic_tag,
+        source_id=source_id,
     )
 
 
@@ -20967,6 +21029,7 @@ def save_webapp_dictionary_query_returning_id(
     origin_process: str | None = None,
     origin_meta: dict | None = None,
     semantic_tag: str | None = None,
+    source_id: int | None = None,
 ) -> int:
     with get_db_connection_context() as conn:
         inserted_id, _inserted = _save_webapp_dictionary_query_returning_id_with_conn(
@@ -20983,6 +21046,7 @@ def save_webapp_dictionary_query_returning_id(
             origin_process=origin_process,
             origin_meta=origin_meta,
             semantic_tag=semantic_tag,
+            source_id=source_id,
         )
     _attach_entry_to_lex_unit_quietly(
         inserted_id, word_de=word_de, word_ru=word_ru,
@@ -21005,6 +21069,7 @@ def save_webapp_dictionary_query_returning_id_with_inserted(
     origin_process: str | None = None,
     origin_meta: dict | None = None,
     semantic_tag: str | None = None,
+    source_id: int | None = None,
 ) -> tuple[int, bool]:
     with get_db_connection_context() as conn:
         inserted_id, inserted = _save_webapp_dictionary_query_returning_id_with_conn(
@@ -21021,6 +21086,7 @@ def save_webapp_dictionary_query_returning_id_with_inserted(
             origin_process=origin_process,
             origin_meta=origin_meta,
             semantic_tag=semantic_tag,
+            source_id=source_id,
         )
     _attach_entry_to_lex_unit_quietly(
         inserted_id, word_de=word_de, word_ru=word_ru,
@@ -35568,6 +35634,215 @@ def get_or_create_dictionary_semantic_folder(user_id: int, semantic_tag: str) ->
             return _get_or_create_dictionary_semantic_folder_with_cursor(cursor, int(user_id), normalized_tag)
 
 
+# ═══ ОТКУДА ПРИШЛО СЛОВО: ролик, книга, статья ═══════════════════════════════════
+#
+# Тема — дом слова (folder_id), источник — его свойство (source_id). Решение владельца
+# 31.08.2026. Один ролик = одна запись НА ВСЁ ВРЕМЯ: смотрели сегодня, завтра или через
+# год — слова копятся в тот же источник, потому что ключ у него `external_key` (id
+# ролика), а не дата просмотра.
+
+DICTIONARY_SOURCE_KINDS = {"youtube", "book", "article"}
+
+
+def _normalize_dictionary_source_kind(value: object) -> str:
+    kind = str(value or "").strip().lower()
+    return kind if kind in DICTIONARY_SOURCE_KINDS else ""
+
+
+def get_or_create_dictionary_source(
+    user_id: int,
+    kind: str,
+    external_key: str,
+    title: str | None = None,
+    title_source: str | None = None,
+) -> dict | None:
+    """Найти или завести источник и, если название пришло, дописать его.
+
+    Название НЕ выдумывается. Плеер не отдал заголовок — в базе остаётся NULL, и это
+    честное «не знаем»: оно считается в get_dictionary_sources_with_counts и дописывается
+    в любой следующий раз, когда заголовок придёт (COALESCE ниже дописывает пустое, но
+    НИКОГДА не затирает уже известное — переименование ролика на YouTube не должно
+    ломать имя, под которым человек его помнит).
+    """
+    normalized_kind = _normalize_dictionary_source_kind(kind)
+    normalized_key = str(external_key or "").strip()
+    if not normalized_kind or not normalized_key:
+        return None
+    normalized_title = str(title or "").strip() or None
+    normalized_title_source = str(title_source or "").strip().lower() or None
+    if normalized_title is None:
+        normalized_title_source = None
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_dictionary_sources (user_id, kind, external_key, title, title_source)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, kind, external_key) DO UPDATE
+                -- Известное имя не затираем: ролик могли переименовать на YouTube, а
+                -- человек помнит его под тем названием, под которым смотрел.
+                -- ИСКЛЮЧЕНИЕ — 'legacy_folder_name': это обрезок из старой папки-ролика
+                -- («Die großen», «tagesschau in» — первые два слова заголовка). Он
+                -- временный по своей природе и уступает первому же настоящему заголовку
+                -- от плеера. См. scripts/dict_folders_to_sources.py.
+                SET title = CASE
+                        WHEN bt_3_dictionary_sources.title IS NULL THEN EXCLUDED.title
+                        WHEN bt_3_dictionary_sources.title_source = 'legacy_folder_name'
+                             AND EXCLUDED.title IS NOT NULL
+                             AND EXCLUDED.title_source IS DISTINCT FROM 'legacy_folder_name'
+                            THEN EXCLUDED.title
+                        ELSE bt_3_dictionary_sources.title
+                    END,
+                    title_source = CASE
+                        WHEN bt_3_dictionary_sources.title IS NULL THEN EXCLUDED.title_source
+                        WHEN bt_3_dictionary_sources.title_source = 'legacy_folder_name'
+                             AND EXCLUDED.title IS NOT NULL
+                             AND EXCLUDED.title_source IS DISTINCT FROM 'legacy_folder_name'
+                            THEN EXCLUDED.title_source
+                        ELSE bt_3_dictionary_sources.title_source
+                    END,
+                    updated_at = NOW()
+                RETURNING id, kind, external_key, title, title_source, created_at;
+                """,
+                (int(user_id), normalized_kind, normalized_key, normalized_title, normalized_title_source),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "kind": row[1],
+        "external_key": row[2],
+        "title": row[3],
+        "title_source": row[4],
+        "created_at": row[5].isoformat() if row[5] else None,
+    }
+
+
+def set_dictionary_source_title(
+    user_id: int,
+    source_id: int,
+    title: str,
+    title_source: str,
+) -> bool:
+    """Дописать название источнику, у которого его не было. Известное не трогаем."""
+    clean_title = str(title or "").strip()
+    if not clean_title:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_dictionary_sources
+                SET title = %s, title_source = %s, updated_at = NOW()
+                WHERE id = %s AND user_id = %s AND (title IS NULL OR btrim(title) = '');
+                """,
+                (clean_title, str(title_source or "").strip().lower() or None, int(source_id), int(user_id)),
+            )
+            return cursor.rowcount > 0
+
+
+# Остальные поверхности, откуда приходят слова, источником-записью не становятся: у них
+# нет ни идентификатора, ни названия — они и ЕСТЬ название. Список берётся из колонки
+# origin_process, поэтому ключи здесь — ровно те значения, что пишет сохранение.
+DICTIONARY_ORIGIN_GROUPS: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    "bot":     ("Бот в личке",      "💬", ("bot_private_save",)),
+    "reader":  ("Читалка",          "📖", ("reader",)),
+    "news":    ("Мировые новости",  "🌍", ("worldnews_phrase_save",)),
+    "quick":   ("Быстрый словарь",  "⚡", ("webapp_quick_dictionary", "webapp_quick_dictionary_related",
+                                           "webapp_quick_dictionary_example")),
+    "artikel": ("Спринт артиклей",  "🔤", ("artikel_sprint_save",)),
+    "trainer": ("Тренажёры",        "🎯", ("trainer_save",)),
+    "search":  ("Поиск в словаре",  "🔍", ("webapp_dictionary_save", "webapp_example", "webapp_related",
+                                           "webapp_deep_analysis_option", "webapp_deep_analysis_example")),
+}
+
+
+def get_dictionary_sources_with_counts(user_id: int) -> dict:
+    """Список «Откуда» для экрана словаря.
+
+    Две части, и они разной природы:
+      • `sources` — ролики, книги и статьи: настоящие записи с id и названием;
+      • `groups`  — остальные поверхности, посчитанные по origin_process.
+
+    `without_title` — счётчик честного «названия не знаем». Это не украшение: пока он
+    больше нуля, у человека в списке стоят ролики, которые он не узнаёт, и это открытая
+    задача на дозаполнение, а не норма.
+    """
+    origin_to_group: dict[str, str] = {}
+    for group_key, (_label, _icon, processes) in DICTIONARY_ORIGIN_GROUPS.items():
+        for process in processes:
+            origin_to_group[process] = group_key
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT s.id, s.kind, s.external_key, s.title, s.title_source,
+                       COUNT(q.id)::BIGINT AS word_count,
+                       MAX(q.created_at)   AS last_saved_at
+                FROM bt_3_dictionary_sources s
+                LEFT JOIN bt_3_webapp_dictionary_queries q
+                       ON q.source_id = s.id AND q.user_id = s.user_id
+                WHERE s.user_id = %s
+                GROUP BY s.id, s.kind, s.external_key, s.title, s.title_source
+                ORDER BY MAX(q.created_at) DESC NULLS LAST, s.created_at DESC;
+                """,
+                (int(user_id),),
+            )
+            source_rows = cursor.fetchall() or []
+
+            cursor.execute(
+                """
+                SELECT origin_process, COUNT(*)::BIGINT
+                FROM bt_3_webapp_dictionary_queries
+                WHERE user_id = %s
+                GROUP BY origin_process;
+                """,
+                (int(user_id),),
+            )
+            origin_rows = cursor.fetchall() or []
+
+    sources = [
+        {
+            "id": int(row[0]),
+            "kind": row[1],
+            "external_key": row[2],
+            "title": row[3],
+            "title_source": row[4],
+            "word_count": int(row[5] or 0),
+            "last_saved_at": row[6].isoformat() if row[6] else None,
+        }
+        for row in source_rows
+    ]
+
+    group_counts: dict[str, int] = {}
+    for origin_process, count in origin_rows:
+        group_key = origin_to_group.get(str(origin_process or "").strip())
+        if not group_key:
+            continue
+        group_counts[group_key] = group_counts.get(group_key, 0) + int(count or 0)
+
+    groups = [
+        {
+            "key": group_key,
+            "name": DICTIONARY_ORIGIN_GROUPS[group_key][0],
+            "icon": DICTIONARY_ORIGIN_GROUPS[group_key][1],
+            "word_count": group_counts[group_key],
+        }
+        for group_key in DICTIONARY_ORIGIN_GROUPS
+        if group_counts.get(group_key)
+    ]
+    groups.sort(key=lambda item: item["word_count"], reverse=True)
+
+    return {
+        "sources": sources,
+        "groups": groups,
+        "without_title": sum(1 for item in sources if not (item["title"] or "").strip()),
+    }
+
+
 def update_entry_semantic_tag_and_folder(
     entry_id: int,
     user_id: int,
@@ -36380,8 +36655,15 @@ def list_user_vocabulary(
     limit: int = 50,
     offset: int = 0,
     updated_since=None,
+    source_id: int | None = None,
+    origin_group: str | None = None,
 ) -> dict:
-    """Return paginated vocabulary entries with SRS state for the library view."""
+    """Return paginated vocabulary entries with SRS state for the library view.
+
+    Тема и источник — РАЗНЫЕ оси, и фильтры по ним складываются, а не подменяют друг
+    друга: «Природа» + «этот ролик» — законный запрос, а не конфликт (решение владельца
+    31.08.2026, см. bt_3_dictionary_sources).
+    """
     conditions = ["q.user_id = %s"]
     params: list = [int(user_id)]
 
@@ -36390,6 +36672,21 @@ def list_user_vocabulary(
     elif folder_id is not None:
         conditions.append("q.folder_id = %s")
         params.append(int(folder_id))
+
+    if source_id is not None:
+        conditions.append("q.source_id = %s")
+        params.append(int(source_id))
+
+    normalized_origin_group = str(origin_group or "").strip().lower()
+    if normalized_origin_group:
+        group_processes = DICTIONARY_ORIGIN_GROUPS.get(normalized_origin_group)
+        if group_processes is None:
+            # Неизвестная группа — это не «показать всё», а пустой ответ: молча снять
+            # фильтр значило бы соврать человеку про то, что он видит.
+            conditions.append("FALSE")
+        else:
+            conditions.append("q.origin_process = ANY(%s)")
+            params.append(list(group_processes[2]))
 
     if search:
         # Артикль в запросе игнорируем: карточка показывает «die Eltern», а в колонке лежит
@@ -36420,6 +36717,13 @@ def list_user_vocabulary(
         "srs_status": "COALESCE(s.due_at, 'epoch'::timestamptz) ASC",
         "updated_desc": "q.updated_at DESC, q.id DESC",
         "updated_asc": "q.updated_at ASC, q.id ASC",
+        # «По источнику»: слова одного ролика идут подряд, свежий ролик выше. Записи без
+        # источника не растворяются в списке, а собираются в конце отдельной группой —
+        # их 16 441 из 16 681, и вперемешку они бы съели весь экран.
+        "source": (
+            "CASE WHEN q.source_id IS NULL THEN 1 ELSE 0 END ASC,"
+            " src.updated_at DESC NULLS LAST, q.source_id DESC, q.created_at DESC"
+        ),
     }
     order_clause = order_map.get(sort, "q.created_at DESC")
 
@@ -36487,7 +36791,13 @@ def list_user_vocabulary(
                     -- ждать ли разбор: у предложения его не бывает по решению владельца
                     -- 27.08.2026. Без этой колонки страж в браузере смотрел в пустоту и
                     -- пропускал сбор разбора для предложений — замер 27.08.2026.
-                    lu.kind         AS unit_kind
+                    lu.kind         AS unit_kind,
+                    -- Откуда пришло слово. Строго В КОНЦЕ выборки — см. предупреждение
+                    -- выше: строки разбираются по номерам.
+                    src.id          AS source_id,
+                    src.kind        AS source_kind,
+                    src.title       AS source_title,
+                    src.external_key AS source_key
                 FROM bt_3_webapp_dictionary_queries q
                 LEFT JOIN bt_3_card_srs_state s
                     ON s.user_id = q.user_id AND s.card_id = q.id
@@ -36495,6 +36805,8 @@ def list_user_vocabulary(
                     ON f.id = q.folder_id
                 LEFT JOIN bt_3_lex_units lu
                     ON lu.id = q.lex_unit_id
+                LEFT JOIN bt_3_dictionary_sources src
+                    ON src.id = q.source_id AND src.user_id = q.user_id
                 WHERE {where_clause}
                 ORDER BY {order_clause}
                 LIMIT %s OFFSET %s
@@ -36620,6 +36932,14 @@ def list_user_vocabulary(
             # решает, ждать ему разбор или не ждать. Ровно так же это сделано в
             # attach_unit_content_to_cards — второй поверхности, где живут карточки.
             "unit_kind": str(row[28] or ""),
+            # Откуда пришло слово. `title` может быть None — это честное «названия не
+            # знаем», и экран показывает так и говорит, а не подставляет id ролика.
+            "source": ({
+                "id": int(row[29]),
+                "kind": str(row[30] or ""),
+                "title": row[31],
+                "external_key": str(row[32] or ""),
+            } if row[29] is not None else None),
         })
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}

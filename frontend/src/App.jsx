@@ -7521,8 +7521,14 @@ function AppInner() {
 
   // Vocabulary Library tab state
   const [vocabTab, setVocabTab] = useState('search');
-  const [vocabFolderListOpen, setVocabFolderListOpen] = useState(false);
-  const [vocabFolderQuery, setVocabFolderQuery] = useState('');
+  // ── ОТКУДА ПРИШЛО СЛОВО ────────────────────────────────────────────────────
+  // Тема — дом слова, источник — его свойство (решение владельца 31.08.2026).
+  // vocabSourceFilter: 'all' | 'src:<id>' (ролик, книга, статья) | 'grp:<ключ>'
+  // (бот, читалка, новости…). Лист выбора — vocabPickerSheet.
+  const [vocabSourcesMeta, setVocabSourcesMeta] = useState({ sources: [], groups: [], without_title: 0 });
+  const [vocabSourceFilter, setVocabSourceFilter] = useState('all');
+  const [vocabPickerSheet, setVocabPickerSheet] = useState(null); // 'theme' | 'source' | 'sort'
+  const [vocabPickerQuery, setVocabPickerQuery] = useState('');
   const [vocabItems, setVocabItems] = useState([]);
   const [vocabTotal, setVocabTotal] = useState(0);
   const [vocabLoading, setVocabLoading] = useState(false);
@@ -7953,8 +7959,6 @@ function AppInner() {
   const analyticsCompareErrorsRef = useRef(null);
   const selectionMenuRef = useRef(null);
   const telegramLoginWidgetRef = useRef(null);
-  const youtubeAutoFolderCacheRef = useRef(new Map());
-  const youtubeAutoFolderPendingRef = useRef(new Map());
   const ttsPendingKeysRef = useRef(new Set());
   const quickTranslateCacheRef = useRef(new Map());
   const quickTranslateInFlightRef = useRef(new Map());
@@ -11732,6 +11736,47 @@ function AppInner() {
 
   const VOCAB_PAGE_SIZE = 40;
 
+  // Режимы сортировки словаря. Пятый, «по источнику», добавлен 31.08.2026 вместе с
+  // фильтром «Откуда»: он разбивает список заголовками роликов, как «по дате» — днями.
+  const VOCAB_SORT_OPTIONS = [
+    { key: 'date_desc',  icon: '↓',  ru: 'Дата: сначала новые',  de: 'Datum: neueste zuerst' },
+    { key: 'date_asc',   icon: '↑',  ru: 'Дата: сначала старые', de: 'Datum: älteste zuerst' },
+    { key: 'alpha_asc',  icon: '🔤', ru: 'А → Я',                de: 'A → Z' },
+    { key: 'srs_status', icon: '🎯', ru: 'Статус повторения',    de: 'Wiederholungsstatus' },
+    { key: 'source',     icon: '🎬', ru: 'По источнику',         de: 'Nach Quelle' },
+  ];
+
+  // Что написать на кнопке «Откуда». Названия у ролика может не быть — плеер не всегда
+  // отдаёт заголовок. Тогда так и пишем словами: подставлять идентификатор ролика нельзя,
+  // человек по нему через два месяца ничего не вспомнит (требование владельца 31.08.2026).
+  const describeVocabSourceFilter = (value) => {
+    const key = String(value || 'all');
+    if (key.startsWith('src:')) {
+      const id = Number(key.slice(4));
+      const found = (vocabSourcesMeta?.sources || []).find((item) => Number(item.id) === id);
+      const title = String(found?.title || '').trim();
+      return {
+        icon: found?.kind === 'youtube' ? '🎬' : '📖',
+        label: title || tr('Ролик без названия', 'Video ohne Titel'),
+      };
+    }
+    if (key.startsWith('grp:')) {
+      const found = (vocabSourcesMeta?.groups || []).find((item) => item.key === key.slice(4));
+      return { icon: found?.icon || '🌐', label: found?.name || tr('Откуда', 'Woher') };
+    }
+    return { icon: '🎬', label: tr('Откуда', 'Woher') };
+  };
+
+  // Фильтр «Откуда» → параметры запроса. Две разные вещи под одним ключом:
+  // 'src:<id>' — конкретный ролик, книга или статья (запись в bt_3_dictionary_sources);
+  // 'grp:<ключ>' — поверхность целиком (бот, читалка, новости), считается по origin_process.
+  const buildVocabSourceRequestParams = (value) => {
+    const key = String(value || 'all');
+    if (key.startsWith('src:')) return { source_id: Number(key.slice(4)) || null };
+    if (key.startsWith('grp:')) return { origin_group: key.slice(4) };
+    return {};
+  };
+
   const loadVocabLibrary = useCallback(async ({ reset = false } = {}) => {
     if (!initData) return;
     setVocabLoading(true);
@@ -11794,6 +11839,7 @@ function AppInner() {
         body: JSON.stringify({
           initData,
           folder_id: folderParam,
+          ...buildVocabSourceRequestParams(vocabSourceFilter),
           search: vocabSearch || null,
           sort: vocabSort,
           limit: VOCAB_PAGE_SIZE,
@@ -11834,7 +11880,7 @@ function AppInner() {
     } finally {
       setVocabLoading(false);
     }
-  }, [initData, vocabFolderFilter, vocabSearch, vocabSort, vocabOffset, fetchWithTimeout, tr, isOnline, webappUser?.id]);
+  }, [initData, vocabFolderFilter, vocabSourceFilter, vocabSearch, vocabSort, vocabOffset, fetchWithTimeout, tr, isOnline, webappUser?.id]);
 
   // Разбить карточку с несколькими смыслами на отдельные карточки. Исходная остаётся
   // и берёт первое значение вместе со всей историей повторений — её терять нельзя,
@@ -20545,7 +20591,35 @@ function AppInner() {
     if (vocabTab !== 'library' || !initData) return;
     setVocabOffset(0);
     void loadVocabLibrary({ reset: true });
-  }, [vocabTab, vocabFolderFilter, vocabSearch, vocabSort, initData]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [vocabTab, vocabFolderFilter, vocabSourceFilter, vocabSearch, vocabSort, initData]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Список «Откуда» грузится один раз на открытие словаря: это чтение из своей базы,
+  // без обращений к модели. Ошибку не прячем — без списка нельзя фильтровать, и
+  // человеку это говорится словами, а не пустым меню.
+  useEffect(() => {
+    if (vocabTab !== 'library' || !initData) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetchWithTimeout('/api/webapp/dictionary/sources', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData }),
+        }, 15000);
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        if (cancelled) return;
+        setVocabSourcesMeta({
+          sources: Array.isArray(data.sources) ? data.sources : [],
+          groups: Array.isArray(data.groups) ? data.groups : [],
+          without_title: Number(data.without_title || 0),
+        });
+      } catch (error) {
+        if (!cancelled) console.warn('[vocab] список «Откуда» не загрузился', error);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [vocabTab, initData, fetchWithTimeout]);
 
   useEffect(() => {
     const handleOnline  = () => setIsOnline(true);
@@ -22887,7 +22961,6 @@ function AppInner() {
     return sentences;
   }
 
-  const normalizeFolderKey = (value) => normalizeSelectionText(value).toLocaleLowerCase();
 
   const showInlineToast = (text, durationMs = 3000, kind = '') => {
     const value = normalizeSelectionText(text);
@@ -23046,98 +23119,28 @@ function AppInner() {
     });
   }, []);
 
-  const resolveYoutubeAutoFolderName = () => {
-    const fromPlayer = normalizeSelectionText(
-      youtubePlayerRef.current?.getVideoData?.()?.title || ''
+  // ── ОТКУДА ПРИШЛО СЛОВО ИЗ ПЛЕЕРА ───────────────────────────────────────────
+  //
+  // Здесь заводилась ПАПКА с названием ролика: имя собиралось из ПЕРВЫХ ДВУХ слов
+  // заголовка («Die großen», «2 Jahre», „Sport und», «An der»), папки склеивались по
+  // этому имени, а сервер тут же переписывал папку на тематическую — из 240 слов,
+  // сохранённых из плеера, в папке ролика осталось 25, и 16 папок стояли пустыми
+  // (замер по живой базе 31.08.2026).
+  //
+  // Теперь ролик — не папка, а СВОЙСТВО слова: id ролика + ПОЛНЫЙ заголовок, каким
+  // человек видел его на экране. Заголовка нет — источник всё равно записывается по id,
+  // а название допишется, когда придёт: выдумывать имя из идентификатора нельзя.
+  const buildYoutubeSourcePayload = () => {
+    const videoId = String(youtubeId || '').trim();
+    if (!videoId) return null;
+    const title = normalizeSelectionText(
+      youtubePlayerRef.current?.getVideoData?.()?.title
+      || movies.find((item) => item.video_id === videoId)?.title
+      || ''
     );
-    const fromCatalog = normalizeSelectionText(
-      movies.find((item) => item.video_id === youtubeId)?.title || ''
-    );
-    const rawTitle = fromPlayer || fromCatalog;
-    if (!rawTitle) {
-      return youtubeId ? `YouTube ${youtubeId.slice(0, 6)}` : 'YouTube';
-    }
-    const tokens = rawTitle
-      .replace(/[|/\\()[\]{}"'`.,!?;:]+/g, ' ')
-      .split(/\s+/)
-      .map((token) => token.trim())
-      .filter(Boolean);
-    if (tokens.length === 0) {
-      return youtubeId ? `YouTube ${youtubeId.slice(0, 6)}` : 'YouTube';
-    }
-    return tokens.slice(0, 2).join(' ');
+    return { kind: 'youtube', key: videoId, title: title || '', title_source: title ? 'player' : '' };
   };
 
-  const ensureYoutubeAutoFolderId = async () => {
-    if (!initData) return null;
-    const folderName = resolveYoutubeAutoFolderName();
-    const folderKey = normalizeFolderKey(folderName);
-    if (!folderKey) return null;
-    if (youtubeAutoFolderCacheRef.current.has(folderKey)) {
-      return youtubeAutoFolderCacheRef.current.get(folderKey);
-    }
-    const pending = youtubeAutoFolderPendingRef.current.get(folderKey);
-    if (pending) {
-      return pending;
-    }
-
-    const task = (async () => {
-      const localMatch = folders.find((item) => normalizeFolderKey(item?.name || '') === folderKey);
-      if (localMatch?.id) {
-        const result = { id: localMatch.id, name: localMatch.name || folderName };
-        youtubeAutoFolderCacheRef.current.set(folderKey, result);
-        return result;
-      }
-
-      const listResponse = await fetch('/api/webapp/dictionary/folders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData }),
-      });
-      if (!listResponse.ok) {
-        throw new Error(await listResponse.text());
-      }
-      const listData = await listResponse.json();
-      const items = Array.isArray(listData.items) ? listData.items : [];
-      setFolders(items);
-      const existing = items.find((item) => normalizeFolderKey(item?.name || '') === folderKey);
-      if (existing?.id) {
-        const result = { id: existing.id, name: existing.name || folderName };
-        youtubeAutoFolderCacheRef.current.set(folderKey, result);
-        return result;
-      }
-
-      const createResponse = await fetch('/api/webapp/dictionary/folders/create', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          name: folderName,
-          color: '#5ddcff',
-          icon: 'book',
-        }),
-      });
-      if (!createResponse.ok) {
-        throw new Error(await createResponse.text());
-      }
-      const createData = await createResponse.json();
-      const created = createData.item;
-      if (created?.id) {
-        youtubeAutoFolderCacheRef.current.set(folderKey, { id: created.id, name: created.name || folderName });
-      }
-      setFolders((prev) => {
-        const exists = prev.some((item) => item.id === created?.id);
-        return exists ? prev : [created, ...prev];
-      });
-      return created?.id ? { id: created.id, name: created.name || folderName } : null;
-    })()
-      .finally(() => {
-        youtubeAutoFolderPendingRef.current.delete(folderKey);
-      });
-
-    youtubeAutoFolderPendingRef.current.set(folderKey, task);
-    return task;
-  };
 
   const resolveDictionaryDirection = (item) => {
     const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
@@ -24102,10 +24105,9 @@ function AppInner() {
       const saveWordRu = isLegacyPair && detectedDirection === 'ru-de'
         ? (canonicalWordRu || normalized)
         : '';
-      const autoFolder = isYoutubeInline
-        ? await ensureYoutubeAutoFolderId()
-        : null;
-      const autoFolderId = autoFolder?.id || null;
+      // Ролик записывается как ИСТОЧНИК слова, а не как папку: тему слову ставит разбор,
+      // и она остаётся его домом (решение владельца 31.08.2026).
+      const youtubeSource = isYoutubeInline ? buildYoutubeSourcePayload() : null;
       if (!inlineMode) {
         setDictionaryResult(data.item || null);
         setDictionaryDirection(detectedDirection);
@@ -24119,7 +24121,12 @@ function AppInner() {
           translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
         }));
         if (isYoutubeInline) {
-          showInlineToast(`${tr('Сохранено в папку', 'In Ordner gespeichert')}: ${autoFolder?.name || 'YouTube'}`);
+          // Название ролика может не прийти — тогда говорим просто «Сохранено».
+          // Подставлять сюда идентификатор ролика нельзя: человеку он ничего не значит.
+          const youtubeTitle = String(youtubeSource?.title || '').trim();
+          showInlineToast(youtubeTitle
+            ? `${tr('Сохранено', 'Gespeichert')} · ${youtubeTitle}`
+            : tr('Сохранено ✅', 'Gespeichert ✅'));
         }
       } else {
         setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Wörterbuch hinzugefügt ✅'));
@@ -24159,7 +24166,8 @@ function AppInner() {
               target_lang: saveTargetLang || undefined,
               direction: detectedDirection || undefined,
               response_json: data.item || {},
-              folder_id: autoFolderId ?? (dictionaryFolderId !== 'none' ? dictionaryFolderId : null),
+              folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
+              ...(youtubeSource ? { source: youtubeSource } : {}),
               origin_process: saveOriginProcess,
               origin_meta: saveOriginMeta,
             }),
@@ -24367,10 +24375,7 @@ function AppInner() {
     const resolvedDirection = String(direction || `${resolvedSourceLang}-${resolvedTargetLang}`).trim().toLowerCase();
     const sanitizedTarget = sanitizeBilingualTargetText(source, target, resolvedTargetLang);
     const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(resolvedDirection);
-    const autoFolder = isYoutubeSelectionContext()
-      ? await ensureYoutubeAutoFolderId()
-      : null;
-    const autoFolderId = autoFolder?.id || null;
+    const youtubeSource = isYoutubeSelectionContext() ? buildYoutubeSourcePayload() : null;
     const responseJsonPayload = buildSelectionGptResponseJson({
       ...(responseJson && typeof responseJson === 'object' ? responseJson : {}),
       source_text: source,
@@ -24398,7 +24403,8 @@ function AppInner() {
         source_lang: resolvedSourceLang || undefined,
         target_lang: resolvedTargetLang || undefined,
         direction: resolvedDirection || undefined,
-        folder_id: autoFolderId ?? (dictionaryFolderId !== 'none' ? dictionaryFolderId : null),
+        folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
+        ...(youtubeSource ? { source: youtubeSource } : {}),
         origin_process: isYoutubeSelectionContext() ? 'youtube' : 'reader',
         origin_meta: {
           endpoint: '/api/webapp/dictionary/save',
@@ -28317,7 +28323,14 @@ function AppInner() {
     openSingleSectionAndScroll('dictionary', dictionaryRef);
   }, [openSingleSectionAndScroll]);
 
-  const fetchVocabularySelectionCardIds = useCallback(async (folderKey) => {
+  // Собрать номера ВСЕХ карточек текущего отбора — темы, источника и строки поиска
+  // вместе. До 31.08.2026 функция знала только папку, и вызывать её было неоткуда:
+  // кнопки у неё не было ни одной, слова приходилось отмечать по одному.
+  const fetchVocabularySelectionCardIds = useCallback(async ({
+    folderKey = 'all',
+    sourceKey = 'all',
+    search = null,
+  } = {}) => {
     if (!initData) {
       throw new Error(initDataMissingMsg);
     }
@@ -28327,6 +28340,7 @@ function AppInner() {
       : normalizedFolderKey === 'none'
         ? -1
         : Number(normalizedFolderKey);
+    const sourceParams = buildVocabSourceRequestParams(sourceKey);
     const collectedIds = [];
     let offset = 0;
     let total = Number.POSITIVE_INFINITY;
@@ -28337,7 +28351,8 @@ function AppInner() {
         body: JSON.stringify({
           initData,
           folder_id: folderParam,
-          search: null,
+          ...sourceParams,
+          search: search || null,
           sort: 'date_desc',
           limit: 100,
           offset,
@@ -28365,15 +28380,18 @@ function AppInner() {
     return normalizePositiveIdList(collectedIds);
   }, [fetchWithTimeout, initData, initDataMissingMsg, readApiError, tr]);
 
-  const toggleManualTrainingSelectionFolder = useCallback(async (folderKey) => {
-    const normalizedFolderKey = String(folderKey || '').trim();
-    if (!normalizedFolderKey || normalizedFolderKey === 'all') {
-      return;
-    }
-    setManualTrainingSelectionFolderBusyKey(normalizedFolderKey);
+  // «Выбрать все отфильтрованные» — одной кнопкой. Повторное нажатие снимает выбор
+  // ровно с этих же слов, а то, что человек отметил вручную, не трогает.
+  const toggleManualTrainingSelectionForFilter = useCallback(async () => {
+    const busyKey = `${vocabFolderFilter}|${vocabSourceFilter}|${vocabSearch || ''}`;
+    setManualTrainingSelectionFolderBusyKey(busyKey);
     setManualTrainingSelectionError('');
     try {
-      const folderIds = await fetchVocabularySelectionCardIds(normalizedFolderKey);
+      const folderIds = await fetchVocabularySelectionCardIds({
+        folderKey: vocabFolderFilter,
+        sourceKey: vocabSourceFilter,
+        search: vocabSearch || null,
+      });
       const current = new Set(normalizePositiveIdList(manualTrainingSelectionIds));
       const allSelected = folderIds.length > 0 && folderIds.every((id) => current.has(id));
       if (allSelected) {
@@ -28393,14 +28411,17 @@ function AppInner() {
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
-        'Не удалось обновить выбор слов для папки.',
-        'Die Auswahl für diesen Ordner konnte nicht aktualisiert werden.'
+        'Не удалось выбрать слова из этого списка.',
+        'Die Wörter aus dieser Liste konnten nicht ausgewählt werden.'
       );
       setManualTrainingSelectionError(friendly);
     } finally {
       setManualTrainingSelectionFolderBusyKey('');
     }
-  }, [fetchVocabularySelectionCardIds, manualTrainingSelectionIds, normalizeNetworkErrorMessage, tr]);
+  }, [
+    fetchVocabularySelectionCardIds, manualTrainingSelectionIds, normalizeNetworkErrorMessage,
+    tr, vocabFolderFilter, vocabSourceFilter, vocabSearch,
+  ]);
 
   const cacheVocabFolderOffline = useCallback(async (folder) => {
     const folderId = Number(folder.id);
@@ -39995,13 +40016,9 @@ function AppInner() {
 
                     {/* ─── LIBRARY TAB ─── */}
                     {vocabTab === 'library' && (() => {
-                      const sortLabels = {
-                        date_desc: tr('↓ Дата', '↓ Datum'),
-                        date_asc:  tr('↑ Дата', '↑ Datum'),
-                        alpha_asc: tr('А → Я', 'A → Z'),
-                        srs_status: tr('SRS статус', 'SRS Status'),
-                      };
-                      const sortKeys = Object.keys(sortLabels);
+                      const sortLabels = Object.fromEntries(
+                        VOCAB_SORT_OPTIONS.map((option) => [option.key, tr(option.ru, option.de)])
+                      );
 
                       const groupByDate = (items) => {
                         const now = new Date();
@@ -40030,9 +40047,27 @@ function AppInner() {
                         return groups;
                       };
 
+                      // «По источнику» разбивает список заголовками роликов ровно так же,
+                      // как «по дате» разбивает его днями: иначе слова 43 источников идут
+                      // сплошняком и понять, где кончился один ролик, нельзя.
+                      const groupBySource = (items) => {
+                        const out = [];
+                        items.forEach((item) => {
+                          const label = item?.source
+                            ? (String(item.source.title || '').trim()
+                                || tr('Ролик без названия', 'Video ohne Titel'))
+                            : tr('Без источника', 'Ohne Quelle');
+                          const last = out[out.length - 1];
+                          if (last && last.label === label) last.items.push(item);
+                          else out.push({ label, items: [item] });
+                        });
+                        return out;
+                      };
                       const groups = vocabSort === 'date_desc' || vocabSort === 'date_asc'
                         ? groupByDate(vocabItems)
-                        : [{ label: null, items: vocabItems }];
+                        : vocabSort === 'source'
+                          ? groupBySource(vocabItems)
+                          : [{ label: null, items: vocabItems }];
 
                       const srsColors = { new: '#6366F1', due: '#F59E0B', ok: '#10B981', none: '#334155' };
                       const srsLabels = {
@@ -40042,22 +40077,6 @@ function AppInner() {
                         none: tr('Без SRS', 'Ohne SRS'),
                       };
                       const manualSelectionIdSet = new Set(manualTrainingSelectionIds);
-
-                      const folderChips = [
-                        { key: 'all', label: tr('Все', 'Alle'), icon: '📂', count: vocabFoldersMeta?.total_count ?? vocabTotal },
-                        ...(vocabFoldersMeta?.folders || []).map((f) => ({
-                          key: String(f.id),
-                          label: f.name,
-                          icon: resolveFolderIconLabel(f.icon),
-                          count: f.word_count,
-                        })),
-                        ...(vocabFoldersMeta?.no_folder_count > 0 ? [{
-                          key: 'none',
-                          label: tr('Без папки', 'Ohne Ordner'),
-                          icon: '🗂',
-                          count: vocabFoldersMeta.no_folder_count,
-                        }] : []),
-                      ];
 
                       const offlineMeta = !isOnline && vocabFoldersMeta?.last_updated
                         ? vocabFoldersMeta.last_updated
@@ -40124,16 +40143,16 @@ function AppInner() {
                                 ) : null
                               ) : null}
                             </span>
-                            <button
-                              type="button"
-                              className="vocab-sort-btn"
-                              onClick={() => {
-                                const idx = sortKeys.indexOf(vocabSort);
-                                setVocabSort(sortKeys[(idx + 1) % sortKeys.length]);
-                              }}
-                            >
-                              {sortLabels[vocabSort]}
-                            </button>
+                            {/* Кнопка сортировки уехала в ряд фильтров ниже: здесь она была
+                                переключалкой по кругу — увидеть все режимы разом было нельзя,
+                                а пятый («по источнику») в такую кнопку уже не помещался.
+                                На её месте — сколько слов показано сейчас, чтобы отбор был
+                                виден числом, а не только подсветкой кнопки. */}
+                            {(vocabFolderFilter !== 'all' || vocabSourceFilter !== 'all' || vocabSearch) && (
+                              <span className="vocab-stats-scope">
+                                {tr('показано', 'gezeigt')}: <strong>{vocabTotal}</strong>
+                              </span>
+                            )}
                           </div>
                           {/* Подключён весь словарь — но слова открываются по ходу занятий,
                               поэтому «Всего» растёт постепенно. Без этой строки неизменное
@@ -40288,97 +40307,83 @@ function AppInner() {
                             </div>
                           )}
 
-                          {/* Folder accordion */}
+                          {/* ── ФИЛЬТРЫ СЛОВАРЯ: тема · откуда · сортировка ─────────────────
+                              Здесь стояла раскрытая панель папок: ВСЕ папки карточками в
+                              две колонки, без предела по высоте. У владельца их 43 — это
+                              ~22 ряда, и список слов начинался ниже края экрана: на снимке
+                              31.08.2026 видно ровно одно слово. Теперь три кнопки в один
+                              ряд, а сам выбор живёт в нижнем листе, который закрывается
+                              сразу после нажатия.
+
+                              Тема и «Откуда» — РАЗНЫЕ оси и складываются: тема — дом слова,
+                              источник — его свойство (решение владельца 31.08.2026). */}
                           <div className="vocab-folder-section">
-                            {(() => {
-                              const activeFolderName =
-                                vocabFolderFilter === 'all'
-                                  ? tr('Все', 'Alle')
+                            <div className="vocab-filter-row">
+                              {(() => {
+                                const activeFolder = vocabFolderFilter === 'all' || vocabFolderFilter === 'none'
+                                  ? null
+                                  : (vocabFoldersMeta?.folders || []).find((f) => String(f.id) === String(vocabFolderFilter));
+                                const themeLabel = vocabFolderFilter === 'all'
+                                  ? tr('Все темы', 'Alle Themen')
                                   : vocabFolderFilter === 'none'
-                                  ? tr('Без папки', 'Ohne Ordner')
-                                  : ((vocabFoldersMeta?.folders || []).find((f) => String(f.id) === String(vocabFolderFilter))?.name || tr('Все', 'Alle'));
-                              return (
-                                <button
-                                  type="button"
-                                  className="vocab-folder-acc-head"
-                                  onClick={() => setVocabFolderListOpen((v) => !v)}
-                                  aria-expanded={vocabFolderListOpen}
-                                >
-                                  <span className="vfa-ic">📂</span>
-                                  <span className="vfa-label">{tr('Папки', 'Ordner')} · <b>{activeFolderName}</b></span>
-                                  <span className="vfa-chev">{vocabFolderListOpen ? `▴ ${tr('свернуть', 'einklappen')}` : `▾ ${tr('показать все', 'alle zeigen')}`}</span>
-                                </button>
-                              );
-                            })()}
-                            {vocabFolderListOpen && (
-                            <div className="vocab-folder-acc-panel">
-                            <div className="vocab-folder-acc-search">
-                              <span className="vfas-icon">🔍</span>
-                              <input
-                                type="text"
-                                value={vocabFolderQuery}
-                                placeholder={tr('Найти папку…', 'Ordner suchen…')}
-                                onChange={(e) => setVocabFolderQuery(e.target.value)}
-                              />
-                            </div>
-                            {/* Quick filters: All + No Folder */}
-                            <div className="vocab-folder-quick-row">
-                              <button
-                                type="button"
-                                className={`vocab-qf-btn ${vocabFolderFilter === 'all' ? 'is-active' : ''}`}
-                                onClick={() => { setVocabFolderFilter('all'); setVocabExpandedId(null); }}
-                              >
-                                📂 {tr('Все', 'Alle')} <span className="vfc-count">{vocabFoldersMeta?.total_count ?? vocabTotal}</span>
-                              </button>
-                              {(vocabFoldersMeta?.no_folder_count ?? 0) > 0 && (
-                                <button
-                                  type="button"
-                                  className={`vocab-qf-btn ${vocabFolderFilter === 'none' ? 'is-active' : ''}`}
-                                  onClick={() => { setVocabFolderFilter('none'); setVocabExpandedId(null); }}
-                                >
-                                  🗂 {tr('Без папки', 'Ohne Ordner')} <span className="vfc-count">{vocabFoldersMeta?.no_folder_count}</span>
-                                </button>
-                              )}
+                                    ? tr('Без папки', 'Ohne Ordner')
+                                    : (activeFolder?.name || tr('Все темы', 'Alle Themen'));
+                                const themeIcon = activeFolder ? resolveFolderIconLabel(activeFolder.icon) : '🗂';
+                                const sourceLabel = describeVocabSourceFilter(vocabSourceFilter).label;
+                                const sourceIcon = describeVocabSourceFilter(vocabSourceFilter).icon;
+                                return (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className={`vocab-fchip ${vocabFolderFilter !== 'all' ? 'is-on' : ''}`}
+                                      onClick={() => { setVocabPickerQuery(''); setVocabPickerSheet('theme'); }}
+                                    >
+                                      <span className="vfch-ic">{themeIcon}</span>
+                                      <span className="vfch-val">{themeLabel}</span>
+                                      <span className="vfch-car">▾</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`vocab-fchip ${vocabSourceFilter !== 'all' ? 'is-on' : ''}`}
+                                      onClick={() => { setVocabPickerQuery(''); setVocabPickerSheet('source'); }}
+                                    >
+                                      <span className="vfch-ic">{sourceIcon}</span>
+                                      <span className="vfch-val">{sourceLabel}</span>
+                                      <span className="vfch-car">▾</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`vocab-fchip ${vocabSort !== 'date_desc' ? 'is-on' : ''}`}
+                                      onClick={() => { setVocabPickerQuery(''); setVocabPickerSheet('sort'); }}
+                                    >
+                                      <span className="vfch-ic">{VOCAB_SORT_OPTIONS.find((o) => o.key === vocabSort)?.icon || '↓'}</span>
+                                      <span className="vfch-val">{sortLabels[vocabSort] || sortLabels.date_desc}</span>
+                                      <span className="vfch-car">▾</span>
+                                    </button>
+                                  </>
+                                );
+                              })()}
                             </div>
 
-                            {/* Folder grid — long-press for context menu */}
-                            {(vocabFoldersMeta?.folders || []).filter((f) => !vocabFolderQuery.trim() || (f.name || '').toLowerCase().includes(vocabFolderQuery.trim().toLowerCase())).length > 0 && (
-                              <div className="vocab-folder-grid">
-                                {(vocabFoldersMeta?.folders || []).filter((f) => !vocabFolderQuery.trim() || (f.name || '').toLowerCase().includes(vocabFolderQuery.trim().toLowerCase())).map((f) => {
-                                  const fKey = String(f.id);
-                                  const isActive = vocabFolderFilter === fKey;
-                                  let longPressTimer = null;
-                                  const handleLongPressStart = () => {
-                                    longPressTimer = window.setTimeout(() => {
-                                      setFolderContextMenu({ folder: f });
-                                    }, 480);
-                                  };
-                                  const handleLongPressEnd = () => {
-                                    if (longPressTimer) { window.clearTimeout(longPressTimer); longPressTimer = null; }
-                                  };
-                                  return (
-                                    <button
-                                      key={fKey}
-                                      type="button"
-                                      className={`vocab-folder-card ${isActive ? 'is-active' : ''}`}
-                                      style={{ '--fc': f.color || '#5ddcff' }}
-                                      onClick={() => { setVocabFolderFilter(fKey); setVocabExpandedId(null); }}
-                                      onPointerDown={handleLongPressStart}
-                                      onPointerUp={handleLongPressEnd}
-                                      onPointerLeave={handleLongPressEnd}
-                                      onPointerCancel={handleLongPressEnd}
-                                    >
-                                      <span className="vfc-card-icon-wrap">
-                                        {renderFolderIcon(f.icon, f.color || '#5ddcff')}
-                                      </span>
-                                      <span className="vfc-card-name">{f.name}</span>
-                                      <span className="vfc-card-count">{f.word_count ?? 0}</span>
-                                    </button>
-                                  );
-                                })}
+                            {/* Отбор включён — сразу предлагаем взять его целиком. Раньше
+                                слова приходилось отмечать по одному: механизм массового
+                                выбора в коде был, а кнопки к нему не было ни одной. */}
+                            {(vocabFolderFilter !== 'all' || vocabSourceFilter !== 'all') && manualTrainingSelectionCount === 0 && (
+                              <div className="vocab-result-bar">
+                                <span className="vrb-left">
+                                  {tr('Найдено', 'Gefunden')}: <strong>{vocabTotal}</strong>
+                                </span>
+                                <button
+                                  type="button"
+                                  className="vrb-select"
+                                  onClick={() => { void toggleManualTrainingSelectionForFilter(); }}
+                                  disabled={Boolean(manualTrainingSelectionFolderBusyKey) || vocabTotal === 0}
+                                >
+                                  {manualTrainingSelectionFolderBusyKey
+                                    ? tr('Выбираем…', 'Wird gewählt…')
+                                    : `✓ ${tr('Выбрать все', 'Alle wählen')}`}
+                                </button>
                               </div>
-                            )}
-                            </div>
                             )}
                             {folderTtsJob && (
                               <div className="folder-tts-job-banner">
@@ -40460,6 +40465,162 @@ function AppInner() {
                           />
                           {vocabSearchOpen && vocabSearchCardItem && webappPageRef.current && createPortal(
                             renderVocabWordFullscreenCard(vocabSearchCardItem, () => setVocabSearchCardItem(null)),
+                            webappPageRef.current,
+                          )}
+
+                          {/* ── ЛИСТ ВЫБОРА: тема · откуда · сортировка ──────────────────
+                              Один лист на три списка: они одинаково устроены (найти —
+                              выбрать — закрыть) и никогда не открыты одновременно.
+                              Рисуется порталом в корень мини-аппа: внутри прокручиваемой
+                              карточки position:fixed в WebKit прибивается к ней, а не к
+                              экрану, и лист уезжал вместе со списком. */}
+                          {vocabPickerSheet && webappPageRef.current && createPortal(
+                            (() => {
+                              const needle = vocabPickerQuery.trim().toLowerCase();
+                              const matches = (text) => !needle || String(text || '').toLowerCase().includes(needle);
+                              const close = () => { setVocabPickerSheet(null); setVocabPickerQuery(''); };
+                              const rows = [];
+
+                              if (vocabPickerSheet === 'theme') {
+                                rows.push({
+                                  key: 'all', icon: '🗂', name: tr('Все темы', 'Alle Themen'),
+                                  count: vocabFoldersMeta?.total_count ?? vocabTotal,
+                                  active: vocabFolderFilter === 'all',
+                                  onPick: () => setVocabFolderFilter('all'),
+                                });
+                                if ((vocabFoldersMeta?.no_folder_count ?? 0) > 0) {
+                                  rows.push({
+                                    key: 'none', icon: '📦', name: tr('Без папки', 'Ohne Ordner'),
+                                    count: vocabFoldersMeta.no_folder_count,
+                                    active: vocabFolderFilter === 'none',
+                                    onPick: () => setVocabFolderFilter('none'),
+                                  });
+                                }
+                                (vocabFoldersMeta?.folders || []).forEach((f) => {
+                                  if (!matches(f.name)) return;
+                                  rows.push({
+                                    key: `f${f.id}`, icon: resolveFolderIconLabel(f.icon), name: f.name,
+                                    count: f.word_count ?? 0,
+                                    active: String(vocabFolderFilter) === String(f.id),
+                                    onPick: () => setVocabFolderFilter(String(f.id)),
+                                  });
+                                });
+                              } else if (vocabPickerSheet === 'source') {
+                                rows.push({
+                                  key: 'all', icon: '🌐', name: tr('Все источники', 'Alle Quellen'),
+                                  count: vocabFoldersMeta?.total_count ?? vocabTotal,
+                                  active: vocabSourceFilter === 'all',
+                                  onPick: () => setVocabSourceFilter('all'),
+                                });
+                                const namedSources = (vocabSourcesMeta?.sources || []).filter(
+                                  (item) => matches(item.title) || matches(item.external_key)
+                                );
+                                if (namedSources.length > 0) {
+                                  rows.push({ key: 'g1', group: tr('Ролики, книги и статьи', 'Videos, Bücher, Artikel') });
+                                  namedSources.forEach((item) => {
+                                    const title = String(item.title || '').trim();
+                                    rows.push({
+                                      key: `s${item.id}`,
+                                      icon: item.kind === 'youtube' ? '🎬' : '📖',
+                                      // Названия нет — говорим это словами. Идентификатор ролика
+                                      // как имя не годится: по «nLiOMhqDvC8» через два месяца
+                                      // ничего не вспомнить (владелец, 31.08.2026).
+                                      name: title || tr('Ролик без названия', 'Video ohne Titel'),
+                                      sub: title ? null : tr('название не сохранилось', 'Titel nicht gespeichert'),
+                                      count: item.word_count ?? 0,
+                                      active: vocabSourceFilter === `src:${item.id}`,
+                                      onPick: () => setVocabSourceFilter(`src:${item.id}`),
+                                    });
+                                  });
+                                }
+                                const groupRows = (vocabSourcesMeta?.groups || []).filter((item) => matches(item.name));
+                                if (groupRows.length > 0) {
+                                  rows.push({ key: 'g2', group: tr('Остальное', 'Sonstiges') });
+                                  groupRows.forEach((item) => {
+                                    rows.push({
+                                      key: `p${item.key}`, icon: item.icon, name: item.name,
+                                      count: item.word_count ?? 0,
+                                      active: vocabSourceFilter === `grp:${item.key}`,
+                                      onPick: () => setVocabSourceFilter(`grp:${item.key}`),
+                                    });
+                                  });
+                                }
+                              } else {
+                                VOCAB_SORT_OPTIONS.forEach((option) => {
+                                  rows.push({
+                                    key: option.key, icon: option.icon, name: tr(option.ru, option.de),
+                                    active: vocabSort === option.key,
+                                    onPick: () => setVocabSort(option.key),
+                                  });
+                                });
+                              }
+
+                              const title = vocabPickerSheet === 'theme'
+                                ? tr('Тема', 'Thema')
+                                : vocabPickerSheet === 'source'
+                                  ? tr('Откуда', 'Woher')
+                                  : tr('Сортировка', 'Sortierung');
+
+                              return (
+                                <div className="vocab-picker-scrim" onClick={close}>
+                                  <div
+                                    className="vocab-picker-sheet"
+                                    role="dialog"
+                                    aria-modal="true"
+                                    aria-label={title}
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <div className="vps-grab" />
+                                    <div className="vps-head">
+                                      <h4>{title}</h4>
+                                      <button type="button" onClick={close} aria-label={tr('Закрыть', 'Schließen')}>✕</button>
+                                    </div>
+                                    {vocabPickerSheet !== 'sort' && (
+                                      <div className="vps-search">
+                                        <span>🔍</span>
+                                        <input
+                                          type="text"
+                                          value={vocabPickerQuery}
+                                          onChange={(e) => setVocabPickerQuery(e.target.value)}
+                                          placeholder={vocabPickerSheet === 'theme'
+                                            ? tr('Найти тему…', 'Thema suchen…')
+                                            : tr('Найти ролик или книгу…', 'Video oder Buch suchen…')}
+                                        />
+                                      </div>
+                                    )}
+                                    <div className="vps-body">
+                                      {rows.map((row) => (row.group ? (
+                                        <div key={row.key} className="vps-group">{row.group}</div>
+                                      ) : (
+                                        <button
+                                          key={row.key}
+                                          type="button"
+                                          className={`vps-item ${row.active ? 'is-active' : ''}`}
+                                          onClick={() => { row.onPick(); setVocabExpandedId(null); close(); }}
+                                        >
+                                          <span className="vps-ic">{row.icon}</span>
+                                          <span className="vps-name">
+                                            {row.name}
+                                            {row.sub && <span className="vps-sub">{row.sub}</span>}
+                                          </span>
+                                          {row.count !== undefined && <span className="vps-count">{row.count}</span>}
+                                        </button>
+                                      )))}
+                                      {vocabPickerSheet === 'source' && (vocabSourcesMeta?.without_title ?? 0) > 0 && (
+                                        // Не украшение, а счётчик честного «не знаем»: пока он
+                                        // больше нуля, в списке стоят ролики без имени.
+                                        <p className="vps-hint">
+                                          {tr(
+                                            `Без названия: ${vocabSourcesMeta.without_title}. Мы сохраняем заголовок ролика с того момента, как вы его открыли, — у открытых раньше его просто нет.`,
+                                            `Ohne Titel: ${vocabSourcesMeta.without_title}. Den Titel speichern wir ab dem Moment, in dem Sie das Video öffnen — früher geöffnete haben keinen.`
+                                          )}
+                                        </p>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })(),
                             webappPageRef.current,
                           )}
 
