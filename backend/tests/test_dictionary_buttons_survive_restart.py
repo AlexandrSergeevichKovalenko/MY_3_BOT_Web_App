@@ -30,6 +30,7 @@ class _FakeStateTable:
     def __init__(self):
         self.rows = {}
         self.ttls = {}
+        self.misses = []
 
     def upsert(self, *, state_key, user_id, state_type, payload, ttl_seconds):
         assert int(ttl_seconds or 0) > 0, "без TTL строка останется в таблице навсегда"
@@ -50,9 +51,14 @@ class _FakeStateTable:
 
 @contextlib.contextmanager
 def _table(store):
+    """Подменяет ВСЕ четыре обращения к базе: три к состоянию карточки и запись
+    промаха в телеметрию. Без последней тесты дописывали бы промахи в живую
+    ведомость, и недельный отчёт владельцу считал бы прогоны pytest."""
     with patch.object(bot_3, "upsert_pending_telegram_input_state", store.upsert), \
          patch.object(bot_3, "get_pending_telegram_input_state", store.get), \
-         patch.object(bot_3, "delete_pending_telegram_input_state", store.delete):
+         patch.object(bot_3, "delete_pending_telegram_input_state", store.delete), \
+         patch.object(bot_3, "record_dictionary_button_state_miss",
+                      lambda **kw: store.misses.append(kw)):
         yield store
 
 
@@ -259,6 +265,97 @@ class DictionaryStateMissIsCountedTests(unittest.TestCase):
             root.removeHandler(handler)
             root.setLevel(previous_level)
         self.assertEqual([x for x in caught if "dictionary_state_miss" in x], [])
+
+
+class DictionaryMissReachesTheWeeklyReportTests(unittest.TestCase):
+    """Строка в логе отвечает на вопрос, только если её кто-то читает.
+
+    Промах кладётся в общую телеметрию, а недельный отчёт по словарю (Пн 10:00,
+    приходит сам) печатает из неё число. Владельцу не нужно ничего вызывать.
+    """
+
+    def test_refusal_is_written_to_the_counter(self):
+        store = _FakeStateTable()
+        q = _FakeQuery("dictquicksave:opt-gone:0", text="не карточка",
+                       sent_at=datetime.now(timezone.utc) - timedelta(minutes=4))
+        calls = []
+        with _table(store), \
+             patch.object(bot_3, "record_dictionary_button_state_miss",
+                          lambda **kw: calls.append(kw)):
+            asyncio.run(bot_3.handle_dictionary_quick_save_callback(
+                SimpleNamespace(callback_query=q), None,
+            ))
+        self.assertEqual(len(calls), 1, calls)
+        self.assertEqual(calls[0]["button"], "quick_save")
+        self.assertIs(calls[0]["recovered"], False)
+        self.assertEqual(calls[0]["user_id"], 5)
+        self.assertEqual(calls[0]["age_minutes"], 4)
+
+    def test_unknown_age_is_none_not_zero(self):
+        # Ноль означал бы «карточка отправлена только что» — то есть худший случай.
+        store = _FakeStateTable()
+        q = _FakeQuery("dictquicksave:opt-gone:0", text="не карточка")  # без даты
+        calls = []
+        with _table(store), \
+             patch.object(bot_3, "record_dictionary_button_state_miss",
+                          lambda **kw: calls.append(kw)):
+            asyncio.run(bot_3.handle_dictionary_quick_save_callback(
+                SimpleNamespace(callback_query=q), None,
+            ))
+        self.assertIsNone(calls[0]["age_minutes"])
+
+    def test_broken_counter_does_not_break_the_button_but_shouts(self):
+        store = _FakeStateTable()
+        q = _FakeQuery("dictquicksave:opt-1:0", text=_CARD_TEXT)
+
+        def _boom(**kw):
+            raise RuntimeError("база недоступна")
+
+        with _table(store):
+            bot_3._put_dictionary_pending_state(
+                "opt-1", bot_3.PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS, _PAYLOAD,
+            )
+            bot_3._drop_dictionary_pending_state("opt-1")  # состояния нет — будет промах
+            with patch.object(bot_3, "record_dictionary_button_state_miss", _boom), \
+                 patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={}), \
+                 patch.object(bot_3, "_save_dictionary_option_for_user",
+                              return_value=(True, "ok", 1, True)), \
+                 self.assertLogs(level=logging.WARNING) as logs:
+                asyncio.run(bot_3.handle_dictionary_quick_save_callback(
+                    SimpleNamespace(callback_query=q), None,
+                ))
+        # человек всё равно сохранил
+        self.assertEqual(q.labels()[-1], "✅ Сохранено")
+        # но недосчёт виден
+        self.assertTrue([x for x in logs.output if "НЕ попал в счётчик" in x], logs.output)
+
+
+class WeeklyReportBlockTests(unittest.TestCase):
+    def test_clean_week_says_nobody_lost_a_word(self):
+        from backend.admin_economics import format_dictionary_button_miss_block
+        text = "\n".join(format_dictionary_button_miss_block({
+            "days": 7, "refused": 0, "refused_fresh": 0, "refused_age_unknown": 0,
+            "recovered": 12, "refused_users": 0, "by_button": [],
+        }))
+        self.assertIn("отказов «устарело»: 0", text)
+        self.assertIn("ни один человек не потерял слово", text)
+        self.assertIn("тихих восстановлений из текста карточки: 12", text)
+        self.assertNotIn("⚠️", text)
+
+    def test_fresh_refusals_are_called_a_hole(self):
+        from backend.admin_economics import format_dictionary_button_miss_block
+        text = "\n".join(format_dictionary_button_miss_block({
+            "days": 7, "refused": 9, "refused_fresh": 4, "refused_age_unknown": 1,
+            "recovered": 0, "refused_users": 3,
+            "by_button": [{"button": "quick_save", "count": 7},
+                          {"button": "folder_new", "count": 2}],
+        }))
+        self.assertIn("отказов «устарело»: 9 (людей: 3)", text)
+        self.assertIn("моложе суток): 4", text)
+        self.assertIn("возраст карточки неизвестен: 1", text)
+        self.assertIn("Сохранить 1 / 2 / оба: 7", text)   # человеческое имя кнопки
+        self.assertIn("новая папка: 2", text)
+        self.assertIn("⚠️", text)
 
 
 if __name__ == "__main__":
