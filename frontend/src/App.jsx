@@ -421,6 +421,11 @@ const SINGLE_INSTANCE_LOCK_KEY = _DDS_IS_STANDALONE_PWA
   : 'dds_single_instance_lock_v1';
 const SINGLE_INSTANCE_HEARTBEAT_MS = 1000;
 const SINGLE_INSTANCE_STALE_MS = 5000;
+
+// Потолок одной личной выборки. Тот же, что и на сервере (backend_server.py,
+// VOCABULARY_SELECTION_MAX): «Выбрать все» и сборка PDF работают с одной пачкой, и
+// разойтись эти два числа не должны — иначе кнопка наберёт больше, чем сервер напечатает.
+const VOCAB_SELECTION_MAX = 5000;
 const TTS_CACHE_MAX_ENTRIES = 60;
 const FREE_SRS_PREFETCH_QUEUE_LIMIT = 3;
 const READER_IDLE_TIMEOUT_MS = 60000;
@@ -7529,6 +7534,7 @@ function AppInner() {
   const [vocabSourceFilter, setVocabSourceFilter] = useState('all');
   const [vocabPickerSheet, setVocabPickerSheet] = useState(null); // 'theme' | 'source' | 'sort'
   const [vocabPickerQuery, setVocabPickerQuery] = useState('');
+  const [vocabPdfLoading, setVocabPdfLoading] = useState(false);
   const [vocabItems, setVocabItems] = useState([]);
   const [vocabTotal, setVocabTotal] = useState(0);
   const [vocabLoading, setVocabLoading] = useState(false);
@@ -28370,10 +28376,10 @@ function AppInner() {
       if (items.length === 0) {
         break;
       }
-      if (collectedIds.length > 5000) {
+      if (collectedIds.length > VOCAB_SELECTION_MAX) {
         throw new Error(tr(
-          'В одну личную выборку пока можно добавить максимум 5000 слов.',
-          'In eine persönliche Auswahl können derzeit maximal 5000 Wörter aufgenommen werden.'
+          `В одну личную выборку пока можно добавить максимум ${VOCAB_SELECTION_MAX} слов.`,
+          `In eine persönliche Auswahl können derzeit maximal ${VOCAB_SELECTION_MAX} Wörter aufgenommen werden.`
         ));
       }
     }
@@ -28400,10 +28406,10 @@ function AppInner() {
         folderIds.forEach((id) => current.add(id));
       }
       const nextIds = Array.from(current);
-      if (nextIds.length > 5000) {
+      if (nextIds.length > VOCAB_SELECTION_MAX) {
         setManualTrainingSelectionError(tr(
-          'В одну личную выборку пока можно добавить максимум 5000 слов.',
-          'In eine persönliche Auswahl können derzeit maximal 5000 Wörter aufgenommen werden.'
+          `В одну личную выборку пока можно добавить максимум ${VOCAB_SELECTION_MAX} слов.`,
+          `In eine persönliche Auswahl können derzeit maximal ${VOCAB_SELECTION_MAX} Wörter aufgenommen werden.`
         ));
         return;
       }
@@ -28421,6 +28427,74 @@ function AppInner() {
   }, [
     fetchVocabularySelectionCardIds, manualTrainingSelectionIds, normalizeNetworkErrorMessage,
     tr, vocabFolderFilter, vocabSourceFilter, vocabSearch,
+  ]);
+
+  // PDF из текущей выборки. Наружу уходят только НОМЕРА карточек — тексты сервер берёт
+  // из базы сам, чтобы файл слово в слово совпадал с экраном и не собирался из того,
+  // что подменили в браузере.
+  const exportSelectionToPdf = useCallback(async () => {
+    const ids = normalizePositiveIdList(manualTrainingSelectionIds);
+    if (!initData || ids.length === 0) return;
+    setVocabPdfLoading(true);
+    setManualTrainingSelectionError('');
+    try {
+      const themePart = vocabFolderFilter === 'all'
+        ? ''
+        : vocabFolderFilter === 'none'
+          ? tr('Без папки', 'Ohne Ordner')
+          : ((vocabFoldersMeta?.folders || []).find((f) => String(f.id) === String(vocabFolderFilter))?.name || '');
+      const sourcePart = vocabSourceFilter === 'all' ? '' : describeVocabSourceFilter(vocabSourceFilter).label;
+      const title = [themePart, sourcePart].filter(Boolean).join(' · ') || tr('Мои слова', 'Meine Wörter');
+
+      const response = await fetch('/api/webapp/vocabulary/export/pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, card_ids: ids, title }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(
+          response,
+          'PDF не собрался. Попробуйте ещё раз.',
+          'Das PDF ist nicht fertig geworden. Versuch es noch einmal.',
+        ));
+      }
+      const blob = await response.blob();
+      const fileName = `${title.replace(/[^0-9A-Za-zА-Яа-яЁё _-]+/g, '').trim().slice(0, 40) || 'slova'}.pdf`;
+
+      // Тот же путь, что у PDF одной карточки: сначала системное «Поделиться» (в Telegram
+      // на телефоне это единственный способ отдать файл), потом обычная ссылка-скачивание.
+      const nav = typeof navigator !== 'undefined' ? navigator : null;
+      const file = typeof File !== 'undefined' ? new File([blob], fileName, { type: 'application/pdf' }) : null;
+      if (nav?.share && file && (!nav.canShare || nav.canShare({ files: [file] }))) {
+        try {
+          await nav.share({ title, files: [file] });
+          return;
+        } catch (error) {
+          if (String(error?.name || '') === 'AbortError') return;
+        }
+      }
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => {
+        try { window.URL.revokeObjectURL(url); } catch (_error) { /* ignore */ }
+      }, 15000);
+    } catch (error) {
+      setManualTrainingSelectionError(normalizeNetworkErrorMessage(
+        error,
+        'PDF не собрался. Попробуйте ещё раз.',
+        'Das PDF ist nicht fertig geworden. Versuch es noch einmal.',
+      ));
+    } finally {
+      setVocabPdfLoading(false);
+    }
+  }, [
+    initData, manualTrainingSelectionIds, vocabFolderFilter, vocabSourceFilter,
+    vocabFoldersMeta, readApiError, normalizeNetworkErrorMessage, tr,
   ]);
 
   const cacheVocabFolderOffline = useCallback(async (folder) => {
@@ -40171,6 +40245,19 @@ function AppInner() {
                                   {tr('загрузка...', 'laden...')}
                                 </span>
                               )}
+                              {/* «Сбросить» — не действие НАД словами, а снятие выбора, и
+                                  среди «Учить / PDF / Переместить / Удалить» ему не место.
+                                  Крестик у счётчика освобождает четвёртое место под PDF и
+                                  оставляет кнопкам нормальный размер (решение владельца
+                                  31.08.2026). */}
+                              <button
+                                type="button"
+                                className="vocab-selection-clear"
+                                onClick={() => { void clearManualTrainingSelectionRemote(); }}
+                                disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
+                                aria-label={tr('Снять выбор', 'Auswahl aufheben')}
+                                title={tr('Снять выбор', 'Auswahl aufheben')}
+                              >✕</button>
                             </div>
                             <div className="vocab-sel-tabs">
                               <button
@@ -40184,12 +40271,12 @@ function AppInner() {
                               </button>
                               <button
                                 type="button"
-                                className="vocab-sel-tab is-reset"
-                                onClick={() => { void clearManualTrainingSelectionRemote(); }}
-                                disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
+                                className="vocab-sel-tab is-pdf"
+                                onClick={() => { void exportSelectionToPdf(); }}
+                                disabled={vocabPdfLoading || manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
                               >
-                                <svg className="vocab-sel-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
-                                <span>{tr('Сбросить', 'Zurücksetzen')}</span>
+                                <svg className="vocab-sel-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M9 15h6" /><path d="M9 18h3" /></svg>
+                                <span>{vocabPdfLoading ? tr('Собираем…', 'Wird erstellt…') : 'PDF'}</span>
                               </button>
                               <button
                                 type="button"

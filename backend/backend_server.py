@@ -51813,6 +51813,57 @@ def _build_dictionary_meaning_lines(response_json: dict | None, *, limit: int = 
     return lines
 
 
+# Потолок одной личной выборки. Тот же, что и на экране (App.jsx, VOCAB_SELECTION_MAX):
+# «Выбрать все» и сборка PDF работают с одной и той же пачкой, и разойтись эти два числа
+# не должны — иначе кнопка наберёт слов больше, чем сервер согласится напечатать.
+VOCABULARY_SELECTION_MAX = 5000
+
+
+def _register_pdf_fonts() -> tuple[str, str]:
+    """Шрифты для PDF: DejaVu, если он есть, иначе Helvetica.
+
+    Helvetica кириллицу НЕ содержит — на ней русская сторона карточки выйдет пустыми
+    прямоугольниками. Это не подмена данных, а ограничение шрифта, поэтому падать
+    здесь нечем; но случай считается по логу, чтобы «пустой PDF» не выглядел загадкой.
+    """
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    font_name = "Helvetica"
+    font_bold = "Helvetica-Bold"
+    font_paths = [
+        os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans.ttf"),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    font_bold_paths = [
+        os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans-Bold.ttf"),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    for fp in font_paths:
+        if not os.path.exists(fp):
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVuSans", fp))
+            font_name = "DejaVuSans"
+            break
+        except Exception:
+            continue
+    for fp in font_bold_paths:
+        if not os.path.exists(fp):
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", fp))
+            font_bold = "DejaVuSans-Bold"
+            break
+        except Exception:
+            continue
+    if font_bold == "Helvetica-Bold" and font_name != "Helvetica":
+        font_bold = font_name
+    if font_name == "Helvetica":
+        logging.warning("PDF: шрифт DejaVu не найден — кириллица в файле не отрисуется")
+    return font_name, font_bold
+
+
 def _build_dictionary_card_pdf(
     *,
     item: dict[str, Any],
@@ -51915,36 +51966,7 @@ def _build_dictionary_card_pdf(
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
 
-    font_name = "Helvetica"
-    font_bold = "Helvetica-Bold"
-    font_paths = [
-        os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans.ttf"),
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-    font_bold_paths = [
-        os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans-Bold.ttf"),
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    ]
-    for fp in font_paths:
-        if not os.path.exists(fp):
-            continue
-        try:
-            pdfmetrics.registerFont(TTFont("DejaVuSans", fp))
-            font_name = "DejaVuSans"
-            break
-        except Exception:
-            continue
-    for fp in font_bold_paths:
-        if not os.path.exists(fp):
-            continue
-        try:
-            pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", fp))
-            font_bold = "DejaVuSans-Bold"
-            break
-        except Exception:
-            continue
-    if font_bold == "Helvetica-Bold" and font_name != "Helvetica":
-        font_bold = font_name
+    font_name, font_bold = _register_pdf_fonts()
 
     width, height = A4
     margin_x = 42
@@ -52114,6 +52136,250 @@ def _build_dictionary_card_pdf(
 
     filename_stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(target_headline or source_value or "dictionary_card")).strip("_") or "dictionary_card"
     return buffer, f"{filename_stem[:48]}.pdf"
+
+
+_PDF_UNRENDERABLE_RE = re.compile(
+    "[" 
+    "\U0001F000-\U0001FAFF"   # эмодзи и пиктограммы
+    "\u2190-\u21FF"           # стрелки
+    "\u2600-\u27BF"           # символы и дингбаты
+    "\uFE0F\u20E3"            # модификаторы эмодзи
+    "]"
+)
+
+
+def _strip_unrenderable_for_pdf(text: str) -> str:
+    """Убрать из строки то, чего в шрифте PDF нет.
+
+    Иначе reportlab рисует пустой глиф, и человек видит квадрат вместо значка. Это
+    касается ТОЛЬКО подписей интерфейса; текста слов и переводов не трогает — там
+    эмодзи не бывает, а если появится, лучше её потерять, чем показать квадрат.
+    """
+    return re.sub(r"\s+", " ", _PDF_UNRENDERABLE_RE.sub("", str(text or ""))).strip()
+
+
+def _wrap_pdf_text(text: str, *, font: str, size: float, width: float) -> list[str]:
+    """Перенос по словам под ширину колонки. Длинное слово режется по буквам.
+
+    Без второй ветки немецкое сложносоставное («Drohnenabwehrzentrum») вылезало бы за
+    край колонки и наезжало на соседнюю — на экране этого не видно, а в PDF видно сразу.
+    """
+    from reportlab.pdfbase import pdfmetrics
+
+    words = str(text or "").split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if pdfmetrics.stringWidth(candidate, font, size) <= width:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+        if pdfmetrics.stringWidth(word, font, size) <= width:
+            current = word
+            continue
+        chunk = ""
+        for letter in word:
+            if pdfmetrics.stringWidth(chunk + letter, font, size) <= width:
+                chunk += letter
+            else:
+                lines.append(chunk)
+                chunk = letter
+        current = chunk
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _build_vocabulary_study_pdf(
+    *,
+    items: list[dict[str, Any]],
+    heading: str,
+    subheading: str,
+) -> tuple[BytesIO, str]:
+    """Список слов на распечатку: слово — перевод, две колонки.
+
+    Зачем именно список, а не карточки: владелец 31.08.2026 — «посмотрел ролик, быстро
+    вытянул слова этого ролика, сделал PDF, выучил». Печатается ровно то, что человек
+    отобрал на экране, теми же строками: заголовок собирает compose_german_headword в
+    list_user_vocabulary — одна формула на экран и на файл, иначе PDF и приложение
+    начнут расходиться в написании слова.
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    font_name, font_bold = _register_pdf_fonts()
+    # Эмодзи в DejaVu нет: «🎬 Die großen» печаталось с пустым прямоугольником в начале
+    # (проверено 31.08.2026 на собранном файле, а не на глаз). Значка в файле не будет —
+    # он украшение экрана; вместо квадрата-заглушки честнее его снять.
+    heading = _strip_unrenderable_for_pdf(heading)
+
+    width, height = A4
+    margin = 42.0
+    gap = 26.0
+    columns = 2
+    column_width = (width - margin * 2 - gap * (columns - 1)) / columns
+    top_first = height - 118          # на первой странице сверху шапка
+    top_next = height - 58
+    bottom = 56.0
+
+    size_word = 9.6
+    size_translation = 8.4
+    lead_word = 12.0
+    lead_translation = 10.6
+    gap_entry = 7.0
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    pdf.setTitle(heading or "Словарь")
+
+    page_number = [1]
+
+    def draw_footer() -> None:
+        pdf.setFont(font_name, 7.6)
+        pdf.setFillColorRGB(0.55, 0.57, 0.62)
+        pdf.drawString(margin, 34, "Deutsche Sprache")
+        pdf.drawRightString(width - margin, 34, str(page_number[0]))
+
+    def draw_header_first() -> None:
+        pdf.setFillColorRGB(0.13, 0.14, 0.18)
+        pdf.setFont(font_bold, 17)
+        pdf.drawString(margin, height - 62, heading[:78])
+        pdf.setFont(font_name, 9.4)
+        pdf.setFillColorRGB(0.45, 0.48, 0.54)
+        pdf.drawString(margin, height - 80, subheading[:120])
+        pdf.setStrokeColorRGB(0.85, 0.87, 0.90)
+        pdf.setLineWidth(0.7)
+        pdf.line(margin, height - 96, width - margin, height - 96)
+
+    draw_header_first()
+    draw_footer()
+
+    # Сначала МЕРИМ все записи, потом раскладываем. Иначе короткий список ложится
+    # одной колонкой во всю страницу, а вторая остаётся пустой: на 21 слове ролика это
+    # ровно половина листа впустую (видно на собранном файле 31.08.2026).
+    measured: list[tuple[list[str], list[str], float]] = []
+    for item in items:
+        word = str(item.get("display_word") or item.get("word_de") or item.get("word_ru") or "").strip()
+        if not word:
+            continue
+        translation = str(item.get("display_translation") or item.get("translation_ru") or "").strip()
+        word_lines = _wrap_pdf_text(word, font=font_bold, size=size_word, width=column_width)
+        translation_lines = _wrap_pdf_text(translation, font=font_name, size=size_translation, width=column_width)
+        height_of_entry = len(word_lines) * lead_word + len(translation_lines) * lead_translation + gap_entry
+        measured.append((word_lines, translation_lines, height_of_entry))
+
+    total_height = sum(entry[2] for entry in measured)
+    first_page_column = top_first - bottom
+    # Всё влезает на один лист — делим поровну, чтобы страница выглядела набранной.
+    balanced_limit = (total_height / columns) if total_height <= first_page_column * columns else None
+
+    column = 0
+    y = top_first
+    used_in_column = 0.0
+
+    def new_page() -> None:
+        nonlocal column, y, used_in_column
+        pdf.showPage()
+        page_number[0] += 1
+        draw_footer()
+        column = 0
+        y = top_next
+        used_in_column = 0.0
+
+    def next_column() -> None:
+        nonlocal column, y, used_in_column
+        if column + 1 < columns:
+            column += 1
+            y = top_next if page_number[0] > 1 else top_first
+            used_in_column = 0.0
+        else:
+            new_page()
+
+    for word_lines, translation_lines, height_of_entry in measured:
+        if y - height_of_entry < bottom:
+            next_column()
+        elif balanced_limit is not None and column + 1 < columns and used_in_column + height_of_entry > balanced_limit:
+            next_column()
+
+        x = margin + column * (column_width + gap)
+        pdf.setFillColorRGB(0.11, 0.12, 0.16)
+        pdf.setFont(font_bold, size_word)
+        for line in word_lines:
+            pdf.drawString(x, y, line)
+            y -= lead_word
+        pdf.setFillColorRGB(0.38, 0.41, 0.47)
+        pdf.setFont(font_name, size_translation)
+        for line in translation_lines:
+            pdf.drawString(x, y, line)
+            y -= lead_translation
+        y -= gap_entry
+        used_in_column += height_of_entry
+
+    pdf.save()
+    buffer.seek(0)
+
+    stem = re.sub(r"[^0-9A-Za-zА-Яа-яЁё_-]+", "_", heading).strip("_") or "slova"
+    return buffer, f"{stem[:48]}.pdf"
+
+
+@app.route("/api/webapp/vocabulary/export/pdf", methods=["POST"])
+def export_webapp_vocabulary_pdf():
+    """PDF из того, что человек отобрал на экране: «посмотрел ролик — выучил слова».
+
+    Тексты берутся ИЗ БАЗЫ по номерам карточек, а не из присланного браузером: файл
+    обязан совпадать с экраном слово в слово, и подменить его с клиента нельзя.
+    Чужие карточки не попадут — выборка идёт по user_id из initData.
+    """
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    raw_ids = payload.get("card_ids")
+    card_ids: list[int] = []
+    if isinstance(raw_ids, list):
+        for value in raw_ids:
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                continue
+            if number > 0:
+                card_ids.append(number)
+    if not card_ids:
+        return jsonify({"error": "Не выбрано ни одного слова."}), 400
+    # Тот же потолок, что и у самой выборки на экране: больше 5000 в одну пачку не берём.
+    if len(card_ids) > VOCABULARY_SELECTION_MAX:
+        return jsonify({
+            "error": f"За раз можно собрать не больше {VOCABULARY_SELECTION_MAX} слов.",
+        }), 400
+
+    heading = re.sub(r"\s+", " ", str(payload.get("title") or "").strip())[:78] or "Мои слова"
+
+    try:
+        result = list_user_vocabulary(
+            user_id=int(user_id),
+            card_ids=card_ids,
+            sort="date_desc",
+            limit=len(card_ids),
+            offset=0,
+        )
+        items = result.get("items") or []
+        if not items:
+            return jsonify({"error": "Эти слова не нашлись — обновите список и попробуйте ещё раз."}), 404
+        subheading = f"{len(items)} слов · {datetime.now().strftime('%d.%m.%Y')}"
+        buffer, download_name = _build_vocabulary_study_pdf(
+            items=items, heading=heading, subheading=subheading,
+        )
+        return send_file(
+            buffer, as_attachment=True, download_name=download_name, mimetype="application/pdf",
+        )
+    except Exception as exc:
+        logging.exception("Vocabulary PDF export failed: user_id=%s count=%s", user_id, len(card_ids))
+        return jsonify({"error": f"Не удалось собрать PDF: {exc}"}), 500
 
 
 @app.route("/api/webapp/dictionary/export/card-pdf", methods=["POST"])
