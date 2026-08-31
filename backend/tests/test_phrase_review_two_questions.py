@@ -331,7 +331,9 @@ class TheJudgeMustHandOverTheFixTests(unittest.TestCase):
     возвращала ТОЛЬКО описание дефекта: поля «как надо» в вопросе не было вовсе."""
 
     def test_the_panel_is_asked_for_the_corrected_text(self):
-        src = _src("scripts/dict_phrase_panel_audit.py")
+        # Правила судейства живут в `backend/phrase_panel.py` — там же, откуда их
+        # зовёт и ночь, и ручной прогон (переехали 31.08.2026, скрипт стал обёрткой).
+        src = _src("backend/phrase_panel.py")
         i = src.index("SYSTEM = ")
         промпт = src[i:src.index('"""', src.index('"""', i) + 3)]
         self.assertIn("EVERY DEFECT MUST COME WITH THE CORRECTED TEXT", промпт)
@@ -347,7 +349,7 @@ class TheJudgeMustHandOverTheFixTests(unittest.TestCase):
         self.assertIn('"better"', тело)
 
     def test_the_proposed_fix_is_checked_by_a_second_voice(self):
-        src = _src("scripts/dict_phrase_panel_audit.py")
+        src = _src("backend/phrase_panel.py")
         self.assertIn("def проверить_вариант(", src)
         i = src.index("def проверить_вариант(")
         self.assertIn("run_translation_pair_check", src[i:i + 2000],
