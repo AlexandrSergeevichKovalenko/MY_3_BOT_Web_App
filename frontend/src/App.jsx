@@ -29433,6 +29433,7 @@ function AppInner() {
     const saveTargetLang = normalizeLangCode(directionPair[1] || pair.target_lang);
     const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(detectedDirection);
     const { sourceText, targetText } = getDictionarySourceTarget(youtubeDictResult, detectedDirection);
+    const youtubeSource = buildYoutubeSourcePayload();
     try {
       const saveResponse = await fetch('/api/webapp/dictionary/save', {
         method: 'POST',
@@ -29459,6 +29460,12 @@ function AppInner() {
               target_lang: saveTargetLang || pair.target_lang,
             },
           },
+          // Третья кнопка сохранения из плеера — словарный виджет под роликом. До
+          // 31.08.2026 она источник не писала: слово уходило в тему, а связь с фильмом
+          // терялась. Из плеера сохраняют ТРЕМЯ путями (выделение, шит разбора и этот
+          // виджет), и источник обязан ехать во всех трёх — иначе «все слова из фильма»
+          // показывают не всё, и понять это по экрану нельзя.
+          ...(youtubeSource ? { source: youtubeSource } : {}),
           origin_process: 'youtube_dict_widget',
           origin_meta: {
             endpoint: '/api/webapp/dictionary/save',
