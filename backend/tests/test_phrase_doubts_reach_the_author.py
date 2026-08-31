@@ -111,7 +111,7 @@ class ФразыДоходятДоАвтора(unittest.TestCase):
         # взять. Вид стоит первым, потому что он в запросе первым и есть.
         _, курсор = _спросить([[], ФРАЗА], user_id=424242)
         параметры = курсор.запросы[1][1]
-        self.assertEqual(параметры[0], ["grammar", "panel"])
+        self.assertEqual(параметры[0], ["grammar", "panel", "personal"])
         self.assertEqual(параметры[1], 424242)
 
     def test_only_open_phrases_are_asked_about(self):

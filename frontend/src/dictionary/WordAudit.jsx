@@ -53,6 +53,12 @@ const RETRANS = 'retrans';
 const DROP = 'drop';
 const EDIT = 'edit';        // правки ВНУТРИ карточки: примеры и перевод
 const REBUILD = 'rebuild';  // собрать карточку заново ночью
+// Готовый вариант от проверяющих по СВОЕЙ фразе — в одно касание.
+// Панель находит ошибку в самой фразе или в её переводе, но написал их человек, и
+// переписывать за него мы не имеем права. Раньше находка просто ложилась отметкой в
+// базу и умирала там (384 карточки на 31.08.2026) — человек не узнавал ничего и
+// продолжал учить неверное. Теперь он видит, что нашли, и правильный текст на кнопке.
+const FIXP = 'fix_personal';
 
 /** Содержимое карточки в том виде, в каком человек им распоряжается. */
 function свежийРазбор(it) {
@@ -252,7 +258,11 @@ export default function WordAudit() {
   // слова, которых человек вовсе не касался, — остаётся жить (см. рамку в шапке).
   const drop = items.filter((it) => state[it.word] === DROP).length;
   const retrans = items.filter((it) => state[it.word] === RETRANS).length;
-  const keep = items.length - drop - retrans;
+  // Принятый готовый вариант — это НЕ «оставим как есть», и складывать их в одно
+  // число нельзя: человек нажал «да, правильно так», а внизу ему написали бы, что
+  // мы ничего не меняем.
+  const исправим = items.filter((it) => state[it.word] === FIXP).length;
+  const keep = items.length - drop - retrans - исправим;
 
   return (
     <div className="wa">
@@ -293,6 +303,7 @@ export default function WordAudit() {
 
       <div className="wa-tally">
         <span className="wa-t-keep"><b>{keep}</b>оставим</span>
+        {исправим ? <span className="wa-t-fix"><b>{исправим}</b>исправим</span> : null}
         <span className="wa-t-fix"><b>{retrans}</b>переделаем</span>
         <span className="wa-t-drop"><b>{drop}</b>удалим</span>
       </div>
@@ -321,9 +332,16 @@ export default function WordAudit() {
             {it.translation ? <p className="wa-trans">{it.translation}</p> : null}
             {/* Претензии панели идут пунктами: у неё их обычно две и о разном —
                 про примеры и про перевод. Сплошным абзацем это не читается. */}
-            {проКарточку && (it.doubts || []).length ? (
+            {(it.doubts || []).length ? (
               <div className="wa-doubt">
-                <p className="wa-doubt-who">Сомнение не во фразе, а в карточке</p>
+                {/* Два разных сомнения — два разных заголовка. У панели спор о
+                    НАПОЛНЕНИИ карточки, у личного вопроса — о самом тексте, который
+                    писал человек: подписать одно другим значит сбить его с толку. */}
+                <p className="wa-doubt-who">
+                  {it.personal
+                    ? 'Что не так, по мнению проверяющих'
+                    : 'Сомнение не во фразе, а в карточке'}
+                </p>
                 <ul>{it.doubts.map((d) => <li key={d}>{d}</li>)}</ul>
               </div>
             ) : <div className="wa-reason">{it.why}</div>}
@@ -546,6 +564,20 @@ export default function WordAudit() {
               </>
             ) : null}
 
+            {/* ⚠ ТЕКСТ КНОПКИ НАВЕРХ НЕ ЕДЕТ. Сервер читает готовый вариант из базы
+                сам (`database.personal_question_fix`): правка расходится по всей
+                словарной статье, и принимать её текст из браузера нельзя. */}
+            {it.fix ? (
+              <button type="button" aria-pressed={chosen === FIXP}
+                      className={chosen === FIXP ? 'wa-suggest is-picked' : 'wa-suggest'}
+                      onClick={() => pick(it.word, FIXP)}>
+                {chosen === FIXP ? '✓ ' : ''}
+                {it.fix_field === 'translation'
+                  ? <>Да, правильный перевод — «{it.fix}»</>
+                  : <>Да, правильно «{it.fix}»</>}
+              </button>
+            ) : null}
+
             {!isPhrase && it.suggestion ? (
               <button type="button" aria-pressed={chosen === FIXED}
                       className={chosen === FIXED ? 'wa-suggest is-picked' : 'wa-suggest'}
@@ -628,7 +660,7 @@ export default function WordAudit() {
         <div className="wa-bar-inner">
           <p className="wa-bar-note">
             {drop === 0
-              ? <>Ничего не удалим — оставим <b>{keep}</b>{retrans ? <> · переделаем <b>{retrans}</b></> : null}</>
+              ? <>Ничего не удалим — оставим <b>{keep}</b>{исправим ? <> · исправим <b>{исправим}</b></> : null}{retrans ? <> · переделаем <b>{retrans}</b></> : null}</>
               : <>Оставим <b>{keep}</b> · переделаем <b>{retrans}</b> · удалим <b>{drop}</b> — по твоей кнопке</>}
           </p>
           <button type="button" className="wa-done" disabled={busy} onClick={submit}>

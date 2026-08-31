@@ -104,7 +104,10 @@ class ВидНазываетсяЯвно(unittest.TestCase):
 
     def test_the_learner_gets_only_questions_about_the_phrase_itself(self):
         from backend.word_confirm_digest import ВИДЫ_ДЛЯ_ЧЕЛОВЕКА
-        self.assertEqual(sorted(ВИДЫ_ДЛЯ_ЧЕЛОВЕКА), ["grammar", "panel"])
+        # 'personal' добавлен 31.08.2026: панель нашла ошибку в САМОЙ фразе или в её
+        # переводе, а писал их человек. Переписывать его текст молча мы не имеем права,
+        # поэтому вопрос адресован ему — с готовым вариантом на кнопке.
+        self.assertEqual(sorted(ВИДЫ_ДЛЯ_ЧЕЛОВЕКА), ["grammar", "panel", "personal"])
         self.assertNotIn("translation", ВИДЫ_ДЛЯ_ЧЕЛОВЕКА)
 
     def test_the_allowlist_has_a_reason_for_every_entry(self):
