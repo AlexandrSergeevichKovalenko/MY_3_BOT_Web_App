@@ -261,3 +261,38 @@ class ПересудСтарыхОтметокTests(unittest.TestCase):
         self.assertNotIn("rejudge_personal", bot,
                          "разовая уборка попала в ночное расписание — платить за неё "
                          "вечно незачем: новые отметки уже с готовым вариантом")
+
+
+class ПорцияПоДвадцатьTests(unittest.TestCase):
+    """Владелец 31.08.2026: «давай по 20 за раз высылать пользователю».
+
+    Пересуд накопленного дал 328 вопросов «ошибка в твоём тексте» одному человеку — на
+    экране, где до этого было 105 карточек. Стена из 433 карточек не разбирается: её
+    закрывают."""
+
+    def test_the_portion_is_twenty(self):
+        from backend.word_confirm_digest import ЛИЧНЫХ_ЗА_РАЗ
+        self.assertEqual(ЛИЧНЫХ_ЗА_РАЗ, 20)
+
+    def test_only_the_new_kind_is_capped(self):
+        """Остальные виды идут как шли: их поток и так небольшой, резать нечего."""
+        src = _src("backend/word_confirm_digest.py")
+        i = src.index("личных_показано += 1")
+        окно = src[max(0, i - 300):i + 200]
+        self.assertIn('if str(вид or "") == "personal":', окно,
+                      "порция режет не только личные вопросы")
+
+    def test_the_rest_are_not_marked_and_come_back(self):
+        """⛔ Это ОКНО, а не фильтр «навсегда». Непоказанные не помечаются ничем: в
+        следующем письме придут те же двадцать, а как человек их решит — следующие."""
+        src = _src("backend/word_confirm_digest.py")
+        i = src.index("if личных_показано > ЛИЧНЫХ_ЗА_РАЗ:")
+        self.assertIn("continue", src[i:i + 120])
+        # Ни отметки, ни записи в дневник — только пропуск на экране.
+        self.assertNotIn("closed_at", src[i:i + 400])
+
+    def test_the_order_is_stable_so_the_queue_moves(self):
+        """Порядок по номеру вопроса: очередь двигается, а не перетасовывается."""
+        src = _src("backend/word_confirm_digest.py")
+        i = src.index("def _phrase_items(")
+        self.assertIn("ORDER BY r.id", src[i:i + 2000])
