@@ -178,3 +178,86 @@ class НакопленноеРазбираетсяСамоTests(unittest.TestCas
         self.assertIn('meta.get("ушло человеку")', тело)
         self.assertIn('meta.get("поднято из старых")', тело)
         self.assertIn("ушли авторам", тело)
+
+
+class ПересудСтарыхОтметокTests(unittest.TestCase):
+    """Разовый пересуд: старым отметкам — тот же вопрос, что и новым.
+
+    Владелец 31.08.2026 на «прогнать их заново за ≈$2?» ответил «yes». Прогон разовый:
+    новые отметки уже рождаются с готовым вариантом, и второй раз он не понадобится.
+    """
+
+    def _прогон(self, verdict, claims, открыт="personal", **заглушки):
+        from backend import phrase_panel as pp
+        строки = [(7, "zweiseitiger Verkehr", "collocation",
+                   {"translation_ru": "двустороннее движение"})]
+        общие = {
+            "unavailable_reason": lambda: "",
+            "units_with_verdict": lambda v, n: строки,
+            "_записать_отметку": lambda *a, **k: None,
+        }
+        with patch.object(pp.Panel, "__init__", lambda self, budget_usd=0: None), \
+             patch.object(pp.Panel, "judge", return_value=(verdict, "почему", claims)), \
+             patch.object(pp.Panel, "проверить_вариант", return_value={"state": "ok", "why": ""}), \
+             patch.object(pp, "unavailable_reason", общие["unavailable_reason"]), \
+             patch.object(pp, "units_with_verdict", общие["units_with_verdict"]), \
+             patch.object(pp, "_записать_отметку", общие["_записать_отметку"]), \
+             patch("backend.database.open_question_kind", return_value=открыт), \
+             patch("backend.database.replace_personal_question_claims",
+                   **заглушки.get("replace", {"return_value": True})) as переписать, \
+             patch("backend.database.close_personal_question",
+                   return_value=True) as закрыть, \
+             patch("backend.database.open_personal_text_question",
+                   return_value=True) as завести, \
+             patch("backend.database.open_panel_card_question",
+                   return_value=True) as владельцу:
+            pp.Panel.cost = 0.0
+            отчёт = pp.rejudge_personal(limit=1)
+        return отчёт, переписать, закрыть, завести, владельцу
+
+    def test_the_fix_appears_in_the_question_the_person_already_has(self):
+        """Второй вопрос об одном и том же — это второе касание. Переписываем первый."""
+        отчёт, переписать, _, завести, _ = self._прогон(
+            "текст человека — решает он",
+            [{"field": "headword", "what": "калька", "fix": "Gegenverkehr"}])
+        self.assertEqual(отчёт["вопрос обновлён"], 1)
+        self.assertEqual(отчёт["с готовым вариантом"], 1)
+        завести.assert_not_called()
+
+    def test_a_claim_the_new_judges_dropped_stops_bothering_the_person(self):
+        """Спрашивать человека о том, что мы САМИ больше не считаем ошибкой, нельзя."""
+        отчёт, _, закрыть, _, _ = self._прогон("подтверждено", [])
+        self.assertEqual(отчёт["снята претензия"], 1)
+        закрыть.assert_called_once()
+
+    def test_a_dispute_goes_to_the_owner_and_the_person_is_left_alone(self):
+        отчёт, _, закрыть, _, владельцу = self._прогон(
+            "спорное", [{"field": "translation", "what": "не то", "fix": "подрезать"}])
+        self.assertEqual(отчёт["ушло владельцу"], 1)
+        закрыть.assert_called_once()
+        владельцу.assert_called_once()
+
+    def test_a_foreign_open_question_is_never_overwritten(self):
+        """По этой же единице открыт спор владельца или проверка перевода — чужой
+        вопрос мы не подменяем и второй поверх него не заводим."""
+        отчёт, переписать, закрыть, завести, _ = self._прогон(
+            "текст человека — решает он",
+            [{"field": "headword", "what": "калька", "fix": "Gegenverkehr"}],
+            открыт="panel")
+        переписать.assert_not_called()
+        завести.assert_not_called()
+        закрыть.assert_not_called()
+
+    def test_no_answer_changes_nothing_at_all(self):
+        """«Не спросили» — авария связи, а не новый вердикт: ни отметку, ни вопрос."""
+        отчёт, переписать, закрыть, завести, _ = self._прогон("не спросили", [])
+        self.assertEqual(отчёт["не спросили"], 1)
+        self.assertEqual(отчёт["пересужено"], 0)
+        for заглушка in (переписать, закрыть, завести):
+            заглушка.assert_not_called()
+
+    def test_it_is_a_one_off_run_not_a_nightly_job(self):
+        bot = _src("bot_3.py")
+        self.assertNotIn("rejudge_personal", bot,
+                         "разовая уборка попала в ночное расписание — платить за неё "
+                         "вечно незачем: новые отметки уже с готовым вариантом")
