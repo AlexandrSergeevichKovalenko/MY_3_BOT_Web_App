@@ -2471,6 +2471,37 @@ html[data-scheme="light"] .frrev-w {
 .frv-ex-de { font-size: 0.9063rem; font-weight: 600; color: var(--dmps-text-primary, #F8FAFC); }
 .frv-ex-ru { font-size: 0.8438rem; color: var(--dmps-text-secondary, #CBD5E1); }
 
+/* Претензии голосов — по пунктам, у каждого своё поле и готовый вариант. Раньше все
+   три склеивались в один абзац в раскрывашке «как рассуждали судьи», и по нему нельзя
+   было понять ни что чинить, ни чем (владелец 31.08.2026). */
+.frv-claims { display: flex; flex-direction: column; gap: 0.625rem; }
+.frv-claim {
+  border: 1px solid var(--frv-line); border-radius: 1.125rem; padding: 0.8125rem 0.875rem;
+  display: flex; flex-direction: column; gap: 0.4375rem;
+}
+.frv-claim-h {
+  font-size: 0.6875rem; letter-spacing: 0.07em; text-transform: uppercase;
+  font-weight: 700; color: var(--dmps-text-muted, #94A3B8);
+}
+.frv-claim-w {
+  font-size: 0.875rem; line-height: 1.45; color: var(--dmps-text-primary, #F8FAFC);
+}
+.frv-claim-nofix {
+  font-size: 0.8125rem; line-height: 1.4; color: var(--dmps-text-muted, #94A3B8);
+}
+
+/* Строка примера в правке: две строки ввода и кнопка «убрать». Убранный пример не
+   исчезает с экрана — он гаснет, и его можно вернуть, пока правки не записаны. */
+.frv-ex-in { font-size: 0.875rem; }
+.frv-ex-drop { flex: 0 0 auto; align-self: flex-start; font-size: 0.8125rem; }
+.frv-ex-row.is-dropped { opacity: 0.45; }
+.frv-opt {
+  display: flex; gap: 0.5rem; align-items: flex-start;
+  font-size: 0.8125rem; line-height: 1.4; color: var(--dmps-text-secondary, #CBD5E1);
+}
+.frv-opt input { margin-top: 0.1875rem; }
+.frv-wide { width: 100%; }
+
 .frv-variants { display: flex; flex-direction: column; gap: 0.625rem; }
 .frv-v {
   border: 1px solid var(--frv-line); border-radius: 1.125rem; padding: 0.8125rem 0.875rem;
@@ -2531,6 +2562,14 @@ html[data-scheme="light"] .frrev-w {
 .frrev-row > * { flex: 1 1 0; width: auto; }
 .frrev-closebtn { flex: 0 0 5.5rem; }
 .frrev-hint { font-size: 0.75rem; color: var(--dmps-text-muted, #94A3B8); text-align: center; }
+/* Подпись у КАЖДОЙ кнопки. Слитная строка из трёх пунктов не читалась: владелец
+   31.08.2026 спрашивал, чем «отложить» отличается от «оставить», хотя ответ стоял
+   у него на экране — просто не разделённым на строки и по левому краю. */
+.frrev-hint-rows {
+  text-align: left; display: flex; flex-direction: column; gap: 0.1875rem;
+  line-height: 1.4;
+}
+.frrev-hint-rows b { color: var(--dmps-text-secondary, #CBD5E1); font-weight: 700; }
 .frrev-keep { background: #16A34A; }
 .frrev-done {
   font-size: 0.8125rem; color: var(--frv-good); background: var(--frv-good-wash);

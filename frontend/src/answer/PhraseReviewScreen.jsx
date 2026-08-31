@@ -45,6 +45,14 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
   const [answer, setAnswer] = useState('');
   const [asking, setAsking] = useState(false);
   const [own, setOwn] = useState('');
+  // Правки ВНУТРИ карточки: перевод и примеры. Ровно то, что уже есть у обычного
+  // человека на его экране проверки (`dictionary/WordAudit.jsx`); у владельца этого
+  // не было, и поправить один перевод было нечем — только «переписать всё заново».
+  const [draft, setDraft] = useState(null);   // { ru, ex: [{de, ru, deleted}], topup }
+  // Исправление САМОЙ немецкой фразы. Спрятано за кнопкой: на панельной карточке это
+  // редкий случай, а поле, стоящее открытым, читалось как «впиши перевод» — и тогда
+  // русский текст уезжал в немецкий заголовок.
+  const [fixingText, setFixingText] = useState(false);
   // Русский к своему тексту. Без этого поля перевод после правки сочиняла модель, и
   // выбор владельца пропадал: замер 20.08.2026 — 11 решений из 119 ушли в базу с
   // машинным русским, «Die Zuschlagsstoffe» стали «заполнителями» вместо «добавок».
@@ -103,6 +111,14 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
 
   useEffect(() => () => { if (doneTimer.current) clearTimeout(doneTimer.current); }, []);
 
+  // Черновик правок привязан к КАРТОЧКЕ, а не к экрану. Сменилась карточка — черновик
+  // сброшен: иначе перевод, набранный для одной, уедет в следующую («Отложить»
+  // листает список, ничего не решая).
+  const cardId = card?.id;
+  useEffect(() => {
+    setDraft(null); setFixingText(false); setOwn(''); setOwnRu('');
+  }, [cardId]);
+
   // `total` — сколько ВСЕГО ждёт решения, а не сколько влезло в загруженное окно.
   // Владелец 24.08.2026: разбираю фразу за фразой, а «из 200» не двигается. Так и было:
   // окно 200, в очереди 202 — решил одну, сервер дослал следующую, число прежнее.
@@ -117,6 +133,10 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
     setOwnRu('');
     // Ответ был про ПРЕДЫДУЩУЮ фразу — на новой ему не место.
     setQuestion(''); setAnswer(''); setAsking(false);
+    // То же и с черновиком правок: оставить его на следующей карточке значит однажды
+    // записать чужой перевод в чужую карточку.
+    setDraft(null);
+    setFixingText(false);
     // Список сдвинулся на одну — остаёмся на той же позиции, то есть на следующей
     // фразе. Прыжок в начало заставлял бы каждый раз искать, где ты был.
     setIdx((prev) => Math.max(0, Math.min(prev, (r.items || []).length - 1)));
@@ -230,6 +250,52 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
     decide('replace', { text, translation: ru || '' });
   };
 
+  // Карточка в том виде, в каком владелец ею распоряжается. Пока он ничего не тронул,
+  // это ровно то, что лежит в базе: правкой считается только отличие от неё.
+  const содержимое = () => draft || {
+    ru: card?.translation || '',
+    ex: (card?.examples || []).map((e) => ({
+      de: e.de || '', ru: e.ru || '', deleted: false,
+    })),
+    topup: false,
+  };
+
+  const правитьКарточку = (change) => {
+    const next = {
+      ...содержимое(),
+      ex: содержимое().ex.map((e) => ({ ...e })),
+    };
+    change(next);
+    setDraft(next);
+  };
+
+  // Что уедет на сервер: примеры, которые остались живыми и заполнены с обеих сторон.
+  // Недописанная строка — не пример, и молча дописывать за человека мы её не будем.
+  const живыеПримеры = (d) => d.ex
+    .filter((e) => !e.deleted && e.de.trim() && e.ru.trim())
+    .map((e) => ({ de: e.de.trim(), ru: e.ru.trim() }));
+
+  const saveCardEdit = (d = содержимое()) => {
+    decide('edit', {
+      translation: (d.ru || '').trim(),
+      examples: живыеПримеры(d),
+      top_up: !!d.topup,
+    });
+  };
+
+  // Готовый вариант судьи — в одно касание. Каждое поле правится СВОЕЙ дверью:
+  // перевод карточки — правкой карточки, сама фраза — переименованием статьи.
+  // Одной дверью на всё это было бы ровно то, что чинится: русский текст, уехавший
+  // в немецкий заголовок.
+  const applyFix = (claim) => {
+    const text = String(claim.fix || '').trim();
+    if (!text || busy) return;
+    if (claim.field === 'headword') { decide('replace', { text }); return; }
+    if (claim.field !== 'translation') return;
+    if (card?.kind === 'translation') { decide('link_own', { text }); return; }
+    saveCardEdit({ ...содержимое(), ru: text });
+  };
+
   const skip = () => {
     if (!card) return;
     setSkipped((prev) => new Set(prev).add(card.id));
@@ -317,13 +383,60 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
     });
   }
 
+  // ⛔ ЗАГОЛОВОК ПИШЕТСЯ ПО ТОМУ, О ЧЁМ СПОР, А НЕ ПО ВИДУ ВОПРОСА.
+  //
+  // ПОЧИНЕНО 31.08.2026. Здесь стояло «Спор о карточке, а не о фразе» — на КАЖДОЙ
+  // панельной карточке, включая те, где голоса спорили как раз о самой фразе
+  // («в немецком не говорят das Projekt auslassen»). Владелец: «тут ты пишешь, что
+  // так не говорят, а сверху написано, что спор не о фразе — так в чём вопрос?»
+  // Панель судит четыре поля, и какое из них под вопросом, теперь приезжает с ним.
+  const dispute = card.dispute || null;
+  const disputeFields = dispute?.fields || [];
+  const claims = dispute?.claims || [];
+  // Правка — это ОТЛИЧИЕ от того, что лежит в карточке сейчас. Пока отличия нет,
+  // записывать нечего: «сохранить» без единого изменения закрыло бы вопрос ничем.
+  const черновик = содержимое();
+  const естьПравки = isPanel && (
+    (черновик.ru || '').trim() !== (card.translation || '').trim()
+    || !!черновик.topup
+    || JSON.stringify(живыеПримеры(черновик))
+      !== JSON.stringify((card.examples || []).map((e) => ({
+        de: String(e.de || '').trim(), ru: String(e.ru || '').trim(),
+      })).filter((e) => e.de && e.ru))
+  );
+  const FIELD_TITLE = {
+    headword: 'Спор о самой фразе', translation: 'Спор о переводе',
+    examples: 'Спор о примерах', meaning: 'Спор о значении',
+  };
+  const FIELD_TEXT = {
+    headword: 'Голоса разошлись о том, говорят ли так по-немецки.',
+    translation: 'Голоса разошлись о том, означает ли этот русский эту немецкую фразу.',
+    examples: 'Голоса разошлись о примерах в карточке. Сама фраза тут ни при чём.',
+    meaning: 'Голоса разошлись о значении, записанном в карточке.',
+  };
+  const FIELD_RU = {
+    headword: 'сама фраза', translation: 'перевод',
+    examples: 'примеры', meaning: 'значение',
+  };
   const kindTitle = isTranslation
     ? 'Перевод не прошёл проверку'
-    : (isPanel ? 'Спор о карточке, а не о фразе' : 'Судьи разошлись о грамматике');
+    : isPanel
+    ? (disputeFields.length === 1
+      ? FIELD_TITLE[disputeFields[0]] || 'Спор о карточке'
+      : disputeFields.length > 1
+        ? 'Спор сразу о нескольких частях карточки'
+        : 'Голоса разошлись — о чём именно, не записано')
+    : 'Судьи разошлись о грамматике';
   const kindText = isTranslation
     ? 'Этот перевод сохранён вместе с карточкой. Прежде чем показывать его другим, мы спросили модель — она не подтвердила. Решаешь ты.'
     : isPanel
-    ? 'Три голоса разошлись о том, годятся ли примеры и перевод. Сама фраза тут ни при чём.'
+    ? (disputeFields.length === 1
+      ? FIELD_TEXT[disputeFields[0]] || 'Ниже — что именно не понравилось голосам.'
+      : disputeFields.length > 1
+        ? `Под вопросом: ${disputeFields.map((f) => FIELD_RU[f] || f).join(', ')}. Ниже — по пунктам.`
+        // Так лежат вопросы, заведённые до 31.08.2026: тогда имя поля терялось по
+        // дороге. Придумать его задним числом нельзя — говорим как есть.
+        : 'Этот вопрос старый: тогда мы не записывали, о какой части карточки спор. Ниже — слова голосов, как они есть.')
     : (variants.length
       ? 'Ниже — тексты, которые прошли проверку. Нажми тот, который сохраняем.'
       : 'Готового варианта, прошедшего проверку, пока нет. Спроси судей заново или впиши свой.');
@@ -385,24 +498,109 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
           {card.translation
             ? <div className="frv-ru">{card.translation}</div>
             : <div className="frv-ru is-missing">Перевода нет</div>}
-          {isTranslation && judges[0]?.why ? (
-            <div className="frv-v-why frv-objection">
-              <b>Что говорит проверка:</b> {judges[0].why}
-            </div>
-          ) : null}
         </div>
 
-        {isPanel && examples.length ? (
+        {/* ⛔ ПРЕТЕНЗИЯ БЕЗ ГОТОВОГО ВАРИАНТА — НЕ ОТВЕТ, А ЗАГАДКА.
+            Владелец 31.08.2026: «в немецком не говорят так — ну окей, а как говорят?
+            Почему нет предложения, как исправить?» Теперь каждый голос обязан назвать
+            исправленный текст, тот проходит вторую проверку, и здесь он стоит кнопкой
+            в одно касание. Не назвал — так и написано, и кнопки нет: выдумывать за
+            него мы не станем. */}
+        {isCard && claims.length ? (
           <>
-            <div className="frv-label">Примеры в карточке сейчас</div>
+            <div className="frv-label">Что не так</div>
+            <div className="frv-claims">
+              {claims.map((c) => {
+                const state = c.fix_check?.state || '';
+                return (
+                  <div className="frv-claim" key={c.no}>
+                    <div className="frv-claim-h">
+                      {c.field ? (FIELD_RU[c.field] || c.field) : 'о чём именно — не записано'}
+                      {c.voice ? ` · голос ${c.voice}` : ''}
+                    </div>
+                    <div className="frv-claim-w">{c.why}</div>
+                    {c.fix ? (
+                      <>
+                        {state === 'bad' ? (
+                          <div className="frv-v-why frv-objection">
+                            <b>Наша проверка не согласна:</b> {c.fix_check.why}
+                          </div>
+                        ) : null}
+                        {state === 'unknown' ? (
+                          <div className="frv-v-why">
+                            <b>Этот вариант проверить не удалось</b> — решаешь ты.
+                          </div>
+                        ) : null}
+                        <button className={state === 'bad' ? 'frv-save is-quiet' : 'frv-save'}
+                          disabled={busy} onClick={() => applyFix(c)}>
+                          {state === 'bad' ? 'Всё равно записать: ' : 'Записать: '}
+                          «{c.fix}»
+                        </button>
+                      </>
+                    ) : (
+                      <div className="frv-claim-nofix">
+                        {c.field === 'examples' || c.field === 'meaning'
+                          ? 'Это чинится пересборкой — кнопка «Переписать примеры и перевод заново» внизу.'
+                          : 'Готового варианта голос не назвал. Впиши свой или спроси заново.'}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : null}
+
+        {/* ПРАВКИ ВНУТРИ КАРТОЧКИ. Механизм построен 28.08.2026 и до 31.08 стоял
+            только на экране обычного человека: у владельца на ту же карточку было два
+            ответа — «переписать всё заново» или «оставить как есть». Поправить один
+            перевод было нечем. */}
+        {isPanel ? (
+          <>
+            <div className="frv-label">Перевод карточки</div>
+            <input
+              className="pinrev-word" value={содержимое().ru} disabled={busy}
+              onChange={(e) => правитьКарточку((d) => { d.ru = e.target.value; })}
+              onFocus={() => setTyping(true)}
+              onBlur={() => setTyping(false)}
+              placeholder="перевод по-русски"
+              enterKeyHint="done"
+              onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+            />
+
+            <div className="frv-label">Примеры в карточке</div>
             <div className="frv-ex">
-              {examples.map((e, n) => (
-                <div className="frv-ex-row" key={n}>
-                  <div className="frv-ex-de">{e.de}</div>
-                  <div className="frv-ex-ru">{e.ru}</div>
+              {содержимое().ex.map((e, n) => (
+                <div className={e.deleted ? 'frv-ex-row is-dropped' : 'frv-ex-row'} key={n}>
+                  <input
+                    className="pinrev-word frv-ex-in" value={e.de} disabled={busy || e.deleted}
+                    onChange={(ev) => правитьКарточку((d) => { d.ex[n].de = ev.target.value; })}
+                    onFocus={() => setTyping(true)} onBlur={() => setTyping(false)}
+                    placeholder="пример по-немецки" />
+                  <input
+                    className="pinrev-word frv-ex-in" value={e.ru} disabled={busy || e.deleted}
+                    onChange={(ev) => правитьКарточку((d) => { d.ex[n].ru = ev.target.value; })}
+                    onFocus={() => setTyping(true)} onBlur={() => setTyping(false)}
+                    placeholder="перевод примера" />
+                  <button className="ans-btn-ghost frv-ex-drop" disabled={busy}
+                    onClick={() => правитьКарточку((d) => { d.ex[n].deleted = !d.ex[n].deleted; })}>
+                    {e.deleted ? '↺ вернуть' : '🗑 убрать'}
+                  </button>
                 </div>
               ))}
+              <button className="ans-btn-ghost" disabled={busy}
+                onClick={() => правитьКарточку((d) => {
+                  d.ex.push({ de: '', ru: '', deleted: false });
+                })}>+ Добавить свой пример</button>
             </div>
+            {живыеПримеры(содержимое()).length < 2 ? (
+              <label className="frv-opt">
+                <input type="checkbox" checked={!!содержимое().topup} disabled={busy}
+                  onChange={() => правитьКарточку((d) => { d.topup = !d.topup; })} />
+                <span>Примеров меньше двух — пусть ночь допишет недостающие.
+                  Твои останутся как есть.</span>
+              </label>
+            ) : null}
           </>
         ) : null}
 
@@ -472,7 +670,11 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
           </details>
         ) : null}
 
-        {judges.some((j) => j.why) ? (
+        {/* У карточек их слова стоят выше, по пунктам и с готовым вариантом
+            (см. `claims`). Прятать их в раскрывашку значит снова заставить владельца
+            искать, в чём спор. Раскрывашка осталась грамматическим вопросам: там
+            рассуждение объясняет ВЫБОР между вариантами, а не заменяет его. */}
+        {!isCard && judges.some((j) => j.why) ? (
           <details className="frv-fold">
             <summary>Как рассуждали судьи</summary>
             <div className="frv-fold-body">
@@ -537,9 +739,19 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
         {/* Панельная карточка: выбирать нечего, главное действие одно — отправить
             примеры и перевод на переписывание ночному переписчику. */}
         {isPanel ? (
-          <button className="frv-save frv-main" disabled={busy} onClick={() => decide('rewrite')}>
-            📗 Переписать примеры и перевод заново
-          </button>
+          <>
+            {/* Главное действие панельной карточки — ЕГО правки, а не пересборка.
+                Кнопка гаснет, пока он ничего не тронул: нажать «записать», ничего не
+                изменив, значит закрыть вопрос молча и ничем. */}
+            <button className="frv-save frv-main" disabled={busy || !естьПравки}
+              onClick={() => saveCardEdit()}>
+              ✏️ Записать мои правки
+            </button>
+            <button className="ans-btn-ghost frv-wide" disabled={busy}
+              onClick={() => decide('rewrite')}>
+              📗 Переписать примеры и перевод заново
+            </button>
+          </>
         ) : null}
         {isTranslation ? (
           <button className="frv-save frv-main" disabled={busy}
@@ -548,13 +760,29 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
           </button>
         ) : null}
 
-        <div className="frv-own">
+        {/* ⛔ ЭТО ПОЛЕ ПЕРЕИМЕНОВЫВАЕТ САМУ НЕМЕЦКУЮ ФРАЗУ, И НАЗЫВАТЬСЯ ОНО ДОЛЖНО
+            ТАК ЖЕ. До 31.08.2026 на панельной карточке оно называлось «или впиши свой
+            перевод» — а уезжало переименованием статьи: русский текст встал бы вместо
+            немецкого заголовка. Перевод правится своим полем выше; здесь — только
+            сама фраза, и на панельной карточке это спрятано за кнопкой, потому что
+            случай редкий. */}
+        {isPanel && !fixingText ? (
+          <button className="ans-btn-ghost frv-wide" disabled={busy}
+            onClick={() => setFixingText(true)}>
+            ✍️ Исправить саму фразу по-немецки
+          </button>
+        ) : null}
+        {/* Прячем НЕ атрибутом `hidden`: у `.frv-own` стоит display:flex, и он бы
+            перебил его — поле осталось бы на экране. */}
+        <div className="frv-own" style={isPanel && !fixingText ? { display: 'none' } : undefined}>
+          {isPanel ? <div className="frv-label">Сама фраза по-немецки</div> : null}
           <input
             className="pinrev-word" value={own} disabled={busy}
             onChange={(e) => setOwn(e.target.value)}
             onFocus={() => setTyping(true)}
             onBlur={() => setTyping(false)}
-            placeholder={isCard ? 'или впиши свой перевод' : 'или впиши свой вариант'}
+            placeholder={isTranslation ? 'или впиши свой перевод'
+              : isPanel ? 'фраза по-немецки, как правильно' : 'или впиши свой вариант'}
             enterKeyHint="next"
             onKeyDown={(e) => {
               if (e.key === 'Enter' && own.trim()) { e.target.blur(); saveOwn(); }
@@ -573,15 +801,22 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
           ) : null}
           {own.trim() ? (
             <button className="frv-save" disabled={busy} onClick={saveOwn}>
-              {isTranslation ? 'Сохранить свой перевод' : 'Сохранить свой вариант'}
+              {isTranslation ? 'Сохранить свой перевод'
+                : isPanel ? 'Записать эту фразу вместо прежней' : 'Сохранить свой вариант'}
             </button>
           ) : null}
         </div>
 
         <div className="frrev-row">
+          {/* ⛔ КНОПКА НАЗЫВАЕТСЯ ТЕМ, ЧТО ДЕЛАЕТ. Владелец 31.08.2026: «а что такое
+              „отложить“? а что такое „оставить“? в чём между ними разница?» Разница
+              была настоящая — «оставить» закрывает вопрос навсегда, «отложить» не
+              пишет в базу ничего, — но прочесть её можно было только в серой строчке
+              из трёх пунктов под кнопками. Теперь она в самих названиях и в подписи
+              под каждой кнопкой. */}
           <button className={variants.length || isCard ? 'ans-btn-ghost' : 'ans-btn frrev-keep'}
             disabled={busy} onClick={() => decide('keep')}>
-            👍 {isTranslation ? 'Оставить личным' : 'Оставить как есть'}
+            👍 {isTranslation ? 'Оставить личным' : 'Всё верно — закрыть вопрос'}
           </button>
           {!asking ? (
             <button className="ans-btn-ghost" disabled={busy}
@@ -598,14 +833,22 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
         </div>
 
         <div className="frrev-row">
-          <button className="ans-btn-ghost" disabled={busy} onClick={skip}>↷ Отложить</button>
+          <button className="ans-btn-ghost" disabled={busy} onClick={skip}>
+            ↷ Вернуться позже
+          </button>
           <button className="ans-btn-ghost pinrev-skip" disabled={busy}
             onClick={() => decide('delete')}>🗑 Удалить фразу</button>
           <button className="ans-btn-ghost frrev-closebtn" onClick={onClose}>✕ Закрыть</button>
         </div>
-        <div className="frrev-hint">
-          «Оставить» закрывает вопрос навсегда · «Удалить» уносит фразу и подписные
-          карточки · «Отложить» ничего не меняет
+        {/* Подпись у каждой кнопки, а не общей строкой: разница между «закрыть вопрос»
+            и «вернуться позже» — это разница между «больше не спросим» и «спросим
+            снова», и читать её в слитном тексте владелец не должен. */}
+        <div className="frrev-hint frrev-hint-rows">
+          <div><b>Всё верно</b> — вопрос закрыт навсегда, эта карточка больше не придёт.</div>
+          <div><b>Вернуться позже</b> — в базе ничего не меняется, карточка уезжает в
+            конец списка и придёт снова.</div>
+          <div><b>Удалить фразу</b> — уносит её из общего словаря вместе с подписными
+            карточками.</div>
         </div>
       </div>
     </div>

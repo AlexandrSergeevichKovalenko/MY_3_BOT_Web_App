@@ -32163,8 +32163,8 @@ def _phrase_review_payload(limit: int = 200) -> dict:
     Варианты нумеруются ЗДЕСЬ, на сервере, и тот же номер уходит обратно в решении —
     иначе фронт и бэкенд могли бы разойтись в том, что значит «принять второй»."""
     from backend.database import (
-        list_open_phrase_reviews, phrase_review_card_examples, phrase_review_kind,
-        phrase_review_variants,
+        list_open_phrase_reviews, phrase_review_card_examples, phrase_review_dispute,
+        phrase_review_kind, phrase_review_variants,
     )
     items = []
     for it in list_open_phrase_reviews(int(limit)):
@@ -32187,6 +32187,14 @@ def _phrase_review_payload(limit: int = 200) -> dict:
         items.append({
             "id": it["id"],
             "kind": kind,
+            # О ЧЁМ СПОР — поимённо: заголовок, перевод, примеры, значение. Экран пишет
+            # заголовок ПО ЭТОМУ, а не по виду вопроса: до 31.08.2026 над спором о самой
+            # фразе стояло «Спор о карточке, а не о фразе», и это было прямое враньё.
+            # Пустой список полей означает «не знаем, о чём спор» (так лежат вопросы,
+            # заведённые до 31.08) — и экран обязан сказать это словами.
+            "dispute": (phrase_review_dispute(
+                judges, "translation" if kind == "translation" else "")
+                if kind != "grammar" else None),
             "text": it.get("text") or "",
             "translation": it.get("translation") or "",
             # Примеры — предмет спора панельного вопроса. У грамматического их не
@@ -32310,11 +32318,25 @@ def answer_phrase_review_decide():
         return jsonify({"error": "нет фразы"}), 400
     decision = str(payload.get("decision") or "").strip().lower()
     if decision not in ("accept", "keep", "delete", "replace", "skip", "rewrite",
-                        "link_accept", "link_own"):
+                        "edit", "link_accept", "link_own"):
         return jsonify({"error": "неизвестное решение"}), 400
     own_text = str(payload.get("text") or "").strip()
     if decision == "replace" and not own_text:
         return jsonify({"error": "пустой текст"}), 400
+    # ⛔ «REPLACE» ПЕРЕИМЕНОВЫВАЕТ НЕМЕЦКИЙ ЗАГОЛОВОК, И РУССКОМУ ЗДЕСЬ НЕ МЕСТО.
+    #
+    # ПОЧИНЕНО 31.08.2026. На панельной карточке единственное поле экрана называлось
+    # «или впиши свой перевод», а уезжало сюда решением `replace` — то есть впиши
+    # владелец «старые дураки», и словарная статья `alte Narren` была бы переименована
+    # в русскую строку, с развозом по всем местам. Он это и попробовал сделать: «а где
+    # поле исправить перевод?!» Поле перевода теперь своё (`edit`), а эта дверь больше
+    # не принимает кириллицу вместо немецкого. Это проверка входа с явной ошибкой
+    # человеку, а не подстановка: мы ничего не исправляем за него молча.
+    if decision == "replace" and own_text:
+        from backend.database import _has_cyrillic_letters
+        if _has_cyrillic_letters(own_text):
+            return jsonify({"error": "Это русский текст, а поле ждёт немецкую фразу. "
+                                     "Перевод правится полем «Перевод» выше."}), 400
     try:
         variant = max(0, int(payload.get("variant") or 0))
     except (TypeError, ValueError):
@@ -32338,6 +32360,46 @@ def answer_phrase_review_decide():
         else:
             note = "Не получилось записать перевод. Вопрос оставлен открытым."
         return jsonify({"ok": True, "result": decision, "note": note,
+                        **_phrase_review_payload()})
+    if decision == "edit":
+        # ┌─ ПРАВКИ ВНУТРИ КАРТОЧКИ НА ЭКРАНЕ ВЛАДЕЛЬЦА. ЗАВЕДЕНО 31.08.2026. ────────┐
+        # │ Механизм (`database.apply_panel_card_edit`) построен 28.08.2026 — и был   │
+        # │ подключён ТОЛЬКО к экрану обычного человека (`WordAudit.jsx`). У владельца│
+        # │ на ту же карточку оставалось два ответа: «переписать всё заново» или      │
+        # │ «оставить как есть». Поправить один перевод было нечем: «а где поле       │
+        # │ исправить перевод?! Просто поправить перевод?!» (31.08.2026).             │
+        # │ Второго механизма не заводим — дверь та же, что у человека.               │
+        # └──────────────────────────────────────────────────────────────────────────┘
+        from backend.database import apply_panel_card_edit
+        # ⛔ ПРИМЕРЫ ПЕРЕЗАПИСЫВАЮТСЯ ЦЕЛИКОМ ТЕМ, ЧТО ПРИШЛО. Значит запрос без списка
+        # примеров стёр бы их все — молча и без ошибки. Молчание не согласие: пришёл
+        # запрос не той формы — отвечаем ошибкой, а не удаляем работу.
+        if not isinstance(payload.get("examples"), list):
+            return jsonify({"error": "правка карточки пришла без примеров"}), 400
+        примеры = payload.get("examples")
+        чистые = [{"de": str(e.get("de") or "").strip(),
+                   "ru": str(e.get("ru") or "").strip()}
+                  for e in примеры if isinstance(e, dict)]
+        res = apply_panel_card_edit(
+            review_id, translation=str(payload.get("translation") or "").strip(),
+            examples=[e for e in чистые if e["de"] and e["ru"]],
+            top_up=bool(payload.get("top_up")))
+        if not res.get("unit_id"):
+            return jsonify({"ok": True, "result": "edit",
+                            "note": "Не записал: карточка уже не числится спорной. "
+                                    "Вопрос оставлен открытым.",
+                            **_phrase_review_payload()})
+        части = []
+        if res.get("translation_set"):
+            части.append("перевод исправлен")
+            # Перевод владельца обязан встать ГЛАВНЫМ. Не встал — молчать нельзя.
+            if res.get("owner_ru_set") is False:
+                части.append("⚠️ но главным он не стал — на слове остался прежний")
+        части.append(f"примеров осталось: {res.get('examples')}")
+        if payload.get("top_up"):
+            части.append("недостающие допишет ночь")
+        return jsonify({"ok": True, "result": "edit",
+                        "note": "Записал твои правки: " + ", ".join(части) + ".",
                         **_phrase_review_payload()})
     if decision == "rewrite":
         # Панельная карточка: спор не о фразе, а о её примерах и переводе. Владелец

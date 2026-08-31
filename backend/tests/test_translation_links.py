@@ -44,8 +44,10 @@ class PromotionRulesTests(unittest.TestCase):
             calls["linked"].append((unit_id, russian))
             return True
 
-        def fake_ask(unit_id, display, russian, why):
-            calls["asked"].append((unit_id, russian, why))
+        # ⛔ Пятым аргументом едет ГОТОВЫЙ перевод (31.08.2026): «не тот перевод» без
+        # «а какой тот» — это диагноз без ответа, и владелец на него смотрел молча.
+        def fake_ask(unit_id, display, russian, why, better=""):
+            calls["asked"].append((unit_id, russian, why, better))
             return True
 
         with patch.object(tl, "units_missing_ru_link", return_value=list(ROWS)), \
@@ -69,12 +71,42 @@ class PromotionRulesTests(unittest.TestCase):
         report, calls = self._run({
             "Schwein haben": {"checked": True, "ok": True, "why": ""},
             "Glück haben": {"checked": True, "ok": False,
-                            "why": "буквальный перевод не передаёт значение"},
+                            "why": "буквальный перевод не передаёт значение",
+                            "better": "повезти"},
         })
         self.assertEqual(report["поднято"], 1)
         self.assertEqual(report["ушло владельцу"], 1)
         self.assertEqual([u for u, _r in calls["linked"]], [101])
         self.assertEqual(calls["asked"][0][0], 102)
+        # Готовый вариант обязан доехать до владельца: на экране это кнопка в одно
+        # касание. Потеряется здесь — и он снова смотрит на диагноз без ответа.
+        self.assertEqual(calls["asked"][0][3], "повезти")
+
+    def test_the_question_carries_the_ready_translation_into_the_queue(self):
+        """И записывается он в саму строку вопроса, а не только едет аргументом."""
+        from backend import translation_links as tl
+        записано = {}
+
+        class Курсор:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, sql, args=None):
+                записано["sql"], записано["args"] = sql, args
+                self.rowcount = 1
+            def fetchone(self): return None
+
+        class Соединение:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def cursor(self): return Курсор()
+            def commit(self): pass
+
+        with patch("backend.database.get_db_connection_context", return_value=Соединение()):
+            self.assertTrue(tl._ask_owner(102, "Glück haben", "иметь свинью",
+                                          "перевод буквальный", "повезти"))
+        судьи = записано["args"][3]
+        self.assertIn('"fix": "повезти"', судьи)
+        self.assertIn('"field": "translation"', судьи)
 
     def test_no_answer_is_neither_good_nor_bad(self):
         """⛔ «Спросить не удалось» — не «хорошо» и не «плохо».
@@ -179,8 +211,18 @@ class ScreenTests(unittest.TestCase):
                       "свой перевод уходит решением о немецком тексте")
 
     def test_the_check_objection_is_shown_not_hidden(self):
+        """Возражение проверки стоит на виду, а не в раскрывашке.
+
+        С 31.08.2026 оно приходит претензией в общем списке «Что не так» (`frv-claims`)
+        вместе с полем спора и готовым вариантом — вместо отдельной строки «Что говорит
+        проверка», которая умела показать только текст и ничего больше."""
         src = _src("frontend/src/answer/PhraseReviewScreen.jsx")
-        self.assertIn("Что говорит проверка:", src)
+        i = src.index('<div className="frv-label">Что не так</div>')
+        хвост = src[i:i + 2000]
+        self.assertIn("frv-claims", хвост)
+        self.assertIn("{c.why}", хвост)
+        # Список претензий не спрятан в <details>: раскрывашка начинается ниже.
+        self.assertNotIn("<details", src[:i][src[:i].rindex("frv-scroll"):])
 
     def test_the_card_door_opens_both_card_questions(self):
         overlay = _src("frontend/src/answer/AnswerOverlay.jsx")
