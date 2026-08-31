@@ -1,8 +1,37 @@
 import asyncio
+import contextlib
 import unittest
 from unittest.mock import patch
 
 import bot_3
+
+
+@contextlib.contextmanager
+def _state_table(rows=None):
+    """Хранилище состояний карточки — в памяти теста.
+
+    Варианты сохранения переехали из dict в памяти бота в таблицу
+    bt_3_telegram_pending_input_states (31.08.2026), поэтому обработчик теперь ходит
+    в базу. Тест боевую базу не трогает: подменяем три функции доступа.
+    """
+    table = dict(rows or {})
+
+    def _upsert(*, state_key, user_id, state_type, payload, ttl_seconds):
+        table[str(state_key)] = {
+            "state_key": str(state_key), "user_id": int(user_id),
+            "state_type": str(state_type), "payload": payload,
+        }
+
+    def _get(state_key):
+        return table.get(str(state_key))
+
+    def _delete(*, state_key, user_id=None):
+        table.pop(str(state_key), None)
+
+    with patch.object(bot_3, "upsert_pending_telegram_input_state", _upsert), \
+         patch.object(bot_3, "get_pending_telegram_input_state", _get), \
+         patch.object(bot_3, "delete_pending_telegram_input_state", _delete):
+        yield table
 
 
 class _FakeMsg:
@@ -39,8 +68,11 @@ class InPlaceSaveTests(unittest.TestCase):
         q = _FakeQuery()
         payload = {"source_lang": "de", "target_lang": "ru", "card_key": "c1"}
         opts = [{"source": "die Herberge", "target": "хостел"}]
+        rows = {"ok1": {"state_key": "ok1", "user_id": 5,
+                        "state_type": bot_3.PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS,
+                        "payload": payload}}
         with patch.object(bot_3, "_save_dictionary_option_for_user", return_value=(True, "ok", 1, True)), \
-             patch.object(bot_3, "pending_dictionary_save_options", {"ok1": payload}):
+             _state_table(rows):
             asyncio.run(bot_3._save_dictionary_variants_in_place(
                 q, None, option_key="ok1", payload=payload, user_id=5,
                 selected_idxs=[0], options=opts,
@@ -53,7 +85,8 @@ class InPlaceSaveTests(unittest.TestCase):
         q = _FakeQuery()
         payload = {"source_lang": "de", "target_lang": "ru"}
         opts = [{"source": "a", "target": "1"}, {"source": "b", "target": "2"}]
-        with patch.object(bot_3, "_save_dictionary_option_for_user", return_value=(True, "ok", 1, True)):
+        with patch.object(bot_3, "_save_dictionary_option_for_user", return_value=(True, "ok", 1, True)), \
+             _state_table():
             asyncio.run(bot_3._save_dictionary_variants_in_place(
                 q, None, option_key="k", payload=payload, user_id=5,
                 selected_idxs=[0, 1], options=opts,
@@ -65,7 +98,8 @@ class InPlaceSaveTests(unittest.TestCase):
         q = _FakeQuery()
         payload = {"source_lang": "de", "target_lang": "ru"}
         opts = [{"source": "a", "target": "1"}]
-        with patch.object(bot_3, "_save_dictionary_option_for_user", return_value=(False, "Лимит исчерпан", 0, False)):
+        with patch.object(bot_3, "_save_dictionary_option_for_user", return_value=(False, "Лимит исчерпан", 0, False)), \
+             _state_table():
             asyncio.run(bot_3._save_dictionary_variants_in_place(
                 q, None, option_key="k", payload=payload, user_id=5,
                 selected_idxs=[0], options=opts,
