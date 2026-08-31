@@ -23,6 +23,7 @@ from backend.database import (
     get_admin_telegram_ids,
     get_db_connection_context,
     get_dict_dedup_report,
+    get_dictionary_button_miss_report,
     get_provider_budget_month_usage,
     list_admin_configurable_limits,
     resolve_entitlement,
@@ -1193,7 +1194,62 @@ DICT_DEDUP_REPORT_TZ = "Europe/Vienna"
 DICT_DEDUP_REPORT_JOB_KEY = "dict_dedup_weekly_report"
 
 
-def format_dict_dedup_weekly_report(report: dict[str, Any]) -> str:
+_DICT_BUTTON_LABELS = {
+    "quick_save": "Сохранить 1 / 2 / оба",
+    "save_option": "выбор варианта",
+    "select_toggle": "галочка варианта",
+    "select_all": "выбрать все",
+    "save_confirm": "Сохранить после выбора",
+    "folder_open": "папка",
+    "folder_back": "назад из папок",
+    "folder_pick": "выбор папки",
+    "folder_pick_apply": "папка выбрана",
+    "folder_new": "новая папка",
+    "card_feel": "разбор (🧩)",
+    "card_speak": "озвучка (🔊)",
+    "card_save": "сохранить с карточки",
+}
+
+
+def format_dictionary_button_miss_block(report: dict[str, Any]) -> list[str]:
+    """Блок «кнопки под карточками словаря» для недельного отчёта.
+
+    Отвечает на один вопрос: осталась ли дыра, из-за которой 31.08.2026 человек
+    нажимал «Сохранить 1» и получал «Варианты устарели». Отказ — это когда человек
+    НЕ смог сохранить; тихое восстановление он не заметил, но оно тоже считается.
+    """
+    days = int(report.get("days") or 7)
+    refused = int(report.get("refused") or 0)
+    fresh = int(report.get("refused_fresh") or 0)
+    unknown_age = int(report.get("refused_age_unknown") or 0)
+    recovered = int(report.get("recovered") or 0)
+    people = int(report.get("refused_users") or 0)
+
+    lines = ["", f"🔘 Кнопки под карточками словаря за {days} дн.:"]
+    if refused == 0:
+        lines.append("   • отказов «устарело»: 0 — ни один человек не потерял слово")
+    else:
+        lines.append(f"   • отказов «устарело»: {refused} (людей: {people})")
+        lines.append(f"   • из них на свежих карточках (моложе суток): {fresh}")
+        if unknown_age:
+            lines.append(f"   • возраст карточки неизвестен: {unknown_age}")
+        for item in (report.get("by_button") or []):
+            code = str(item.get("button") or "—")
+            lines.append(
+                f"      — {_DICT_BUTTON_LABELS.get(code, code)}: {int(item.get('count') or 0)}"
+            )
+    lines.append(f"   • тихих восстановлений из текста карточки: {recovered}")
+    if fresh:
+        lines.append("")
+        lines.append(
+            "⚠️ Отказ на свежей карточке — это дыра, а не истёкший срок хранения. "
+            "Состояние карточки живёт 30 дней и переезд в базу его больше не теряет; "
+            "если такие есть, надо смотреть, что именно его удаляет."
+        )
+    return lines
+
+
+def format_dict_dedup_weekly_report(report: dict[str, Any], buttons: dict[str, Any] | None = None) -> str:
     """Render the weekly duplicate-removal summary as a Telegram message (Russian)."""
     days = int(report.get("days") or 7)
     window_deleted = int(report.get("window_entries_deleted") or 0)
@@ -1230,6 +1286,9 @@ def format_dict_dedup_weekly_report(report: dict[str, Any]) -> str:
     elif window_deleted == 0:
         lines += ["", "ℹ️ Джоба отработала, но дубликатов не нашла — это норма, если их просто нет."]
 
+    if isinstance(buttons, dict):
+        lines += format_dictionary_button_miss_block(buttons)
+
     return "\n".join(lines)
 
 
@@ -1262,7 +1321,7 @@ def send_dict_dedup_weekly_report(*, days: int = 7, force: bool = False) -> dict
                 )
             return {"ok": False, "sent": 0, "error": "no_admin_ids", "week": run_period}
         report = get_dict_dedup_report(days=days)
-        text = format_dict_dedup_weekly_report(report)
+        text = format_dict_dedup_weekly_report(report, buttons=get_dictionary_button_miss_report(days=days))
         sent = 0
         for admin_id in admin_ids:
             for part in _split_telegram_text(text):

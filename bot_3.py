@@ -266,6 +266,7 @@ from backend.database import (
     count_shortcut_runs_total,
     upsert_pending_telegram_input_state,
     delete_pending_telegram_input_state,
+    record_dictionary_button_state_miss,
     get_pending_telegram_input_state,
     get_active_pending_telegram_input_state_for_user,
     purge_expired_pending_telegram_input_states,
@@ -758,6 +759,21 @@ def _log_dictionary_state_miss(*, button: str, state_key: str, query, recovered:
         logging.info(line, *args)
     else:
         logging.warning(line, *args)
+    try:
+        record_dictionary_button_state_miss(
+            user_id=int(getattr(user, "id", 0) or 0) or None,
+            button=str(button or "").strip(),
+            recovered=bool(recovered),
+            age_minutes=int(age_min) if age_min != "unknown" else None,
+        )
+    except Exception:
+        # Счётчик — не ответ человеку, сорвать из-за него нажатие нельзя. Но и молчать
+        # нельзя: недосчитанный промах делает недельный отчёт врущим в приятную сторону,
+        # поэтому это WARNING, а не debug.
+        logging.warning(
+            "⚠️ Промах кнопки словаря НЕ попал в счётчик button=%s — недельный отчёт "
+            "покажет меньше, чем было", str(button or "").strip(), exc_info=True,
+        )
 
 
 def _load_dictionary_save_options(query, option_key: str, *, button: str) -> dict | None:
@@ -14145,9 +14161,10 @@ async def admin_dedup_report_command(update: Update, context: CallbackContext):
         await message.reply_text("⛔️ Команда доступна только администратору.")
         return
     try:
-        from backend.database import get_dict_dedup_report
+        from backend.database import get_dict_dedup_report, get_dictionary_button_miss_report
         report = await asyncio.to_thread(get_dict_dedup_report, days=7)
-        text = format_dict_dedup_weekly_report(report)
+        buttons = await asyncio.to_thread(get_dictionary_button_miss_report, days=7)
+        text = format_dict_dedup_weekly_report(report, buttons=buttons)
         for part in _split_telegram_text(text):
             await message.reply_text(part, disable_web_page_preview=True)
     except Exception as exc:

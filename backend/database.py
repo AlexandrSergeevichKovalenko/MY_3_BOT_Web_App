@@ -49110,6 +49110,118 @@ def log_limit_runtime_event(
         logging.debug("admin limit runtime telemetry skipped", exc_info=True)
 
 
+# Промахи кнопок под карточкой словаря живут в общей телеметрии
+# bt_3_limit_runtime_events (event_type='telemetry'): отдельная таблица ради счётчика
+# не нужна, а индекс по (feature_code, event_type, event_time) там уже есть.
+DICTIONARY_BUTTON_MISS_FEATURE_CODE = "dictionary_button_state_miss"
+# Свежей считаем карточку моложе суток: промах на ней — настоящая дыра, промах на
+# месячной — просто истёк срок хранения состояния (30 дней).
+DICTIONARY_BUTTON_MISS_FRESH_MINUTES = 24 * 60
+
+
+def record_dictionary_button_state_miss(
+    *,
+    user_id: int | None,
+    button: str,
+    recovered: bool,
+    age_minutes: int | None,
+) -> None:
+    """Отметить, что кнопка под карточкой словаря не нашла своего состояния.
+
+    recovered=False — человеку сказано «устарело», сохранить он не смог.
+    recovered=True  — состояние собралось из текста карточки, человек не заметил.
+    age_minutes=None — возраст сообщения неизвестен; кладём NULL, а НЕ ноль:
+    ноль означал бы «карточка только что отправлена», то есть худший случай.
+
+    Ошибку записи НЕ глушим здесь. Недосчитанный промах делает недельный отчёт
+    врущим в приятную сторону — решение, что с этим делать, принимает вызывающий.
+    """
+    label = str(button or "").strip().lower()
+    if not label:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_limit_runtime_events (
+                    user_id, feature_code, event_type, origin, units_value, metadata, event_time
+                )
+                VALUES (%s, %s, 'telemetry', 'telegram_dictionary_card', 1, %s, %s);
+                """,
+                (
+                    int(user_id) if user_id else None,
+                    DICTIONARY_BUTTON_MISS_FEATURE_CODE,
+                    Json({
+                        "button": label,
+                        "recovered": bool(recovered),
+                        "age_minutes": int(age_minutes) if age_minutes is not None else None,
+                    }),
+                    datetime.now(timezone.utc),
+                ),
+            )
+
+
+def get_dictionary_button_miss_report(days: int = 7) -> dict[str, Any]:
+    """Сколько раз за окно кнопка под карточкой словаря не нашла состояния."""
+    window_days = max(1, int(days or 7))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE NOT (metadata->>'recovered')::boolean),
+                    COUNT(*) FILTER (
+                        WHERE NOT (metadata->>'recovered')::boolean
+                          AND metadata->>'age_minutes' IS NOT NULL
+                          AND (metadata->>'age_minutes')::int < %s
+                    ),
+                    COUNT(*) FILTER (
+                        WHERE NOT (metadata->>'recovered')::boolean
+                          AND metadata->>'age_minutes' IS NULL
+                    ),
+                    COUNT(*) FILTER (WHERE (metadata->>'recovered')::boolean),
+                    COUNT(DISTINCT user_id) FILTER (WHERE NOT (metadata->>'recovered')::boolean)
+                FROM bt_3_limit_runtime_events
+                WHERE feature_code = %s
+                  AND event_type = 'telemetry'
+                  AND event_time > NOW() - (%s * INTERVAL '1 day');
+                """,
+                (
+                    DICTIONARY_BUTTON_MISS_FRESH_MINUTES,
+                    DICTIONARY_BUTTON_MISS_FEATURE_CODE,
+                    window_days,
+                ),
+            )
+            row = cursor.fetchone() or (0, 0, 0, 0, 0)
+            cursor.execute(
+                """
+                SELECT metadata->>'button', COUNT(*)
+                FROM bt_3_limit_runtime_events
+                WHERE feature_code = %s
+                  AND event_type = 'telemetry'
+                  AND event_time > NOW() - (%s * INTERVAL '1 day')
+                  AND NOT (metadata->>'recovered')::boolean
+                GROUP BY 1
+                ORDER BY 2 DESC, 1 ASC
+                LIMIT 5;
+                """,
+                (DICTIONARY_BUTTON_MISS_FEATURE_CODE, window_days),
+            )
+            by_button = [
+                {"button": str(item[0] or "—"), "count": int(item[1] or 0)}
+                for item in (cursor.fetchall() or [])
+            ]
+    return {
+        "days": window_days,
+        "refused": int(row[0] or 0),
+        "refused_fresh": int(row[1] or 0),
+        "refused_age_unknown": int(row[2] or 0),
+        "recovered": int(row[3] or 0),
+        "refused_users": int(row[4] or 0),
+        "by_button": by_button,
+    }
+
+
 def list_admin_configurable_limits(plan_code: str = "free") -> list[dict[str, Any]]:
     ensure_admin_economics_schema()
     plan_value = str(plan_code or "free").strip().lower() or "free"
