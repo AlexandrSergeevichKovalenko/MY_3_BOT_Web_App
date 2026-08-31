@@ -395,10 +395,13 @@ class TheJudgeMustHandOverTheFixTests(unittest.TestCase):
         уезжал владельцу отдельным скриптом, который читал из базы одну склеенную
         строку, — там они и пропадали."""
         src = _src("backend/database.py")
-        i = src.index("def open_panel_card_question(")
-        тело = src[i:i + 3000]
+        # Сборка записей общая на все вопросы: панельный и личный (31.08.2026).
+        i = src.index("def _претензии_в_судей(")
+        тело = src[i:i + 2500]
         for ключ in ('"field": поле', '"fix":', '"fix_check"'):
             self.assertIn(ключ, тело)
+        i = src.index("def open_panel_card_question(")
+        тело = src[i:i + 3000]
         self.assertIn("if not судьи:", тело,
                       "вопрос без единой претензии снова тратит касание владельца")
 

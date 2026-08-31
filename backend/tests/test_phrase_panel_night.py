@@ -60,8 +60,13 @@ class ХудшаяПроверкаНеЗапускаетсяВовсеTests(unit
         with patch.dict(os.environ, {"OPENAI_API_KEY": "x", "GEMINI_API_KEY": ""}):
             причина = pp.unavailable_reason()
         self.assertIn("GEMINI_API_KEY", причина)
+        # ⛔ ПОДЪЁМ СТАРЫХ ОТМЕТОК ТОЖЕ ЗАМОКАН. Он идёт ДО проверки ключей и ходит в
+        # базу: без этой заглушки прогон тестов 31.08.2026 завёл 90 живых вопросов в
+        # боевой базе. Тесты не трогают прод — правило проекта, проверенное болью.
         with patch.dict(os.environ, {"OPENAI_API_KEY": "x", "GEMINI_API_KEY": ""}), \
              patch.object(pp, "count_unchecked", return_value=7), \
+             patch.object(pp, "поднять_старые_отметки", return_value=0), \
+             patch.object(pp, "count_personal_backlog", return_value=0), \
              patch.object(pp, "unchecked_units") as отбор:
             отчёт = pp.run_batch(limit=5)
         self.assertIn("пропущено", отчёт)
@@ -102,6 +107,8 @@ class ЧтоНеПроверилиНеПомечаемTests(unittest.TestCase):
         from backend import phrase_panel as pp
         строки = [(1, "eine Idee zu eigen machen", "collocation", {"translation_ru": "x"})]
         with patch.object(pp, "unavailable_reason", return_value=""), \
+             patch.object(pp, "поднять_старые_отметки", return_value=0), \
+             patch.object(pp, "count_personal_backlog", return_value=0), \
              patch.object(pp, "unchecked_units", return_value=строки), \
              patch.object(pp, "count_unchecked", return_value=1), \
              patch.object(pp, "_записать_отметку") as отметка, \
@@ -127,6 +134,8 @@ class ЧтоНеПроверилиНеПомечаемTests(unittest.TestCase):
         claims = [{"field": "translation", "what": "Narren — дураки.",
                    "fix": "старые дураки", "voice": 1}]
         with patch.object(pp, "unavailable_reason", return_value=""), \
+             patch.object(pp, "поднять_старые_отметки", return_value=0), \
+             patch.object(pp, "count_personal_backlog", return_value=0), \
              patch.object(pp, "unchecked_units", return_value=строки), \
              patch.object(pp, "count_unchecked", return_value=0), \
              patch.object(pp, "_записать_отметку"), \
@@ -157,6 +166,6 @@ class ВладелецВидитЧислоTests(unittest.TestCase):
         bot = _src("bot_3.py")
         self.assertIn("+ _phrase_panel_line()", bot)
         i = bot.index("def _phrase_panel_line(")
-        тело = bot[i:i + 3000]
+        тело = bot[i:i + 4500]
         for кусок in ("осталось непроверенных", "ждут твоего решения", "потрачено за ночь"):
             self.assertIn(кусок, тело)
