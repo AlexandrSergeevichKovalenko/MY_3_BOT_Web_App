@@ -61,6 +61,190 @@ def _object_key_composed(compound_id: str) -> str:
     return f"rebus/composed/{safe}.png"
 
 
+# Сколько до-гейтовых картинок машина смотрит за одну ночь. Каждая — платный запрос
+# к vision-модели, поэтому проход идёт порциями, а не «все 225 разом».
+# Решение владельца 31.08.2026: «прогнать машиной, мне — только спорные».
+REBUS_PREGATE_SWEEP_PER_NIGHT = 25
+
+
+def sweep_pregate_rebus_components(limit: int = REBUS_PREGATE_SWEEP_PER_NIGHT) -> dict:
+    """Ночной проход по картинкам, которым «принято» проставила миграция, а не человек.
+
+    ┌─ ОТКУДА ВЗЯЛИСЬ ЭТИ КАРТИНКИ. Разобрано 31.08.2026. ──────────────────────┐
+    │ 03.08.2026 у таблицы половинок появилась колонка review_status с           │
+    │ DEFAULT 'approved' (`backend/database.py`, блок схемы ребуса). Все уже      │
+    │ лежавшие строки — 225 штук — получили «принято владельцем», которого он     │
+    │ никогда не давал: их рисовали весной, до постройки vision-гейта и приёмки.  │
+    │ Владелец 31.08.2026 решил: прогнать машиной, ему показывать только спорные. │
+    └───────────────────────────────────────────────────────────────────────────┘
+
+    Три исхода на картинку, и они РАЗНЫЕ:
+      • судья доволен → ставим отметку «машина смотрела», картинка остаётся в работе;
+      • судья возражает → картинка уходит ВЛАДЕЛЬЦУ в очередь приёмки с причиной и
+        до его решения не выдаётся. Сами не удаляем: приговор машины — повод
+        спросить человека, а не заменить его;
+      • судья не смог посмотреть → не трогаем ничего, берём её же следующей ночью.
+    """
+    from backend.database import (
+        list_ready_rebus_component_images, get_rebus_part_meanings,
+        mark_rebus_component_gate_checked, send_rebus_component_to_owner_review,
+        count_rebus_pregate_backlog,
+    )
+    from backend.openai_manager import run_image_depicts
+    from backend.r2_storage import r2_get_bytes
+
+    rows = list_ready_rebus_component_images(int(limit), pregate_only=True)
+    meanings = get_rebus_part_meanings()
+    clean = 0
+    to_owner: list[str] = []
+    unseen = 0
+    no_file = 0
+
+    for row in rows:
+        word = str(row.get("word") or "")
+        key = str(row.get("image_object_key") or "")
+        if not word or not key:
+            continue
+        try:
+            img = r2_get_bytes(key)
+        except Exception:
+            logging.warning("pregate_sweep: r2_get_bytes failed word=%s key=%s", word, key, exc_info=True)
+            unseen += 1
+            continue
+        if not img:
+            # Ключ есть, файла нет — это не приговор картинке, а отдельная поломка.
+            no_file += 1
+            logging.warning("pregate_sweep: файла нет word=%s key=%s", word, key)
+            continue
+        mime = "image/webp" if key.endswith(".webp") else "image/png"
+        verdict = run_image_depicts(bytes(img), word, meaning=meanings.get(word, ""), mime=mime)
+        if verdict.get("unknown"):
+            unseen += 1
+            continue
+        if verdict.get("ok"):
+            mark_rebus_component_gate_checked(word)
+            clean += 1
+            continue
+        reason = str(verdict.get("reason") or "машина усомнилась")
+        send_rebus_component_to_owner_review(word, f"машина усомнилась: {reason}")
+        to_owner.append(f"{word} ({reason})")
+
+    result = {
+        "looked_at": len(rows), "clean": clean, "to_owner": to_owner,
+        "judge_could_not_look": unseen, "file_missing": no_file,
+        "backlog_left": count_rebus_pregate_backlog(),
+    }
+    logging.info("rebus_pregate_sweep: %s", result)
+    return result
+
+
+def fill_missing_rebus_image_versions() -> dict:
+    """Проставить версию содержимого и отпечаток половинок там, где их ещё нет.
+
+    Работает САМА, ночью, вместе с пополнением пула: строки без версии появляются
+    всякий раз, когда картинка легла в R2 в обход обычного пути (ручная заливка,
+    миграция, восстановление). Без версии карточка не выдаётся вовсе — поэтому
+    «когда-нибудь руками» здесь не годится.
+
+    Версия берётся из ETag объекта (`head_object`) — файлы не скачиваются, ничего
+    не перерисовывается, модель не зовётся. Денег: ноль.
+    """
+    from backend.database import (
+        list_rebus_images_without_version, set_rebus_component_image_version,
+        set_rebus_card_image_version,
+    )
+    from backend.r2_storage import r2_object_version
+
+    todo = list_rebus_images_without_version()
+    comp_done = comp_missing = card_done = card_missing = 0
+
+    for word, key in todo.get("components", []):
+        version = r2_object_version(str(key))
+        if not version:
+            comp_missing += 1
+            logging.warning("rebus_version: половинка «%s»: ключ есть, файла нет — %s", word, key)
+            continue
+        set_rebus_component_image_version(str(word), version)
+        comp_done += 1
+
+    for compound_id, key, parts in todo.get("cards", []):
+        version = r2_object_version(str(key))
+        if not version:
+            card_missing += 1
+            logging.warning("rebus_version: карточка «%s»: ключ есть, файла нет — %s", compound_id, key)
+            continue
+        words = [str((p or {}).get("word") or "") for p in (parts or [])[:2]]
+        set_rebus_card_image_version(
+            str(compound_id), version, rebus_parts_fingerprint(words) if words else "",
+        )
+        card_done += 1
+
+    result = {"components_versioned": comp_done, "components_file_missing": comp_missing,
+              "cards_versioned": card_done, "cards_file_missing": card_missing}
+    if any(result.values()):
+        logging.info("rebus_version_backfill: %s", result)
+    return result
+
+
+def rebus_card_delivery_url(entry: dict) -> str:
+    """Адрес картинки карточки для отправки человеку.
+
+    Пустая строка = ОТПРАВЛЯТЬ НЕЛЬЗЯ, и это не молчание, а незакрытая задача: карточка
+    попадает в счётчик и в ночную пересборку. Два случая, когда возвращается пусто:
+
+      • отпечаток половинок разошёлся с нынешними половинками — значит склейка
+        показывает не то, что написано в подписи (случай «груша под словом яйцо»);
+      • отпечатка нет вовсе — сверить не с чем. Он проставляется добором
+        (`scripts/rebus_image_versions_backfill.py`) и ночной задачей, поэтому
+        «нет отпечатка» — это состояние на минуты, а не нормальный исход.
+
+    Версия содержимого уезжает в адрес (`?v=…`): без неё Telegram отдаёт свою старую
+    копию по неизменному адресу и перерисовка не доезжает до людей никогда.
+    """
+    from backend.r2_storage import r2_public_url
+
+    compound_id = str(entry.get("compound_id") or entry.get("id") or "")
+    object_key = str(entry.get("composed_image_object_key") or "").strip()
+    if not object_key:
+        return ""
+
+    stored = str(entry.get("parts_fingerprint") or "").strip()
+    words = [str((p or {}).get("word") or "") for p in (entry.get("parts") or [])[:2]]
+    current = rebus_parts_fingerprint(words) if words else ""
+    if not stored or stored != current:
+        logging.warning(
+            "rebus_card_not_delivered compound_id=%s reason=%s stored=%r current=%r",
+            compound_id, "fingerprint_missing" if not stored else "fingerprint_mismatch",
+            stored, current,
+        )
+        return ""
+
+    return r2_public_url(object_key, version=str(entry.get("composed_image_version") or ""))
+
+
+def rebus_parts_fingerprint(words: list[str]) -> str:
+    """Отпечаток половинок: «слово:версия|слово:версия» в порядке частей.
+
+    ┌─ ЗАЧЕМ. Разобрано 31.08.2026. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ────────────┐
+    │ 13.06.2026 у `eieruhr_001` починили ЧАСТИ (Birne → Ei), но собранная       │
+    │ картинка осталась июньская: подпись строится живьём из parts_json при      │
+    │ отправке, а картинка — замороженный файл, и ничто их не сверяло. Человек   │
+    │ 79 дней видел «яйцо + часы» над грушей. Отпечаток делает это расхождение   │
+    │ видимым В МОМЕНТ ОТПРАВКИ, а не через два месяца по жалобе.                │
+    │ Половинка без версии даёт «слово:», и это НЕ совпадёт с «слово:abc» —      │
+    │ то есть неизвестность толкает к пересборке, а не к молчаливой отправке.    │
+    └───────────────────────────────────────────────────────────────────────────┘
+    """
+    from backend.database import get_rebus_component_image
+
+    marks = []
+    for word in words:
+        word = str(word or "").strip()
+        row = get_rebus_component_image(word) or {}
+        marks.append(f"{word}:{str(row.get('image_version') or '')}")
+    return "|".join(marks)
+
+
 # ─── Step 1: generate one component image ────────────────────────────────────
 
 def generate_component_image(word: str, dalle_prompt: str, *,
@@ -134,21 +318,33 @@ def generate_component_image(word: str, dalle_prompt: str, *,
                                     mime=mime)
         if not verdict.get("ok"):
             reason = str(verdict.get("reason") or "vision_rejected")
+            # «Судья не смог посмотреть» и «судья забраковал» — разные миры. Первое не
+            # засчитывается как попытка: три обрыва сети не должны сжечь лимит
+            # перерисовок слова. Картинка в обоих случаях НЕ принимается.
+            unknown = bool(verdict.get("unknown"))
             upsert_rebus_component_image(word, generation_status="failed",
                                          failure_reason=f"vision: {reason}"[:500],
-                                         count_attempt=True)
-            raise RuntimeError(f"vision rejected component '{word}': {reason}")
+                                         count_attempt=not unknown)
+            if unknown:
+                logging.warning("rebus_vision_unknown word=%s reason=%s", word, reason)
+            raise RuntimeError(
+                f"vision {'could not judge' if unknown else 'rejected'} component '{word}': {reason}"
+            )
 
         ext = "png" if "png" in mime else "webp" if "webp" in mime else "png"
         object_key = _object_key_component(word).replace(".png", f".{ext}")
-        r2_put_bytes(
+        # Ключ детерминирован (от слова), поэтому перерисовка ложится в ТОТ ЖЕ адрес.
+        # Версия содержимого — единственное, чем новая картинка отличается от старой
+        # для Telegram и для браузера; без неё «immutable, max-age=год» ниже означал
+        # бы, что перерисованную половинку не увидит вообще никто. См. r2_public_url.
+        version = r2_put_bytes(
             object_key,
             img_bytes,
             content_type=mime,
             cache_control="public, max-age=31536000, immutable",
         )
         upsert_rebus_component_image(word, image_object_key=object_key, generation_status="ready",
-                                     review_status="pending")
+                                     review_status="pending", image_version=version)
         logging.info("rebus_generator: component drawn word=%s key=%s bytes=%s — awaiting owner",
                      word, object_key, len(img_bytes))
         return object_key
@@ -458,13 +654,20 @@ def prepare_rebus_entry(compound_id: str, *, allow_draw: bool = True) -> dict:
         )
 
         composed_key = _object_key_composed(compound_id)
-        r2_put_bytes(
+        composed_version = r2_put_bytes(
             composed_key,
             card_bytes,
             content_type="image/png",
             cache_control="public, max-age=86400",
         )
-        mark_rebus_composed(compound_id, image_object_key=composed_key)
+        mark_rebus_composed(
+            compound_id,
+            image_object_key=composed_key,
+            image_version=composed_version,
+            parts_fingerprint=rebus_parts_fingerprint(
+                [str((p.get("word") or "")) for p in parts[:2]]
+            ),
+        )
         logging.info(
             "rebus_generator: composed ready compound_id=%s key=%s bytes=%s",
             compound_id, composed_key, len(card_bytes),

@@ -307,6 +307,7 @@ from backend.database import (
     get_rebus_slot,
     get_rebus_bank_entry,
     mark_rebus_sent,
+    mark_rebus_needs_recompose,
     count_available_rebuses,
     record_rebus_dispatch,
     update_rebus_dispatch_telegram_id,
@@ -4660,9 +4661,13 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
         object_key = str(entry.get("composed_image_object_key") or "")
         if not object_key:
             return False
+        # Тот же страж, что и в слоте: версия в адресе + сверка склейки с половинками.
+        from backend.rebus_generator import rebus_card_delivery_url
         try:
-            image_url = r2_public_url(object_key)
+            image_url = rebus_card_delivery_url(entry)
         except Exception:
+            return False
+        if not image_url:
             return False
         ok = await send_rebus_to_chat(context, compound_entry=entry, image_url=image_url, slot_date=slot_date,
                                       slot_hour=slot_hour, chat_id=uid, target_user_id=uid, held=held)
@@ -4680,7 +4685,9 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
         if not object_key:
             return False
         try:
-            image_url = r2_public_url(object_key)
+            # Версия содержимого в адресе — иначе Telegram отдаёт свою старую копию
+            # по неизменившемуся адресу (см. backend/r2_storage.py:r2_public_url).
+            image_url = r2_public_url(object_key, version=str(entry.get("image_version") or ""))
         except Exception:
             return False
         ok = await send_crossword_to_chat(context, crossword_entry=entry, image_url=image_url, slot_date=slot_date,
@@ -4823,7 +4830,8 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
         if not object_key:
             return False
         try:
-            image_url = r2_public_url(object_key)
+            # Версия содержимого в адресе — см. комментарий у кроссворда выше.
+            image_url = r2_public_url(object_key, version=str(entry.get("image_version") or ""))
         except Exception:
             return False
         ok = await send_article_quiz_to_chat(context, entry=entry, image_url=image_url,
@@ -31950,10 +31958,24 @@ async def _send_scheduled_rebuses(context: CallbackContext) -> None:
         logging.warning("rebus_slot: no composed image key compound_id=%s", compound_id)
         return
 
+    # Адрес несёт версию содержимого и строится только если склейка сходится с
+    # нынешними половинками. Пусто — карточку НЕ шлём: см. rebus_card_delivery_url.
+    from backend.rebus_generator import rebus_card_delivery_url
     try:
-        image_url = r2_public_url(object_key)
+        image_url = rebus_card_delivery_url(compound_entry)
     except Exception:
-        logging.warning("rebus_slot: r2_public_url failed key=%s", object_key, exc_info=True)
+        logging.warning("rebus_slot: delivery url failed key=%s", object_key, exc_info=True)
+        return
+    if not image_url:
+        # Карточка не сходится со своими половинками. Просто промолчать нельзя — это
+        # оставит её сломанной навсегда: снимаем со «сборки готово», и ночной пул
+        # (prepare_rebus_pool_job, 07:45) склеит её заново из нынешних половинок.
+        logging.warning("rebus_slot: card withheld compound_id=%s — отправлена на пересборку", compound_id)
+        try:
+            await asyncio.to_thread(mark_rebus_needs_recompose, compound_id)
+        except Exception:
+            logging.warning("rebus_slot: не смог пометить на пересборку compound_id=%s",
+                            compound_id, exc_info=True)
         return
 
     delivery_targets = await _collect_quiz_delivery_user_targets(context)
@@ -32123,10 +32145,58 @@ async def handle_rebus_answer_callback(update: Update, context: CallbackContext)
         )
 
 
+async def rebus_pregate_sweep_job(context: CallbackContext) -> None:
+    """Ночной разбор картинок, которым «принято» проставила миграция 03.08.2026, а не
+    владелец (225 штук). Машина смотрит порцию за ночь; всё, в чём она усомнилась,
+    уходит владельцу в очередь приёмки с кнопками, а не удаляется само.
+
+    Решение владельца 31.08.2026: «прогнать машиной, мне — только спорные»."""
+    try:
+        from backend.rebus_generator import sweep_pregate_rebus_components
+        result = await asyncio.to_thread(sweep_pregate_rebus_components)
+    except Exception:
+        logging.warning("rebus_pregate_sweep_job failed", exc_info=True)
+        return
+
+    to_owner = result.get("to_owner") or []
+    if to_owner:
+        # Спорное не копится молча: владелец узнаёт о нём в ту же ночь, и у него уже
+        # есть кнопки на экране приёмки.
+        try:
+            from backend.database import get_admin_telegram_ids
+            bot = context.bot if context is not None else (application.bot if application else None)
+            names = "\n".join(f"• {t}" for t in to_owner[:12])
+            text = (
+                f"🧩 <b>Картинки ребуса: {len(to_owner)} под вопросом</b>\n\n"
+                f"{names}{'…' if len(to_owner) > 12 else ''}\n\n"
+                "Их рисовали до появления проверки, и «принято» им проставила миграция, "
+                "а не ты. Машина посмотрела и усомнилась — пока не решишь, эти задания "
+                f"людям не уходят.\n\nОсталось разобрать: {result.get('backlog_left')}."
+            )
+            if bot is not None:
+                for admin_id in (get_admin_telegram_ids() or []):
+                    try:
+                        await bot.send_message(chat_id=int(admin_id), text=text,
+                                               parse_mode="HTML", reply_markup=_rebus_review_kb())
+                    except Exception:
+                        logging.warning("pregate sweep: DM failed admin_id=%s", admin_id, exc_info=True)
+        except Exception:
+            logging.warning("pregate sweep: owner notice failed", exc_info=True)
+
+
 async def prepare_rebus_pool_job(context: CallbackContext) -> None:
     """Startup + periodic: sync bank from code and fill composed image pool."""
     try:
-        from backend.rebus_generator import prepare_rebus_pool
+        from backend.rebus_generator import prepare_rebus_pool, fill_missing_rebus_image_versions
+        # Сначала — версии и отпечатки для всего, у чего их нет. Без версии карточка
+        # не выдаётся вовсе (иначе перерисовка не доедет до людей — Telegram кеширует
+        # по адресу), поэтому это не уборка «когда-нибудь», а условие работы пула.
+        try:
+            versions = await asyncio.to_thread(fill_missing_rebus_image_versions)
+            if any(versions.values()):
+                logging.info("rebus_pool_job versions: %s", versions)
+        except Exception:
+            logging.warning("rebus_pool_job: fill_missing_rebus_image_versions failed", exc_info=True)
         result = await asyncio.to_thread(prepare_rebus_pool, target_ready=REBUS_POOL_TARGET, max_attempts=40)
         logging.info("rebus_pool_job done: %s", result)
         # Всё, что нарисовалось, ждёт человека — молча копить эту очередь нельзя:
@@ -32167,10 +32237,19 @@ async def admin_rebus_send_command(update: Update, context: CallbackContext) -> 
         return
 
     object_key = str(compound_entry.get("composed_image_object_key") or "")
+    # Пробная отправка проходит тем же стражем, что и боевая: иначе владелец увидел бы
+    # на проверке не то, что уйдёт людям.
+    from backend.rebus_generator import rebus_card_delivery_url
     try:
-        image_url = r2_public_url(object_key)
+        image_url = rebus_card_delivery_url(compound_entry)
     except Exception as exc:
-        await status_msg.edit_text(f"r2_public_url failed: {exc}")
+        await status_msg.edit_text(f"адрес картинки не собрался: {exc}")
+        return
+    if not image_url:
+        await status_msg.edit_text(
+            "Карточка не отправлена: её склейка разошлась с половинками "
+            "(или у неё нет отпечатка). Нужна пересборка — /admin_rebus_pool."
+        )
         return
 
     import datetime as _dt
@@ -32545,6 +32624,7 @@ async def admin_rebus_recheck_command(update: Update, context: CallbackContext) 
         meanings = get_rebus_part_meanings()
         checked = 0
         bad: list[str] = []
+        unknown: list[str] = []      # судья не смог посмотреть — это НЕ приговор картинке
         reset = 0
         for row in rows:
             word = str(row.get("word") or "")
@@ -32560,12 +32640,18 @@ async def admin_rebus_recheck_command(update: Update, context: CallbackContext) 
             checked += 1
             mime = "image/webp" if key.endswith(".webp") else "image/png"
             verdict = run_image_depicts(bytes(img), word, meaning=meanings.get(word, ""), mime=mime)
+            if verdict.get("unknown"):
+                # Судья сам не ответил (нет ключа, сеть, кривой JSON). Картинку НЕ
+                # трогаем: снять её с ротации по нашей же поломке — это выдуманный
+                # приговор. Слово уходит в счётчик и в следующий прогон.
+                unknown.append(f"{word} ({verdict.get('reason') or '?'})")
+                continue
             if not verdict.get("ok"):
                 bad.append(f"{word} ({verdict.get('reason') or '?'})")
                 upsert_rebus_component_image(word, generation_status="failed",
                                              failure_reason=f"recheck vision: {verdict.get('reason') or ''}"[:500])
                 reset += reset_rebus_compounds_for_part(word)
-        return {"checked": checked, "bad": bad, "compounds_reset": reset}
+        return {"checked": checked, "bad": bad, "unknown": unknown, "compounds_reset": reset}
 
     try:
         result = await asyncio.to_thread(_recheck, limit, pregate)
@@ -32573,13 +32659,17 @@ async def admin_rebus_recheck_command(update: Update, context: CallbackContext) 
         await status_msg.edit_text(f"Error: {exc}")
         return
     bad = result.get("bad") or []
+    unknown = result.get("unknown") or []
     text = (
         f"✅ Перепроверено: {result.get('checked')}\n"
         f"🔴 Забраковано: {len(bad)}\n"
+        f"❔ Судья не смог посмотреть: {len(unknown)}\n"
         f"♻️ Слов на перекомпоновку: {result.get('compounds_reset')}\n"
     )
     if bad:
         text += "\nПлохие:\n" + "\n".join(f"• {b}" for b in bad[:25])
+    if unknown:
+        text += "\nНе просмотрено (нужен повторный прогон):\n" + "\n".join(f"• {b}" for b in unknown[:15])
     text += "\n\nЗапусти /admin_rebus_pool — перегенерит забракованные уже с vision-гейтом."
     await status_msg.edit_text(text[:4000])
 
@@ -35489,7 +35579,7 @@ async def _send_scheduled_article_quiz(context: CallbackContext) -> None:
         return
 
     try:
-        image_url = r2_public_url(object_key)
+        image_url = r2_public_url(object_key, version=str(entry.get("image_version") or ""))
     except Exception:
         logging.warning("aq_slot: r2_public_url failed key=%s", object_key, exc_info=True)
         return
@@ -35718,7 +35808,7 @@ async def admin_article_quiz_send_command(update: Update, context: CallbackConte
         return
 
     try:
-        image_url = r2_public_url(object_key)
+        image_url = r2_public_url(object_key, version=str(entry.get("image_version") or ""))
     except Exception as exc:
         await status_msg.edit_text(f"r2_public_url failed: {exc}")
         return
@@ -36057,7 +36147,7 @@ async def _send_scheduled_crossword(context: CallbackContext) -> None:
             logging.warning("cw_slot: no image key crossword_id=%s", crossword_id)
             continue
         try:
-            image_url = r2_public_url(object_key)
+            image_url = r2_public_url(object_key, version=str(entry.get("image_version") or ""))
         except Exception:
             logging.warning("cw_slot: r2_public_url failed key=%s", object_key, exc_info=True)
             continue
@@ -36272,7 +36362,7 @@ async def admin_crossword_send_command(update: Update, context: CallbackContext)
             await asyncio.to_thread(mark_crossword_send_failed, crossword_id)
             continue
         try:
-            image_url = r2_public_url(object_key)
+            image_url = r2_public_url(object_key, version=str(entry.get("image_version") or ""))
         except Exception as exc:
             last_error = f"r2_public_url failed: {exc}"
             await asyncio.to_thread(mark_crossword_send_failed, crossword_id)
@@ -46941,6 +47031,17 @@ def main():
             "cron",
             hour=7,
             minute=45,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Разбор до-гейтовых картинок (03:20, когда трафика нет) --
+        # 225 картинок получили «принято» от миграции 03.08.2026, а не от владельца.
+        # Машина смотрит по 25 за ночь; спорное уходит владельцу с кнопками той же
+        # ночью. Решение владельца 31.08.2026.
+        scheduler.add_job(
+            lambda: submit_async(rebus_pregate_sweep_job, CallbackContext(application=application)),
+            "cron",
+            hour=3,
+            minute=20,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         logging.info(
