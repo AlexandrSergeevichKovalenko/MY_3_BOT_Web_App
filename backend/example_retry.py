@@ -110,8 +110,18 @@ def count_open_defects() -> int:
 
 
 def _escalate(cur, unit_id: int, display: str, translation: str, why: str) -> None:
-    """Машина исчерпала себя — вопрос уходит человеку, в уже существующую очередь."""
-    judges = [{"verdict": "doubt", "category": "примеры не удалось переписать",
+    """Машина исчерпала себя — вопрос уходит человеку, в уже существующую очередь.
+
+    ⚠ КАТЕГОРИЯ ЗДЕСЬ — НЕ УКРАШЕНИЕ. По ней экран владельца понимает, о чём вопрос.
+    До 31.08.2026 стояла своя строка «примеры не удалось переписать», которой не знал
+    никто: `database.phrase_review_kind` не находил её среди своих и объявлял вопрос
+    ГРАММАТИЧЕСКИМ. Владелец видел заголовок «Судьи разошлись о грамматике», ни одного
+    варианта под ним и ни одного примера — при том, что спор был как раз о примерах.
+    Категория теперь та же, что у панели, а поле названо прямо: `examples`.
+    """
+    from backend.database import PANEL_REVIEW_CATEGORY
+    judges = [{"verdict": "doubt", "category": PANEL_REVIEW_CATEGORY,
+               "field": "examples", "voice": 0, "fix": "",
                "corrected": "", "why": f"{MAX_ATTEMPTS} попытки подряд: {why}"[:400]}]
     cur.execute("""INSERT INTO bt_3_phrase_review (unit_id, text, translation, judges, status)
                    VALUES (%s,%s,%s,%s::jsonb,'open') ON CONFLICT DO NOTHING;""",

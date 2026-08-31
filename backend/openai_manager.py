@@ -9871,7 +9871,12 @@ def run_translation_pair_check(*, german: str, russian: str, kind: str = "colloc
         "- An empty or nonsense Russian is wrong.\n"
         "- `why` MUST be written in RUSSIAN, in Cyrillic letters, one short sentence. "
         "Leave it empty when the pair is correct.\n"
-        "Answer STRICT JSON only: {\"ok\":true|false,\"why\":\"<RUSSIAN or empty>\"}"
+        "- When the pair is WRONG, `better` MUST hold the Russian that DOES mean the "
+        "German — the finished translation itself, nothing else: no comment, no "
+        "question, no explanation. Leave `better` empty only when you cannot name one, "
+        "and always leave it empty when the pair is correct.\n"
+        "Answer STRICT JSON only: {\"ok\":true|false,\"why\":\"<RUSSIAN or empty>\","
+        "\"better\":\"<RUSSIAN or empty>\"}"
     )
     try:
         client = build_sync_openai_client(api_key=api_key, timeout=15)
@@ -9905,8 +9910,13 @@ def run_translation_pair_check(*, german: str, russian: str, kind: str = "colloc
         return {"checked": False}
     if "ok" not in data:
         return {"checked": False}          # ответ не той формы — это «не спросили»
+    # `better` — готовый перевод, а не диагноз. Владелец 31.08.2026: «в немецком не
+    # говорят так — ну окей, а как говорят? Почему нет предложения как исправить?»
+    # Стоит он ноль: то же обращение, тот же ответ, одно дополнительное поле.
     return {"checked": True, "ok": bool(data.get("ok")),
-            "why": str(data.get("why") or "").strip()}
+            "why": str(data.get("why") or "").strip(),
+            "better": ("" if bool(data.get("ok"))
+                       else str(data.get("better") or "").strip()[:300])}
 
 
 def run_phrase_dispute_verdict(*, text: str, variants: list, translation: str = "",

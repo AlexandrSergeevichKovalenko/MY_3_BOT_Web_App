@@ -93,8 +93,17 @@ die Stirn». Only call the example wrong when it illustrates something ELSE enti
 Also NOT defects: style, register, a missing final full stop, a phrase given without
 context, a dictionary placeholder (jemanden, etwas, sich), regional but attested German.
 
+EVERY DEFECT MUST COME WITH THE CORRECTED TEXT. A verdict «this is not said in German»
+without saying what IS said is useless to the person who has to decide. Fill "fix":
+  headword   — the entry written the way German actually says it;
+  translation— the Russian that really means the German entry;
+  examples, meaning — leave "fix" empty: those are rebuilt by a separate step, and a
+               correction nobody can apply is worse than none.
+Leave "fix" empty ONLY when you genuinely cannot name a correct version. Never put a
+comment, a question or an explanation in "fix" — it is the finished text and nothing else.
+
 Answer STRICT JSON: {"defects":[{"field":"headword|translation|examples|meaning",
-"what":"<one short sentence in Russian>"}]}
+"what":"<one short sentence in Russian>","fix":"<corrected text or empty>"}]}
 An empty list means the entry is fine. When unsure, leave it out."""
 
 
@@ -109,14 +118,32 @@ def prod(var: str, service: str = "Postgres") -> str:
 
 
 def _fields(text: str):
-    """Поля дефектов из ответа. None — ответ не разобран, и это НЕ «чисто»."""
+    """Разбор ответа голоса: (поля, сводка словами, претензии по пунктам).
+
+    Поля = None — ответ не разобран, и это НЕ «чисто».
+
+    ПРЕТЕНЗИИ ВОЗВРАЩАЮТСЯ ПОШТУЧНО, а не одной строкой. Склейка через «; » была
+    придумана для колонки `reference`, где нужен человекочитаемый след, — но по дороге
+    к владельцу она уносила ДВЕ вещи: имя поля (о чём спор) и готовый вариант. Экран
+    после этого печатал «спор о карточке» над претензией к самой фразе, а исправить
+    перевод было нечем (разобрано с владельцем 31.08.2026).
+    """
     try:
         payload = json.loads(text)
     except (json.JSONDecodeError, TypeError):
-        return None, ""
+        return None, "", []
     defects = payload.get("defects") or []
-    return ({d.get("field") for d in defects if d.get("field")},
-            "; ".join(str(d.get("what") or "")[:90] for d in defects)[:400])
+    претензии = [
+        {"field": str(d.get("field") or ""),
+         "what": str(d.get("what") or "").strip()[:400],
+         # Готовый вариант. Пустой — значит голос его НЕ назвал; выдумывать за него
+         # нечего и нельзя, экран честно покажет претензию без кнопки.
+         "fix": str(d.get("fix") or "").strip()[:300]}
+        for d in defects if isinstance(d, dict) and d.get("field")
+    ]
+    return ({d["field"] for d in претензии},
+            "; ".join(d["what"][:90] for d in претензии)[:400],
+            претензии)
 
 
 class BudgetSpent(Exception):
@@ -179,32 +206,40 @@ class Panel:
                          + (usage.thoughts_token_count or 0)) * PRICE_GEMINI[1])
         return _fields(answer.text)
 
-    def judge(self, entry: dict) -> tuple[str, str]:
-        """(вердикт, пояснение). Голос, который не ответил, НЕ засчитывается молчанием."""
+    def judge(self, entry: dict) -> tuple[str, str, list]:
+        """(вердикт, пояснение, претензии по пунктам).
+
+        Голос, который не ответил, НЕ засчитывается молчанием. Третьим значением идут
+        претензии каждого голоса поштучно — с именем поля и готовым вариантом; они
+        уезжают владельцу, когда вердикт «спорное», и пропадать по дороге не имеют
+        права (см. `_fields`)."""
         if self.cost >= self.BUDGET_USD:
             raise BudgetSpent(f"потрачено ${self.cost:.2f} — потолок ${self.BUDGET_USD:.2f}")
         payload = json.dumps(entry, ensure_ascii=False)
-        votes, reasons = [], []
-        for asking in (lambda: self._openai_vote(MODEL_A, payload),
-                       lambda: self._openai_vote(MODEL_B, payload),
-                       lambda: self._gemini_vote(payload)):
+        votes, reasons, claims = [], [], []
+        for номер, asking in enumerate(
+                (lambda: self._openai_vote(MODEL_A, payload),
+                 lambda: self._openai_vote(MODEL_B, payload),
+                 lambda: self._gemini_vote(payload)), 1):
             for attempt in range(3):
                 try:
-                    fields, why = asking()
+                    fields, why, доводы = asking()
                     break
                 except Exception as exc:              # сеть, 429, срез ответа
                     if attempt == 2:
-                        fields, why = None, f"голос не ответил: {type(exc).__name__}"
+                        fields, why, доводы = None, f"голос не ответил: {type(exc).__name__}", []
                     time.sleep(2 + attempt * 3)
             votes.append(fields)
             if why:
                 reasons.append(why)
+            for довод in доводы:
+                claims.append({**довод, "voice": номер})
 
         answered = [v for v in votes if v is not None]
         if len(answered) < 2:
             # Меньше двух голосов — большинства не существует. Записать «чисто» здесь
             # значило бы выдать аварию за проверку.
-            return NOT_ASKED, "; ".join(reasons)[:400]
+            return NOT_ASKED, "; ".join(reasons)[:400], claims
         union = set().union(*answered)
         majority = {f for f in union if sum(1 for v in answered if f in v) >= 2}
         silent = sum(1 for v in answered if not v)
@@ -213,10 +248,49 @@ class Panel:
             # его дело: помечаем и показываем ему, но не переписываем.
             ours = majority & OUR_OWN_FIELDS
             verdict = DEFECT if ours else HUMANS_OWN
-            return verdict, f"{', '.join(sorted(majority))} :: " + "; ".join(reasons)[:300]
+            return (verdict,
+                    f"{', '.join(sorted(majority))} :: " + "; ".join(reasons)[:300],
+                    claims)
         if not union or silent >= 2:
-            return CLEAN, ""
-        return DISPUTED, "; ".join(reasons)[:400]
+            return CLEAN, "", []
+        return DISPUTED, "; ".join(reasons)[:400], claims
+
+    def проверить_вариант(self, *, поле: str, готовое: str, заголовок: str,
+                          перевод: str) -> dict:
+        """ВТОРОЙ ГОЛОС НА ГОТОВЫЙ ВАРИАНТ. Предложение судьи — тоже текст модели.
+
+        Владелец 31.08.2026: диагноз без исправления бесполезен. Но исправление,
+        которое никто не проверил, — это ровно то же самое, только опаснее: оно
+        выглядит как ответ и стоит на кнопке. Поэтому предложение сверяется парной
+        проверкой смысла (`openai_manager.run_translation_pair_check`, gpt-4.1-mini,
+        ≈$0.0001): означает ли русский эту немецкую фразу.
+
+        Три состояния и ни одного молчаливого: годится / не годится / спросить не
+        удалось. Последнее НЕ притворяется ни первым, ни вторым — кнопку не рисуем,
+        но и обвинить вариант не в чем.
+        """
+        готовое = str(готовое or "").strip()
+        if not готовое or поле not in ("headword", "translation"):
+            return {}
+        de = готовое if поле == "headword" else str(заголовок or "").strip()
+        ru = готовое if поле == "translation" else str(перевод or "").strip()
+        if not de or not ru:
+            return {}
+        from backend.openai_manager import _LAST_LLM_USAGE, run_translation_pair_check
+        try:
+            ответ = run_translation_pair_check(german=de, russian=ru)
+        except Exception as exc:
+            return {"state": "unknown", "why": f"проверить не удалось: {type(exc).__name__}"}
+        # ⛔ ЭТОТ ЗАПРОС ТОЖЕ ПЛАТНЫЙ, и не учесть его — значит построить потолок расхода
+        # на заниженной арифметике. Один раз это уже стоило разницы между счётчиком
+        # ($5.83) и счётом Google (€8.28), см. рамку в `_gemini_vote`.
+        usage = _LAST_LLM_USAGE.get() or {}
+        self.cost += (int(usage.get("prompt_tokens") or 0) * PRICE_OPENAI[MODEL_B][0]
+                      + int(usage.get("completion_tokens") or 0) * PRICE_OPENAI[MODEL_B][1])
+        if not ответ.get("checked"):
+            return {"state": "unknown", "why": "проверить не удалось"}
+        return ({"state": "ok", "why": ""} if ответ.get("ok")
+                else {"state": "bad", "why": str(ответ.get("why") or "")[:300]})
 
 
 def main() -> int:
@@ -249,20 +323,32 @@ def main() -> int:
     tally: dict[str, int] = {}
     started = time.time()
     done = 0
+    отдано = 0          # сколько спорных карточек ушло владельцу вопросом
 
     def one(row):
         unit_id, display, kind, card = row
+        перевод = str((card or {}).get("translation_ru") or "")
         entry = {"headword": display, "kind": kind,
                  "translation": (card or {}).get("translation_ru"),
                  "saved_meaning": (card or {}).get("translation_ru"),
                  "examples": (card or {}).get("usage_examples")}
         try:
-            verdict, why = panel.judge(entry)
+            verdict, why, claims = panel.judge(entry)
         except BudgetSpent as stop:
             # Отметку НЕ ставим: карточку не проверяли. Она останется в остатке и
             # достанется следующему запуску — это честнее, чем записать «чисто».
-            return unit_id, display, None, str(stop)
-        return unit_id, display, verdict, why
+            return unit_id, display, None, str(stop), [], перевод
+        if verdict == DISPUTED:
+            # Готовый вариант проверяем ВТОРЫМ ГОЛОСОМ — но только у спорных карточек:
+            # это 2,5% прохода, и лишний запрос на каждую из пяти тысяч мы не платим.
+            for claim in claims:
+                приговор = panel.проверить_вариант(
+                    поле=claim.get("field", ""), готовое=claim.get("fix", ""),
+                    заголовок=str(display or ""),
+                    перевод=перевод)
+                if приговор:
+                    claim["fix_check"] = приговор
+        return unit_id, display, verdict, why, claims, перевод
 
     stopped_by_budget = False
     # ⏱ Результаты берём ПО МЕРЕ ГОТОВНОСТИ, а не по порядку. Прежняя версия шла
@@ -271,7 +357,7 @@ def main() -> int:
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = [pool.submit(one, row) for row in rows]
         for future in as_completed(futures):
-            unit_id, display, verdict, why = future.result()
+            unit_id, display, verdict, why, claims, перевод = future.result()
             if verdict is None:
                 stopped_by_budget = True
                 continue
@@ -293,6 +379,14 @@ def main() -> int:
                                      "панель: gpt-4.1 + gpt-4.1-mini + gemini-3.6-flash",
                                      why[:400] or None))
                         conn.commit()
+                if verdict == DISPUTED:
+                    # ⛔ ВОПРОС ВЛАДЕЛЬЦУ ЗАВОДИТСЯ ЗДЕСЬ ЖЕ, а не отдельным прогоном.
+                    # Отдельный шаг (`dict_panel_disputes_to_owner.py`) читал из базы
+                    # только колонку `reference` — склеенную строку, — и именно там
+                    # терялись имя поля и готовый вариант. Здесь они ещё в руках.
+                    from backend.database import open_panel_card_question
+                    if open_panel_card_question(unit_id, display, перевод, claims):
+                        отдано += 1
             if done % 100 == 0:
                 speed = done / max(time.time() - started, 1)
                 left = (len(rows) - done) / max(speed, 0.001) / 60
@@ -301,6 +395,9 @@ def main() -> int:
     print("\n— ИТОГ")
     for verdict, count in sorted(tally.items(), key=lambda kv: -kv[1]):
         print(f"   {verdict:16} {count:>6}  ({100*count/len(rows):.1f}%)")
+    if отдано:
+        print(f"\n   ушло владельцу вопросом: {отдано} "
+              f"(экран «Спорные фразы», с именем поля и готовым вариантом)")
     print(f"\n   потрачено: ${panel.cost:.2f} из потолка ${Panel.BUDGET_USD:.2f},"
           f" время {(time.time()-started)/60:.0f} мин")
     if stopped_by_budget:

@@ -25651,6 +25651,106 @@ TRANSLATION_REVIEW_CATEGORY = "перевод карточки"
 CARD_REVIEW_CATEGORIES = {PANEL_REVIEW_CATEGORY, TRANSLATION_REVIEW_CATEGORY}
 
 
+def open_panel_card_question(unit_id: int, text: str, translation: str,
+                             claims: list) -> bool:
+    """Спорная карточка уходит владельцу — С ИМЕНЕМ ПОЛЯ И ГОТОВЫМ ВАРИАНТОМ.
+
+    ┌─ ЗАВЕДЕНО 31.08.2026 ПО РАЗБОРУ С ВЛАДЕЛЬЦЕМ. ───────────────────────────────┐
+    │ Экран печатал над КАЖДОЙ такой карточкой «Спор о карточке, а не о фразе» —    │
+    │ и над той, где голоса спорили как раз о самой фразе. Врал не экран: панель    │
+    │ судит четыре поля (заголовок, перевод, примеры, значение), а по дороге сюда   │
+    │ имя поля выбрасывалось и оставалась одна склеенная строка. Владелец 31.08:    │
+    │ «как можно понять, что здесь нужно откорректировать?»                          │
+    │ Второе, что выбрасывалось, — готовый вариант: его вообще не спрашивали.       │
+    └──────────────────────────────────────────────────────────────────────────────┘
+
+    Одна претензия = одна запись в `judges`: поле, слова, готовый вариант и приговор
+    второго голоса этому варианту. Ничего не склеиваем и не досочиняем: чего голос не
+    сказал, того здесь нет.
+
+    Возвращает True, если вопрос заведён. False — если по этой единице уже открыт
+    вопрос (уникальный индекс на status='open'): второй раз владельцу одно и то же
+    не показываем.
+    """
+    судьи = []
+    for claim in (claims or []):
+        if not isinstance(claim, dict):
+            continue
+        слова = str(claim.get("what") or "").strip()
+        поле = str(claim.get("field") or "").strip()
+        if not слова and not поле:
+            continue
+        запись = {
+            "verdict": "doubt",
+            "category": PANEL_REVIEW_CATEGORY,
+            "voice": int(claim.get("voice") or 0),
+            "field": поле,
+            "why": слова[:1000],
+            # Готовый вариант и приговор ему. Пусто — значит голос его не назвал; на
+            # экране будет претензия без кнопки, а не выдуманная кнопка.
+            "fix": str(claim.get("fix") or "").strip()[:300],
+            "corrected": "", "proposal": "",
+        }
+        приговор = claim.get("fix_check")
+        if isinstance(приговор, dict) and приговор.get("state"):
+            запись["fix_check"] = {"state": str(приговор.get("state")),
+                                   "why": str(приговор.get("why") or "")[:300]}
+        судьи.append(запись)
+    if not судьи:
+        # Спор без единой названной претензии — это не вопрос к человеку, а пустой
+        # звонок. Заводить его значит тратить его касание ни на что.
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            # Вид называем ЯВНО, а не оставляем триггеру: этот вопрос всегда про
+            # карточку, и в запросе это должно быть видно глазами (правило и страж —
+            # `docs/tasks/phrase_review_kinds.md`, `test_phrase_review_kind_is_named`).
+            cursor.execute(
+                """INSERT INTO bt_3_phrase_review
+                       (unit_id, text, translation, judges, kind, status)
+                   VALUES (%s, %s, %s, %s::jsonb, 'panel', 'open')
+                   ON CONFLICT DO NOTHING;""",
+                (int(unit_id), str(text or "")[:500], str(translation or "")[:500],
+                 json.dumps(судьи, ensure_ascii=False)))
+            добавлено = bool(cursor.rowcount)
+        conn.commit()
+    return добавлено
+
+
+def phrase_review_dispute(judges: list, default_field: str = "") -> dict:
+    """О ЧЁМ СПОР — в том виде, в каком это читает экран.
+
+    Возвращает {"fields": [...], "claims": [...]}: какие поля карточки под вопросом и
+    что сказал каждый голос — поштучно, с готовым вариантом и приговором ему.
+
+    ⚠ ПУСТОЙ `fields` — ЭТО НЕ «СПОР О КАРТОЧКЕ». Это «мы не знаем, о чём спор»: так
+    лежат вопросы, заведённые до 31.08.2026, когда имя поля терялось по дороге. Экран
+    обязан говорить об этом честно, а не подставлять правдоподобный заголовок: старые
+    записи владелец решил не переписывать (31.08.2026), и они будут встречаться.
+    """
+    поля, claims = [], []
+    for n, j in enumerate(judges if isinstance(judges, list) else [], 1):
+        if not isinstance(j, dict):
+            continue
+        # `default_field` — НЕ догадка: у вопроса о переводе предмет спора задан самим
+        # видом вопроса (его заводит проверка пары «немецкое ↔ русское»). Он нужен
+        # старым записям, где отдельного поля ещё не писали.
+        поле = str(j.get("field") or "").strip() or str(default_field or "").strip()
+        if поле and поле not in поля:
+            поля.append(поле)
+        claims.append({
+            "no": n,
+            "voice": int(j.get("voice") or 0),
+            "field": поле,
+            "why": str(j.get("why") or "").strip(),
+            "fix": str(j.get("fix") or "").strip(),
+            "fix_check": (j.get("fix_check")
+                          if isinstance(j.get("fix_check"), dict) else None),
+        })
+    return {"fields": поля, "claims": claims}
+
+
 def phrase_review_kind(judges: list) -> str:
     """Какой это вопрос: "grammar" | "panel" | "translation".
 

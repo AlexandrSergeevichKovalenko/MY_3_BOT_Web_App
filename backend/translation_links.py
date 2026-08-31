@@ -124,7 +124,8 @@ def _link_translation(unit_id: int, russian: str) -> bool:
         return False
 
 
-def _ask_owner(unit_id: int, display: str, russian: str, why: str) -> bool:
+def _ask_owner(unit_id: int, display: str, russian: str, why: str,
+               better: str = "") -> bool:
     """Перевод не прошёл проверку — вопрос владельцу, в его очередь карточек словаря.
 
     Ложится в ту же таблицу, что и споры о грамматике, но со своей категорией: экран по
@@ -133,7 +134,14 @@ def _ask_owner(unit_id: int, display: str, russian: str, why: str) -> bool:
     куда надо не забыть заглянуть."""
     from backend.database import TRANSLATION_REVIEW_CATEGORY, get_db_connection_context
 
+    # ⛔ ДИАГНОЗ БЕЗ ГОТОВОГО ВАРИАНТА — НЕ ОТВЕТ. Владелец 31.08.2026: «в немецком не
+    # говорят так — ну окей, а как говорят?» Проверка теперь возвращает и правильный
+    # русский (`run_translation_pair_check` → `better`), и он едет сюда: на экране это
+    # кнопка в одно касание, а не задача «догадайся сам».
+    # Поле названо прямо: экран по нему пишет, О ЧЁМ спор, и больше не сочиняет заголовок.
     judges = [{"verdict": "doubt", "category": TRANSLATION_REVIEW_CATEGORY,
+               "field": "translation", "voice": 0,
+               "fix": str(better or "").strip()[:300],
                "corrected": "", "proposal": "",
                "why": (why or "Проверка не подтвердила, что этот русский означает эту фразу.")[:400]}]
     try:
@@ -184,7 +192,8 @@ def promote_card_translations(*, limit: int | None = None,
                 report["поднято"] += 1
             continue
         if _ask_owner(row["unit_id"], row["display"], row["translation"],
-                      str(verdict.get("why") or "")):
+                      str(verdict.get("why") or ""),
+                      str(verdict.get("better") or "")):
             report["ушло владельцу"] += 1
     report["потрачено"] = round(report["потрачено"], 4)
     report["осталось"] = count_units_missing_ru_link()
