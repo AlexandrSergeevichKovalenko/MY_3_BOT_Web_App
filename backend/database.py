@@ -36657,6 +36657,7 @@ def list_user_vocabulary(
     updated_since=None,
     source_id: int | None = None,
     origin_group: str | None = None,
+    card_ids: list[int] | None = None,
 ) -> dict:
     """Return paginated vocabulary entries with SRS state for the library view.
 
@@ -36676,6 +36677,18 @@ def list_user_vocabulary(
     if source_id is not None:
         conditions.append("q.source_id = %s")
         params.append(int(source_id))
+
+    # Отбор по конкретным карточкам — им пользуется сборка PDF: печатаем ровно то, что
+    # человек отметил, и берём тексты ИЗ БАЗЫ этой же функцией, а не из присланного
+    # браузером. Иначе в PDF попало бы то, что подменили на клиенте, и он разошёлся бы
+    # с экраном (заголовок собирает compose_german_headword ниже — один на оба пути).
+    if card_ids is not None:
+        clean_ids = [int(value) for value in card_ids if int(value or 0) > 0]
+        if not clean_ids:
+            conditions.append("FALSE")
+        else:
+            conditions.append("q.id = ANY(%s)")
+            params.append(clean_ids)
 
     normalized_origin_group = str(origin_group or "").strip().lower()
     if normalized_origin_group:

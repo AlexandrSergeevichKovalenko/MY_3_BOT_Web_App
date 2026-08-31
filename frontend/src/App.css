@@ -8315,10 +8315,10 @@ body:has(.webapp-page.is-theme-light),
 /* "Learn" — white fill, other buttons — translucent white */
 .vocab-sel-tab.is-learn { background: #ffffff; color: #4f46e5; }
 .vocab-sel-tab.is-learn:hover:not(:disabled) { background: #ffffff; color: #4338ca; }
-.vocab-sel-tab.is-reset,
+.vocab-sel-tab.is-pdf,
 .vocab-sel-tab.is-move,
 .vocab-sel-tab.is-delete { background: rgba(255,255,255,0.16); color: #ffffff; }
-.vocab-sel-tab.is-reset:hover:not(:disabled),
+.vocab-sel-tab.is-pdf:hover:not(:disabled),
 .vocab-sel-tab.is-move:hover:not(:disabled),
 .vocab-sel-tab.is-delete:hover:not(:disabled) { background: rgba(255,255,255,0.26); }
 .vocab-sel-tab:disabled { opacity: 0.5; cursor: default; }
@@ -30610,6 +30610,24 @@ html[data-scheme="light"] .story-modal-guess-answer,
   font-size:10px; font-weight:600; margin-left:auto; flex:0 0 auto;
   color:var(--dmps-text-secondary,#94a3b8);
 }
+/* Крестик «снять выбор». Он стоит у счётчика, а не в ряду действий: это не действие
+   над словами, а отмена выбора, и место в ряду отдано PDF (решение владельца 31.08.2026). */
+.vocab-selection-clear{
+  margin-left:auto; flex:0 0 auto;
+  width:22px; height:22px; padding:0; border:0; border-radius:50%;
+  display:inline-flex; align-items:center; justify-content:center;
+  font-size:12px; line-height:1; cursor:pointer;
+  background:rgba(148,163,184,0.16); color:var(--dmps-text-secondary,#cbd5e1);
+  -webkit-tap-highlight-color:transparent;
+}
+.webapp-page.is-theme-light .vocab-selection-clear{ background:rgba(0,0,0,0.06); color:#5b6472; }
+.vocab-selection-clear:active:not(:disabled){ transform:scale(0.92); }
+.vocab-selection-clear:disabled{ opacity:.4; cursor:default; }
+.vocab-selection-clear:focus-visible{ outline:2px solid var(--vlib-acc,#6366F1); outline-offset:2px; }
+/* Когда идёт загрузка выборки, надпись «загрузка…» и крестик делят правый край. */
+.webapp-dictionary .vocab-selection-toolbar .vocab-selection-loading + .vocab-selection-clear{
+  margin-left:6px;
+}
 /* 4 действия — равные кнопки во всю ширину (иконка над подписью) */
 .webapp-dictionary .vocab-selection-toolbar .vocab-sel-tabs{
   display:flex; gap:6px;
@@ -30639,6 +30657,8 @@ html[data-scheme="light"] .story-modal-guess-answer,
 .webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab.is-learn{
   background:var(--vlib-acc); border-color:transparent; color:#fff;
 }
+/* PDF — обычное действие ряда, цвет наследует от .vocab-sel-tab. Отдельного акцента
+   ему не даём: главное действие на панели одно — «Учить». */
 /* деструктивное = «Удалить» */
 .webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab.is-delete{
   color:#e0556a; border-color:rgba(244,63,94,0.30); background:rgba(244,63,94,0.10);
