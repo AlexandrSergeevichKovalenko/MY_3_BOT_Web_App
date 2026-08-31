@@ -45254,12 +45254,13 @@ function AppInner() {
                             }}
                           />
                           <span>
+                            {/* Только слово — и ничего больше. Здесь стояло правило
+                                «с артиклем, если существительное»: условие человек
+                                проверить не может, к делу оно не относится и просто
+                                засоряло экран (владелец, 31.08.2026). Логику сохранения
+                                эта подпись не трогает и трогать не должна. */}
                             {getSelectionGptWordText()
-                              ? tr(
-                                `Слово «${getSelectionGptWordText()}» — с артиклем, если существительное`,
-                                `Wort „${getSelectionGptWordText()}“ — mit Artikel, falls Nomen`
-                              )
-                              : tr('Оригинальное слово (с артиклем, если это существительное)', 'Originalwort (mit Artikel, falls es ein Nomen ist)')}
+                              || tr('Оригинальное слово', 'Originalwort')}
                           </span>
                         </label>
                         <div className="webapp-gpt-save-actions">
