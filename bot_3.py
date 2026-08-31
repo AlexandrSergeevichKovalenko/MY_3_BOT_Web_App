@@ -720,6 +720,59 @@ def _drop_dictionary_pending_state(state_key: str) -> None:
     delete_pending_telegram_input_state(state_key=key)
 
 
+def _log_dictionary_state_miss(*, button: str, state_key: str, query, recovered: bool) -> None:
+    """Кнопка под карточкой словаря не нашла своего состояния — пишем строку.
+
+    Зачем. 31.08.2026 состояние переехало из памяти бота в таблицу, и «Варианты
+    устарели» должно было исчезнуть. Проверить это можно только числом: пока промахи
+    нигде не считались, дыра выглядела бы точно так же, как её отсутствие.
+
+    recovered=yes — строки в таблице не было, но варианты собрались из текста самой
+    карточки; человек ничего не заметил. Так живут карточки, отправленные до переезда.
+    recovered=no  — человеку сказано «устарело», сохранить он не смог. ЭТО дефект.
+
+    age_min отличает архивную карточку от свежей: промах на карточке возрастом в
+    минуты и есть настоящая дыра, промах на месячной — истёкший срок хранения.
+
+    Читать так:
+        railway logs -s MY_3_BOT | grep dictionary_state_miss | grep recovered=no
+    """
+    from datetime import timezone as _tz  # в модуле импортирован только datetime
+
+    age_min = "unknown"
+    sent_at = getattr(getattr(query, "message", None), "date", None)
+    if isinstance(sent_at, datetime) and sent_at.tzinfo is not None:
+        age_min = str(int((datetime.now(_tz.utc) - sent_at).total_seconds() // 60))
+    user = getattr(query, "from_user", None)
+    line = (
+        "dictionary_state_miss button=%s key=%s user_id=%s recovered=%s age_min=%s"
+    )
+    args = (
+        str(button or "").strip(),
+        str(state_key or "").strip(),
+        int(getattr(user, "id", 0) or 0),
+        "yes" if recovered else "no",
+        age_min,
+    )
+    if recovered:
+        logging.info(line, *args)
+    else:
+        logging.warning(line, *args)
+
+
+def _load_dictionary_save_options(query, option_key: str, *, button: str) -> dict | None:
+    """Варианты сохранения для кнопки: из таблицы, а если строки нет — из текста
+    карточки, которую человек видит на экране. Каждый промах уходит в лог."""
+    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
+    if payload:
+        return payload
+    payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    _log_dictionary_state_miss(
+        button=button, state_key=option_key, query=query, recovered=bool(payload),
+    )
+    return payload
+
+
 class _ReplyTextAdapter:
     def __init__(self, bot, chat_id: int, reply_to_message_id: int | None = None):
         self._bot = bot
@@ -22409,6 +22462,7 @@ async def handle_dictionary_feel_callback(update: Update, context: CallbackConte
     card_key = parts[1].strip()
     payload = _get_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD)
     if not payload:
+        _log_dictionary_state_miss(button="card_feel", state_key=card_key, query=query, recovered=False)
         await query.answer("Карточка устарела. Запросите перевод заново.", show_alert=True)
         return
 
@@ -22552,6 +22606,7 @@ async def handle_dictionary_speak_callback(update: Update, context: CallbackCont
     card_key = parts[1].strip()
     payload = _get_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD)
     if not payload:
+        _log_dictionary_state_miss(button="card_speak", state_key=card_key, query=query, recovered=False)
         await query.answer("Карточка устарела. Запросите перевод заново.", show_alert=True)
         return
 
@@ -23133,7 +23188,9 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
                 "original_query": str(options[0].get("source") or "").strip(),
             }
             _put_dictionary_pending_state(key, PENDING_INPUT_STATE_DICTIONARY_CARD, payload)
+            _log_dictionary_state_miss(button="card_save", state_key=key, query=query, recovered=True)
     if not payload:
+        _log_dictionary_state_miss(button="card_save", state_key=key, query=query, recovered=False)
         await query.answer("Эта карточка уже недоступна. Запросите перевод ещё раз.", show_alert=True)
         return
 
@@ -23223,9 +23280,7 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
         await query.answer("Неверный индекс варианта.", show_alert=True)
         return
 
-    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
-    if not payload:
-        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    payload = _load_dictionary_save_options(query, option_key, button="save_option")
     if not payload:
         await query.answer("Варианты устарели. Нажмите сохранить ещё раз.", show_alert=True)
         return
@@ -23806,9 +23861,7 @@ async def handle_dictionary_select_toggle_callback(update: Update, context: Call
         await query.answer("Неверный индекс варианта.", show_alert=True)
         return
 
-    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
-    if not payload:
-        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    payload = _load_dictionary_save_options(query, option_key, button="select_toggle")
     if not payload:
         await query.answer("Варианты устарели. Запросите снова.", show_alert=True)
         return
@@ -23855,9 +23908,7 @@ async def handle_dictionary_select_all_callback(update: Update, context: Callbac
         await query.answer("Неверный формат.", show_alert=True)
         return
     option_key = parts[1].strip()
-    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
-    if not payload:
-        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    payload = _load_dictionary_save_options(query, option_key, button="select_all")
     if not payload:
         await query.answer("Варианты устарели. Запросите снова.", show_alert=True)
         return
@@ -23976,9 +24027,7 @@ async def handle_dictionary_save_confirm_callback(update: Update, context: Callb
         await query.answer("Неверный формат.", show_alert=True)
         return
     option_key = parts[1].strip()
-    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
-    if not payload:
-        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    payload = _load_dictionary_save_options(query, option_key, button="save_confirm")
     if not payload:
         await query.answer("Варианты устарели. Запросите снова.", show_alert=True)
         return
@@ -24011,13 +24060,7 @@ async def handle_dictionary_quick_save_callback(update: Update, context: Callbac
 
     option_key = parts[1].strip()
     selector = parts[2].strip().lower()
-    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
-    if not payload:
-        # Карточки, отправленные ДО переезда состояния в базу (31.08.2026), строки в
-        # таблице не имеют. Пять соседних кнопок уже умели восстанавливать варианты из
-        # текста самой карточки — эта единственная не умела, и именно на ней человек
-        # получал «Варианты устарели». Восстанавливаем так же: читаем то, что видит он.
-        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    payload = _load_dictionary_save_options(query, option_key, button="quick_save")
     if not payload:
         await query.answer("Варианты устарели. Запросите перевод снова.", show_alert=True)
         return
@@ -24085,9 +24128,7 @@ async def handle_dictionary_folder_callback(update: Update, context: CallbackCon
         await query.answer("Неверный формат кнопки.", show_alert=True)
         return
     option_key = parts[1].strip()
-    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
-    if not payload:
-        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    payload = _load_dictionary_save_options(query, option_key, button="folder_open")
     if not payload:
         await query.answer("Варианты устарели. Запросите перевод снова.", show_alert=True)
         return
@@ -24128,6 +24169,7 @@ async def handle_dictionary_folder_back_callback(update: Update, context: Callba
     option_key = parts[1].strip()
     payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
     if not payload:
+        _log_dictionary_state_miss(button="folder_back", state_key=option_key, query=query, recovered=False)
         await query.answer("Карточка уже устарела.", show_alert=True)
         return
     try:
@@ -24150,6 +24192,7 @@ async def handle_dictionary_folder_pick_callback(update: Update, context: Callba
     selector = parts[2].strip()
     payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
     if not payload:
+        _log_dictionary_state_miss(button="folder_pick", state_key=option_key, query=query, recovered=False)
         await query.answer("Карточка уже устарела.", show_alert=True)
         return
     user = query.from_user
@@ -24200,6 +24243,7 @@ async def handle_dictionary_folder_pick_callback(update: Update, context: Callba
 
     updated_payload = _update_pending_dictionary_folder_payload(option_key, folder_payload)
     if not updated_payload:
+        _log_dictionary_state_miss(button="folder_pick_apply", state_key=option_key, query=query, recovered=False)
         await query.answer("Карточка уже устарела.", show_alert=True)
         return
     try:
@@ -24221,6 +24265,7 @@ async def handle_dictionary_folder_new_callback(update: Update, context: Callbac
     option_key = parts[1].strip()
     payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
     if not payload:
+        _log_dictionary_state_miss(button="folder_new", state_key=option_key, query=query, recovered=False)
         await query.answer("Карточка уже устарела.", show_alert=True)
         return
     user = query.from_user

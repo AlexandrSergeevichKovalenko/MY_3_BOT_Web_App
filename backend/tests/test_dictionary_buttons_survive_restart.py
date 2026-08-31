@@ -14,7 +14,9 @@
 import asyncio
 import contextlib
 import json
+import logging
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -55,7 +57,8 @@ def _table(store):
 
 
 class _FakeMessage:
-    def __init__(self, text=""):
+    def __init__(self, text="", date=None):
+        self.date = date
         self.text = text
         self.caption = ""
         self.chat_id = 777
@@ -68,10 +71,10 @@ class _FakeMessage:
 
 
 class _FakeQuery:
-    def __init__(self, data, uid=5, text=""):
+    def __init__(self, data, uid=5, text="", sent_at=None):
         self.data = data
         self.from_user = SimpleNamespace(id=uid)
-        self.message = _FakeMessage(text)
+        self.message = _FakeMessage(text, date=sent_at)
         self.answers = []
         self.markups = []
 
@@ -173,6 +176,89 @@ class DictionaryButtonsSurviveRestartTests(unittest.TestCase):
             ))
         self.assertNotIn("Варианты устарели. Запросите перевод снова.", q.answers)
         self.assertEqual(q.labels()[-1], "✅ Сохранено")
+
+
+class DictionaryStateMissIsCountedTests(unittest.TestCase):
+    """Промах кнопки обязан оставлять строку в логе.
+
+    Пока промахи нигде не считались, «дыра осталась» и «дыры нет» выглядели
+    одинаково. Строка отвечает на этот вопрос числом, а recovered= отделяет
+    незаметное для человека восстановление от настоящего отказа.
+    """
+
+    def test_refusal_writes_recovered_no(self):
+        store = _FakeStateTable()
+        q = _FakeQuery("dictquicksave:opt-gone:0", text="ничего похожего на карточку")
+        with _table(store), self.assertLogs(level=logging.WARNING) as logs:
+            asyncio.run(bot_3.handle_dictionary_quick_save_callback(
+                SimpleNamespace(callback_query=q), None,
+            ))
+        line = [x for x in logs.output if "dictionary_state_miss" in x]
+        self.assertEqual(len(line), 1, logs.output)
+        self.assertIn("button=quick_save", line[0])
+        self.assertIn("key=opt-gone", line[0])
+        self.assertIn("recovered=no", line[0])
+        self.assertIn("user_id=5", line[0])
+        # человеку при этом сказано словами, а не молча
+        self.assertIn("Варианты устарели. Запросите перевод снова.", q.answers)
+
+    def test_silent_recovery_writes_recovered_yes(self):
+        store = _FakeStateTable()
+        q = _FakeQuery("dictquicksave:opt-old:0", text=_CARD_TEXT)
+        with _table(store), \
+             patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={}), \
+             patch.object(bot_3, "_save_dictionary_option_for_user",
+                          return_value=(True, "ok", 1, True)), \
+             self.assertLogs(level=logging.INFO) as logs:
+            asyncio.run(bot_3.handle_dictionary_quick_save_callback(
+                SimpleNamespace(callback_query=q), None,
+            ))
+        line = [x for x in logs.output if "dictionary_state_miss" in x]
+        self.assertEqual(len(line), 1, logs.output)
+        self.assertIn("recovered=yes", line[0])
+        self.assertNotIn("Варианты устарели. Запросите перевод снова.", q.answers)
+
+    def test_line_carries_the_age_of_the_card(self):
+        # Возраст отличает свежую карточку (настоящая дыра) от архивной (истёк срок).
+        store = _FakeStateTable()
+        sent_at = datetime.now(timezone.utc) - timedelta(minutes=13)
+        q = _FakeQuery("dictquicksave:opt-gone:0", text="не карточка", sent_at=sent_at)
+        with _table(store), self.assertLogs(level=logging.WARNING) as logs:
+            asyncio.run(bot_3.handle_dictionary_quick_save_callback(
+                SimpleNamespace(callback_query=q), None,
+            ))
+        line = [x for x in logs.output if "dictionary_state_miss" in x][0]
+        self.assertIn("age_min=13", line)
+
+    def test_hit_writes_nothing(self):
+        # Строка обязана появляться ТОЛЬКО на промахе: иначе её число ничего не значит.
+        caught = []
+
+        class _Catch(logging.Handler):
+            def emit(self, record):
+                caught.append(record.getMessage())
+
+        handler = _Catch()
+        root = logging.getLogger()
+        root.addHandler(handler)
+        previous_level = root.level
+        root.setLevel(logging.INFO)
+        try:
+            store = _FakeStateTable()
+            with _table(store):
+                bot_3._put_dictionary_pending_state(
+                    "opt-1", bot_3.PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS, _PAYLOAD,
+                )
+                q = _FakeQuery("dictquicksave:opt-1:0", text=_CARD_TEXT)
+                with patch.object(bot_3, "_save_dictionary_option_for_user",
+                                  return_value=(True, "ok", 1, True)):
+                    asyncio.run(bot_3.handle_dictionary_quick_save_callback(
+                        SimpleNamespace(callback_query=q), None,
+                    ))
+        finally:
+            root.removeHandler(handler)
+            root.setLevel(previous_level)
+        self.assertEqual([x for x in caught if "dictionary_state_miss" in x], [])
 
 
 if __name__ == "__main__":
