@@ -502,6 +502,8 @@ from backend.database import (
     get_dictionary_folders,
     get_or_create_dictionary_folder,
     get_or_create_dictionary_semantic_folder,
+    get_or_create_dictionary_source,
+    get_dictionary_sources_with_counts,
     normalize_dictionary_semantic_tag,
     update_webapp_dictionary_entry,
     get_dictionary_entry_by_id,
@@ -10805,6 +10807,68 @@ def _prepare_dictionary_response_json_for_save(
         payload, german_pos=str(payload.get("part_of_speech") or ""),
     )
     return payload
+
+
+def _folder_for_dictionary_save(
+    *,
+    folder_id: int | None,
+    folder_chosen_by_user: bool,
+    semantic_folder_id: int | None,
+) -> int | None:
+    """Куда лечь слову: в выбранную человеком папку или в тематическую.
+
+    ⚠ ДО 31.08.2026 ТЕМА ВЫБРАСЫВАЛА ЛЮБУЮ ПРИСЛАННУЮ ПАПКУ — и ту, что человек выбрал
+    руками, и автоматическую папку ролика. Замер по живой базе 31.08.2026: из 240 слов,
+    сохранённых из плеера, 215 уехали в тематические папки, а 16 папок роликов остались
+    пустыми — отсюда и жалоба «папки пустеют».
+
+    Правило теперь одно: автораспределение по теме работает там, где папку НИКТО не
+    назвал. Назвал человек — его выбор выигрывает («не решаем за пользователя»).
+    """
+    if folder_chosen_by_user:
+        return folder_id
+    if semantic_folder_id is not None:
+        return semantic_folder_id
+    return folder_id
+
+
+def _resolve_dictionary_source_for_save(payload: dict | None, user_id: int) -> int | None:
+    """Откуда человек взял слово: ролик, книга, статья.
+
+    Приходит в теле сохранения как {"source": {"kind", "key", "title"}}. `kind` и `key`
+    обязательны — без них источника нет; `title` необязателен: плеер не всегда отдаёт
+    заголовок, и пустое название честнее выдуманного «YouTube nLiOMh». Оно допишется в
+    любой следующий раз, когда заголовок придёт (см. get_or_create_dictionary_source).
+
+    Ключ — идентификатор ролика, а не дата просмотра: решение владельца 31.08.2026 —
+    один ролик остаётся одним источником, сколько бы раз его ни открывали.
+    """
+    body = payload if isinstance(payload, dict) else {}
+    raw = body.get("source")
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("kind") or "").strip().lower()
+    external_key = str(raw.get("key") or raw.get("external_key") or "").strip()
+    if not kind or not external_key:
+        return None
+    title = str(raw.get("title") or "").strip()
+    try:
+        source = get_or_create_dictionary_source(
+            user_id=int(user_id),
+            kind=kind,
+            external_key=external_key,
+            title=title or None,
+            title_source=str(raw.get("title_source") or "player").strip().lower() if title else None,
+        )
+    except Exception:
+        # Сохранение слова из-за источника не срывается: это подпись, а не сам ответ.
+        # Но и молча «как будто источника не было» не делаем — пишем в лог с данными.
+        logging.warning(
+            "Не смогли записать источник слова: user_id=%s kind=%s key=%s",
+            user_id, kind, external_key, exc_info=True,
+        )
+        return None
+    return int(source["id"]) if source and source.get("id") else None
 
 
 def _resolve_dictionary_semantic_folder_for_save(user_id: int, response_json: dict | None) -> tuple[str, int | None]:
@@ -22952,6 +23016,23 @@ def _build_multilang_dictionary_result(
         "register_examples",
         "common_mistakes",
         "false_friends",
+        # ⚠ ТЕМА КАРТОЧКИ. Найдено 31.08.2026: её здесь не было, и она терялась.
+        #
+        # Модель возвращает `semantic_category` вместе с секцией значений (см. промпт
+        # потока в openai_manager). Поток отдаёт секцию как есть — фронт её видит, — но
+        # событием `done` карточка пересобирается ЭТИМ сборщиком, и накопленное поле
+        # затиралось собранным без него. Дальше сохранение искало тему в response_json,
+        # не находило и клало слово мимо тематических папок.
+        #
+        # Замер по живой базе 31.08.2026: за сутки 44 слова из 68 сохранены без темы —
+        # всё, что шло через приложение (видео, читалка, быстрый словарь); сохранения из
+        # бота идут другим путём и не затронуты. За 26–30.08 таких слов было 0.
+        # Проверить снова: SELECT COUNT(*) FILTER (WHERE semantic_tag IS NULL OR
+        # semantic_tag = '') FROM bt_3_webapp_dictionary_queries WHERE created_at::date = …
+        #
+        # Значение здесь не проверяется намеренно: закрытый список тем сверяет
+        # normalize_dictionary_semantic_tag на сохранении, и чужое слово туда не пройдёт.
+        "semantic_category",
     )
     for key in passthrough_keys:
         value = raw.get(key)
@@ -52225,6 +52306,10 @@ def save_webapp_dictionary_entry():
     payload_origin_meta = payload.get("origin_meta")
     response_json = payload.get("response_json") or {}
     folder_id = payload.get("folder_id")
+    # Папку выбрал ЧЕЛОВЕК — значит, автораспределение по теме её не трогает (см. ниже,
+    # у semantic_folder_id). Флаг снимается ДО подстановки GENERAL: подставленный по
+    # умолчанию GENERAL выбором человека не является.
+    folder_chosen_by_user = folder_id is not None
 
     if not word_ru and not word_de and not source_text:
         return jsonify({"error": "word_ru или word_de или source_text обязателен"}), 400
@@ -52233,6 +52318,10 @@ def save_webapp_dictionary_entry():
     user_id = _resolve_webapp_user_id(payload)
     if not user_id:
         return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    # Откуда пришло слово: ролик, книга, статья. Тема — дом слова, источник — свойство
+    # (решение владельца 31.08.2026). Не пришло — остаётся None, ничего не выдумываем.
+    source_id = _resolve_dictionary_source_for_save(payload, user_id=int(user_id))
 
     profile_source_lang, profile_target_lang, _profile = _get_user_language_pair(int(user_id))
     source_lang, target_lang = _resolve_dictionary_save_pair(
@@ -52391,8 +52480,11 @@ def save_webapp_dictionary_entry():
         semantic_tag, semantic_folder_id = _resolve_dictionary_semantic_folder_for_save(int(user_id), response_json)
         if semantic_tag:
             response_json["semantic_category"] = semantic_tag
-            if semantic_folder_id is not None:
-                folder_id = semantic_folder_id
+            folder_id = _folder_for_dictionary_save(
+                folder_id=folder_id,
+                folder_chosen_by_user=folder_chosen_by_user,
+                semantic_folder_id=semantic_folder_id,
+            )
         existing_entry_id = get_existing_user_dictionary_entry_id_for_save(
             user_id=int(user_id),
             word_ru=resolved_word_ru if resolved_word_ru else None,
@@ -52456,6 +52548,7 @@ def save_webapp_dictionary_entry():
             origin_process=origin_process,
             origin_meta=origin_meta,
             semantic_tag=semantic_tag or None,
+            source_id=source_id,
         )
         if effective_mode == "free" and inserted and not save_is_free_of_charge:
             increment_free_feature_usage(
@@ -52543,6 +52636,12 @@ def save_mobile_dictionary_entry():
     payload_origin_meta = payload.get("origin_meta")
     response_json = payload.get("response_json") or {}
     folder_id = payload.get("folder_id")
+    # Папку выбрал ЧЕЛОВЕК — значит, автораспределение по теме её не трогает (см. ниже,
+    # у semantic_folder_id). Флаг снимается ДО подстановки GENERAL: подставленный по
+    # умолчанию GENERAL выбором человека не является.
+    folder_chosen_by_user = folder_id is not None
+    # Откуда пришло слово (ролик / книга / статья) — то же, что в /dictionary/save.
+    source_id = _resolve_dictionary_source_for_save(payload, user_id=int(user_id))
     profile_source_lang, profile_target_lang, _profile = _get_user_language_pair(int(user_id))
     source_lang, target_lang = _resolve_dictionary_save_pair(
         profile_source_lang=profile_source_lang,
@@ -52691,8 +52790,11 @@ def save_mobile_dictionary_entry():
         semantic_tag, semantic_folder_id = _resolve_dictionary_semantic_folder_for_save(int(user_id), response_json)
         if semantic_tag:
             response_json["semantic_category"] = semantic_tag
-            if semantic_folder_id is not None:
-                folder_id = semantic_folder_id
+            folder_id = _folder_for_dictionary_save(
+                folder_id=folder_id,
+                folder_chosen_by_user=folder_chosen_by_user,
+                semantic_folder_id=semantic_folder_id,
+            )
 
         entry_id = _save_dictionary_entry_with_schema_retry(
             user_id=user_id,
@@ -52707,6 +52809,7 @@ def save_mobile_dictionary_entry():
             origin_process=origin_process,
             origin_meta=origin_meta,
             semantic_tag=semantic_tag or None,
+            source_id=source_id,
         )
         _start_saved_dictionary_entry_enrichment(
             entry_id=int(entry_id or 0),
@@ -56610,6 +56713,17 @@ def webapp_vocabulary_list():
         except (TypeError, ValueError):
             pass
 
+    # Тема и источник — две РАЗНЫЕ оси отбора, и они складываются: «Природа» + «этот
+    # ролик» — законный запрос (решение владельца 31.08.2026).
+    raw_source = payload.get("source_id")
+    source_id = None
+    if raw_source is not None:
+        try:
+            source_id = int(raw_source)
+        except (TypeError, ValueError):
+            source_id = None
+    origin_group = str(payload.get("origin_group") or "").strip().lower() or None
+
     search = (payload.get("search") or "").strip() or None
     sort = str(payload.get("sort") or "date_desc").strip()
     limit = max(1, min(100, int(payload.get("limit") or 50)))
@@ -56625,6 +56739,8 @@ def webapp_vocabulary_list():
             limit=limit,
             offset=offset,
             updated_since=updated_since,
+            source_id=source_id,
+            origin_group=origin_group,
         )
         folders_data = get_vocabulary_folders_with_counts(user_id=user_id)
     except Exception as exc:
@@ -56638,6 +56754,26 @@ def webapp_vocabulary_list():
         is_admin = False
 
     return jsonify({"ok": True, **result, "folders_meta": folders_data, "is_admin": is_admin})
+
+
+@app.route("/api/webapp/dictionary/sources", methods=["POST"])
+def webapp_dictionary_sources():
+    """Список «Откуда» для словаря: ролики, книги и статьи + остальные поверхности.
+
+    Ролик показывается ПОЛНЫМ названием, каким человек видел его на экране: через два
+    месяца по идентификатору `nLiOMhqDvC8` не вспомнить ничего, а по заголовку — всё
+    (требование владельца 31.08.2026). Название, которого мы не знаем, приходит как
+    null — экран говорит об этом словами, а не подставляет идентификатор.
+    """
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    try:
+        data = get_dictionary_sources_with_counts(int(user_id))
+    except Exception as exc:
+        return _сбой_запроса(exc, что="webapp_dictionary_sources", код=500)
+    return jsonify({"ok": True, **data})
 
 
 @app.route("/api/webapp/vocabulary/pool-search", methods=["POST"])

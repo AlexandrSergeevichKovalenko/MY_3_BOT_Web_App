@@ -30393,7 +30393,7 @@ html[data-scheme="light"] .story-modal-guess-answer,
 }
 
 /* ── 2. Новый порядок блоков ──
-   поиск → всего/сортировка → папки(аккордеон) → слова/ещё/легенда
+   поиск → всего/показано → фильтры(тема·откуда·сортировка) → слова/ещё/легенда
    панель выборки уезжает вниз (плавающая, см. п.5) */
 .webapp-dictionary .vocab-library > .vocab-offline-banner    { order:-6; }
 .webapp-dictionary .vocab-library > .vocab-search-wrap       { order:-5; margin:0 0 2px; }
@@ -30409,103 +30409,169 @@ html[data-scheme="light"] .story-modal-guess-answer,
   height:46px; font-size:15px;
 }
 
-/* ── 3. Папки-аккордеон ── */
+/* ── 3. Ряд фильтров: тема · откуда · сортировка ──
+   Здесь была раскрытая панель папок (аккордеон + сетка карточек в две колонки без
+   предела по высоте). У владельца 43 папки — это ~22 ряда, и список слов начинался
+   ниже края экрана: на снимке 31.08.2026 видно ровно одно слово. Панель вместе со
+   своими стилями удалена, выбор живёт в нижнем листе .vocab-picker-sheet. */
 
-/* Шапка-строка «📂 Папки · активная ▾» */
-.webapp-dictionary .vocab-folder-acc-head{
-  width:100%;
-  display:flex; align-items:center; gap:10px;
-  height:46px; padding:0 13px;
-  border-radius:14px;
-  background:rgba(148,163,184,0.10);
-  border:1px solid var(--dmps-border,#334155);
-  cursor:pointer; font-family:inherit;
+.webapp-dictionary .vocab-filter-row{
+  display:grid;
+  grid-template-columns:repeat(3, minmax(0, 1fr));
+  gap:7px;
 }
-.webapp-page.is-theme-light .vocab-folder-acc-head{ background:rgba(0,0,0,0.04); }
-.webapp-dictionary .vocab-folder-acc-head .vfa-ic{
-  width:26px; height:26px; border-radius:8px; flex:0 0 auto;
-  display:flex; align-items:center; justify-content:center;
-  font-size:13px; color:#fff; background:var(--vlib-acc);
+.webapp-dictionary .vocab-fchip{
+  display:flex; align-items:center; gap:5px;
+  min-width:0; height:38px; padding:0 9px;
+  border:1px solid transparent; border-radius:12px;
+  background:rgba(148,163,184,0.12);
+  color:var(--dmps-text-secondary,#94a3b8);
+  font-size:12.5px; font-weight:600; text-align:left;
+  -webkit-tap-highlight-color:transparent;
+  transition:background .14s, color .14s, border-color .14s;
 }
-.webapp-dictionary .vocab-folder-acc-head .vfa-label{
-  flex:1; text-align:left; font-size:14px; font-weight:700;
-  color:var(--dmps-text-secondary,#cbd5e1);
+.webapp-page.is-theme-light .vocab-fchip{ background:rgba(0,0,0,0.05); color:#5b6472; }
+.webapp-dictionary .vocab-fchip .vfch-ic{ flex:0 0 auto; font-size:13px; line-height:1; }
+/* Название ролика длинное — обрезаем многоточием, а не переносим: кнопка обязана
+   остаться одной строкой, иначе ряд из трёх ломает высоту шапки. */
+.webapp-dictionary .vocab-fchip .vfch-val{
+  flex:1 1 auto; min-width:0;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
-.webapp-dictionary .vocab-folder-acc-head .vfa-label b{ color:var(--vlib-acc); }
-.webapp-dictionary .vocab-folder-acc-head .vfa-chev{
-  flex:0 0 auto; font-size:12px; font-weight:700;
-  color:var(--dmps-text-secondary,#94a3b8); opacity:0.75;
-}
-
-/* Разворачиваемая панель */
-.webapp-dictionary .vocab-folder-acc-panel{
-  margin-top:8px; padding:9px;
-  border:1px solid var(--dmps-border,#334155);
-  border-radius:16px;
-  background:rgba(148,163,184,0.06);
-}
-.webapp-page.is-theme-light .vocab-folder-acc-panel{ background:#fff; }
-
-/* Поиск по папкам внутри панели */
-.webapp-dictionary .vocab-folder-acc-search{ position:relative; display:flex; align-items:center; margin-bottom:9px; }
-.webapp-dictionary .vocab-folder-acc-search .vfas-icon{
-  position:absolute; left:11px; font-size:13px; color:var(--dmps-text-secondary,#94a3b8); opacity:0.7;
-}
-.webapp-dictionary .vocab-folder-acc-search input{
-  width:100%; height:38px; border-radius:11px;
-  background:rgba(148,163,184,0.10);
-  border:1px solid var(--dmps-border,#334155);
-  padding:0 12px 0 32px; font-size:13.5px; font-family:inherit;
-  color:var(--dmps-text-title,#f1f5f9);
-}
-.webapp-page.is-theme-light .vocab-folder-acc-search input{ background:rgba(0,0,0,0.04); }
-.webapp-dictionary .vocab-folder-acc-search input::placeholder{ color:var(--dmps-text-secondary,#94a3b8); opacity:0.8; }
-
-/* Быстрые фильтры (Все / Без папки) — две кнопки в строку */
-.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-quick-row{
-  display:flex; gap:8px; margin-bottom:8px;
-}
-
-/* Сетка папок: 2 колонки, полные имена, вертикальный скролл */
-.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-grid{
-  display:grid !important;
-  grid-template-columns:1fr 1fr;
-  gap:8px;
-  max-height:300px;
-  overflow-y:auto;
-  padding-right:2px;
-}
-
-/* Карточка папки → крупная плитка: [иконка · счётчик] / имя в 2 строки */
-.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card{
-  flex-direction:column;
-  align-items:stretch;
-  gap:9px;
-  width:auto;
-  min-height:86px;
-  padding:11px;
-  border-radius:14px;
-  white-space:normal;
-  text-align:left;
-}
-.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card .vfc-card-icon-wrap{
-  display:flex; align-items:center; justify-content:space-between;
-}
-.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card .vfc-card-name{
-  font-size:13px; font-weight:700; line-height:1.25;
-  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
-}
-.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card .vfc-card-count{
-  font-size:12px; font-weight:700;
-  padding:2px 8px; border-radius:99px;
-  background:rgba(128,128,128,0.16);
-}
-.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card.is-active{
-  border-color:var(--vlib-acc);
+.webapp-dictionary .vocab-fchip .vfch-car{ flex:0 0 auto; font-size:9px; opacity:.75; }
+.webapp-dictionary .vocab-fchip.is-on{
   background:var(--vlib-acc-soft);
+  border-color:color-mix(in srgb, var(--vlib-acc) 40%, transparent);
+  color:var(--vlib-acc);
 }
+.webapp-dictionary .vocab-fchip:active{ transform:scale(0.97); }
+.webapp-dictionary .vocab-fchip:focus-visible{ outline:2px solid var(--vlib-acc); outline-offset:2px; }
 
+/* Полоса «Найдено N · Выбрать все». Показывается только при включённом отборе —
+   без фильтра «выбрать все» означало бы 16 680 слов, а это не выбор, а промах. */
+.webapp-dictionary .vocab-result-bar{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  margin-top:8px; padding:8px 11px;
+  border-radius:12px; background:var(--vlib-acc-soft);
+  font-size:12.5px; color:var(--vlib-acc); font-weight:600;
+}
+.webapp-dictionary .vocab-result-bar .vrb-left{
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.webapp-dictionary .vocab-result-bar .vrb-select{
+  flex:0 0 auto;
+  font-size:12px; font-weight:600; color:#fff;
+  background:var(--vlib-acc); border:0; border-radius:9px;
+  padding:7px 11px; -webkit-tap-highlight-color:transparent;
+}
+.webapp-dictionary .vocab-result-bar .vrb-select:disabled{ opacity:.55; }
+.webapp-dictionary .vocab-result-bar .vrb-select:focus-visible{ outline:2px solid var(--vlib-acc); outline-offset:2px; }
+
+/* «показано: N» на месте бывшей кнопки-переключалки сортировки */
+.vocab-stats-scope{ margin-left:auto; font-size:12px; color:var(--dmps-text-secondary,#94a3b8); }
+.vocab-stats-scope strong{ color:inherit; }
+
+/* ── 3.1 Нижний лист выбора ──
+   Один лист на три списка (тема / откуда / сортировка): устроены они одинаково —
+   найти, выбрать, закрыть. Рисуется порталом в корень мини-аппа, поэтому fixed
+   считается от экрана, а не от прокручиваемой карточки словаря. */
+.vocab-picker-scrim{
+  position:fixed; inset:0; z-index:1200;
+  background:rgba(8,12,20,0.5);
+  display:flex; align-items:flex-end; justify-content:center;
+  animation:vps-fade .16s ease-out;
+}
+@keyframes vps-fade{ from{ opacity:0 } to{ opacity:1 } }
+.vocab-picker-sheet{
+  width:100%; max-width:520px;
+  max-height:min(78vh, 620px);
+  display:flex; flex-direction:column;
+  background:var(--dmps-surface,#111827);
+  border-radius:20px 20px 0 0;
+  box-shadow:0 -8px 34px rgba(0,0,0,0.34);
+  padding-bottom:max(10px, env(safe-area-inset-bottom));
+  animation:vps-rise .22s cubic-bezier(.32,.72,0,1);
+}
+.webapp-page.is-theme-light .vocab-picker-sheet{ background:#fffdf9; }
+@keyframes vps-rise{ from{ transform:translateY(100%) } to{ transform:translateY(0) } }
+@media (prefers-reduced-motion: reduce){
+  .vocab-picker-scrim, .vocab-picker-sheet{ animation:none; }
+}
+.vocab-picker-sheet .vps-grab{
+  width:38px; height:4px; border-radius:2px;
+  background:var(--dmps-border,#334155);
+  margin:9px auto 4px; flex:0 0 auto;
+}
+.vocab-picker-sheet .vps-head{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:4px 16px 10px; flex:0 0 auto;
+}
+.vocab-picker-sheet .vps-head h4{
+  margin:0; font-size:16px; font-weight:700;
+  color:var(--dmps-text,#e2e8f0);
+}
+.webapp-page.is-theme-light .vocab-picker-sheet .vps-head h4{ color:#1b1f27; }
+.vocab-picker-sheet .vps-head button{
+  background:none; border:0; padding:2px 4px; line-height:1;
+  font-size:17px; color:var(--dmps-text-secondary,#94a3b8);
+}
+.vocab-picker-sheet .vps-search{
+  display:flex; align-items:center; gap:8px;
+  margin:0 16px 10px; padding:0 11px; height:38px;
+  border-radius:11px; background:rgba(148,163,184,0.12);
+  color:var(--dmps-text-secondary,#94a3b8); font-size:13px; flex:0 0 auto;
+}
+.webapp-page.is-theme-light .vocab-picker-sheet .vps-search{ background:rgba(0,0,0,0.05); }
+.vocab-picker-sheet .vps-search input{
+  flex:1 1 auto; min-width:0;
+  background:none; border:0; outline:none;
+  font-size:14px; color:var(--dmps-text,#e2e8f0);
+}
+.webapp-page.is-theme-light .vocab-picker-sheet .vps-search input{ color:#1b1f27; }
+.vocab-picker-sheet .vps-body{
+  flex:1 1 auto; min-height:0; overflow-y:auto;
+  padding:0 10px 14px; -webkit-overflow-scrolling:touch;
+}
+.vocab-picker-sheet .vps-group{
+  padding:12px 8px 5px;
+  font-size:10.5px; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--dmps-text-secondary,#94a3b8);
+}
+.vocab-picker-sheet .vps-item{
+  width:100%; display:flex; align-items:center; gap:10px;
+  padding:10px 8px; border:0; border-radius:12px; background:none;
+  text-align:left; font-size:14px; color:var(--dmps-text,#e2e8f0);
+  -webkit-tap-highlight-color:transparent;
+}
+.webapp-page.is-theme-light .vocab-picker-sheet .vps-item{ color:#1b1f27; }
+.vocab-picker-sheet .vps-item.is-active{
+  background:var(--vlib-acc-soft,rgba(99,102,241,0.14));
+  color:var(--vlib-acc,#6366F1); font-weight:600;
+}
+.vocab-picker-sheet .vps-item:focus-visible{ outline:2px solid var(--vlib-acc,#6366F1); outline-offset:-2px; }
+.vocab-picker-sheet .vps-ic{
+  flex:0 0 auto; width:28px; height:28px; border-radius:9px;
+  display:grid; place-items:center; font-size:14px;
+  background:rgba(148,163,184,0.12);
+}
+.webapp-page.is-theme-light .vocab-picker-sheet .vps-ic{ background:rgba(0,0,0,0.05); }
+.vocab-picker-sheet .vps-name{
+  flex:1 1 auto; min-width:0;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.vocab-picker-sheet .vps-sub{
+  display:block; font-size:11px; font-weight:400;
+  color:var(--dmps-text-secondary,#94a3b8);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.vocab-picker-sheet .vps-count{
+  flex:0 0 auto; font-size:11.5px; font-variant-numeric:tabular-nums;
+  color:var(--dmps-text-secondary,#94a3b8);
+}
+.vocab-picker-sheet .vps-hint{
+  margin:10px 8px 0; font-size:11.5px; line-height:1.45;
+  color:var(--dmps-text-secondary,#94a3b8);
+}
 /* ── 4. Плавающая нижняя панель выборки — ВСЕГДА закреплена внизу экрана ──
    position:fixed → панель не уезжает в конец списка при прокрутке.
    Нет transform/filter у родителей словаря, поэтому fixed якорится к вьюпорту. */

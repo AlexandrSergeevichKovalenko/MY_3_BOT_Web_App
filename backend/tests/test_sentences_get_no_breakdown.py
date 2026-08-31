@@ -142,7 +142,10 @@ class СписокСловОтдаётВидЗаписи(unittest.TestCase):
     def test_library_list_returns_unit_kind(self):
         from backend import database
 
-        колонки = 29                       # см. SELECT в list_user_vocabulary
+        # См. SELECT в list_user_vocabulary. Колонки там добавляются ТОЛЬКО В КОНЕЦ —
+        # строки разбираются по номерам. 31.08.2026 в конец приехали четыре колонки
+        # источника слова (source_id / kind / title / external_key): 29 → 33.
+        колонки = 33
         строка = [None] * колонки
         строка[0] = 1                      # q.id
         строка[3] = "Gesundheit ist wichtig."
