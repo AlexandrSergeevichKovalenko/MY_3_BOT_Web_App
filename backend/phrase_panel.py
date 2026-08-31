@@ -558,3 +558,133 @@ def run_batch(*, limit: int = NIGHT_LIMIT, budget_usd: float = NIGHT_BUDGET,
     отчёт["осталось"] = count_unchecked()
     logging.info("панель, порция: %s", отчёт)
     return отчёт
+
+
+# ── Пересуд накопленного: старым отметкам — тот же вопрос, что и новым ────────────
+def units_with_verdict(verdict: str, limit: int) -> list[tuple]:
+    """Единицы с этим вердиктом панели — для повторного прогона.
+
+    Обычный отбор (`unchecked_units`) берёт то, чего панель не видела. Здесь наоборот:
+    берём УЖЕ помеченное, потому что вопрос к судье с тех пор изменился.
+    """
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT u.id, u.display, u.kind, u.card
+                  FROM bt_3_field_checks c
+                  JOIN bt_3_lex_units u ON u.id = c.unit_id
+                 WHERE c.field = %s AND c.verdict = %s AND u.card IS NOT NULL
+                 ORDER BY c.checked_at DESC
+                 LIMIT %s;""", (FIELD, str(verdict), int(limit)))
+            return list(cur.fetchall() or [])
+
+
+def rejudge_personal(*, limit: int = 500, budget_usd: float = 3.0, workers: int = 4,
+                     apply: bool = True, on_card=None) -> dict[str, Any]:
+    """РАЗОВЫЙ ПЕРЕСУД отметок «текст человека» — чтобы у них появился готовый вариант.
+
+    ┌─ РЕШЕНИЕ ВЛАДЕЛЬЦА 31.08.2026. ──────────────────────────────────────────────┐
+    │ Отметки, поставленные до этого дня, несут только претензию: поля «как надо»  │
+    │ в вопросе к панели тогда не было. Человеку они приходят без кнопки «да,      │
+    │ правильно так» — то есть ровно с тем дефектом, который мы в этот день чинили. │
+    │ Выдумать вариант задним числом нельзя, значит надо спросить заново. Цена по   │
+    │ замеру того же дня: $0.0042 за карточку, ≈$2 на все.                          │
+    │ Это разовая уборка, а не ночная работа: новые отметки уже рождаются с         │
+    │ готовым вариантом, и второй раз этот прогон не понадобится.                   │
+    └──────────────────────────────────────────────────────────────────────────────┘
+
+    ЧТО ДЕЛАЕМ С НОВЫМ ВЕРДИКТОМ, и ни одного молчаливого исхода:
+      «текст человека» — вопрос автору переписывается новыми претензиями (или заводится);
+      «подтверждено»   — претензии больше нет: отметка меняется, вопрос ЗАКРЫВАЕТСЯ.
+                         Спрашивать человека о том, что мы сами больше не считаем
+                         ошибкой, нельзя — его касание дороже нашей строки в базе;
+      «дефект»         — виноваты наши примеры: карточку берёт ночной переписчик,
+                         личный вопрос закрывается;
+      «спорное»        — голоса разошлись, это вопрос владельцу; личный закрывается;
+      «не спросили»    — не трогаем НИЧЕГО: отметка и вопрос остаются как были.
+
+    Чужой открытый вопрос (спор владельца, проверка перевода) не трогаем и поверх
+    него ничего не заводим.
+    """
+    from backend.database import (
+        close_personal_question, open_panel_card_question, open_personal_text_question,
+        open_question_kind, replace_personal_question_claims,
+    )
+    отчёт: dict[str, Any] = {
+        "взято": 0, "пересужено": 0, "с готовым вариантом": 0, "вопрос обновлён": 0,
+        "вопрос заведён": 0, "снята претензия": 0, "ушло владельцу": 0,
+        "наши примеры": 0, NOT_ASKED: 0, "потрачено": 0.0,
+        "остановлено потолком": False,
+    }
+    нельзя = unavailable_reason()
+    if нельзя:
+        отчёт["пропущено"] = нельзя
+        return отчёт
+
+    rows = units_with_verdict(HUMANS_OWN, int(limit))
+    отчёт["взято"] = len(rows)
+    if not rows:
+        return отчёт
+    panel = Panel(budget_usd=budget_usd)
+
+    def one(row):
+        unit_id, display, kind, card = row
+        перевод = str((card or {}).get("translation_ru") or "")
+        try:
+            verdict, why, claims = panel.judge(entry_of(display, kind, card))
+        except BudgetSpent as stop:
+            return unit_id, display, None, str(stop), [], перевод
+        if verdict in (DISPUTED, HUMANS_OWN):
+            for claim in claims:
+                приговор = panel.проверить_вариант(
+                    поле=claim.get("field", ""), готовое=claim.get("fix", ""),
+                    заголовок=str(display or ""), перевод=перевод)
+                if приговор:
+                    claim["fix_check"] = приговор
+        return unit_id, display, verdict, why, claims, перевод
+
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
+        futures = [pool.submit(one, row) for row in rows]
+        for future in as_completed(futures):
+            unit_id, display, verdict, why, claims, перевод = future.result()
+            if verdict is None:
+                отчёт["остановлено потолком"] = True
+                continue
+            if verdict == NOT_ASKED:
+                # Голоса не ответили. Ни отметку, ни вопрос не трогаем: «не спросили»
+                # это не новый вердикт, а авария связи.
+                отчёт[NOT_ASKED] += 1
+                continue
+            отчёт["пересужено"] += 1
+            if callable(on_card):
+                on_card(unit_id, display, verdict, why)
+            if not apply:
+                continue
+            открыт = open_question_kind(unit_id)
+            if открыт and открыт != "personal":
+                # Чужой вопрос по этой же единице. Отметку обновляем, вопрос не трогаем.
+                _записать_отметку(unit_id, verdict, why)
+                continue
+            _записать_отметку(unit_id, verdict, why)
+            if verdict == HUMANS_OWN:
+                if any(str(c.get("fix") or "").strip() for c in claims):
+                    отчёт["с готовым вариантом"] += 1
+                if открыт == "personal":
+                    if replace_personal_question_claims(unit_id, claims):
+                        отчёт["вопрос обновлён"] += 1
+                elif open_personal_text_question(unit_id, display, перевод, claims):
+                    отчёт["вопрос заведён"] += 1
+                continue
+            # Претензии к тексту человека больше нет — вопрос к нему снимаем.
+            if открыт == "personal" and close_personal_question(unit_id, why):
+                отчёт["снята претензия"] += 1
+            if verdict == DISPUTED and open_panel_card_question(
+                    unit_id, display, перевод, claims):
+                отчёт["ушло владельцу"] += 1
+            elif verdict == DEFECT:
+                отчёт["наши примеры"] += 1
+
+    отчёт["потрачено"] = round(panel.cost, 4)
+    logging.info("пересуд отметок «текст человека»: %s", отчёт)
+    return отчёт

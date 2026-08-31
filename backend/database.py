@@ -25856,6 +25856,67 @@ def open_personal_text_question(unit_id: int, text: str, translation: str,
     return добавлено
 
 
+def replace_personal_question_claims(unit_id: int, claims: list) -> bool:
+    """Переписать претензии в УЖЕ ОТКРЫТОМ личном вопросе — когда мы пересудили фразу.
+
+    ЗАЧЕМ. 92 личных вопроса заведены из старых отметок, у которых готового варианта не
+    было: до 31.08.2026 его у судьи не спрашивали. Владелец решил пересудить их новым
+    вопросом, чтобы и у них появилась кнопка «да, правильно так». Заводить второй
+    вопрос нельзя — он ляжет тем же человеку вторым касанием об одном и том же; значит
+    переписываем претензии в существующем.
+
+    Трогаем ТОЛЬКО вопросы вида 'personal': чужой вопрос (спор владельца, проверка
+    перевода) этой правкой не подменяется.
+    """
+    судьи = _претензии_в_судей(claims, PERSONAL_REVIEW_CATEGORY)
+    if not судьи:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "UPDATE bt_3_phrase_review SET judges = %s::jsonb "
+                "WHERE unit_id = %s AND status = 'open' AND kind = 'personal';",
+                (json.dumps(судьи, ensure_ascii=False), int(unit_id)))
+            обновлено = cursor.rowcount or 0
+        conn.commit()
+    return bool(обновлено)
+
+
+def close_personal_question(unit_id: int, why: str = "") -> bool:
+    """Закрыть личный вопрос, когда пересуд снял претензию.
+
+    Спрашивать человека о том, что мы САМИ больше не считаем ошибкой, нельзя: его
+    касание стоит дороже нашей строки в базе. След остаётся в `decided_text`.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "UPDATE bt_3_phrase_review SET status = 'closed', decided_at = NOW(), "
+                "decided_text = %s WHERE unit_id = %s AND status = 'open' "
+                "AND kind = 'personal';",
+                (str(why or "пересуд снял претензию")[:500], int(unit_id)))
+            закрыто = cursor.rowcount or 0
+        conn.commit()
+    return bool(закрыто)
+
+
+def open_question_kind(unit_id: int) -> str:
+    """Вид ОТКРЫТОГО вопроса по этой единице или «» — если открытого нет.
+
+    Нужен пересуду: чужой вопрос (спор владельца, проверка перевода) он не трогает и
+    поверх него ничего не заводит."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "SELECT COALESCE(kind, 'grammar') FROM bt_3_phrase_review "
+                "WHERE unit_id = %s AND status = 'open' LIMIT 1;", (int(unit_id),))
+            row = cursor.fetchone()
+    return str(row[0]) if row else ""
+
+
 def personal_question_fix(review_id: int) -> dict:
     """Готовый вариант, который человеку ПОКАЗАЛИ на кнопке, — из базы, а не из браузера.
 
