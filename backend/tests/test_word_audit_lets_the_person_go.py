@@ -108,11 +108,29 @@ def test_no_queue_means_an_honest_no_not_a_silent_five_minute_wait(client, monke
     assert "Ничего не потеряно" in тело["message"]
 
 
-def test_the_background_report_names_what_was_done(monkeypatch):
-    """Человек ушёл с экрана — итог он увидит только сообщением. Молчать нельзя."""
-    from backend.background_jobs import _word_audit_report_text
+def test_the_background_job_never_writes_to_the_person(monkeypatch):
+    """Фон НИЧЕГО не пишет человеку — ни при успехе, ни при сбое.
 
-    текст = _word_audit_report_text({"исправлено": 36, "оставлено": 2, "удалено": 0})
-    assert "исправлено: 36" in текст
-    assert "удалено" not in текст          # нулей человеку не показываем
-    assert _word_audit_report_text({}).startswith("🦊")
+    Владелец 31.08.2026 отменил оба письма: «человек этим процессом не управляет, он
+    заплатил деньги и в его картине мира всё уже сделано». Подтверждение он получает
+    на экране, а сорванная работа не теряется — записи остаются открытыми и придут
+    ему на проверку в ближайший вторник или пятницу.
+    """
+    from backend import background_jobs, telegram_notify, word_confirm_digest
+
+    отправленное = []
+    monkeypatch.setattr(telegram_notify, "_send_private_message",
+                        lambda *a, **k: отправленное.append(a))
+
+    monkeypatch.setattr(word_confirm_digest, "apply_decisions",
+                        lambda uid, d: {"исправлено": 3, "оставлено": 1})
+    background_jobs.run_word_audit_apply_job(user_id=777, decisions=РЕШЕНИЯ)
+    assert отправленное == []
+
+    def падает(uid, d):
+        raise RuntimeError("модель не ответила")
+
+    monkeypatch.setattr(word_confirm_digest, "apply_decisions", падает)
+    with pytest.raises(RuntimeError):
+        background_jobs.run_word_audit_apply_job(user_id=777, decisions=РЕШЕНИЯ)
+    assert отправленное == []
