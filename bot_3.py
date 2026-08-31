@@ -10280,6 +10280,79 @@ def _translation_links_line() -> str:
         return ""
 
 
+def _phrase_panel_line() -> str:
+    """Строка о ночной панели из трёх голосов — в тот же утренний отчёт.
+
+    ЗАЧЕМ. До 31.08.2026 панель была разовым скриптом, который запускался руками.
+    Замер того дня: 1 302 карточки фраз она не видела НИ РАЗУ, из них 89 появились за
+    последнюю неделю — дыра не историческая, она наполнялась дальше. Владелец: «ставь»
+    ночной порцией, с потолком и строкой в отчёт.
+
+    Строка обязана уметь сказать «не запускалось» и «упало»: молчание планировщика
+    иначе неотличимо от успешной ночи, и это мы уже проходили.
+    """
+    try:
+        from backend.database import get_latest_scheduler_run_guard
+        row = get_latest_scheduler_run_guard(job_key="phrase_panel_night") or {}
+        meta = row.get("metadata") or {}
+        status = str(row.get("status") or "").lower()
+        if not row:
+            return ""
+        if status == "failed":
+            return ("\n🧑‍⚖️ Панель трёх голосов: ❌ упала — "
+                    f"{str(meta.get('error') or 'подробности в логах')[:120]}\n")
+        if meta.get("пропущено"):
+            # Ухудшенная проверка не запускается вовсе (см. `phrase_panel.
+            # unavailable_reason`), и владелец должен знать почему, а не гадать.
+            return f"\n🧑‍⚖️ Панель трёх голосов не работала: {meta['пропущено']}\n"
+        проверено = int(meta.get("проверено") or 0)
+        дефект = int(meta.get("дефект") or 0)
+        спорных = int(meta.get("ушло владельцу") or 0)
+        не_спросили = int(meta.get("не спросили") or 0)
+        осталось = int(meta.get("осталось") or 0)
+        потрачено = float(meta.get("потрачено") or 0.0)
+        if not any((проверено, осталось)):
+            return ""
+        out = f"\n🧑‍⚖️ Карточки, проверенные панелью за ночь: <b>{проверено}</b>"
+        if дефект:
+            out += f"\n   с кривыми примерами — уйдут на переписывание: <b>{дефект}</b>"
+        if спорных:
+            out += f"\n   голоса разошлись — ждут твоего решения: <b>{спорных}</b>"
+        if не_спросили:
+            out += f"\n   спросить не удалось (вернутся к следующей ночи): {не_спросили}"
+        if осталось:
+            ночей = (осталось + 49) // 50
+            out += (f"\n   осталось непроверенных: {осталось} (≈{ночей} ноч"
+                    f"{'ь' if ночей == 1 else 'и' if ночей < 5 else 'ей'})")
+        else:
+            out += "\n   ✅ непроверенных карточек не осталось"
+        if потрачено:
+            out += f"\n   потрачено за ночь: ${потрачено:.2f}"
+        return out + "\n"
+    except Exception:
+        logging.debug("строка о панели не собралась", exc_info=True)
+        return ""
+
+
+def _run_phrase_panel_night_safe() -> None:
+    """Ночная порция панели: карточки фраз, которых она ещё не видела.
+
+    Порция маленькая нарочно — это уборка, а не гонка. Что панель найдёт, разбирают
+    уже существующие механизмы: «дефект» каждую ночь берёт переписывание примеров,
+    «спорное» уходит владельцу вопросом с готовым вариантом на кнопке.
+
+    Падение печатаем и записываем: тихо упавшая ночная работа неотличима от сделанной.
+    """
+    try:
+        from backend.phrase_panel import run_batch
+        stats = run_batch()
+        _record_sched_heartbeat("phrase_panel_night", "completed", stats)
+        logging.info("ночная панель закончена: %s", stats)
+    except Exception as exc:
+        logging.exception("ночная панель упала")
+        _record_sched_heartbeat("phrase_panel_night", "failed", {"error": str(exc)[:300]})
+
+
 def _run_translation_links_safe() -> None:
     """Ночной подъём переводов карточек в общий слой. Идёт ДО проверки грамматики.
 
@@ -10361,6 +10434,7 @@ def _send_phrase_check_morning_report() -> None:
                    if left else "✅ Все фразы проверены.\n")
                 + (f"\nРазобрать спорные: /admin_phrase_review" if open_reviews else "")
                 + _examples_retry_line()
+                + _phrase_panel_line()
             )
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
@@ -46240,6 +46314,25 @@ def main():
             "cron",
             hour=int((os.getenv("PHRASE_NIGHT_CHECK_HOUR") or "3").strip() or "3"),
             minute=int((os.getenv("PHRASE_NIGHT_CHECK_MINUTE") or "40").strip() or "40"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Панель трёх голосов по карточкам фраз (04:00 Вена) --
+        # Замер 31.08.2026: 1 302 карточки фраз панель не видела ни разу, и 89 из них
+        # появились за последнюю неделю — то есть дыра наполнялась дальше, а проверка
+        # запускалась только руками. Владелец: «ставь». Порция 50 за ночь с потолком
+        # расхода; проверенная карточка не возвращается никогда — отбор идёт по
+        # отсутствию отметки в `bt_3_field_checks`.
+        #
+        # 04:00, а не 03:40: там уже стоят переписывание примеров и проверка грамматики,
+        # и все они делят один дневной кошелёк — драться за него незачем.
+        scheduler.add_job(
+            _run_phrase_panel_night_safe,
+            "cron",
+            hour=int((os.getenv("PHRASE_PANEL_HOUR") or "4").strip() or "4"),
+            minute=int((os.getenv("PHRASE_PANEL_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
