@@ -24420,55 +24420,89 @@ function AppInner() {
     setDictionaryLanguagePair(resolveLanguagePairForUI(payload.language_pair));
   };
 
-  const saveSelectionGptOriginalWord = async (rawText) => {
+  // ┌─ ЧТО РОВНО ЛЯЖЕТ В СЛОВАРЬ. Один источник и на подпись, и на запись. ────────────┐
+  // │ До 31.08.2026 галочка сохранения подписывалась ПРАВИЛОМ: «Слово «X» — с артиклем,│
+  // │ если существительное». Владелец: условие «если существительное» человек проверить│
+  // │ не может и не должен, а на его снимке под этой строкой стояло «finstere          │
+  // │ Machenschaften» — сочетание прилагательного с существительным, то есть условие   │
+  // │ ложно и строка мертва.                                                           │
+  // │ Теперь подпись показывает РЕЗУЛЬТАТ — ту самую строку, которую отправит кнопка.  │
+  // │ Собирается она здесь, и отсюда же её берёт сохранение: разойтись им негде.       │
+  // │ Разбор ещё не приехал (`plan === null`) — про артикль честно молчим: заголовок    │
+  // │ тогда выберет словарь на сервере, и обещать его состав нам не из чего.           │
+  // └──────────────────────────────────────────────────────────────────────────────────┘
+  const buildSelectionGptOriginalSavePlan = (rawText) => {
     const cleaned = normalizeSelectionText(rawText);
-    if (!cleaned) return false;
+    if (!cleaned) return null;
     const gptItem = selectionGptData?.dictionaryItem && typeof selectionGptData.dictionaryItem === 'object'
       ? selectionGptData.dictionaryItem
       : null;
+    if (!gptItem) return null;
     const gptPair = resolveLanguagePairForUI(selectionGptData?.languagePair || dictionaryLanguagePair);
-    if (gptItem) {
-      const detected = String(gptItem.detected_language || '').trim().toLowerCase();
-      const direction = String(
-        selectionGptData?.direction
-        || (detected === 'target'
-          ? `${gptPair.target_lang}-${gptPair.source_lang}`
-          : `${gptPair.source_lang}-${gptPair.target_lang}`)
-      ).trim().toLowerCase();
-      const [directionSourceLang = gptPair.source_lang, directionTargetLang = gptPair.target_lang] = direction.includes('-')
-        ? direction.split('-', 2)
-        : [gptPair.source_lang, gptPair.target_lang];
-      const sourceText = String(
-        directionSourceLang === gptPair.target_lang
-          ? (gptItem.word_target || gptItem.target_text || cleaned)
-          : (gptItem.word_source || gptItem.source_text || cleaned)
-      ).trim();
-      const targetText = String(
-        directionTargetLang === gptPair.source_lang
-          ? (gptItem.word_source || gptItem.source_text || selectionGptData.translation || '')
-          : (gptItem.word_target || gptItem.target_text || selectionGptData.translation || '')
-      ).trim();
-      if (sourceText && targetText) {
-        await saveSelectionGptDictionaryEntry({
-          sourceText,
-          targetText,
-          sourceLang: directionSourceLang,
-          targetLang: directionTargetLang,
-          direction,
-          responseJson: {
-            ...gptItem,
-            word_ru: directionSourceLang === 'ru' ? sourceText : (directionTargetLang === 'ru' ? targetText : ''),
-            word_de: directionSourceLang === 'de' ? sourceText : (directionTargetLang === 'de' ? targetText : ''),
-            translation_ru: directionTargetLang === 'ru' ? targetText : (directionSourceLang === 'ru' ? sourceText : ''),
-            translation_de: directionTargetLang === 'de' ? targetText : (directionSourceLang === 'de' ? sourceText : ''),
-          },
-          originMeta: {
-            source_kind: 'original_word',
-            save_source: 'selection_gpt_dictionary_item',
-          },
-        });
-        return true;
-      }
+    const detected = String(gptItem.detected_language || '').trim().toLowerCase();
+    const direction = String(
+      selectionGptData?.direction
+      || (detected === 'target'
+        ? `${gptPair.target_lang}-${gptPair.source_lang}`
+        : `${gptPair.source_lang}-${gptPair.target_lang}`)
+    ).trim().toLowerCase();
+    const [directionSourceLang = gptPair.source_lang, directionTargetLang = gptPair.target_lang] = direction.includes('-')
+      ? direction.split('-', 2)
+      : [gptPair.source_lang, gptPair.target_lang];
+    const rawSourceText = String(
+      directionSourceLang === gptPair.target_lang
+        ? (gptItem.word_target || gptItem.target_text || cleaned)
+        : (gptItem.word_source || gptItem.source_text || cleaned)
+    ).trim();
+    const rawTargetText = String(
+      directionTargetLang === gptPair.source_lang
+        ? (gptItem.word_source || gptItem.source_text || selectionGptData.translation || '')
+        : (gptItem.word_target || gptItem.target_text || selectionGptData.translation || '')
+    ).trim();
+    // Артикль приставляет тот же помощник, что и путь через словарь
+    // (`saveSelectionGptWordByLookup`): он трогает ТОЛЬКО одиночное существительное с
+    // известным родом и не приклеит «der» к обороту. Раньше этот путь его не звал, и
+    // «die» из разбора мог не дойти до записи — тогда подпись и словарь говорили бы о
+    // слове разное.
+    const normalizedPair = applyArticleForDirection(rawSourceText, rawTargetText, direction, gptItem);
+    const sourceText = String(normalizedPair.sourceText || rawSourceText).trim();
+    const targetText = String(normalizedPair.targetText || rawTargetText).trim();
+    if (!sourceText || !targetText) return null;
+    return {
+      sourceText,
+      targetText,
+      sourceLang: directionSourceLang,
+      targetLang: directionTargetLang,
+      direction,
+      responseJson: {
+        ...gptItem,
+        word_ru: directionSourceLang === 'ru' ? sourceText : (directionTargetLang === 'ru' ? targetText : ''),
+        word_de: directionSourceLang === 'de' ? sourceText : (directionTargetLang === 'de' ? targetText : ''),
+        translation_ru: directionTargetLang === 'ru' ? targetText : (directionSourceLang === 'ru' ? sourceText : ''),
+        translation_de: directionTargetLang === 'de' ? targetText : (directionSourceLang === 'de' ? sourceText : ''),
+      },
+      originMeta: {
+        source_kind: 'original_word',
+        save_source: 'selection_gpt_dictionary_item',
+      },
+    };
+  };
+
+  // Строка для подписи галочки: ровно то, что уйдёт в словарь. Разбора ещё нет —
+  // показываем выделенное слово как есть, без обещаний про артикль.
+  const getSelectionGptSaveWordText = () => {
+    const selected = getSelectionGptWordText();
+    const plan = buildSelectionGptOriginalSavePlan(selected);
+    return plan ? plan.sourceText : selected;
+  };
+
+  const saveSelectionGptOriginalWord = async (rawText) => {
+    const cleaned = normalizeSelectionText(rawText);
+    if (!cleaned) return false;
+    const plan = buildSelectionGptOriginalSavePlan(cleaned);
+    if (plan) {
+      await saveSelectionGptDictionaryEntry(plan);
+      return true;
     }
     return saveSelectionGptWordByLookup(cleaned, { source_kind: 'original_word' });
   };
@@ -45254,12 +45288,14 @@ function AppInner() {
                             }}
                           />
                           <span>
-                            {getSelectionGptWordText()
+                            {/* Не правило, а результат: показываем ту самую строку, которую
+                                отправит кнопка (`buildSelectionGptOriginalSavePlan`). */}
+                            {getSelectionGptSaveWordText()
                               ? tr(
-                                `Слово «${getSelectionGptWordText()}» — с артиклем, если существительное`,
-                                `Wort „${getSelectionGptWordText()}“ — mit Artikel, falls Nomen`
+                                `Сохраним: ${getSelectionGptSaveWordText()}`,
+                                `Wird gespeichert: ${getSelectionGptSaveWordText()}`
                               )
-                              : tr('Оригинальное слово (с артиклем, если это существительное)', 'Originalwort (mit Artikel, falls es ein Nomen ist)')}
+                              : tr('Выделенное слово', 'Markiertes Wort')}
                           </span>
                         </label>
                         <div className="webapp-gpt-save-actions">
