@@ -826,7 +826,7 @@ def _phrase_counts_by_author(cur) -> dict[int, int]:
            WHERE lex_unit_id IS NOT NULL
            ORDER BY lex_unit_id, created_at, id
         )
-        SELECT a.user_id, btrim(r.text), r.judges
+        SELECT a.user_id, btrim(r.text), r.judges, COALESCE(r.kind, '')
           FROM bt_3_phrase_review r
           JOIN авторы a ON a.lex_unit_id = r.unit_id
          -- Тот же отбор вида, что и на экране (см. `_phrase_items`).
@@ -837,12 +837,22 @@ def _phrase_counts_by_author(cur) -> dict[int, int]:
         """,
         (ВИДЫ_ДЛЯ_ЧЕЛОВЕКА,),
     )
+    # ⛔ ПОРЦИЯ СЧИТАЕТСЯ ЗДЕСЬ ТОЖЕ. Экран показывает не больше ЛИЧНЫХ_ЗА_РАЗ вопросов
+    # нового вида (решение владельца 31.08.2026), и письмо обязано обещать РОВНО
+    # столько же. Иначе повторяется дефект, ради которого эта функция и заведена:
+    # «письмо обещает 186 фраз, а человек находит 98».
     счёт: dict[int, int] = {}
-    for user_id, текст, судьи in (cur.fetchall() or []):
+    личных: dict[int, int] = {}
+    for user_id, текст, судьи, вид in (cur.fetchall() or []):
         судьи = судьи if isinstance(судьи, list) else []
         if phrase_review_is_noise(судьи, str(текст)):
             continue
+        if str(вид or "") == "personal":
+            личных[int(user_id)] = личных.get(int(user_id), 0) + 1
+            continue
         счёт[int(user_id)] = счёт.get(int(user_id), 0) + 1
+    for user_id, сколько in личных.items():
+        счёт[user_id] = счёт.get(user_id, 0) + min(сколько, ЛИЧНЫХ_ЗА_РАЗ)
     return счёт
 
 

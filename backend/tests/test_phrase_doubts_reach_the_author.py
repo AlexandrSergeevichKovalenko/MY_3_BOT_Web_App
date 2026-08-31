@@ -148,8 +148,11 @@ class ФразыДоходятДоАвтора(unittest.TestCase):
 
     def test_the_letter_promises_exactly_what_the_screen_shows(self):
         """Письмо и экран считают ОДНИМ правилом — иначе обещание снова разойдётся с делом."""
+        # Четвёртой колонкой едет вид вопроса: с 31.08.2026 личные считаются порцией
+        # (не больше ЛИЧНЫХ_ЗА_РАЗ), и счёт письма обязан знать, какой вид перед ним.
         курсор = ПоддельныйКурсор([[(7, "Ich überhaupt kein Talent",
-                                     [{"verdict": "error", "category": "wortstellung"}])]])
+                                     [{"verdict": "error", "category": "wortstellung"}],
+                                     "grammar")]])
         # Пустая придирка («ошибка есть, а исправить нечего») на экран не попадает —
         # значит и в число письма входить не должна.
         self.assertEqual(сводка._phrase_counts_by_author(курсор), {})

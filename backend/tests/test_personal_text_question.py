@@ -296,3 +296,31 @@ class ПорцияПоДвадцатьTests(unittest.TestCase):
         src = _src("backend/word_confirm_digest.py")
         i = src.index("def _phrase_items(")
         self.assertIn("ORDER BY r.id", src[i:i + 2000])
+
+
+class ПисьмоОбещаетТоЧтоНаЭкранеTests(unittest.TestCase):
+    """⛔ Число в письме и число на экране — это одно и то же число.
+
+    Порция (20 личных вопросов за раз) резала только экран, а счёт для письма считал
+    ВСЕ. Владелец получил бы «338 фраз ждут проверки», а на экране нашёл двадцать.
+    Ровно тот дефект, ради которого `_phrase_counts_by_author` и заведена: «письмо
+    обещает 186 фраз, а человек находит 98»."""
+
+    def test_the_letter_counts_the_same_portion(self):
+        from backend.word_confirm_digest import _phrase_counts_by_author, ЛИЧНЫХ_ЗА_РАЗ
+
+        class Курсор:
+            def execute(self, sql, args=None):
+                self.sql = sql
+            def fetchall(self):
+                # 30 личных вопросов одного человека и 2 обычных.
+                строки = [(5, f"фраза {n}", [{"verdict": "doubt"}], "personal")
+                          for n in range(30)]
+                строки += [(5, "фраза грамматика", [{"verdict": "doubt"}], "grammar"),
+                           (7, "чужая фраза", [{"verdict": "doubt"}], "personal")]
+                return строки
+
+        счёт = _phrase_counts_by_author(Курсор())
+        self.assertEqual(счёт[5], ЛИЧНЫХ_ЗА_РАЗ + 1,
+                         "письмо снова обещает больше, чем покажет экран")
+        self.assertEqual(счёт[7], 1)
