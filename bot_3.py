@@ -635,8 +635,6 @@ pending_quiz_question_requests = {}
 pending_quiz_question_input = {}
 pending_quiz_question_save_requests = {}
 pending_quiz_phrase_requests = {}
-pending_dictionary_cards = {}
-pending_dictionary_save_options = {}
 pending_dictionary_folder_create = {}
 pending_dictionary_lookup_requests = {}
 pending_dictionary_lookup_inflight = set()
@@ -657,6 +655,122 @@ DICTIONARY_FOLDER_CACHE_TTL_SECONDS = max(
     30,
     int((os.getenv("DICTIONARY_FOLDER_CACHE_TTL_SECONDS") or "300").strip() or "300"),
 )
+
+
+# ── Карточки словаря и варианты сохранения живут В БАЗЕ, а не в памяти бота ──
+# Было (до 31.08.2026): два обычных dict в памяти процесса, каждый с потолком 500
+# записей. Любой перезапуск бота стирал их целиком. 31.08 деплоев было девять за три
+# часа, и человек, нажавший «Сохранить 1» под карточкой от 16:27 в 16:40, получил
+# «Варианты устарели. Запросите перевод снова.» Потолок 500 давал ровно то же самое
+# на пачке «Быстрого перевода» — уже без всякого деплоя, просто от объёма.
+# Стало: общее хранилище состояний bt_3_telegram_pending_input_states (там же лежит
+# ввод названия папки). Ключ у кнопки уже есть — он в callback_data. Просроченное
+# каждые 15 минут убирает cleanup_pending_input_states, руками делать нечего.
+PENDING_INPUT_STATE_DICTIONARY_CARD = "dictionary_card"
+PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS = "dictionary_save_options"
+# Карточка висит в чате сколько угодно, и кнопки под ней обязаны работать и через
+# неделю. Решение владельца 31.08.2026: держим 30 дней, дальше строку убирает
+# cleanup_pending_input_states по expires_at.
+# Цена замерена 31.08.2026 на живой базе: разбор слова в среднем 1356 байт (медиана
+# 536, максимум 6387), строк на один поиск две — карточка и варианты. На сегодняшнем
+# потоке (2399 сохранений за 30 дней) это единицы мегабайт; на тысяче активных людей
+# — единицы гигабайт, и тогда срок сокращается этой переменной, без правки кода.
+DICTIONARY_PENDING_STATE_TTL_SECONDS = max(
+    3600,
+    int((os.getenv("DICTIONARY_PENDING_STATE_TTL_SECONDS") or str(30 * 24 * 60 * 60)).strip()
+        or str(30 * 24 * 60 * 60)),
+)
+
+
+def _get_dictionary_pending_state(state_key: str, state_type: str) -> dict | None:
+    """Достать карточку/варианты по ключу кнопки. Источник истины — таблица.
+
+    Ошибку БД здесь НЕ глушим: пустой ответ обязан значить «записи правда нет».
+    Иначе человеку скажут «устарело» там, где мы просто не дотянулись до базы.
+    """
+    key = str(state_key or "").strip()
+    if not key:
+        return None
+    row = get_pending_telegram_input_state(key)
+    if not row:
+        return None
+    if str(row.get("state_type") or "") != state_type:
+        return None
+    payload = row.get("payload")
+    return payload if isinstance(payload, dict) else None
+
+
+def _put_dictionary_pending_state(state_key: str, state_type: str, payload: dict) -> None:
+    key = str(state_key or "").strip()
+    if not key or not isinstance(payload, dict):
+        return
+    upsert_pending_telegram_input_state(
+        state_key=key,
+        user_id=int(payload.get("user_id") or 0),
+        state_type=state_type,
+        payload=payload,
+        ttl_seconds=DICTIONARY_PENDING_STATE_TTL_SECONDS,
+    )
+
+
+def _drop_dictionary_pending_state(state_key: str) -> None:
+    key = str(state_key or "").strip()
+    if not key:
+        return
+    delete_pending_telegram_input_state(state_key=key)
+
+
+def _log_dictionary_state_miss(*, button: str, state_key: str, query, recovered: bool) -> None:
+    """Кнопка под карточкой словаря не нашла своего состояния — пишем строку.
+
+    Зачем. 31.08.2026 состояние переехало из памяти бота в таблицу, и «Варианты
+    устарели» должно было исчезнуть. Проверить это можно только числом: пока промахи
+    нигде не считались, дыра выглядела бы точно так же, как её отсутствие.
+
+    recovered=yes — строки в таблице не было, но варианты собрались из текста самой
+    карточки; человек ничего не заметил. Так живут карточки, отправленные до переезда.
+    recovered=no  — человеку сказано «устарело», сохранить он не смог. ЭТО дефект.
+
+    age_min отличает архивную карточку от свежей: промах на карточке возрастом в
+    минуты и есть настоящая дыра, промах на месячной — истёкший срок хранения.
+
+    Читать так:
+        railway logs -s MY_3_BOT | grep dictionary_state_miss | grep recovered=no
+    """
+    from datetime import timezone as _tz  # в модуле импортирован только datetime
+
+    age_min = "unknown"
+    sent_at = getattr(getattr(query, "message", None), "date", None)
+    if isinstance(sent_at, datetime) and sent_at.tzinfo is not None:
+        age_min = str(int((datetime.now(_tz.utc) - sent_at).total_seconds() // 60))
+    user = getattr(query, "from_user", None)
+    line = (
+        "dictionary_state_miss button=%s key=%s user_id=%s recovered=%s age_min=%s"
+    )
+    args = (
+        str(button or "").strip(),
+        str(state_key or "").strip(),
+        int(getattr(user, "id", 0) or 0),
+        "yes" if recovered else "no",
+        age_min,
+    )
+    if recovered:
+        logging.info(line, *args)
+    else:
+        logging.warning(line, *args)
+
+
+def _load_dictionary_save_options(query, option_key: str, *, button: str) -> dict | None:
+    """Варианты сохранения для кнопки: из таблицы, а если строки нет — из текста
+    карточки, которую человек видит на экране. Каждый промах уходит в лог."""
+    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
+    if payload:
+        return payload
+    payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    _log_dictionary_state_miss(
+        button=button, state_key=option_key, query=query, recovered=bool(payload),
+    )
+    return payload
 
 
 class _ReplyTextAdapter:
@@ -10308,6 +10422,8 @@ def _phrase_panel_line() -> str:
         проверено = int(meta.get("проверено") or 0)
         дефект = int(meta.get("дефект") or 0)
         спорных = int(meta.get("ушло владельцу") or 0)
+        людям = int(meta.get("ушло человеку") or 0) + int(meta.get("поднято из старых") or 0)
+        у_людей = int(meta.get("осталось у людей") or 0)
         не_спросили = int(meta.get("не спросили") or 0)
         осталось = int(meta.get("осталось") or 0)
         потрачено = float(meta.get("потрачено") or 0.0)
@@ -10318,6 +10434,14 @@ def _phrase_panel_line() -> str:
             out += f"\n   с кривыми примерами — уйдут на переписывание: <b>{дефект}</b>"
         if спорных:
             out += f"\n   голоса разошлись — ждут твоего решения: <b>{спорных}</b>"
+        if людям:
+            # Ошибка в САМОЙ фразе или в её переводе — это текст человека, и переписывать
+            # его молча мы не имеем права. Вопрос уходит автору на его экран проверки
+            # слов, с готовым вариантом на кнопке. До 31.08.2026 такие находки просто
+            # ложились отметкой в базу и умирали там — 384 карточки.
+            out += f"\n   ошибки в тексте людей — ушли авторам: <b>{людям}</b>"
+            if у_людей:
+                out += f" (в очереди ещё {у_людей})"
         if не_спросили:
             out += f"\n   спросить не удалось (вернутся к следующей ночи): {не_спросили}"
         if осталось:
@@ -19386,9 +19510,9 @@ def _rebuild_dictionary_save_options_payload_from_message(query, option_key: str
         "message_chat_id": int(message.chat_id) if getattr(message, "chat_id", None) is not None else None,
         "message_id": int(message.message_id) if getattr(message, "message_id", None) is not None else None,
     }
-    pending_dictionary_save_options[option_key] = payload
-    if card_key and card_key not in pending_dictionary_cards:
-        pending_dictionary_cards[card_key] = {
+    _put_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS, payload)
+    if card_key and not _get_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD):
+        _put_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD, {
             "user_id": user_id,
             "direction": f"{source_lang}-{target_lang}",
             "source_lang": source_lang,
@@ -19402,7 +19526,7 @@ def _rebuild_dictionary_save_options_payload_from_message(query, option_key: str
             "folder_name": str(folder_payload.get("name") or "").strip(),
             "folder_icon": str(folder_payload.get("icon") or "").strip(),
             "folder_is_none": bool(folder_payload.get("is_none")),
-        }
+        })
     return payload
 
 
@@ -20344,7 +20468,7 @@ def _store_pending_dictionary_card(
     key = hashlib.sha1(
         f"{user_id}:{direction}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
     ).hexdigest()[:20]
-    pending_dictionary_cards[key] = {
+    _put_dictionary_pending_state(key, PENDING_INPUT_STATE_DICTIONARY_CARD, {
         "user_id": user_id,
         "direction": direction,
         "source_lang": source_lang,
@@ -20353,10 +20477,7 @@ def _store_pending_dictionary_card(
         "lookup": lookup,
         "original_query": (original_query or source_text or "").strip(),
         "saved": False,
-    }
-    if len(pending_dictionary_cards) > 500:
-        oldest_key = next(iter(pending_dictionary_cards))
-        pending_dictionary_cards.pop(oldest_key, None)
+    })
     return key
 
 
@@ -20513,26 +20634,31 @@ async def _store_pending_dictionary_save_options(
             )
         except Exception:
             logging.exception("❌ Не удалось сохранить deep-dive карточку (словарь) user_id=%s", user_id)
-    pending_dictionary_save_options[key] = {
-        "user_id": user_id,
-        "card_key": card_key,
-        "direction": direction,
-        "source_lang": source_lang,
-        "target_lang": target_lang,
-        "lookup": lookup,
-        "options": options[:3],
-        "selected": [],
-        "question_request_key": str(question_request_key or "").strip(),
-        "keyboard_mode": str(keyboard_mode or "full").strip().lower() or "full",
-        "folder_id": resolved_folder_payload.get("folder_id"),
-        "folder_name": str(resolved_folder_payload.get("name") or "").strip(),
-        "folder_icon": str(resolved_folder_payload.get("icon") or "").strip(),
-        "folder_is_none": bool(resolved_folder_payload.get("is_none")),
-        "deepdive_card_id": deepdive_card_id,
-    }
-    if len(pending_dictionary_save_options) > 500:
-        oldest_key = next(iter(pending_dictionary_save_options))
-        pending_dictionary_save_options.pop(oldest_key, None)
+    # Запись в базу — не «в фоне, авось дойдёт»: пока её нет, кнопки под карточкой
+    # мертвы. Падение здесь честно уронит подготовку карточки, а не отправит человеку
+    # красивое сообщение с неработающими кнопками. Off the event loop — как и deep-dive.
+    await asyncio.to_thread(
+        _put_dictionary_pending_state,
+        key,
+        PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS,
+        {
+            "user_id": user_id,
+            "card_key": card_key,
+            "direction": direction,
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "lookup": lookup,
+            "options": options[:3],
+            "selected": [],
+            "question_request_key": str(question_request_key or "").strip(),
+            "keyboard_mode": str(keyboard_mode or "full").strip().lower() or "full",
+            "folder_id": resolved_folder_payload.get("folder_id"),
+            "folder_name": str(resolved_folder_payload.get("name") or "").strip(),
+            "folder_icon": str(resolved_folder_payload.get("icon") or "").strip(),
+            "folder_is_none": bool(resolved_folder_payload.get("is_none")),
+            "deepdive_card_id": deepdive_card_id,
+        },
+    )
     return key
 
 
@@ -20644,7 +20770,7 @@ def _build_save_variant_keyboard(
     speak_card_key: str | None = None,
     question_request_key: str | None = None,
 ) -> InlineKeyboardMarkup:
-    payload = pending_dictionary_save_options.get(option_key) or {}
+    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS) or {}
     payload = {
         **payload,
         "options": options[:3],
@@ -20702,7 +20828,7 @@ def _build_quick_dictionary_result_text(
 
 
 def _build_quick_dictionary_save_keyboard(option_key: str, options: list[dict]) -> InlineKeyboardMarkup:
-    payload = pending_dictionary_save_options.get(option_key) or {}
+    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS) or {}
     payload = {
         **payload,
         "options": options[:3],
@@ -21539,14 +21665,14 @@ async def _send_dictionary_lookup_result(
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
-    option_payload = pending_dictionary_save_options.get(prepared["option_key"])
+    option_payload = _get_dictionary_pending_state(prepared["option_key"], PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
     if isinstance(option_payload, dict):
         option_payload["message_chat_id"] = int(msg.chat_id)
         option_payload["message_id"] = int(msg.message_id)
         option_payload["feel_card_key"] = prepared["card_key"]
         option_payload["speak_card_key"] = prepared["card_key"]
         option_payload["question_request_key"] = prepared["question_request_key"]
-        pending_dictionary_save_options[prepared["option_key"]] = option_payload
+        _put_dictionary_pending_state(prepared["option_key"], PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS, option_payload)
     add_service_msg_id(context, msg.message_id)
 
 
@@ -21668,10 +21794,10 @@ async def _prepare_dictionary_lookup_response(
         source_lang=source_lang,
         target_lang=target_lang,
     )
-    card_payload = pending_dictionary_cards.get(card_key)
+    card_payload = _get_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD)
     if isinstance(card_payload, dict):
         card_payload["question_request_key"] = question_request_key
-        pending_dictionary_cards[card_key] = card_payload
+        _put_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD, card_payload)
 
     option_source_payload = {
         "source_lang": source_lang,
@@ -21715,13 +21841,13 @@ async def _prepare_dictionary_lookup_response(
         keyboard_mode="full",
         folder_payload=folder_payload,
     )
-    card_payload = pending_dictionary_cards.get(card_key)
+    card_payload = _get_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD)
     if isinstance(card_payload, dict):
         card_payload["folder_id"] = folder_payload.get("folder_id")
         card_payload["folder_name"] = folder_payload.get("name")
         card_payload["folder_icon"] = folder_payload.get("icon")
         card_payload["folder_is_none"] = bool(folder_payload.get("is_none"))
-        pending_dictionary_cards[card_key] = card_payload
+        _put_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD, card_payload)
     logging.info(
         "dictionary_lookup_prepare user_id=%s mode=%s pair=%s->%s lookup_ms=%s options_ms=%s folder_ms=%s options=%s total_ms=%s",
         int(user_id),
@@ -21822,12 +21948,12 @@ async def _send_dictionary_lookup_quick_result(
         send_ms,
         int((pytime.perf_counter() - started_perf) * 1000),
     )
-    option_payload = pending_dictionary_save_options.get(prepared["option_key"])
+    option_payload = _get_dictionary_pending_state(prepared["option_key"], PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
     if isinstance(option_payload, dict):
         option_payload["message_chat_id"] = int(msg.chat_id)
         option_payload["message_id"] = int(msg.message_id)
         option_payload["keyboard_mode"] = "quick"
-        pending_dictionary_save_options[prepared["option_key"]] = option_payload
+        _put_dictionary_pending_state(prepared["option_key"], PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS, option_payload)
     add_service_msg_id(context, msg.message_id)
 
 
@@ -22334,8 +22460,9 @@ async def handle_dictionary_feel_callback(update: Update, context: CallbackConte
         return
 
     card_key = parts[1].strip()
-    payload = pending_dictionary_cards.get(card_key)
+    payload = _get_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD)
     if not payload:
+        _log_dictionary_state_miss(button="card_feel", state_key=card_key, query=query, recovered=False)
         await query.answer("Карточка устарела. Запросите перевод заново.", show_alert=True)
         return
 
@@ -22448,7 +22575,7 @@ async def handle_dictionary_feel_callback(update: Update, context: CallbackConte
         )
         add_service_msg_id(context, msg.message_id)
         payload["feel_used"] = True
-        pending_dictionary_cards[card_key] = payload
+        _put_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD, payload)
         try:
             await asyncio.to_thread(
                 update_telegram_system_message_type,
@@ -22477,8 +22604,9 @@ async def handle_dictionary_speak_callback(update: Update, context: CallbackCont
         return
 
     card_key = parts[1].strip()
-    payload = pending_dictionary_cards.get(card_key)
+    payload = _get_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD)
     if not payload:
+        _log_dictionary_state_miss(button="card_speak", state_key=card_key, query=query, recovered=False)
         await query.answer("Карточка устарела. Запросите перевод заново.", show_alert=True)
         return
 
@@ -23038,7 +23166,7 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
 
     data = query.data or ""
     key = data.replace("dictsave:", "", 1).strip()
-    payload = pending_dictionary_cards.get(key)
+    payload = _get_dictionary_pending_state(key, PENDING_INPUT_STATE_DICTIONARY_CARD)
     if not payload and query.message and query.from_user:
         text = str(getattr(query.message, "text", "") or getattr(query.message, "caption", "") or "")
         source_lang, target_lang, options = _parse_dictionary_options_from_message_text(text)
@@ -23059,8 +23187,10 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
                 "saved": False,
                 "original_query": str(options[0].get("source") or "").strip(),
             }
-            pending_dictionary_cards[key] = payload
+            _put_dictionary_pending_state(key, PENDING_INPUT_STATE_DICTIONARY_CARD, payload)
+            _log_dictionary_state_miss(button="card_save", state_key=key, query=query, recovered=True)
     if not payload:
+        _log_dictionary_state_miss(button="card_save", state_key=key, query=query, recovered=False)
         await query.answer("Эта карточка уже недоступна. Запросите перевод ещё раз.", show_alert=True)
         return
 
@@ -23123,14 +23253,14 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
         pass
     await query.answer("Выберите вариант")
     msg = await query.message.reply_text(variants_text, reply_markup=keyboard)
-    option_payload = pending_dictionary_save_options.get(option_key)
+    option_payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
     if isinstance(option_payload, dict):
         option_payload["message_chat_id"] = int(msg.chat_id)
         option_payload["message_id"] = int(msg.message_id)
         option_payload["feel_card_key"] = key
         option_payload["speak_card_key"] = key
         option_payload["question_request_key"] = str(payload.get("question_request_key") or "").strip()
-        pending_dictionary_save_options[option_key] = option_payload
+        _put_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS, option_payload)
 
 
 async def handle_dictionary_save_option_callback(update: Update, context: CallbackContext) -> None:
@@ -23150,9 +23280,7 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
         await query.answer("Неверный индекс варианта.", show_alert=True)
         return
 
-    payload = pending_dictionary_save_options.get(option_key)
-    if not payload:
-        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    payload = _load_dictionary_save_options(query, option_key, button="save_option")
     if not payload:
         await query.answer("Варианты устарели. Нажмите сохранить ещё раз.", show_alert=True)
         return
@@ -23196,12 +23324,12 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
         ))
 
     card_key = payload.get("card_key")
-    card_payload = pending_dictionary_cards.get(card_key or "")
+    card_payload = _get_dictionary_pending_state(card_key or "", PENDING_INPUT_STATE_DICTIONARY_CARD)
     if isinstance(card_payload, dict):
         card_payload["saved"] = True
-        pending_dictionary_cards[card_key] = card_payload
+        _put_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD, card_payload)
 
-    pending_dictionary_save_options.pop(option_key, None)
+    _drop_dictionary_pending_state(option_key)
     try:  # in-place status on THIS message — no separate chat message
         await query.edit_message_reply_markup(reply_markup=_dict_save_status_keyboard("✅ Сохранено"))
     except Exception:
@@ -23733,9 +23861,7 @@ async def handle_dictionary_select_toggle_callback(update: Update, context: Call
         await query.answer("Неверный индекс варианта.", show_alert=True)
         return
 
-    payload = pending_dictionary_save_options.get(option_key)
-    if not payload:
-        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    payload = _load_dictionary_save_options(query, option_key, button="select_toggle")
     if not payload:
         await query.answer("Варианты устарели. Запросите снова.", show_alert=True)
         return
@@ -23756,7 +23882,7 @@ async def handle_dictionary_select_toggle_callback(update: Update, context: Call
     else:
         selected_set.add(option_idx)
     payload["selected"] = sorted(selected_set)
-    pending_dictionary_save_options[option_key] = payload
+    _put_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS, payload)
     keyboard = _build_save_variant_keyboard(
         option_key,
         options,
@@ -23782,9 +23908,7 @@ async def handle_dictionary_select_all_callback(update: Update, context: Callbac
         await query.answer("Неверный формат.", show_alert=True)
         return
     option_key = parts[1].strip()
-    payload = pending_dictionary_save_options.get(option_key)
-    if not payload:
-        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    payload = _load_dictionary_save_options(query, option_key, button="select_all")
     if not payload:
         await query.answer("Варианты устарели. Запросите снова.", show_alert=True)
         return
@@ -23794,7 +23918,7 @@ async def handle_dictionary_select_all_callback(update: Update, context: Callbac
         return
     options = payload.get("options") or []
     payload["selected"] = list(range(len(options)))
-    pending_dictionary_save_options[option_key] = payload
+    _put_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS, payload)
     keyboard = _build_save_variant_keyboard(
         option_key,
         options,
@@ -23863,11 +23987,11 @@ async def _save_dictionary_variants_in_place(
                 ))
         if saved > 0:
             card_key = payload.get("card_key")
-            cp = pending_dictionary_cards.get(card_key or "")
+            cp = _get_dictionary_pending_state(card_key or "", PENDING_INPUT_STATE_DICTIONARY_CARD)
             if isinstance(cp, dict):
                 cp["saved"] = True
-                pending_dictionary_cards[card_key] = cp
-            pending_dictionary_save_options.pop(option_key, None)
+                _put_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD, cp)
+            _drop_dictionary_pending_state(option_key)
             label = "✅ Сохранено" if saved == 1 else f"✅ Сохранено ({saved})"
         elif "лимит" in first_error.lower():
             label = "⚠️ Лимит бесплатного тарифа"
@@ -23903,9 +24027,7 @@ async def handle_dictionary_save_confirm_callback(update: Update, context: Callb
         await query.answer("Неверный формат.", show_alert=True)
         return
     option_key = parts[1].strip()
-    payload = pending_dictionary_save_options.get(option_key)
-    if not payload:
-        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    payload = _load_dictionary_save_options(query, option_key, button="save_confirm")
     if not payload:
         await query.answer("Варианты устарели. Запросите снова.", show_alert=True)
         return
@@ -23938,7 +24060,7 @@ async def handle_dictionary_quick_save_callback(update: Update, context: Callbac
 
     option_key = parts[1].strip()
     selector = parts[2].strip().lower()
-    payload = pending_dictionary_save_options.get(option_key)
+    payload = _load_dictionary_save_options(query, option_key, button="quick_save")
     if not payload:
         await query.answer("Варианты устарели. Запросите перевод снова.", show_alert=True)
         return
@@ -23976,23 +24098,23 @@ def _update_pending_dictionary_folder_payload(
     option_key: str,
     folder_payload: dict,
 ) -> dict | None:
-    payload = pending_dictionary_save_options.get(option_key)
+    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
     if not isinstance(payload, dict):
         return None
     payload["folder_id"] = folder_payload.get("folder_id")
     payload["folder_name"] = str(folder_payload.get("name") or "").strip()
     payload["folder_icon"] = str(folder_payload.get("icon") or "").strip()
     payload["folder_is_none"] = bool(folder_payload.get("is_none"))
-    pending_dictionary_save_options[option_key] = payload
+    _put_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS, payload)
     card_key = str(payload.get("card_key") or "").strip()
     if card_key:
-        card_payload = pending_dictionary_cards.get(card_key)
+        card_payload = _get_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD)
         if isinstance(card_payload, dict):
             card_payload["folder_id"] = folder_payload.get("folder_id")
             card_payload["folder_name"] = str(folder_payload.get("name") or "").strip()
             card_payload["folder_icon"] = str(folder_payload.get("icon") or "").strip()
             card_payload["folder_is_none"] = bool(folder_payload.get("is_none"))
-            pending_dictionary_cards[card_key] = card_payload
+            _put_dictionary_pending_state(card_key, PENDING_INPUT_STATE_DICTIONARY_CARD, card_payload)
     return payload
 
 
@@ -24006,9 +24128,7 @@ async def handle_dictionary_folder_callback(update: Update, context: CallbackCon
         await query.answer("Неверный формат кнопки.", show_alert=True)
         return
     option_key = parts[1].strip()
-    payload = pending_dictionary_save_options.get(option_key)
-    if not payload:
-        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    payload = _load_dictionary_save_options(query, option_key, button="folder_open")
     if not payload:
         await query.answer("Варианты устарели. Запросите перевод снова.", show_alert=True)
         return
@@ -24047,8 +24167,9 @@ async def handle_dictionary_folder_back_callback(update: Update, context: Callba
         await query.answer("Неверный формат кнопки.", show_alert=True)
         return
     option_key = parts[1].strip()
-    payload = pending_dictionary_save_options.get(option_key)
+    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
     if not payload:
+        _log_dictionary_state_miss(button="folder_back", state_key=option_key, query=query, recovered=False)
         await query.answer("Карточка уже устарела.", show_alert=True)
         return
     try:
@@ -24069,8 +24190,9 @@ async def handle_dictionary_folder_pick_callback(update: Update, context: Callba
         return
     option_key = parts[1].strip()
     selector = parts[2].strip()
-    payload = pending_dictionary_save_options.get(option_key)
+    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
     if not payload:
+        _log_dictionary_state_miss(button="folder_pick", state_key=option_key, query=query, recovered=False)
         await query.answer("Карточка уже устарела.", show_alert=True)
         return
     user = query.from_user
@@ -24121,6 +24243,7 @@ async def handle_dictionary_folder_pick_callback(update: Update, context: Callba
 
     updated_payload = _update_pending_dictionary_folder_payload(option_key, folder_payload)
     if not updated_payload:
+        _log_dictionary_state_miss(button="folder_pick_apply", state_key=option_key, query=query, recovered=False)
         await query.answer("Карточка уже устарела.", show_alert=True)
         return
     try:
@@ -24140,8 +24263,9 @@ async def handle_dictionary_folder_new_callback(update: Update, context: Callbac
         await query.answer("Неверный формат кнопки.", show_alert=True)
         return
     option_key = parts[1].strip()
-    payload = pending_dictionary_save_options.get(option_key)
+    payload = _get_dictionary_pending_state(option_key, PENDING_INPUT_STATE_DICTIONARY_SAVE_OPTIONS)
     if not payload:
+        _log_dictionary_state_miss(button="folder_new", state_key=option_key, query=query, recovered=False)
         await query.answer("Карточка уже устарела.", show_alert=True)
         return
     user = query.from_user

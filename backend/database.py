@@ -25313,6 +25313,8 @@ def _create_phrase_check_tables(cursor) -> None:
                         THEN 'panel'
                     WHEN NEW.judges::text LIKE '%""" + TRANSLATION_REVIEW_CATEGORY + """%'
                         THEN 'translation'
+                    WHEN NEW.judges::text LIKE '%""" + PERSONAL_REVIEW_CATEGORY + """%'
+                        THEN 'personal'
                     ELSE 'grammar' END;
             END IF;
             RETURN NEW;
@@ -25569,7 +25571,13 @@ def list_open_phrase_reviews(limit: int = 200) -> list[dict]:
                                    '[]'::json) AS history
                      FROM bt_3_phrase_review r
                      LEFT JOIN bt_3_lex_units u ON u.id = r.unit_id
-                    WHERE r.status = 'open' ORDER BY r.id LIMIT %s;""",
+                    -- ВИД НАЗЫВАЕТСЯ ЯВНО. Вопрос вида 'personal' адресован АВТОРУ
+                    -- фразы («так по-немецки не говорят, правильно вот так») и решается
+                    -- на его экране проверки слов. Владельцу он не нужен: решать за
+                    -- человека, что тому учить, мы не будем. Правило для всех читателей
+                    -- таблицы — docs/tasks/phrase_review_kinds.md.
+                    WHERE r.status = 'open' AND COALESCE(r.kind, 'grammar') <> 'personal'
+                    ORDER BY r.id LIMIT %s;""",
                 (int(limit),),
             )
             rows = cursor.fetchall()
@@ -25689,13 +25697,15 @@ def count_open_phrase_reviews_by_kind() -> dict:
             _ensure_phrase_check_tables(cursor)
             cursor.execute("SELECT judges FROM bt_3_phrase_review WHERE status = 'open';")
             rows = cursor.fetchall() or []
-    out = {"panel": 0, "grammar": 0, "translation": 0}
+    out = {"panel": 0, "grammar": 0, "translation": 0, "personal": 0}
     for (judges,) in rows:
         kind = phrase_review_kind(judges if isinstance(judges, list) else [])
         out[kind] = out.get(kind, 0) + 1
     # «Карточки словаря» — это панель И переводы: они приходят владельцу ОДНИМ
     # сообщением по вторникам и пятницам и разбираются на одном экране.
     out["cards"] = out["panel"] + out["translation"]
+    # 'personal' в сумму владельца не входит: это очередь автора фразы, и разбирает её
+    # он на своём экране проверки слов.
     return out
 
 
@@ -25711,10 +25721,57 @@ def count_noise_phrase_reviews() -> int:
 
 PANEL_REVIEW_CATEGORY = "панель из трёх голосов"
 TRANSLATION_REVIEW_CATEGORY = "перевод карточки"
+# ⛔ ВОПРОС АВТОРУ ФРАЗЫ, А НЕ ВЛАДЕЛЬЦУ. Заведено 31.08.2026.
+#
+# Панель судит четыре поля карточки. Примеры и значение сочинили МЫ — их чиним сами.
+# Саму фразу и её перевод написал ЧЕЛОВЕК, и правило владельца от 23.08.2026 запрещает
+# переписывать их молча: «это же сам пользователь записал, мы должны это оставить».
+# У правила была вторая половина — «помечаем и ПОКАЗЫВАЕМ ему», — и её не построили:
+# отметка ложилась в базу, а человек не узнавал ничего. Замер 31.08.2026: 384 такие
+# карточки, из них 369 у самого владельца. Он продолжал учить «zweiseitiger Verkehr»,
+# которого в немецком нет.
+#
+# Этот вид адресован АВТОРУ карточки и на экран владельца НЕ попадает: решать за
+# человека, что ему учить, мы не будем — ни ему за других, ни нам за него.
+PERSONAL_REVIEW_CATEGORY = "текст человека — решает он"
 # Вопросы НЕ о грамматике фразы. Живут в той же очереди сознательно: у владельца уже
 # шесть очередей с кнопками, седьмая означала бы седьмое место, куда надо не забыть
 # заглянуть. Различаются категорией, и по ней экран рисует свои кнопки.
 CARD_REVIEW_CATEGORIES = {PANEL_REVIEW_CATEGORY, TRANSLATION_REVIEW_CATEGORY}
+
+
+def _претензии_в_судей(claims: list, category: str) -> list:
+    """Претензии голосов → записи `judges`, как их читают экраны. Одна сборка на всех.
+
+    Одна претензия = одна запись: поле, слова, готовый вариант и приговор второго
+    голоса этому варианту. Ничего не склеиваем и не досочиняем: чего голос не сказал,
+    того здесь нет.
+    """
+    судьи = []
+    for claim in (claims or []):
+        if not isinstance(claim, dict):
+            continue
+        слова = str(claim.get("what") or "").strip()
+        поле = str(claim.get("field") or "").strip()
+        if not слова and not поле:
+            continue
+        запись = {
+            "verdict": "doubt",
+            "category": category,
+            "voice": int(claim.get("voice") or 0),
+            "field": поле,
+            "why": слова[:1000],
+            # Готовый вариант и приговор ему. Пусто — значит голос его не назвал; на
+            # экране будет претензия без кнопки, а не выдуманная кнопка.
+            "fix": str(claim.get("fix") or "").strip()[:300],
+            "corrected": "", "proposal": "",
+        }
+        приговор = claim.get("fix_check")
+        if isinstance(приговор, dict) and приговор.get("state"):
+            запись["fix_check"] = {"state": str(приговор.get("state")),
+                                   "why": str(приговор.get("why") or "")[:300]}
+        судьи.append(запись)
+    return судьи
 
 
 def open_panel_card_question(unit_id: int, text: str, translation: str,
@@ -25738,30 +25795,7 @@ def open_panel_card_question(unit_id: int, text: str, translation: str,
     вопрос (уникальный индекс на status='open'): второй раз владельцу одно и то же
     не показываем.
     """
-    судьи = []
-    for claim in (claims or []):
-        if not isinstance(claim, dict):
-            continue
-        слова = str(claim.get("what") or "").strip()
-        поле = str(claim.get("field") or "").strip()
-        if not слова and not поле:
-            continue
-        запись = {
-            "verdict": "doubt",
-            "category": PANEL_REVIEW_CATEGORY,
-            "voice": int(claim.get("voice") or 0),
-            "field": поле,
-            "why": слова[:1000],
-            # Готовый вариант и приговор ему. Пусто — значит голос его не назвал; на
-            # экране будет претензия без кнопки, а не выдуманная кнопка.
-            "fix": str(claim.get("fix") or "").strip()[:300],
-            "corrected": "", "proposal": "",
-        }
-        приговор = claim.get("fix_check")
-        if isinstance(приговор, dict) and приговор.get("state"):
-            запись["fix_check"] = {"state": str(приговор.get("state")),
-                                   "why": str(приговор.get("why") or "")[:300]}
-        судьи.append(запись)
+    судьи = _претензии_в_судей(claims, PANEL_REVIEW_CATEGORY)
     if not судьи:
         # Спор без единой названной претензии — это не вопрос к человеку, а пустой
         # звонок. Заводить его значит тратить его касание ни на что.
@@ -25782,6 +25816,142 @@ def open_panel_card_question(unit_id: int, text: str, translation: str,
             добавлено = bool(cursor.rowcount)
         conn.commit()
     return добавлено
+
+
+def open_personal_text_question(unit_id: int, text: str, translation: str,
+                                claims: list) -> bool:
+    """Вопрос АВТОРУ фразы: его текст неверен, вот как правильно.
+
+    ┌─ ЗАВЕДЕНО 31.08.2026. ЗДЕСЬ БЫЛА КУЧА, КОТОРУЮ НИКТО НЕ РАЗБИРАЛ. ────────────┐
+    │ Панель ставила вердикт «текст человека — решает он» и на этом замолкала:      │
+    │ отметка в базе была, а человек не узнавал ничего и продолжал учить неверное.  │
+    │ Замер 31.08.2026: 384 такие карточки. Владелец: «показывать человеку».        │
+    │                                                                              │
+    │ Мы НЕ переписываем его текст (правило 23.08.2026) — мы показываем ему, что    │
+    │ нашли, и даём готовый вариант одним касанием. Решает он.                      │
+    └──────────────────────────────────────────────────────────────────────────────┘
+
+    Ложится в ту же таблицу, что и остальные вопросы, но со своим видом: на экран
+    владельца он не попадает (`list_open_phrase_reviews`), а на экран проверки слов
+    автора — попадает (`word_confirm_digest.ВИДЫ_ДЛЯ_ЧЕЛОВЕКА`).
+
+    True — вопрос заведён; False — по этой единице уже открыт вопрос (уникальный
+    индекс на status='open') либо претензий не было вовсе.
+    """
+    судьи = _претензии_в_судей(claims, PERSONAL_REVIEW_CATEGORY)
+    if not судьи:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                """INSERT INTO bt_3_phrase_review
+                       (unit_id, text, translation, judges, kind, status)
+                   VALUES (%s, %s, %s, %s::jsonb, 'personal', 'open')
+                   ON CONFLICT DO NOTHING;""",
+                (int(unit_id), str(text or "")[:500], str(translation or "")[:500],
+                 json.dumps(судьи, ensure_ascii=False)))
+            добавлено = bool(cursor.rowcount)
+        conn.commit()
+    return добавлено
+
+
+def replace_personal_question_claims(unit_id: int, claims: list) -> bool:
+    """Переписать претензии в УЖЕ ОТКРЫТОМ личном вопросе — когда мы пересудили фразу.
+
+    ЗАЧЕМ. 92 личных вопроса заведены из старых отметок, у которых готового варианта не
+    было: до 31.08.2026 его у судьи не спрашивали. Владелец решил пересудить их новым
+    вопросом, чтобы и у них появилась кнопка «да, правильно так». Заводить второй
+    вопрос нельзя — он ляжет тем же человеку вторым касанием об одном и том же; значит
+    переписываем претензии в существующем.
+
+    Трогаем ТОЛЬКО вопросы вида 'personal': чужой вопрос (спор владельца, проверка
+    перевода) этой правкой не подменяется.
+    """
+    судьи = _претензии_в_судей(claims, PERSONAL_REVIEW_CATEGORY)
+    if not судьи:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "UPDATE bt_3_phrase_review SET judges = %s::jsonb "
+                "WHERE unit_id = %s AND status = 'open' AND kind = 'personal';",
+                (json.dumps(судьи, ensure_ascii=False), int(unit_id)))
+            обновлено = cursor.rowcount or 0
+        conn.commit()
+    return bool(обновлено)
+
+
+def close_personal_question(unit_id: int, why: str = "") -> bool:
+    """Закрыть личный вопрос, когда пересуд снял претензию.
+
+    Спрашивать человека о том, что мы САМИ больше не считаем ошибкой, нельзя: его
+    касание стоит дороже нашей строки в базе. След остаётся в `decided_text`.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "UPDATE bt_3_phrase_review SET status = 'closed', decided_at = NOW(), "
+                "decided_text = %s WHERE unit_id = %s AND status = 'open' "
+                "AND kind = 'personal';",
+                (str(why or "пересуд снял претензию")[:500], int(unit_id)))
+            закрыто = cursor.rowcount or 0
+        conn.commit()
+    return bool(закрыто)
+
+
+def open_question_kind(unit_id: int) -> str:
+    """Вид ОТКРЫТОГО вопроса по этой единице или «» — если открытого нет.
+
+    Нужен пересуду: чужой вопрос (спор владельца, проверка перевода) он не трогает и
+    поверх него ничего не заводит."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "SELECT COALESCE(kind, 'grammar') FROM bt_3_phrase_review "
+                "WHERE unit_id = %s AND status = 'open' LIMIT 1;", (int(unit_id),))
+            row = cursor.fetchone()
+    return str(row[0]) if row else ""
+
+
+def personal_question_fix(review_id: int) -> dict:
+    """Готовый вариант, который человеку ПОКАЗАЛИ на кнопке, — из базы, а не из браузера.
+
+    ⚠ ТЕКСТ КНОПКИ НАВЕРХ НЕ ЕДЕТ ВОВСЕ. Экран присылает только «нажал готовый
+    вариант», а какой это был текст, сервер читает здесь сам. Иначе кнопкой можно было
+    бы записать что угодно в чужую словарную статью — а правка расходится по всем
+    местам и по карточкам других людей.
+
+    Возвращает {"field": "headword"|"translation", "fix": "<текст>", "unit_id": N}
+    или пустой словарь, если готового варианта у этого вопроса нет.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_phrase_check_tables(cursor)
+            cursor.execute(
+                "SELECT unit_id, judges FROM bt_3_phrase_review "
+                "WHERE id = %s AND status = 'open' AND kind = 'personal';",
+                (int(review_id),))
+            row = cursor.fetchone()
+    if not row:
+        return {}
+    unit_id, judges = int(row[0]), (row[1] if isinstance(row[1], list) else [])
+    for j in judges:
+        if not isinstance(j, dict):
+            continue
+        поле = str(j.get("field") or "").strip()
+        текст = str(j.get("fix") or "").strip()
+        # Вариант, который наша проверка ЗАБРАКОВАЛА, кнопкой не отдаём: на экране
+        # человека нет места для возражения, а кнопка читается как «система уверена».
+        # Это то же правило, по которому спорные варианты не доходят до его экрана
+        # (`word_confirm_digest.кнопки_вариантов`, разбор 27.08.2026).
+        плохой = str((j.get("fix_check") or {}).get("state") or "") == "bad"
+        if текст and поле in ("headword", "translation") and not плохой:
+            return {"field": поле, "fix": текст, "unit_id": unit_id}
+    return {}
 
 
 def phrase_review_dispute(judges: list, default_field: str = "") -> dict:
@@ -25835,6 +26005,8 @@ def phrase_review_kind(judges: list) -> str:
             return "panel"
         if category == TRANSLATION_REVIEW_CATEGORY:
             return "translation"
+        if category == PERSONAL_REVIEW_CATEGORY:
+            return "personal"
     return "grammar"
 
 
@@ -26110,7 +26282,12 @@ def count_open_phrase_reviews() -> int:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
-            cursor.execute("SELECT count(*) FROM bt_3_phrase_review WHERE status = 'open';")
+            # Вид назван явно: 'personal' — очередь АВТОРА фразы, а не владельца
+            # (см. `list_open_phrase_reviews`). Считать её здесь значит показать ему
+            # число, которое от его нажатий не уменьшается.
+            cursor.execute("SELECT count(*) FROM bt_3_phrase_review "
+                           "WHERE status = 'open' "
+                           "AND COALESCE(kind, 'grammar') <> 'personal';")
             return int((cursor.fetchone() or [0])[0])
 
 
