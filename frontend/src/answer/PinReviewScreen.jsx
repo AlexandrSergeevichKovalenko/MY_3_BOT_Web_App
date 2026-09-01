@@ -168,7 +168,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
         </div>
         <div className="pinw-bar">
           {typing ? (
-            <button className="ans-btn pinw-done" onMouseDown={(e) => e.preventDefault()}
+            <button className="ans-btn pinw-done pinw-typing-keep" onMouseDown={(e) => e.preventDefault()}
               onClick={() => taRef.current?.blur()}>Готово ✓ — свернуть клавиатуру</button>
           ) : null}
           <button className="ans-btn pinw-gen" disabled={!descs.trim() || busy} onClick={submitScenes}>🎨 Сгенерировать сцены</button>

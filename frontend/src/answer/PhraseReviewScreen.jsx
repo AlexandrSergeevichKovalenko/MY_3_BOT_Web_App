@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTypingChrome } from './useTypingChrome.js';
 
 /**
  * Спорные фразы общего словаря (админ). Одна фраза на экран.
@@ -57,7 +58,9 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
   // выбор владельца пропадал: замер 20.08.2026 — 11 решений из 119 ушли в базу с
   // машинным русским, «Die Zuschlagsstoffe» стали «заполнителями» вместо «добавок».
   const [ownRu, setOwnRu] = useState('');
-  const [typing, setTyping] = useState(false);
+  // Пока курсор в поле, нижняя панель отдаёт свою высоту области правки, а само поле
+  // подкручивается к середине видимого. Правило и замер — в `useTypingChrome.js`.
+  const { typing, onFocus: onTypeFocus, onBlur: onTypeBlur } = useTypingChrome();
   // Отложенные на этом сеансе: в базе ничего не меняется, они просто уходят в конец
   // очереди, чтобы не крутиться перед глазами, пока разбираешь остальные.
   const [skipped, setSkipped] = useState(() => new Set());
@@ -561,8 +564,8 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
             <input
               className="pinrev-word" value={содержимое().ru} disabled={busy}
               onChange={(e) => правитьКарточку((d) => { d.ru = e.target.value; })}
-              onFocus={() => setTyping(true)}
-              onBlur={() => setTyping(false)}
+              onFocus={onTypeFocus}
+              onBlur={onTypeBlur}
               placeholder="перевод по-русски"
               enterKeyHint="done"
               onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
@@ -575,12 +578,12 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
                   <input
                     className="pinrev-word frv-ex-in" value={e.de} disabled={busy || e.deleted}
                     onChange={(ev) => правитьКарточку((d) => { d.ex[n].de = ev.target.value; })}
-                    onFocus={() => setTyping(true)} onBlur={() => setTyping(false)}
+                    onFocus={onTypeFocus} onBlur={onTypeBlur}
                     placeholder="пример по-немецки" />
                   <input
                     className="pinrev-word frv-ex-in" value={e.ru} disabled={busy || e.deleted}
                     onChange={(ev) => правитьКарточку((d) => { d.ex[n].ru = ev.target.value; })}
-                    onFocus={() => setTyping(true)} onBlur={() => setTyping(false)}
+                    onFocus={onTypeFocus} onBlur={onTypeBlur}
                     placeholder="перевод примера" />
                   <button className="ans-btn-ghost frv-ex-drop" disabled={busy}
                     onClick={() => правитьКарточку((d) => { d.ex[n].deleted = !d.ex[n].deleted; })}>
@@ -716,8 +719,8 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
             <input
               className="pinrev-word" value={question} disabled={busy} autoFocus
               onChange={(e) => setQuestion(e.target.value)}
-              onFocus={() => setTyping(true)}
-              onBlur={() => setTyping(false)}
+              onFocus={onTypeFocus}
+              onBlur={onTypeBlur}
               placeholder="например: mit и gegen тут разный смысл?"
               enterKeyHint="send"
               onKeyDown={(e) => { if (e.key === 'Enter' && question.trim()) { e.target.blur(); ask(); } }}
@@ -743,7 +746,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
             {/* Главное действие панельной карточки — ЕГО правки, а не пересборка.
                 Кнопка гаснет, пока он ничего не тронул: нажать «записать», ничего не
                 изменив, значит закрыть вопрос молча и ничем. */}
-            <button className="frv-save frv-main" disabled={busy || !естьПравки}
+            <button className="frv-save frv-main pinw-typing-keep" disabled={busy || !естьПравки}
               onClick={() => saveCardEdit()}>
               ✏️ Записать мои правки
             </button>
@@ -754,7 +757,7 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
           </>
         ) : null}
         {isTranslation ? (
-          <button className="frv-save frv-main" disabled={busy}
+          <button className="frv-save frv-main pinw-typing-keep" disabled={busy}
             onClick={() => decide('link_accept')}>
             🔤 Сохранить этот перевод как общий
           </button>
@@ -774,13 +777,16 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
         ) : null}
         {/* Прячем НЕ атрибутом `hidden`: у `.frv-own` стоит display:flex, и он бы
             перебил его — поле осталось бы на экране. */}
-        <div className="frv-own" style={isPanel && !fixingText ? { display: 'none' } : undefined}>
+        {/* `pinw-typing-keep` — этот блок ОБЯЗАН пережить открытие клавиатуры: правят
+            зачастую именно его, и спрятать поле, в котором стоит курсор, значит сбить
+            фокус и захлопнуть клавиатуру на первом же символе. */}
+        <div className="frv-own pinw-typing-keep" style={isPanel && !fixingText ? { display: 'none' } : undefined}>
           {isPanel ? <div className="frv-label">Сама фраза по-немецки</div> : null}
           <input
             className="pinrev-word" value={own} disabled={busy}
             onChange={(e) => setOwn(e.target.value)}
-            onFocus={() => setTyping(true)}
-            onBlur={() => setTyping(false)}
+            onFocus={onTypeFocus}
+            onBlur={onTypeBlur}
             placeholder={isTranslation ? 'или впиши свой перевод'
               : isPanel ? 'фраза по-немецки, как правильно' : 'или впиши свой вариант'}
             enterKeyHint="next"
@@ -792,8 +798,8 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
             <input
               className="pinrev-word frrev-own-ru" value={ownRu} disabled={busy}
               onChange={(e) => setOwnRu(e.target.value)}
-              onFocus={() => setTyping(true)}
-              onBlur={() => setTyping(false)}
+              onFocus={onTypeFocus}
+              onBlur={onTypeBlur}
               placeholder="перевод по-русски (можно не писать)"
               enterKeyHint="send"
               onKeyDown={(e) => { if (e.key === 'Enter') { e.target.blur(); saveOwn(); } }}
