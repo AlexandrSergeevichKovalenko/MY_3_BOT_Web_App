@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useTypingChrome } from './useTypingChrome.js';
 
 /**
  * Приёмка ребусов (админ). Единица решения — КАРТОЧКА, а не картинка.
@@ -24,6 +25,9 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
   const [cards, setCards] = useState(null);         // каталог для вкладок ready/waiting
   const [redrawFor, setRedrawFor] = useState('');   // слово, которое решили перерисовать
   const [comment, setComment] = useState('');      // своя правка вместо кнопки-причины
+  // Тот же каркас `.pinw`, что и у «Спорных фраз»: пока курсор в поле, нижняя панель
+  // отдаёт свою высоту (замер и правило — в `useTypingChrome.js` / `answer.css`).
+  const { typing, onFocus: onTypeFocus, onBlur: onTypeBlur } = useTypingChrome();
 
   // loud=true — нажали кнопку руками: молчаливая кнопка выглядит сломанной, поэтому
   // всегда отвечаем словами, даже когда ничего не изменилось.
@@ -266,7 +270,7 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
   const target = card.halves.find((h) => h.word === redrawFor);
 
   return (
-    <div className="pinw">
+    <div className={`pinw${typing ? ' typing' : ''}`}>
       <div className="pinw-top pinw-top-row">
         <span className="pinw-title">🧩 Приёмка</span>
         <span className="pinw-count">осталось {items.length}</span>
@@ -308,6 +312,7 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
                 отрисовку, поэтому «не хватает хвоста» работает лучше, чем «некрасиво». */}
             <input
               className="pinrev-word" value={comment} onChange={(e) => setComment(e.target.value)}
+              onFocus={onTypeFocus} onBlur={onTypeBlur}
               placeholder="или своими словами: что поправить"
               enterKeyHint="send"
               onKeyDown={(e) => {
