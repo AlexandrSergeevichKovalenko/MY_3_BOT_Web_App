@@ -14023,6 +14023,24 @@ def ensure_webapp_tables() -> None:
                 ALTER TABLE bt_3_rebus_component_images
                 ADD COLUMN IF NOT EXISTS gate_checked_at TIMESTAMPTZ;
             """)
+            # Ходовость слова по DWDS — кеш, чтобы не спрашивать чужой сервис дважды.
+            # `hits IS NULL` = «спрашивали, не ответил»: это НЕ ноль вхождений.
+            # Разбор 01.09.2026: см. backend/dwds_frequency.py.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_dwds_frequency (
+                    word            TEXT PRIMARY KEY,
+                    hits            BIGINT,
+                    corpus_total    BIGINT,
+                    per_billion     DOUBLE PRECISION,
+                    band            SMALLINT,
+                    lemma           TEXT,
+                    checked_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_dwds_frequency_unknown
+                ON bt_3_dwds_frequency (checked_at) WHERE hits IS NULL;
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_rebus_bank (
                     compound_id             TEXT PRIMARY KEY,
@@ -56028,6 +56046,75 @@ def upsert_rebus_bank_entry(entry: dict) -> None:
         conn.commit()
 
 
+# ─── Ходовость слова по DWDS (кеш) ───────────────────────────────────────────
+# Зачем и с какими оговорками — backend/dwds_frequency.py.
+
+def get_dwds_frequency(word: str) -> float | None:
+    """Частота слова из кеша. None — либо не спрашивали, либо спрашивали и НЕ
+    получили ответа. Оба случая означают «не знаем», а не «ноль»."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT per_billion FROM bt_3_dwds_frequency WHERE word = %s AND hits IS NOT NULL",
+                (str(word),),
+            )
+            row = cursor.fetchone()
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def upsert_dwds_frequency(answer: dict) -> None:
+    """Сохранить ответ DWDS. `hits=None` записывает «спрашивали, не ответил» —
+    отдельное состояние, по которому ночная задача переспрашивает."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_dwds_frequency
+                    (word, hits, corpus_total, per_billion, band, lemma, checked_at)
+                VALUES (%(word)s, %(hits)s, %(total)s, %(ppb)s, %(band)s, %(lemma)s, NOW())
+                ON CONFLICT (word) DO UPDATE SET
+                    hits         = EXCLUDED.hits,
+                    corpus_total = EXCLUDED.corpus_total,
+                    per_billion  = EXCLUDED.per_billion,
+                    band         = EXCLUDED.band,
+                    lemma        = EXCLUDED.lemma,
+                    checked_at   = NOW()
+                """,
+                {
+                    "word": str(answer.get("word") or ""),
+                    "hits": answer.get("hits"),
+                    "total": answer.get("total"),
+                    "ppb": answer.get("per_billion"),
+                    "band": answer.get("band"),
+                    "lemma": answer.get("lemma"),
+                },
+            )
+        conn.commit()
+
+
+def list_dwds_words_without_answer(limit: int = 200) -> list[str]:
+    """Слова, про которые мы спрашивали, а DWDS не ответил. Для ночного переспроса.
+    Замер 01.09.2026: при первом прогоне так замолчали 69 слов из 338 — все из-за
+    сети, и среди них были Bahnhof и Badezimmer."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT word FROM bt_3_dwds_frequency WHERE hits IS NULL "
+                "ORDER BY checked_at LIMIT %s",
+                (max(1, min(1000, int(limit or 200))),),
+            )
+            return [str(r[0]) for r in (cursor.fetchall() or [])]
+
+
+def get_existing_rebus_compound_ids() -> set[str]:
+    """Номера карточек, которые в банке УЖЕ есть. Приёмка по частотности касается
+    только новых: решение владельца 01.09.2026 — накопленное не трогаем."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT compound_id FROM bt_3_rebus_bank")
+            return {str(r[0]) for r in (cursor.fetchall() or [])}
+
+
 def sync_rebus_bank_from_code() -> dict:
     """Upsert all entries from REBUS_COMPOUND_BANK into DB. Returns stats.
 
@@ -56036,9 +56123,14 @@ def sync_rebus_bank_from_code() -> dict:
     being scheduled, since pick selection only filters on retired = FALSE.
     """
     from backend.rebus_bank import REBUS_COMPOUND_BANK, validate_rebus_entry_consistency
+    from backend.rebus_word_gate import judge_rebus_word
     inserted = 0
     skipped_inconsistent = 0
+    skipped_rare: list[str] = []
     code_ids = []
+    # Приёмка по ходовости касается ТОЛЬКО новых карточек: накопленное владелец
+    # решил не трогать (01.09.2026). Поэтому сперва узнаём, что в банке уже есть.
+    already = get_existing_rebus_compound_ids()
     for entry in REBUS_COMPOUND_BANK:
         # Root-cause guard: never ship an entry whose part word does not match the
         # compound (image-vs-text desync, e.g. "Birne" mislabelled as «яйцо»).
@@ -56049,6 +56141,14 @@ def sync_rebus_bank_from_code() -> dict:
                 "sync_rebus_bank: REJECTED %s — %s", entry.get("id"), consistency_error
             )
             continue
+        entry_id = str(entry.get("id") or "")
+        if entry_id not in already:
+            ok, why = judge_rebus_word(str(entry.get("compound") or ""))
+            if not ok:
+                skipped_rare.append(f"{entry.get('compound')} — {why}")
+                logging.warning("sync_rebus_bank: не пускаю новое слово %s — %s",
+                                entry.get("compound"), why)
+                continue
         try:
             upsert_rebus_bank_entry(entry)
             inserted += 1
@@ -56073,11 +56173,18 @@ def sync_rebus_bank_from_code() -> dict:
                 conn.commit()
         except Exception:
             logging.warning("sync_rebus_bank: retire-stale failed", exc_info=True)
+    if skipped_rare:
+        # Не молчим: отказ приёмки должен быть виден числом, иначе банк «почему-то
+        # не растёт» и никто не знает почему.
+        logging.warning("sync_rebus_bank: не пущено по ходовости %s: %s",
+                        len(skipped_rare), "; ".join(skipped_rare[:10]))
     return {
         "synced": inserted,
         "total": len(REBUS_COMPOUND_BANK),
         "retired_stale": retired,
         "skipped_inconsistent": skipped_inconsistent,
+        "skipped_rare": len(skipped_rare),
+        "skipped_rare_words": skipped_rare[:25],
     }
 
 
