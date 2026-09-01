@@ -30398,6 +30398,9 @@ function AppInner() {
   };
 
   const renderVideoTextButton = (extraClass = '') => {
+    // Ролика нет — кнопке нечего делать. На широкой раскладке панель живёт и без
+    // видео, и кнопка «текст ролика» там была бы обещанием без предмета.
+    if (!String(youtubeId || '').trim()) return null;
     const view = videoTextButtonView();
     const subtitlesReady = youtubeSubtitlesReady;
     return (
