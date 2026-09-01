@@ -32145,17 +32145,17 @@ async def handle_rebus_answer_callback(update: Update, context: CallbackContext)
         )
 
 
-async def rebus_pregate_sweep_job(context: CallbackContext) -> None:
-    """Ночной разбор картинок, которым «принято» проставила миграция 03.08.2026, а не
-    владелец (225 штук). Машина смотрит порцию за ночь; всё, в чём она усомнилась,
-    уходит владельцу в очередь приёмки с кнопками, а не удаляется само.
+async def rebus_image_sweep_job(context: CallbackContext) -> None:
+    """Ночной просмотр картинок: на каждой ли нарисован тот предмет, который написан.
 
+    Машина смотрит 25 штук за ночь; всё, в чём усомнилась, уходит владельцу в
+    очередь приёмки с кнопками и до его решения людям не выдаётся.
     Решение владельца 31.08.2026: «прогнать машиной, мне — только спорные»."""
     try:
-        from backend.rebus_generator import sweep_pregate_rebus_components
-        result = await asyncio.to_thread(sweep_pregate_rebus_components)
+        from backend.rebus_generator import sweep_unchecked_rebus_components
+        result = await asyncio.to_thread(sweep_unchecked_rebus_components)
     except Exception:
-        logging.warning("rebus_pregate_sweep_job failed", exc_info=True)
+        logging.warning("rebus_image_sweep_job failed", exc_info=True)
         return
 
     to_owner = result.get("to_owner") or []
@@ -32169,9 +32169,9 @@ async def rebus_pregate_sweep_job(context: CallbackContext) -> None:
             text = (
                 f"🧩 <b>Картинки ребуса: {len(to_owner)} под вопросом</b>\n\n"
                 f"{names}{'…' if len(to_owner) > 12 else ''}\n\n"
-                "Их рисовали до появления проверки, и «принято» им проставила миграция, "
-                "а не ты. Машина посмотрела и усомнилась — пока не решишь, эти задания "
-                f"людям не уходят.\n\nОсталось разобрать: {result.get('backlog_left')}."
+                "Машина посмотрела и решила, что нарисован не тот предмет. Пока не "
+                "решишь ты, эти задания людям не уходят.\n\n"
+                f"Осталось просмотреть: {result.get('backlog_left')}."
             )
             if bot is not None:
                 for admin_id in (get_admin_telegram_ids() or []):
@@ -32179,9 +32179,9 @@ async def rebus_pregate_sweep_job(context: CallbackContext) -> None:
                         await bot.send_message(chat_id=int(admin_id), text=text,
                                                parse_mode="HTML", reply_markup=_rebus_review_kb())
                     except Exception:
-                        logging.warning("pregate sweep: DM failed admin_id=%s", admin_id, exc_info=True)
+                        logging.warning("image_sweep: DM failed admin_id=%s", admin_id, exc_info=True)
         except Exception:
-            logging.warning("pregate sweep: owner notice failed", exc_info=True)
+            logging.warning("image_sweep: owner notice failed", exc_info=True)
 
 
 async def prepare_rebus_pool_job(context: CallbackContext) -> None:
@@ -47044,12 +47044,11 @@ def main():
             minute=45,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
-        # -- Разбор до-гейтовых картинок (03:20, когда трафика нет) --
-        # 225 картинок получили «принято» от миграции 03.08.2026, а не от владельца.
-        # Машина смотрит по 25 за ночь; спорное уходит владельцу с кнопками той же
-        # ночью. Решение владельца 31.08.2026.
+        # -- Просмотр картинок ребуса (03:20, когда трафика нет) --
+        # Машина смотрит по 25 картинок за ночь: тот ли предмет нарисован.
+        # Спорное уходит владельцу с кнопками той же ночью.
         scheduler.add_job(
-            lambda: submit_async(rebus_pregate_sweep_job, CallbackContext(application=application)),
+            lambda: submit_async(rebus_image_sweep_job, CallbackContext(application=application)),
             "cron",
             hour=3,
             minute=20,

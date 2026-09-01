@@ -56904,10 +56904,7 @@ def list_ready_rebus_component_images(limit: int = 200, *, pregate_only: bool = 
         "WHERE generation_status = 'ready' AND image_object_key IS NOT NULL "
     )
     if pregate_only:
-        # До-гейтовые: промпта нет (рисовались до появления проверки) И машина их с
-        # тех пор ни разу не смотрела. Второе условие важно, иначе ночной проход
-        # каждую ночь брал бы те же самые картинки и жёг деньги по кругу.
-        sql += "AND dalle_prompt IS NULL AND gate_checked_at IS NULL "
+        sql += "AND dalle_prompt IS NULL "
     sql += "ORDER BY word LIMIT %s"
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -56944,14 +56941,38 @@ def send_rebus_component_to_owner_review(word: str, reason: str) -> None:
         conn.commit()
 
 
-def count_rebus_pregate_backlog() -> int:
-    """Сколько до-гейтовых картинок машина ещё не смотрела — число для отчёта."""
+_UNCHECKED_IMAGES_WHERE = (
+    "generation_status = 'ready' AND image_object_key IS NOT NULL "
+    "AND image_object_key <> '' AND gate_checked_at IS NULL"
+)
+# ┌─ ПОЧЕМУ ОТБОР ИМЕННО ТАКОЙ. Исправлено 01.09.2026 по замечанию владельца. ──┐
+# │ Сперва ночной проход брал «картинки без сохранённого запроса на отрисовку»  │
+# │ (dalle_prompt IS NULL) — условие, подсмотренное в соседней админ-команде.   │
+# │ Оно отвечает на ДРУГОЙ вопрос и под него попадали 2 картинки из 226, а не   │
+# │ 225, как я сказал владельцу. Правильный вопрос один: «машина на эту         │
+# │ картинку смотрела?» Ответ хранится в gate_checked_at, больше ничего для     │
+# │ этого не нужно. Не изобретать сюда признаков, не отвечающих на этот вопрос. │
+# └────────────────────────────────────────────────────────────────────────────┘
+
+
+def list_rebus_images_never_checked(limit: int = 25) -> list[dict]:
+    """Готовые картинки, на которые машина ни разу не смотрела. Порция за ночь."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT COUNT(*) FROM bt_3_rebus_component_images "
-                "WHERE generation_status = 'ready' AND image_object_key IS NOT NULL "
-                "  AND dalle_prompt IS NULL AND gate_checked_at IS NULL"
+                "SELECT word, image_object_key FROM bt_3_rebus_component_images "
+                f"WHERE {_UNCHECKED_IMAGES_WHERE} ORDER BY word LIMIT %s",
+                (max(1, min(500, int(limit or 25))),),
+            )
+            return [{"word": r[0], "image_object_key": r[1]} for r in (cursor.fetchall() or [])]
+
+
+def count_rebus_images_never_checked() -> int:
+    """Сколько картинок ещё не смотрела машина — число для отчёта владельцу."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) FROM bt_3_rebus_component_images WHERE {_UNCHECKED_IMAGES_WHERE}"
             )
             return int((cursor.fetchone() or [0])[0])
 
