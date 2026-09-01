@@ -1023,14 +1023,23 @@ def verbs_of_form(form: str, *, limit: int = 8) -> list[str]:
     word = str(form or "").strip().casefold()
     if not word or " " in word:
         return []
+    # В Python «ß».casefold() == «ss», и весь наш словарь хранит ключи именно так
+    # (`lex_units.normalize_query`). А в таблицах справочника напечатано «gießt» — с ß.
+    # Поэтому дешёвая выборка ищет ОБА написания, иначе «giesst» не найдёт своей
+    # страницы. Поймано 01.09.2026 на «aufgießen»: разбор срывался, и указатель «auf»
+    # оставался висеть на глаголе.
+    spellings = {word}
+    if "ss" in word:
+        spellings.add(word.replace("ss", "ß"))
+    patterns = ["%" + spelling + "%" for spelling in sorted(spellings)]
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """SELECT verb, tables FROM bt_3_german_verb_paradigms
                         WHERE documented AND verb NOT LIKE %s
-                          AND tables::text ILIKE %s LIMIT 60;""",
-                    (_MODEL_KEY_PREFIX + "%", "%" + word + "%"),
+                          AND tables::text ILIKE ANY(%s) LIMIT 60;""",
+                    (_MODEL_KEY_PREFIX + "%", patterns),
                 )
                 rows = cur.fetchall()
     except Exception:

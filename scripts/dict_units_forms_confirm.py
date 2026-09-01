@@ -90,12 +90,16 @@ DELETABLE = (CLASS_A, CLASS_B)
 def load_reference(cur) -> dict[str, set[str]]:
     """Глагол → множество форм, напечатанных ЦЕЛЫМИ ячейками."""
     cur.execute(
-        """SELECT lower(verb), tables FROM bt_3_german_verb_paradigms
+        """SELECT verb, tables FROM bt_3_german_verb_paradigms
             WHERE documented AND verb NOT LIKE %s;""",
         (_MODEL_KEY_PREFIX + "%",),
     )
-    return {verb: whole_cell_forms(tables) for verb, tables in cur.fetchall()
-            if isinstance(tables, dict)}
+    # Ключ — casefold, ТОТ ЖЕ, что у написаний в bt_3_lex_surfaces
+    # (`lex_units.normalize_query`). SQL-функция lower() оставляет «ß» как есть, а
+    # casefold превращает его в «ss» — из-за этого расхождения «aufgießen» не
+    # находился в справочнике и его указатель «auf» переживал чистку (01.09.2026).
+    return {str(verb).casefold(): whole_cell_forms(tables)
+            for verb, tables in cur.fetchall() if isinstance(tables, dict)}
 
 
 def load_known_verbs(cur) -> set[str]:
@@ -115,6 +119,11 @@ def load_known_verbs(cur) -> set[str]:
 def classify(surface: str, lemma: str, reference: dict[str, set[str]],
              owner_of: dict[str, set[str]], known_verbs: set[str]) -> tuple[str, str]:
     """Класс указателя и НАСТОЯЩИЙ владелец написания (пустая строка — не назван)."""
+    # Разбор на приставку делается по ИСХОДНОМУ написанию, а не по casefold: в Python
+    # «ß».casefold() == «ss», и «aufgießen» превращается в «aufgiessen». Основа «giessen»
+    # в справочнике не значится (там «gießen»), разбор срывается, и «auf» оставалось
+    # висеть указателем на глагол. Поймано на живых данных 01.09.2026.
+    original_lemma = str(lemma or "").strip()
     surface = surface.casefold()
     lemma = lemma.casefold()
     cells = reference.get(lemma)
@@ -128,7 +137,7 @@ def classify(surface: str, lemma: str, reference: dict[str, set[str]],
     # «durchziehe» — тоже начало слова «durchziehen», но это НАСТОЯЩАЯ форма 1-го лица,
     # а не приставка. Приставку берём у разбора `split_separable_verb` — там список
     # собран прогоном по 439 отделяемым глаголам справочника, а не на глаз.
-    prefix, base = split_separable_verb(lemma)
+    prefix, base = split_separable_verb(original_lemma)
     if prefix and surface == prefix.casefold():
         return CLASS_A, surface
     # B. Написание напечатано у базового глагола, а лемма им заканчивается.

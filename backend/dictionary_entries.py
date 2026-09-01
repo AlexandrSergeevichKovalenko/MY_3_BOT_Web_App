@@ -447,7 +447,15 @@ def entries_for_query(query: str, *, source_lang: str, target_lang: str,
                 elif other_lang == "de":
                     raw += _from_base_reverse(cur, key)
                 raw = [item for item in raw if item["headword"]]
-                if not raw and query_lang == "de":
+                # Спросили НЕ ЗАГОЛОВОК: либо не нашли ничего, либо нашли по указателю
+                # словоформы, и написание не совпало ни с одной леммой. Оба случая —
+                # повод спросить справочник, чья это форма. Когда человек набрал саму
+                # лемму («gehen», «arbeiten»), сюда не заходим вовсе: лишнего запроса
+                # к справочнику на горячем пути быть не должно.
+                asked_a_headword = any(
+                    normalize_query(item["headword"]) == key for item in raw
+                )
+                if query_lang == "de" and not asked_a_headword:
                     # СЛОВОФОРМА. Человек нажал слово в фильме или в книге, а там оно
                     # почти всегда стоит в форме: «wühlt», «ging», «nimmt». Словарь —
                     # словарь ЛЕММ, поэтому раньше он здесь молчал, и строка «ПЕРЕВОД»
@@ -471,12 +479,22 @@ def entries_for_query(query: str, *, source_lang: str, target_lang: str,
                                             other_lang=other_lang)
                         found += _from_base_forward(cur, lemma_key)
                         for item in found:
-                            if item["headword"]:
-                                # Подпись для экрана: человек нажал «wühlt», а видит
-                                # «wühlen» — он обязан понимать, почему.
-                                item["form_of"] = lemma
-                                item["asked_form"] = text
-                                raw.append(item)
+                            if not item["headword"]:
+                                continue
+                            # Справочник сказал: это форма ГЛАГОЛА. Существительное с
+                            # тем же написанием леммы такой формы не имеет — «fängt» не
+                            # форма слова «das Fangen» (салочки), а «gräbt» не форма
+                            # слова «der Graben» (канава). Раньше они выигрывали по
+                            # частотности и отвечали вместо глагола.
+                            # Часть речи неизвестна — не судим и берём: молчание нашего
+                            # банка не повод выбросить единственный найденный ответ.
+                            if item["pos"] and item["pos"] != "verb":
+                                continue
+                            # Подпись для экрана: человек нажал «wühlt», а видит
+                            # «wühlen» — он обязан понимать, почему.
+                            item["form_of"] = lemma
+                            item["asked_form"] = text
+                            raw.append(item)
                 if not raw:
                     return []
                 # Род ставится ДО склейки: он входит в ключ статьи, и без него
@@ -501,6 +519,12 @@ def entries_for_query(query: str, *, source_lang: str, target_lang: str,
     # узнает, что оно значит.
     entries = [e for e in entries if e["translations"]]
     entries.sort(key=lambda e: (
+        # Статья, подтверждённая справочником форм, идёт первой: человек нажал «fängt»,
+        # и это форма ГЛАГОЛА «fangen». Существительное «das Fangen» (салочки) такой
+        # формы не имеет — оно лишь совпадает написанием с леммой, и до 01.09.2026
+        # выигрывало по частотности, отвечая на «fängt» словом «салочки».
+        # Из списка оно НЕ пропадает: омонимы человек должен видеть рядом.
+        0 if e.get("form_of") else 1,
         e["rank"] if e["rank"] is not None else 10 ** 9,
         _POS_ORDER.get(e["pos"], 9),
         e["headword"].lower(),
