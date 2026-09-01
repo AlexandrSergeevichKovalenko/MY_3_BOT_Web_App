@@ -32187,7 +32187,18 @@ async def rebus_pregate_sweep_job(context: CallbackContext) -> None:
 async def prepare_rebus_pool_job(context: CallbackContext) -> None:
     """Startup + periodic: sync bank from code and fill composed image pool."""
     try:
-        from backend.rebus_generator import prepare_rebus_pool, fill_missing_rebus_image_versions
+        from backend.rebus_generator import (
+            prepare_rebus_pool, fill_missing_rebus_image_versions,
+            retry_unanswered_dwds_words,
+        )
+        # Слова, про которые DWDS промолчал, в банк не пускаются — значит очередь
+        # неответов обязана рассасываться сама, без человека.
+        try:
+            silent = await asyncio.to_thread(retry_unanswered_dwds_words)
+            if silent.get("asked"):
+                logging.info("rebus_pool_job dwds: %s", silent)
+        except Exception:
+            logging.warning("rebus_pool_job: retry_unanswered_dwds_words failed", exc_info=True)
         # Сначала — версии и отпечатки для всего, у чего их нет. Без версии карточка
         # не выдаётся вовсе (иначе перерисовка не доедет до людей — Telegram кеширует
         # по адресу), поэтому это не уборка «когда-нибудь», а условие работы пула.

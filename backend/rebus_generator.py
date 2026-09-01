@@ -138,6 +138,35 @@ def sweep_pregate_rebus_components(limit: int = REBUS_PREGATE_SWEEP_PER_NIGHT) -
     return result
 
 
+def retry_unanswered_dwds_words(limit: int = 200) -> dict:
+    """Переспросить у DWDS слова, про которые он в прошлый раз не ответил.
+
+    «Не ответил» — отдельное состояние, а не ноль вхождений: при первом прогоне
+    01.09.2026 так замолчали 69 слов из 338, все по сетевым причинам, и среди них
+    были Bahnhof и Badezimmer. Пока ответа нет, слово в банк не пускается —
+    поэтому очередь обязана рассасываться сама, а не ждать человека.
+    """
+    import time
+
+    from backend.database import list_dwds_words_without_answer, upsert_dwds_frequency
+    from backend.dwds_frequency import ask_dwds
+
+    words = list_dwds_words_without_answer(limit)
+    answered = still_silent = 0
+    for word in words:
+        answer = ask_dwds(word)
+        if answer is None:
+            still_silent += 1
+        else:
+            upsert_dwds_frequency(answer)
+            answered += 1
+        time.sleep(1.0)      # чужой бесплатный сервис — ходим по одному запросу в секунду
+    result = {"asked": len(words), "answered": answered, "still_silent": still_silent}
+    if words:
+        logging.info("dwds_retry: %s", result)
+    return result
+
+
 def fill_missing_rebus_image_versions() -> dict:
     """Проставить версию содержимого и отпечаток половинок там, где их ещё нет.
 
@@ -1208,6 +1237,14 @@ def _validate_replenishment_entry(entry: dict, existing_set: set[str]) -> str | 
     wrong = entry.get("wrong_options")
     if not isinstance(wrong, list) or len(wrong) != 3:
         return "wrong_options must be list of 3"
+    # Ходовость — последней, потому что она единственная ходит в сеть. Именно этим
+    # путём в банк попали Geldbeutelverschluss (застёжка кошелька, 0,0 вхождений на
+    # миллиард) и Steuerflasche («бутылка для измерения налога», 0,4). Проверка —
+    # backend/rebus_word_gate.py, решение владельца 01.09.2026.
+    from backend.rebus_word_gate import judge_rebus_word
+    ok, why = judge_rebus_word(compound)
+    if not ok:
+        return why
     return None
 
 
