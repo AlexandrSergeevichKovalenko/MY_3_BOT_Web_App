@@ -1454,6 +1454,29 @@ body:has(.webapp-page.is-theme-light),
 .topbar-home-row .youtube-topsearch-open:hover,
 .topbar-home-row .youtube-topdict-open:hover { background: #fff; color: #c1873f; border-color: rgba(193, 135, 63, .5); }
 
+/* ── «Пересказ»: кнопка «текст ролика» ──────────────────────────────────────
+   Одна кнопка на две панели — телефонную (.youtube-watchbar-btn) и широкую
+   (.youtube-topdict-open), поэтому здесь только состояния, а размер и форма
+   достаются от базового класса своей панели.
+   Три состояния и ничего больше: обычное — «собрать», янтарное с процентом —
+   «собирается», зелёное — «текст готов, открыть». */
+.youtube-textbtn.is-building {
+  background: rgba(193, 135, 63, .14);
+  border-color: rgba(193, 135, 63, .45);
+  color: #a8702f;
+}
+.youtube-textbtn.is-ready {
+  background: rgba(46, 140, 87, .14);
+  border-color: rgba(46, 140, 87, .45);
+  color: #2e8c57;
+}
+.youtube-textbtn-pct {
+  font-family: inherit; font-weight: 800; font-size: 11px; letter-spacing: -.02em;
+  line-height: 1; font-variant-numeric: tabular-nums;
+}
+@keyframes youtube-textbtn-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .55 } }
+.youtube-textbtn.is-building { animation: youtube-textbtn-pulse 1.8s ease-in-out infinite; }
+
 /* Быстрый словарь поверх приложения (тот же оверлей, что в standalone-PWA).
    .ans-root сам разворачивается на весь экран (как на телефоне); ✕ в шапке закрывает. */
 .quick-dict-portal { position: fixed; inset: 0; z-index: 90; }

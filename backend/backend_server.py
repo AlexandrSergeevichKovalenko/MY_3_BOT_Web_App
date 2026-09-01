@@ -488,6 +488,14 @@ from backend.database import (
     upsert_dictionary_lookup_cache,
     get_youtube_transcript_cache,
     upsert_youtube_transcript_cache,
+    get_video_reader_text,
+    claim_video_reader_text_build,
+    set_video_reader_text_progress,
+    finish_video_reader_text,
+    fail_video_reader_text,
+    log_video_reader_text_request,
+    get_video_reader_text_slot,
+    find_reader_document_by_source_url,
     upsert_youtube_translations,
     get_youtube_watch_state,
     get_latest_youtube_watch_state,
@@ -61710,6 +61718,324 @@ def translate_youtube_subtitles():
             **summarize_db_acquire_events(db_acquire_events),
         )
         return jsonify(response_payload)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  «Пересказ»: текст ролика уезжает в читалку
+#
+#  Зачем (владелец, 01.09.2026): «занимаемся с учителем, он даёт видео, мы смотрим,
+#  а на уроке разбираем. Прочитать текст помогло бы сильно, да и под рукой он не
+#  всегда — читать иногда проще, чем смотреть».
+#
+#  Устройство в двух словах. Текст ОДИН на ролик и общий для всех: собрал первый —
+#  читают все, и нам это второй раз ничего не стоит. Книга у каждого своя (своя
+#  закладка, свой прогресс), поэтому на нажатие заводится заготовка в библиотеке,
+#  а общий текст доливается в неё, когда готов. Сборка идёт фоном: владелец выбрал,
+#  чтобы видео при этом не прерывалось.
+#
+#  Плата за сборку — недельный слот: один НОВЫЙ ролик в неделю на платного человека
+#  (решение владельца 01.09.2026). Открытие уже готового слот НЕ тратит.
+# ═════════════════════════════════════════════════════════════════════════════
+
+_VIDEO_TEXT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, int((os.getenv("VIDEO_READER_TEXT_MAX_WORKERS") or "2").strip() or "2")),
+    thread_name_prefix="video-text",
+)
+
+
+def _video_text_source_url(video_id: str) -> str:
+    return f"https://youtu.be/{video_id}"
+
+
+def _video_text_cover_url(video_id: str) -> str:
+    return f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
+
+
+def _video_text_title(video_id: str, title: str) -> str:
+    """Заголовок книги — название ролика. Названия нет — ставим честное «Текст
+    видео», а не подсовываем человеку идентификатор из YouTube."""
+    clean = str(title or "").strip()
+    return clean[:300] if clean else "Текст видео"
+
+
+def _run_video_reader_text_build(*, video_id: str, user_id: int) -> None:
+    """Собрать ОБЩИЙ текст ролика. Идёт в фоне, ничего не возвращает: результат
+    ложится в bt_3_video_reader_texts, оттуда его забирают все ожидающие.
+
+    Падение ловится ровно для того, чтобы записать ПРИЧИНУ в строку ролика и снять
+    замок. Наружу при этом уходит статус failed с текстом ошибки — не пустой текст,
+    выданный за готовый, и не молчание.
+    """
+    from backend.video_reader_text import build_reader_text
+
+    try:
+        data, _tier, _ms = _load_cached_youtube_transcript_data(video_id)
+        items = (data or {}).get("items") or []
+        if not items:
+            raise RuntimeError("субтитры ролика не найдены")
+        result = build_reader_text(
+            items=items,
+            user_id=int(user_id),
+            on_progress=lambda done, total: set_video_reader_text_progress(
+                video_id, done=done, total=total
+            ),
+        )
+        finish_video_reader_text(
+            video_id,
+            text=result["text"],
+            mode=result["mode"],
+            model=result["model"],
+            source_chars=result["source_chars"],
+            result_chars=result["result_chars"],
+            chunks=result["chunks"],
+        )
+        logging.info(
+            "текст ролика собран video_id=%s режим=%s %d→%d символов",
+            video_id, result["mode"], result["source_chars"], result["result_chars"],
+        )
+    except Exception as exc:
+        logging.exception("текст ролика НЕ собран video_id=%s", video_id)
+        fail_video_reader_text(video_id, error=str(exc))
+
+
+def _video_text_document(*, user_id: int, source_lang: str, target_lang: str,
+                         video_id: str, title: str) -> dict | None:
+    """Книга-заготовка этого человека под этот ролик. Уже есть — берём её, а не
+    заводим вторую: повторное нажатие не должно плодить одинаковые книги."""
+    source_url = _video_text_source_url(video_id)
+    existing = find_reader_document_by_source_url(
+        int(user_id), source_lang=source_lang, target_lang=target_lang, source_url=source_url,
+    )
+    if existing:
+        return existing
+    return create_reader_library_document_placeholder(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        title=_video_text_title(video_id, title),
+        source_type="video",
+        source_url=source_url,
+        cover_image_url=_video_text_cover_url(video_id),
+    )
+
+
+def _video_text_deliver(*, user_id: int, source_lang: str, target_lang: str,
+                        video_id: str, title: str, cached: dict) -> int:
+    """Долить готовый общий текст в книгу этого человека. Возвращает id книги.
+
+    Идемпотентна: если книга уже готова, второй раз ничего не переписываем — иначе
+    доливка затёрла бы прогресс чтения тому, кто уже начал читать.
+    """
+    document = _video_text_document(
+        user_id=int(user_id), source_lang=source_lang, target_lang=target_lang,
+        video_id=video_id, title=title,
+    )
+    if not document:
+        raise RuntimeError("не удалось завести книгу в библиотеке")
+    document_id = int(document.get("id") or 0)
+    if str(document.get("processing_status") or "").strip().lower() == "ready":
+        return document_id
+    finalized = finalize_reader_library_document_processing(
+        user_id=int(user_id),
+        document_id=document_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        title=_video_text_title(video_id, title or cached.get("title") or ""),
+        source_type="video",
+        source_url=_video_text_source_url(video_id),
+        content_text=str(cached.get("content_text") or ""),
+        cover_image_url=_video_text_cover_url(video_id),
+    )
+    if not finalized:
+        raise RuntimeError("не удалось сохранить текст в библиотеку")
+    return int(finalized.get("id") or document_id)
+
+
+def _video_text_percent(cached: dict | None):
+    """Проценты для кнопки. Пока неизвестно, сколько всего кусков, возвращаем None —
+    и человек видит «Готовим…» без числа. Выдуманное «5%» здесь ничем не лучше лжи."""
+    if not cached:
+        return None
+    total = int(cached.get("chunks_total") or 0)
+    if total <= 0:
+        return None
+    done = int(cached.get("chunks_done") or 0)
+    return max(0, min(99, round(done * 100 / total)))
+
+
+def _video_text_resolve_user(payload: dict):
+    init_data = payload.get("initData")
+    if init_data and _telegram_hash_is_valid(init_data):
+        user_id = (_parse_telegram_init_data(init_data).get("user") or {}).get("id")
+        if user_id:
+            return int(user_id)
+    resolved = _resolve_webapp_user_id(payload)
+    return int(resolved) if resolved else None
+
+
+_VIDEO_TEXT_PRO_MESSAGE = (
+    "Текст видео — функция «Полного доступа». Оформи его, и любой ролик можно будет "
+    "не только смотреть, но и читать в читалке: с переводом по нажатию и закладками."
+)
+
+
+@app.route("/api/webapp/video/text/start", methods=["POST"])
+def video_reader_text_start():
+    payload = request.get_json(silent=True) or {}
+    user_id = _video_text_resolve_user(payload)
+    if not user_id:
+        return jsonify({"error": "initData обязателен"}), 400
+    video_id = str(payload.get("video_id") or "").strip()
+    if not video_id:
+        return jsonify({"error": "video_id обязателен"}), 400
+    title = str(payload.get("title") or "").strip()
+    confirmed = bool(payload.get("confirm"))
+
+    try:
+        entitlement, _subscription = _resolve_user_entitlement(user_id=int(user_id))
+        effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower()
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка проверки плана: {exc}"}), 500
+    if effective_mode not in ("pro", "trial"):
+        return jsonify({"error": _VIDEO_TEXT_PRO_MESSAGE, "error_code": "PRO_ONLY"}), 403
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    cached = get_video_reader_text(video_id)
+    status = str((cached or {}).get("status") or "")
+
+    # 1. Текст уже собран — отдаём сразу. Слот не тратится: нам это ничего не стоит.
+    if cached and status == "ready":
+        try:
+            document_id = _video_text_deliver(
+                user_id=int(user_id), source_lang=source_lang, target_lang=target_lang,
+                video_id=video_id, title=title, cached=cached,
+            )
+        except Exception as exc:
+            logging.exception("текст ролика: не отдали готовое video_id=%s", video_id)
+            return jsonify({"error": f"Текст готов, но не открылся: {exc}"}), 500
+        log_video_reader_text_request(int(user_id), video_id, was_new=False)
+        return jsonify({"state": "ready", "percent": 100, "document_id": document_id,
+                        "mode": cached.get("mode") or ""})
+
+    # 2. Ролик уже собирает кто-то другой (или мы сами раньше) — становимся в очередь
+    #    к тому же тексту. Второй сборки не запускаем и слот не тратим.
+    from backend.database import VIDEO_READER_TEXT_STALE_SECONDS
+    if cached and status == "building" and float(cached.get("age_seconds") or 0) < VIDEO_READER_TEXT_STALE_SECONDS:
+        try:
+            document = _video_text_document(
+                user_id=int(user_id), source_lang=source_lang, target_lang=target_lang,
+                video_id=video_id, title=title,
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Не удалось завести книгу: {exc}"}), 500
+        return jsonify({"state": "building", "percent": _video_text_percent(cached),
+                        "document_id": int((document or {}).get("id") or 0)})
+
+    # 3. Собирать заново. Вот это стоит денег — значит, недельный слот.
+    slot = get_video_reader_text_slot(int(user_id))
+    if not slot.get("free"):
+        return jsonify({
+            "state": "limit",
+            "next_at": slot.get("next_at") or "",
+            "error": "Один текст видео в неделю. Следующий откроется автоматически.",
+        }), 429
+
+    data, _tier, _ms = _load_cached_youtube_transcript_data(video_id)
+    items = (data or {}).get("items") or []
+    if not items:
+        return jsonify({
+            "state": "no_subtitles",
+            "error": "У этого ролика нет субтитров — собирать текст не из чего.",
+        }), 409
+
+    if not confirmed:
+        # Слот один на неделю, тратить его молча нельзя: человек должен знать, на что
+        # он его тратит, ДО того как мы пойдём к модели за деньги.
+        return jsonify({"state": "confirm_needed",
+                        "title": _video_text_title(video_id, title),
+                        "source_chars": len("".join(str((i or {}).get("text") or "") for i in items))})
+
+    if not claim_video_reader_text_build(video_id, title=_video_text_title(video_id, title)):
+        # Кто-то опередил на доли секунды — присоединяемся к его сборке, слот целый.
+        fresh = get_video_reader_text(video_id)
+        document = _video_text_document(
+            user_id=int(user_id), source_lang=source_lang, target_lang=target_lang,
+            video_id=video_id, title=title,
+        )
+        return jsonify({"state": "building", "percent": _video_text_percent(fresh),
+                        "document_id": int((document or {}).get("id") or 0)})
+
+    log_video_reader_text_request(int(user_id), video_id, was_new=True)
+    try:
+        document = _video_text_document(
+            user_id=int(user_id), source_lang=source_lang, target_lang=target_lang,
+            video_id=video_id, title=title,
+        )
+    except Exception as exc:
+        fail_video_reader_text(video_id, error=f"книга не завелась: {exc}")
+        return jsonify({"error": f"Не удалось завести книгу: {exc}"}), 500
+    _VIDEO_TEXT_EXECUTOR.submit(_run_video_reader_text_build, video_id=video_id, user_id=int(user_id))
+    return jsonify({"state": "building", "percent": None,
+                    "document_id": int((document or {}).get("id") or 0)})
+
+
+@app.route("/api/webapp/video/text/status", methods=["POST"])
+def video_reader_text_status():
+    payload = request.get_json(silent=True) or {}
+    user_id = _video_text_resolve_user(payload)
+    if not user_id:
+        return jsonify({"error": "initData обязателен"}), 400
+    video_id = str(payload.get("video_id") or "").strip()
+    if not video_id:
+        return jsonify({"error": "video_id обязателен"}), 400
+    title = str(payload.get("title") or "").strip()
+
+    cached = get_video_reader_text(video_id)
+    if not cached:
+        return jsonify({"state": "none"})
+    status = str(cached.get("status") or "")
+    if status == "failed":
+        # Причину пишем в лог, человеку — человеческий текст. Кнопка вернётся в
+        # исходное состояние, и попробовать можно снова: замок с failed снимается.
+        logging.warning("текст ролика failed video_id=%s: %s", video_id, cached.get("error"))
+        # Книга-заготовка этого человека иначе осталась бы в библиотеке навсегда в
+        # состоянии «готовится» — вечная крутилка, которая никогда не кончится.
+        # Молча её не убираем (удаление обязано оставлять след): помечаем неудачей,
+        # и библиотека показывает это тем же способом, что и у неудавшихся книг.
+        try:
+            source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+            existing = find_reader_document_by_source_url(
+                int(user_id), source_lang=source_lang, target_lang=target_lang,
+                source_url=_video_text_source_url(video_id),
+            )
+            if existing and str(existing.get("processing_status") or "").lower() != "ready":
+                set_reader_library_document_processing_status(
+                    user_id=int(user_id),
+                    document_id=int(existing["id"]),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    status="failed",
+                    error="Не удалось собрать текст этого ролика.",
+                )
+        except Exception:
+            logging.warning("текст ролика: заготовку не пометили неудачей video_id=%s",
+                            video_id, exc_info=True)
+        return jsonify({"state": "failed",
+                        "error": "Не удалось собрать текст этого ролика. Попробуйте ещё раз."})
+    if status != "ready":
+        return jsonify({"state": "building", "percent": _video_text_percent(cached)})
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        document_id = _video_text_deliver(
+            user_id=int(user_id), source_lang=source_lang, target_lang=target_lang,
+            video_id=video_id, title=title, cached=cached,
+        )
+    except Exception as exc:
+        logging.exception("текст ролика: не долили в книгу video_id=%s", video_id)
+        return jsonify({"error": f"Текст готов, но не открылся: {exc}"}), 500
+    return jsonify({"state": "ready", "percent": 100, "document_id": document_id,
+                    "mode": cached.get("mode") or ""})
 
 
 @app.route("/api/webapp/reader/sources", methods=["POST"])

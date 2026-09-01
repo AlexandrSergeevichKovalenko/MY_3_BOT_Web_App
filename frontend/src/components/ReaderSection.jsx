@@ -924,7 +924,7 @@ export default function ReaderSection(props) {
         });
         // Books stay in the permanent library; web articles are read-once and shown
         // in a separate auto-cleaning «Недавние статьи» group so they don't clutter it.
-        const libraryBooks = visibleLibraryItems.filter((it) => String(it?.source_type || '') !== 'html');
+        const libraryBooks = visibleLibraryItems.filter((it) => !['html', 'video'].includes(String(it?.source_type || '')));
         const libraryArticles = visibleLibraryItems.filter((it) => String(it?.source_type || '') === 'html');
         const renderReaderLibCard = (item) => {
           const progress = Math.max(0, Math.min(100, Number(item?.progress_percent || 0)));
@@ -1050,8 +1050,12 @@ export default function ReaderSection(props) {
             if (!readerIncludeArchived && Boolean(item?.is_archived)) return false;
             return true;
           });
-          const allBooks = notArchivedBase.filter((it) => String(it?.source_type || '') !== 'html');
+          // Тексты роликов («Пересказ») живут на своей полке, а не вперемешку с книгами:
+          // через месяц занятий их там десятки, и книги в них тонут. Решение владельца
+          // 01.09.2026 — «отдельная полка в библиотеке».
+          const allBooks = notArchivedBase.filter((it) => !['html', 'video'].includes(String(it?.source_type || '')));
           const allArticles = notArchivedBase.filter((it) => String(it?.source_type || '') === 'html');
+          const allVideoTexts = notArchivedBase.filter((it) => String(it?.source_type || '') === 'video');
           const publicItems = Array.isArray(readerPublicDocuments) ? readerPublicDocuments : [];
           const shelfDefs = [
             {
@@ -1071,6 +1075,12 @@ export default function ReaderSection(props) {
               name: tr('Статьи', 'Artikel'),
               desc: tr('Из интернета, очищаются сами', 'Aus dem Web, selbstreinigend'),
               items: allArticles,
+            },
+            {
+              key: 'videos', accent: 'videos', emoji: '🎬',
+              name: tr('Из видео', 'Aus Videos'),
+              desc: tr('Тексты роликов, которые вы смотрели', 'Texte der Videos, die du gesehen hast'),
+              items: allVideoTexts,
             },
           ];
           const activeShelf = readerLibraryShelf

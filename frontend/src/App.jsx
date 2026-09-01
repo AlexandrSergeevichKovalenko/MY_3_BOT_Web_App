@@ -6591,6 +6591,14 @@ function AppInner() {
   const [youtubeOriginalEnabled, setYoutubeOriginalEnabled] = useState(true);
   const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
   const [youtubeAppFullscreen, setYoutubeAppFullscreen] = useState(false);
+  // ── «Пересказ»: текст ролика уезжает книгой в читалку ──
+  // { videoId, state: 'none'|'building'|'ready'|'failed', percent, documentId }.
+  // Держим ОДНО состояние на текущий ролик: смена ролика его обнуляет, иначе кнопка
+  // показывала бы готовность чужого текста.
+  const [videoTextInfo, setVideoTextInfo] = useState(null);
+  const [videoTextBusy, setVideoTextBusy] = useState(false);
+  // Счётчик «начать опрос заново»: растёт, когда мы только что запустили сборку.
+  const [videoTextPollTick, setVideoTextPollTick] = useState(0);
   // ── Puzzle-стиль панель под видео (≥700: планшет + браузер) ──
   // Ширина ≥700 → overlay-only + нижняя панель управления (как Puzzle English).
   const [isWideLayout, setIsWideLayout] = useState(
@@ -30216,6 +30224,277 @@ function AppInner() {
   // ── Тонкий поиск/смена видео в полосе «Startseite» (≥700, не новости). ──
   // Заменяет большой блок-форму под видео: свёрнуто = лупа, развёрнуто = поле+Найти+✕,
   // результаты — выпадающим списком. Показ только в Puzzle-режиме.
+  // ══ «Пересказ»: текст ролика уезжает книгой в читалку ═══════════════════════
+  // Владелец, 01.09.2026: «занимаемся с учителем, он даёт видео, мы смотрим, а на
+  // уроке разбираем. Прочитать текст помогло бы сильно, да и под рукой он не всегда».
+  //
+  // Сборка идёт НА СЕРВЕРЕ и ФОНОМ — владелец выбрал, чтобы видео не прерывалось.
+  // Здесь только три вещи: спросить сервер, показать состояние на кнопке и открыть
+  // готовую книгу. Никакой сборки текста в браузере нет и быть не должно.
+  const resolveYoutubeTitle = () => String(
+    youtubePlayerRef.current?.getVideoData?.()?.title
+    || movies.find((item) => item.video_id === youtubeId)?.title
+    || ''
+  ).trim();
+
+  const applyVideoTextAnswer = (videoId, data) => {
+    const rawPercent = data?.percent;
+    setVideoTextInfo({
+      videoId,
+      state: String(data?.state || 'none'),
+      // null — «сколько всего кусков, пока неизвестно». Показываем «Готовим…» без
+      // числа: выдуманный процент ничем не лучше выдуманного текста.
+      percent: (rawPercent === null || rawPercent === undefined) ? null : Number(rawPercent),
+      documentId: Number(data?.document_id || 0) || null,
+    });
+  };
+
+  const openVideoTextUpgradeModal = () => {
+    setProFeatureModal({
+      emoji: '📖',
+      title: tr('Текст видео — в «Полном доступе»', 'Videotext — mit vollem Zugang'),
+      intro: tr(
+        'Мы соберём из ролика читаемый текст и положим его в читалку: можно читать вместо просмотра, нажимать на слова за переводом и вернуться к тексту в любой момент.',
+        'Wir machen aus dem Video einen lesbaren Text und legen ihn in den Reader: lesen statt schauen, Wörter antippen für die Übersetzung, jederzeit zurückkommen.',
+      ),
+    });
+  };
+
+  const openVideoTextBook = (documentId) => {
+    const safeId = Number(documentId || 0);
+    if (!safeId) return;
+    openSingleSectionAndScroll('reader', readerRef);
+    void openReaderDocument(safeId);
+  };
+
+  const requestVideoText = async ({ confirm = false } = {}) => {
+    const videoId = String(youtubeId || '').trim();
+    if (!videoId || videoTextBusy) return;
+    if (isKnownFreePaidSurfaceMode) {
+      openVideoTextUpgradeModal();
+      return;
+    }
+    setVideoTextBusy(true);
+    try {
+      const response = await fetch('/api/webapp/video/text/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          video_id: videoId,
+          title: resolveYoutubeTitle(),
+          confirm: Boolean(confirm),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 403 || data?.error_code === 'PRO_ONLY') {
+        openVideoTextUpgradeModal();
+        return;
+      }
+      if (data?.state === 'confirm_needed') {
+        // Слот один на неделю. Тратить его молча нельзя: человек должен знать, на
+        // что он его тратит, ДО того как мы пойдём собирать текст.
+        showNoticeModal({
+          emoji: '📖',
+          title: tr('Собрать текст этого ролика?', 'Text zu diesem Video erstellen?'),
+          message: tr(
+            'Текст появится книгой в читалке — с переводом по нажатию и закладками. Видео при этом не остановится. Один текст в неделю: следующий можно будет собрать через семь дней.',
+            'Der Text erscheint als Buch im Reader — mit Übersetzung per Tippen und Lesezeichen. Das Video läuft weiter. Ein Text pro Woche: den nächsten gibt es in sieben Tagen.',
+          ),
+          okLabel: tr('Не сейчас', 'Jetzt nicht'),
+          confirmLabel: tr('Собрать текст', 'Text erstellen'),
+          onConfirm: () => {
+            setNoticeModal(null);
+            void requestVideoText({ confirm: true });
+          },
+        });
+        return;
+      }
+      if (data?.state === 'limit') {
+        showNoticeModal({
+          emoji: '🗓️',
+          title: tr('Текст на эту неделю уже собран', 'Der Text dieser Woche ist schon da'),
+          message: tr(
+            'Собрать можно один текст в неделю. Уже собранные ролики открываются без ограничений — они лежат в читалке на полке «Из видео».',
+            'Ein Text pro Woche. Bereits erstellte Videos lassen sich unbegrenzt öffnen — sie liegen im Reader im Regal „Aus Videos“.',
+          ),
+        });
+        return;
+      }
+      if (data?.state === 'no_subtitles') {
+        showNoticeModal({
+          emoji: '🤷',
+          title: tr('У этого ролика нет субтитров', 'Dieses Video hat keine Untertitel'),
+          message: tr(
+            'Текст собирать не из чего. Выберите ролик, у которого субтитры есть — их видно прямо под видео.',
+            'Es gibt nichts, woraus wir einen Text bauen könnten. Nimm ein Video mit Untertiteln — sie stehen direkt unter dem Player.',
+          ),
+        });
+        return;
+      }
+      if (!response.ok) {
+        showNoticeModal({
+          emoji: '😕',
+          message: String(data?.error || '').trim() || tr(
+            'Не получилось начать сборку текста. Попробуйте ещё раз.',
+            'Der Text konnte nicht gestartet werden. Versuch es noch einmal.',
+          ),
+        });
+        return;
+      }
+      applyVideoTextAnswer(videoId, data);
+      if (String(data?.state) === 'ready' && data?.document_id) {
+        openVideoTextBook(Number(data.document_id));
+      } else {
+        // Пошла сборка — будим опрос, иначе кнопка застынет на «Готовим…».
+        setVideoTextPollTick((tick) => tick + 1);
+      }
+    } catch (error) {
+      console.error('[VIDEO_TEXT] start failed', error);
+      showNoticeModal({
+        emoji: '😕',
+        message: tr(
+          'Не получилось начать сборку текста. Проверьте связь и попробуйте ещё раз.',
+          'Der Text konnte nicht gestartet werden. Prüf die Verbindung und versuch es noch einmal.',
+        ),
+      });
+    } finally {
+      setVideoTextBusy(false);
+    }
+  };
+
+  const handleVideoTextTap = () => {
+    if (isKnownFreePaidSurfaceMode) {
+      openVideoTextUpgradeModal();
+      return;
+    }
+    const info = videoTextInfo && videoTextInfo.videoId === String(youtubeId || '').trim()
+      ? videoTextInfo
+      : null;
+    if (info?.state === 'ready' && info.documentId) {
+      openVideoTextBook(info.documentId);
+      return;
+    }
+    if (info?.state === 'building') {
+      showNoticeModal({
+        emoji: '⏳',
+        title: tr('Текст ещё собирается', 'Der Text entsteht noch'),
+        message: tr(
+          'Можно спокойно смотреть дальше — кнопка сама позеленеет, когда текст будет готов.',
+          'Schau ruhig weiter — der Knopf wird von selbst grün, sobald der Text fertig ist.',
+        ),
+      });
+      return;
+    }
+    void requestVideoText();
+  };
+
+  // Что показывает кнопка. Одна функция на обе панели — телефонную и широкую,
+  // чтобы состояния не разъезжались между раскладками.
+  const videoTextButtonView = () => {
+    const videoId = String(youtubeId || '').trim();
+    const info = videoTextInfo && videoTextInfo.videoId === videoId ? videoTextInfo : null;
+    const state = info?.state || 'none';
+    if (state === 'ready') {
+      return { tone: 'is-ready', label: tr('Открыть текст ролика', 'Videotext öffnen'), percent: null };
+    }
+    if (state === 'building') {
+      return {
+        tone: 'is-building',
+        label: tr('Текст собирается', 'Text entsteht'),
+        percent: (info?.percent === null || info?.percent === undefined) ? null : info.percent,
+      };
+    }
+    return { tone: '', label: tr('Пересказ: текст ролика', 'Nacherzählung: Videotext'), percent: null };
+  };
+
+  const renderVideoTextButton = (extraClass = '') => {
+    // Ролика нет — кнопке нечего делать. На широкой раскладке панель живёт и без
+    // видео, и кнопка «текст ролика» там была бы обещанием без предмета.
+    if (!String(youtubeId || '').trim()) return null;
+    const view = videoTextButtonView();
+    const subtitlesReady = youtubeSubtitlesReady;
+    return (
+      <button
+        type="button"
+        className={`${extraClass} youtube-textbtn ${view.tone}`}
+        onClick={() => {
+          if (!subtitlesReady) {
+            showNoticeModal({
+              emoji: '🤷',
+              title: tr('Субтитры ещё не пришли', 'Untertitel sind noch nicht da'),
+              message: tr(
+                'Текст ролика собирается из субтитров. Подождите, пока они появятся под видео, — или выберите ролик, у которого они есть.',
+                'Der Videotext entsteht aus den Untertiteln. Warte, bis sie unter dem Video erscheinen — oder nimm ein Video, das welche hat.',
+              ),
+            });
+            return;
+          }
+          handleVideoTextTap();
+        }}
+        aria-label={view.label}
+        title={view.label}
+        data-state={view.tone || 'is-idle'}
+      >
+        {view.percent !== null && view.percent !== undefined ? (
+          <span className="youtube-textbtn-pct">{view.percent}%</span>
+        ) : (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M4 5h16" /><path d="M4 10h16" /><path d="M4 15h11" /><path d="M4 20h7" />
+          </svg>
+        )}
+      </button>
+    );
+  };
+
+  // Опрос состояния текста. Он же и первый вопрос при заходе на ролик: если текст
+  // кто-то уже собрал, кнопка сразу говорит «Открыть», а не предлагает собирать
+  // заново то, что у нас есть. Смена ролика обнуляет состояние: показывать
+  // готовность ЧУЖОГО текста нельзя.
+  useEffect(() => {
+    // Обнуление живёт в ОТДЕЛЬНОМ эффекте — по смене ролика и только по ней.
+    // Иначе перезапуск опроса после старта сборки стирал бы только что полученное
+    // «собирается», и кнопка мигала бы обратно на «Пересказ».
+    setVideoTextInfo(null);
+  }, [youtubeId]);
+
+  useEffect(() => {
+    const videoId = String(youtubeId || '').trim();
+    if (!videoId || !initData || isKnownFreePaidSurfaceMode) return undefined;
+    let cancelled = false;
+    let timer = null;
+    const ask = async () => {
+      try {
+        const response = await fetch('/api/webapp/video/text/status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, video_id: videoId, title: resolveYoutubeTitle() }),
+        });
+        if (cancelled) return;
+        if (!response.ok) {
+          // Сервер ответил ошибкой — состояние НЕ меняем (иначе «готово» могло бы
+          // смениться на «нет текста» от одного моргнувшего запроса) и пробуем позже.
+          timer = setTimeout(ask, 8000);
+          return;
+        }
+        const data = await response.json();
+        if (cancelled) return;
+        applyVideoTextAnswer(videoId, data);
+        if (String(data?.state) === 'building') timer = setTimeout(ask, 4000);
+      } catch (error) {
+        if (cancelled) return;
+        console.warn('[VIDEO_TEXT] status poll failed', error);
+        timer = setTimeout(ask, 8000);
+      }
+    };
+    void ask();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [youtubeId, initData, isKnownFreePaidSurfaceMode, videoTextPollTick]);
+
   const renderYoutubeTopbarSearch = () => {
     if (!(isWideLayout && !youtubeNewsMode && youtubeSectionVisible)) return null;
     const dictBtn = (
@@ -30229,10 +30508,14 @@ function AppInner() {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
       </button>
     );
+    // Планшет и браузер получают ту же кнопку тем же обработчиком — состояния у
+    // раскладок общие, расходиться им нельзя (решение владельца 01.09.2026).
+    const textBtn = renderVideoTextButton('youtube-topdict-open');
     if (!youtubeSearchExpanded) {
       return (
         <div className="youtube-topbar-tools">
           {dictBtn}
+          {textBtn}
           <button
             type="button"
             className="youtube-topsearch-open"
@@ -30248,6 +30531,7 @@ function AppInner() {
     return (
       <div className="youtube-topbar-tools is-expanded">
       {dictBtn}
+      {textBtn}
       <div className="youtube-topsearch">
         <div className="youtube-topsearch-field">
           <svg className="yts-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.5-4.5" /></svg>
@@ -38851,6 +39135,9 @@ function AppInner() {
                             >
                               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
                             </button>
+                            {/* «Пересказ» — текст ролика книгой в читалку. Владелец выбрал
+                                это место сам (01.09.2026): между словарём и языками. */}
+                            {renderVideoTextButton('youtube-watchbar-btn')}
                           </div>
                           <div className="youtube-watchbar-cluster">
                             <div className="youtube-langseg" role="group" aria-label={tr('Субтитры', 'Untertitel')}>

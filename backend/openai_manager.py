@@ -99,6 +99,13 @@ _DEFAULT_TASK_MODELS = {
     # LLM_TASK_MODEL_ENRICH_WORD_MULTILANG / _ENRICH_WORD if a regression shows.
     "enrich_word_multilang": "gpt-4.1-mini",
     "enrich_word": "gpt-4.1-mini",
+    # «Пересказ» ролика в читалку (backend/video_reader_text.py). Два РАЗНЫХ дела:
+    # чистка субтитров — расставить знаки и убрать мусор распознавалки, все слова уже
+    # лежат в тексте, сочинять нечего → mini хватает и он в пять раз дешевле. Пересказ
+    # ролика длиннее 50 000 символов — работа настоящая, там полный gpt-4.1; по замеру
+    # 01.09.2026 в этот режим попадали 4 ролика из 62, так что цена ограничена.
+    "video_reader_text_clean": "gpt-4.1-mini",
+    "video_reader_text_condense": "gpt-4.1-2025-04-14",
     # Free-tier translation grading → mini (score + correct answer only; the detailed
     # /explain breakdown is paid and stays on the full model). Same prompt, cheaper judge.
     "check_translation_multilang_free": "gpt-4.1-mini",
