@@ -6998,7 +6998,7 @@ function AppInner() {
     if (appToastTimerRef.current) clearTimeout(appToastTimerRef.current);
     setAppToast(null);
   }, []);
-  const [selectionGptData, setSelectionGptData] = useState({ translation: '', dictionaryItem: null, direction: '', languagePair: null });
+  const [selectionGptData, setSelectionGptData] = useState({ translation: '', dictionaryItem: null, direction: '', languagePair: null, formOf: '', machine: false });
   // Состояние ИМЕННО карточки разбора, отдельно от быстрого перевода: перевод приходит
   // сразу, карточка достраивается секциями. Одним флагом это описать нельзя — человек
   // должен видеть перевод, пока грамматика ещё едет.
@@ -24010,6 +24010,12 @@ function AppInner() {
         // Article for a single German noun, resolved instantly from the local
         // Wiktionary table so "das Substantiv" shows without the full breakdown.
         article: String(data?.article || '').trim(),
+        // Спросили ФОРМУ («wühlt»), а отвечаем словарной формой («wühlen») — экран
+        // обязан это подписать, иначе человек решит, что мы подменили его слово.
+        formOf: String(data?.form_of || '').trim(),
+        // Ответ машинного переводчика, а не словарная статья. Именно он 01.09.2026
+        // выдал «рыется» — слова, которого в русском нет. Показываем, но подписываем.
+        machine: !!data?.machine,
       };
       quickTranslateCacheRef.current.set(cacheKey, { ts: Date.now(), payload });
       if (quickTranslateCacheRef.current.size > 200) {
@@ -24739,7 +24745,7 @@ function AppInner() {
     setSelectionGptCardStatus('loading');
     setSelectionGptCardSections(new Set());
     resetSelectionGptSaveState();
-    setSelectionGptData({ translation: '', dictionaryItem: null, direction: '', languagePair: null });
+    setSelectionGptData({ translation: '', dictionaryItem: null, direction: '', languagePair: null, formOf: '', machine: false });
 
     // ЭТАП 1 — перевод. Он и есть ответ на вопрос «что это значит»; карточка идёт следом.
     let quick = null;
@@ -24750,7 +24756,12 @@ function AppInner() {
     }
     if (isStale()) return;
     if (quick) {
-      setSelectionGptData((prev) => ({ ...prev, translation: String(quick.translation || '').trim() }));
+      setSelectionGptData((prev) => ({
+        ...prev,
+        translation: String(quick.translation || '').trim(),
+        formOf: quick.formOf || '',
+        machine: !!quick.machine,
+      }));
       setSelectionInlineLookup({
         loading: false,
         word: cleaned,
@@ -24858,7 +24869,7 @@ function AppInner() {
     setSelectionGptCardStatus('idle');
     setSelectionGptCardSections(new Set());
     setSelectionGptCardLimit('');
-    setSelectionGptData({ translation: '', dictionaryItem: null, direction: '', languagePair: null });
+    setSelectionGptData({ translation: '', dictionaryItem: null, direction: '', languagePair: null, formOf: '', machine: false });
     resetSelectionGptSaveState();
   };
 
@@ -45465,6 +45476,28 @@ function AppInner() {
                       <div className="webapp-selection-translation">
                         <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Перевод', 'Übersetzung')}</div>
                         <div style={{ fontSize: 16, fontWeight: 600 }}>{selectionGptData.translation || '—'}</div>
+                        {/* Две подписи, и обе про честность ответа.
+
+                            «форма от …» — человек нажал «wühlt», а видит статью
+                            «wühlen»; без подписи это выглядит как подмена слова. Так
+                            подписывают Wiktionary, PONS, Duden и dict.cc.
+
+                            «машинный перевод» — словарной статьи у нас нет, и ответ дал
+                            машинный переводчик. Он переводит голую форму догадкой: на
+                            «wühlt» выдал «рыется», хотя в русском языке есть только
+                            «роется» (владелец, 01.09.2026). Человек должен видеть цену
+                            такого ответа, а не принимать его за словарную норму. */}
+                        {selectionGptData.formOf && (
+                          <div className="webapp-muted" style={{ fontSize: 12.5, marginTop: 4 }}>
+                            {tr(`форма от ${selectionGptData.formOf}`, `Form von ${selectionGptData.formOf}`)}
+                          </div>
+                        )}
+                        {selectionGptData.machine && !selectionGptData.formOf && (
+                          <div className="webapp-muted" style={{ fontSize: 12.5, marginTop: 4 }}>
+                            {tr('машинный перевод — этого слова нет в словаре',
+                                'maschinelle Übersetzung — dieses Wort steht nicht im Wörterbuch')}
+                          </div>
+                        )}
                       </div>
                       {/* Разбор — ТА ЖЕ карточка, что в словаре. Пока секции едут, вместо
                           неё стоит скелет, а не пустое место. */}

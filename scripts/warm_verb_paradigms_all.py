@@ -28,10 +28,10 @@ os.environ.setdefault("SKIP_STARTUP_SCHEMA_BOOTSTRAP", "1")
 os.environ.setdefault("SKIP_BILLING_LEDGER_WRITES", "1")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.database import get_db_connection_context            # noqa: E402
 from backend.german_verb_paradigms import (                       # noqa: E402
     ensure_german_verb_paradigm_schema,
     fetch_documented_tables,
+    pending_paradigm_verbs,
     store_paradigm,
 )
 
@@ -40,23 +40,14 @@ BACKOFF_SEC = (30, 60, 120, 300)
 
 
 def pending_verbs(limit: int | None) -> list[str]:
-    """Глаголы словаря, о которых ещё не спрашивали."""
-    sql = """
-        SELECT DISTINCT lower(u.display)
-          FROM bt_3_lex_units u
-         WHERE u.lang = 'de' AND u.kind = 'word'
-           AND (u.pos = 'verb' OR u.card->>'part_of_speech' = 'verb')
-           AND u.display ~ '^[a-zäöüßA-ZÄÖÜ]+$'
-           AND NOT EXISTS (SELECT 1 FROM bt_3_german_verb_paradigms p
-                            WHERE p.verb = lower(u.display))
-         ORDER BY 1
+    """Глаголы, о которых ещё не спрашивали.
+
+    Отбор ОДИН на все прогревы и живёт в справочнике
+    (`backend.german_verb_paradigms.pending_paradigm_verbs`). Здесь была своя копия
+    запроса — она брала кандидатов только из наших единиц, поэтому основы («gehen»,
+    «stellen», «graben») не попадали в прогрев никогда. 01.09.2026 копия убрана.
     """
-    if limit:
-        sql += " LIMIT %d" % int(limit)
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql + ";")
-            return [r[0] for r in cur.fetchall() if r[0]]
+    return pending_paradigm_verbs(limit)
 
 
 def main() -> None:

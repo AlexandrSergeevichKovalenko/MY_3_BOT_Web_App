@@ -673,3 +673,52 @@ def build_grammar_tables(item: dict[str, Any] | None) -> dict[str, Any]:
             out["comparison"] = table
 
     return out
+
+
+# ── Ячейка таблицы → словоформа ────────────────────────────────────────────────
+#
+# ⛔ ЗДЕСЬ РОДИЛСЯ ДЕФЕКТ «ging → ausgehen». НЕ ВОЗВРАЩАТЬ НАРЕЗКУ ПО ПРОБЕЛАМ.
+#
+# До 01.09.2026 ячейку парадигмы резали на слова, и КАЖДОЕ слово становилось указателем
+# на лемму (`scripts/dict_units_paradigm_surfaces.py`, `scripts/dict_units_wikt_forms.py`).
+# У отделяемого глагола в ячейке стоит «ging aus» — в указатели уезжали и «ging», и «aus».
+#
+# Что это дало на живой базе (замер 01.09.2026, `scripts/dict_units_forms_confirm.py`):
+#     «auf»   вело к 34 глаголам,  «ging» — к 15,  «stellt» — к 18;
+#     быстрый словарь на «ging» отвечал «выходить» (ausgehen), а базового «gehen»
+#     в ответе не было вообще — его вообще нет у нас глаголом, только «das Gehen».
+#
+# Правило ниже — не догадка, а то, КАК ФОРМА НАПЕЧАТАНА в источнике. Так же печатает
+# dict.cc («eingehen | ging ein | eingegangen») и Wiktionary на странице Flexion.
+_CELL_SPACE_RE = re.compile(r"\s+")
+
+# Служебные слова: они стоят в ячейке, но частью формы не являются. Артикли —
+# «des Studenten», вспомогательные глаголы — «hat angefangen».
+_CELL_SERVICE_WORDS = frozenset({
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer", "eines",
+    "hat", "habe", "hast", "haben", "habt", "ist", "bin", "bist", "sind", "seid", "war", "waren",
+    "wird", "werde", "wirst", "werden", "werdet", "sich", "zu", "nicht", "wurde", "wurden",
+})
+_CELL_MIN_LEN = 3  # «am», «im» и прочие обрывки формой не считаются
+
+
+def form_token_of_cell(cell: str) -> str:
+    """Словоформа из ОДНОЙ ячейки таблицы — или пустая строка, если её там нет.
+
+        1. выбрасываем служебные слова (артикль, вспомогательный глагол);
+        2. осталось РОВНО ОДНО слово — это форма;
+        3. осталось два и больше — форма разнесена по словам («ging aus»), и брать
+           из неё отдельное слово НЕЛЬЗЯ: «ging» — форма «gehen», а не «ausgehen».
+
+    Проверено на живых ячейках 01.09.2026:
+        «des Studenten»   → studenten     «ging aus»    → (пусто)
+        «hat angefangen»  → angefangen    «geht aus»    → (пусто)
+        «ist ausgegangen» → ausgegangen   «am ältesten» → ältesten
+    """
+    tokens = []
+    for token in _CELL_SPACE_RE.split(str(cell or "").strip()):
+        token = token.strip(" ,;.—-").casefold()
+        if len(token) < _CELL_MIN_LEN or token in _CELL_SERVICE_WORDS:
+            continue
+        tokens.append(token)
+    return tokens[0] if len(tokens) == 1 else ""

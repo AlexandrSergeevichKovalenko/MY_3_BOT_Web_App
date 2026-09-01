@@ -821,32 +821,67 @@ def paradigm_for_verb(infinitive: str, *, allow_network: bool = False,
     return None
 
 
+def pending_paradigm_verbs(limit: int | None = None) -> list[str]:
+    """Глаголы, о которых справочник ещё не спрашивали.
+
+    ДВА источника, и второй появился 01.09.2026.
+
+    Раньше спрашивались только НАШИ единицы — и справочник вырос кривым: в нём лежали
+    1380 приставочных глаголов и почти не было их ОСНОВ. «gehen» у нас единицей-глаголом
+    не числится вовсе (есть только существительное «das Gehen»), поэтому базовые глаголы
+    в прогрев не попадали НИКОГДА. Из-за этого нельзя было ответить на главный вопрос
+    формы — «чья она?»: «ging» напечатано у «gehen», а «gehen» справочнику неизвестен.
+
+    Второй источник — `bt_base_dictionary` (FreeDict, выверенный внешний словарь):
+    оттуда берутся именно основы — gehen, stellen, fallen, graben, wühlen. Это не
+    догадка «слово похоже на глагол»: часть речи стоит в самом словаре.
+
+    Функция ОДНА на оба прогрева — ночной (`warm_verb_paradigms`) и полный
+    (`scripts/warm_verb_paradigms_all.py`). До 01.09.2026 запрос был скопирован в оба
+    места, и чинить пришлось бы дважды.
+    """
+    from backend.database import get_db_connection_context
+
+    sql = """
+        WITH candidates AS (
+            SELECT DISTINCT lower(u.display) AS verb
+              FROM bt_3_lex_units u
+             WHERE u.lang = 'de' AND u.kind = 'word'
+               AND (u.pos = 'verb' OR u.card->>'part_of_speech' = 'verb')
+               AND u.display ~ '^[a-zäöüßA-ZÄÖÜ]+$'
+            UNION
+            SELECT DISTINCT lower(b.lemma)
+              FROM bt_base_dictionary b
+             WHERE b.source_lang = 'de' AND lower(b.pos) = 'verb'
+               AND b.lemma ~ '^[a-zäöüßA-ZÄÖÜ]+$'
+        )
+        SELECT verb FROM candidates c
+         WHERE NOT EXISTS (SELECT 1 FROM bt_3_german_verb_paradigms p
+                            WHERE p.verb = c.verb)
+         ORDER BY 1
+    """
+    if limit:
+        sql += " LIMIT %d" % int(limit)
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql + ";")
+                return [r[0] for r in cur.fetchall() if r[0]]
+    except Exception:
+        logging.warning("парадигмы глаголов: не выбрал кандидатов", exc_info=True)
+        return []
+
+
 def warm_verb_paradigms(*, limit: int = 200, pause_sec: float = 1.5) -> dict:
     """Ночной прогрев: спросить справочник про глаголы, о которых ещё не спрашивали.
 
     Порция маленькая и с паузой. При первом молчании справочника проход прекращается —
     иначе упор в лимит превратился бы в сотни ложных «страницы нет»."""
-    from backend.database import get_db_connection_context
     ensure_german_verb_paradigm_schema()
     report = {"asked": 0, "documented": 0, "no_page": 0, "stopped_early": False}
-    try:
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT DISTINCT lower(u.display) FROM bt_3_lex_units u
-                     WHERE u.lang = 'de' AND u.kind = 'word'
-                       AND (u.pos = 'verb' OR u.card->>'part_of_speech' = 'verb')
-                       AND u.display ~ '^[a-zäöüßA-ZÄÖÜ]+$'
-                       AND NOT EXISTS (SELECT 1 FROM bt_3_german_verb_paradigms p
-                                        WHERE p.verb = lower(u.display))
-                     ORDER BY 1 LIMIT %s;
-                    """,
-                    (int(limit),),
-                )
-                verbs = [r[0] for r in cur.fetchall()]
-    except Exception:
-        logging.warning("парадигмы глаголов: не выбрал кандидатов", exc_info=True)
+    verbs = pending_paradigm_verbs(int(limit))
+    if not verbs:
+        report.update(warm_verb_paradigms_from_model(limit=limit))
         return report
 
     for verb in verbs:
@@ -912,6 +947,119 @@ def warm_verb_paradigms_from_model(*, limit: int = 60) -> dict:
         store_paradigm(_MODEL_KEY_PREFIX + verb, answer or {"reason": reason})
         report["model_confirmed" if answer else "model_unclear"] += 1
     return report
+
+
+_CELL_DASHES = frozenset({"—", "–", "-", "―", ""})
+
+
+def whole_cell_forms(tables: dict) -> set[str]:
+    """Формы глагола, КАК ОНИ НАПЕЧАТАНЫ ЦЕЛОЙ ЯЧЕЙКОЙ. Ничего не режем на куски.
+
+    ЗАЧЕМ ЭТО ОТДЕЛЬНО ОТ `_printed_words`. Обе функции читают одну таблицу, но
+    отвечают на РАЗНЫЕ вопросы, и их путаница стоила нам «ging → ausgehen»:
+
+        `_printed_words`  — «встречается ли такое написание в немецком вообще?»
+                            Там ячейка «bist losgeworden» ОБЯЗАНА распадаться на слова,
+                            иначе одиночное «losgeworden» не подтвердится.
+        `whole_cell_forms`— «является ли это написание формой ИМЕННО ЭТОГО глагола?»
+                            Здесь резать нельзя. У «ausgehen» напечатано «ging aus»;
+                            «ging» — форма глагола «gehen», а не «ausgehen», и «aus»
+                            не форма вообще, а отделяемая приставка.
+
+    ИСТОЧНИК: страница Flexion:<глагол> на de.wiktionary.org, разобранная
+    `documented_tables`. Проверка 01.09.2026 на «ausgehen» — напечатаны ровно ячейки
+    «ging aus», «geht aus», «ausgegangen», «ist ausgegangen»; одиночного «ging»
+    среди них НЕТ. Ровно так же печатает dict.cc: «eingehen | ging ein | eingegangen».
+
+    ┌─ ПРОВЕРЕНО 01.09.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ─────────────────┐
+    │ Мерили: 5872 указателя-формы у глаголов в bt_3_lex_surfaces.                │
+    │ Разложилось: 3457 подтверждены целой ячейкой (норма, не трогать);           │
+    │   223 — отделяемая приставка вместо формы («auf» → aufzeichnen);            │
+    │   909 — форма БАЗОВОГО глагола на приставочной лемме («ging» → zugehen),    │
+    │         доказано справочником; 998 — то же самое, но базовый глагол в       │
+    │         справочнике отсутствует; 178 — прочее, разбирается поштучно.        │
+    │ Породил всё это `scripts/dict_units_paradigm_surfaces.py`, который резал     │
+    │ ячейку на слова. Перемерить: `python3 scripts/dict_units_forms_confirm.py`. │
+    └────────────────────────────────────────────────────────────────────────────┘
+    """
+    out: set[str] = set()
+
+    def walk(node) -> None:
+        if isinstance(node, str):
+            value = node.strip()
+            if value and value not in _CELL_DASHES:
+                out.add(value.casefold())
+        elif isinstance(node, dict):
+            for key, item in node.items():
+                if key in ("auxiliary", "infinitive", "full_form", "source"):
+                    continue
+                walk(item)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(tables or {})
+    return out
+
+
+def verbs_of_form(form: str, *, limit: int = 8) -> list[str]:
+    """Глаголы, у которых это написание НАПЕЧАТАНО ЦЕЛОЙ ЯЧЕЙКОЙ. Пусто — не знаем.
+
+    Это ответ на вопрос человека «я нажал ging — что это?». Отвечает СПРАВОЧНИК, а не
+    машина: «ging» напечатано целой ячейкой только у «gehen», а у «ausgehen» напечатано
+    «ging aus» — поэтому приставочные сюда не попадают и подсказка получается такой же,
+    как у Wiktionary («Konjugierte Form … des Verbs gehen»), PONS («ging → von gehen»),
+    Duden («ging, siehe gehen») и dict.cc («gehen | ging | gegangen»).
+
+    Отбор в два шага, как в `form_is_documented`: дешёвая выборка по тексту JSON сужает
+    круг, а потом написание сверяется ТОЧНО с ячейками. Без второго шага «ging» нашло бы
+    себя внутри «ging aus» и вернуло бы «ausgehen» — ровно тот дефект, из-за которого
+    быстрый словарь отвечал на «ging» словом «выходить» (01.09.2026).
+
+    Строки «модель:…» не участвуют: справочник отвечает источником, а не догадкой.
+    """
+    from backend.database import get_db_connection_context
+
+    word = str(form or "").strip().casefold()
+    if not word or " " in word:
+        return []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT verb, tables FROM bt_3_german_verb_paradigms
+                        WHERE documented AND verb NOT LIKE %s
+                          AND tables::text ILIKE %s LIMIT 60;""",
+                    (_MODEL_KEY_PREFIX + "%", "%" + word + "%"),
+                )
+                rows = cur.fetchall()
+    except Exception:
+        logging.debug("справочник форм: чтение не удалось", exc_info=True)
+        return []
+    found: list[str] = []
+    for verb, tables in rows:
+        if isinstance(tables, dict) and word in whole_cell_forms(tables):
+            name = str(verb or "").strip()
+            if name and name.casefold() != word:
+                found.append(name)
+    return sorted(set(found))[:limit]
+
+
+def form_belongs_to_verb(form: str, verb: str) -> bool | None:
+    """Форма ли это ИМЕННО ЭТОГО глагола. True / False / None («справочник молчит»).
+
+    Три состояния, и путать их нельзя: None — мы не знаем и права судить не имеем,
+    False — источник посмотрели и формы там НЕ НАПЕЧАТАНО. Пустого «нет» без разбора
+    здесь быть не может: молчание источника — это None, и вызывающий обязан его
+    отличать (иначе чистка снесёт то, о чём справочник просто не спросили)."""
+    word = str(form or "").strip().casefold()
+    target = str(verb or "").strip()
+    if not word or not target:
+        return None
+    tables = load_paradigm(target)
+    if not tables or not tables.get("praesens"):
+        return None
+    return word in whole_cell_forms(tables)
 
 
 def _printed_words(tables: dict) -> set[str]:

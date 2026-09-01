@@ -40813,6 +40813,12 @@ def _build_quick_translate_from_entries(entries, text, source_lang, target_lang)
         "article": primary.get("gender") or "",
         "part_of_speech": primary.get("pos") or "",
         "article_source": "словарь статей",
+        # Спросили ФОРМУ, отвечаем словарной формой — и говорим об этом вслух.
+        # Человек нажал «wühlt», а видит «wühlen»: без подписи он решит, что программа
+        # подменила его слово. Так подписывают все словари: Wiktionary — «Konjugierte
+        # Form … des Verbs gehen», PONS — «ging → von gehen», Duden — «ging, siehe gehen».
+        "form_of": primary.get("form_of") or "",
+        "asked_form": primary.get("asked_form") or "",
         # Весь список — то, ради чего всё и затевалось.
         "entries": entries,
         "entry_lang": other_lang,
