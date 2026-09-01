@@ -11474,6 +11474,49 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_youtube_transcripts_updated
                 ON bt_3_youtube_transcripts (updated_at);
             """)
+            # ── «Пересказ» ролика в читалку — ОДИН текст на ролик, общий для всех.
+            # Собирается один раз тем, кто нажал первым; всем следующим он достаётся
+            # мгновенно и нам не стоит ничего. Строка заводится ДО сборки (статус
+            # building) и служит замком: два одновременных нажатия не запустят две
+            # сборки. chunks_done/chunks_total — то, что человек видит процентами.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_video_reader_texts (
+                    video_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'building',
+                    mode TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    content_text TEXT NOT NULL DEFAULT '',
+                    source_chars INTEGER NOT NULL DEFAULT 0,
+                    result_chars INTEGER NOT NULL DEFAULT 0,
+                    chunks_total INTEGER NOT NULL DEFAULT 0,
+                    chunks_done INTEGER NOT NULL DEFAULT 0,
+                    model TEXT NOT NULL DEFAULT '',
+                    error TEXT,
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_video_reader_texts_status
+                ON bt_3_video_reader_texts (status, updated_at);
+            """)
+            # Кто и когда просил текст. Нужен для двух вещей: недельный слот (один
+            # НОВЫЙ ролик в неделю на платного человека — решение владельца 01.09.2026)
+            # и отчёт владельцу числом, сколько текстов собрано и сколько роздано из
+            # готового. was_new=FALSE значит «взял готовое»: слот не тратится.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_video_reader_text_requests (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    video_id TEXT NOT NULL,
+                    was_new BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_video_reader_text_requests_user
+                ON bt_3_video_reader_text_requests (user_id, was_new, created_at DESC);
+            """)
             # ── «Начни день с коротких новостей» — one shared daily news entry for all users.
             # Heavy prep (video pick + transcript + LLM phrases + MC quiz) runs ONCE nightly
             # and lands here; the morning broadcast is just a cheap read of one row.
@@ -30250,6 +30293,202 @@ def upsert_youtube_transcript_cache(
                 is_generated,
                 json.dumps(translations, ensure_ascii=False) if translations is not None else None,
             ))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  «Пересказ» ролика в читалку. Текст ОДИН на ролик и общий для всех: собрал
+#  первый — читают все. Здесь только хранение; сама сборка — video_reader_text.py.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Сколько сборка имеет право «висеть», прежде чем её признают брошенной. Сервис
+# может умереть посреди работы, и тогда строка со статусом building осталась бы
+# замком навсегда: кнопка у всех показывала бы «готовим» и никогда не дошла бы до
+# конца. Больше самого длинного ролика (151 000 символов ≈ 38 кусков) с запасом.
+VIDEO_READER_TEXT_STALE_SECONDS = 40 * 60
+
+
+def get_video_reader_text(video_id: str) -> dict | None:
+    """Что мы знаем про текст этого ролика. None — не знаем ничего."""
+    if not video_id:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT status, mode, title, content_text, source_chars, result_chars,
+                       chunks_total, chunks_done, model, error,
+                       EXTRACT(EPOCH FROM (NOW() - updated_at))
+                FROM bt_3_video_reader_texts
+                WHERE video_id = %s;
+            """, (video_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            (status, mode, title, content_text, source_chars, result_chars,
+             chunks_total, chunks_done, model, error, age_seconds) = row
+            return {
+                "video_id": video_id,
+                "status": str(status or ""),
+                "mode": str(mode or ""),
+                "title": str(title or ""),
+                "content_text": str(content_text or ""),
+                "source_chars": int(source_chars or 0),
+                "result_chars": int(result_chars or 0),
+                "chunks_total": int(chunks_total or 0),
+                "chunks_done": int(chunks_done or 0),
+                "model": str(model or ""),
+                "error": str(error or ""),
+                "age_seconds": float(age_seconds or 0),
+            }
+
+
+def claim_video_reader_text_build(video_id: str, *, title: str = "") -> bool:
+    """Взять сборку этого ролика на себя. True — взяли, надо собирать.
+
+    Замок и запись — одна и та же строка, поэтому два одновременных нажатия не
+    запустят две сборки: вторая вставка упрётся в PRIMARY KEY. Перехватить чужую
+    работу можно только у брошенной (висит дольше VIDEO_READER_TEXT_STALE_SECONDS)
+    или у упавшей — упавшую честно пробуем ещё раз.
+    """
+    if not video_id:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO bt_3_video_reader_texts (video_id, status, title, started_at, updated_at)
+                VALUES (%s, 'building', %s, NOW(), NOW())
+                ON CONFLICT (video_id) DO UPDATE
+                SET status = 'building',
+                    title = COALESCE(NULLIF(EXCLUDED.title, ''), bt_3_video_reader_texts.title),
+                    error = NULL,
+                    chunks_done = 0,
+                    chunks_total = 0,
+                    started_at = NOW(),
+                    updated_at = NOW()
+                WHERE bt_3_video_reader_texts.status = 'failed'
+                   OR (bt_3_video_reader_texts.status = 'building'
+                       AND bt_3_video_reader_texts.updated_at < NOW() - (%s || ' seconds')::interval)
+                RETURNING video_id;
+            """, (video_id, str(title or "")[:300], str(VIDEO_READER_TEXT_STALE_SECONDS)))
+            return cursor.fetchone() is not None
+
+
+def set_video_reader_text_progress(video_id: str, *, done: int, total: int) -> None:
+    """Сколько кусков готово. Это и есть проценты на кнопке у человека."""
+    if not video_id:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE bt_3_video_reader_texts
+                SET chunks_done = %s, chunks_total = %s, updated_at = NOW()
+                WHERE video_id = %s AND status = 'building';
+            """, (int(done), int(total), video_id))
+
+
+def finish_video_reader_text(video_id: str, *, text: str, mode: str, model: str,
+                             source_chars: int, result_chars: int, chunks: int) -> None:
+    """Текст собран — кладём в общий кеш."""
+    if not video_id:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE bt_3_video_reader_texts
+                SET status = 'ready', content_text = %s, mode = %s, model = %s,
+                    source_chars = %s, result_chars = %s,
+                    chunks_total = %s, chunks_done = %s, error = NULL, updated_at = NOW()
+                WHERE video_id = %s;
+            """, (str(text or ""), str(mode or ""), str(model or ""),
+                  int(source_chars), int(result_chars), int(chunks), int(chunks), video_id))
+
+
+def fail_video_reader_text(video_id: str, *, error: str) -> None:
+    """Сборка не вышла. Пишем ПРИЧИНУ и оставляем статус failed: пустой текст,
+    выданный за готовый, был бы обманом, а тихое исчезновение — обманом вдвойне."""
+    if not video_id:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE bt_3_video_reader_texts
+                SET status = 'failed', error = %s, updated_at = NOW()
+                WHERE video_id = %s;
+            """, (str(error or "")[:2000], video_id))
+
+
+def log_video_reader_text_request(user_id: int, video_id: str, *, was_new: bool) -> None:
+    """Кто попросил текст. was_new=True — потратил недельный слот и наши деньги,
+    False — забрал готовое (нам бесплатно)."""
+    if not user_id or not video_id:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO bt_3_video_reader_text_requests (user_id, video_id, was_new)
+                VALUES (%s, %s, %s);
+            """, (int(user_id), str(video_id), bool(was_new)))
+
+
+def get_video_reader_text_slot(user_id: int, *, days: int = 7) -> dict:
+    """Свободен ли недельный слот у этого человека.
+
+    Один НОВЫЙ ролик в неделю на платного (решение владельца 01.09.2026). Считаются
+    только сборки — открытие уже готового текста слот не тратит, потому что оно нам
+    ничего не стоит. Возвращает {"free": bool, "next_at": ISO|"" , "used_at": ISO|""}.
+    """
+    if not user_id:
+        return {"free": False, "next_at": "", "used_at": ""}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT created_at, created_at + (%s || ' days')::interval
+                FROM bt_3_video_reader_text_requests
+                WHERE user_id = %s AND was_new = TRUE
+                  AND created_at > NOW() - (%s || ' days')::interval
+                ORDER BY created_at ASC
+                LIMIT 1;
+            """, (str(int(days)), int(user_id), str(int(days))))
+            row = cursor.fetchone()
+            if not row:
+                return {"free": True, "next_at": "", "used_at": ""}
+            used_at, next_at = row
+            return {
+                "free": False,
+                "used_at": used_at.isoformat() if used_at else "",
+                "next_at": next_at.isoformat() if next_at else "",
+            }
+
+
+def find_reader_document_by_source_url(user_id: int, *, source_lang: str, target_lang: str,
+                                       source_url: str) -> dict | None:
+    """Есть ли у человека книга, сделанная из ЭТОГО ролика.
+
+    Нужна, чтобы повторное нажатие «Пересказ» открывало ту же книгу, а не плодило
+    в библиотеке одинаковые. Ищем по ссылке на ролик, потому что текст на момент
+    первого нажатия ещё не собран и сверять по нему нечего.
+    """
+    if not user_id or not source_url:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT id, title, processing_status, processing_error
+                FROM bt_3_reader_library
+                WHERE user_id = %s AND source_lang = %s AND target_lang = %s
+                  AND source_url = %s
+                ORDER BY COALESCE(last_opened_at, updated_at, created_at) DESC
+                LIMIT 1;
+            """, (int(user_id), str(source_lang or "ru").strip().lower() or "ru",
+                  str(target_lang or "de").strip().lower() or "de", str(source_url)))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": int(row[0]),
+                "title": str(row[1] or ""),
+                "processing_status": str(row[2] or "ready"),
+                "processing_error": str(row[3] or ""),
+            }
 
 
 def purge_old_youtube_transcripts(days: int = 7) -> None:
