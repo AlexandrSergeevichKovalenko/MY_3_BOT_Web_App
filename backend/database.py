@@ -63555,6 +63555,54 @@ def count_available_sprint_items(*, relation: str, cooldown_days: int = 0) -> in
             return int((cursor.fetchone() or [0])[0])
 
 
+def measure_sprint_bank_pressure(*, relation: str, window_days: int = 21) -> dict:
+    """Сколько карточек этого вида РАСХОДУЕТСЯ в день — по факту, из базы.
+
+    ┌─ ЗАКОН БАНКА. Замер 01.09.2026, повод — тренажёр синонимов. ───────────────┐
+    │ Банк обязан быть не меньше, чем расход за срок отдыха. Иначе выдача каждый │
+    │ раз упирается в «отдохнувших нет», срабатывает запасной ход, и человек     │
+    │ получает одно и то же раньше срока — тихо, без пустого экрана.             │
+    │                                                                            │
+    │ Как было: цель пополнения — жёсткая шестёрка (SPRINT_POOL_TARGET=6). В     │
+    │ банке 16 синонимов и 18 антонимов, шестнадцать больше шести, поэтому       │
+    │ ночная задача с 27.06.2026 просыпалась и не делала НИЧЕГО. Расход при этом │
+    │ 1,6 карточки в день при отдыхе 21 день: за срок уходит 33 из 34, отдохнуть │
+    │ успевает ОДНА.                                                             │
+    │                                                                            │
+    │ Поэтому цель теперь считается от жизни, а не задаётся числом: станет людей │
+    │ больше — вырастет расход, вырастет и цель, без правки кода.                │
+    └───────────────────────────────────────────────────────────────────────────┘
+
+    Одна карточка расходуется ДВУМЯ выдачами независимо — спринтом
+    (`last_sent_at`) и тренажёром (`trainer_last_sent_at`), у каждой свой счётчик
+    дат. Поэтому берём БОЛЬШИЙ из двух расходов: банк должен выдержать тот, что
+    давит сильнее.
+    """
+    window = max(7, min(90, int(window_days or 21)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE last_sent_at > NOW() - (%s || ' days')::INTERVAL),
+                    COUNT(*) FILTER (WHERE trainer_last_sent_at > NOW() - (%s || ' days')::INTERVAL),
+                    COUNT(*)
+                FROM bt_3_sprint_bank
+                WHERE relation = %s AND retired = FALSE
+                """,
+                (window, window, str(relation)),
+            )
+            sprint_used, trainer_used, bank = cursor.fetchone() or (0, 0, 0)
+    return {
+        "relation": str(relation),
+        "window_days": window,
+        "bank": int(bank or 0),
+        "sprint_per_day": float(sprint_used or 0) / window,
+        "trainer_per_day": float(trainer_used or 0) / window,
+        "per_day": max(float(sprint_used or 0), float(trainer_used or 0)) / window,
+    }
+
+
 def ensure_sprint_word_outcomes_schema() -> None:
     """Какие слова человек НАЗВАЛ, а какие упустил. До 15.08.2026 не сохранялось нигде:
     в базу уходил только счёт «7 слов за минуту»."""

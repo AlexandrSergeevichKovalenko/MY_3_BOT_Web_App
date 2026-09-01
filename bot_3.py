@@ -41629,8 +41629,33 @@ async def admin_artikel_report_command(update: Update, context: CallbackContext)
     await message.reply_text(text, parse_mode="HTML")
 
 
-SPRINT_POOL_TARGET = max(3, int((os.getenv("SPRINT_POOL_TARGET") or "6").strip() or "6"))
+# Нижний пол банка: столько карточек держим даже когда расхода ещё нет (новый вид,
+# никого не было в игре). Раньше это же число было ЦЕЛЬЮ — отсюда и беда, см. ниже.
+SPRINT_POOL_FLOOR = max(3, int((os.getenv("SPRINT_POOL_TARGET") or "6").strip() or "6"))
 SPRINT_COOLDOWN_DAYS = max(7, int((os.getenv("SPRINT_COOLDOWN_DAYS") or "21").strip() or "21"))
+# Запас сверх закона: расход скачет ото дня ко дню, и банк ровно «в притык» всё равно
+# упирался бы в запасной ход.
+SPRINT_POOL_HEADROOM = 1.25
+# Потолок дозаказа за одну ночь. Каждая карточка — обращения к модели за деньги,
+# поэтому отставание добирается за несколько ночей, а не одним рывком.
+SPRINT_TOPUP_MAX_PER_NIGHT = max(1, int((os.getenv("SPRINT_TOPUP_MAX_PER_NIGHT") or "6").strip() or "6"))
+
+
+def _sprint_pool_target(relation: str) -> tuple[int, dict]:
+    """Сколько карточек этого вида должно лежать в банке. Считается от ЖИЗНИ.
+
+    Закон: банк ≥ расход за срок отдыха. Если банк меньше — выдача каждый раз не
+    находит отдохнувшую карточку, срабатывает запасной ход, и человек получает одно
+    и то же раньше срока. Замер 01.09.2026: у тренажёра банк 34 при расходе 33 за
+    21 день — отдохнуть успевала ОДНА карточка из тридцати четырёх.
+
+    Возвращает (цель, чем мерили) — второе идёт в лог, чтобы число всегда можно было
+    проверить, а не принимать на веру.
+    """
+    from backend.database import measure_sprint_bank_pressure
+    pressure = measure_sprint_bank_pressure(relation=relation, window_days=SPRINT_COOLDOWN_DAYS)
+    by_law = pressure["per_day"] * SPRINT_COOLDOWN_DAYS * SPRINT_POOL_HEADROOM
+    return max(SPRINT_POOL_FLOOR, int(round(by_law))), pressure
 
 
 def _sprint_enabled() -> bool:
@@ -41678,9 +41703,25 @@ async def prepare_sprint_pool_job(context: CallbackContext) -> None:
     try:
         await asyncio.to_thread(ensure_sprint_schema)
         for relation in ("synonym", "antonym"):
-            have = await asyncio.to_thread(count_available_sprint_items, relation=relation, cooldown_days=0)
-            if have < SPRINT_POOL_TARGET:
-                await _sprint_topup(relation, SPRINT_POOL_TARGET - have + 1)
+            target, pressure = await asyncio.to_thread(_sprint_pool_target, relation)
+            # Считаем то, что выдача вправду может взять СЕГОДНЯ, — то есть карточки,
+            # отдохнувшие положенный срок. Прежний счёт шёл с cooldown_days=0 и считал
+            # отдыхающие карточки доступными: он отвечал на вопрос «сколько их всего»,
+            # а решать нужно было «сколько можно выдать».
+            have = await asyncio.to_thread(count_available_sprint_items, relation=relation,
+                                           cooldown_days=SPRINT_COOLDOWN_DAYS)
+            logging.info(
+                "sprint_pool relation=%s банк=%s отдохнули=%s цель=%s расход/день=%.2f "
+                "(спринт %.2f, тренажёр %.2f) отдых=%s",
+                relation, pressure["bank"], have, target, pressure["per_day"],
+                pressure["sprint_per_day"], pressure["trainer_per_day"], SPRINT_COOLDOWN_DAYS,
+            )
+            if pressure["bank"] < target:
+                want = min(SPRINT_TOPUP_MAX_PER_NIGHT, target - pressure["bank"])
+                made = await _sprint_topup(relation, want)
+                logging.info("sprint_pool topup relation=%s заказано=%s добавлено=%s "
+                             "останется добрать=%s", relation, want, made,
+                             max(0, target - pressure["bank"] - made))
         logging.info("sprint_pool_job done")
     except Exception:
         logging.warning("sprint_pool_job failed", exc_info=True)
@@ -41979,7 +42020,7 @@ async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> Non
     if not entry:
         entry = await asyncio.to_thread(pick_next_sprint, relation=relation, cooldown_days=SPRINT_COOLDOWN_DAYS)
     if not entry:
-        await _sprint_topup(relation, SPRINT_POOL_TARGET)
+        await _sprint_topup(relation, SPRINT_TOPUP_MAX_PER_NIGHT)
         entry = await asyncio.to_thread(pick_next_sprint, relation=relation, cooldown_days=SPRINT_COOLDOWN_DAYS)
     if not entry:
         await _alert_admin_interactive(context, f"⚠️ Sprint «{relation}»: пул пуст, не отправлено.", throttle_key=f"sprint_empty_{relation}")
@@ -42047,7 +42088,7 @@ async def admin_clearsprint_command(update: Update, context: CallbackContext) ->
     deleted = await asyncio.to_thread(delete_sprint_bank, relation=relation)
     made = 0
     for rel in ([relation] if relation else ["synonym", "antonym"]):
-        made += await _sprint_topup(rel, SPRINT_POOL_TARGET)
+        made += await _sprint_topup(rel, SPRINT_TOPUP_MAX_PER_NIGHT)
     await status_msg.edit_text(f"✅ Удалено {deleted}, сгенерировано {made} (с переводами по словам).")
 
 
@@ -42071,7 +42112,7 @@ async def admin_sprint_command(update: Update, context: CallbackContext) -> None
     entry = await asyncio.to_thread(pick_next_sprint, relation=relation, cooldown_days=0)
     if not entry:
         await status_msg.edit_text(f"Генерирую {relation}-спринт (LLM)…")
-        await _sprint_topup(relation, SPRINT_POOL_TARGET)
+        await _sprint_topup(relation, SPRINT_TOPUP_MAX_PER_NIGHT)
         entry = await asyncio.to_thread(pick_next_sprint, relation=relation, cooldown_days=0)
     if not entry:
         await status_msg.edit_text("Не удалось подготовить спринт (см. логи).")
