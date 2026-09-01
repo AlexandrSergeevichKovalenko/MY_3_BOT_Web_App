@@ -13518,25 +13518,48 @@ def _build_unit_decision_review(session: dict, sid: str, page: int) -> tuple:
     return "\n".join(head), InlineKeyboardMarkup(rows_kb)
 
 
+_QUARANTINE_MARK_ICON = {"": "·", "as_is": "✅", "redo": "↩️", "drop": "🗑"}
+
+
+def _quarantine_counts(session: dict) -> dict:
+    """Сколько слов в каждом исходе. Нерешённые считаются отдельно — они не действие."""
+    marks = session.get("marks") or {}
+    итог = {"as_is": 0, "redo": 0, "drop": 0, "": 0}
+    for c in session.get("candidates") or []:
+        итог[str(marks.get(int(c.get("id"))) or "")] += 1
+    return итог
+
+
 def _build_quarantine_review(session: dict, sid: str, page: int) -> tuple[str, "InlineKeyboardMarkup"]:
+    """Разбор карантина. У слова ТРИ исхода и одно исходное состояние «решения нет».
+
+    ПЕРЕДЕЛАНО 01.09.2026 по решению владельца. Было два исхода — удалить / вернуть на
+    пересбор, — и открывался экран с ПОМЕЧЕННЫМИ НА УДАЛЕНИЕ всеми словами сразу. Не
+    хватало ровно того исхода, который чаще всего и нужен: «слово остаётся людям как
+    есть, подробный разбор ему не нужен». Владелец: «Вот как есть — пусть так и будет
+    слово доступно пользователю!!!»"""
     from html import escape as _esc
     reason_ru = {"empty": "пусто", "thin": "неполн"}
     cands = session.get("candidates") or []
-    kept = set(session.get("kept_ids") or [])
+    marks = session.get("marks") or {}
     total = len(cands)
     n_pages = max(1, (total + _QUARANTINE_PAGE_SIZE - 1) // _QUARANTINE_PAGE_SIZE)
     page = max(0, min(page, n_pages - 1))
     start = page * _QUARANTINE_PAGE_SIZE
     chunk = cands[start:start + _QUARANTINE_PAGE_SIZE]
-    to_delete = sum(1 for c in cands if int(c.get("id")) not in kept)
+    сколько = _quarantine_counts(session)
 
     head = [
         f"🗑 <b>Карантин пула</b> — {total} слов",
-        "<i>Карточка не собралась три раза подряд, и слово выпало из ночной очереди.</i>",
+        "<i>Ночь не смогла собрать подробный разбор, и слово выпало из очереди. Перевод "
+        "у него есть, людям оно видно — не хватает только разбора.</i>",
         "",
-        f"Сейчас: удалить <b>{to_delete}</b>, вернуть в работу <b>{len(kept)}</b>.",
-        "<i>Тап по слову переключает: 🗑 удалить ↔ ↩️ вернуть. «Вернуть» — значит слово "
-        "снова попадёт в ночное обогащение и бот попробует собрать карточку заново.</i>",
+        "<i>Ничего не трогать — тоже ответ: непомеченное останется как было и придёт "
+        "снова. Тап по слову переключает исход по кругу:</i>",
+        "<i>· нет решения → ✅ оставить как есть → ↩️ на пересбор → 🗑 удалить.</i>",
+        "",
+        f"✅ оставить <b>{сколько['as_is']}</b> · ↩️ пересобрать <b>{сколько['redo']}</b> · "
+        f"🗑 удалить <b>{сколько['drop']}</b> · без решения <b>{сколько['']}</b>",
         f"Стр. {page + 1}/{n_pages}",
         "",
     ]
@@ -13544,7 +13567,7 @@ def _build_quarantine_review(session: dict, sid: str, page: int) -> tuple[str, "
     for local_i, c in enumerate(chunk):
         gidx = start + local_i
         cid = int(c.get("id"))
-        mark = "↩️" if cid in kept else "🗑"
+        icon = _QUARANTINE_MARK_ICON.get(str(marks.get(cid) or ""), "·")
         why = reason_ru.get(str(c.get("r") or ""), "?")
         word = str(c.get("w") or "")
         again = int(c.get("rel") or 0)
@@ -13553,7 +13576,7 @@ def _build_quarantine_review(session: dict, sid: str, page: int) -> tuple[str, "
             f"{gidx + 1}. <b>{_esc(word)}</b> — {_esc(str(c.get('t') or ''))} "
             f"<i>[{why}, спрос {int(c.get('d') or 0)}{again_note}]</i>"
         )
-        label = f"{mark} {gidx + 1}. {word}"
+        label = f"{icon} {gidx + 1}. {word}"
         if len(label) > 60:
             label = label[:59] + "…"
         rows_kb.append([InlineKeyboardButton(label, callback_data=f"qz:t:{sid}:{page}:{gidx}")])
@@ -13566,7 +13589,8 @@ def _build_quarantine_review(session: dict, sid: str, page: int) -> tuple[str, "
     if nav:
         rows_kb.append(nav)
     rows_kb.append([InlineKeyboardButton(
-        f"✅ Применить: удалить {to_delete}, вернуть {len(kept)}", callback_data=f"qz:del:{sid}")])
+        f"✅ Применить: ✅{сколько['as_is']} ↩️{сколько['redo']} 🗑{сколько['drop']}",
+        callback_data=f"qz:del:{sid}")])
     rows_kb.append([InlineKeyboardButton("✖ Закрыть без изменений", callback_data=f"qz:x:{sid}")])
     return "\n".join(head), InlineKeyboardMarkup(rows_kb)
 
@@ -13866,7 +13890,7 @@ async def admin_pool_quarantine_command(update: Update, context: CallbackContext
                "candidates": [{"id": int(r["id"]), "w": r.get("source_text"), "t": r.get("target_text"),
                                "r": r.get("reason"), "d": r.get("demand"),
                                "rel": int(r.get("releases") or 0)} for r in rows],
-               "kept_ids": []}
+               "marks": {}}
     text, markup = _build_quarantine_review(session, sid, 0)
     await message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
@@ -13884,9 +13908,9 @@ async def handle_quarantine_callback(update: Update, context: CallbackContext) -
     sid = parts[2] if len(parts) > 2 else ""
 
     from backend.database import (
-        get_quarantine_review_session, toggle_quarantine_review_keep,
+        get_quarantine_review_session, cycle_quarantine_review_mark,
         delete_pool_entries_by_ids, delete_quarantine_review_session,
-        release_pool_entries_from_quarantine,
+        release_pool_entries_from_quarantine, keep_pool_entries_as_is,
     )
     session = await asyncio.to_thread(get_quarantine_review_session, sid)
     if not session or int(session.get("admin_id") or 0) != int(user.id):
@@ -13894,12 +13918,12 @@ async def handle_quarantine_callback(update: Update, context: CallbackContext) -
         return
 
     try:
-        if action == "t":  # toggle keep for a candidate
+        if action == "t":  # перебрать исход по кругу
             page = int(parts[3]); gidx = int(parts[4])
             cands = session.get("candidates") or []
             if 0 <= gidx < len(cands):
                 session = await asyncio.to_thread(
-                    toggle_quarantine_review_keep, sid, int(cands[gidx]["id"])
+                    cycle_quarantine_review_mark, sid, int(cands[gidx]["id"])
                 )
             await query.answer()
             text, markup = _build_quarantine_review(session, sid, page)
@@ -13911,44 +13935,56 @@ async def handle_quarantine_callback(update: Update, context: CallbackContext) -
             text, markup = _build_quarantine_review(session, sid, page)
             await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup,
                                           disable_web_page_preview=True)
-        elif action == "del":  # ask confirm
-            kept = set(session.get("kept_ids") or [])
-            n = sum(1 for c in (session.get("candidates") or []) if int(c["id"]) not in kept)
-            if n == 0 and not kept:
-                await query.answer("Нечего применять.", show_alert=True)
+        elif action == "del":  # спросить подтверждение
+            сколько = _quarantine_counts(session)
+            if not (сколько["as_is"] or сколько["redo"] or сколько["drop"]):
+                await query.answer("Ничего не отмечено — применять нечего.", show_alert=True)
                 return
             await query.answer()
             kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"✅ Да: −{n} / ↩️{len(kept)}", callback_data=f"qz:go:{sid}"),
+                InlineKeyboardButton(
+                    f"✅ Да: ✅{сколько['as_is']} ↩️{сколько['redo']} 🗑{сколько['drop']}",
+                    callback_data=f"qz:go:{sid}"),
                 InlineKeyboardButton("↩ Назад", callback_data=f"qz:p:{sid}:0"),
             ]])
             await query.edit_message_text(
-                f"⚠️ Удалить из пула безвозвратно: <b>{n}</b>.\n"
-                f"Вернуть в ночное обогащение: <b>{len(kept)}</b>.\n\n"
-                f"<i>Удалённое при следующем запросе снова уйдёт в GPT. Возвращённое бот "
-                f"попробует собрать заново ближайшей ночью; если снова не выйдет три раза — "
-                f"слово вернётся в этот разбор с пометкой, сколько раз его уже возвращали.</i>",
+                f"✅ Оставить как есть: <b>{сколько['as_is']}</b> — слово живёт в словаре с "
+                f"переводом, подробный разбор ему больше не собираем и в этот список оно "
+                f"не вернётся.\n"
+                f"↩️ На пересбор: <b>{сколько['redo']}</b> — бот попробует собрать разбор "
+                f"ближайшей ночью.\n"
+                f"🗑 Удалить безвозвратно: <b>{сколько['drop']}</b> — при следующем запросе "
+                f"слово соберётся заново через GPT.\n\n"
+                f"<i>Без решения: {сколько['']} — с ними ничего не произойдёт.</i>",
                 parse_mode="HTML", reply_markup=kb,
             )
-        elif action == "go":  # perform delete + release
-            kept = sorted(set(session.get("kept_ids") or []))
-            del_ids = [int(c["id"]) for c in (session.get("candidates") or [])
-                       if int(c["id"]) not in set(kept)]
-            deleted = await asyncio.to_thread(delete_pool_entries_by_ids, del_ids)
-            released = await asyncio.to_thread(release_pool_entries_from_quarantine, kept) if kept else 0
+        elif action == "go":  # применить отмеченное
+            marks = session.get("marks") or {}
+            по_исходам: dict[str, list] = {"as_is": [], "redo": [], "drop": []}
+            for c in (session.get("candidates") or []):
+                исход = str(marks.get(int(c["id"])) or "")
+                if исход in по_исходам:
+                    по_исходам[исход].append(int(c["id"]))
+            deleted = await asyncio.to_thread(
+                delete_pool_entries_by_ids, по_исходам["drop"]) if по_исходам["drop"] else 0
+            released = await asyncio.to_thread(
+                release_pool_entries_from_quarantine, по_исходам["redo"]) if по_исходам["redo"] else 0
+            kept_as_is = await asyncio.to_thread(
+                keep_pool_entries_as_is, по_исходам["as_is"]) if по_исходам["as_is"] else 0
             await asyncio.to_thread(delete_quarantine_review_session, sid)
             await query.answer("Готово.")
             await query.edit_message_text(
-                f"🗑 Удалено из пула: <b>{deleted}</b>.\n"
-                f"↩️ Возвращено в обогащение: <b>{released}</b> — бот возьмётся за них ночью.",
+                f"✅ Оставлено как есть: <b>{kept_as_is}</b> — больше не спрашиваем.\n"
+                f"↩️ Отправлено на пересбор: <b>{released}</b> — бот возьмётся за них ночью.\n"
+                f"🗑 Удалено из пула: <b>{deleted}</b>.",
                 parse_mode="HTML",
             )
         elif action == "x":  # close
             await asyncio.to_thread(delete_quarantine_review_session, sid)
             await query.answer("Закрыто.")
             await query.edit_message_text(
-                "🗑 Разбор карантина закрыт. Ничего не удалено и ничего не возвращено — "
-                "слова остались в карантине.")
+                "🗑 Разбор карантина закрыт. Ничего не изменено — слова остались "
+                "как были.")
         else:
             await query.answer()
     except Exception:
@@ -14119,7 +14155,7 @@ def _send_quarantine_review_weekly() -> None:
                                            "t": r.get("target_text"), "r": r.get("reason"),
                                            "d": r.get("demand"),
                                            "rel": int(r.get("releases") or 0)} for r in rows],
-                           "kept_ids": []}
+                           "marks": {}}
                 text, markup = _build_quarantine_review(session, sid, 0)
                 ok, reason = send_telegram_message(
                     chat_id=uid, text=text, token=token,

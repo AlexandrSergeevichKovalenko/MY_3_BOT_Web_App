@@ -63,12 +63,31 @@ class NightEnrichmentStopsWithoutSecondVoice(unittest.TestCase):
 
     def test_night_run_starts_when_only_the_reserve_voice_is_available(self):
         """Ровно случай владельца: Gemini не пополнен. Прогон обязан НАЧАТЬСЯ —
-        значит дойти до модели, а не упасть на пороге."""
+        значит дойти до модели, а не упасть на пороге.
+
+        ┌─ ИСПРАВЛЕНО 01.09.2026. ЭТОТ ТЕСТ КЛЕЙМИЛ ЖИВЫЕ СЛОВА. ─────────────────────┐
+        │ Подменялась только очередь СЛОЯ СЛОВ. На сервере добор и вправду ходит туда │
+        │ (DICTIONARY_UNITS_LOOKUP_ENABLED=1), но на машине разработчика рубильника   │
+        │ нет — и добор уходил во вторую, старую ветку, где очередь берётся ИЗ ЖИВОЙ  │
+        │ БАЗЫ по востребованности. Пустой ответ модели тут же вешал самому нужному   │
+        │ слову «карточка не собралась»; три пуша — и хорошее слово в карантине.      │
+        │ Теперь подменены ОБЕ очереди: прогон работает на выдуманной строке при      │
+        │ любом положении рубильника.                                                 │
+        └────────────────────────────────────────────────────────────────────────────┘"""
         from backend import backend_server
         дошли = []
         with self._no_key_env():
             with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "тест"}):
                 with mock.patch.object(
+                    backend_server, "get_thin_pool_entries_for_enrichment",
+                    return_value=[{"id": -1, "source_lang": "de", "target_lang": "ru",
+                                   "source_text": "der Zufall", "target_text": "случай",
+                                   "response_json": {}}],
+                ), mock.patch.object(
+                    backend_server, "count_thin_pool_entries", return_value=0,
+                ), mock.patch.object(
+                    backend_server, "mark_pool_entry_enrich_failed",
+                ) as клеймо, mock.patch.object(
                     backend_server.lex_units, "units_needing_card",
                     return_value=[{"id": 1, "display": "der Zufall", "translation": "случай"}],
                 ):
@@ -83,6 +102,9 @@ class NightEnrichmentStopsWithoutSecondVoice(unittest.TestCase):
                             backend_server.run_pool_night_enrichment(limit=1)
         self.assertEqual(1, len(дошли),
                          "ночь не дошла до модели, хотя запасной судья доступен")
+        for звонок in клеймо.call_args_list:
+            self.assertLess(int(звонок.args[0]), 0,
+                            "тест пометил ЖИВУЮ запись базы, а не выдуманную")
 
     def test_dry_run_still_works_without_the_second_voice(self):
         """Сухой прогон ничего не пишет, значит и дверь ему не нужна: он обязан
@@ -94,6 +116,10 @@ class NightEnrichmentStopsWithoutSecondVoice(unittest.TestCase):
                 side_effect=AssertionError("сухой прогон не имеет права ходить в модель"),
             ):
                 with mock.patch.object(
+                    backend_server, "get_thin_pool_entries_for_enrichment", return_value=[],
+                ), mock.patch.object(
+                    backend_server, "count_thin_pool_entries", return_value=0,
+                ), mock.patch.object(
                     backend_server.lex_units, "units_needing_card", return_value=[],
                 ):
                     отчёт = backend_server.run_pool_night_enrichment(limit=5, dry_run=True)
