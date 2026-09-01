@@ -124,6 +124,10 @@ def _entry(headword, *, pos="", gender="", translations=(), source="", unit_id=0
         "sources": [source] if source else [],
         "unit_id": int(unit_id or 0),
         "rank": rank,
+        # Подпись «это форма» заполняется только тогда, когда статью нашли ПО ФОРМЕ
+        # (см. _lemmas_of_form). Для обычного запроса поля пустые, и экран молчит.
+        "form_of": "",
+        "asked_form": "",
     }
 
 
@@ -139,6 +143,9 @@ def _merge(into: dict, other: dict) -> None:
         into["unit_id"] = other["unit_id"]
     if into.get("rank") is None and other.get("rank") is not None:
         into["rank"] = other["rank"]
+    if not into.get("form_of") and other.get("form_of"):
+        into["form_of"] = other["form_of"]
+        into["asked_form"] = other.get("asked_form") or ""
     into["translations"] = _dedupe_words(
         list(into["translations"]) + list(other.get("translations") or [])
     )[:6]
@@ -379,6 +386,25 @@ def _attach_examples(cur, entries: list[dict], limit: int = 2) -> None:
 # ─────────────────────────── вход ───────────────────────────
 
 
+def _lemmas_of_form(text: str) -> list[str]:
+    """Словарные формы, которым принадлежит это написание. Пусто — справочник молчит.
+
+    Источник — `bt_3_german_verb_paradigms`, таблицы со страниц Flexion de.wiktionary.
+    Здесь НЕТ ни модели, ни арифметики: если справочник не знает, мы честно возвращаем
+    пусто, и выше по цепочке отработает машинный перевод с честной подписью.
+
+    Молчание справочника — не норма, а незакрытая задача: пополняет его ночной прогрев
+    `warm_verb_paradigms`, который с 01.09.2026 спрашивает и про ОСНОВЫ, а не только
+    про наши единицы.
+    """
+    try:
+        from backend.german_verb_paradigms import verbs_of_form
+        return verbs_of_form(text)
+    except Exception:
+        logging.debug("справочник форм не ответил про %r", text, exc_info=True)
+        return []
+
+
 def entries_for_query(query: str, *, source_lang: str, target_lang: str,
                       limit: int = MAX_ENTRIES) -> list[dict]:
     """Список словарных статей для написания. Пустой список — «нам это слово
@@ -421,6 +447,54 @@ def entries_for_query(query: str, *, source_lang: str, target_lang: str,
                 elif other_lang == "de":
                     raw += _from_base_reverse(cur, key)
                 raw = [item for item in raw if item["headword"]]
+                # Спросили НЕ ЗАГОЛОВОК: либо не нашли ничего, либо нашли по указателю
+                # словоформы, и написание не совпало ни с одной леммой. Оба случая —
+                # повод спросить справочник, чья это форма. Когда человек набрал саму
+                # лемму («gehen», «arbeiten»), сюда не заходим вовсе: лишнего запроса
+                # к справочнику на горячем пути быть не должно.
+                asked_a_headword = any(
+                    normalize_query(item["headword"]) == key for item in raw
+                )
+                if query_lang == "de" and not asked_a_headword:
+                    # СЛОВОФОРМА. Человек нажал слово в фильме или в книге, а там оно
+                    # почти всегда стоит в форме: «wühlt», «ging», «nimmt». Словарь —
+                    # словарь ЛЕММ, поэтому раньше он здесь молчал, и строка «ПЕРЕВОД»
+                    # уходила к машинному переводчику. Тот переводит голую форму,
+                    # достраивая русскую под немецкую, и 01.09.2026 выдал владельцу
+                    # «рыется» — слова, которого в русском языке нет (правильно
+                    # «роется»). Верный ответ при этом лежал у нас: «wühlen — рыться».
+                    #
+                    # Спрашиваем СПРАВОЧНИК, а не модель: `verbs_of_form` отдаёт те
+                    # глаголы, у которых написание НАПЕЧАТАНО целой ячейкой таблицы
+                    # Flexion. Так же отвечают Wiktionary («ging — Konjugierte Form des
+                    # Verbs gehen»), PONS, Duden и dict.cc. Ничего не достраиваем: молчит
+                    # справочник — молчим и мы, и тогда работает машинный перевод,
+                    # подписанный как машинный.
+                    lemmas = _lemmas_of_form(text)
+                    for lemma in lemmas:
+                        lemma_key = normalize_query(lemma)
+                        if not lemma_key or lemma_key == key:
+                            continue
+                        found = _from_units(cur, lemma_key, query_lang=query_lang,
+                                            other_lang=other_lang)
+                        found += _from_base_forward(cur, lemma_key)
+                        for item in found:
+                            if not item["headword"]:
+                                continue
+                            # Справочник сказал: это форма ГЛАГОЛА. Существительное с
+                            # тем же написанием леммы такой формы не имеет — «fängt» не
+                            # форма слова «das Fangen» (салочки), а «gräbt» не форма
+                            # слова «der Graben» (канава). Раньше они выигрывали по
+                            # частотности и отвечали вместо глагола.
+                            # Часть речи неизвестна — не судим и берём: молчание нашего
+                            # банка не повод выбросить единственный найденный ответ.
+                            if item["pos"] and item["pos"] != "verb":
+                                continue
+                            # Подпись для экрана: человек нажал «wühlt», а видит
+                            # «wühlen» — он обязан понимать, почему.
+                            item["form_of"] = lemma
+                            item["asked_form"] = text
+                            raw.append(item)
                 if not raw:
                     return []
                 # Род ставится ДО склейки: он входит в ключ статьи, и без него
@@ -445,6 +519,12 @@ def entries_for_query(query: str, *, source_lang: str, target_lang: str,
     # узнает, что оно значит.
     entries = [e for e in entries if e["translations"]]
     entries.sort(key=lambda e: (
+        # Статья, подтверждённая справочником форм, идёт первой: человек нажал «fängt»,
+        # и это форма ГЛАГОЛА «fangen». Существительное «das Fangen» (салочки) такой
+        # формы не имеет — оно лишь совпадает написанием с леммой, и до 01.09.2026
+        # выигрывало по частотности, отвечая на «fängt» словом «салочки».
+        # Из списка оно НЕ пропадает: омонимы человек должен видеть рядом.
+        0 if e.get("form_of") else 1,
         e["rank"] if e["rank"] is not None else 10 ** 9,
         _POS_ORDER.get(e["pos"], 9),
         e["headword"].lower(),

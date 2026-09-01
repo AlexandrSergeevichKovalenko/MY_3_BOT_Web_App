@@ -32,7 +32,10 @@ import psycopg2
 import psycopg2.extras
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from backend.german_grammar_tables import build_grammar_tables  # noqa: E402
+from backend.german_grammar_tables import (  # noqa: E402
+    build_grammar_tables,
+    form_token_of_cell,
+)
 
 SPACE_RE = re.compile(r"\s+")
 # Служебные слова, которые не являются формой САМОГО слова: артикли и вспомогательные
@@ -62,7 +65,7 @@ def norm(text: str) -> str:
 
 
 def forms_from_tables(tables: dict) -> set[str]:
-    """Все словоформы из построенной парадигмы, по одному слову за раз."""
+    """Все словоформы из построенной парадигмы — по ОДНОЙ ЦЕЛОЙ ЯЧЕЙКЕ за раз."""
     out: set[str] = set()
     if not isinstance(tables, dict):
         return out
@@ -75,11 +78,11 @@ def forms_from_tables(tables: dict) -> set[str]:
             for key, value in row.items():
                 if key in {"case", "label", "person", "tense", "degree"} or not isinstance(value, str):
                     continue
-                for token in SPACE_RE.split(value.strip()):
-                    token = token.strip(" ,;.—-").casefold()
-                    if len(token) >= MIN_LEN and token not in STOP_TOKENS:
-                        out.add(token)
+                form = form_token_of_cell(value)
+                if form:
+                    out.add(form)
     return out
+
 
 
 def main() -> int:

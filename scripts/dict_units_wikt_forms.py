@@ -36,6 +36,7 @@ import psycopg2.extras
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.article_wiktionary_ref import _API, _DE_HEADER, _NEXT_LANG, _UA  # noqa: E402
+from backend.german_grammar_tables import form_token_of_cell  # noqa: E402
 
 SPACE_RE = re.compile(r"\s+")
 BATCH = 45
@@ -194,10 +195,12 @@ def main() -> int:
     cur.execute("SELECT title, form_key, value FROM bt_3_wiktionary_forms WHERE form_key <> '—';")
     forms_by_title: dict[str, set] = {}
     for title, _key, value in cur.fetchall():
-        for token in SPACE_RE.split(str(value).strip()):
-            token = token.strip(" ,;.—-").casefold()
-            if len(token) >= MIN_LEN and token not in STOP_TOKENS:
-                forms_by_title.setdefault(title, set()).add(token)
+        # ЦЕЛАЯ ЯЧЕЙКА, а не нарезка по пробелам: правило и объяснение — в
+        # backend/german_grammar_tables.form_token_of_cell. Здесь резали так же,
+        # как в dict_units_paradigm_surfaces, и так же плодили «ging → ausgehen».
+        form = form_token_of_cell(value)
+        if form:
+            forms_by_title.setdefault(title, set()).add(form)
 
     cur.execute(
         """

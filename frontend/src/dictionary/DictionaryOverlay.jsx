@@ -513,6 +513,9 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
         // написания. Пусто — значит ответила машина, и это подписано на экране.
         entries: Array.isArray(data?.entries) ? data.entries : [],
         machine: !!data?.machine,
+        // Спросили форму («ging»), отвечаем словарной формой («gehen»). Подпись
+        // обязательна: иначе человек решит, что мы подменили его слово.
+        formOf: String(data?.form_of || '').trim(),
       };
       setChosen(0);
       setQuick(nextQuick);
@@ -1474,6 +1477,12 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
                 должен видеть разницу — это ровно то, чего не хватало. */}
             {quick.machine && !entries.length && (
               <div className="dq-machine-note">машинный перевод — этого слова нет в словаре</div>
+            )}
+            {/* Ответ по СЛОВОФОРМЕ: статью нашли не по написанию, а через справочник
+                спряжений («ging» напечатано целой ячейкой у «gehen»). Подписываем так
+                же, как Wiktionary, PONS, Duden и dict.cc. */}
+            {quick.formOf && (
+              <div className="dq-machine-note">форма от {quick.formOf}</div>
             )}
             {/* Живые примеры — общий компонент на оба словаря.
 
