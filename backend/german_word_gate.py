@@ -52,6 +52,9 @@ CONFIRMED = "подтверждено"
 REPAIRED = "исправлено"
 UNCONFIRMED = "не подтверждено"
 NOT_A_WORD = "не слово"
+# Вопрос не к этой двери. НЕ вердикт о тексте: она про ОДНО слово, а ей дали фразу.
+# Этот статус не кешируется и никогда не уходит владельцу — см. `check_word`.
+NOT_A_WORD_QUESTION = "не одно слово"
 
 _UMLAUT_PAIRS = (("a", "ä"), ("o", "ö"), ("u", "ü"), ("A", "Ä"), ("O", "Ö"), ("U", "Ü"))
 _MAX_REPAIR_CANDIDATES = 8
@@ -275,6 +278,29 @@ def _second_reference_says(words: list[str]) -> dict[str, str] | None:
 from backend.german_form_headword import POS_BY_WORTART as _POS_BY_WORTART
 
 
+# Артикль словом не считается: «die Fahne» это наш формат заголовка, а не две лексемы.
+_LEADING_DEFINITE_RE = re.compile(r"^(?:der|die|das)\s+", re.IGNORECASE)
+
+
+def is_single_word(text: str) -> bool:
+    """Одно ли это слово ПО НАШИМ ЖЕ правилам заголовка.
+
+    Правило берётся оттуда же, откуда его берёт дверь (`clean_text` +
+    `german_dictionary_headword`), а не пишется здесь заново: иначе «eine Schnapsidee»
+    и «zu erklären» посчитались бы фразами, хотя дверь сводит их к одному слову.
+    """
+    from backend.dictionary_intake import clean_text
+    from backend.german_grammar_tables import german_dictionary_headword
+
+    raw = " ".join(str(text or "").split())
+    if not raw:
+        return False
+    body = clean_text(raw) or raw
+    body = german_dictionary_headword(body) or body
+    body = _LEADING_DEFINITE_RE.sub("", body.strip()).strip()
+    return bool(body) and " " not in body
+
+
 def check_word(word: str, *, pos_hint: str = "", allow_network: bool = True,
                allow_model: bool = True) -> dict:
     """Вердикт двери. Никогда не бросает и никогда не возвращает пустой текст.
@@ -285,6 +311,44 @@ def check_word(word: str, *, pos_hint: str = "", allow_network: bool = True,
     if not asked:
         return {"text": "", "status": NOT_A_WORD, "pos": "", "source": "",
                 "note": "пустая строка"}
+
+    # ┌─ ПОЧИНЕНО 01.09.2026 ПО ЖАЛОБЕ ВЛАДЕЛЬЦА. СТОРОЖ НЕ СНИМАТЬ. ─────────────────┐
+    # │ «Приходят слова и пишут, что модель не знает таких слов — ну конечно не       │
+    # │ знает, потому что это ПРЕДЛОЖЕНИЯ. Зачем они попадаются в разбор слов?!»      │
+    # │                                                                              │
+    # │ Замер живой базы 01.09.2026: в очереди к владельцу 79 записей, 54 из них      │
+    # │ многословные. У 47 из 59 многословных строка в `bt_3_word_check` появляется   │
+    # │ через секунды после решения по фразе — `bt_3_phrase_review.decided_text`      │
+    # │ совпадает дословно. То есть круг замыкался сам на себя: владелец правит       │
+    # │ фразу на экране спорных фраз → дочистка после переименования                  │
+    # │ (`card_complaints._вернуть_в_круг_после_переименования`) спрашивает эту дверь │
+    # │ про ВЕСЬ текст фразы → модель отвечает «такого слова нет» → ответ уходит      │
+    # │ владельцу вопросом «убрать из словаря?».                                      │
+    # │                                                                              │
+    # │ Проверка «внутри пробел — не наше дело» стояла у восьми вызывающих из девяти  │
+    # │ (backend_server:53872, database:33581, database:34271, lex_units через        │
+    # │ `kind`). Копия правила у каждого вызывающего ломается на следующем — поэтому  │
+    # │ правило переехало СЮДА, в саму дверь, одним местом на всех.                   │
+    # │                                                                              │
+    # │ ЭТО НЕ МОЛЧАНИЕ И НЕ ЗАГЛУШКА. Фраза не остаётся непроверенной: её грамматику │
+    # │ разбирает СВОЙ механизм — `backend/phrase_night_check.py` → `bt_3_phrase_     │
+    # │ check` → очередь `bt_3_phrase_review` → экран спорных фраз с готовым          │
+    # │ исправлением. Здесь мы отказываемся отвечать на вопрос, которого не задавали: │
+    # │ «существует ли в немецком слово „Es löst Kopfschütteln aus.“».                │
+    # │                                                                              │
+    # │ Вердикт НЕ кешируется (возврат до `_cached`/`_remember`) и статуса            │
+    # │ `OWNER_STATUSES` не имеет — значит `words_awaiting_owner` его не увидит.      │
+    # │ Текст возвращается ровно как спросили: вызывающие переименовывают запись при  │
+    # │ `text != asked`, и подменять здесь нечего.                                    │
+    # │                                                                              │
+    # │ Перемерить: `SELECT count(*) FROM bt_3_word_check WHERE position(' ' in       │
+    # │ asked) > 0` — при живом стороже число не растёт.                              │
+    # └──────────────────────────────────────────────────────────────────────────────┘
+    if not is_single_word(asked):
+        logging.info("дверь слова: %r — это не одно слово, вопрос не к ней", asked[:60])
+        return {"text": asked, "status": NOT_A_WORD_QUESTION, "pos": "",
+                "source": "дверь слова разбирает одно слово",
+                "note": "фразу проверяет phrase_night_check, а не эта дверь"}
 
     remembered = _cached(asked)
     if remembered and _is_final(remembered, allow_network=True, allow_model=True):
