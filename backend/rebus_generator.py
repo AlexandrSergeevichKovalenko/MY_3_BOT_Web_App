@@ -61,39 +61,41 @@ def _object_key_composed(compound_id: str) -> str:
     return f"rebus/composed/{safe}.png"
 
 
-# Сколько до-гейтовых картинок машина смотрит за одну ночь. Каждая — платный запрос
-# к vision-модели, поэтому проход идёт порциями, а не «все 225 разом».
-# Решение владельца 31.08.2026: «прогнать машиной, мне — только спорные».
-REBUS_PREGATE_SWEEP_PER_NIGHT = 25
+# Сколько картинок машина смотрит за одну ночь. Каждая — платный запрос к
+# vision-модели, поэтому идём порциями. Решение владельца 01.09.2026.
+REBUS_IMAGE_SWEEP_PER_NIGHT = 25
 
 
-def sweep_pregate_rebus_components(limit: int = REBUS_PREGATE_SWEEP_PER_NIGHT) -> dict:
-    """Ночной проход по картинкам, которым «принято» проставила миграция, а не человек.
+def sweep_unchecked_rebus_components(limit: int = REBUS_IMAGE_SWEEP_PER_NIGHT) -> dict:
+    """Посмотреть картинки, которые машина ещё не смотрела: тот ли на них предмет.
 
-    ┌─ ОТКУДА ВЗЯЛИСЬ ЭТИ КАРТИНКИ. Разобрано 31.08.2026. ──────────────────────┐
-    │ 03.08.2026 у таблицы половинок появилась колонка review_status с           │
-    │ DEFAULT 'approved' (`backend/database.py`, блок схемы ребуса). Все уже      │
-    │ лежавшие строки — 225 штук — получили «принято владельцем», которого он     │
-    │ никогда не давал: их рисовали весной, до постройки vision-гейта и приёмки.  │
-    │ Владелец 31.08.2026 решил: прогнать машиной, ему показывать только спорные. │
+    ┌─ ЗАДАЧА ЦЕЛИКОМ, БЕЗ УСЛОЖНЕНИЙ. Владелец, 01.09.2026. ───────────────────┐
+    │ «Есть картинки, надо просмотреть на предмет того, насколько они            │
+    │ соответствуют». Всё. Единственный признак отбора — смотрели или нет        │
+    │ (`gate_checked_at`). Никаких других условий сюда не добавлять.             │
+    │                                                                            │
+    │ Первая версия брала «картинки без сохранённого запроса на отрисовку» —     │
+    │ признак, подсмотренный в соседней админ-команде. Он отвечает на другой     │
+    │ вопрос: под него попадали 2 картинки из 226, и ночной проход посмотрел     │
+    │ две штуки и замолчал навсегда.                                             │
     └───────────────────────────────────────────────────────────────────────────┘
 
     Три исхода на картинку, и они РАЗНЫЕ:
-      • судья доволен → ставим отметку «машина смотрела», картинка остаётся в работе;
-      • судья возражает → картинка уходит ВЛАДЕЛЬЦУ в очередь приёмки с причиной и
-        до его решения не выдаётся. Сами не удаляем: приговор машины — повод
-        спросить человека, а не заменить его;
-      • судья не смог посмотреть → не трогаем ничего, берём её же следующей ночью.
+      • предмет тот         → отмечаем «смотрели», картинка остаётся в работе;
+      • предмет не тот      → картинка уходит ВЛАДЕЛЬЦУ в очередь приёмки с
+        причиной и до его решения не выдаётся. Сами не удаляем: приговор машины —
+        повод спросить человека, а не заменить его;
+      • судья не ответил    → не трогаем ничего, возьмём её же следующей ночью.
     """
     from backend.database import (
-        list_ready_rebus_component_images, get_rebus_part_meanings,
+        list_rebus_images_never_checked, get_rebus_part_meanings,
         mark_rebus_component_gate_checked, send_rebus_component_to_owner_review,
-        count_rebus_pregate_backlog,
+        count_rebus_images_never_checked,
     )
     from backend.openai_manager import run_image_depicts
     from backend.r2_storage import r2_get_bytes
 
-    rows = list_ready_rebus_component_images(int(limit), pregate_only=True)
+    rows = list_rebus_images_never_checked(int(limit))
     meanings = get_rebus_part_meanings()
     clean = 0
     to_owner: list[str] = []
@@ -108,13 +110,13 @@ def sweep_pregate_rebus_components(limit: int = REBUS_PREGATE_SWEEP_PER_NIGHT) -
         try:
             img = r2_get_bytes(key)
         except Exception:
-            logging.warning("pregate_sweep: r2_get_bytes failed word=%s key=%s", word, key, exc_info=True)
+            logging.warning("image_sweep: r2_get_bytes failed word=%s key=%s", word, key, exc_info=True)
             unseen += 1
             continue
         if not img:
             # Ключ есть, файла нет — это не приговор картинке, а отдельная поломка.
             no_file += 1
-            logging.warning("pregate_sweep: файла нет word=%s key=%s", word, key)
+            logging.warning("image_sweep: файла нет word=%s key=%s", word, key)
             continue
         mime = "image/webp" if key.endswith(".webp") else "image/png"
         verdict = run_image_depicts(bytes(img), word, meaning=meanings.get(word, ""), mime=mime)
@@ -132,38 +134,9 @@ def sweep_pregate_rebus_components(limit: int = REBUS_PREGATE_SWEEP_PER_NIGHT) -
     result = {
         "looked_at": len(rows), "clean": clean, "to_owner": to_owner,
         "judge_could_not_look": unseen, "file_missing": no_file,
-        "backlog_left": count_rebus_pregate_backlog(),
+        "backlog_left": count_rebus_images_never_checked(),
     }
-    logging.info("rebus_pregate_sweep: %s", result)
-    return result
-
-
-def retry_unanswered_dwds_words(limit: int = 200) -> dict:
-    """Переспросить у DWDS слова, про которые он в прошлый раз не ответил.
-
-    «Не ответил» — отдельное состояние, а не ноль вхождений: при первом прогоне
-    01.09.2026 так замолчали 69 слов из 338, все по сетевым причинам, и среди них
-    были Bahnhof и Badezimmer. Пока ответа нет, слово в банк не пускается —
-    поэтому очередь обязана рассасываться сама, а не ждать человека.
-    """
-    import time
-
-    from backend.database import list_dwds_words_without_answer, upsert_dwds_frequency
-    from backend.dwds_frequency import ask_dwds
-
-    words = list_dwds_words_without_answer(limit)
-    answered = still_silent = 0
-    for word in words:
-        answer = ask_dwds(word)
-        if answer is None:
-            still_silent += 1
-        else:
-            upsert_dwds_frequency(answer)
-            answered += 1
-        time.sleep(1.0)      # чужой бесплатный сервис — ходим по одному запросу в секунду
-    result = {"asked": len(words), "answered": answered, "still_silent": still_silent}
-    if words:
-        logging.info("dwds_retry: %s", result)
+    logging.info("rebus_image_sweep: %s", result)
     return result
 
 
