@@ -140,6 +140,43 @@ def sweep_unchecked_rebus_components(limit: int = REBUS_IMAGE_SWEEP_PER_NIGHT) -
     return result
 
 
+def retry_unanswered_dwds_words(limit: int = 200) -> dict:
+    """Переспросить у DWDS слова, про которые он в прошлый раз не ответил.
+
+    «Не ответил» — отдельное состояние, а не ноль вхождений: при первом прогоне
+    01.09.2026 так замолчали 69 слов из 338, все по сетевым причинам, и среди них
+    были Bahnhof и Badezimmer. Пока ответа нет, слово в банк не пускается —
+    поэтому очередь обязана рассасываться сама, а не ждать человека.
+
+    ┌─ СТЁРТА И ВОССТАНОВЛЕНА 01.09.2026. ──────────────────────────────────────┐
+    │ При переписывании ночного прохода я заменил кусок файла по двум меткам и   │
+    │ захватил эту функцию заодно. Вызов в bot_3.py остался, определение исчезло │
+    │ — ночное пополнение банка ребусов падало с ImportError на каждом прогоне.  │
+    │ Тесты этого не поймали: имя никто не импортировал. Страж на этот класс —   │
+    │ backend/tests/test_rebus_pool_job_imports_exist.py.                        │
+    └───────────────────────────────────────────────────────────────────────────┘
+    """
+    import time
+
+    from backend.database import list_dwds_words_without_answer, upsert_dwds_frequency
+    from backend.dwds_frequency import ask_dwds
+
+    words = list_dwds_words_without_answer(limit)
+    answered = still_silent = 0
+    for word in words:
+        answer = ask_dwds(word)
+        if answer is None:
+            still_silent += 1
+        else:
+            upsert_dwds_frequency(answer)
+            answered += 1
+        time.sleep(1.0)      # чужой бесплатный сервис — ходим по одному запросу в секунду
+    result = {"asked": len(words), "answered": answered, "still_silent": still_silent}
+    if words:
+        logging.info("dwds_retry: %s", result)
+    return result
+
+
 def fill_missing_rebus_image_versions() -> dict:
     """Проставить версию содержимого и отпечаток половинок там, где их ещё нет.
 
