@@ -51,16 +51,20 @@ class ApplyDoesBothTests(unittest.TestCase):
         сдвиг = src.index(метка, начало_функции)
         return src[сдвиг:сдвиг + длина]
 
-    def test_apply_button_deletes_and_releases(self):
-        """Кнопка внизу разбора должна делать оба действия за один тап: иначе
-        «оставленные» слова тихо остаются в карантине и возвращаются через неделю."""
-        block = self._карантинный_блок('elif action == "go":', 1200)
+    def test_apply_button_does_all_three_outcomes(self):
+        """Кнопка внизу разбора делает ВСЕ отмеченные исходы за один тап.
+
+        Исходов стало три (01.09.2026): оставить как есть / на пересбор / удалить.
+        Если хоть один не применяется, слово тихо остаётся в карантине и приходит снова —
+        ровно то, от чего разбор и заводили."""
+        block = self._карантинный_блок('elif action == "go":', 2000)
         self.assertIn("delete_pool_entries_by_ids", block)
         self.assertIn("release_pool_entries_from_quarantine", block)
+        self.assertIn("keep_pool_entries_as_is", block)
 
     def test_close_changes_nothing_and_says_so(self):
         block = self._карантинный_блок('elif action == "x":', 600)
-        self.assertIn("остались в карантине", block,
+        self.assertIn("Ничего не изменено", block,
                       "«Закрыть» не должно выглядеть как решение — оно ничего не меняет")
 
 
