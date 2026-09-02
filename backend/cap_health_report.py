@@ -220,7 +220,15 @@ def send_cap_health_report(*, target_day: date | None = None, force: bool = Fals
             sent += 1
         if not force:
             finish_scheduler_run_guard(job_key=JOB_KEY, run_period=run_period,
-                                       target_scope="global", status="completed", metadata={"sent": sent})
+                                       target_scope="global", status="completed" if sent else "failed", metadata={"sent": sent})
+        # ⛔ НОЛЬ ДОСТАВЛЕННЫХ — ЭТО ПРОВАЛ, А НЕ УСПЕХ (правило одно на все отчёты).
+        # Поймано живьём 02.09.2026: Telegram ответил 401, письмо не ушло НИКОМУ, а функция
+        # вернула ok=True с sent=0 и пометила прогон «выполнено». Владелец 19.08.2026:
+        # «молчащий механизм неотличим от сломанного». Поэтому статус прогона зависит от
+        # ФАКТА доставки, и наружу уходит ok=False с названной причиной.
+        if not sent:
+            logging.error("cap_health_report: письмо НЕ ДОСТАВЛЕНО ни одному админу")
+            return {"ok": False, "sent": 0, "day": run_period}
         return {"ok": True, "sent": sent, "day": run_period}
     except Exception as exc:
         if not force:

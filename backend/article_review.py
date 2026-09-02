@@ -158,8 +158,16 @@ def send_article_review_dm(*, force: bool = False) -> dict[str, Any]:
             mark_article_nouns_asked([int(i["id"]) for i in items])
         if not force:
             finish_scheduler_run_guard(job_key=JOB_KEY, run_period=run_period,
-                                       target_scope="global", status="completed",
+                                       target_scope="global", status="completed" if sent else "failed",
                                        metadata={"sent": sent, "words": len(items)})
+        # ⛔ НОЛЬ ДОСТАВЛЕННЫХ — ЭТО ПРОВАЛ, А НЕ УСПЕХ (правило одно на все отчёты).
+        # Поймано живьём 02.09.2026: Telegram ответил 401, письмо не ушло НИКОМУ, а функция
+        # вернула ok=True с sent=0 и пометила прогон «выполнено». Владелец 19.08.2026:
+        # «молчащий механизм неотличим от сломанного». Поэтому статус прогона зависит от
+        # ФАКТА доставки, и наружу уходит ok=False с названной причиной.
+        if not sent:
+            logging.error("article_review: письмо НЕ ДОСТАВЛЕНО ни одному админу")
+            return {"ok": False, "sent": 0, "words": len(items), "left": left}
         return {"ok": True, "sent": sent, "words": len(items), "left": left}
     except Exception as exc:
         if not force:
