@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import re
 
-from backend.lex_units import normalize_query
+from backend.lex_units import _LINK_PICK_ORDER, _LINK_PICK_WHERE, normalize_query
 
 _SPACE_RE = re.compile(r"\s+")
 _CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
@@ -213,20 +213,44 @@ def _from_units(cur, key: str, *, query_lang: str, other_lang: str) -> list[dict
         """,
         (query_lang, key),
     )
+    # ⛔ БЕРЁМ ШЕСТЬ РАЗНЫХ ПЕРЕВОДОВ, А НЕ ШЕСТЬ СТРОК. НЕ ВОЗВРАЩАТЬ LIMIT 6.
+    #
+    # Одно и то же русское слово живёт в слое ДВАЖДЫ: замер 02.09.2026 — 2574 написания
+    # заведены двумя единицами (у одной часть речи проставлена, у другой нет), и обе
+    # связаны с немецким словом. Сами по себе дубли человеку не видны: `_dedupe_words`
+    # их схлопывает. Но они ЗАНИМАЮТ МЕСТА в выборке.
+    #
+    # Пока здесь стояло LIMIT 6, порядок был такой: взять 6 СВЯЗЕЙ по рангу → схлопнуть
+    # повторы → показать что осталось. Проверено на экране 02.09.2026:
+    #     «die Kugel»  — 11 разных переводов в базе, на экране 3 («шарик» не доезжал);
+    #     «der Mangel» — 32 разных, на экране 3;
+    #     «ahnen»      — 22 разных, на экране 4.
+    # Ранги при этом почти у всех одинаковые (37 841 связь с рангом 10), так что
+    # шестёрка набиралась случайно.
+    #
+    # Теперь берём с запасом и режем ПОСЛЕ схлопывания — потолок в шесть значений
+    # ставит `_entry`. Запас 60: у самого нагруженного слова («der Mangel») 72 связи,
+    # и 60 покрывают все реальные случаи, оставаясь дешёвым запросом по индексу.
     rows = cur.fetchall()
     if not rows:
         return []
     out: list[dict] = []
     for unit_id, display, pos, gender, lang in rows:
+        # ПРАВИЛО «КАКОЙ РУССКИЙ ЧЕЛОВЕК ВИДИТ» — ОДНО НА ВЕСЬ ПРОЕКТ, И ОНО В
+        # lex_units (_LINK_PICK_WHERE / _LINK_PICK_ORDER). Здесь была своя копия:
+        # «ORDER BY l.rank» без отсева понижённых. Из-за неё в список значений
+        # проезжали свалки («Шарик, пуля, пушечное ядро; пуля», ранг 900) и
+        # заготовки упражнений с «___». Копий этого правила больше нет.
         cur.execute(
-            """
-            SELECT t.display
+            f"""
+            SELECT v.display
             FROM bt_3_lex_links l
-            JOIN bt_3_lex_units t
-              ON t.id = CASE WHEN l.from_unit = %s THEN l.to_unit ELSE l.from_unit END
-            WHERE (l.from_unit = %s OR l.to_unit = %s) AND t.lang = %s
-            ORDER BY l.rank
-            LIMIT 6;
+            JOIN bt_3_lex_units v
+              ON v.id = CASE WHEN l.from_unit = %s THEN l.to_unit ELSE l.from_unit END
+            WHERE (l.from_unit = %s OR l.to_unit = %s) AND v.lang = %s
+              AND {_LINK_PICK_WHERE}
+            ORDER BY {_LINK_PICK_ORDER}
+            LIMIT 60;
             """,
             (unit_id, unit_id, unit_id, other_lang),
         )
