@@ -176,6 +176,8 @@ class ВладелецВидитЧислоTests(unittest.TestCase):
         bot = _src("bot_3.py")
         self.assertIn("+ _phrase_panel_line()", bot)
         i = bot.index("def _phrase_panel_line(")
-        тело = bot[i:i + 4500]
+        # Режем ДО следующей функции, а не по числу знаков: строка отчёта растёт, и
+        # окно в 4500 знаков однажды обрезало проверку молча (02.09.2026).
+        тело = bot[i:bot.index("\ndef ", i + 1)]
         for кусок in ("осталось непроверенных", "ждут твоего решения", "потрачено за ночь"):
             self.assertIn(кусок, тело)

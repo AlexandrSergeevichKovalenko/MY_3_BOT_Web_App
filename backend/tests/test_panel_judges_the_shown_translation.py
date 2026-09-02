@@ -19,12 +19,17 @@ abgewinnen» и увидел над ней «Перевода нет», а в с
 
 Здесь заперто то, что нельзя потерять при следующей правке.
 """
+import ast
 import pathlib
 import unittest
 
 
 def _src(rel: str) -> str:
     return (pathlib.Path(__file__).resolve().parents[2] / rel).read_text(encoding="utf-8")
+
+
+def derevo_defs(дерево):
+    return [n for n in ast.walk(дерево) if isinstance(n, ast.FunctionDef)]
 
 
 class ПереводПриходитСнаружиTests(unittest.TestCase):
@@ -169,3 +174,107 @@ class ОдноПравилоНаВсёПриложениеTests(unittest.TestCas
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ВопросИзПрозыНеВопросTests(unittest.TestCase):
+    """⛔ Претензия, собранная из обрезанного следа, — это не вопрос, а его видимость.
+
+    Владелец 02.09.2026 прочёл на своём экране: «Пример 'Sie stellte sich vor den
+    Spiegel zurecht.' не связан с фотографированием, а значит; Выражение
+    «sich zurechtstellen» не употребляется в возвратной форме». Это ДВА замечания от
+    ДВУХ голосов о РАЗНЫХ частях карточки, каждое обрезано на 90-м знаке и склеено
+    через «; » — след отметки писался как `"; ".join(what[:90])`, а вопрос до
+    31.08.2026 собирался из него. Полного текста нет нигде: он отброшен при записи.
+
+    Замер 02.09.2026: 36 панельных вопросов без имени поля, у 25 текст оборван
+    по-настоящему (ровно 90 знаков и нет точки в конце); 6 таких же у авторов.
+    """
+
+    def test_such_a_question_puts_the_card_back_in_the_queue(self):
+        from backend.phrase_panel import ВОПРОС_ИЗ_ПРОЗЫ, _где_судить
+        условие = _где_судить("(SELECT 'живой')")
+        self.assertIn("bt_3_phrase_review", условие,
+                      "вопрос из прозы снова не возвращает карточку на пересуд")
+        self.assertIn("COALESCE(j->>'field', '') <> ''", ВОПРОС_ИЗ_ПРОЗЫ,
+                      "признак «поле не названо» изменился — проверь отбор")
+        self.assertIn("= 'panel'", ВОПРОС_ИЗ_ПРОЗЫ)
+
+    def test_the_owner_sees_this_pile_shrink(self):
+        from backend import phrase_panel as pp
+        self.assertTrue(hasattr(pp, "count_prose_questions"))
+        bot = _src("bot_3.py")
+        i = bot.index("def _phrase_panel_line(")
+        тело = bot[i:i + 5000]
+        self.assertIn('meta.get("вопросы из прозы")', тело)
+
+
+class ПересудНеОставляетСтарыйВопросTests(unittest.TestCase):
+    """⛔ В базе новый вердикт, а на экране прежняя претензия — так решать нельзя.
+
+    Заведение вопроса защищено от дублей (`ON CONFLICT DO NOTHING`). Пока карточку
+    смотрели ОДИН раз, этого хватало; с пересудом (02.09.2026) заведение молча не
+    срабатывает, и открытый вопрос обязан переписываться или сниматься.
+    """
+
+    def _что_вышло(self, *, открыт, verdict, claims=None):
+        from unittest.mock import patch
+        from backend import phrase_panel as pp
+        claims = claims if claims is not None else [
+            {"field": "translation", "what": "не то", "fix": "вот так", "voice": 1}]
+        with patch("backend.database.open_question_kind", return_value=открыт), \
+             patch("backend.database.replace_question_claims",
+                   return_value=True) as переписать, \
+             patch("backend.database.close_open_question", return_value=True) as снять, \
+             patch("backend.database.open_panel_card_question",
+                   return_value=True) as владельцу, \
+             patch("backend.database.open_personal_text_question",
+                   return_value=True) as человеку:
+            код = pp.донести_вердикт(7, "alte Narren", "старые дураки",
+                                     verdict, "почему", claims)
+        return код, переписать, снять, владельцу, человеку
+
+    def test_an_open_panel_question_is_rewritten_not_left_stale(self):
+        код, переписать, снять, владельцу, _ = self._что_вышло(
+            открыт="panel", verdict="спорное")
+        self.assertEqual(код, "переписан")
+        переписать.assert_called_once()
+        self.assertEqual(переписать.call_args.kwargs["kind"], "panel")
+        снять.assert_not_called()
+        владельцу.assert_not_called()
+
+    def test_a_question_nobody_disputes_any_more_is_taken_away(self):
+        """Спрашивать о том, что мы САМИ больше не считаем ошибкой, нельзя."""
+        код, _, снять, _, _ = self._что_вышло(открыт="panel", verdict="подтверждено")
+        self.assertEqual(код, "снят")
+        снять.assert_called_once()
+        self.assertEqual(снять.call_args.kwargs["kind"], "panel")
+
+    def test_the_addressee_may_change_and_then_the_old_question_goes(self):
+        """«Это текст человека» — значит спор владельца больше не тот вопрос."""
+        код, _, снять, _, человеку = self._что_вышло(
+            открыт="panel", verdict="текст человека — решает он")
+        self.assertEqual(код, "человеку")
+        снять.assert_called_once()
+        человеку.assert_called_once()
+
+    def test_someone_elses_question_is_never_touched(self):
+        for чужой in ("grammar", "translation"):
+            код, переписать, снять, владельцу, человеку = self._что_вышло(
+                открыт=чужой, verdict="спорное")
+            self.assertEqual(код, "чужой", чужой)
+            for заглушка in (переписать, снять, владельцу, человеку):
+                заглушка.assert_not_called()
+
+    def test_the_rule_lives_in_one_place(self):
+        """Вторая копия таблицы решений жила в `rejudge_personal` до 02.09.2026."""
+        import ast
+        src = _src("backend/phrase_panel.py")
+        дерево = ast.parse(src)
+        тела = {n.name: ast.get_source_segment(src, n) for n in derevo_defs(дерево)}
+        for имя in ("rejudge_personal", "run_batch"):
+            тело = тела[имя]
+            self.assertIn("донести_вердикт(", тело, имя)
+            for чужое in ("open_personal_text_question(", "open_panel_card_question(",
+                          "close_open_question(", "replace_question_claims("):
+                self.assertNotIn(чужое, тело,
+                                 f"{имя}: правила снова разъехались на две копии")
