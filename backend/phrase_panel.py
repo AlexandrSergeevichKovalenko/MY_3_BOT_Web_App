@@ -53,6 +53,10 @@ from typing import Any
 
 FIELD = "phrase_panel"
 CLEAN, DEFECT, DISPUTED, NOT_ASKED = "подтверждено", "дефект", "спорное", "не спросили"
+# Исход «судить было нечем»: перевод исчез между отбором и запросом (человек стёр связь
+# в ту же секунду). Отметку НЕ ставим — карточка не проверена; число уходит в отчёт.
+# Отбор такие карточки не берёт, так что это защита от гонки, а не рабочий путь.
+NO_RU = "перевода нет — не судили"
 HUMANS_OWN = "текст человека — решает он"
 
 # ⛔ ЧТО ЧИНИМ, А ЧТО НЕ НАШЕ. Решение владельца 23.08.2026, дословно: «это же сам
@@ -318,71 +322,172 @@ class Panel:
                 else {"state": "bad", "why": str(ответ.get("why") or "")[:300]})
 
 
-def entry_of(display: str, kind: str, card: dict | None) -> dict:
-    """Карточка в том виде, в каком её видит голос. Одна форма на все прогоны."""
+def entry_of(display: str, kind: str, card: dict | None, translation: str) -> dict:
+    """Карточка в том виде, в каком её видит голос. Одна форма на все прогоны.
+
+    ⛔ ПЕРЕВОД ПРИХОДИТ СНАРУЖИ И ОБЯЗАТЕЛЕН. Раньше он брался тут же из карточки,
+    ключом `translation_ru`, — и это была КОПИЯ, снятая при сохранении. У 752 карточек
+    фраз ключа не было вовсе, и голоса получали `"translation": null`, после чего
+    писали «русский перевод не передаёт значение немецкой фразы» о переводе, которого
+    им не показали (разобрано с владельцем 02.09.2026). Настоящий перевод живёт в слое
+    связей и берётся `lex_units.native_display_sql` — тем же правилом, каким его
+    выбирает экран.
+
+    Пустой перевод сюда попасть не может: карточку без перевода панель не судит вовсе
+    (`unchecked_units` их не выбирает, `count_without_translation` считает их числом).
+    """
     card = card if isinstance(card, dict) else {}
+    перевод = str(translation or "").strip()
+    if not перевод:
+        raise ValueError("карточку без перевода панели не показываем: судить нечего")
     return {"headword": display, "kind": kind,
-            "translation": card.get("translation_ru"),
-            "saved_meaning": card.get("translation_ru"),
+            "translation": перевод,
+            "saved_meaning": перевод,
             "examples": card.get("usage_examples")}
 
 
+# ⛔ ОТБОР ИДЁТ ПО ТОМУ, ЧТО СУДИЛИ, А НЕ ПО ФАКТУ «отметка есть».
+# Отметка `bt_3_field_checks` хранит `judged_ru` — перевод, который в тот раз реально
+# показали голосам. Карточка возвращается на пересуд, когда перевод на экране стал
+# другим. Замер 02.09.2026 сразу после засыпки: вернулись 890 отметок — 546 вынесены с
+# ПУСТЫМ русским, 344 по разошедшейся копии. Тот же отбор закрывает и будущее:
+# правка перевода сама приводит карточку обратно, а не оставляет старый вердикт про
+# текст, которого больше нет.
+def _где_судить(ru_sql: str) -> str:
+    """Условие «эту карточку надо (пере)судить» — одно на отбор и на счётчики.
+
+    Счётчик и выборка обязаны смотреть на одно и то же: разойдясь, они врут владельцу
+    в утреннем отчёте (этот урок уже оплачен — `pick_phrases_for_grammar_check`).
+    """
+    return (f"u.lang = 'de' AND u.kind <> 'word' AND u.card IS NOT NULL\n"
+            # Карточку без перевода судить нельзя: голос получил бы пустоту и написал
+            # бы о ней «перевод не передаёт значение». Их считает отдельный счётчик.
+            f"   AND COALESCE({ru_sql}, '') <> ''\n"
+            f"   AND (c.unit_id IS NULL OR c.judged_ru IS DISTINCT FROM {ru_sql})")
+
+
 def unchecked_units(limit: int, *, fresh_first: bool = True) -> list[tuple]:
-    """Карточки фраз без отметки панели. Проверенные не берём НИКОГДА — ни этой ночью,
-    ни через месяц: отметка стоит в `bt_3_field_checks`, и по ней идёт отбор.
+    """Карточки фраз, которых панель не видела ИЛИ видела с другим переводом.
 
     Свежие первыми: дыра открыта сегодня, и вчерашнее сохранение важнее прошлогоднего.
+    Пятым столбцом идёт перевод — тот самый, что человек видит на экране.
     """
     from backend.database import get_db_connection_context
+    from backend.lex_units import native_display_sql
+    ru = native_display_sql("u")
     порядок = "u.created_at DESC NULLS LAST, u.id DESC" if fresh_first else "u.id"
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(f"""
-                SELECT u.id, u.display, u.kind, u.card
+                SELECT u.id, u.display, u.kind, u.card, {ru} AS ru
                   FROM bt_3_lex_units u
                   LEFT JOIN bt_3_field_checks c
                          ON c.unit_id = u.id AND c.field = %s
-                 WHERE u.lang = 'de' AND u.kind <> 'word' AND u.card IS NOT NULL
-                   AND c.unit_id IS NULL
+                 WHERE {_где_судить(ru)}
                  ORDER BY {порядок}
                  LIMIT %s;""", (FIELD, int(limit)))
             return list(cur.fetchall() or [])
 
 
-def count_unchecked() -> int:
-    """Сколько карточек панель ещё не видела. Число едет владельцу в утренний отчёт:
-    молчащий механизм неотличим от сломанного. -1 значит «прочитать не смогли» — это
-    НЕ ноль."""
+def _счётчик(условие: str) -> int:
+    """Общий счётчик по пулу карточек фраз. -1 значит «прочитать не смогли» — это НЕ
+    ноль: молчащий механизм неотличим от сломанного."""
     from backend.database import get_db_connection_context
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT count(*) FROM bt_3_lex_units u
                       LEFT JOIN bt_3_field_checks c
                              ON c.unit_id = u.id AND c.field = %s
-                     WHERE u.lang = 'de' AND u.kind <> 'word' AND u.card IS NOT NULL
-                       AND c.unit_id IS NULL;""", (FIELD,))
+                     WHERE {условие};""", (FIELD,))
                 return int((cur.fetchone() or (0,))[0])
     except Exception:
-        logging.warning("счётчик непроверенных карточек не прочитан", exc_info=True)
+        logging.warning("счётчик карточек панели не прочитан", exc_info=True)
         return -1
 
 
-def _записать_отметку(unit_id: int, verdict: str, why: str) -> None:
+def count_unchecked() -> int:
+    """Сколько карточек панель ещё не видела или видела с другим переводом. Число едет
+    владельцу в утренний отчёт."""
+    from backend.lex_units import native_display_sql
+    return _счётчик(_где_судить(native_display_sql("u")))
+
+
+def count_stale_translation() -> int:
+    """Из них — ПЕРЕСУД: отметка есть, но поставлена по другому переводу.
+
+    Отдельным числом, потому что это уборка накопленного, и владелец должен видеть,
+    как она убывает, а не гадать, почему «осталось проверить» не падает."""
+    from backend.lex_units import native_display_sql
+    ru = native_display_sql("u")
+    return _счётчик(f"u.lang = 'de' AND u.kind <> 'word' AND u.card IS NOT NULL\n"
+                    f"   AND COALESCE({ru}, '') <> ''\n"
+                    f"   AND c.unit_id IS NOT NULL AND c.judged_ru IS DISTINCT FROM {ru}")
+
+
+def count_without_translation() -> int:
+    """Карточки фраз, у которых перевода нет НИГДЕ. Панель их не судит: показать голосу
+    пустоту и получить «перевод не передаёт значение» — это выдумка, а не проверка.
+
+    Замер 02.09.2026: таких ноль. Число печатается в утреннем отчёте, чтобы появление
+    первой такой карточки было видно сразу, а не «когда-нибудь всплыло»."""
+    from backend.lex_units import native_display_sql
+    ru = native_display_sql("u")
+    return _счётчик(f"u.lang = 'de' AND u.kind <> 'word' AND u.card IS NOT NULL\n"
+                    f"   AND COALESCE({ru}, '') = ''")
+
+
+def ensure_judged_ru_column() -> None:
+    """Графа «какой перевод показали голосам» + разовая засыпка прошлого.
+
+    ┌─ ЗАВЕДЕНО 02.09.2026 ПО РАЗБОРУ С ВЛАДЕЛЬЦЕМ. ───────────────────────────────┐
+    │ Отметка говорила «эту карточку смотрели» и молчала о том, ЧТО смотрели. Пока  │
+    │ панель брала перевод из копии в json, это молчание скрывало 890 отметок,      │
+    │ вынесенных по пустому или чужому русскому. Теперь отметка хранит текст, и     │
+    │ «проверено» значит «проверено вот с этим переводом».                          │
+    │                                                                              │
+    │ ЗАСЫПКА НЕ ДОГАДКА. Прежний код кормил голоса ровно `card->>'translation_ru'` │
+    │ — это доказуемо по самому коду, а не предположение. Поэтому старым отметкам   │
+    │ проставляется именно оно: у кого копия совпала с экраном (5314 карточек) —    │
+    │ отметка остаётся в силе и денег второй раз не стоит, у кого разошлась —       │
+    │ карточка сама вернётся на пересуд ночными порциями.                           │
+    │ Засыпаются только строки с NULL, поэтому повторный вызов ничего не портит.    │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    """
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("ALTER TABLE bt_3_field_checks "
+                        "ADD COLUMN IF NOT EXISTS judged_ru TEXT;")
+            cur.execute("""
+                UPDATE bt_3_field_checks c
+                   SET judged_ru = COALESCE(u.card->>'translation_ru', '')
+                  FROM bt_3_lex_units u
+                 WHERE u.id = c.unit_id AND c.field = %s AND c.judged_ru IS NULL;""",
+                        (FIELD,))
+            if cur.rowcount:
+                logging.info("панель: у %s старых отметок записан судимый перевод",
+                             cur.rowcount)
+        conn.commit()
+
+
+def _записать_отметку(unit_id: int, verdict: str, why: str, перевод: str) -> None:
+    """Отметка о проверке. `перевод` — тот текст, который РЕАЛЬНО показали голосам."""
     from backend.database import get_db_connection_context
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO bt_3_field_checks
-                    (unit_id, field, verdict, source, ours, reference, checked_at)
-                VALUES (%s,%s,%s,%s,NULL,%s,NOW())
+                    (unit_id, field, verdict, source, ours, reference, checked_at,
+                     judged_ru)
+                VALUES (%s,%s,%s,%s,NULL,%s,NOW(),%s)
                 ON CONFLICT (unit_id, field) DO UPDATE
                    SET verdict = EXCLUDED.verdict, reference = EXCLUDED.reference,
-                       checked_at = NOW();""",
+                       checked_at = NOW(), judged_ru = EXCLUDED.judged_ru;""",
                         (unit_id, FIELD, verdict,
                          "панель: gpt-4.1 + gpt-4.1-mini + gemini-3.6-flash",
-                         (why or "")[:400] or None))
+                         (why or "")[:400] or None, str(перевод or "")))
         conn.commit()
 
 
@@ -423,10 +528,11 @@ def поднять_старые_отметки(limit: int = BACKFILL_LIMIT) -> i
     слове — это два касания вместо одного и потеря доверия к очереди.
     """
     from backend.database import get_db_connection_context, open_personal_text_question
+    from backend.lex_units import native_display_sql
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT c.unit_id, u.display, COALESCE(u.card->>'translation_ru',''),
+            cur.execute(f"""
+                SELECT c.unit_id, u.display, COALESCE({native_display_sql("u")}, ''),
                        COALESCE(c.reference, '')
                   FROM bt_3_field_checks c
                   JOIN bt_3_lex_units u ON u.id = c.unit_id
@@ -478,8 +584,12 @@ def run_batch(*, limit: int = NIGHT_LIMIT, budget_usd: float = NIGHT_BUDGET,
         DISPUTED: 0, NOT_ASKED: 0, "ушло владельцу": 0, "ушло человеку": 0,
         "поднято из старых": 0, "потрачено": 0.0,
         "остановлено потолком": False, "осталось": 0,
+        "пересудить": 0, "без перевода": 0,
     }
     if apply:
+        # Графа «что судили» и засыпка прошлого — до всего остального: по ней идёт
+        # отбор, и без неё ночь не поймёт, что пересуживать.
+        ensure_judged_ru_column()
         # Ни одного платного запроса: это разбор УЖЕ вынесенных вердиктов. Делаем до
         # проверки ключей — накопленное должно доходить до людей даже в ту ночь,
         # когда панель судить не может.
@@ -503,10 +613,12 @@ def run_batch(*, limit: int = NIGHT_LIMIT, budget_usd: float = NIGHT_BUDGET,
     panel = Panel(budget_usd=budget_usd)
 
     def one(row):
-        unit_id, display, kind, card = row
-        перевод = str((card or {}).get("translation_ru") or "")
+        unit_id, display, kind, card, перевод = row
+        перевод = str(перевод or "")
+        if not перевод.strip():
+            return unit_id, display, NO_RU, "", [], ""
         try:
-            verdict, why, claims = panel.judge(entry_of(display, kind, card))
+            verdict, why, claims = panel.judge(entry_of(display, kind, card, перевод))
         except BudgetSpent as stop:
             # Отметку НЕ ставим: карточку не проверяли. Она останется в остатке и
             # достанется следующей ночи — это честнее, чем записать «чисто».
@@ -531,13 +643,16 @@ def run_batch(*, limit: int = NIGHT_LIMIT, budget_usd: float = NIGHT_BUDGET,
             if verdict is None:
                 отчёт["остановлено потолком"] = True
                 continue
+            if verdict == NO_RU:
+                отчёт[NO_RU] = int(отчёт.get(NO_RU) or 0) + 1
+                continue
             отчёт["проверено"] += 1
             отчёт[verdict] = int(отчёт.get(verdict) or 0) + 1
             if callable(on_card):
                 on_card(unit_id, display, verdict, why)
             if not apply:
                 continue
-            _записать_отметку(unit_id, verdict, why)
+            _записать_отметку(unit_id, verdict, why, перевод)
             if verdict == DISPUTED:
                 # ⛔ ВОПРОС ВЛАДЕЛЬЦУ ЗАВОДИТСЯ ЗДЕСЬ ЖЕ, а не отдельным прогоном.
                 # Отдельный шаг читал из базы одну склеенную строку `reference` — и
@@ -556,6 +671,10 @@ def run_batch(*, limit: int = NIGHT_LIMIT, budget_usd: float = NIGHT_BUDGET,
 
     отчёт["потрачено"] = round(panel.cost, 4)
     отчёт["осталось"] = count_unchecked()
+    # Уборка накопленного обязана быть ВИДНА числом и обязана убывать: иначе владелец
+    # не отличит идущий пересуд от вставшего (правило 19.08.2026).
+    отчёт["пересудить"] = count_stale_translation()
+    отчёт["без перевода"] = count_without_translation()
     logging.info("панель, порция: %s", отчёт)
     return отчёт
 
@@ -568,13 +687,18 @@ def units_with_verdict(verdict: str, limit: int) -> list[tuple]:
     берём УЖЕ помеченное, потому что вопрос к судье с тех пор изменился.
     """
     from backend.database import get_db_connection_context
+    from backend.lex_units import native_display_sql
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT u.id, u.display, u.kind, u.card
+            cur.execute(f"""
+                SELECT u.id, u.display, u.kind, u.card,
+                       {native_display_sql("u")} AS ru
                   FROM bt_3_field_checks c
                   JOIN bt_3_lex_units u ON u.id = c.unit_id
                  WHERE c.field = %s AND c.verdict = %s AND u.card IS NOT NULL
+                   -- Карточку без перевода не судим и здесь: пустота на входе рождает
+                   -- претензию к переводу, которого голос не видел.
+                   AND COALESCE({native_display_sql("u")}, '') <> ''
                  ORDER BY c.checked_at DESC
                  LIMIT %s;""", (FIELD, str(verdict), int(limit)))
             return list(cur.fetchall() or [])
@@ -629,10 +753,12 @@ def rejudge_personal(*, limit: int = 500, budget_usd: float = 3.0, workers: int 
     panel = Panel(budget_usd=budget_usd)
 
     def one(row):
-        unit_id, display, kind, card = row
-        перевод = str((card or {}).get("translation_ru") or "")
+        unit_id, display, kind, card, перевод = row
+        перевод = str(перевод or "")
+        if not перевод.strip():
+            return unit_id, display, NO_RU, "", [], ""
         try:
-            verdict, why, claims = panel.judge(entry_of(display, kind, card))
+            verdict, why, claims = panel.judge(entry_of(display, kind, card, перевод))
         except BudgetSpent as stop:
             return unit_id, display, None, str(stop), [], перевод
         if verdict in (DISPUTED, HUMANS_OWN):
@@ -656,6 +782,9 @@ def rejudge_personal(*, limit: int = 500, budget_usd: float = 3.0, workers: int 
                 # это не новый вердикт, а авария связи.
                 отчёт[NOT_ASKED] += 1
                 continue
+            if verdict == NO_RU:
+                отчёт[NO_RU] = int(отчёт.get(NO_RU) or 0) + 1
+                continue
             отчёт["пересужено"] += 1
             if callable(on_card):
                 on_card(unit_id, display, verdict, why)
@@ -664,9 +793,9 @@ def rejudge_personal(*, limit: int = 500, budget_usd: float = 3.0, workers: int 
             открыт = open_question_kind(unit_id)
             if открыт and открыт != "personal":
                 # Чужой вопрос по этой же единице. Отметку обновляем, вопрос не трогаем.
-                _записать_отметку(unit_id, verdict, why)
+                _записать_отметку(unit_id, verdict, why, перевод)
                 continue
-            _записать_отметку(unit_id, verdict, why)
+            _записать_отметку(unit_id, verdict, why, перевод)
             if verdict == HUMANS_OWN:
                 if any(str(c.get("fix") or "").strip() for c in claims):
                     отчёт["с готовым вариантом"] += 1

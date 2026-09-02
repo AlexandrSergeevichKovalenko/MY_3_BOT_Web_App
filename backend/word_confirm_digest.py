@@ -377,17 +377,20 @@ def _phrase_items(cur, user_id: int, limit: int) -> list[dict[str, Any]]:
     ⚠ СПРАШИВАЕМ АВТОРА, А НЕ ВСЕХ ПОДПИСЧИКОВ — то же правило и та же история
     дефекта, что в `words_for_user`. Автор — тот, чья карточка появилась первой.
     """
-    from backend.database import phrase_review_is_noise
+    from backend.database import _перевод_для_экрана, phrase_review_is_noise
 
     cur.execute(
-        """
+        f"""
         WITH авторы AS (
           SELECT DISTINCT ON (lex_unit_id) lex_unit_id, user_id
             FROM bt_3_webapp_dictionary_queries
            WHERE lex_unit_id IS NOT NULL
            ORDER BY lex_unit_id, created_at, id
         )
-        SELECT r.id, btrim(r.text), COALESCE(r.translation, ''), r.judges, r.arbiter,
+        -- Перевод — ЖИВОЙ, из слоя связей. Копия в строке вопроса пуста у 53 личных
+        -- вопросов из 357: автор видел «Перевода нет» при переводе, лежащем в базе
+        -- (разобрано с владельцем 02.09.2026). Правило одно на все экраны.
+        SELECT r.id, btrim(r.text), {_перевод_для_экрана()}, r.judges, r.arbiter,
                r.unit_id, COALESCE(r.kind, ''), u.card
           FROM bt_3_phrase_review r
           JOIN bt_3_lex_units u ON u.id = r.unit_id

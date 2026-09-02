@@ -25688,6 +25688,27 @@ def queue_phrase_for_review(*, unit_id: int, text: str, translation: str,
     return int(row[0]) if row else 0
 
 
+def _перевод_для_экрана(r: str = "r", u: str = "u") -> str:
+    """Русский, который экран спорных фраз показывает под немецкой фразой.
+
+    ┌─ ПЕРЕПИСАНО 02.09.2026 ПО НАХОДКЕ ВЛАДЕЛЬЦА. ────────────────────────────────┐
+    │ Экран печатал «Перевода нет» над фразой, у которой перевод в словаре есть:    │
+    │ он читал КОПИЮ, записанную в строку вопроса ночью, а ночь брала её из json    │
+    │ карточки, где ключа могло не быть вовсе. Теперь перевод берётся живым, тем же │
+    │ правилом, каким его выбирает сама карточка словаря                            │
+    │ (`lex_units.native_display_sql`). «Перевода нет» снова значит «его нет».      │
+    │                                                                              │
+    │ ⚠ КРОМЕ ВИДА 'translation'. Там вопрос ровно в том, годится ли ПРЕДЛОЖЕННЫЙ   │
+    │ перевод карточки, чтобы поднять его в общий слой, — связи ещё нет, и подсунуть│
+    │ вместо кандидата живое значение значит спросить владельца не о том.           │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    """
+    from backend.lex_units import native_display_sql
+    return (f"CASE WHEN COALESCE({r}.kind, 'grammar') = 'translation' "
+            f"THEN COALESCE({r}.translation, '') "
+            f"ELSE COALESCE({native_display_sql(u)}, '') END")
+
+
 def list_open_phrase_reviews(limit: int = 200) -> list[dict]:
     """Открытые вопросы для экрана — ОДНИМ запросом вместе со всем, что экран покажет.
 
@@ -25699,8 +25720,8 @@ def list_open_phrase_reviews(limit: int = 200) -> list[dict]:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
             cursor.execute(
-                """SELECT r.id, r.unit_id, r.text, r.translation, r.judges, r.arbiter,
-                          u.card,
+                f"""SELECT r.id, r.unit_id, r.text, {_перевод_для_экрана()}, r.judges,
+                          r.arbiter, u.card,
                           COALESCE((SELECT json_agg(json_build_object(
                                         'status', h.status, 'text', h.text,
                                         'decided_text', h.decided_text,
@@ -26288,9 +26309,15 @@ def apply_panel_card_edit(review_id: int, *, translation: str = "",
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
+            # Прежний перевод берём ТОТ ЖЕ, что стоял у владельца на экране: правка
+            # ищет и заменяет именно его. Читая копию из строки вопроса, мы искали бы
+            # в карточке текст, которого владелец не видел (а у пустой копии — «поле,
+            # где ничего нет», и правка уезжала не туда).
             cursor.execute(
-                "SELECT unit_id, text, COALESCE(translation,'') FROM bt_3_phrase_review "
-                "WHERE id = %s AND status = 'open';", (int(review_id),))
+                f"""SELECT r.unit_id, r.text, {_перевод_для_экрана()}
+                      FROM bt_3_phrase_review r
+                      LEFT JOIN bt_3_lex_units u ON u.id = r.unit_id
+                     WHERE r.id = %s AND r.status = 'open';""", (int(review_id),))
             row = cursor.fetchone()
             if not row:
                 return итог
@@ -26435,7 +26462,8 @@ def get_open_phrase_review(review_id: int) -> dict | None:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
             cursor.execute(
-                """SELECT r.id, r.unit_id, r.text, r.translation, r.judges, u.kind, r.arbiter
+                f"""SELECT r.id, r.unit_id, r.text, {_перевод_для_экрана()}, r.judges,
+                          u.kind, r.arbiter
                    FROM bt_3_phrase_review r
                    LEFT JOIN bt_3_lex_units u ON u.id = r.unit_id
                    WHERE r.id = %s AND r.status = 'open';""",

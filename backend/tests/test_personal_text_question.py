@@ -189,8 +189,8 @@ class ПересудСтарыхОтметокTests(unittest.TestCase):
 
     def _прогон(self, verdict, claims, открыт="personal", **заглушки):
         from backend import phrase_panel as pp
-        строки = [(7, "zweiseitiger Verkehr", "collocation",
-                   {"translation_ru": "двустороннее движение"})]
+        строки = [(7, "zweiseitiger Verkehr", "collocation", {},
+                   "двустороннее движение")]
         общие = {
             "unavailable_reason": lambda: "",
             "units_with_verdict": lambda v, n: строки,
