@@ -557,6 +557,7 @@
 }
 .webapp-reader .reader-shelf-hint-badge.is-classics { background: rgba(214,161,74,0.16); }
 .webapp-reader .reader-shelf-hint-badge.is-articles { background: rgba(56,132,232,0.16); }
+.webapp-reader .reader-shelf-hint-badge.is-videos { background: rgba(168,88,196,0.16); }
 
 /* Friendly empty state inside a shelf */
 .webapp-reader .reader-shelf-empty {
