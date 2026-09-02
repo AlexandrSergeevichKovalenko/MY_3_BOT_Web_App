@@ -62025,7 +62025,23 @@ def video_reader_text_status():
     if status != "ready":
         return jsonify({"state": "building", "percent": _video_text_percent(cached)})
 
+    # ┌─ НАЙДЕНО И ЗАКРЫТО 02.09.2026. НЕ ВОЗВРАЩАТЬ СОЗДАНИЕ КНИГИ СЮДА. ─────────┐
+    # │ Опрос состояния идёт САМ, при заходе на ролик, — человек ничего не нажимал. │
+    # │ Раньше он доливал текст в книгу, а книги ещё не было, и она заводилась      │
+    # │ молча. Замер: один пересказ в базе, ОДНО нажатие в журнале — и ДВЕ книги у  │
+    # │ двух разных людей. Второму человеку книга появилась в библиотеке сама.      │
+    # │ Опрос теперь только СООБЩАЕТ. Книгу заводит нажатие, и только оно.          │
+    # └────────────────────────────────────────────────────────────────────────────┘
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    existing = find_reader_document_by_source_url(
+        int(user_id), source_lang=source_lang, target_lang=target_lang,
+        source_url=_video_text_source_url(video_id),
+    )
+    if not existing:
+        # Текст есть, книги у этого человека нет и он её не просил. Кнопка покажет
+        # «Открыть текст», и книга заведётся на нажатии — в /start.
+        return jsonify({"state": "ready", "percent": 100, "document_id": None,
+                        "mode": cached.get("mode") or ""})
     try:
         document_id = _video_text_deliver(
             user_id=int(user_id), source_lang=source_lang, target_lang=target_lang,

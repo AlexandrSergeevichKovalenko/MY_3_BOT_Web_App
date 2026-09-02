@@ -926,6 +926,11 @@ export default function ReaderSection(props) {
         // in a separate auto-cleaning «Недавние статьи» group so they don't clutter it.
         const libraryBooks = visibleLibraryItems.filter((it) => !['html', 'video'].includes(String(it?.source_type || '')));
         const libraryArticles = visibleLibraryItems.filter((it) => String(it?.source_type || '') === 'html');
+        // Тексты роликов. ОТДЕЛЬНЫЙ список нужен потому, что у каждой полки своя сетка:
+        // счётчик в заголовке считает по одному списку, а карточки рисуются по другому.
+        // 02.09.2026 полка «Из видео» показывала «1» и пустоту ровно из-за этого —
+        // список для неё был, а сетки не было.
+        const libraryVideoTexts = visibleLibraryItems.filter((it) => String(it?.source_type || '') === 'video');
         const renderReaderLibCard = (item) => {
           const progress = Math.max(0, Math.min(100, Number(item?.progress_percent || 0)));
           const coverUrl = getReaderCoverUrl(item);
@@ -1244,7 +1249,7 @@ export default function ReaderSection(props) {
                       <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
                     </svg>
                   </button>
-                  {activeShelf?.key !== 'classics' && (
+                  {!['classics', 'videos'].includes(activeShelf?.key) && (
                     <button
                       type="button"
                       className={`reader-lib-add-btn${readerAddOpen ? ' is-open' : ''}`}
@@ -1259,7 +1264,7 @@ export default function ReaderSection(props) {
               </div>
 
               {/* ── Add form: paste URL/text → Открыть, OR pick a file → opens instantly ── */}
-              {readerAddOpen && activeShelf?.key !== 'classics' && (
+              {readerAddOpen && !['classics', 'videos'].includes(activeShelf?.key) && (
                 <div className="reader-add-form-wrap">
                   <form className="reader-add-form" onSubmit={handleReaderIngest}>
                     <textarea
@@ -1659,6 +1664,28 @@ export default function ReaderSection(props) {
                   ) : (
                     <div className="reader-library-grid">
                       {libraryArticles.map(renderReaderLibCard)}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {/* ── Shelf detail: Из видео ────────────────────────── */}
+              {activeShelf?.key === 'videos' && (
+                <section className="reader-library reader-shelf-detail">
+                  <div className="reader-shelf-hint">
+                    <span className="reader-shelf-hint-badge is-videos" aria-hidden="true">🎬</span>
+                    <span>{tr('Тексты роликов, которые вы смотрели. Читаются как обычная книга — с переводом по нажатию.',
+                            'Texte der Videos, die du gesehen hast. Lesen wie ein Buch — mit Übersetzung per Tippen.')}</span>
+                  </div>
+                  {libraryVideoTexts.length === 0 ? (
+                    <div className="reader-shelf-empty">
+                      <span className="reader-shelf-empty-emoji" aria-hidden="true">🎬</span>
+                      <span>{tr('Откройте ролик и нажмите «Пересказ» — текст появится здесь.',
+                              'Öffne ein Video und tippe auf „Nacherzählung" — der Text erscheint hier.')}</span>
+                    </div>
+                  ) : (
+                    <div className="reader-library-grid">
+                      {libraryVideoTexts.map(renderReaderLibCard)}
                     </div>
                   )}
                 </section>
