@@ -203,9 +203,9 @@ class ПересудСтарыхОтметокTests(unittest.TestCase):
              patch.object(pp, "units_with_verdict", общие["units_with_verdict"]), \
              patch.object(pp, "_записать_отметку", общие["_записать_отметку"]), \
              patch("backend.database.open_question_kind", return_value=открыт), \
-             patch("backend.database.replace_personal_question_claims",
+             patch("backend.database.replace_question_claims",
                    **заглушки.get("replace", {"return_value": True})) as переписать, \
-             patch("backend.database.close_personal_question",
+             patch("backend.database.close_open_question",
                    return_value=True) as закрыть, \
              patch("backend.database.open_personal_text_question",
                    return_value=True) as завести, \
@@ -238,15 +238,35 @@ class ПересудСтарыхОтметокTests(unittest.TestCase):
         владельцу.assert_called_once()
 
     def test_a_foreign_open_question_is_never_overwritten(self):
-        """По этой же единице открыт спор владельца или проверка перевода — чужой
-        вопрос мы не подменяем и второй поверх него не заводим."""
-        отчёт, переписать, закрыть, завести, _ = self._прогон(
+        """По этой же единице открыт вопрос ДРУГОГО механизма — не подменяем его и
+        второй поверх него не заводим.
+
+        ⚠ УТОЧНЕНО 02.09.2026. Чужие здесь — грамматический спор и проверка перевода
+        карточки: их заводит и закрывает другой механизм. Панельный вопрос чужим НЕ
+        является: его завела эта же панель, и оставлять его с прежней претензией при
+        новом вердикте значит показать человеку текст, который мы сами считаем
+        неверным (см. следующий тест).
+        """
+        for чужой in ("grammar", "translation"):
+            отчёт, переписать, закрыть, завести, _ = self._прогон(
+                "текст человека — решает он",
+                [{"field": "headword", "what": "калька", "fix": "Gegenverkehr"}],
+                открыт=чужой)
+            переписать.assert_not_called()
+            завести.assert_not_called()
+            закрыть.assert_not_called()
+
+    def test_the_panels_own_question_moves_to_the_author(self):
+        """Новый вердикт «это текст человека» — значит спор владельца больше не тот
+        вопрос: его снимаем и заводим вопрос автору."""
+        отчёт, _, закрыть, завести, _ = self._прогон(
             "текст человека — решает он",
             [{"field": "headword", "what": "калька", "fix": "Gegenverkehr"}],
             открыт="panel")
-        переписать.assert_not_called()
-        завести.assert_not_called()
-        закрыть.assert_not_called()
+        закрыть.assert_called_once()
+        self.assertEqual(закрыть.call_args.kwargs["kind"], "panel")
+        завести.assert_called_once()
+        self.assertEqual(отчёт["вопрос заведён"], 1)
 
     def test_no_answer_changes_nothing_at_all(self):
         """«Не спросили» — авария связи, а не новый вердикт: ни отметку, ни вопрос."""

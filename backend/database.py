@@ -26016,8 +26016,15 @@ def open_personal_text_question(unit_id: int, text: str, translation: str,
     return добавлено
 
 
-def replace_personal_question_claims(unit_id: int, claims: list) -> bool:
-    """Переписать претензии в УЖЕ ОТКРЫТОМ личном вопросе — когда мы пересудили фразу.
+# Категория претензии — по виду вопроса. Вид называется ВСЛУХ на каждом вызове:
+# перепутать их значит показать вопрос владельца автору фразы и наоборот.
+_КАТЕГОРИЯ_ВОПРОСА = {"personal": PERSONAL_REVIEW_CATEGORY,
+                      "panel": PANEL_REVIEW_CATEGORY}
+
+
+def replace_question_claims(unit_id: int, claims: list, *,
+                            kind: str = "personal") -> bool:
+    """Переписать претензии в УЖЕ ОТКРЫТОМ вопросе — когда мы пересудили фразу.
 
     ЗАЧЕМ. 92 личных вопроса заведены из старых отметок, у которых готового варианта не
     было: до 31.08.2026 его у судьи не спрашивали. Владелец решил пересудить их новым
@@ -26025,10 +26032,18 @@ def replace_personal_question_claims(unit_id: int, claims: list) -> bool:
     вопрос нельзя — он ляжет тем же человеку вторым касанием об одном и том же; значит
     переписываем претензии в существующем.
 
-    Трогаем ТОЛЬКО вопросы вида 'personal': чужой вопрос (спор владельца, проверка
-    перевода) этой правкой не подменяется.
+    ⛔ И ЭТО ЖЕ ЗАКРЫВАЕТ ДЫРУ ПЕРЕСУДА (02.09.2026). Заведение вопроса защищено от
+    дублей (`ON CONFLICT DO NOTHING`), и пока карточку смотрели ОДИН раз, этого хватало.
+    С этого дня пересуд стал обычным делом — и без переписывания на экране осталась бы
+    ПРЕЖНЯЯ претензия при новом вердикте в базе. Владелец увидел бы старый текст и
+    решал по нему.
+
+    Трогаем ТОЛЬКО вопрос названного вида: чужой вопрос этой правкой не подменяется.
     """
-    судьи = _претензии_в_судей(claims, PERSONAL_REVIEW_CATEGORY)
+    категория = _КАТЕГОРИЯ_ВОПРОСА.get(str(kind))
+    if not категория:
+        raise ValueError(f"неизвестный вид вопроса: {kind!r}")
+    судьи = _претензии_в_судей(claims, категория)
     if not судьи:
         return False
     with get_db_connection_context() as conn:
@@ -26036,30 +26051,46 @@ def replace_personal_question_claims(unit_id: int, claims: list) -> bool:
             _ensure_phrase_check_tables(cursor)
             cursor.execute(
                 "UPDATE bt_3_phrase_review SET judges = %s::jsonb "
-                "WHERE unit_id = %s AND status = 'open' AND kind = 'personal';",
-                (json.dumps(судьи, ensure_ascii=False), int(unit_id)))
+                "WHERE unit_id = %s AND status = 'open' AND kind = %s;",
+                (json.dumps(судьи, ensure_ascii=False), int(unit_id), str(kind)))
             обновлено = cursor.rowcount or 0
         conn.commit()
     return bool(обновлено)
 
 
-def close_personal_question(unit_id: int, why: str = "") -> bool:
-    """Закрыть личный вопрос, когда пересуд снял претензию.
+def replace_personal_question_claims(unit_id: int, claims: list) -> bool:
+    """Личный вопрос — тот же механизм с явно названным видом."""
+    return replace_question_claims(unit_id, claims, kind="personal")
+
+
+def close_open_question(unit_id: int, why: str = "", *,
+                        kind: str = "personal") -> bool:
+    """Закрыть вопрос, когда пересуд снял претензию.
 
     Спрашивать человека о том, что мы САМИ больше не считаем ошибкой, нельзя: его
     касание стоит дороже нашей строки в базе. След остаётся в `decided_text`.
+
+    Карточку это НЕ трогает: закрывается вопрос, а не запись. Число закрытых уезжает в
+    утренний отчёт — молчаливое закрытие неотличимо от потерянного вопроса.
     """
+    if str(kind) not in _КАТЕГОРИЯ_ВОПРОСА:
+        raise ValueError(f"неизвестный вид вопроса: {kind!r}")
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             _ensure_phrase_check_tables(cursor)
             cursor.execute(
                 "UPDATE bt_3_phrase_review SET status = 'closed', decided_at = NOW(), "
                 "decided_text = %s WHERE unit_id = %s AND status = 'open' "
-                "AND kind = 'personal';",
-                (str(why or "пересуд снял претензию")[:500], int(unit_id)))
+                "AND kind = %s;",
+                (str(why or "пересуд снял претензию")[:500], int(unit_id), str(kind)))
             закрыто = cursor.rowcount or 0
         conn.commit()
     return bool(закрыто)
+
+
+def close_personal_question(unit_id: int, why: str = "") -> bool:
+    """Личный вопрос — тот же механизм с явно названным видом."""
+    return close_open_question(unit_id, why, kind="personal")
 
 
 def open_question_kind(unit_id: int) -> str:
