@@ -195,9 +195,22 @@ class ВопросИзПрозыНеВопросTests(unittest.TestCase):
         условие = _где_судить("(SELECT 'живой')")
         self.assertIn("bt_3_phrase_review", условие,
                       "вопрос из прозы снова не возвращает карточку на пересуд")
-        self.assertIn("COALESCE(j->>'field', '') <> ''", ВОПРОС_ИЗ_ПРОЗЫ,
-                      "признак «поле не названо» изменился — проверь отбор")
-        self.assertIn("= 'panel'", ВОПРОС_ИЗ_ПРОЗЫ)
+        self.assertIn("COALESCE(j->>'voice', '0') <> '0'", ВОПРОС_ИЗ_ПРОЗЫ,
+                      "признак происхождения подменён признаком по форме текста")
+        self.assertIn("IN ('panel', 'personal')", ВОПРОС_ИЗ_ПРОЗЫ,
+                      "оба наших экрана обязаны чиниться вместе")
+
+    def test_the_signature_is_the_origin_not_the_shape_of_the_text(self):
+        """⛔ ИСКАЛ ПО ФОРМЕ ТЕКСТА — И ОШИБСЯ (02.09.2026).
+
+        Признак «кусок ровно в 90 знаков без точки» дал ложное срабатывание на целой
+        претензии «…правильная форма 'weil es ihr leidtut'» — в ней ровно 90 знаков.
+        Признак происхождения (номер голоса) такой ошибки дать не может.
+        """
+        from backend.phrase_panel import ВОПРОС_ИЗ_ПРОЗЫ
+        self.assertNotIn("length(", ВОПРОС_ИЗ_ПРОЗЫ,
+                         "отбор снова гадает по длине текста")
+        self.assertNotIn("'[.!?", ВОПРОС_ИЗ_ПРОЗЫ)
 
     def test_the_owner_sees_this_pile_shrink(self):
         from backend import phrase_panel as pp
