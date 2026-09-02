@@ -490,7 +490,37 @@ def german_headword_case(word: str | None, pos: str | None) -> str:
     существительное?» написала «афины».
     """
     text = str(word or "")
-    if not text or not text[:1].isupper():
+    if not text:
+        return text
+
+    # ── ВТОРАЯ ПОЛОВИНА ПРАВИЛА, достроена 02.09.2026 ────────────────────────
+    # До этого дня правило работало в ОДНУ сторону: опускало заглавную у глагола
+    # («Gehen» → «gehen») и НИКОГДА не поднимало её у существительного. Поэтому в базе
+    # спокойно жили «die aufenthaltsgenehmigung», «der bierhausschwätzer», «das gehen»
+    # — и человек видел их именно так. В немецком существительное со строчной — ошибка
+    # ВСЕГДА, а это языковое приложение: увиденное запоминается.
+    #
+    # Поднимаем только когда часть речи названа ЯВНО и это существительное. Пустая
+    # часть речи — не разрешение, ровно как и в обратную сторону: под ней прячется всё
+    # подряд. Артикль внутри заголовка («die pflanze») заглавную прячет, поэтому
+    # смотрим на первую букву САМОГО слова, а не строки.
+    if str(pos or "").strip().lower() == "noun":
+        head = _DEFINITE_HEAD_RE.match(text)
+        prefix = head.group(1) if head else ""
+        rest = text[len(prefix):]
+        if rest[:1].islower():
+            # «eROBERUNG»: первая буква строчная, а хвост капсом — это искалеченное
+            # написание из текста, где слово было выделено, а не немецкий язык.
+            # Поднять только первую букву дало бы «EROBERUNG» — не лучше. Проверено
+            # на живой записи 02.09.2026.
+            хвост = rest[1:]
+            буквы = [c for c in хвост if c.isalpha()]
+            if len(буквы) > 1 and all(c.isupper() for c in буквы):
+                return prefix + rest[:1].upper() + хвост.lower()
+            return prefix + rest[:1].upper() + хвост
+        return text
+
+    if not text[:1].isupper():
         return text
     if str(pos or "").strip().lower() not in _LOWERCASE_POS:
         return text
