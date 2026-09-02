@@ -24349,6 +24349,27 @@ function AppInner() {
     || String(selectionInlineLookup?.direction || '').startsWith('youtube_')
   );
 
+  // ЧТО ИМЕННО УЙДЁТ В СЛОВАРЬ, если нажать «Сохранить». Не то, что человек тапнул.
+  //
+  // Владелец 02.09.2026 нажал в фильме «wühlt», внизу карточки увидел галочку «wühlt» и
+  // спросил: мы что, сохраняем форму? Проверка по базе: сохранилось ПРАВИЛЬНО, «wühlen»
+  // — потому что `saveSelectionGptOriginalWord` берёт слово из приехавшего разбора
+  // (`word_de` / `source_text`), а не из тапнутого текста. Врала только подпись.
+  //
+  // Подпись обязана показывать ровно то, что будет сохранено: иначе человек либо не
+  // нажмёт (испугавшись, что запомнит форму), либо решит, что программа врёт. Пока
+  // разбор ещё едет, показываем тапнутое слово — другого у нас в этот момент нет.
+  const getSelectionGptSaveWordText = () => {
+    const item = selectionGptData?.dictionaryItem;
+    if (item && typeof item === 'object') {
+      const fromCard = String(
+        item.word_source || item.source_text || item.word_de || ''
+      ).trim();
+      if (fromCard) return fromCard;
+    }
+    return getSelectionGptWordText();
+  };
+
   const getSelectionGptDictionarySemanticCategory = () => {
     const item = selectionGptData?.dictionaryItem;
     if (!item || typeof item !== 'object') return '';
@@ -45834,7 +45855,7 @@ function AppInner() {
                                 проверить не может, к делу оно не относится и просто
                                 засоряло экран (владелец, 31.08.2026). Логику сохранения
                                 эта подпись не трогает и трогать не должна. */}
-                            {getSelectionGptWordText()
+                            {getSelectionGptSaveWordText()
                               || tr('Оригинальное слово', 'Originalwort')}
                           </span>
                         </label>
