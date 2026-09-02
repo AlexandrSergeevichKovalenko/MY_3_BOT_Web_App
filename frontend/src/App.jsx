@@ -16365,6 +16365,20 @@ function AppInner() {
   );
   const youtubeSearchExpanded = !youtubeId || !youtubeLearningMode;
   const youtubeLoadDisabled = !youtubeId || youtubeTranscriptLoading || youtubeManualOverride;
+  // Текст плашки «Субтитры недоступны» на телефоне. Пока никто ничего не нажимал — общее
+  // объяснение. Но как только человек нажал «Загрузить субтитры» и загрузка сорвалась, он
+  // обязан увидеть ПРИЧИНУ: иначе нажатие и его отказ выглядят одинаково — тот же экран,
+  // тот же текст, и понять, попробовали мы вообще или нет, невозможно.
+  const youtubeEmptyPanelCopy = (() => {
+    const raw = String(youtubeTranscriptError || '').trim();
+    if (!raw) {
+      return tr('К этому видео у нас пока нет субтитров. Попробуй оригинальные субтитры YouTube или выбери другое видео.',
+                'Für dieses Video haben wir noch keine Untertitel. Versuch die YouTube-Untertitel oder wähle ein anderes Video.');
+    }
+    return raw.startsWith(YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX)
+      ? raw.slice(YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX.length).trim()
+      : raw;
+  })();
   const youtubeSubtitleStatusClass = youtubeTranscriptLoading
     ? 'is-loading'
     : youtubeSubtitlesReady
@@ -39813,8 +39827,7 @@ function AppInner() {
                             <img className="yt-panel-empty-fox" src={heroStickerSrc} alt="" aria-hidden="true" />
                             <strong className="yt-panel-empty-title">{tr('Субтитры недоступны', 'Untertitel nicht verfügbar')}</strong>
                             <span className="yt-panel-empty-copy">
-                              {tr('К этому видео у нас пока нет субтитров. Попробуй оригинальные субтитры YouTube или выбери другое видео.',
-                                  'Für dieses Video haben wir noch keine Untertitel. Versuch die YouTube-Untertitel oder wähle ein anderes Video.')}
+                              {youtubeEmptyPanelCopy}
                             </span>
                             <div className="yt-panel-empty-actions">
                               <button
@@ -39830,6 +39843,28 @@ function AppInner() {
                                 onClick={() => setYoutubeChangeOpen(true)}
                               >
                                 {tr('Сменить видео', 'Video wechseln')}
+                              </button>
+                              {/* ┌─ РЕШЕНИЕ ВЛАДЕЛЬЦА 02.09.2026. КНОПКУ НЕ УБИРАТЬ. ──────────────────┐
+                                  │ 31.07.2026 живую загрузку субтитров закрыли на действие человека:  │
+                                  │ «Фильмы» — это и есть таблица субтитров, и автоподгрузка возвращала │
+                                  │ в общий каталог фильм, удалённый администратором (коммит 064bb464). │
+                                  │ Замок правильный, но на телефоне единственное «действие человека» — │
+                                  │ пункт «Загрузить субтитры» — уехало внутрь меню под шестерёнкой, а  │
+                                  │ на этой плашке его не было вовсе. Замер 02.09.2026: у ролика        │
+                                  │ wxXTLW1tbM0 немецкий адрес отдаёт 1785 строк за 14 секунд, а        │
+                                  │ счётчик ступеней (bt_3_transcript_source_stats) показал, что за всю │
+                                  │ сессию просмотра лестница не запускалась НИ РАЗУ — приложение и не  │
+                                  │ пробовало. Ролик с живыми субтитрами выглядел как ролик без них.    │
+                                  │ Нажатие здесь = то самое действие человека, ради которого замок и   │
+                                  │ ставили. Автоподгрузка (auto:true) по-прежнему живьём НЕ ходит.     │
+                                  └────────────────────────────────────────────────────────────────────┘ */}
+                              <button
+                                type="button"
+                                className="yt-panel-empty-btn"
+                                onClick={() => fetchTranscript()}
+                                disabled={youtubeLoadDisabled}
+                              >
+                                {tr('Загрузить субтитры', 'Untertitel laden')}
                               </button>
                             </div>
                           </>
