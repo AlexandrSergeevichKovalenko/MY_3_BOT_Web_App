@@ -102,6 +102,7 @@ from backend.background_jobs import (  # noqa: E402
     run_monthly_budget_policy_actor,
     run_german_form_index_warm_actor,
     run_verb_paradigm_warm_actor,
+    run_lex_form_index_report_actor,
     run_wiktionary_warm_report_actor,
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
@@ -445,6 +446,10 @@ def _dispatch_german_form_index_warm() -> None:
 
 def _dispatch_verb_paradigm_warm() -> None:
     run_verb_paradigm_warm_actor.send()
+
+
+def _dispatch_lex_form_index_report() -> None:
+    run_lex_form_index_report_actor.send()
 
 
 def _dispatch_article_review_dm() -> None:
@@ -842,6 +847,24 @@ def _build_scheduler():
             "cron",
             hour=_int_env("VERB_PARADIGM_WARM_HOUR", 4),
             minute=_int_env("VERB_PARADIGM_WARM_MINUTE", 40),
+            timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
+    # -- Недельная строчка владельцу про словоформы. Сама сверка идёт КАЖДУЮ ночь внутри
+    # прогрева выше (там же и чистка); сюда вынесен только отчёт. Владелец 19.08.2026:
+    # «всё, что я должен вызывать командой, я забуду» — поэтому числа приходят сами.
+    # Понедельник 10:00: к этому часу за выходные прошло два прогрева, и в строчке есть
+    # чему измениться.
+    if _enabled("LEX_FORM_INDEX_REPORT_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_lex_form_index_report,
+            "cron",
+            day_of_week=str(os.getenv("LEX_FORM_INDEX_REPORT_DAY_OF_WEEK") or "mon").strip() or "mon",
+            hour=_int_env("LEX_FORM_INDEX_REPORT_HOUR", 10),
+            minute=_int_env("LEX_FORM_INDEX_REPORT_MINUTE", 0),
             timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
             max_instances=1,
             coalesce=True,
