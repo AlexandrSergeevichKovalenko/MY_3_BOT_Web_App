@@ -87,7 +87,13 @@ def test_query_asks_the_database_for_owner_first():
 
     lex_units._fetch_links(_Cursor(), 1, want_lang="ru")
     sql = captured["sql"]
-    assert OWNER_CHOICE_SOURCE in captured["params"], "подпись выбора владельца не уехала в запрос"
+    # ⚠ 02.09.2026 подпись переехала из параметра в текст запроса: правило отбора связей
+    # стало ОДНИМ на всё приложение (`lex_units._LINK_PICK_ORDER`), и его же спрашивают
+    # проверки, судящие перевод. Стережём то же самое — что подпись доехала до базы, —
+    # но смотрим туда, где она теперь лежит.
+    assert OWNER_CHOICE_SOURCE in sql, "подпись выбора владельца не уехала в запрос"
+    assert OWNER_CHOICE_SOURCE in lex_units.native_display_sql("u"), \
+        "проверки перевода спрашивают не то же правило, что выдача"
     order = sql[sql.index("ORDER BY"):]
     owner_clause = order.index("l.source IS DISTINCT FROM")
     sense_clause = order.index("l.sense_id IS NULL")

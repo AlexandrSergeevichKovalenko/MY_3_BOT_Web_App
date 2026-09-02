@@ -105,7 +105,7 @@ class ЧтоНеПроверилиНеПомечаемTests(unittest.TestCase):
 
     def test_a_card_stopped_by_the_budget_keeps_no_mark(self):
         from backend import phrase_panel as pp
-        строки = [(1, "eine Idee zu eigen machen", "collocation", {"translation_ru": "x"})]
+        строки = [(1, "eine Idee zu eigen machen", "collocation", {}, "перенять мысль")]
         with patch.object(pp, "unavailable_reason", return_value=""), \
              patch.object(pp, "поднять_старые_отметки", return_value=0), \
              patch.object(pp, "count_personal_backlog", return_value=0), \
@@ -120,17 +120,27 @@ class ЧтоНеПроверилиНеПомечаемTests(unittest.TestCase):
         self.assertEqual(отчёт["проверено"], 0)
 
     def test_a_checked_card_is_never_taken_again(self):
-        """Один раз посмотрели — больше не смотрим и денег второй раз не платим:
-        отбор идёт по ОТСУТСТВИЮ отметки, а не по дате."""
+        """Один раз посмотрели — больше не смотрим и денег второй раз не платим.
+
+        ⚠ ПРАВИЛО УТОЧНЕНО 02.09.2026, и это не смягчение. Отбор по-прежнему идёт по
+        отметке, а не по дате, — но отметка теперь говорит, ЧТО именно судили
+        (`judged_ru`). Карточка возвращается ровно в одном случае: перевод на экране
+        стал другим, то есть прежний вердикт вынесен о тексте, которого больше нет.
+        Без этого 1227 карточек навсегда остались бы осуждёнными по пустому русскому.
+        """
+        from backend.phrase_panel import _где_судить
         src = _src("backend/phrase_panel.py")
         i = src.index("def unchecked_units(")
         тело = src[i:i + 1200]
         self.assertIn("LEFT JOIN bt_3_field_checks", тело)
-        self.assertIn("c.unit_id IS NULL", тело)
+        self.assertIn("_где_судить(", тело)
+        условие = _где_судить("(SELECT 'живой')")
+        self.assertIn("c.unit_id IS NULL", условие)
+        self.assertIn("c.judged_ru IS DISTINCT FROM", условие)
 
     def test_a_disputed_card_reaches_the_owner_with_the_field_and_the_fix(self):
         from backend import phrase_panel as pp
-        строки = [(9, "alte Narren", "collocation", {"translation_ru": "старые шутники"})]
+        строки = [(9, "alte Narren", "collocation", {}, "старые шутники")]
         claims = [{"field": "translation", "what": "Narren — дураки.",
                    "fix": "старые дураки", "voice": 1}]
         with patch.object(pp, "unavailable_reason", return_value=""), \
