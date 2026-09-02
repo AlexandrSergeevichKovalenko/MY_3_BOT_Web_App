@@ -376,6 +376,7 @@ def send_form_index_report(*, force: bool = False) -> dict[str, Any]:
             return {"ok": False, "error": "no_token_or_admins"}
         text = build_form_index_report_text()
         sent = 0
+        failures: list[str] = []
         for uid in admins:
             resp = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
@@ -385,13 +386,34 @@ def send_form_index_report(*, force: bool = False) -> dict[str, Any]:
             )
             if resp.status_code >= 400:
                 logging.warning("отчёт по указателям форм не ушёл uid=%s: %s", uid, resp.text[:200])
+                failures.append("%s: HTTP %s" % (uid, resp.status_code))
             else:
                 sent += 1
+
+        # ⛔ НОЛЬ ОТПРАВЛЕННЫХ — ЭТО ПРОВАЛ, А НЕ УСПЕХ.
+        #
+        # Поймано 02.09.2026 на живой проверке: токен оказался не боевым, Telegram
+        # ответил 401, письмо не ушло НИКОМУ — а функция вернула {"ok": True, "sent": 0}
+        # и пометила прогон «completed». То есть в понедельник отчёт мог не прийти, и
+        # никто бы об этом не узнал: в журнале стояло бы «выполнено».
+        #
+        # Это ровно то, что владелец запретил 19.08.2026: «молчащий механизм неотличим
+        # от сломанного». Адресаты есть, письмо не ушло — говорим это словом.
+        if not sent:
+            reason = "; ".join(failures) or "адресатов нет"
+            if not force:
+                finish_scheduler_run_guard(job_key=REPORT_JOB_KEY, run_period=run_period,
+                                           target_scope="global", status="failed",
+                                           metadata={"sent": 0, "error": reason})
+            logging.error("отчёт по указателям форм НЕ ДОСТАВЛЕН ни одному админу: %s", reason)
+            return {"ok": False, "sent": 0, "error": reason}
+
         if not force:
             finish_scheduler_run_guard(job_key=REPORT_JOB_KEY, run_period=run_period,
-                                       target_scope="global", status="completed",
-                                       metadata={"sent": sent})
-        return {"ok": True, "sent": sent}
+                                       target_scope="global",
+                                       status="completed" if not failures else "partial",
+                                       metadata={"sent": sent, "failed": failures})
+        return {"ok": True, "sent": sent, "failed": failures}
     except Exception as exc:
         if not force:
             finish_scheduler_run_guard(job_key=REPORT_JOB_KEY, run_period=run_period,
