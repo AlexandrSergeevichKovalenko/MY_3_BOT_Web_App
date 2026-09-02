@@ -296,11 +296,29 @@ def sweep_form_index(*, apply: bool = False, sample: int = 0) -> dict[str, Any]:
     return report
 
 
-def build_form_index_report_text(report: dict[str, Any] | None = None) -> str:
-    """Строчка владельцу: что со справочником и указателями форм.
+def _ночей(n: int) -> str:
+    """«1 ночь», «3 ночи», «11 ночей». Письмо человеку, а не отладочный вывод."""
+    n = abs(int(n))
+    if 11 <= n % 100 <= 14:
+        return "ночей"
+    return {1: "ночь", 2: "ночи", 3: "ночи", 4: "ночи"}.get(n % 10, "ночей")
 
-    Отчёт не спрашивают командой — он приходит сам. Молчащий механизм неотличим от
-    сломанного (правило владельца 19.08.2026)."""
+
+def build_form_index_report_text(report: dict[str, Any] | None = None) -> str:
+    """Письмо владельцу — ЧЕЛОВЕЧЕСКИМ ЯЗЫКОМ.
+
+    ⛔ ПЕРВАЯ ВЕРСИЯ ЭТОГО ТЕКСТА БЫЛА БРАКОМ. 02.09.2026 владелец получил её и ответил:
+    «Я вообще не понимаю, к чему?! мы ж вроде говорили про спорные фразы или нет??».
+    Там стояли «указатели-словоформ», «подтверждено справочником», «недоказанных 294» —
+    мои рабочие слова, по которым нельзя ни понять, о чём речь, ни решить, надо ли
+    что-то делать.
+
+    Правила, по которым он переписан (владелец, давние и повторённые):
+      • сначала СМЫСЛ обычными словами: про что это письмо и почему оно пришло;
+      • сырые внутренние числа не выносить — только то, по чему принимают решение;
+      • у каждого числа сказано, хорошо это или плохо и что с этим делать;
+      • в конце прямо написано, нужно ли ему шевелиться. Обычно — нет.
+    """
     from backend.database import get_db_connection_context
 
     if report is None:
@@ -308,53 +326,59 @@ def build_form_index_report_text(report: dict[str, Any] | None = None) -> str:
     with get_db_connection_context() as conn:
         cur = conn.cursor()
         cur.execute(
-            """SELECT
-                 count(*) FILTER (WHERE documented AND verb NOT LIKE %(model)s),
-                 count(*) FILTER (WHERE NOT documented AND verb NOT LIKE %(model)s),
-                 count(*) FILTER (WHERE verb LIKE %(model)s AND documented)
-               FROM bt_3_german_verb_paradigms;""",
+            """SELECT count(*) FILTER (WHERE documented AND verb NOT LIKE %(model)s)
+                 FROM bt_3_german_verb_paradigms;""",
             {"model": _MODEL_KEY_PREFIX + "%"},
         )
-        from_page, no_page, from_model = cur.fetchone()
+        tables_now = int(cur.fetchone()[0])
         from backend.german_verb_paradigms import pending_paradigm_verbs
         waiting = len(pending_paradigm_verbs())
 
     classes = report.get("classes") or {}
+    total = int(report.get("pointers") or 0)
+    good = int(classes.get(CONFIRMED, 0))
     unresolved = (classes.get(CLASS_B2, 0) + classes.get(CLASS_D, 0) + classes.get(NO_REF, 0))
+    share = round(good * 100 / total) if total else 0
     nights = (waiting + 199) // 200 if waiting else 0
-    # За неделю — из журнала прогонов. Журнала ещё нет (первая неделя) — так и пишем,
-    # а не показываем ноль: ноль снятого и «мы ещё не мерили» — разные новости.
     week = week_totals()
-    if week.get("runs"):
-        grew = max(from_page - week.get("reference_then", from_page), 0)
-        week_line = (f"За неделю: справочник вырос на <b>{grew}</b>, "
-                     f"снято указателей <b>{week['removed']}</b> "
-                     f"(ночных сверок {week['runs']}).")
-    else:
-        week_line = "За неделю: сверок ещё не было — журнал пустой, первые числа будут в следующем отчёте."
+
     lines = [
-        "🔤 <b>Словоформы: справочник и указатели</b>",
+        "🔤 <b>Словарь: формы слов</b>",
         "",
-        f"Справочник спряжений: <b>{from_page}</b> глаголов со страницы Wiktionary, "
-        f"{from_model} от модели, {no_page} без страницы.",
-        f"Ждут ночного прогрева: <b>{waiting}</b> (это ≈{nights} ночей по 200)." if waiting
-        else "Прогревать больше нечего — справочник добран.",
+        "Про что это письмо. Человек нажимает в фильме или в книге слово в форме — "
+        "«wühlt», «ging» — и должен получить само слово: wühlen, gehen. Отчёт следит, "
+        "чтобы эта связь держалась. <i>Со спорными фразами это не связано, они приходят "
+        "отдельным письмом.</i>",
         "",
-        f"Указателей-словоформ у глаголов: <b>{report.get('pointers', 0)}</b>.",
-        f"Подтверждено справочником: {classes.get(CONFIRMED, 0)}.",
-        week_line,
-        f"Осталось недоказанных: <b>{unresolved}</b> "
-        f"(нет базового глагола {classes.get(CLASS_B2, 0)}, "
-        f"владелец не назван {classes.get(CLASS_D, 0)}, "
-        f"не спрашивали {classes.get(NO_REF, 0)}).",
+        f"<b>Связей «форма → слово»: {total}.</b>",
+        f"Из них проверено и верно — {good} ({share}%).",
     ]
     if unresolved:
         lines += [
-            "",
-            "Недоказанные НЕ удаляются: «в таблице не напечатано» и «не является формой» — "
-            "разные вещи (gehauen, auszulaugen, umzingele это подтвердили). "
-            "Они закроются сами, когда прогрев доберёт базовые глаголы.",
+            f"Ещё {unresolved} проверить пока нечем: у нас нет таблицы спряжения их "
+            "глагола. Мы их не удаляем — среди них есть настоящие формы, и снести их "
+            "значило бы потерять слова.",
         ]
+    else:
+        lines += ["Непроверенных не осталось."]
+    lines += [""]
+    if waiting:
+        lines += [f"Таблицы спряжения дозагружаются сами, по ночам. Осталось примерно "
+                  f"{nights} {_ночей(nights)} — после этого оставшиеся связи проверятся сами."]
+    else:
+        lines += ["Таблицы спряжения добраны полностью — дозагружать больше нечего."]
+    if week.get("runs"):
+        grew = max(tables_now - week.get("reference_then", tables_now), 0)
+        lines += [f"За эту неделю: таблиц прибавилось {grew}, кривых связей убрано "
+                  f"{week['removed']}."]
+    else:
+        lines += ["За эту неделю: это первое письмо, сравнивать пока не с чем — "
+                  "числа появятся в следующем."]
+    lines += [
+        "",
+        "<b>Делать ничего не нужно.</b> Позовите меня, только если через две недели "
+        "число непроверенных не уменьшится: значит ночная работа встала.",
+    ]
     return "\n".join(lines)
 
 

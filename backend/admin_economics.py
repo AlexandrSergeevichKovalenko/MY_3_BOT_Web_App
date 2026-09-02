@@ -1115,6 +1115,14 @@ def send_cost_breakdown_report(*, days: int = 7, limit: int = 30) -> dict[str, A
             sent += 1
     if отказы:
         logging.warning("разбор расходов не дошёл: %s", "; ".join(отказы))
+    # ⛔ НОЛЬ ДОСТАВЛЕННЫХ — ЭТО ПРОВАЛ, А НЕ УСПЕХ (правило одно на все отчёты).
+    # Поймано живьём 02.09.2026: Telegram ответил 401, письмо не ушло НИКОМУ, а функция
+    # вернула ok=True с sent=0 и пометила прогон «выполнено». Владелец 19.08.2026:
+    # «молчащий механизм неотличим от сломанного». Поэтому статус прогона зависит от
+    # ФАКТА доставки, и наружу уходит ok=False с названной причиной.
+    if not sent:
+        logging.error("admin_economics: письмо НЕ ДОСТАВЛЕНО ни одному админу")
+        return {"ok": False, "sent": 0, "days": int(days), "отказы": отказы}
     return {"ok": True, "sent": sent, "days": int(days), "отказы": отказы}
 
 
@@ -1173,9 +1181,17 @@ def send_admin_economics_report(*, target_day: date | None = None, force: bool =
                 job_key=ADMIN_ECONOMICS_JOB_KEY,
                 run_period=run_period,
                 target_scope="global",
-                status="completed",
+                status="completed" if sent else "failed",
                 metadata={"sent": sent},
             )
+        # ⛔ НОЛЬ ДОСТАВЛЕННЫХ — ЭТО ПРОВАЛ, А НЕ УСПЕХ (правило одно на все отчёты).
+        # Поймано живьём 02.09.2026: Telegram ответил 401, письмо не ушло НИКОМУ, а функция
+        # вернула ok=True с sent=0 и пометила прогон «выполнено». Владелец 19.08.2026:
+        # «молчащий механизм неотличим от сломанного». Поэтому статус прогона зависит от
+        # ФАКТА доставки, и наружу уходит ok=False с названной причиной.
+        if not sent:
+            logging.error("admin_economics: письмо НЕ ДОСТАВЛЕНО ни одному админу")
+            return {"ok": False, "sent": 0, "day": run_period}
         return {"ok": True, "sent": sent, "day": run_period}
     except Exception as exc:
         if not force:
@@ -1332,9 +1348,17 @@ def send_dict_dedup_weekly_report(*, days: int = 7, force: bool = False) -> dict
                 job_key=DICT_DEDUP_REPORT_JOB_KEY,
                 run_period=run_period,
                 target_scope="global",
-                status="completed",
+                status="completed" if sent else "failed",
                 metadata={"sent": sent},
             )
+        # ⛔ НОЛЬ ДОСТАВЛЕННЫХ — ЭТО ПРОВАЛ, А НЕ УСПЕХ (правило одно на все отчёты).
+        # Поймано живьём 02.09.2026: Telegram ответил 401, письмо не ушло НИКОМУ, а функция
+        # вернула ok=True с sent=0 и пометила прогон «выполнено». Владелец 19.08.2026:
+        # «молчащий механизм неотличим от сломанного». Поэтому статус прогона зависит от
+        # ФАКТА доставки, и наружу уходит ok=False с названной причиной.
+        if not sent:
+            logging.error("admin_economics: письмо НЕ ДОСТАВЛЕНО ни одному админу")
+            return {"ok": False, "sent": 0, "week": run_period, "report": report}
         return {"ok": True, "sent": sent, "week": run_period, "report": report}
     except Exception as exc:
         if not force:
@@ -1431,9 +1455,17 @@ def send_dict_dedup_daily_report(*, days: int = 1, force: bool = False) -> dict[
                 job_key=DICT_DEDUP_DAILY_REPORT_JOB_KEY,
                 run_period=run_period,
                 target_scope="global",
-                status="completed",
+                status="completed" if sent else "failed",
                 metadata={"sent": sent},
             )
+        # ⛔ НОЛЬ ДОСТАВЛЕННЫХ — ЭТО ПРОВАЛ, А НЕ УСПЕХ (правило одно на все отчёты).
+        # Поймано живьём 02.09.2026: Telegram ответил 401, письмо не ушло НИКОМУ, а функция
+        # вернула ok=True с sent=0 и пометила прогон «выполнено». Владелец 19.08.2026:
+        # «молчащий механизм неотличим от сломанного». Поэтому статус прогона зависит от
+        # ФАКТА доставки, и наружу уходит ok=False с названной причиной.
+        if not sent:
+            logging.error("admin_economics: письмо НЕ ДОСТАВЛЕНО ни одному админу")
+            return {"ok": False, "sent": 0, "day": run_period, "report": report}
         return {"ok": True, "sent": sent, "day": run_period, "report": report}
     except Exception as exc:
         if not force:

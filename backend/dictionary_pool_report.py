@@ -279,14 +279,24 @@ def send_dictionary_pool_report(*, force: bool = False) -> dict[str, Any]:
         snapshot = {k: v for k, v in stats.items() if k != "previous"}
         save_dictionary_pool_snapshot(payload=snapshot, window_start=stats.get("window_start"))
         record_scheduler_heartbeat(
-            job_key=JOB_KEY, status="completed",
+            # Сердцебиение тоже говорит правду о доставке: иначе на панели задача
+            # выглядит здоровой ровно в тот момент, когда письмо не дошло.
+            job_key=JOB_KEY, status="completed" if sent else "failed",
             metadata={"sent": sent, "hits": stats.get("hits_total"), "llm": stats.get("llm_total")},
         )
         if not force:
             finish_scheduler_run_guard(
                 job_key=JOB_KEY, run_period=run_period, target_scope="global",
-                status="completed", metadata={"sent": sent},
+                status="completed" if sent else "failed", metadata={"sent": sent},
             )
+        # ⛔ НОЛЬ ДОСТАВЛЕННЫХ — ЭТО ПРОВАЛ, А НЕ УСПЕХ (правило одно на все отчёты).
+        # Поймано живьём 02.09.2026: Telegram ответил 401, письмо не ушло НИКОМУ, а функция
+        # вернула ok=True с sent=0 и пометила прогон «выполнено». Владелец 19.08.2026:
+        # «молчащий механизм неотличим от сломанного». Поэтому статус прогона зависит от
+        # ФАКТА доставки, и наружу уходит ok=False с названной причиной.
+        if not sent:
+            logging.error("dictionary_pool_report: письмо НЕ ДОСТАВЛЕНО ни одному админу")
+            return {"ok": False, "sent": 0}
         return {"ok": True, "sent": sent}
     except Exception as exc:
         if not force:
