@@ -8119,6 +8119,15 @@ def _verified_entry_for_prompt(word: str, *, lookup_lang: str = "") -> dict | No
         from backend.dictionary_entries import entries_for_query
         found = entries_for_query(word, source_lang="de", target_lang="ru")
     except Exception:
+        # ⚠ НАЙДЕНО 02.09.2026, ОТКРЫТО, ЖДЁТ РЕШЕНИЯ ВЛАДЕЛЬЦА.
+        # Сбой словаря здесь означает «проверенной статьи нет», и промпт уходит к
+        # модели БЕЗ подтверждения. Это молчаливая деградация качества: человек
+        # получит разбор, который никто не сверял, и не узнает об этом.
+        # Поведение пока прежнее, но сбой теперь виден в логе как ошибка, а не как
+        # пустой ответ. Правильный исход — не строить промпт вовсе; решение за
+        # владельцем, потому что это меняет поведение платного пути.
+        logging.error("проверенная статья: словарь не ответил про %r", str(word)[:60],
+                      exc_info=True)
         return None
     if not found:
         return None
@@ -40785,14 +40794,15 @@ def _quick_translate_dictionary_entries(text, source_lang, target_lang):
     Молчать нестрашно, страшно догадываться — именно догадка про часть речи по
     заглавной букве и превратила «толстый» в «der Dicke».
 
-    Не поднимает исключений НИКОГДА: быстрый перевод не должен падать из-за того,
-    что справочник не ответил."""
-    try:
-        from backend.dictionary_entries import entries_for_query
-        return entries_for_query(text, source_lang=source_lang or "", target_lang=target_lang or "")
-    except Exception:
-        logging.debug("слой статей не ответил на быстром пути", exc_info=True)
-        return []
+    СБОЙ БАЗЫ НАРУЖУ НЕ ГЛУШИТСЯ. Пустой список здесь означает «слова у нас нет», и по
+    нему вызывающий уходит к машинному переводчику. Если тем же пустым списком отвечал
+    обрыв связи, обрыв тихо превращался в машинный перевод вместо словарной статьи —
+    запрещённая правилом ноль молчаливая деградация. Поймано 02.09.2026 на живом
+    замере: слой вернул пусто для слова «Kugel», которое в базе есть.
+
+    Теперь сбой называется вслух (`DictionaryLayerUnavailable`), и решает вызывающий."""
+    from backend.dictionary_entries import entries_for_query
+    return entries_for_query(text, source_lang=source_lang or "", target_lang=target_lang or "")
 
 
 def _build_quick_translate_from_entries(entries, text, source_lang, target_lang):
@@ -41238,7 +41248,23 @@ def translate_quick():
     # часть речи выводилась из заглавной буквы ответа. Между тем правильный ответ
     # («dick», прилагательное) лежал у нас в базовом словаре, и его никто не
     # спрашивал. Теперь спрашиваем — бесплатно, без сети и без модели.
-    entries = _quick_translate_dictionary_entries(text, source_lang, target_lang)
+    # Сбой СВОЕГО словаря не имеет права незаметно превратиться в машинный перевод:
+    # человек получил бы строку без грамматики и не узнал, что это не наша статья.
+    # Говорим правду и не тратим деньги на переводчика (владелец, 02.09.2026).
+    from backend.dictionary_entries import DictionaryLayerUnavailable
+    try:
+        entries = _quick_translate_dictionary_entries(text, source_lang, target_lang)
+    except DictionaryLayerUnavailable as exc:
+        _release_quick_translate_inflight_slot(cache_key)
+        _log_flow_observation(
+            "quick_translate", "quick_translate_completed",
+            request_id=request_id, correlation_id=correlation_id,
+            user_id=user_id_for_billing, source_lang=source_lang, target_lang=target_lang,
+            text_chars=len(text), final_status="error", error_code="dictionary_unavailable",
+            duration_ms=_elapsed_ms_since(started_perf), http_status=503,
+        )
+        logging.error("быстрый перевод: словарь не ответил про %r: %s", text[:60], exc)
+        return jsonify({"error": "Словарь сейчас не отвечает. Попробуйте через минуту."}), 503
     if entries:
         result = _build_quick_translate_from_entries(entries, text, source_lang, target_lang)
         _set_cached_quick_translate(cache_key, result)
@@ -43525,6 +43551,11 @@ def _word_diff_lookup_sources(word: str, studied_lang: str, explain_lang: str,
         from backend.dictionary_entries import entries_for_query
         entries = entries_for_query(text, source_lang=studied_lang, target_lang=explain_lang)
     except Exception:
+        # ⚠ НАЙДЕНО 02.09.2026, ОТКРЫТО, ЖДЁТ РЕШЕНИЯ ВЛАДЕЛЬЦА.
+        # При сбое словаря вкладка «чем отличается» покажет МЕНЬШЕ прочтений, чем есть,
+        # и человек не узнает, что часть ответа потеряна. Ошибка уже пишется полностью;
+        # правильный исход — сказать человеку «сейчас не собралось», а не показать
+        # неполный ответ как полный. Меняет экран, поэтому решает владелец.
         logging.exception("word_diff: слой единиц не ответил на %r", text)
         entries = []
 
@@ -52474,7 +52505,14 @@ def _dictionary_save_costs_us_nothing(*, word: str, source_lang: str, target_lan
         if entries_for_query(bare, source_lang=source_lang, target_lang=target_lang):
             return True
     except Exception:
-        logging.debug("слой статей не ответил про %r", bare[:60], exc_info=True)
+        # ⚠ НАЙДЕНО 02.09.2026, ОТКРЫТО, ЖДЁТ РЕШЕНИЯ ВЛАДЕЛЬЦА.
+        # Здесь решается, СТОИТ ЛИ НАМ ДЕНЕГ сохранение слова. Сбой словаря делает вид,
+        # что слово нам незнакомо, — и известное слово может списать человеку лимит
+        # (правило владельца: лимиты только там, где мы платим). Ниже спрашивается ещё
+        # и общий пул, так что один сбой не решает всё; но сбой теперь виден в логе
+        # ошибкой, а не прячется в debug. Решение о поведении — за владельцем.
+        logging.error("бесплатность сохранения: словарь не ответил про %r", bare[:60],
+                      exc_info=True)
     try:
         pooled = get_pool_dictionary_entry(
             source_lang=source_lang, target_lang=target_lang, source_text=text,
