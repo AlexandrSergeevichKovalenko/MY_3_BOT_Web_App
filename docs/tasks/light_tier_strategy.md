@@ -346,3 +346,35 @@ access: { state, free_month_ends_at, days_left, light_stars, pro_stars }
    Полного с его 615). Подтвердить или назвать другое число звёзд.
 3. Правило «Полный → Лайт только после отмены Полного» (§4.3). Подтвердить.
 4. День и час напоминания: суббота 11:00. Подтвердить или заменить.
+
+---
+
+## 13. Выполнено 04.09.2026 (ветка `agent/light`)
+
+Пять шагов из §10 сделаны и покрыты тестами (`backend/tests/test_access_period.py`,
+`test_light_plan.py`, `test_access_lock.py`, `test_access_reminder.py`).
+
+| что | где |
+|---|---|
+| таблица начала отсчёта, 4 двери записи, заливка днём деплоя, ночная страховка 03:50 | `backend/database.py` (блок «Бесплатный месяц: начало отсчёта»), `bot_3.py` (`_touch_access_period`, `_access_period_sweep_job`), `backend_server.py` (bootstrap) |
+| тариф `light`, цена 160 ⭐ (`LIGHT_PRICE_EUR_MINOR`, по умолчанию 246), счёт-подписка, исполнение, отмена Лайта при покупке Полного | `backend_server.py` (`light_price_stars`, `/api/webapp/billing/stars_invoice`), `bot_3.py` (`on_stars_successful_payment`, `_cancel_light_subscription_after_pro`) |
+| `access_state` в праве доступа | `backend/database.py` → `resolve_entitlement` |
+| окно входа в четырёх режимах, «Подписка», онбординг | `ProTrialModal.jsx`, `App.jsx`, `OnboardingWizard.jsx` |
+| замок: дверь веба 402, сборщик рассылок, чат бота, экран вне Telegram | `backend_server.py` (`enforce_webapp_access`, `_access_lock_applies`), `bot_3.py` (`_is_access_locked_cached`, `_reply_access_locked`), `frontend/src/main.jsx` |
+| напоминание сб 11:00, каденс, строка отчёта, `/admin_access` | `bot_3.py`, `backend/access_reminder_card.py` |
+| обещания | `access_period_night_sweep`, `access_period_missing`, `locked_users_got_learning_content`, `access_reminders_over_cadence` |
+
+**Как снять снимок «после» на тестовом аккаунте:**
+
+```
+/admin_access <user_id> 2026-08-01     # старт 34 дня назад → заперт
+```
+
+Затем: открыть приложение (окно «Бесплатный месяц закончился», две кнопки, раздел
+«Подписка»); нажать в боте «▶️ Следующее задание» (ответ с двумя кнопками); утром —
+строка «🔒 Доступ» в отчёте «Ночной добор словаря» и обещания. Вернуть аккаунт:
+`/admin_access <user_id> 2026-09-04`.
+
+**Открыто, ждёт решения:** письмо владельцу при неудачной отмене Лайта (§4.3) сейчас
+приходит текстом с готовой командой `/refund_star <charge>`, без кнопок. Кнопка «вернуть
+звёзды» = необратимое действие деньгами одним касанием — сделать, если владелец скажет.
