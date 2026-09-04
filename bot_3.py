@@ -446,6 +446,8 @@ from backend.database import (
     create_article_sprint_dispatch,
     update_article_sprint_dispatch_message_id,
     is_user_pro,
+    start_access_period,
+    sweep_access_periods_for_known_users,
     list_allowed_telegram_user_ids,
     create_article_sprint_battle,
     get_article_sprint_battle,
@@ -8703,6 +8705,34 @@ async def track_group_member_context(update: Update, context: CallbackContext) -
 _identity_seen_in_process: dict[int, str] = {}
 
 
+# Кому в этом процессе мы уже записали начало отсчёта бесплатного месяца. Запись
+# одноразовая на всю жизнь (ON CONFLICT DO NOTHING), поэтому второй раз ходить в базу
+# на каждое сообщение незачем.
+_access_period_touched_in_process: set[int] = set()
+
+
+def _touch_access_period(user_id: int, source: str) -> None:
+    """Дверь записи начала отсчёта бесплатного месяца из бота. Фоном: первое сообщение
+    человека не должно ждать базу. Ошибка — в лог целиком; страховка — ночная проверка,
+    число промахов — обещание access_period_night_sweep."""
+    try:
+        uid = int(user_id or 0)
+        if uid <= 0 or uid in _access_period_touched_in_process:
+            return
+        _access_period_touched_in_process.add(uid)
+
+        def _run() -> None:
+            try:
+                start_access_period(uid, source)
+            except Exception:
+                _access_period_touched_in_process.discard(uid)
+                logging.exception("access_period: дверь %s не записала старт user=%s", source, uid)
+
+        threading.Thread(target=_run, name="access-period", daemon=True).start()
+    except Exception:
+        logging.exception("access_period: дверь %s не запустилась", source)
+
+
 def _remember_identity_from_telegram_user(user) -> None:
     """Запомнить имя из апдейта Telegram. Фоном и молча: имя — не повод задерживать или
     ронять обработку сообщения."""
@@ -16682,6 +16712,17 @@ async def _onboarding_nudge_job(context: CallbackContext) -> None:
             await asyncio.sleep(1.0)
 
 
+async def _access_period_sweep_job(context: CallbackContext) -> None:
+    """Ночная страховка: известным людям без начала отсчёта бесплатного месяца ставим
+    старт по самому раннему нашему следу о них. Каждая созданная строка — дверь,
+    которая промолчала; утром это число покажет обещание access_period_night_sweep."""
+    created = await asyncio.to_thread(sweep_access_periods_for_known_users)
+    if created:
+        logging.warning("access_period: ночная страховка поставила старт %s людям — двери пропустили", created)
+    else:
+        logging.info("access_period: ночная страховка — все известные люди с началом отсчёта")
+
+
 async def start(update: Update, context: CallbackContext):
     """Запуск бота и отправка главного меню."""
     user = update.effective_user
@@ -16709,6 +16750,8 @@ async def start(update: Update, context: CallbackContext):
             await _send_access_closed_reply(update, context)
             return
 
+    if user:
+        _touch_access_period(int(user.id), "bot_start")
     context.user_data.setdefault("service_message_ids", [])  # Инициализируем список
     if update.effective_chat and update.effective_chat.type == "private":
         # /start = явный жест пользователя «верни мне меню». Принудительно пере-доставляем
@@ -17198,6 +17241,8 @@ async def handle_user_message(update: Update, context: CallbackContext):
 
     user_id = update.message.from_user.id
     text = update.message.text.strip()
+    if update.effective_chat and update.effective_chat.type == "private":
+        _touch_access_period(int(user_id), "bot_message")
 
     if _is_admin_user(user_id):
         if await _try_handle_admin_support_reply(update, context, text):
@@ -46409,6 +46454,8 @@ def main():
         # никогда не применяются к тому, что собрано раньше.
         scheduler.add_job(lambda: submit_async(run_daily_video_recheck,CallbackContext(application=application)),"cron", hour=3, minute=20, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         scheduler.add_job(lambda: submit_async(run_standup_shelf_refill,CallbackContext(application=application)),"cron", hour=3, minute=40, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        # Бесплатный месяц: ночная страховка начала отсчёта (кого двери пропустили).
+        scheduler.add_job(lambda: submit_async(_access_period_sweep_job,CallbackContext(application=application)),"cron", hour=3, minute=50, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Drain Mini-App «⚔️ Battles» create requests every few seconds (bot runs the
         # existing broadcast logic, so invites/images/nudges/digest are unchanged).

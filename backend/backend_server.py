@@ -644,6 +644,7 @@ from backend.database import (
     resolve_entitlement,
     grant_welcome_trial_once,
     get_welcome_trial_status,
+    start_access_period,
     enforce_daily_cost_cap,
     enforce_feature_limit,
     get_user_provider_units_today,
@@ -31289,6 +31290,12 @@ def bootstrap_webapp_session():
             # One-time 7-day Pro trial for everyone (Pro minus book-narration audio) on first
             # Mini-App open. Idempotent per lifetime — a returning user just gets granted=False.
             # Enrich with the app-entry plaque state (active countdown / ended → buy Pro).
+            # Дверь записи начала отсчёта бесплатного месяца (первое открытие приложения).
+            # Идемпотентно на всю жизнь; ошибка — в лог, число промахов — в обещание.
+            try:
+                start_access_period(int(parsed_user_id), "bootstrap")
+            except Exception:
+                logging.exception("access_period: дверь bootstrap не записала старт user=%s", parsed_user_id)
             try:
                 _grant_res = grant_welcome_trial_once(int(parsed_user_id))
                 _ws = get_welcome_trial_status(int(parsed_user_id))

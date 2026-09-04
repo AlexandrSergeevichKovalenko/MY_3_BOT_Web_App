@@ -101,6 +101,17 @@ def _count_worldnews_old_look_rules(css: str) -> int:
     return n
 
 
+def _access_period_night_sweep() -> int:
+    """Сколько начал отсчёта бесплатного месяца за сутки поставила ночная страховка, а
+    не дверь записи. Обещано: 0.
+
+    Дверей четыре: /start, первое сообщение в боте, самозапись по ссылке, открытие
+    приложения. Строка от страховки значит, что человек прошёл мимо всех четырёх —
+    искать, какая молчит (source в bt_3_access_period у соседей подскажет)."""
+    from backend.database import count_access_periods_created_by_night_sweep
+    return count_access_periods_created_by_night_sweep(days=1)
+
+
 def _worldnews_card_old_look_rules() -> int:
     """Читает CSS собранного фронта (frontend/dist/assets/*.css) на сервере. Обещано: 0."""
     from pathlib import Path
@@ -141,6 +152,15 @@ PROMISES: tuple[Promise, ...] = (
         measure=_worldnews_card_old_look_rules,
         how="grep -c 'Georgia' frontend/dist/assets/*.css рядом с .worldnews-card-de "
             "и 'clip-path' рядом с .worldnews-step — ждём 0 и 0",
+    ),
+    Promise(
+        key="access_period_night_sweep",
+        title="Людей, кому начало бесплатного месяца поставила ночная страховка, а не дверь",
+        since="04.09.2026",
+        expected=0,
+        measure=_access_period_night_sweep,
+        how="SELECT COUNT(*) FROM bt_3_access_period WHERE source='night_sweep' "
+            "AND created_at > NOW() - interval '1 day'",
     ),
 )
 
