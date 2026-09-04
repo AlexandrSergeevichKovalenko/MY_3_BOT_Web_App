@@ -17376,6 +17376,10 @@ async def handle_forwarded_message_lookup(update: Update, context: CallbackConte
             quote=True,
         )
         return
+    # Замок бесплатного месяца: пересылка идёт своим обработчиком, мимо handle_user_message.
+    if await asyncio.to_thread(_is_access_locked_cached, int(msg.from_user.id)):
+        await _reply_access_locked(update)
+        return
     await _run_shortcut_text_split(
         msg,
         int(msg.from_user.id),
