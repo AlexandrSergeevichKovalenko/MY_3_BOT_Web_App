@@ -39454,7 +39454,9 @@ function AppInner() {
                         : '';
                       return (
                         <div className="worldnews-deck">
-                          <div className="worldnews-deck-progress">{idx + 1} / {worldNewsPhrases.length}</div>
+                          <div className="worldnews-deck-progress">
+                            {tr('Слово', 'Wort')} <b>{idx + 1}</b> {tr('из', 'von')} {worldNewsPhrases.length}
+                          </div>
                           <div
                             className="worldnews-card"
                             onTouchStart={(e) => { worldNewsTouchXRef.current = e.changedTouches?.[0]?.clientX ?? null; }}
@@ -39472,7 +39474,7 @@ function AppInner() {
                             {/* Длинные составные слова (Fußballweltmeisterschaft) не переносим
                                 и не рвём — уменьшаем кегль, пока слово не влезет в ширину карточки. */}
                             <FitText className="worldnews-card-de" refitKey={`${idx}:${phrase.phrase_de || ''}`}
-                                     max={30} min={15}>
+                                     max={34} min={15}>
                               {article && <span className={`worldnews-art ${gClass}`}>{article} </span>}
                               <span className="worldnews-head-main">{headRest}</span>
                             </FitText>
@@ -39521,7 +39523,25 @@ function AppInner() {
                                     {phrase.de_in_text}
                                   </span>
                                 )}
-                                <span className="worldnews-card-quote-de">«{phrase.quote_de}»</span>
+                                {/* Форма из текста подсвечена ПРЯМО во фразе (04.09.2026), строка
+                                    «В тексте» выше при этом остаётся. Ищем форму дословно, без
+                                    учёта регистра; не нашлась дословно — фраза идёт без подсветки,
+                                    ничего не «додумываем». */}
+                                <span className="worldnews-card-quote-de">
+                                  {(() => {
+                                    const q = String(phrase.quote_de);
+                                    const f = phrase.de_in_text ? String(phrase.de_in_text).trim() : '';
+                                    const at = f ? q.toLowerCase().indexOf(f.toLowerCase()) : -1;
+                                    if (at < 0) return <>«{q}»</>;
+                                    return (
+                                      <>
+                                        «{q.slice(0, at)}
+                                        <mark className="worldnews-card-quote-mark">{q.slice(at, at + f.length)}</mark>
+                                        {q.slice(at + f.length)}»
+                                      </>
+                                    );
+                                  })()}
+                                </span>
                                 {phrase.quote_ru && (
                                   <span className="worldnews-card-quote-ru">{phrase.quote_ru}</span>
                                 )}
@@ -39547,7 +39567,13 @@ function AppInner() {
                               onClick={() => saveWorldNewsCard(idx)}
                               disabled={saved}
                             >
-                              {saved ? tr('✓ Сохранено', '✓ Gespeichert') : tr('🔖 Сохранить в словарь', '🔖 Ins Wörterbuch')}
+                              {/* Иконка одним стилем со всем приложением, а не эмодзи-закладка. */}
+                              {saved ? (
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>
+                              ) : (
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z" /></svg>
+                              )}
+                              {saved ? tr('Сохранено', 'Gespeichert') : tr('Сохранить в словарь', 'Ins Wörterbuch')}
                             </button>
                             {/* Второй кнопкой, а не вопросом каждому: девяносто девять раз
                                 из ста человек жмёт «Сохранить» и листает дальше. */}

@@ -127,3 +127,27 @@ class КарантинСтарогоБанкаСнесён(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class КарточкаСловаНовостиДняСобранаВНовомВиде(unittest.TestCase):
+    """Обещание 04.09.2026: карточка слова «Новость дня» переведена на наш стиль.
+    Измеритель читает собранный CSS; здесь он проверяется на образцах, а не на сборке."""
+
+    def test_old_look_is_counted_and_new_look_is_zero(self):
+        from backend.fix_promises import _count_worldnews_old_look_rules
+        старый = (".worldnews-step{flex:1 1 0;clip-path:polygon(0 0,100% 50%)}"
+                  ".worldnews-card-de{font-family:Georgia,serif;font-size:30px}")
+        новый = (".worldnews-step{flex:1 1 0;border-radius:10px}"
+                 ".worldnews-step.is-active{background:#fff}"
+                 ".worldnews-card-de{font-family:-apple-system,system-ui;font-size:34px}")
+        self.assertEqual(2, _count_worldnews_old_look_rules(старый))
+        self.assertEqual(0, _count_worldnews_old_look_rules(новый))
+
+    def test_wrong_file_is_unmeasured_not_zero(self):
+        from backend.fix_promises import _count_worldnews_old_look_rules
+        with self.assertRaises(LookupError):
+            _count_worldnews_old_look_rules("body{margin:0}")
+
+    def test_promise_is_registered(self):
+        from backend.fix_promises import by_key
+        self.assertEqual(0, by_key("worldnews_card_old_look").expected)

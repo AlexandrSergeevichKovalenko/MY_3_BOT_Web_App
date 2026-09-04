@@ -80,6 +80,37 @@ def _night_enrichment_runs_in_units_mode() -> int:
     return 1 if режим == "units" else 0
 
 
+_WN_OLD_LOOK = ((".worldnews-card-de", "Georgia"), (".worldnews-step", "clip-path"))
+
+
+def _count_worldnews_old_look_rules(css: str) -> int:
+    """Сколько правил СТАРОГО вида карточки слова «Новость дня» осталось в CSS.
+
+    Старый вид (владелец 04.09.2026: «бедный, блеклый, некачественный») узнаётся по
+    двум приметам: газетная Georgia у заголовка .worldnews-card-de и стрелки-шевроны
+    (clip-path) у шагов .worldnews-step. Нет самого селектора заголовка — это не тот
+    файл, и считать нечего: исход «не измерено», а не «0»."""
+    import re
+    if not re.search(r"\.worldnews-card-de\s*\{", css):
+        raise LookupError("в CSS нет .worldnews-card-de — это не собранный фронт")
+    n = 0
+    for selector, marker in _WN_OLD_LOOK:
+        for m in re.finditer(re.escape(selector) + r"\s*\{([^}]*)\}", css):
+            if marker in m.group(1):
+                n += 1
+    return n
+
+
+def _worldnews_card_old_look_rules() -> int:
+    """Читает CSS собранного фронта (frontend/dist/assets/*.css) на сервере. Обещано: 0."""
+    from pathlib import Path
+    assets = Path(__file__).resolve().parent.parent / "frontend" / "dist" / "assets"
+    files = sorted(assets.glob("*.css"))
+    if not files:
+        raise FileNotFoundError(f"собранного CSS нет: {assets}")
+    return _count_worldnews_old_look_rules("".join(f.read_text(encoding="utf-8") for f in files))
+
+
 # ── реестр ────────────────────────────────────────────────────────────────────────────
 # Добавляя починку — добавляй строку сюда. Ключ не менять после регистрации: по нему
 # лежат журнал проверок и решение владельца.
@@ -101,6 +132,15 @@ PROMISES: tuple[Promise, ...] = (
         measure=_night_enrichment_runs_in_units_mode,
         how="SELECT metadata->>'mode' FROM bt_3_scheduler_run_guards "
             "WHERE job_key='pool_night_enrichment' — ждём units",
+    ),
+    Promise(
+        key="worldnews_card_old_look",
+        title="Карточка слова «Новость дня» собрана в новом виде (без Georgia и шевронов)",
+        since="04.09.2026",
+        expected=0,
+        measure=_worldnews_card_old_look_rules,
+        how="grep -c 'Georgia' frontend/dist/assets/*.css рядом с .worldnews-card-de "
+            "и 'clip-path' рядом с .worldnews-step — ждём 0 и 0",
     ),
 )
 
