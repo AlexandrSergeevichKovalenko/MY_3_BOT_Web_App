@@ -54722,6 +54722,10 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
 
     if not is_telegram_user_allowed(user_id):
         return {"error": "Пользователь не имеет доступа"}, 403
+    # Замок бесплатного месяца: ярлык ходит мимо двери /api/webapp/*, поэтому проверка
+    # стоит здесь отдельно (docs/tasks/light_tier_strategy.md §5.1, найдено 04.09.2026).
+    if is_access_locked(user_id):
+        return _access_locked_payload(), 402
 
     if not text:
         return {"error": "text обязателен"}, 400
@@ -56728,6 +56732,9 @@ def shortcut_run_check():
         return jsonify({"allowed": False, "error": "invalid_install_token"}), 401
     if not is_telegram_user_allowed(user_id):
         return jsonify({"allowed": False, "reason": "no_access", "message": "Доступ закрыт."}), 403
+    if is_access_locked(user_id):  # замок бесплатного месяца, см. _shortcut_lookup_from_install_token
+        return jsonify({"allowed": False, "reason": "access_locked",
+                        "message": _access_locked_payload()["error"]}), 402
     # Advisory pre-flight: decide via the SHARED gate. The ACTUAL run is recorded at the
     # work endpoint (/lookup), which re-runs the same gate — so a well-behaved shortcut
     # sees the verdict here and stops early, but the real enforcement lives on /lookup
