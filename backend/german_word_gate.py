@@ -553,6 +553,19 @@ def _decide(asked: str, *, pos_hint: str, allow_network: bool, allow_model: bool
         # значит это догадка. Владелец 20.08.2026: «чиним только подтверждённое
         # справочником, остальное — в проверку». Слово остаётся как было, а решение
         # принимает человек на экране проверки.
+        #
+        # ┌─ ПОЧИНЕНО 04.09.2026. ВАРИАНТ БОЛЬШЕ НЕ ВЫБРАСЫВАЕТСЯ. ───────────────────┐
+        # │ До сегодня `fixed` здесь умирал: в базу шла только ПОМЕТКА «что-то        │
+        # │ предлагала», а само предложенное слово никуда не сохранялось. Человек на  │
+        # │ экране проверки видел серое «мы не нашли это слово» — без «было вот так,  │
+        # │ предлагаем вот так», при том что ответ у нас уже был в руках и уже оплачен│
+        # │ обращением к модели. Владелец 04.09.2026: «Ну а где было вот так —        │
+        # │ предлагаю вот так?». Замер того дня: 6 слов в журнале двери с этой         │
+        # │ пометкой и НИ ОДНОЙ подсказки (Burp, KEHREN, Quicksilber, Ragebait, Soil, │
+        # │ STAUBWISCHEN). Теперь вариант кладётся в `bt_3_word_suggestion`, и экран  │
+        # │ показывает кнопку «Да, это «…»» — решает человек, а не мы.                │
+        # └──────────────────────────────────────────────────────────────────────────┘
+        remember_suggestion(asked, fixed)
         return _finish(text, UNCONFIRMED, pos_hint,
                        "модель предложила другое написание, справочник не подтвердил", asked)
     # Слово настоящее, но не немецкое («Sweatpants», «lowkey»). Отклонять НЕЛЬЗЯ —
@@ -823,26 +836,78 @@ Antworte NUR mit JSON: {"gemeint": "die Abschiebung"}
 Erfinde nichts."""
 
 
+def remember_suggestion(asked: str, suggestion: str) -> str:
+    """Положить готовый вариант написания туда, откуда его берёт экран проверки.
+
+    Зовётся из двери в тот момент, когда вариант УЖЕ получен и уже оплачен: лишнего
+    обращения к модели здесь нет ни одного. Артикль дописывается только справочником
+    рода — старый артикль строки сюда не переносится и «der» на всякий случай не
+    выдумывается (то же правило, что в `word_confirm_digest._with_article`).
+
+    Ошибку записи глушим сознательно и с логом: это ПОБОЧНАЯ запись рядом с главным
+    вердиктом двери. Уронить сохранение слова из-за неудавшейся подсказки нельзя, а
+    подменять ответ мы не подменяем — подсказки просто не будет, и это видно в базе
+    пустой строкой.
+    """
+    from backend.database import get_db_connection_context
+    from backend.word_confirm_digest import ensure_word_suggestion_schema
+
+    key = str(asked or "").strip()
+    text = " ".join(str(suggestion or "").split())
+    if not key or not text:
+        return ""
+    if text[:1].isupper():
+        try:
+            from backend.article_authority import authoritative_article
+            art, _src = authoritative_article(text, allow_network=False)
+        except Exception:
+            logging.debug("подсказка написания: справочник рода недоступен", exc_info=True)
+            art = None
+        if art:
+            text = f"{art} {text}"
+    try:
+        ensure_word_suggestion_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO bt_3_word_suggestion (asked, suggestion, checked_at)
+                       VALUES (%s, %s, NOW())
+                       ON CONFLICT (asked) DO UPDATE
+                          SET suggestion=EXCLUDED.suggestion, checked_at=NOW();""",
+                    (key, text),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("подсказка написания: не записал вариант для %s", key, exc_info=True)
+        return ""
+    return text
+
+
 def suggest_spelling(word: str) -> str:
-    """Что человек, скорее всего, имел в виду. Принимаем ТОЛЬКО совпадение двух ответов.
+    """Что человек, скорее всего, имел в виду. Один спрос: не знает — говорит пустотой.
 
     Детерминированные правила такое не чинят: «Abschiebu» нужно дописать «ng», а не
     «ung», а у «inkelgasse» потеряно НАЧАЛО слова — суффиксными правилами это
-    недостижимо. Модель восстанавливает такое надёжно, но только при согласии двух
-    независимых ответов: замер 20.08.2026 — Abschiebu → die Abschiebung, inkelgasse →
-    die Winkelgasse, -künfte → die Einkünfte (совпало), Scheinwerfergla — разошлось,
-    и подсказки не будет. Пустая строка честнее выдуманной.
+    недостижимо. Поэтому восстанавливает модель.
+
+    ┌─ ПЕРЕСМОТРЕНО 04.09.2026. ВТОРОЙ СПРОС УБРАН, НЕ ВОЗВРАЩАТЬ. ────────────────────┐
+    │ С 20.08.2026 мы спрашивали ДВАЖДЫ и принимали только совпавшие ответы. Владелец  │
+    │ 04.09.2026: «Одна модель же в состоянии понять или не понять, что имелось в виду.│
+    │ Зачем столько токенов тратить?» Он прав дважды. Во-первых, два спроса одной и той│
+    │ же модели — это не проверка, а один источник, спрошенный два раза. Во-вторых,    │
+    │ честное «не знаю» инструкция уже требует с первого раза: «Kannst du es nicht     │
+    │ eindeutig wiederherstellen, gib "" zurück». Замер 04.09.2026: в таблице подсказок│
+    │ 25 слов за две недели, то есть 50 обращений, половина из которых — повтор ради   │
+    │ сверки. При этом расхождение ответов оставляло человека БЕЗ варианта вовсе       │
+    │ («aufknuspern»), хотя решать всё равно ему — кнопкой «Да, это …».                │
+    │ Перемерить: SELECT count(*) FROM bt_3_word_suggestion WHERE suggestion <> ''.    │
+    └─────────────────────────────────────────────────────────────────────────────────┘
     """
     from backend.german_reference_forms import _ask_once
     from backend.openai_manager import system_message
     system_message.setdefault(_MEANT_TASK, _MEANT_INSTRUCTION)
-    first = _ask_once(_MEANT_TASK, word)
-    second = _ask_once(_MEANT_TASK, word)
-    a = str((first or {}).get("gemeint") or "").strip()
-    b = str((second or {}).get("gemeint") or "").strip()
-    if not a or a.casefold() != b.casefold():
-        return ""
-    return a
+    said = _ask_once(_MEANT_TASK, word)
+    return str((said or {}).get("gemeint") or "").strip()
 
 
 def warm_suggestions(*, limit: int = 60) -> dict:
@@ -858,13 +923,28 @@ def warm_suggestions(*, limit: int = 60) -> dict:
     ensure_word_suggestion_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
+            # ДВА КЛАССА, А НЕ ОДИН (04.09.2026):
+            #   «не слово»                     — обрубок, восстанавливаем написание;
+            #   «модель предложила другое …»   — вариант БЫЛ и до 04.09.2026 выбрасывался
+            #                                    дверью. Новые кладутся сразу (см.
+            #                                    remember_suggestion), а те 6, что уже
+            #                                    лежат в журнале с этой пометкой, добирает
+            #                                    эта ночь — иначе они остались бы навсегда
+            #                                    без кнопки.
+            # ПЕРЕСЧЁТ ПУСТЫХ. Подсказки, посчитанные ДО 05.09.2026, могли выйти пустыми
+            # только из-за снятого правила «принимаем два совпавших ответа» — их считаем
+            # ещё раз, ОДИН раз: после пересчёта checked_at свежий, и слово сюда больше
+            # не попадёт, даже если модель снова не смогла восстановить.
             cur.execute(
                 """SELECT w.asked FROM bt_3_word_check w
-                    WHERE w.status = %s
+                    WHERE (w.status = %s
+                           OR (w.status = %s AND w.source LIKE 'модель предложила другое%%'))
                       AND NOT EXISTS (SELECT 1 FROM bt_3_word_suggestion s
-                                       WHERE s.asked = w.asked)
+                                       WHERE s.asked = w.asked
+                                         AND (COALESCE(s.suggestion,'') <> ''
+                                              OR s.checked_at >= TIMESTAMPTZ '2026-09-05'))
                     ORDER BY w.checked_at DESC LIMIT %s;""",
-                (NOT_A_WORD, int(limit)),
+                (NOT_A_WORD, UNCONFIRMED, int(limit)),
             )
             words = [str(r[0]) for r in (cur.fetchall() or [])]
 

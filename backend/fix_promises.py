@@ -144,6 +144,95 @@ def _worldnews_card_old_look_rules() -> int:
     if not files:
         raise FileNotFoundError(f"собранного CSS нет: {assets}")
     return _count_worldnews_old_look_rules("".join(f.read_text(encoding="utf-8") for f in files))
+_SCREEN_PROMISE_USER_CAP = 200
+
+
+def _people_with_pending_words() -> list[int]:
+    """Кому экран проверки слов сегодня что-то покажет. Больше потолка — НЕ измеряем.
+
+    Обещание проверяется той же функцией, что рисует экран (`audit_items`), а она
+    работает на одного человека. Пока таких людей единицы, обход честный и полный.
+    Станет больше потолка — проверка обязана сказать «не измерено», а не померить
+    выборку и выдать её за весь продукт (три исхода, и путать их нельзя).
+    """
+    from backend.database import get_db_connection_context
+    from backend.word_confirm_digest import _BARE, _ТОЛЬКО_СЛОВА
+    bare = _BARE.format(col="q.word_de")
+    sql = """
+        SELECT DISTINCT q.user_id
+          FROM bt_3_webapp_dictionary_queries q
+          JOIN bt_3_word_check w ON w.asked = {bare}
+         WHERE w.status IN ('не подтверждено', 'не слово')
+           AND {только_слова}
+           AND NOT EXISTS (SELECT 1 FROM bt_3_word_confirm_digest d
+                            WHERE d.user_id = q.user_id AND d.word = {bare}
+                              AND d.closed_at IS NOT NULL);
+    """.format(bare=bare, только_слова=_ТОЛЬКО_СЛОВА.format(bare=bare))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            люди = [int(r[0]) for r in (cursor.fetchall() or [])]
+    if len(люди) > _SCREEN_PROMISE_USER_CAP:
+        raise RuntimeError(
+            f"людей с ждущими словами {len(люди)}, потолок обхода {_SCREEN_PROMISE_USER_CAP}: "
+            "обещание нужно мерить иначе, а не по выборке")
+    return люди
+
+
+def _screen_cards() -> list[dict]:
+    """Все карточки СЛОВ, которые экран проверки сегодня покажет живым людям.
+
+    Берётся ровно то, что уходит в браузер (`audit_items`), а не свой похожий запрос:
+    обещание, которое смотрит мимо продукта, ничего не стережёт. Фразы отбрасываем —
+    они не про написание слова."""
+    from backend.word_confirm_digest import audit_items
+    карточки: list[dict] = []
+    for user_id in _people_with_pending_words():
+        карточки += [к for к in audit_items(user_id) if к.get("kind") == "word"]
+    return карточки
+
+
+def _accusations_without_a_variant() -> int:
+    """Карточек, где надпись говорит «сохранилось не целиком», а варианта рядом нет.
+
+    Обещано: 0. Это и есть жалоба владельца 04.09.2026 — «а где было вот так,
+    предлагаю вот так?». Считается по тому, что вправду уходит на экран: вернут одну
+    фразу для всех — число вырастет назавтра, само."""
+    return sum(1 for к in _screen_cards()
+               if "не целиком" in str(к.get("why") or "")
+               and not str(к.get("suggestion") or "").strip())
+
+
+def _real_words_still_bothering_people() -> int:
+    """Карточек «слово настоящее, справочник его не знает» на экранах. Обещано: 0.
+
+    Решение владельца 04.09.2026: настоящее слово, которого нет в справочнике, — наша
+    забота, а не вопрос человеку. Замер в день починки: 13 таких из 16 карточек на
+    экране владельца. В базе эти слова остаются как были — уходят они только с экрана."""
+    return sum(1 for к in _screen_cards()
+               if "справочник его не знает" in str(к.get("why") or ""))
+
+
+def _lost_spellings_from_the_gate() -> int:
+    """Новых вердиктов «модель предложила другое написание» БЕЗ сохранённого варианта.
+
+    Обещано: 0. До 04.09.2026 дверь получала от модели готовое написание и выбрасывала
+    его, оставляя человеку серую надпись без единой кнопки. Считаем только вердикты от
+    05.09.2026 и позже: старые 6 добирает ночь, и мешать одно с другим значит не увидеть
+    возврата дефекта."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """SELECT COUNT(*) FROM bt_3_word_check w
+                    WHERE w.status = 'не подтверждено'
+                      AND w.source LIKE 'модель предложила другое%%'
+                      AND w.checked_at >= TIMESTAMPTZ '2026-09-05'
+                      AND NOT EXISTS (SELECT 1 FROM bt_3_word_suggestion s
+                                       WHERE s.asked = w.asked
+                                         AND COALESCE(s.suggestion, '') <> '');"""
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
 
 
 # ── реестр ────────────────────────────────────────────────────────────────────────────
@@ -209,6 +298,35 @@ PROMISES: tuple[Promise, ...] = (
         expected=0,
         measure=_access_reminders_over_cadence,
         how="python3 -c \"from backend.database import count_access_reminders_over_cadence as f; print(f())\"",
+    ),
+    Promise(
+        key="audit_accusation_without_variant",
+        title="Карточек «слово сохранилось не целиком» без готового варианта",
+        since="04.09.2026",
+        expected=0,
+        measure=_accusations_without_a_variant,
+        how="открыть экран проверки слов (startapp=woerter): под каждой надписью про "
+            "«не целиком» обязана стоять кнопка «Да, это «…»»",
+    ),
+    Promise(
+        key="audit_real_words_not_asked",
+        title="Настоящих слов, которыми экран проверки зря тревожит человека",
+        since="04.09.2026",
+        expected=0,
+        measure=_real_words_still_bothering_people,
+        how="открыть экран проверки слов (startapp=woerter): надписи «слово настоящее, "
+            "просто редкое — справочник его не знает» там больше нет ни одной. В базе "
+            "эти слова остаются, уходят они только с экрана",
+    ),
+    Promise(
+        key="gate_keeps_the_spelling_it_got",
+        title="Новых вердиктов «модель предложила другое написание» без варианта",
+        since="04.09.2026",
+        expected=0,
+        measure=_lost_spellings_from_the_gate,
+        how="SELECT w.asked FROM bt_3_word_check w LEFT JOIN bt_3_word_suggestion s "
+            "ON s.asked=w.asked WHERE w.source LIKE 'модель предложила другое%' "
+            "AND w.checked_at >= '2026-09-05' AND COALESCE(s.suggestion,'')=''",
     ),
 )
 
