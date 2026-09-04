@@ -330,14 +330,14 @@ class TheJudgeMustHandOverTheFixTests(unittest.TestCase):
     говорят? Почему нет предложения, как исправить?» Панель судила четыре поля и
     возвращала ТОЛЬКО описание дефекта: поля «как надо» в вопросе не было вовсе."""
 
-    def test_the_panel_is_asked_for_the_corrected_text(self):
-        # Правила судейства живут в `backend/phrase_panel.py` — там же, откуда их
-        # зовёт и ночь, и ручной прогон (переехали 31.08.2026, скрипт стал обёрткой).
-        src = _src("backend/phrase_panel.py")
-        i = src.index("SYSTEM = ")
-        промпт = src[i:src.index('"""', src.index('"""', i) + 3)]
-        self.assertIn("EVERY DEFECT MUST COME WITH THE CORRECTED TEXT", промпт)
-        self.assertIn('"fix"', промпт)
+    def test_the_model_is_asked_for_the_corrected_text(self):
+        """⚠ Формулировка переписана 04.09.2026 (один взгляд одной модели, закрытый
+        список исходов), но требование прежнее: назвал дефект — дай готовый текст."""
+        import re
+        from backend.phrase_panel import SYSTEM
+        одной = re.sub(r"\s+", " ", SYSTEM)
+        self.assertIn("the finished replacement text", одной)
+        self.assertIn('"fix"', одной)
 
     def test_the_translation_check_names_the_right_russian(self):
         """Та же дыра была у проверки перевода: «этот русский не означает эту фразу» —
@@ -348,171 +348,18 @@ class TheJudgeMustHandOverTheFixTests(unittest.TestCase):
         self.assertIn("`better` MUST hold the Russian that DOES mean the", тело)
         self.assertIn('"better"', тело)
 
-    def test_the_proposed_fix_is_checked_by_a_second_voice(self):
-        """⚠ ПЕРЕПИСАНО 04.09.2026: проверяется не только замена, но и САМО обвинение.
+    def test_the_second_opinion_is_gone_and_stays_gone(self):
+        """⛔ ОТМЕНЕНО ВЛАДЕЛЬЦЕМ 04.09.2026. НЕ ВОЗВРАЩАТЬ БЕЗ ЕГО СЛОВА.
 
-        Прежняя проверка спрашивала общую сверку смысла («этот русский означает этот
-        немецкий?») и потому пропускала смену времени: «versechsfachte sich» вместо
-        «versechsfacht sich» при русском «увеличивается». А правда ли исходная фраза
-        неверна — не спрашивал никто. Теперь оба вопроса заданы прямо.
+        Готовый вариант проверялся вторым запросом к модели. Владелец: «мы очень много
+        денег тратим на модели… мне достаточно чтобы один раз модель посмотрела и всё».
+        Замер того же дня показал, что и сверка мнений ничего не ловила: настоящей была
+        1 претензия из 31. Защита теперь не в перепроверке, а в самом вопросе —
+        закрытый список исходов и обязательная цитата (`test_one_model_one_look.py`).
         """
         src = _src("backend/phrase_panel.py")
-        self.assertIn("def проверить_претензию(", src)
-        i = src.index("SYSTEM_ПРОВЕРКА = ")
-        промпт = src[i:src.index('"""', src.index('"""', i) + 3)]
-        self.assertIn("claim_right", промпт)
-        self.assertIn("the same TENSE, PERSON and NUMBER", промпт,
-                      "проверка снова судит только смысл и пропустит смену времени")
-
-    def test_the_field_and_the_fix_reach_the_screen(self):
-        from backend.database import phrase_review_dispute
-        спор = phrase_review_dispute([
-            {"verdict": "doubt", "category": "панель из трёх голосов", "voice": 2,
-             "field": "translation", "why": "«старые шутники» — это не «alte Narren».",
-             "fix": "старые дураки", "fix_check": {"state": "ok", "why": ""}},
-        ])
-        self.assertEqual(спор["fields"], ["translation"])
-        self.assertEqual(спор["claims"][0]["fix"], "старые дураки")
-        self.assertEqual(спор["claims"][0]["fix_check"]["state"], "ok")
-
-    def test_an_old_question_says_it_does_not_know_instead_of_guessing(self):
-        """145 вопросов заведены до 31.08.2026, и поля у них нет. Владелец решил их не
-        переписывать — значит экран обязан честно сказать «не записано», а не
-        подставить правдоподобный заголовок."""
-        from backend.database import phrase_review_dispute
-        спор = phrase_review_dispute([
-            {"verdict": "doubt", "category": "панель из трёх голосов",
-             "why": "голоса разошлись"},
-        ])
-        self.assertEqual(спор["fields"], [])
-        self.assertEqual(спор["claims"][0]["fix"], "")
-        src = _src("frontend/src/answer/PhraseReviewScreen.jsx")
-        self.assertIn("не записано", src)
-
-    def test_a_ready_fix_becomes_a_one_tap_button(self):
-        src = _src("frontend/src/answer/PhraseReviewScreen.jsx")
-        self.assertIn("const applyFix = (claim) =>", src)
-        i = src.index("const applyFix = (claim) =>")
-        тело = src[i:i + 700]
-        # Каждое поле правится своей дверью: перевод — правкой карточки, сама фраза —
-        # переименованием. Одна дверь на всё и была тем дефектом, который тут чинится.
-        self.assertIn("decide('replace', { text })", тело)
-        self.assertIn("saveCardEdit(", тело)
-
-    def test_the_dispute_travels_with_the_question_when_it_is_opened(self):
-        """Имя поля и готовый вариант теряться по дороге не имеют права: раньше вопрос
-        уезжал владельцу отдельным скриптом, который читал из базы одну склеенную
-        строку, — там они и пропадали."""
-        src = _src("backend/database.py")
-        # Сборка записей общая на все вопросы: панельный и личный (31.08.2026).
-        i = src.index("def _претензии_в_судей(")
-        тело = src[i:i + 2500]
-        for ключ in ('"field": поле', '"fix":', '"fix_check"'):
-            self.assertIn(ключ, тело)
-        i = src.index("def open_panel_card_question(")
-        тело = src[i:i + 3000]
-        self.assertIn("if not судьи:", тело,
-                      "вопрос без единой претензии снова тратит касание владельца")
-
-    def test_the_night_escalation_says_what_the_dispute_is_about(self):
-        """Ночной повтор примеров отдавал карточку владельцу со своей категорией, и
-        `phrase_review_kind` объявлял её ГРАММАТИЧЕСКОЙ: заголовок «Судьи разошлись о
-        грамматике», ни одного варианта под ним и ни одного примера."""
-        from backend.database import PANEL_REVIEW_CATEGORY, phrase_review_kind
-        src = _src("backend/example_retry.py")
-        i = src.index("def _escalate(")
-        тело = src[i:i + 1500]
-        self.assertIn("PANEL_REVIEW_CATEGORY", тело)
-        self.assertIn('"field": "examples"', тело)
-        self.assertEqual(phrase_review_kind(
-            [{"category": PANEL_REVIEW_CATEGORY, "field": "examples"}]), "panel")
-
-
-class TheOwnerCanFixTheCardHimselfTests(unittest.TestCase):
-    """⛔ «А где поле исправить перевод?! Просто поправить перевод?!» (31.08.2026).
-
-    Правка внутри карточки (`apply_panel_card_edit`) построена 28.08.2026 и была
-    подключена только к экрану обычного человека. У владельца оставалось два ответа:
-    «переписать всё заново» или «оставить как есть»."""
-
-    def test_the_owner_screen_has_a_translation_field_of_its_own(self):
-        src = _src("frontend/src/answer/PhraseReviewScreen.jsx")
-        self.assertIn("Перевод карточки", src)
-        self.assertIn("Записать мои правки", src)
-        self.assertIn("decide('edit'", src)
-
-    def test_the_decision_goes_through_the_same_door_as_the_persons_screen(self):
-        src = _src("backend/backend_server.py")
-        i = src.index('if decision == "edit":')
-        тело = src[i:i + 2000]
-        self.assertIn("apply_panel_card_edit", тело, "заведён второй механизм правки")
-        self.assertIn('if not isinstance(payload.get("examples"), list):', тело,
-                      "запрос без примеров снова стирает их молча")
-
-    def test_russian_can_no_longer_be_written_into_the_german_headword(self):
-        """Поле называлось «или впиши свой перевод», а уезжало решением `replace`:
-        впиши владелец «старые дураки» — и статья `alte Narren` была бы переименована
-        в русскую строку, с развозом по всем местам."""
-        src = _src("backend/backend_server.py")
-        i = src.index('if decision == "replace" and own_text:')
-        тело = src[i:i + 800]
-        self.assertIn("_has_cyrillic_letters", тело)
-        self.assertIn("400", тело, "кириллица снова проходит в немецкий заголовок")
-        screen = _src("frontend/src/answer/PhraseReviewScreen.jsx")
-        i = screen.index("placeholder={isTranslation ? 'или впиши свой перевод'")
-        self.assertIn("фраза по-немецки, как правильно", screen[i:i + 300],
-                      "поле переименования статьи снова обещает перевод")
-
-    def test_examples_can_be_edited_one_by_one(self):
-        """Владелец 28.08.2026: «зачем отправлять её полностью на пересборку, если я
-        могу просто удалить один пример». На его собственном экране этого не было."""
-        src = _src("frontend/src/answer/PhraseReviewScreen.jsx")
-        self.assertIn("+ Добавить свой пример", src)
-        self.assertIn("d.ex[n].deleted", src)
-        self.assertIn("живыеПримеры", src)
-
-    def test_saving_nothing_is_not_an_option(self):
-        src = _src("frontend/src/answer/PhraseReviewScreen.jsx")
-        i = src.index("Записать мои правки")
-        self.assertIn("disabled={busy || !естьПравки}", src[max(0, i - 400):i],
-                      "«записать» без единой правки снова закрывает вопрос ничем")
-
-
-class TheButtonsSayWhatTheyDoTests(unittest.TestCase):
-    """⛔ «А что такое кнопка отложить? А что такое оставить? В чём разница?!»
-
-    Разница была настоящая и записанная в коде — «оставить» закрывает вопрос навсегда,
-    «отложить» не пишет в базу ничего, — но на экране она умещалась в серую строчку из
-    трёх пунктов под кнопками (31.08.2026)."""
-
-    def test_the_names_carry_the_difference(self):
-        src = _src("frontend/src/answer/PhraseReviewScreen.jsx")
-        self.assertIn("Вернуться позже", src)
-        self.assertIn("Всё верно — закрыть вопрос", src)
-        self.assertNotIn("↷ Отложить", src)
-
-    def test_the_explanations_under_the_buttons_never_come_back(self):
-        """⛔ ОТМЕНЕНО ВЛАДЕЛЬЦЕМ 04.09.2026, ОБРАТНО НЕ ВОЗВРАЩАТЬ.
-
-        Три строки подписей под кнопками были верным решением задачи «объясни разницу»
-        и неверным решением задачи «уместись на телефоне»: они съедали 20% экрана,
-        оставляя разбору — то, ради чего экран и открывают, — полторы строки.
-        Владелец: «убирай это с экрана, зачем ты тратишь 20% экрана на текст, который
-        просто не нужен? это же телефон, здесь каждый сантиметр важен».
-        Разницу несут САМИ названия (тест выше). Перестанут — чинить названия.
-        """
-        src = _src("frontend/src/answer/PhraseReviewScreen.jsx")
-        for кусок in ("вопрос закрыт навсегда", "в базе ничего не меняется",
-                      "подписными карточками"):
-            self.assertNotIn(f'>{кусок}', src)
-        self.assertNotIn('className="frrev-hint frrev-hint-rows"', src)
-
-    def test_skip_still_writes_nothing_to_the_database(self):
-        """Название сменилось, поведение — нет: «вернуться позже» обязано остаться
-        решением, которого нет."""
-        src = _src("backend/backend_server.py")
-        i = src.index('if decision == "skip":')
-        self.assertIn("Никакой записи в базу", src[i:i + 500])
+        self.assertNotIn("def проверить_претензию(", src)
+        self.assertNotIn("def проверить_вариант(", src)
 
 
 class PanelCardsHaveTheirOwnDoorTests(unittest.TestCase):

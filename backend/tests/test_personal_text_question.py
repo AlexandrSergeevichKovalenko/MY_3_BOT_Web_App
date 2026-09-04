@@ -198,8 +198,6 @@ class ПересудСтарыхОтметокTests(unittest.TestCase):
         }
         with patch.object(pp.Panel, "__init__", lambda self, budget_usd=0: None), \
              patch.object(pp.Panel, "judge", return_value=(verdict, "почему", claims)), \
-             patch.object(pp.Panel, "проверить_претензию",
-                          return_value={"claim": "right", "fix": "ok", "why": ""}), \
              patch.object(pp, "unavailable_reason", общие["unavailable_reason"]), \
              patch.object(pp, "units_with_verdict", общие["units_with_verdict"]), \
              patch.object(pp, "_записать_отметку", общие["_записать_отметку"]), \

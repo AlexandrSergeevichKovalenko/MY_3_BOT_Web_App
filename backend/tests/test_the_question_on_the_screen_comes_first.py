@@ -48,38 +48,18 @@ class ПервымЧинимТоЧтоЧитаютTests(unittest.TestCase):
         self.assertIn('meta.get("вопросы старой формулировкой")', тело)
 
 
-class ВопросКСудьямЧестныйTests(unittest.TestCase):
-
-    def test_not_being_an_idiom_is_not_a_defect(self):
-        import re
-        from backend.phrase_panel import SYSTEM
-        # Переносы строк в промпте не значат ничего — сравниваем по словам.
-        одной_строкой = re.sub(r"\s+", " ", SYSTEM)
-        for кусок in ("not a set phrase", "not an idiom", "not a fixed expression"):
-            self.assertIn(кусок, одной_строкой,
-                          "судьям снова не сказано, что «не устойчивое» — не ошибка")
-        self.assertIn("THE ENTRY IS USUALLY THE LEARNER'S OWN SENTENCE", одной_строкой)
-
-    def test_prompt_version_is_bumped_with_the_prompt(self):
-        """⛔ МЕНЯЕШЬ ВОПРОС — ПОДНИМАЙ ВЕРСИЮ.
-
-        Вердикт стоит ровно столько, сколько стоит вопрос, по которому он вынесен. По
-        версии в отметке пересуживаются вопросы, стоящие у человека на экране. Молча
-        изменённый вопрос означает, что старые вердикты выданы за новые.
-        Поднял версию — обнови и отпечаток ниже, это одно действие.
-        """
-        from backend.phrase_panel import PROMPT_VERSION, SYSTEM
-        отпечаток = hashlib.sha256(SYSTEM.encode("utf-8")).hexdigest()[:16]
-        self.assertEqual(
-            (PROMPT_VERSION, отпечаток), (2, "4b399db4604ca93d"),
-            "текст вопроса к судьям изменился — подними PROMPT_VERSION и отпечаток")
+class ВопросКМоделиЧестныйTests(unittest.TestCase):
+    """⚠ 04.09.2026 вопрос переписан целиком, версия поднята до 3, а сверка мнений
+    убрана. Содержание вопроса и его версия стерегутся в `test_one_model_one_look.py`;
+    здесь остаётся только то, ради чего заведена версия: по ней пересуживаются
+    вопросы, стоящие у человека на экране, и только они."""
 
     def test_a_stale_verdict_is_re_asked_only_where_a_human_reads_it(self):
-        """Пересуживать все 6738 карточек из-за правки формулировки — $28 за то, чего
-        никто не читает. Пересуживаем только вопросы на экране."""
-        from backend.phrase_panel import _где_судить
+        """Пересуживать все 6738 карточек из-за правки формулировки — деньги за то,
+        чего никто не читает."""
+        from backend.phrase_panel import PROMPT_VERSION, _где_судить
         условие = _где_судить("(SELECT 'живой')")
-        self.assertIn("COALESCE(c.prompt_v, 1) <> 2", условие)
+        self.assertIn(f"COALESCE(c.prompt_v, 1) <> {PROMPT_VERSION}", условие)
         self.assertIn("bt_3_phrase_review", условие)
 
 

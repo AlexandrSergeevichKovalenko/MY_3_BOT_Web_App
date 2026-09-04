@@ -48,23 +48,28 @@ class ОдинМеханизмНаДваПрогонаTests(unittest.TestCase):
         self.assertIn("max_instances=1", bot[i:i + 500])
 
 
-class ХудшаяПроверкаНеЗапускаетсяВовсеTests(unittest.TestCase):
-    """⛔ Два голоса одного производителя — это не панель, а её видимость.
+class БезКлючаНеРаботаемTests(unittest.TestCase):
+    """⚠ ЗДЕСЬ БЫЛ ЗАКОН «ТРИ ГОЛОСА, ИНАЧЕ НЕ ЗАПУСКАЕМСЯ». ОТМЕНЁН 04.09.2026.
 
-    Замер 23.08.2026: две модели OpenAI расходятся в 15% случаев (1 718 вопросов
-    владельцу), три голоса с чужим производителем — в 2,5% (286). Работать «чем есть»
-    здесь означает молча ухудшить проверку и завалить его очередь."""
+    Владелец: «убирай вторую, убирай третью модель… это не судьи, это хаотическое
+    распределение случайности». Замер того же дня подтвердил: 31 претензия на 60
+    карточек от двух голосов, настоящая — одна; на закрытом вопросе одной модели —
+    одна претензия, та самая. Подробности и числа — `test_one_model_one_look.py`.
 
-    def test_no_gemini_key_means_no_run_at_all(self):
+    Осталось единственное честное условие: нечем спрашивать — не спрашиваем.
+    """
+
+    def test_no_openai_key_means_no_run_at_all(self):
         from backend import phrase_panel as pp
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "x", "GEMINI_API_KEY": ""}):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
             причина = pp.unavailable_reason()
-        self.assertIn("GEMINI_API_KEY", причина)
+        self.assertIn("OPENAI_API_KEY", причина)
         # ⛔ ПОДЪЁМ СТАРЫХ ОТМЕТОК ТОЖЕ ЗАМОКАН. Он идёт ДО проверки ключей и ходит в
         # базу: без этой заглушки прогон тестов 31.08.2026 завёл 90 живых вопросов в
         # боевой базе. Тесты не трогают прод — правило проекта, проверенное болью.
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "x", "GEMINI_API_KEY": ""}), \
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}), \
              patch.object(pp, "count_unchecked", return_value=7), \
+             patch.object(pp, "ensure_judged_ru_column"), \
              patch.object(pp, "поднять_старые_отметки", return_value=0), \
              patch.object(pp, "count_personal_backlog", return_value=0), \
              patch.object(pp, "unchecked_units") as отбор:
@@ -84,13 +89,12 @@ class ХудшаяПроверкаНеЗапускаетсяВовсеTests(unit
 class ЧтоНеПроверилиНеПомечаемTests(unittest.TestCase):
     """Отметка значит «мы это видели». Поставить её на непроверенное — соврать себе."""
 
-    def test_the_gemini_voice_goes_over_plain_http(self):
-        """⛔ `google-genai` нет в requirements проде. Библиотека здесь означала бы,
-        что третий голос не отвечает НИКОГДА, а два оставшихся одинаковы."""
+    def test_no_google_library_sneaks_back(self):
+        """⚠ ТРЕТЬЕГО ГОЛОСА БОЛЬШЕ НЕТ (04.09.2026), но запрет остаётся в силе для
+        всего файла: `google-genai` нет в requirements прода, и её появление означало бы
+        падение каждого вызова на сервере при зелёных прогонах локально."""
         import ast
         src = _src("backend/phrase_panel.py")
-        # Смотрим ИМПОРТЫ, а не текст файла: в рамке-предупреждении эта строка стоит
-        # нарочно — как запрет её возвращать.
         импорты = set()
         for node in ast.walk(ast.parse(src)):
             if isinstance(node, ast.ImportFrom):
@@ -98,16 +102,13 @@ class ЧтоНеПроверилиНеПомечаемTests(unittest.TestCase):
             elif isinstance(node, ast.Import):
                 импорты.update(a.name for a in node.names)
         self.assertNotIn("google.genai", импорты)
-        self.assertIn("generativelanguage.googleapis.com", src)
-        реквизиты = _src("requirements.txt")
-        self.assertNotIn("google-genai", реквизиты,
-                         "пакет появился — тогда решение про HTTP надо пересмотреть")
+        self.assertNotIn("generativelanguage.googleapis.com", src,
+                         "третий голос вернулся без решения владельца")
 
     def test_a_card_stopped_by_the_budget_keeps_no_mark(self):
         from backend import phrase_panel as pp
         строки = [(1, "eine Idee zu eigen machen", "collocation", {}, "перенять мысль")]
         with patch.object(pp, "unavailable_reason", return_value=""), \
-             patch.object(pp, "третий_голос_молчит", return_value=""), \
              patch.object(pp, "поднять_старые_отметки", return_value=0), \
              patch.object(pp, "count_personal_backlog", return_value=0), \
              patch.object(pp, "unchecked_units", return_value=строки), \
@@ -139,13 +140,16 @@ class ЧтоНеПроверилиНеПомечаемTests(unittest.TestCase):
         self.assertIn("c.unit_id IS NULL", условие)
         self.assertIn("c.judged_ru IS DISTINCT FROM", условие)
 
-    def test_a_disputed_card_reaches_the_owner_with_the_field_and_the_fix(self):
+    def test_a_finding_reaches_the_person_with_the_field_and_the_fix(self):
+        """⚠ ВЕРДИКТА «СПОРНОЕ» БОЛЬШЕ НЕТ: спор рождался из сверки мнений, а её убрали
+        04.09.2026. Находка одной модели про текст человека уходит АВТОРУ фразы — с
+        именем поля и готовым вариантом на кнопке. Это и требовалось: «сразу с кнопкой,
+        конкретно указано, что нужно по мнению модели изменить»."""
         from backend import phrase_panel as pp
         строки = [(9, "alte Narren", "collocation", {}, "старые шутники")]
-        claims = [{"field": "translation", "what": "Narren — дураки.",
-                   "fix": "старые дураки", "voice": 1}]
+        находки = [{"field": "translation", "span": "старые шутники",
+                    "what": "Narren — дураки.", "fix": "старые дураки"}]
         with patch.object(pp, "unavailable_reason", return_value=""), \
-             patch.object(pp, "третий_голос_молчит", return_value=""), \
              patch.object(pp, "поднять_старые_отметки", return_value=0), \
              patch.object(pp, "count_personal_backlog", return_value=0), \
              patch.object(pp, "unchecked_units", return_value=строки), \
@@ -153,16 +157,14 @@ class ЧтоНеПроверилиНеПомечаемTests(unittest.TestCase):
              patch.object(pp, "_записать_отметку"), \
              patch.object(pp.Panel, "__init__", _панель_без_сети), \
              patch.object(pp.Panel, "judge",
-                          return_value=(pp.DISPUTED, "голоса разошлись", claims)), \
-             patch.object(pp.Panel, "проверить_претензию",
-                          return_value={"claim": "right", "fix": "ok", "why": ""}), \
-             patch("backend.database.open_panel_card_question",
+                          return_value=(pp.HUMANS_OWN, "перевод", находки)), \
+             patch("backend.database.open_personal_text_question",
                    return_value=True) as вопрос:
             отчёт = pp.run_batch(limit=1)
-        self.assertEqual(отчёт["ушло владельцу"], 1)
+        self.assertEqual(отчёт["ушло человеку"], 1)
         _, _, _, отданные = вопрос.call_args[0]
         self.assertEqual(отданные[0]["fix"], "старые дураки")
-        self.assertEqual(отданные[0]["fix_check"], {"state": "ok", "why": ""})
+        self.assertEqual(отданные[0]["field"], "translation")
 
 
 class ВладелецВидитЧислоTests(unittest.TestCase):

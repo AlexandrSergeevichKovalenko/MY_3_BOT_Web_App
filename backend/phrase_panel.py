@@ -52,7 +52,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 FIELD = "phrase_panel"
-CLEAN, DEFECT, DISPUTED, NOT_ASKED = "подтверждено", "дефект", "спорное", "не спросили"
+CLEAN, DEFECT, NOT_ASKED = "подтверждено", "дефект", "не спросили"
+# ⚠ «Спорное» БОЛЬШЕ НЕ РОЖДАЕТСЯ: спор возникал из сверки нескольких мнений, а её
+# больше нет (решение владельца 04.09.2026). Слово оставлено, потому что с ним лежат
+# уже открытые вопросы и старые отметки в базе, и читать их надо тем же словом.
+DISPUTED = "спорное"
 # Исход «судить было нечем»: перевод исчез между отбором и запросом (человек стёр связь
 # в ту же секунду). Отметку НЕ ставим — карточка не проверена; число уходит в отчёт.
 # Отбор такие карточки не берёт, так что это защита от гонки, а не рабочий путь.
@@ -83,15 +87,35 @@ HUMAN_FIELDS = {"headword", "translation"}        # это его слова —
 # Отметка хранит версию, и при её смене ПЕРЕСУЖИВАЮТСЯ ТОЛЬКО ТЕ карточки, чей вопрос
 # СТОИТ У ЧЕЛОВЕКА НА ЭКРАНЕ. Пересуживать все 6738 из-за правки формулировки — это
 # $28 за то, чего никто не читает.
-PROMPT_VERSION = 2
+PROMPT_VERSION = 3
 
+# ⛔ ОДНА МОДЕЛЬ, ОДИН ВЗГЛЯД. Решение владельца 04.09.2026, дословно:
+# «мне достаточно чтобы один раз модель посмотрела и всё… убирай вторую, убирай третью
+# модель… нам не нужно так усложнять».
+#
+# ┌─ ЧТО ЗДЕСЬ БЫЛО И ПОЧЕМУ УБРАНО. НЕ ВОЗВРАЩАТЬ БЕЗ ЕГО СЛОВА. ──────────────────┐
+# │ Была панель из трёх голосов (gpt-4.1 + gpt-4.1-mini + gemini) и правило «двое из │
+# │ трёх». Она строилась против выдумок модели — и не работала, потому что мерила не │
+# │ то: голоса «сходились» по НАЗВАНИЮ ПОЛЯ, а не по тому, что именно не так.        │
+# │                                                                                 │
+# │ ЗАМЕР 04.09.2026, 60 живых карточек, прежний вопрос: претензии нашлись у 20      │
+# │ карточек из 60, всего 31 штука. Из них настоящей была ОДНА («freigebracht» вместо│
+# │ «freigegeben»). Остальные тридцать — вкусовщина: «steile These не употребляется» │
+# │ (употребляется), «обычно говорят durchtrieben sein» (стиль), «в русском не       │
+# │ говорят „варить пиво“» (говорят), «величайшее, а не великое».                    │
+# │                                                                                 │
+# │ Причина не в числе голосов, а в ВОПРОСЕ. «Правильно ли это?» — просьба оценить, а│
+# │ оценка бездонна: улучшить можно любую фразу, и модель обязана быть полезной.     │
+# │ Владелец: «ну конечно её нет — я её только что придумал и перевёл».              │
+# │ Три голоса на плохом вопросе дают втрое больше выдумок, а не втрое меньше.       │
+# │                                                                                 │
+# │ Тем же замером, новый вопрос (процитируй кусок + только грамматика и             │
+# │ возможность): претензия осталась у ОДНОЙ карточки из 60 — той самой настоящей.   │
+# │ И дешевле: $0.063 против $0.118 на те же 60 карточек.                            │
+# └─────────────────────────────────────────────────────────────────────────────────┘
 MODEL_A = "gpt-4.1-2025-04-14"
-MODEL_B = "gpt-4.1-mini"
-MODEL_C = "gemini-3.6-flash"
-# Цены OpenAI — из нашей bt_3_billing_price_snapshots. Цена Gemini — публичный прайс
-# Google на 23.08.2026; сверена со счётом после первого прогона.
-PRICE_OPENAI = {MODEL_A: (2.0 / 1e6, 8.0 / 1e6), MODEL_B: (0.4 / 1e6, 1.6 / 1e6)}
-PRICE_GEMINI = (0.30 / 1e6, 2.50 / 1e6)
+# Цена — из нашей bt_3_billing_price_snapshots (вход $2 / выход $8 за 1M токенов).
+PRICE_OPENAI = {MODEL_A: (2.0 / 1e6, 8.0 / 1e6)}
 TIMEOUT_S = 60.0
 
 # Ночная порция и потолок за ночь. Порция маленькая нарочно: это уборка, а не гонка.
@@ -108,47 +132,52 @@ TIMEOUT_S = 60.0
 NIGHT_LIMIT = int(os.getenv("PHRASE_PANEL_NIGHT_LIMIT", "50") or "50")
 NIGHT_BUDGET = float(os.getenv("PHRASE_PANEL_NIGHT_BUDGET", "0.40") or "0.40")
 
-SYSTEM = """You audit ONE entry of a German↔Russian learner's dictionary. The entry is a
-phrase or a sentence, not a single word — no printed dictionary lists it, so judge the
-German itself.
+SYSTEM = """You look ONCE at ONE German entry a language learner saved for himself,
+together with the Russian he saved with it.
 
-THE ENTRY IS USUALLY THE LEARNER'S OWN SENTENCE. They met it, wrote it, or asked about
-it, and saved it. It is NOT claimed to be an idiom, a proverb or a set phrase, and it
-does not have to be one. «Wolle spinnen», «Etat festlegen», «auf jeden Fall kommen» are
-ordinary, correct German word combinations — a learner may save any of them.
-NEVER report as a defect that the entry is "not a set phrase", "not an idiom", "not a
-fixed expression", "uncommon", "rarely used" or "not in dictionaries". That is not an
-error a learner can act on, and it is not what we asked. Report the German being WRONG.
+⛔ THE ENTRY IS HIS OWN SENTENCE. He met it, composed it or translated it a minute ago.
+It is NOT a dictionary article, NOT an idiom, NOT a set phrase, and it does not exist
+anywhere else — of course it does not, he just made it up. That is never a defect.
 
-Report ONLY defects that would teach a learner something false:
-  headword   — not real German, or a broken fragment;
-  translation— the Russian does not mean what the German says;
-  examples   — the German is ungrammatical, or the sides are swapped (Russian text sitting
-               in the German field), or the Russian translation does not match its German
-               sentence, or the example has nothing to do with the entry;
-  meaning    — the saved meaning is an idiom but the entry explains the literal words.
+⛔ YOU ARE NOT ASKED HOW TO SAY IT BETTER. There are a billion possible variants and we
+want none of them. Never report: style, register, a nicer word, "one would rather say",
+"this is not a set expression", "not in dictionaries", "rare", "the entry is only a
+fragment", a missing full stop, or an opinion about the Russian being prettier.
 
-An example does NOT have to repeat the entry word for word. German inflects: the verb is
-conjugated, the noun takes a case, the word order changes, a pronoun replaces a name.
-«Sie bot ihrem Chef die Stirn» is properly illustrated by «Er bietet seinem Vorgesetzten
-die Stirn». Only call the example wrong when it illustrates something ELSE entirely.
+CHOOSE FROM THIS CLOSED LIST. Nothing outside it is a defect.
 
-Also NOT defects: style, register, a missing final full stop, a phrase given without
-context, a dictionary placeholder (jemanden, etwas, sich), regional but attested German,
-and — see above — the entry not being an idiom or a set expression.
+  (nothing)      Grammar is correct and a German would say it and understand it.
+                 Report NOTHING. This is the normal outcome — most entries are fine.
 
-EVERY DEFECT MUST COME WITH THE CORRECTED TEXT. A verdict «this is not said in German»
-without saying what IS said is useless to the person who has to decide. Fill "fix":
-  headword   — the entry written the way German actually says it;
-  translation— the Russian that really means the German entry;
-  examples, meaning — leave "fix" empty: those are rebuilt by a separate step, and a
-               correction nobody can apply is worse than none.
-Leave "fix" empty ONLY when you genuinely cannot name a correct version. Never put a
-comment, a question or an explanation in "fix" — it is the finished text and nothing else.
+  "headword"     Either the German has a GRAMMAR error (case, agreement, verb form, word
+                 order, spelling, preposition, article), or a native speaker would NOT
+                 produce this sentence at all — not «I would phrase it differently», but
+                 «a German does not say this». "fix" = the German a native WOULD say.
 
-Answer STRICT JSON: {"defects":[{"field":"headword|translation|examples|meaning",
-"what":"<one short sentence in Russian>","fix":"<corrected text or empty>"}]}
-An empty list means the entry is fine. When unsure, leave it out."""
+  "translation"  The German is fine, but the Russian does not mean it: a different action,
+                 a different object, the opposite, a different tense or person, or the two
+                 sides are swapped (German text sitting in the Russian field). A free but
+                 faithful translation is CORRECT — do not touch it. "fix" = the Russian
+                 that really means this German.
+
+  "examples"     An example is itself ungrammatical, OR it shares not a single word with
+                 the entry. Nothing else about examples is a defect: an example does not
+                 have to be the perfect illustration, and for a whole sentence there is no
+                 such thing. If any word of the entry appears in the example in any form,
+                 the example is FINE.
+
+⚖️ WHEN YOU HESITATE between «fine» and «a German would not say it», choose FINE and
+report nothing. Silence is the correct answer far more often than a defect.
+
+For every defect you MUST give:
+  "span" — the exact substring, copied CHARACTER FOR CHARACTER, that is wrong. For a
+           "headword" defect it must occur verbatim in the entry. Cannot quote it? Then
+           there is no defect.
+  "fix"  — the finished replacement text, and nothing else: no comment, no question.
+  "what" — ONE short sentence in Russian saying what is wrong.
+
+Answer STRICT JSON: {"defects":[{"field":"…","span":"…","fix":"…","what":"…"}]}
+An empty list means the entry is fine."""
 
 
 # ⛔ ТРЕТИЙ ГОЛОС, КОГДА GEMINI МОЛЧИТ. Решение владельца 04.09.2026: «если нету у нас
@@ -199,87 +228,61 @@ class BudgetSpent(Exception):
 
 
 def unavailable_reason() -> str:
-    """Почему панель спрашивать НЕЛЬЗЯ. Пустая строка — можно.
+    """Почему смотреть НЕЛЬЗЯ. Пустая строка — можно.
 
-    ⛔ ДВА ГОЛОСА ОДНОГО ПРОИЗВОДИТЕЛЯ — ЭТО НЕ ПАНЕЛЬ. Без ключа Gemini остались бы
-    два голоса OpenAI, а они обучены одинаково: замер 23.08.2026 — 15% разногласий
-    вместо 2,5%, то есть владельцу поехало бы 1 718 вопросов вместо 286. Работать
-    «чем есть» здесь означает молча ухудшить проверку и завалить его очередь, поэтому
-    ночь честно не запускается и говорит об этом в отчёте.
+    ⚠ РАНЬШЕ ЗДЕСЬ ТРЕБОВАЛСЯ ВТОРОЙ ПРОИЗВОДИТЕЛЬ (Gemini): без него оставались два
+    голоса OpenAI, а «два голоса одного производителя — не панель, а её видимость».
+    Панели больше нет (см. рамку у MODEL_A): смотрит одна модель один раз, сверять
+    мнения не с чем и незачем.
     """
     if not str(os.getenv("OPENAI_API_KEY") or "").strip():
         return "нет ключа OPENAI_API_KEY — спрашивать нечем"
-    if not str(os.getenv("GEMINI_API_KEY") or "").strip():
-        return ("нет ключа GEMINI_API_KEY — остались бы два голоса одного производителя, "
-                "а это не панель, а её видимость")
     return ""
 
 
-def третий_голос_молчит() -> str:
-    """Живая проверка третьего голоса. Пустая строка — отвечает.
-
-    ⛔ КЛЮЧ В ОКРУЖЕНИИ — ЭТО НЕ «ГОЛОС РАБОТАЕТ». Ключ лежал на месте, а Gemini
-    отвечал `429 Your prepayment credits are depleted` — деньги на счету кончились.
-    `unavailable_reason` смотрела только на наличие ключа и говорила «работать можно»,
-    после чего каждая ночь шла на двух голосах ОДНОГО производителя. Это ровно то, что
-    в этом файле запрещено первой рамкой: два голоса OpenAI обучены одинаково, дают
-    15% разногласий вместо 2,5% — и владелец получил поток чужих догадок.
-
-    Один короткий запрос за прогон (не за карточку): ночь идёт раз в сутки, и цена
-    этой проверки — доли цента.
-    """
-    import requests
-    api_key = str(os.getenv("GEMINI_API_KEY") or "").strip()
-    if not api_key:
-        return "нет ключа GEMINI_API_KEY"
-    try:
-        ответ = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_C}:generateContent",
-            params={"key": api_key},
-            json={"contents": [{"role": "user", "parts": [{"text": "ok"}]}],
-                  "generationConfig": {"temperature": 0, "maxOutputTokens": 1}},
-            timeout=20)
-    except Exception as exc:                                   # сеть, DNS, таймаут
-        return f"третий голос недоступен: {type(exc).__name__}"
-    if ответ.status_code == 200:
-        return ""
-    # Человеческим языком: владелец читает это в утреннем отчёте, а не в логах.
-    если_деньги = "" if ответ.status_code not in (402, 429) else (
-        " — похоже, кончились деньги на счёте Gemini (ai.studio → Billing)")
-    return f"третий голос не отвечает: HTTP {ответ.status_code}{если_деньги}"
-
-
-def _fields(text: str):
-    """Разбор ответа голоса: (поля, сводка словами, претензии по пунктам).
+def _fields(text: str, заголовок: str = ""):
+    """Разбор ответа модели: (поля, сводка словами, претензии по пунктам).
 
     Поля = None — ответ не разобран, и это НЕ «чисто».
 
-    ПРЕТЕНЗИИ ВОЗВРАЩАЮТСЯ ПОШТУЧНО, а не одной строкой. Склейка через «; » нужна
-    колонке `reference`, где лежит человекочитаемый след, — но по дороге к владельцу
-    она уносила ДВЕ вещи: имя поля (о чём спор) и готовый вариант. Экран после этого
-    печатал «спор о карточке» над претензией к самой фразе, а исправить перевод было
-    нечем (разобрано с владельцем 31.08.2026).
+    ⛔ ПАЛЕЦ ОБЯЗАН ПОКАЗЫВАТЬ НА НАСТОЯЩИЙ КУСОК. Модель просят процитировать неверное
+    место буква в букву — и мы проверяем цитату СОБСТВЕННОЙ арифметикой, без запросов:
+    нет такого куска в самой фразе, значит указано в пустоту, и находки нет.
+    Замер 04.09.2026 на 60 карточках: этот бесплатный фильтр снял 13 «находок» из 19 —
+    модель показывала на то, чего в записи нет вовсе.
+
+    Проверяем только претензии к САМОЙ ФРАЗЕ: у примеров свой текст, и цитата из них в
+    заголовке не встретится никогда.
     """
     try:
         payload = json.loads(text)
     except (json.JSONDecodeError, TypeError):
         return None, "", []
-    defects = payload.get("defects") or []
-    претензии = [
-        {"field": str(d.get("field") or ""),
-         "what": str(d.get("what") or "").strip()[:400],
-         # Готовый вариант. Пустой — значит голос его НЕ назвал; выдумывать за него
-         # нечего и нельзя, экран честно покажет претензию без кнопки.
-         "fix": str(d.get("fix") or "").strip()[:300]}
-        for d in defects if isinstance(d, dict) and d.get("field")
-    ]
+    заголовок = str(заголовок or "")
+    претензии = []
+    for d in (payload.get("defects") or []):
+        if not isinstance(d, dict) or not d.get("field"):
+            continue
+        поле = str(d.get("field") or "")
+        кусок = str(d.get("span") or "").strip()
+        if поле == "headword" and (not кусок or кусок not in заголовок):
+            logging.info("панель: находка без цитаты в тексте — отброшена (%r)", кусок[:60])
+            continue
+        претензии.append({
+            "field": поле,
+            "span": кусок[:300],
+            "what": str(d.get("what") or "").strip()[:400],
+            # Готовый вариант. Пустой — значит модель его НЕ назвала; выдумывать за неё
+            # нечего и нельзя, экран честно покажет претензию без кнопки.
+            "fix": str(d.get("fix") or "").strip()[:300],
+        })
     return ({d["field"] for d in претензии},
             "; ".join(d["what"][:90] for d in претензии)[:400],
             претензии)
 
 
 class Panel:
-    """Три голоса и счётчик денег. Один экземпляр на прогон."""
+    """Одна модель и счётчик денег. Один экземпляр на прогон."""
 
     def __init__(self, budget_usd: float = NIGHT_BUDGET) -> None:
         self.budget_usd = float(budget_usd)
@@ -290,228 +293,60 @@ class Panel:
         # очередь. Провайдер, который «думает» дольше минуты, — это авария.
         self._openai = OpenAI(timeout=TIMEOUT_S, max_retries=0)
 
-    def _openai_vote(self, model: str, payload: str):
+    def _openai_vote(self, model: str, payload: str, заголовок: str = ""):
         answer = self._openai.chat.completions.create(
             model=model, temperature=0, response_format={"type": "json_object"},
             messages=[{"role": "system", "content": SYSTEM},
                       {"role": "user", "content": payload}])
         self.cost += (answer.usage.prompt_tokens * PRICE_OPENAI[model][0]
                       + answer.usage.completion_tokens * PRICE_OPENAI[model][1])
-        return _fields(answer.choices[0].message.content)
+        return _fields(answer.choices[0].message.content, заголовок)
 
-    def _gemini_vote(self, payload: str):
-        """Третий голос — прямым HTTP, а НЕ библиотекой `google-genai`.
+    def judge(self, entry: dict, заголовок: str = "") -> tuple[str, str, list]:
+        """(вердикт, пояснение, находки поштучно). ОДИН взгляд ОДНОЙ модели.
 
-        ┌─ ПРОВЕРЕНО 31.08.2026. НЕ ВОЗВРАЩАТЬ СЮДА `from google import genai`. ─────┐
-        │ Пакета `google-genai` в requirements.txt нет и не было: локально он стоит, │
-        │ поэтому мои прогоны проходили, а в проде каждый вызов падал бы с           │
-        │ «cannot import name 'genai' from 'google'» — там `google` это namespace от │
-        │ google-cloud-*, и подпакета genai в нём нет. На этом уже обожглись         │
-        │ 26.08.2026 во втором голосе (`second_voice_check._ask_gemini`), и ночная    │
-        │ панель повторила бы ту же аварию молча: третий голос не отвечает никогда,   │
-        │ остаются два одинаковых, разногласия растут вшестеро.                       │
-        └────────────────────────────────────────────────────────────────────────────┘
+        Владелец 04.09.2026: «модель просто должна посмотреть на неё и сказать: да,
+        фраза грамматически корректна, построена по правилам языка, немец её поймёт —
+        оставляем».
+
+        Не ответила — это НЕ «чисто»: возвращаем «не спросили», отметку не ставим,
+        карточка вернётся следующей ночью.
         """
-        import requests
-        api_key = str(os.getenv("GEMINI_API_KEY") or "").strip()
-        if not api_key:
-            raise RuntimeError("нет ключа GEMINI_API_KEY")
-        ответ = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_C}:generateContent",
-            params={"key": api_key},
-            json={
-                "system_instruction": {"parts": [{"text": SYSTEM}]},
-                "contents": [{"role": "user", "parts": [{"text": payload}]}],
-                "generationConfig": {"temperature": 0,
-                                     "responseMimeType": "application/json"},
-            },
-            timeout=TIMEOUT_S)
-        if ответ.status_code != 200:
-            raise RuntimeError(f"Gemini HTTP {ответ.status_code}")
-        данные = ответ.json()
-        usage = данные.get("usageMetadata") or {}
-        # ⚠ «РАЗМЫШЛЕНИЯ» ТОЖЕ ПЛАТНЫЕ, и это стоило реальных денег 23.08.2026. Замер
-        # одного запроса: вход 67, ОТВЕТ 5, размышления 343. Считая только ответ, я
-        # занижал выход в семьдесят раз: счётчик показал $5.83, счёт Google пришёл на
-        # €8.28. Потолок, построенный на такой арифметике, не защищает — он врёт медленнее.
-        self.cost += ((int(usage.get("promptTokenCount") or 0)) * PRICE_GEMINI[0]
-                      + (int(usage.get("candidatesTokenCount") or 0)
-                         + int(usage.get("thoughtsTokenCount") or 0)) * PRICE_GEMINI[1])
-        куски = (данные.get("candidates") or [{}])[0].get("content", {}).get("parts") or []
-        return _fields("".join(str(к.get("text") or "") for к in куски))
-
-    def judge(self, entry: dict) -> tuple[str, str, list]:
-        """(вердикт, пояснение, претензии по пунктам).
-
-        Голос, который не ответил, НЕ засчитывается молчанием. Третьим значением идут
-        претензии каждого голоса поштучно — с именем поля и готовым вариантом; они
-        уезжают владельцу, когда вердикт «спорное»."""
         if self.cost >= self.budget_usd:
             raise BudgetSpent(f"потрачено ${self.cost:.2f} — потолок ${self.budget_usd:.2f}")
         payload = json.dumps(entry, ensure_ascii=False)
-        votes, reasons, claims = [], [], []
-        for номер, asking in enumerate(
-                (lambda: self._openai_vote(MODEL_A, payload),
-                 lambda: self._openai_vote(MODEL_B, payload),
-                 lambda: self._gemini_vote(payload)), 1):
-            for attempt in range(3):
-                try:
-                    fields, why, доводы = asking()
-                    break
-                except Exception as exc:              # сеть, 429, срез ответа
-                    if attempt == 2:
-                        fields, why, доводы = None, f"голос не ответил: {type(exc).__name__}", []
-                    time.sleep(2 + attempt * 3)
-            votes.append(fields)
-            if why:
-                reasons.append(why)
-            for довод in доводы:
-                claims.append({**довод, "voice": номер})
-
-        answered = [v for v in votes if v is not None]
-        # Сколько голосов реально ответило — нужно вызывающему: при неполной панели
-        # спор 1-1 разрешает проверяющий претензий, а не владелец (см. `разобрать`).
-        self.ответивших = len(answered)
-        if len(answered) < 2:
-            # Меньше двух голосов — большинства не существует. Записать «чисто» здесь
-            # значило бы выдать аварию за проверку.
-            return NOT_ASKED, "; ".join(reasons)[:400], claims
-        union = set().union(*answered)
-        majority = {f for f in union if sum(1 for v in answered if f in v) >= 2}
-        silent = sum(1 for v in answered if not v)
-        if majority:
-            # Дефект в НАШЕЙ части карточки — наша работа. Дефект в тексте человека —
-            # его дело: помечаем и показываем ему, но не переписываем.
-            ours = majority & OUR_OWN_FIELDS
-            verdict = DEFECT if ours else HUMANS_OWN
-            return (verdict,
-                    f"{', '.join(sorted(majority))} :: " + "; ".join(reasons)[:300],
-                    claims)
-        if not union or silent >= 2:
+        for attempt in range(3):
+            try:
+                fields, why, находки = self._openai_vote(MODEL_A, payload, заголовок)
+                break
+            except Exception as exc:                  # сеть, 429, срез ответа
+                if attempt == 2:
+                    return NOT_ASKED, f"модель не ответила: {type(exc).__name__}", []
+                time.sleep(2 + attempt * 3)
+        if fields is None:
+            return NOT_ASKED, "ответ модели не разобран", []
+        if not находки:
             return CLEAN, "", []
-        # ┌─ ГЛАВНАЯ ДЫРА ЭТОГО МЕХАНИЗМА. НАЙДЕНА И ЗАКРЫТА 04.09.2026. ────────────┐
-        # │ Владелец: «я не вижу, что слово versechsfacht написано неверно» — и был   │
-        # │ прав: слово написано верно, а претензию высказал ОДИН голос, которого     │
-        # │ никто не подтвердил и не опроверг. Третий голос молчал (у Gemini кончились│
-        # │ деньги, HTTP 429), оставались двое: один придрался, второй промолчал.     │
-        # │ Правило «молчание большинства — это „чисто“» требует ДВУХ молчащих, а из  │
-        # │ двоих их взяться неоткуда, — и одинокая догадка ехала владельцу под видом │
-        # │ «голоса разошлись». Замер: ВСЕ 51 вопрос на его экране родились в прогоне,│
-        # │ где голос не ответил; 45 держались на одном голосе.                       │
-        # │                                                                          │
-        # │ Спор владельцу — это разногласие ТРЁХ ответивших голосов. Когда голосов   │
-        # │ было двое, спор 1-1 разрешает проверяющий претензий (решение владельца    │
-        # │ 04.09.2026: «если нету у нас Gemini, пусть OpenAI отрабатывают»), и до    │
-        # │ человека доходит только то, что проверяющий подтвердил. Разбор — в        │
-        # │ `разобрать` ниже; здесь только вердикт голосов.                            │
-        # └──────────────────────────────────────────────────────────────────────────┘
-        return DISPUTED, "; ".join(reasons)[:400], claims
-
-    def проверить_претензию(self, *, поле: str, претензия: str, готовое: str,
-                            заголовок: str, перевод: str) -> dict:
-        """ТРЕТИЙ ГОЛОС НА ОДНУ ПРЕТЕНЗИЮ: правда ли она, и годится ли замена.
-
-        Возвращает {"claim": "right"|"wrong"|"unknown", "fix": "ok"|"bad"|"unknown"|"",
-                    "why": "<по-русски>"}. «unknown» НЕ притворяется ни «правдой», ни
-        «ложью»: спросить не удалось — значит не удалось, и претензия остаётся как есть.
-
-        Спрашиваем ТОЛЬКО о тексте человека (заголовок, перевод): примеры и значение
-        сочинили мы сами, их не оспаривают, а переписывают.
-        """
-        претензия = str(претензия or "").strip()
-        заголовок = str(заголовок or "").strip()
-        перевод = str(перевод or "").strip()
-        готовое = str(готовое or "").strip()
-        if поле not in HUMAN_FIELDS or not претензия or not заголовок or not перевод:
-            return {}
-        if self.cost >= self.budget_usd:
-            raise BudgetSpent(f"потрачено ${self.cost:.2f} — потолок ${self.budget_usd:.2f}")
-        payload = json.dumps({"german": заголовок, "russian": перевод, "field": поле,
-                              "complaint": претензия, "proposed_fix": готовое},
-                             ensure_ascii=False)
-        try:
-            ответ = self._openai.chat.completions.create(
-                model=MODEL_A, temperature=0, response_format={"type": "json_object"},
-                messages=[{"role": "system", "content": SYSTEM_ПРОВЕРКА},
-                          {"role": "user", "content": payload}])
-        except Exception as exc:
-            return {"claim": "unknown", "fix": "unknown",
-                    "why": f"проверить не удалось: {type(exc).__name__}"}
-        # ⛔ ЭТОТ ЗАПРОС ТОЖЕ ПЛАТНЫЙ (см. рамку про счёт Google в `_gemini_vote`).
-        self.cost += (ответ.usage.prompt_tokens * PRICE_OPENAI[MODEL_A][0]
-                      + ответ.usage.completion_tokens * PRICE_OPENAI[MODEL_A][1])
-        try:
-            данные = json.loads(ответ.choices[0].message.content)
-        except (json.JSONDecodeError, TypeError):
-            return {"claim": "unknown", "fix": "unknown", "why": "ответ не разобран"}
-        верна = данные.get("claim_right")
-        замена = данные.get("fix_ok")
-        return {
-            "claim": "right" if верна is True else "wrong" if верна is False else "unknown",
-            "fix": ("" if not готовое else
-                    "ok" if замена is True else "bad" if замена is False else "unknown"),
-            "why": str(данные.get("why") or "")[:300],
-        }
+        # Ошибка в НАШЕЙ части карточки — наша работа: примеры и значение сочинили мы,
+        # их переписывает ночной переписчик. Ошибка в тексте человека — его дело:
+        # показываем ему с готовым вариантом, но молча не переписываем.
+        verdict = DEFECT if (fields & OUR_OWN_FIELDS) else HUMANS_OWN
+        return verdict, f"{', '.join(sorted(fields))} :: {why}"[:400], находки
 
 
 def разобрать(panel: "Panel", display: str, kind: str, card: dict | None,
               перевод: str) -> tuple[str, str, list]:
-    """Судейство карточки ЦЕЛИКОМ: голоса, проверка их претензий, итоговый вердикт.
+    """Один взгляд на карточку — одна дверь для всех прогонов.
 
-    ┌─ ОДНА ДВЕРЬ НА ВСЕ ПРОГОНЫ (04.09.2026). ────────────────────────────────────┐
-    │ Раньше каждый прогон сам звал `judge`, сам обходил претензии и сам решал, что │
-    │ с ними делать. Копий было две, и в обеих проверялась только ЗАМЕНА, а само    │
-    │ обвинение — никогда. Здесь это одно место, и оно отвечает на оба вопроса      │
-    │ владельца от 04.09.2026: «правда ли слово написано неверно» и «почему замена  │
-    │ в другом времени».                                                            │
+    ┌─ ЗДЕСЬ БЫЛА ПАНЕЛЬ ИЗ ТРЁХ ГОЛОСОВ И РАУНД ЗАЩИТЫ. УБРАНЫ 04.09.2026. ───────┐
+    │ Владелец: «мы очень сильно усложняем эти процессы, мы очень много денег       │
+    │ тратим на модели… мне достаточно чтобы один раз модель посмотрела и всё».     │
+    │ И он прав по числам: на плохом вопросе три голоса дают втрое больше выдумок,  │
+    │ а не втрое меньше (замер в рамке у MODEL_A: 31 претензия на 60 карточек,      │
+    │ настоящая — одна). Дело было в вопросе, а не в числе голосов.                  │
     └──────────────────────────────────────────────────────────────────────────────┘
-
-    Что делает проверка с претензией:
-      подтвердил      — претензия остаётся, замена помечается годной/негодной;
-      опроверг        — претензия ВЫБРАСЫВАЕТСЯ: показывать человеку то, что мы сами
-                        считаем неправдой, нельзя;
-      спросить не смог — оставляем как есть и говорим об этом словами.
-
-    Если после проверки не осталось ни одной претензии — карточка чистая.
-    Если голосов было меньше трёх, подтверждённая претензия считается подтверждённой
-    ВТОРЫМ голосом: спора нет, есть находка. Владельцу спор уходит только когда
-    разошлись три ответивших голоса.
     """
-    verdict, why, claims = panel.judge(entry_of(display, kind, card, перевод))
-    if verdict not in (DISPUTED, HUMANS_OWN):
-        return verdict, why, claims
-
-    выжили, пояснения = [], []
-    for claim in claims:
-        поле = str(claim.get("field") or "")
-        приговор = panel.проверить_претензию(
-            поле=поле, претензия=str(claim.get("what") or ""),
-            готовое=str(claim.get("fix") or ""), заголовок=str(display or ""),
-            перевод=перевод)
-        if not приговор:                       # примеры и значение не оспариваем
-            выжили.append(claim)
-            continue
-        if приговор["claim"] == "wrong":
-            пояснения.append(f"претензия про {поле} снята проверкой: {приговор['why']}")
-            continue
-        if приговор["fix"] == "ok":
-            claim["fix_check"] = {"state": "ok", "why": ""}
-        elif приговор["fix"] == "bad":
-            claim["fix_check"] = {"state": "bad", "why": приговор["why"]}
-        elif приговор["fix"] == "unknown":
-            claim["fix_check"] = {"state": "unknown", "why": приговор["why"]}
-        выжили.append(claim)
-
-    if пояснения:
-        why = "; ".join([why] + пояснения)[:400] if why else "; ".join(пояснения)[:400]
-    if not выжили:
-        return CLEAN, why, []
-    if verdict == DISPUTED and int(getattr(panel, "ответивших", 3)) < 3:
-        # Голосов было двое, и проверяющий встал на сторону претензии — это не спор,
-        # а подтверждённая находка. Владельца спором не тревожим.
-        поля = {str(c.get("field") or "") for c in выжили}
-        verdict = DEFECT if поля & OUR_OWN_FIELDS else HUMANS_OWN
-    return verdict, why, выжили
+    return panel.judge(entry_of(display, kind, card, перевод), display)
 
 
 def entry_of(display: str, kind: str, card: dict | None, translation: str) -> dict:
@@ -929,7 +764,7 @@ def run_batch(*, limit: int = NIGHT_LIMIT, budget_usd: float = NIGHT_BUDGET,
     """
     отчёт: dict[str, Any] = {
         "взято": 0, "проверено": 0, CLEAN: 0, DEFECT: 0, HUMANS_OWN: 0,
-        DISPUTED: 0, NOT_ASKED: 0, "ушло владельцу": 0, "ушло человеку": 0,
+        NOT_ASKED: 0, "ушло владельцу": 0, "ушло человеку": 0,
         "поднято из старых": 0, "потрачено": 0.0,
         "остановлено потолком": False, "осталось": 0,
         "пересудить": 0, "без перевода": 0, "вопросы из прозы": 0,
@@ -955,14 +790,6 @@ def run_batch(*, limit: int = NIGHT_LIMIT, budget_usd: float = NIGHT_BUDGET,
         отчёт["осталось"] = count_unchecked()
         logging.warning("ночная панель не запускалась: %s", нельзя)
         return отчёт
-
-    # ⛔ ТРЕТИЙ ГОЛОС МОЛЧИТ — РАБОТАЕМ, НО ГОВОРИМ ОБ ЭТОМ ВСЛУХ.
-    # Решение владельца 04.09.2026: «если нету у нас Gemini, пусть OpenAI отрабатывают».
-    # Молчаливой деградации тут нет: пока голосов двое, ни одна одинокая претензия не
-    # доходит до человека без проверки (`разобрать`), а причина стоит в утреннем отчёте.
-    отчёт["третий голос"] = третий_голос_молчит()
-    if отчёт["третий голос"]:
-        logging.warning("панель работает без третьего голоса: %s", отчёт["третий голос"])
 
     rows = unchecked_units(int(limit))
     отчёт["взято"] = len(rows)
