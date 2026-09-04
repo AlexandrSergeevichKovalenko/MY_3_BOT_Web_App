@@ -129,6 +129,13 @@ def _locked_users_got_learning_content() -> int:
     return count_learning_content_sent_to_locked_users(days=1)
 
 
+def _access_reminders_over_cadence() -> int:
+    """Напоминаний запертым за сутки, ушедших раньше положенного промежутка (7 дней
+    первые 8 раз, дальше 30). Обещано: 0."""
+    from backend.database import count_access_reminders_over_cadence
+    return count_access_reminders_over_cadence(days=1)
+
+
 def _worldnews_card_old_look_rules() -> int:
     """Читает CSS собранного фронта (frontend/dist/assets/*.css) на сервере. Обещано: 0."""
     from pathlib import Path
@@ -194,6 +201,14 @@ PROMISES: tuple[Promise, ...] = (
         expected=0,
         measure=_locked_users_got_learning_content,
         how="python3 -c \"from backend.database import count_learning_content_sent_to_locked_users as f; print(f())\"",
+    ),
+    Promise(
+        key="access_reminders_over_cadence",
+        title="Напоминаний запертым, ушедших чаще положенного (7 дней ×8, потом 30)",
+        since="04.09.2026",
+        expected=0,
+        measure=_access_reminders_over_cadence,
+        how="python3 -c \"from backend.database import count_access_reminders_over_cadence as f; print(f())\"",
     ),
 )
 

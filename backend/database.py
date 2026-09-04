@@ -24399,6 +24399,170 @@ def count_learning_content_sent_to_locked_users(days: int = 1) -> int:
             return int((cur.fetchone() or [0])[0] or 0)
 
 
+# ── Напоминание запертым (docs/tasks/light_tier_strategy.md §7) ────────────────
+# Решение владельца 04.09.2026: раз в неделю 8 недель, дальше раз в месяц. Каденс живёт в
+# таблице отправок, а не в памяти процесса: перезапуск бота не должен ни удвоить письмо,
+# ни потерять счёт.
+ACCESS_REMINDER_WEEKLY_COUNT = 8
+ACCESS_REMINDER_WEEKLY_GAP_DAYS = 7
+ACCESS_REMINDER_MONTHLY_GAP_DAYS = 30
+_access_reminder_schema_ready = False
+
+
+def _ensure_access_reminder_schema() -> None:
+    global _access_reminder_schema_ready
+    if _access_reminder_schema_ready:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_access_reminders (
+                    id       BIGSERIAL PRIMARY KEY,
+                    user_id  BIGINT NOT NULL,
+                    seq      INT NOT NULL,
+                    sent_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_access_reminders_user "
+                        "ON bt_3_access_reminders (user_id, sent_at DESC);")
+        conn.commit()
+    _access_reminder_schema_ready = True
+
+
+def access_reminder_gap_days(seq_sent: int) -> int:
+    """Сколько дней ждать после напоминания номер `seq_sent`."""
+    return ACCESS_REMINDER_WEEKLY_GAP_DAYS if int(seq_sent) < ACCESS_REMINDER_WEEKLY_COUNT \
+        else ACCESS_REMINDER_MONTHLY_GAP_DAYS
+
+
+def access_reminder_due(user_id: int, now_utc: datetime | None = None) -> tuple[bool, int]:
+    """(пора ли, номер следующего). Первое — сразу; дальше по каденсу."""
+    _ensure_access_reminder_schema()
+    now_ref = _to_aware_datetime(now_utc)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT seq, sent_at FROM bt_3_access_reminders "
+                        "WHERE user_id=%s ORDER BY sent_at DESC LIMIT 1;", (int(user_id),))
+            row = cur.fetchone()
+    if not row:
+        return True, 1
+    seq = int(row[0] or 0)
+    sent_at = _to_aware_datetime(row[1])
+    gap = access_reminder_gap_days(seq)
+    return (now_ref - sent_at) >= timedelta(days=gap), seq + 1
+
+
+def record_access_reminder(user_id: int, seq: int) -> None:
+    _ensure_access_reminder_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO bt_3_access_reminders (user_id, seq) VALUES (%s, %s);",
+                        (int(user_id), int(seq)))
+        conn.commit()
+
+
+def list_access_reminder_candidates() -> list[int]:
+    """У кого бесплатный месяц уже прошёл и кто не заблокировал бота. Заперт ли он
+    сейчас (нет ли подписки) — решает is_access_locked у вызывающего."""
+    _ensure_access_period_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT p.user_id FROM bt_3_access_period p
+                WHERE p.started_at + (%s || ' days')::interval <= NOW()
+                  AND NOT EXISTS (SELECT 1 FROM bt_3_bot_blocked_users b
+                                  WHERE b.user_id = p.user_id AND b.is_blocked)
+                ORDER BY p.user_id;
+                """,
+                (int(ACCESS_PERIOD_FREE_DAYS),),
+            )
+            return [int(r[0]) for r in (cur.fetchall() or []) if is_real_telegram_user_id(r[0])]
+
+
+def count_access_reminders_over_cadence(days: int = 1) -> int:
+    """Напоминаний за последние `days` суток, отправленных раньше положенного промежутка
+    после предыдущего. Обещано: 0."""
+    _ensure_access_reminder_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH r AS (
+                    SELECT user_id, seq, sent_at,
+                           LAG(seq) OVER (PARTITION BY user_id ORDER BY sent_at) AS prev_seq,
+                           LAG(sent_at) OVER (PARTITION BY user_id ORDER BY sent_at) AS prev_sent
+                    FROM bt_3_access_reminders
+                )
+                SELECT COUNT(*) FROM r
+                WHERE sent_at > NOW() - (%s || ' days')::interval
+                  AND prev_sent IS NOT NULL
+                  AND sent_at - prev_sent < (CASE WHEN prev_seq < %s THEN %s ELSE %s END) * interval '1 day';
+                """,
+                (int(days), ACCESS_REMINDER_WEEKLY_COUNT,
+                 ACCESS_REMINDER_WEEKLY_GAP_DAYS, ACCESS_REMINDER_MONTHLY_GAP_DAYS),
+            )
+            return int((cur.fetchone() or [0])[0] or 0)
+
+
+def access_state_counts() -> dict[str, int]:
+    """Сколько известных людей в каждом состоянии доступа — для утреннего отчёта.
+    Один источник (resolve_entitlement, кеш), никакой параллельной арифметики в SQL."""
+    ensure_user_identity_schema()
+    _ensure_access_period_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT u.user_id FROM (
+                    SELECT user_id FROM bt_3_user_identity
+                    UNION SELECT user_id FROM bt_3_allowed_users
+                    UNION SELECT user_id FROM user_subscriptions
+                ) u WHERE u.user_id > 0;
+                """
+            )
+            ids = [int(r[0]) for r in (cur.fetchall() or []) if is_real_telegram_user_id(r[0])]
+    out = {"pro": 0, "light": 0, "free_month": 0, "locked": 0, "unknown": 0}
+    for uid in ids:
+        state = str(resolve_entitlement(uid).get("access_state") or "unknown")
+        out[state if state in out else "unknown"] += 1
+    return out
+
+
+def count_star_payments_last_day(purposes: tuple[str, ...] = ("light", "pro")) -> dict[str, int]:
+    """Оплат за последние сутки по назначению (light / pro) — строка в утренний отчёт."""
+    out = {p: 0 for p in purposes}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT purpose, COUNT(*) FROM bt_3_star_payments "
+                "WHERE created_at > NOW() - interval '1 day' AND purpose = ANY(%s) GROUP BY purpose;",
+                (list(purposes),),
+            )
+            for purpose, n in cur.fetchall() or []:
+                out[str(purpose)] = int(n or 0)
+    return out
+
+
+def admin_set_access_period_started(user_id: int, started_at: datetime) -> None:
+    """ЕДИНСТВЕННОЕ место, где started_at меняется, — ручная команда администратора
+    /admin_access для проверки замка на тестовом аккаунте, не дожидаясь 30 дней.
+    Для живых людей начало отсчёта не двигается никогда."""
+    _ensure_access_period_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bt_3_access_period (user_id, started_at, source)
+                VALUES (%s, %s, 'signup')
+                ON CONFLICT (user_id) DO UPDATE SET started_at = EXCLUDED.started_at;
+                """,
+                (int(user_id), _to_aware_datetime(started_at)),
+            )
+        conn.commit()
+    _bust_entitlement_cache(int(user_id))
+
+
 def count_access_periods_created_by_night_sweep(days: int = 1) -> int:
     """Сколько начал отсчёта за последние `days` суток поставила ночная страховка, а не
     дверь. Обещано: 0."""

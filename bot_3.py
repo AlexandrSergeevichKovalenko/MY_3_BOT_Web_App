@@ -449,6 +449,13 @@ from backend.database import (
     is_access_locked,
     start_access_period,
     sweep_access_periods_for_known_users,
+    list_access_reminder_candidates,
+    access_reminder_due,
+    record_access_reminder,
+    access_state_counts,
+    count_star_payments_last_day,
+    get_access_period,
+    admin_set_access_period_started,
     list_allowed_telegram_user_ids,
     create_article_sprint_battle,
     get_article_sprint_battle,
@@ -10256,6 +10263,7 @@ def _send_pool_enrich_morning_report() -> None:
                 # сообщение она не лезет: число, на которое нельзя нажать, это не работа.
                 + _dictionary_integrity_line()
             )
+        text += _access_state_line()
         text += _fix_promises_block(обещания)
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
@@ -16757,6 +16765,127 @@ async def _onboarding_nudge_job(context: CallbackContext) -> None:
             logging.warning("onboarding nudge failed uid=%s", uid, exc_info=True)
         if idx % 20 == 0:
             await asyncio.sleep(1.0)
+
+
+async def _access_reminder_job(context: CallbackContext) -> None:
+    """Суббота 11:00 (Вена): запертым — картинка с двумя кнопками оплаты.
+    Каденс из таблицы отправок: 8 раз еженедельно, дальше раз в 30 дней; оплатил — стоп
+    (проверка состояния перед каждой отправкой). Стратегия §7."""
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip access reminders")
+        return
+    try:
+        candidates = await asyncio.to_thread(list_access_reminder_candidates)
+    except Exception:
+        logging.exception("access reminder: кандидаты не прочитались")
+        return
+    admin_ids = {int(a) for a in (get_admin_telegram_ids() or [])}
+    from backend.backend_server import light_price_stars, pro_price_stars
+    from backend.access_reminder_card import render_access_reminder_card
+    png = None
+    try:
+        png = await asyncio.to_thread(render_access_reminder_card,
+                                      light_stars=light_price_stars(), pro_stars=pro_price_stars())
+    except Exception:
+        logging.exception("access reminder: карточка не отрисовалась")
+    caption = (
+        "🔒 <b>Бесплатный месяц закончился</b>\n\n"
+        "Ты позанимался с нами месяц. Чтобы задания приходили дальше в том же объёме, "
+        f"выбери «Лайт» ({light_price_stars()} ⭐ / мес) — или «Полный доступ» "
+        f"({pro_price_stars()} ⭐ / мес), где открыто всё."
+    )
+    kb = _access_locked_keyboard()
+    sent = skipped_paid = skipped_cadence = failed = 0
+    for uid in candidates:
+        if uid in admin_ids:
+            continue
+        try:
+            if not await asyncio.to_thread(is_access_locked, uid):
+                skipped_paid += 1
+                continue
+            due, seq = await asyncio.to_thread(access_reminder_due, uid)
+            if not due:
+                skipped_cadence += 1
+                continue
+            if png:
+                await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(png), caption=caption,
+                                             parse_mode="HTML", reply_markup=kb)
+            else:
+                await context.bot.send_message(chat_id=uid, text=caption, parse_mode="HTML", reply_markup=kb)
+            await asyncio.to_thread(record_access_reminder, uid, seq)
+            sent += 1
+        except Exception:
+            failed += 1
+            logging.warning("access reminder: не ушло user=%s", uid, exc_info=True)
+    logging.info("access reminder: sent=%s not_locked=%s cadence_wait=%s failed=%s candidates=%s",
+                 sent, skipped_paid, skipped_cadence, failed, len(candidates))
+
+
+def _access_state_line() -> str:
+    """Строка утреннего отчёта о бесплатном месяце: кто в каком состоянии, сколько
+    оплат за сутки. Числа — из того же права доступа, что видит приложение."""
+    try:
+        c = access_state_counts()
+        p = count_star_payments_last_day()
+    except Exception:
+        logging.exception("строка о доступе не собралась")
+        return "\n🔒 Доступ: ❓ не посчитался, подробности в логах.\n"
+    line = (f"\n🔒 <b>Доступ</b>: бесплатный месяц <b>{c['free_month']}</b> · Лайт <b>{c['light']}</b> · "
+            f"Полный <b>{c['pro']}</b> · заперто <b>{c['locked']}</b>")
+    if c.get("unknown"):
+        line += f" · без начала отсчёта <b>{c['unknown']}</b> ⚠️"
+    line += f"\nОплат за сутки: Лайт {p.get('light', 0)} / Полный {p.get('pro', 0)}\n"
+    return line
+
+
+async def admin_access_command(update: Update, context: CallbackContext):
+    """Состояние доступа человека и — для проверки замка на тестовом аккаунте — сдвиг
+    начала отсчёта. /admin_access <user_id> [ГГГГ-ММ-ДД]"""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    args = list(context.args or [])
+    if not args:
+        await message.reply_text("Использование: /admin_access <user_id> [ГГГГ-ММ-ДД]\n"
+                                 "Без даты — показать состояние. С датой — поставить начало отсчёта "
+                                 "(только для тестового аккаунта).")
+        return
+    try:
+        uid = int(args[0])
+    except Exception:
+        await message.reply_text("user_id должен быть числом.")
+        return
+    if len(args) >= 2:
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            started = _dt.strptime(args[1], "%Y-%m-%d").replace(tzinfo=_tz.utc)
+        except Exception:
+            await message.reply_text("Дата в виде ГГГГ-ММ-ДД.")
+            return
+        await asyncio.to_thread(admin_set_access_period_started, uid, started)
+        _ACCESS_LOCK_CACHE.pop(uid, None)
+        _PRO_STATUS_CACHE.pop(uid, None)
+    from backend.database import resolve_entitlement
+    ent = await asyncio.to_thread(resolve_entitlement, uid)
+    period = await asyncio.to_thread(get_access_period, uid)
+    started_txt = period["started_at"].astimezone(ZoneInfo("Europe/Vienna")).strftime("%d.%m.%Y %H:%M") if period else "нет"
+    ends_txt = period["ends_at"].astimezone(ZoneInfo("Europe/Vienna")).strftime("%d.%m.%Y %H:%M") if period else "—"
+    names = {"pro": "полный доступ", "light": "Лайт", "free_month": "бесплатный месяц",
+             "locked": "ЗАПЕРТ", "unknown": "начала отсчёта нет"}
+    state = str(ent.get("access_state") or "unknown")
+    await message.reply_text(
+        f"👤 {uid}\n"
+        f"Состояние: <b>{names.get(state, state)}</b>\n"
+        f"Тариф: {ent.get('plan_name')} ({ent.get('source_of_entitlement')})\n"
+        f"Начало отсчёта: {started_txt} ({(period or {}).get('source', '')})\n"
+        f"Конец бесплатного месяца: {ends_txt}\n"
+        f"Дней осталось: {ent.get('free_month_days_left')}",
+        parse_mode="HTML",
+    )
 
 
 async def _access_period_sweep_job(context: CallbackContext) -> None:
@@ -45962,6 +46091,7 @@ def main():
     application.add_handler(CommandHandler("admin_resweep_units", admin_resweep_units_command))
     application.add_handler(CommandHandler("admin_words_decide", admin_words_decide_command))
     application.add_handler(CommandHandler("admin_promises", admin_promises_command))
+    application.add_handler(CommandHandler("admin_access", admin_access_command))
     application.add_handler(CallbackQueryHandler(handle_fix_promise_callback, pattern=r"^fp:"))
     application.add_handler(CallbackQueryHandler(handle_unit_decision_callback,
                                                 pattern=r"^uw:"))
@@ -46603,6 +46733,8 @@ def main():
         scheduler.add_job(lambda: submit_async(run_standup_shelf_refill,CallbackContext(application=application)),"cron", hour=3, minute=40, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Бесплатный месяц: ночная страховка начала отсчёта (кого двери пропустили).
         scheduler.add_job(lambda: submit_async(_access_period_sweep_job,CallbackContext(application=application)),"cron", hour=3, minute=50, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        # Бесплатный месяц: напоминание запертым — суббота 11:00 (решение владельца 04.09.2026).
+        scheduler.add_job(lambda: submit_async(_access_reminder_job,CallbackContext(application=application)),"cron", day_of_week="sat", hour=11, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Drain Mini-App «⚔️ Battles» create requests every few seconds (bot runs the
         # existing broadcast logic, so invites/images/nudges/digest are unchanged).
