@@ -18019,7 +18019,17 @@ body.worldnews-active .webapp-topbar {
   --wn-bad: #dc2626;
 }
 
-/* Shared primary CTA (Смотреть видео / Дальше / Проверить знания). */
+/* ── Переделка карточки слова 04.09.2026 (решение владельца) ────────────────────
+   Экран выглядел «бедно и блекло»: коробка на коробке, всё одного веса, тонкие серые
+   рамки, газетная Georgia в заголовке. Подача переведена на наш стиль (Fuchs UI:
+   один герой, тени и волосяные линии вместо рамок, системный шрифт, плотный жирный
+   заголовок), а ПАЛИТРА оставлена прежней светло-синей — она общая у всех интерактивов
+   и меняется отдельным заданием. Состав карточки и обработчики не тронуты. */
+
+/* Shared primary CTA (Смотреть видео / Дальше / Проверить знания).
+   Тёмно-синяя «киношная» кнопка — того же цвета, что панель субтитров этой рубрики.
+   Синим остаётся «Сохранить» внутри карточки: две одинаково синие кнопки спорили бы,
+   кто из них главная. */
 .worldnews-next-cta {
   justify-self: stretch;
   width: 100%;
@@ -18027,44 +18037,67 @@ body.worldnews-active .webapp-topbar {
   margin-top: 4px;
   border: none;
   border-radius: 16px;
-  background: #2563eb;
+  background: #0f172a;
   color: #ffffff;
   font-size: 16px;
   font-weight: 700;
+  letter-spacing: -0.01em;
   cursor: pointer;
-  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 14px 28px -14px rgba(15, 23, 42, 0.7);
   transition: transform 0.12s ease, box-shadow 0.2s ease, opacity 0.2s ease;
 }
 .worldnews-next-cta:hover { transform: translateY(-1px); }
 .worldnews-next-cta:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
 
-/* Stepper — thin right-pointing arrow chips (Слова › Видео › Тест), ~half height. */
+/* Stepper — сегментный переключатель (① Слова · ② Видео · ③ Тест): серая дорожка,
+   активный сегмент белый и приподнят, номера шагов рисует CSS-счётчик. */
 .worldnews-stepper {
   display: flex;
-  gap: 4px;
-  margin: 0 0 8px;
+  gap: 2px;
+  padding: 4px;
+  margin: 0 0 10px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.06);
+  counter-reset: wn-step;
 }
 .worldnews-step {
   flex: 1 1 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 22px;
-  padding: 0 6px;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 8px;
   border: none;
-  background: #dbe3ef;
+  border-radius: 10px;
+  background: transparent;
   color: #64748b;
-  font-size: 11.5px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   cursor: pointer;
-  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%, 10px 50%);
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
-.worldnews-step:first-child {
-  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%);
-  border-radius: 7px 0 0 7px;
+.worldnews-step::before {
+  counter-increment: wn-step;
+  content: counter(wn-step);
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.12);
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 18px;
+  text-align: center;
+  flex: 0 0 auto;
 }
 .worldnews-step.is-active {
+  background: #ffffff;
+  color: #1d4ed8;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.14);
+}
+.worldnews-step.is-active::before {
   background: #2563eb;
   color: #ffffff;
 }
@@ -18083,7 +18116,8 @@ body.worldnews-active .webapp-topbar {
   padding: 2px 0 8px;
   /* Вычитаем то, что занято над колодой: шапка экрана и полоса шагов. Значение в
      переменной — на планшете и в Telegram-шторке высота хрома другая. */
-  max-height: calc(100dvh - var(--wn-deck-chrome, 150px));
+  /* 166px с 04.09.2026: полоса шагов выросла с 22 до 42px вместе с отступом. */
+  max-height: calc(100dvh - var(--wn-deck-chrome, 166px));
 }
 .worldnews-deck-progress,
 .worldnews-deck-nav,
@@ -18093,10 +18127,12 @@ body.worldnews-active .webapp-topbar {
 .worldnews-deck-progress {
   text-align: center;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--wn-muted);
-  letter-spacing: 0.04em;
+  letter-spacing: -0.005em;
+  font-variant-numeric: tabular-nums;
 }
+.worldnews-deck-progress b { color: var(--wn-text-2); font-weight: 700; }
 /* Длинное слово не должно уносить вправо всю страницу: карточка режет вылет по ширине,
    а подгонка кегля (FitText) в этот момент уже уменьшает слово. */
 .worldnews-card {
@@ -18115,12 +18151,17 @@ body.worldnews-active .webapp-topbar {
      прокручиваемого блока верх содержимого срезается. */
   justify-content: flex-start;
   text-align: center;
-  gap: 14px;
-  padding: 30px 22px;
-  border-radius: 22px;
-  border: 1px solid var(--wn-border);
+  gap: 12px;
+  padding: 26px 22px 20px;
+  border-radius: 24px;
+  /* Волосяная линия и мягкая тень вместо серой рамки: карточка — единственный
+     приподнятый предмет на экране. */
+  border: none;
   background: var(--wn-card);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 0 0 1px rgba(15, 23, 42, 0.06),
+    0 18px 40px -22px rgba(15, 23, 42, 0.35);
   user-select: none;
   touch-action: pan-y;
 }
@@ -18134,11 +18175,14 @@ body.worldnews-active .webapp-topbar {
      теперь только по горизонтали, где длинное слово и так подгоняется по кеглю. */
   flex: 0 0 auto;
   overflow-x: hidden;
-  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
-  font-size: 30px;
-  font-weight: 700;
-  line-height: 1.15;
-  color: #111827;
+  /* Системный шрифт, как во всём приложении: газетная Georgia спорила с остальной
+     карточкой (04.09.2026). Кегль задаёт FitText (max 34), здесь — запасное значение. */
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.08;
+  color: #0f172a;
 }
 .worldnews-art { font-style: italic; font-weight: 700; }
 .worldnews-art.g-m { color: var(--wn-der); }
@@ -18146,7 +18190,8 @@ body.worldnews-active .webapp-topbar {
 .worldnews-art.g-n { color: var(--wn-das); }
 .worldnews-card-ru {
   font-size: 18px;
-  font-weight: 600;
+  font-weight: 550;
+  letter-spacing: -0.01em;
   color: var(--wn-text-2);
 }
 /* Пояснительная середина: перевод, форма из текста, цитата, употребление. Только она
@@ -18178,102 +18223,123 @@ body.worldnews-active .webapp-topbar {
 }
 .worldnews-card-register,
 .worldnews-card-form {
-  padding: 3px 10px;
+  padding: 4px 11px;
   border-radius: 999px;
-  font-size: 12px;
-  font-weight: 700;
-  border: 1px solid #dfe4ec;
-  background: #eef2f8;
-  color: #5b6b85;
+  font-size: 11.5px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: none;
+  background: rgba(37, 99, 235, 0.10);
+  color: #1d4ed8;
 }
 /* Форма набрана иначе, чем регистр: это разные сведения, и слипаться им нельзя. */
 .worldnews-card-form {
-  background: #fdf4e7;
-  border-color: #f0e0c8;
-  color: #8a6a3a;
+  background: rgba(245, 158, 11, 0.12);
+  color: #92400e;
 }
 /* Слово в контексте: дословная строка из субтитров ролика и её перевод. Немецкая строка
    набрана тем же засечным шрифтом, что и заголовок карточки, — это цитата, а не подпись. */
 .worldnews-card-quote {
   display: grid;
-  gap: 3px;
-  padding: 10px 12px;
-  border-left: 3px solid var(--wn-accent, #2563eb);
-  border-radius: 0 10px 10px 0;
-  background: #f5f8fd;
+  gap: 4px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--wn-primary);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+/* Форма из текста подсвечена ПРЯМО во фразе (04.09.2026): глаз связывает словарный вид
+   и живую речь без отдельного чтения строки «В тексте» — сама строка при этом остаётся. */
+.worldnews-card-quote-mark {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: rgba(37, 99, 235, 0.14);
+  color: #1d4ed8;
+  font-weight: 750;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 /* Форма из текста — мостик между словарным видом и живой речью. Набрана тем же
    засечным шрифтом, что и заголовок карточки: это одна и та же единица, только в другом
    виде, и глаз должен их связать. */
 .worldnews-card-intext {
   display: block;
-  font-family: Georgia, 'Noto Serif', serif;
-  font-size: 15.5px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 750;
   line-height: 1.4;
-  color: var(--wn-text-1, #1b2536);
+  letter-spacing: -0.01em;
+  color: #1d4ed8;
   margin-bottom: 2px;
 }
-.worldnews-card-intext-label {
+.worldnews-card-intext-label,
+.worldnews-card-note-label {
   display: block;
-  font-family: Manrope, system-ui, sans-serif;
   font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
+  font-weight: 750;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: #8fa0b8;
+  color: var(--wn-muted);
 }
 .worldnews-card-quote-de {
-  font-family: Georgia, 'Noto Serif', serif;
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.45;
-  color: var(--wn-text-1, #1b2536);
+  letter-spacing: -0.01em;
+  color: var(--wn-text);
 }
 .worldnews-card-quote-ru {
-  font-size: 13.5px;
-  line-height: 1.4;
-  color: #6b7a92;
-}
-.worldnews-card-note {
-  display: grid;
-  gap: 4px;
-  width: 100%;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: var(--wn-surface);
-  border: 1px solid var(--wn-border);
-  text-align: left;
-}
-.worldnews-card-note-label {
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #8fa0b8;
-}
-.worldnews-card-note-text {
   font-size: 14px;
   line-height: 1.4;
+  color: var(--wn-muted);
+}
+/* Пояснения — не коробки, а разделы через волосяную линию: одна карточка,
+   а не стопка одинаковых рамок. */
+.worldnews-card-note {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 14px 0 0;
+  border-radius: 0;
+  background: transparent;
+  border: none;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  text-align: left;
+}
+.worldnews-card-note-text {
+  font-size: 15px;
+  line-height: 1.45;
   color: var(--wn-text-2);
 }
+/* Главное действие карточки: одна сплошная синяя кнопка во всю ширину. */
 .worldnews-card-save {
-  margin-top: 2px;
-  min-height: 46px;
-  padding: 0 26px;
-  border-radius: 999px;
-  border: 1.5px solid #2563eb;
-  background: transparent;
-  color: #2563eb;
-  font-size: 14.5px;
-  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  width: 100%;
+  margin-top: 8px;
+  min-height: 52px;
+  padding: 0 20px;
+  border-radius: 15px;
+  border: none;
+  background: linear-gradient(180deg, #3b82f6, #2563eb);
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  box-shadow: 0 12px 24px -10px rgba(37, 99, 235, 0.6);
+  transition: transform 0.12s ease, box-shadow 0.2s ease, background 0.15s ease, color 0.15s ease;
 }
-.worldnews-card-save:hover:not(:disabled) { background: rgba(37, 99, 235, 0.08); }
+.worldnews-card-save svg { width: 18px; height: 18px; flex: 0 0 auto; }
+.worldnews-card-save:hover:not(:disabled) { transform: translateY(-1px); }
 .worldnews-card-save.is-saved {
   background: rgba(22, 163, 74, 0.12);
-  border-color: #16a34a;
   color: #15803d;
+  box-shadow: none;
   cursor: default;
 }
 /* ── Свой вариант ────────────────────────────────────────────────────────────────
@@ -18281,15 +18347,20 @@ body.worldnews-active .webapp-topbar {
    стоит рядом тихой строкой. Спрашивать выбор у каждого при каждом сохранении нельзя —
    поправить надо считаные случаи, а листают карточки все. */
 .worldnews-card-own-open {
-  margin-top: 8px;
+  margin-top: 4px;
+  padding: 6px 10px;
   border: none;
   background: transparent;
   color: #64748b;
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
-  text-decoration: underline;
-  text-underline-offset: 3px;
   cursor: pointer;
+}
+/* Тихая строка с шевроном вместо подчёркнутой ссылки. */
+.worldnews-card-own-open::after {
+  content: '›';
+  margin-left: 4px;
+  font-weight: 700;
 }
 .worldnews-card-own-open:hover { color: #2563eb; }
 .worldnews-card-own {
@@ -18311,10 +18382,10 @@ body.worldnews-active .webapp-topbar {
   letter-spacing: 0.03em;
 }
 .worldnews-card-own-input {
-  min-height: 40px;
-  padding: 0 12px;
-  border-radius: 10px;
-  border: 1.5px solid #cbd5e1;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
   background: #fff;
   font-size: 15px;
   font-weight: 600;
@@ -18331,26 +18402,27 @@ body.worldnews-active .webapp-topbar {
 .worldnews-card-own-save,
 .worldnews-card-own-take {
   flex: 1;
-  min-height: 42px;
-  border-radius: 999px;
+  min-height: 46px;
+  border-radius: 13px;
   border: none;
   background: #2563eb;
   color: #fff;
-  font-size: 14px;
-  font-weight: 800;
+  font-size: 14.5px;
+  font-weight: 700;
   cursor: pointer;
+  box-shadow: 0 10px 20px -10px rgba(37, 99, 235, 0.6);
 }
-.worldnews-card-own-save:disabled { background: #cbd5e1; cursor: default; }
+.worldnews-card-own-save:disabled { background: #cbd5e1; cursor: default; box-shadow: none; }
 .worldnews-card-own-cancel,
 .worldnews-card-own-keep {
   flex: 1;
-  min-height: 42px;
-  border-radius: 999px;
-  border: 1.5px solid #cbd5e1;
-  background: transparent;
-  color: #475569;
-  font-size: 14px;
-  font-weight: 700;
+  min-height: 46px;
+  border-radius: 13px;
+  border: none;
+  background: rgba(15, 23, 42, 0.06);
+  color: #334155;
+  font-size: 14.5px;
+  font-weight: 650;
   cursor: pointer;
 }
 /* Мнение судьи — подсказка, а не приговор: песочный фон, обе кнопки равны по весу. */
@@ -18376,33 +18448,42 @@ body.worldnews-active .webapp-topbar {
   gap: 16px;
 }
 .worldnews-deck-arrow {
-  width: 44px;
-  height: 44px;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
   border-radius: 50%;
-  border: 1px solid var(--wn-border);
+  border: none;
   background: var(--wn-card);
   color: var(--wn-text);
-  font-size: 24px;
+  font-size: 26px;
   line-height: 1;
+  padding-bottom: 3px;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.08), 0 6px 16px -8px rgba(15, 23, 42, 0.5);
 }
-.worldnews-deck-arrow:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+.worldnews-deck-arrow:disabled { opacity: 0.4; cursor: default; box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.08); }
+/* Точки стали тонкой полосой прогресса из сегментов: те же сведения (какая карточка
+   текущая, какие уже в словаре), но читается с одного взгляда и не рассыпается в
+   две строки на длинных выпусках. */
 .worldnews-deck-dots {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  justify-content: center;
-  max-width: 60%;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  gap: 3px;
+  align-items: center;
+  max-width: none;
+  min-width: 0;
 }
 .worldnews-deck-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #cbd3df;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(15, 23, 42, 0.12);
+  transition: background 0.2s ease;
 }
-.worldnews-deck-dot.is-active { background: #2563eb; transform: scale(1.25); }
 .worldnews-deck-dot.is-saved { background: #16a34a; }
+.worldnews-deck-dot.is-active { background: #2563eb; height: 6px; }
 
 /* «Проверить знания» CTA on the video stage: subdued until the video ends. */
 .worldnews-to-quiz { margin-top: 12px; }
