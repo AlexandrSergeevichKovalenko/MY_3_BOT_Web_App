@@ -107,6 +107,7 @@ class ЧтоНеПроверилиНеПомечаемTests(unittest.TestCase):
         from backend import phrase_panel as pp
         строки = [(1, "eine Idee zu eigen machen", "collocation", {}, "перенять мысль")]
         with patch.object(pp, "unavailable_reason", return_value=""), \
+             patch.object(pp, "третий_голос_молчит", return_value=""), \
              patch.object(pp, "поднять_старые_отметки", return_value=0), \
              patch.object(pp, "count_personal_backlog", return_value=0), \
              patch.object(pp, "unchecked_units", return_value=строки), \
@@ -144,6 +145,7 @@ class ЧтоНеПроверилиНеПомечаемTests(unittest.TestCase):
         claims = [{"field": "translation", "what": "Narren — дураки.",
                    "fix": "старые дураки", "voice": 1}]
         with patch.object(pp, "unavailable_reason", return_value=""), \
+             patch.object(pp, "третий_голос_молчит", return_value=""), \
              patch.object(pp, "поднять_старые_отметки", return_value=0), \
              patch.object(pp, "count_personal_backlog", return_value=0), \
              patch.object(pp, "unchecked_units", return_value=строки), \
