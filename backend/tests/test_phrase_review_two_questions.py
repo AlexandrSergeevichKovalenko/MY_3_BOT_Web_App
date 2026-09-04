@@ -349,11 +349,20 @@ class TheJudgeMustHandOverTheFixTests(unittest.TestCase):
         self.assertIn('"better"', тело)
 
     def test_the_proposed_fix_is_checked_by_a_second_voice(self):
+        """⚠ ПЕРЕПИСАНО 04.09.2026: проверяется не только замена, но и САМО обвинение.
+
+        Прежняя проверка спрашивала общую сверку смысла («этот русский означает этот
+        немецкий?») и потому пропускала смену времени: «versechsfachte sich» вместо
+        «versechsfacht sich» при русском «увеличивается». А правда ли исходная фраза
+        неверна — не спрашивал никто. Теперь оба вопроса заданы прямо.
+        """
         src = _src("backend/phrase_panel.py")
-        self.assertIn("def проверить_вариант(", src)
-        i = src.index("def проверить_вариант(")
-        self.assertIn("run_translation_pair_check", src[i:i + 2000],
-                      "готовый вариант снова уходит владельцу непроверенным")
+        self.assertIn("def проверить_претензию(", src)
+        i = src.index("SYSTEM_ПРОВЕРКА = ")
+        промпт = src[i:src.index('"""', src.index('"""', i) + 3)]
+        self.assertIn("claim_right", промпт)
+        self.assertIn("the same TENSE, PERSON and NUMBER", промпт,
+                      "проверка снова судит только смысл и пропустит смену времени")
 
     def test_the_field_and_the_fix_reach_the_screen(self):
         from backend.database import phrase_review_dispute
