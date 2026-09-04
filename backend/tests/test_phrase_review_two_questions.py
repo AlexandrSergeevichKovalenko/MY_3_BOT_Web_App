@@ -482,13 +482,21 @@ class TheButtonsSayWhatTheyDoTests(unittest.TestCase):
         self.assertIn("Всё верно — закрыть вопрос", src)
         self.assertNotIn("↷ Отложить", src)
 
-    def test_every_button_has_its_own_line_of_explanation(self):
+    def test_the_explanations_under_the_buttons_never_come_back(self):
+        """⛔ ОТМЕНЕНО ВЛАДЕЛЬЦЕМ 04.09.2026, ОБРАТНО НЕ ВОЗВРАЩАТЬ.
+
+        Три строки подписей под кнопками были верным решением задачи «объясни разницу»
+        и неверным решением задачи «уместись на телефоне»: они съедали 20% экрана,
+        оставляя разбору — то, ради чего экран и открывают, — полторы строки.
+        Владелец: «убирай это с экрана, зачем ты тратишь 20% экрана на текст, который
+        просто не нужен? это же телефон, здесь каждый сантиметр важен».
+        Разницу несут САМИ названия (тест выше). Перестанут — чинить названия.
+        """
         src = _src("frontend/src/answer/PhraseReviewScreen.jsx")
-        i = src.index("frrev-hint-rows")
-        хвост = src[i:i + 900]
-        self.assertIn("вопрос закрыт навсегда", хвост)
-        self.assertIn("в базе ничего не меняется", хвост)
-        self.assertIn("подписными", хвост)
+        for кусок in ("вопрос закрыт навсегда", "в базе ничего не меняется",
+                      "подписными карточками"):
+            self.assertNotIn(f'>{кусок}', src)
+        self.assertNotIn('className="frrev-hint frrev-hint-rows"', src)
 
     def test_skip_still_writes_nothing_to_the_database(self):
         """Название сменилось, поведение — нет: «вернуться позже» обязано остаться

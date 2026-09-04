@@ -70,6 +70,21 @@ HUMANS_OWN = "текст человека — решает он"
 OUR_OWN_FIELDS = {"examples", "meaning"}          # это сделали мы — чиним
 HUMAN_FIELDS = {"headword", "translation"}        # это его слова — только показать ему
 
+# ⛔ ВЕРСИЯ ВОПРОСА К СУДЬЯМ. Меняешь SYSTEM — поднимаешь это число, иначе страж
+# `test_prompt_version_is_bumped_with_the_prompt` не даст запушить.
+#
+# ЗАЧЕМ. Вердикт стоит ровно столько, сколько стоит вопрос, по которому он вынесен.
+# Версия 1 требовала от судей ругать «неустойчивые» выражения — и они ругали: замер
+# 04.09.2026, 29 из 49 живых вопросов владельца были «в немецком нет такого устойчивого
+# выражения» про его же собственные предложения («Wolle spinnen», «Etat festlegen»).
+# Владелец: «Я сам задал вопрос — просто предложение, которое меня интересует. Это не
+# устойчивое выражение. Это моё предложение».
+#
+# Отметка хранит версию, и при её смене ПЕРЕСУЖИВАЮТСЯ ТОЛЬКО ТЕ карточки, чей вопрос
+# СТОИТ У ЧЕЛОВЕКА НА ЭКРАНЕ. Пересуживать все 6738 из-за правки формулировки — это
+# $28 за то, чего никто не читает.
+PROMPT_VERSION = 2
+
 MODEL_A = "gpt-4.1-2025-04-14"
 MODEL_B = "gpt-4.1-mini"
 MODEL_C = "gemini-3.6-flash"
@@ -97,6 +112,14 @@ SYSTEM = """You audit ONE entry of a German↔Russian learner's dictionary. The 
 phrase or a sentence, not a single word — no printed dictionary lists it, so judge the
 German itself.
 
+THE ENTRY IS USUALLY THE LEARNER'S OWN SENTENCE. They met it, wrote it, or asked about
+it, and saved it. It is NOT claimed to be an idiom, a proverb or a set phrase, and it
+does not have to be one. «Wolle spinnen», «Etat festlegen», «auf jeden Fall kommen» are
+ordinary, correct German word combinations — a learner may save any of them.
+NEVER report as a defect that the entry is "not a set phrase", "not an idiom", "not a
+fixed expression", "uncommon", "rarely used" or "not in dictionaries". That is not an
+error a learner can act on, and it is not what we asked. Report the German being WRONG.
+
 Report ONLY defects that would teach a learner something false:
   headword   — not real German, or a broken fragment;
   translation— the Russian does not mean what the German says;
@@ -111,7 +134,8 @@ conjugated, the noun takes a case, the word order changes, a pronoun replaces a 
 die Stirn». Only call the example wrong when it illustrates something ELSE entirely.
 
 Also NOT defects: style, register, a missing final full stop, a phrase given without
-context, a dictionary placeholder (jemanden, etwas, sich), regional but attested German.
+context, a dictionary placeholder (jemanden, etwas, sich), regional but attested German,
+and — see above — the entry not being an idiom or a set expression.
 
 EVERY DEFECT MUST COME WITH THE CORRECTED TEXT. A verdict «this is not said in German»
 without saying what IS said is useless to the person who has to decide. Fill "fix":
@@ -379,6 +403,23 @@ def entry_of(display: str, kind: str, card: dict | None, translation: str) -> di
 #
 # Берём ТОЛЬКО свои два вида. Грамматический спор и проверку перевода карточки заводит
 # другой механизм, номера голосов он не пишет вовсе, и панель их не трогает.
+# ⛔ ВОПРОС, КОТОРЫЙ ЧЕЛОВЕК ЧИТАЕТ ПРЯМО СЕЙЧАС, — ПЕРВЫЙ В ОЧЕРЕДИ.
+#
+# ┌─ ОШИБКА 03.09.2026, ИСПРАВЛЕНА 04.09. НЕ ПОВТОРЯТЬ. ────────────────────────────┐
+# │ 02.09 я поставил оборванные вопросы в ночную очередь — и доложил владельцу, что │
+# │ починил. Очередь берёт СВЕЖИЕ карточки первыми, а оборванные вопросы стоят на   │
+# │ СТАРЫХ карточках: за ночь панель проверила 50 штук, и ни одного из 36 не тронула│
+# │ — их число даже выросло до 37. Владелец третий раз показал мне тот же обрыв на  │
+# │ экране. Это ровно «положил в список» вместо «сделал»: список был, работы не было.│
+# │                                                                                 │
+# │ Правило: карточка, чей вопрос СТОИТ У ЧЕЛОВЕКА НА ЭКРАНЕ, идёт первой. Свежесть │
+# │ важна для того, чего никто не видел; то, что человек читает сейчас, важнее.     │
+# └─────────────────────────────────────────────────────────────────────────────────┘
+ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ = """EXISTS (
+      SELECT 1 FROM bt_3_phrase_review r
+       WHERE r.unit_id = u.id AND r.status = 'open'
+         AND COALESCE(r.kind, 'grammar') = 'panel')"""
+
 ВОПРОС_ИЗ_ПРОЗЫ = """EXISTS (
       SELECT 1 FROM bt_3_phrase_review r
        WHERE r.unit_id = u.id AND r.status = 'open'
@@ -399,7 +440,11 @@ def _где_судить(ru_sql: str) -> str:
             f"   AND COALESCE({ru_sql}, '') <> ''\n"
             f"   AND (c.unit_id IS NULL\n"
             f"        OR c.judged_ru IS DISTINCT FROM {ru_sql}\n"
-            f"        OR {ВОПРОС_ИЗ_ПРОЗЫ})")
+            f"        OR {ВОПРОС_ИЗ_ПРОЗЫ}\n"
+            # Вопрос на экране, вынесенный ПРЕЖНИМ вопросом к судьям, — не вердикт, а
+            # след старой формулировки. Пересуживаем только то, что человек читает.
+            f"        OR ({ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ}\n"
+            f"            AND COALESCE(c.prompt_v, 1) <> {PROMPT_VERSION}))")
 
 
 def unchecked_units(limit: int, *, fresh_first: bool = True) -> list[tuple]:
@@ -411,7 +456,10 @@ def unchecked_units(limit: int, *, fresh_first: bool = True) -> list[tuple]:
     from backend.database import get_db_connection_context
     from backend.lex_units import native_display_sql
     ru = native_display_sql("u")
-    порядок = "u.created_at DESC NULLS LAST, u.id DESC" if fresh_first else "u.id"
+    # Сначала то, что человек читает прямо сейчас, потом свежее (см. рамку у
+    # `ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ`). `NOT` даёт false=0 впереди — вопросы на экране первыми.
+    свежесть = "u.created_at DESC NULLS LAST, u.id DESC" if fresh_first else "u.id"
+    порядок = f"(NOT {ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ}), {свежесть}"
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(f"""
@@ -473,6 +521,16 @@ def count_prose_questions() -> int:
                     f"   AND {ВОПРОС_ИЗ_ПРОЗЫ}")
 
 
+def count_questions_on_the_old_prompt() -> int:
+    """Вопросы на экране владельца, вынесенные ПРЕЖНЕЙ формулировкой. Обязано убывать."""
+    from backend.lex_units import native_display_sql
+    ru = native_display_sql("u")
+    return _счётчик(f"u.lang = 'de' AND u.kind <> 'word' AND u.card IS NOT NULL\n"
+                    f"   AND COALESCE({ru}, '') <> ''\n"
+                    f"   AND {ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ}\n"
+                    f"   AND COALESCE(c.prompt_v, 1) <> {PROMPT_VERSION}")
+
+
 def count_without_translation() -> int:
     """Карточки фраз, у которых перевода нет НИГДЕ. Панель их не судит: показать голосу
     пустоту и получить «перевод не передаёт значение» — это выдумка, а не проверка.
@@ -507,6 +565,12 @@ def ensure_judged_ru_column() -> None:
         with conn.cursor() as cur:
             cur.execute("ALTER TABLE bt_3_field_checks "
                         "ADD COLUMN IF NOT EXISTS judged_ru TEXT;")
+            # Версия вопроса, которым вынесен вердикт. Старым отметкам — 1: они все
+            # вынесены первой формулировкой, это факт, а не догадка.
+            cur.execute("ALTER TABLE bt_3_field_checks "
+                        "ADD COLUMN IF NOT EXISTS prompt_v INT;")
+            cur.execute("UPDATE bt_3_field_checks SET prompt_v = 1 "
+                        "WHERE field = %s AND prompt_v IS NULL;", (FIELD,))
             cur.execute("""
                 UPDATE bt_3_field_checks c
                    SET judged_ru = COALESCE(u.card->>'translation_ru', '')
@@ -527,14 +591,16 @@ def _записать_отметку(unit_id: int, verdict: str, why: str, пе�
             cur.execute("""
                 INSERT INTO bt_3_field_checks
                     (unit_id, field, verdict, source, ours, reference, checked_at,
-                     judged_ru)
-                VALUES (%s,%s,%s,%s,NULL,%s,NOW(),%s)
+                     judged_ru, prompt_v)
+                VALUES (%s,%s,%s,%s,NULL,%s,NOW(),%s,%s)
                 ON CONFLICT (unit_id, field) DO UPDATE
                    SET verdict = EXCLUDED.verdict, reference = EXCLUDED.reference,
-                       checked_at = NOW(), judged_ru = EXCLUDED.judged_ru;""",
+                       checked_at = NOW(), judged_ru = EXCLUDED.judged_ru,
+                       prompt_v = EXCLUDED.prompt_v;""",
                         (unit_id, FIELD, verdict,
                          "панель: gpt-4.1 + gpt-4.1-mini + gemini-3.6-flash",
-                         (why or "")[:400] or None, str(перевод or "")))
+                         (why or "")[:400] or None, str(перевод or ""),
+                         int(PROMPT_VERSION)))
         conn.commit()
 
 
@@ -554,6 +620,11 @@ def раскрыть_отметку(reference: str) -> list[dict]:
     с претензией и без кнопки «да, правильно так» — выдумать её задним числом нельзя.
     """
     сырое = str(reference or "").strip()
+    # ⛔ «голос не ответил: ClientError» — это авария связи, а не претензия к немецкому.
+    # Владелец 04.09.2026 читал это на своём экране. Сырую ошибку в интерфейс не пускаем
+    # никогда: в следе она остаётся, человеку не показывается.
+    сырое = "; ".join(кусок for кусок in сырое.split("; ")
+                      if not кусок.strip().startswith("голос не ответил")).strip()
     if not сырое:
         return []
     поля, _, слова = сырое.partition(" :: ")
@@ -694,6 +765,7 @@ def run_batch(*, limit: int = NIGHT_LIMIT, budget_usd: float = NIGHT_BUDGET,
         "поднято из старых": 0, "потрачено": 0.0,
         "остановлено потолком": False, "осталось": 0,
         "пересудить": 0, "без перевода": 0, "вопросы из прозы": 0,
+        "вопросы старой формулировкой": 0,
         # Пересуд не только заводит вопросы, но и переписывает и снимает уже открытые.
         # Оба числа обязаны быть видны: молча снятый вопрос неотличим от потерянного.
         "вопрос переписан": 0, "вопрос снят": 0,
@@ -787,6 +859,7 @@ def run_batch(*, limit: int = NIGHT_LIMIT, budget_usd: float = NIGHT_BUDGET,
     отчёт["пересудить"] = count_stale_translation()
     отчёт["без перевода"] = count_without_translation()
     отчёт["вопросы из прозы"] = count_prose_questions()
+    отчёт["вопросы старой формулировкой"] = count_questions_on_the_old_prompt()
     logging.info("панель, порция: %s", отчёт)
     return отчёт
 

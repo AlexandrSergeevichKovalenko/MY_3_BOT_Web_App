@@ -222,7 +222,10 @@ class ScreenFitsOneScreenTests(unittest.TestCase):
 
     def test_decisions_are_laid_out_in_rows_not_a_column(self):
         src = self._src("PhraseReviewScreen.jsx")
-        self.assertGreaterEqual(src.count('className="frrev-row"'), 2,
+        # ⚠ 04.09.2026 два ряда решений сведены в ОДИН плотный (`frrev-row-tight`):
+        # два ряда высоких кнопок съедали половину экрана. Требование прежнее —
+        # решения стоят строками, а не столбиком по кнопке на строку.
+        self.assertGreaterEqual(src.count('className="frrev-row'), 2,
                                 "решения снова занимают по строке каждое")
 
     def test_review_block_takes_the_free_height(self):
