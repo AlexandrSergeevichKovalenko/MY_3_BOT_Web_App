@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 from backend.lex_units import _LINK_PICK_ORDER, _LINK_PICK_WHERE, normalize_query
 
@@ -56,6 +57,30 @@ _GENUS_TO_ARTICLE = {"m": "der", "f": "die", "n": "das"}
 
 # Дальше этого числа список перестаёт помогать и начинает пугать.
 MAX_ENTRIES = 6
+
+
+# ── СНАЧАЛА ПОВТОРИТЬ ПОД КАПОТОМ, И ТОЛЬКО ПОТОМ ЖАЛОВАТЬСЯ ────────────────────
+#
+# Владелец 03.09.2026: «если мы видим, что база моргнула, почему не дослать запрос
+# ещё раз? Человек знать этого не может, а мы-то знаем, моргнула база или нет».
+#
+# Он прав, и это НЕ запрещённый правилом ноль фолбэк: «Ретрай сети с ЧЕСТНЫМ финальным
+# падением — не fallback». Мы не подменяем ответ ничем другим — спрашиваем ТО ЖЕ САМОЕ
+# ещё раз.
+#
+# Что уже было в проекте: при ОТКРЫТИИ связи база пробуется трижды
+# (`database.DB_CONNECT_RETRIES`, пауза 0,6 c). А вот если связь взяли из уже открытых
+# и она оказалась мёртвой — запрос падал сразу, без второй попытки. Именно на это я
+# напоролся 02.09.2026: слой вернул пусто на живом слове «Kugel».
+#
+# Пауза короткая, весь повтор укладывается меньше чем в секунду: человек ждёт незаметно,
+# а если база не моргает, а лежит — мы не превращаем повторы в лишнюю нагрузку на неё.
+_ПОПЫТОК = 3
+_ПАУЗА_СЕК = 0.25
+
+# Сколько раз повтор ВЫРУЧИЛ. Если это число начнёт расти постоянно — база не моргает,
+# а болеет, и лечить надо её, а не переживать повторами (владелец, 03.09.2026).
+СПАСЕНО_ПОВТОРОМ = 0
 
 
 class DictionaryLayerUnavailable(RuntimeError):
@@ -480,7 +505,7 @@ def entries_for_query(query: str, *, source_lang: str, target_lang: str,
     if not key:
         return []
 
-    try:
+    def _собрать():
         from backend.database import get_db_connection_context
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
@@ -554,10 +579,30 @@ def entries_for_query(query: str, *, source_lang: str, target_lang: str,
                 entries = list(collected.values())
                 _attach_frequency(cur, entries)
                 _attach_examples(cur, entries)
-    except Exception as exc:
-        # НЕ ВОЗВРАЩАТЬ ЗДЕСЬ ПУСТОЙ СПИСОК. Почему — в DictionaryLayerUnavailable.
-        logging.error("слой статей не смог ответить про %r: %s", query, exc, exc_info=True)
-        raise DictionaryLayerUnavailable(str(exc)) from exc
+        return entries
+
+    global СПАСЕНО_ПОВТОРОМ
+    последняя = None
+    for попытка in range(1, _ПОПЫТОК + 1):
+        try:
+            entries = _собрать()
+            if попытка > 1:
+                СПАСЕНО_ПОВТОРОМ += 1
+                logging.warning("слой статей: ответил со %d-й попытки про %r — база "
+                                "моргнула, человек этого не увидел (выручено раз: %d)",
+                                попытка, query, СПАСЕНО_ПОВТОРОМ)
+            break
+        except Exception as exc:
+            последняя = exc
+            if попытка < _ПОПЫТОК:
+                logging.info("слой статей: попытка %d не удалась про %r (%s) — повторяю",
+                             попытка, query, exc)
+                time.sleep(_ПАУЗА_СЕК * попытка)
+                continue
+            # НЕ ВОЗВРАЩАТЬ ЗДЕСЬ ПУСТОЙ СПИСОК. Почему — в DictionaryLayerUnavailable.
+            logging.error("слой статей не смог ответить про %r после %d попыток: %s",
+                          query, _ПОПЫТОК, exc, exc_info=True)
+            raise DictionaryLayerUnavailable(str(exc)) from последняя
 
     # Статью без единого перевода показывать нечем — человек увидит слово и не
     # узнает, что оно значит.
