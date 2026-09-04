@@ -384,3 +384,10 @@ access: { state, free_month_ends_at, days_left, light_stars, pro_stars }
 сообщений боту (`handle_forwarded_message_lookup`). Закрыты той же проверкой
 `is_access_locked`; тест `backend/tests/test_access_lock_side_doors.py`. Быстрый словарь с
 иконки на экране идёт через дверь веба и перехватчик 402 — заперт вместе со всем.
+
+**Дополнение 04.09.2026, второе (по скриншоту владельца):** запертый аккаунт получал
+переводы в быстром словаре с иконки. Дверь стояла только на `/api/webapp/*`, а учебных
+адресов вне этого префикса десятки (`/api/translate/quick*`, `/api/answer/*`, `/api/cards/*`,
+`/api/today/*`, `/api/sprint/*`, `/api/trainer/task`…). Замок переехал в отдельный перехватчик
+`enforce_access_lock` на весь `/api/` с белым списком; §5.1 читать с этой поправкой.
+Тест — класс `ЗамокНаВесьApi` в `backend/tests/test_access_lock.py`.

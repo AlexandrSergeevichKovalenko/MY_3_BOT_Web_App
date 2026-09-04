@@ -7707,7 +7707,11 @@ function AppInner() {
       }));
     };
     window.addEventListener('dds:access-locked', onLocked);
-    return () => window.removeEventListener('dds:access-locked', onLocked);
+    try { window.__ddsAppMounted = true; } catch (_e) { /* ignore */ }
+    return () => {
+      window.removeEventListener('dds:access-locked', onLocked);
+      try { window.__ddsAppMounted = false; } catch (_e) { /* ignore */ }
+    };
   }, []);
   // "What are Telegram Stars" explainer — opened by a small ⓘ next to any Stars price.
   const [starsInfoOpen, setStarsInfoOpen] = useState(false);

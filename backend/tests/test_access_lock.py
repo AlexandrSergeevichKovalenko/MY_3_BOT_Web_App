@@ -148,3 +148,32 @@ class Обещание(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ЗамокНаВесьApi(unittest.TestCase):
+    """04.09.2026: учебных адресов вне /api/webapp/ десятки — замок стоит на всём /api/."""
+
+    def setUp(self):
+        self.client = server.app.test_client()
+
+    def _hit(self, path, *, uid, locked):
+        with patch.object(server, "_resolve_webapp_user_id", return_value=uid), \
+             patch.object(server, "is_access_locked", return_value=locked):
+            return self.client.post(path, json={"initData": "x"})
+
+    def test_ответ_на_задание_и_карточки_запертому_402(self):
+        for path in ("/api/answer/task", "/api/cards/next", "/api/today", "/api/sprint/task",
+                     "/api/translate/quick", "/api/trainer/task", "/api/leaderboard"):
+            r = self._hit(path, uid=UID, locked=True)
+            self.assertEqual(r.status_code, 402, path)
+            self.assertEqual(r.get_json()["reason"], "free_month_over", path)
+
+    def test_оплата_и_вход_открыты_запертому(self):
+        for path in ("/api/billing/status", "/api/billing/plans", "/api/webapp/billing/stars_invoice",
+                     "/api/telegram/validate", "/api/user/language-profile", "/api/mobile/auth/exchange"):
+            r = self._hit(path, uid=UID, locked=True)
+            self.assertNotEqual(r.status_code, 402, path)
+
+    def test_аноним_проходит_запирать_некого(self):
+        r = self._hit("/api/answer/task", uid=None, locked=True)
+        self.assertNotEqual(r.status_code, 402)
