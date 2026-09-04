@@ -5,11 +5,30 @@
 Грамматику предложения может рассудить только язык, а это деньги — значит партиями,
 с потолком и с отчётом.
 
-Два судьи, и это главное правило. Один и тот же вопрос задаётся ДВАЖДЫ, независимо.
-Молча правим ТОЛЬКО когда оба назвали одну категорию и выдали дословно один и тот же
-исправленный текст. Разошлись хоть в букве — фраза уходит владельцу на решение, а не
-в базу. Проверено на выборке 06.08.2026: расхождение — верный признак того, что модель
-не уверена и придумывает («предлог не тот» при том, что в правке дописана только точка).
+ОДИН ВЗГЛЯД ОДНОЙ МОДЕЛИ. Решение владельца 04.09.2026: «мне достаточно чтобы один раз
+модель посмотрела и всё… это не судьи, это хаотическое распределение случайности».
+
+┌─ ЗДЕСЬ БЫЛИ ДВА СУДЬИ. ЧТО ИМЕННО УБРАНО И ПОЧЕМУ. ─────────────────────────────┐
+│ Один и тот же вопрос задавался ДВАЖДЫ, и молча правилось только то, где оба      │
+│ ответа совпали дословно. Согласие двух ответов служило страховкой для записи в   │
+│ базу без спроса — и эта страховка УЖЕ доказала, что не работает: 19.08.2026 оба  │
+│ судьи дословно предложили «in den Taschen» (неверный падеж и другое число), и    │
+│ спасла не их сверка, а отдельная проверка самого исправленного текста.           │
+│                                                                                 │
+│ Замер 04.09.2026 на соседнем механизме (панель, 60 живых карточек): на вопросе   │
+│ «правильно ли это?» два голоса дали 31 претензию, настоящей была ОДНА. Дело в    │
+│ вопросе, а не в числе голосов: оценка бездонна, улучшить можно любую фразу.      │
+│ Закрытый вопрос одной модели дал на тех же карточках одну претензию — ту самую.  │
+│                                                                                 │
+│ Что теперь держит молчаливую правку вместо согласия двух ответов:                │
+│   • вопрос закрытый — только грамматика и понятность, стиль и «лучше бы сказать» │
+│     запрещены прямым текстом;                                                    │
+│   • модель ОБЯЗАНА процитировать неверный кусок, и цитату мы проверяем своей     │
+│     арифметикой, без запросов: нет её в тексте — находки нет;                    │
+│   • исправленный текст проходит свою проверку (`_check_fix_once`), а спор с ней  │
+│     снимает ПЕЧАТНЫЙ справочник, а не второе мнение;                             │
+│   • категория ошибки — из числа тех, что верны или неверны сами по себе.         │
+└─────────────────────────────────────────────────────────────────────────────────┘
 
 Молча правим только ошибки, которые не зависят от контекста: опечатка, согласование,
 падеж, предлог. ПОРЯДОК СЛОВ — никогда: кусок, вырванный из предложения, законно
@@ -56,7 +75,7 @@ def _check_own_fixes(judge: dict, text: str, translation: str) -> dict:
         if not fix:
             continue
         try:
-            judge[f"{field}_check"] = _check_fix_twice(text, translation, fix)
+            judge[f"{field}_check"] = _check_fix_once(text, translation, fix)
         except Exception as exc:
             logging.debug("проверка правки судьи не прошла: %s", exc)
             judge[f"{field}_check"] = {"checked": False}
@@ -121,58 +140,41 @@ def _reference_confirms_the_wording(fix: str, corrections: list[str]) -> str:
     return ", ".join(confirmed)
 
 
-def _check_fix_twice(text: str, translation: str, fix: str) -> dict:
-    """Спросить проверяющего ДВАЖДЫ и забраковать правку только при единогласии.
+def _check_fix_once(text: str, translation: str, fix: str) -> dict:
+    """Спросить проверяющего ОДИН раз про готовый исправленный текст.
 
-    Проверяющий — такая же модель, и на трудном месте ошибается: правку «Er war froh,
-    dass er das Schwein losgeworden war» один прогон забраковал со словами «слитное
-    написание неверно», хотя `losgeworden` — верное причастие от `loswerden`. Это тот же
-    приём, которым в этом файле держатся судьи: один голос — мнение, два совпавших —
-    основание. Здесь он развёрнут в сторону осторожности, потому что цена ошибок разная:
+    Это НЕ переспрос мнения: проверяется текст, которого раньше не было, — грамотен ли
+    он и не уехал ли смысл. Именно эта проверка поймала «in den Taschen», когда сверка
+    двух судей не поймала.
 
-      • ложно ЗАБРАКОВАТЬ — владелец теряет годную кнопку. Обидно, но текст и причина у
-        него перед глазами, и рядом есть поле «впиши свой вариант»;
-      • ложно ПРОПУСТИТЬ — неверный немецкий уезжает на кнопку, а при согласии судей и
-        молча в общий словарь, к людям.
-
-    Поэтому: забраковали оба — брак; разошлись — правка остаётся на кнопке, но помечена
-    спорной, и ночь её молча НЕ применяет (`fix_passed_check` вернёт None).
+    ⚠ ВТОРОЙ ЗАПРОС УБРАН 04.09.2026 вместе со вторым судьёй. Он ловил редкий случай,
+    когда проверяющий придирается к верному написанию («losgeworden пишется раздельно»),
+    — но ловит это НЕ второе мнение, а печатный справочник ниже, и он остаётся.
     """
     from backend.openai_manager import run_phrase_fix_check
 
-    first = run_phrase_fix_check(original=text, meaning_ru=translation, fix=fix) or {}
-    if not first.get("checked"):
+    итог = run_phrase_fix_check(original=text, meaning_ru=translation, fix=fix) or {}
+    if not итог.get("checked"):
         return {"checked": False}
-    if first.get("grammar_ok") and first.get("meaning_kept"):
-        return first          # претензий нет — второй голос не нужен, это лишние деньги
-    second = run_phrase_fix_check(original=text, meaning_ru=translation, fix=fix) or {}
-    if not second.get("checked"):
-        return {"checked": False}
-    out = dict(first)
-    for key in ("grammar_ok", "meaning_kept"):
-        # Брак только тогда, когда его увидели ОБА.
-        out[key] = bool(first.get(key)) or bool(second.get(key))
-    # СПРАВОЧНИК СИЛЬНЕЕ ДВУХ МОДЕЛЕЙ.
+    if итог.get("grammar_ok") and итог.get("meaning_kept"):
+        return итог
+    out = dict(итог)
+    # СПРАВОЧНИК СИЛЬНЕЕ МОДЕЛИ.
     #
-    # Оба голоса могут ошибиться одинаково — это и произошло: правку «…dass er das
-    # Schwein losgeworden war» обе проверки забраковали со словами «пишется раздельно»,
-    # хотя `losgeworden` напечатано в таблице `loswerden` именно слитно. Спорить с
-    # моделью нечем, а со справочником есть чем: если слово, к которому придрались,
-    # напечатано на странице Flexion, придирка снимается. Это не наше правило и не наша
-    # догадка — это то, что напечатано в источнике (CLAUDE.md, правило ноль).
-    if not out["grammar_ok"]:
-        confirmed_by = _reference_confirms_the_wording(
-            fix, [str(first.get("fixed") or ""), str(second.get("fixed") or "")])
+    # Проверяющий ошибается на трудном месте: правку «…dass er das Schwein losgeworden
+    # war» он забраковал со словами «пишется раздельно», хотя `losgeworden` напечатано
+    # в таблице `loswerden` именно слитно. Спорить с моделью нечем, а со справочником
+    # есть чем: если слово, к которому придрались, напечатано на странице Flexion,
+    # придирка снимается. Это не наше правило и не наша догадка — это то, что напечатано
+    # в источнике (CLAUDE.md, правило ноль).
+    if not out.get("grammar_ok"):
+        confirmed_by = _reference_confirms_the_wording(fix, [str(итог.get("fixed") or "")])
         if confirmed_by:
             logging.info("справочник подтвердил написание %s — придирка снята", confirmed_by)
             out["grammar_ok"] = True
             out["reference"] = confirmed_by
             out["why"] = (f"Написание подтверждено справочником ({confirmed_by}) — "
                           f"придирка к орфографии снята.")
-    if (bool(first.get("grammar_ok")) != bool(second.get("grammar_ok"))
-            or bool(first.get("meaning_kept")) != bool(second.get("meaning_kept"))):
-        out["disputed"] = True
-        out["why"] = str(second.get("why") or first.get("why") or "")
     return out
 
 
@@ -184,56 +186,86 @@ def _in_russian(value: str) -> bool:
     return bool(_CYRILLIC.search(str(value or "")))
 
 
-def _russian_why_or_retry(text: str, kind: str, translation: str, verdict: dict) -> dict:
-    """Объяснение судьи ОБЯЗАНО быть по-русски. Не по-русски — спрашиваем ещё раз.
+# ⛔ ЗДЕСЬ БЫЛ ПЕРЕСПРОС СУДЬИ ИЗ-ЗА ЯЗЫКА ОБЪЯСНЕНИЯ. УБРАН 04.09.2026.
+# Если ответ приходил не по-русски, задавался ЕЩЁ ОДИН платный запрос — тот же самый.
+# Требование «объясняй по-русски» стоит отдельным правилом в самом вопросе
+# (`openai_manager.run_phrase_grammar_verdict`), и платить за переформулирование
+# незачем. Пришло не по-русски — показываем как есть: спрятать разбор хуже.
 
-    Промпт требует «one short sentence in RUSSIAN» (openai_manager.run_phrase_grammar_verdict),
-    но модель это нарушает: замер 26.08.2026 — 29 открытых вопросов из 232 приехали к
-    владельцу с немецким объяснением вида «Das Verb 'fahren' wird hier transitiv
-    verwendet». Владелец читает по-русски; экран, объясняющий решение на языке, который
-    он разбирает, — это тот же молчащий экран, только с текстом.
 
-    Переспрашиваем ОДИН раз и только когда правило нарушено, поэтому расход почти нулевой.
-    Второй ответ тоже не по-русски — берём его как есть: прятать разбор нельзя, но
-    показываем его тогда во второй очереди, под «как рассуждали судьи».
+def _что_изменено(исходный: str, правка: str) -> str:
+    """Что именно правка меняет в тексте. Пустая строка — не меняет ничего.
+
+    ┌─ ПОЧЕМУ СЧИТАЕМ САМИ, А НЕ СПРАШИВАЕМ. Замер 04.09.2026. ────────────────────┐
+    │ Судью попросили цитировать неверное место полем `span`. На 63 живых фразах он │
+    │ вернул `null` ВО ВСЕХ случаях, включая контрольные с заведомой ошибкой:       │
+    │ «Die Finster der Nacht» он исправил верно, а показать пальцем не смог.        │
+    │ Требование, которое модель игнорирует, — не защита, а самообман.               │
+    │                                                                              │
+    │ Зато исправленный текст она даёт, и разница между ним и исходным И ЕСТЬ то    │
+    │ место, о котором речь. Это наша арифметика: она не зависит от послушности     │
+    │ модели и ловит ровно тот класс пустых придирок, ради которого затевалась, —   │
+    │ «предлог не тот», а в правке дописана только точка.                            │
+    └──────────────────────────────────────────────────────────────────────────────┘
+
+    Знаки в конце не считаются изменением: это словарная запись, а не связный текст.
+    """
+    a = str(исходный or "").strip().rstrip(" .!?…")
+    b = str(правка or "").strip().rstrip(" .!?…")
+    if not b or a == b:
+        return ""
+    начало = 0
+    while начало < len(a) and начало < len(b) and a[начало] == b[начало]:
+        начало += 1
+    конец = 0
+    while (конец < len(a) - начало and конец < len(b) - начало
+           and a[len(a) - 1 - конец] == b[len(b) - 1 - конец]):
+        конец += 1
+    # Раздвигаем до границ слов: «Finster» → «Finsternis» даёт разницу в три буквы
+    # («nis»), а человеку нужно видеть СЛОВО, о котором речь.
+    while начало > 0 and not a[начало - 1].isspace():
+        начало -= 1
+    while конец > 0 and конец < len(a) and not a[len(a) - конец].isspace():
+        конец -= 1
+    место = a[начало:len(a) - конец].strip()
+    # Правка только дописала слова (в исходном на этом месте пусто) — показываем то,
+    # что появилось: человеку важно увидеть, ЧТО именно добавили.
+    return место or b[начало:len(b) - конец].strip()
+
+
+def _judge_once(text: str, kind: str, translation: str = "") -> list[dict]:
+    """Спросить модель ОДИН раз. Список из одного ответа — форма, которую ждут дальше
+    экран и очередь вопросов.
+
+    Перевод передаём обязательно: предлог и падеж в немецком выбираются по смыслу, и
+    судья без перевода судит вслепую — на «Wappnen mit» («запастись чем-то») он требовал
+    `gegen` и ошибался.
+
+    Каждая предложенная правка сразу проходит проверку на грамотность и на сохранение
+    смысла (`_check_own_fixes`): показывать владельцу кнопку с неверным немецким — это
+    отдавать ему на проверку то, что должна была проверить система.
     """
     from backend.openai_manager import run_phrase_grammar_verdict
 
-    why = str((verdict or {}).get("why") or "").strip()
-    if not why or _in_russian(why):
-        return verdict
     try:
-        again = run_phrase_grammar_verdict(text=text, kind=kind, translation=translation) or {}
+        verdict = run_phrase_grammar_verdict(
+            text=text, kind=kind, translation=translation) or {}
     except Exception as exc:
-        logging.debug("переспрос судьи из-за языка объяснения не удался: %s", exc)
-        return verdict
-    if _in_russian(str(again.get("why") or "")):
-        return again
-    return verdict
-
-
-def _judge_twice(text: str, kind: str, translation: str = "") -> list[dict]:
-    """Спросить судью дважды, независимо. Перевод передаём ОБОИМ: предлог и падеж в
-    немецком выбираются по смыслу, и судья без перевода судит вслепую — на «Wappnen mit»
-    («запастись чем-то») оба независимо потребовали `gegen` и оба ошиблись.
-
-    Каждая предложенная правка сразу проходит проверку на грамотность и на сохранение
-    смысла (`_check_own_fixes`): показывать владельцу кнопку с неверным немецким —
-    это отдавать ему на проверку то, что должна была проверить система."""
-    from backend.openai_manager import run_phrase_grammar_verdict
-
-    out = []
-    for _ in range(2):
-        try:
-            verdict = run_phrase_grammar_verdict(
-                text=text, kind=kind, translation=translation) or {}
-        except Exception as exc:
-            logging.debug("судья фраз не ответил: %s", exc)
-            verdict = {}
-        if verdict:
-            verdict = _russian_why_or_retry(text, kind, translation, verdict)
-        out.append(_check_own_fixes(verdict, text, translation) if verdict else verdict)
-    return out
+        logging.debug("судья фраз не ответил: %s", exc)
+        return [{}]
+    if not verdict:
+        return [{}]
+    # ⛔ ПРЕТЕНЗИЯ БЕЗ ИЗМЕНЕНИЯ — НЕ ОШИБКА. Считаем САМИ, без запросов.
+    if str(verdict.get("verdict") or "") == "error":
+        место = _что_изменено(text, str(verdict.get("corrected") or "")) \
+            or _что_изменено(text, str(verdict.get("proposal") or ""))
+        if not место:
+            logging.info("судья не изменил ни слова — придирка снята с %r", str(text)[:60])
+            return [{"verdict": "ok", "category": "", "corrected": "", "why": "",
+                     "kind": verdict.get("kind") or kind, "span": "",
+                     "dropped_no_change": True}]
+        verdict["span"] = место
+    return [_check_own_fixes(verdict, text, translation)]
 
 
 def fix_passed_check(judge: dict, field: str) -> bool | None:
@@ -270,33 +302,49 @@ def _both_name_the_same_kind(judges: list[dict]) -> str:
     return первый if первый in ("sentence", "collocation") else ""
 
 
-def _both_agree(judges: list[dict]) -> tuple[bool, str, str]:
-    """Согласны ли судьи ДОСЛОВНО. Возвращает (согласны, категория, исправленный текст).
+def _both_agree(judges: list[dict], text: str = "") -> tuple[bool, str, str]:
+    """Можно ли применить правку МОЛЧА. Возвращает (можно, категория, готовый текст).
+
+    ⚠ ИМЯ ОСТАЛОСЬ ПРЕЖНИМ, ЗАКОН ИЗМЕНИЛСЯ 04.09.2026. Раньше «согласны» значило
+    «два независимых ответа совпали дословно». Судья теперь один (см. рамку в шапке
+    файла), и молчаливую правку держат четыре условия — каждое проверяемо:
+
+      1) вердикт «ошибка» и категория из тех, что верны или неверны сами по себе;
+      2) правка непустая и отличается от исходного текста не одной точкой на конце;
+      3) МОДЕЛЬ ПРОЦИТИРОВАЛА неверный кусок, и цитата НАЙДЕНА в самом тексте —
+         это наша арифметика, без запросов и без веры на слово;
+      4) сам исправленный текст прошёл проверку (`_check_fix_once`), а спор с ней
+         снимает печатный справочник.
 
     Смотрим ТОЛЬКО `corrected` — правку без добавления слов. Поле `proposal` (достройка
     неполной фразы: дописанное местоимение, артикль, подлежащее) сюда не допускается
     никогда: дописать слова за человека — это решение о смысле, а его принимает владелец
-    в /admin_phrase_review, а не ночь молча."""
-    if len(judges) != 2:
+    в /admin_phrase_review, а не ночь молча.
+    """
+    if len(judges) != 1:
         return False, "", ""
-    a, b = judges
-    if a.get("verdict") != "error" or b.get("verdict") != "error":
+    a = judges[0]
+    if not isinstance(a, dict) or a.get("verdict") != "error":
         return False, "", ""
-    if (a.get("category") or "") != (b.get("category") or ""):
+    fix = str(a.get("corrected") or "").strip()
+    if not fix:
         return False, "", ""
-    fix_a = str(a.get("corrected") or "").strip()
-    fix_b = str(b.get("corrected") or "").strip()
-    if not fix_a or fix_a != fix_b:
+    исходный = str(text or "").strip()
+    if исходный and fix.rstrip(" .!?") == исходный.rstrip(" .!?"):
+        # Правка, отличающаяся одной точкой, — пустая придирка, а не исправление.
         return False, "", ""
-    # Согласие двух судей — это ещё не правильность. Оба могут ошибиться одинаково:
-    # 19.08.2026 оба дословно предложили «in den Taschen» — неверный падеж и другое
-    # число. Молча правим ТОЛЬКО то, что вдобавок прошло проверку своей же правки.
-    # «Не проверялась» (None) сюда тоже не пускаем: молчание проверки не согласие.
+    # ⛔ ЦИТАТА ОБЯЗАНА НАЙТИСЬ В САМОМ ТЕКСТЕ. Модель, которая не может показать
+    # пальцем на неверное место, не имеет права молча переписать чужую фразу.
+    кусок = str(a.get("span") or "").strip()
+    if исходный and (not кусок or кусок not in исходный):
+        logging.info("молчаливая правка отклонена: цитата %r не найдена в %r",
+                     кусок[:40], исходный[:60])
+        return False, "", ""
+    # Проверка правки — не мнение о фразе, а вопрос о НОВОМ тексте. «Не проверялась»
+    # (None) сюда не пускаем: молчание проверки не согласие.
     if fix_passed_check(a, "corrected") is not True:
         return False, "", ""
-    if fix_passed_check(b, "corrected") is not True:
-        return False, "", ""
-    return True, str(a.get("category") or ""), fix_a
+    return True, str(a.get("category") or ""), fix
 
 
 def rejudge_phrase_review(review_id: int) -> bool:
@@ -312,7 +360,7 @@ def rejudge_phrase_review(review_id: int) -> bool:
     row = get_open_phrase_review(int(review_id))
     if not row:
         return False
-    judges = _judge_twice(row["text"], row.get("kind") or "collocation",
+    judges = _judge_once(row["text"], row.get("kind") or "collocation",
                           row.get("translation") or "")
     if not any(j for j in judges):
         return False
@@ -415,7 +463,7 @@ def settle_dispute(review_id: int) -> bool:
         # Свой текст третьего судьи — такая же правка, как у первых двух, и проверяется
         # тем же способом. Итог кладём рядом, в `better_check`.
         try:
-            verdict["better_check"] = _check_fix_twice(text, translation, better)
+            verdict["better_check"] = _check_fix_once(text, translation, better)
         except Exception as exc:
             logging.debug("проверка текста третьего судьи не прошла: %s", exc)
             verdict["better_check"] = {"checked": False}
@@ -458,7 +506,7 @@ def answer_beyond_what_the_owner_saw(*, unit_id: int, text: str, translation: st
     better = str(verdict.get("better") or "").strip()
     if not better or _phrase_text_key(better) in seen:
         return False                       # ответить нечем — это круг, молчим
-    check = _check_fix_twice(text, translation, better)
+    check = _check_fix_once(text, translation, better)
     if not (check.get("checked") and check.get("grammar_ok") and check.get("meaning_kept")):
         return False                       # свой же текст не прошёл проверку — не несём
     verdict["better_check"] = check
@@ -698,7 +746,7 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
         return report
 
     def work(row):
-        return row, _judge_twice(row["text"], row["kind"], row.get("translation") or "")
+        return row, _judge_once(row["text"], row["kind"], row.get("translation") or "")
 
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
         for row, judges in pool.map(work, rows):
@@ -717,7 +765,7 @@ def run_phrase_night_check(*, limit: int | None = None, dry_run: bool = False) -
                         report["kind_fixed"] = report.get("kind_fixed", 0) + 1
                         logging.info("вид записи %r: %s → %s (оба судьи)",
                                      row["text"][:60], row.get("kind"), новый_вид)
-            agreed, category, corrected = _both_agree(judges)
+            agreed, category, corrected = _both_agree(judges, row["text"])
             if agreed and category in SILENT_CATEGORIES:
                 if dry_run or _apply_silent_fix(row["unit_id"], corrected):
                     if not dry_run:

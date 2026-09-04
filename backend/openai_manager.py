@@ -9458,6 +9458,29 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence",
         "You are a strict German grammar examiner. Our records call this " + as_what + ", "
         "saved into a dictionary by a learner. Our record may be WRONG - it was produced by "
         "counting words, not by reading the text.\n"
+        # ⛔ ЭТО ЕГО СОБСТВЕННАЯ ФРАЗА. Владелец 04.09.2026: «ну конечно её нет — я её
+        # только что придумал и перевёл». До этого дня судья считал дефектом то, что
+        # фразы нет в словарях, и слал владельцу «такого устойчивого выражения не
+        # существует» про его же предложения.
+        "\nTHE TEXT IS THE LEARNER'S OWN. He met it, composed it or translated it "
+        "himself and saved it for himself. It is NOT a dictionary article, NOT an idiom, "
+        "NOT a set phrase, and it does not exist anywhere else - he wrote it minutes ago. "
+        "NEVER report as a defect that the text is not a set expression, not idiomatic, "
+        "not found in dictionaries, uncommon, or that some other wording would be more "
+        "usual. Those are not errors. You are asked TWO things only: is it grammatically "
+        "correct, and would a German understand it as written.\n"
+        "WHEN YOU HESITATE between \"correct\" and \"a German would not say it\", answer "
+        "verdict=\"ok\". Silence is the right answer far more often than a complaint.\n"
+        # ⛔ ЦИТАТУ У МОДЕЛИ НЕ ПРОСИМ — ПРОВЕРЕНО 04.09.2026, ОНА ЕЁ НЕ ЗАПОЛНЯЕТ.
+        # Поле `span` было добавлено и на 63 живых фразах вернулось `null` ВО ВСЕХ
+        # случаях, включая контрольные с заведомой ошибкой. Требование, которое модель
+        # игнорирует, — не защита, а самообман. Изменённое место мы теперь СЧИТАЕМ САМИ
+        # из разницы между текстом и правкой (`phrase_night_check._что_изменено`):
+        # это наша арифметика, она не зависит от послушности модели.
+        "AN ERROR YOU CANNOT FIX IS NOT AN ERROR. Whenever you answer verdict=\"error\", "
+        "`corrected` (or `proposal`) MUST differ from the text in the place that is "
+        "wrong. If your fix would be the text itself, or would differ only by the final "
+        "full stop, then there is nothing wrong: answer verdict=\"ok\".\n"
         "FIRST decide for yourself what it is and answer it in `kind`:\n"
         "  \"sentence\" - a complete standalone sentence or main clause: it has a subject "
         "and a finite verb (\"Das geht nicht\", \"Ich bin verwirrt\", \"Mir reicht's\"). "
@@ -9507,6 +9530,10 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence",
         "there is INVALID even when the sentence you judge is German: the reader is a "
         "Russian speaker deciding whether to keep the entry. German words may appear "
         "only as quoted examples inside the Russian sentence.\n"
+        # ⛔ ЦИТАТА ОБЯЗАТЕЛЬНА, И МЫ ПРОВЕРЯЕМ ЕЁ СВОЕЙ АРИФМЕТИКОЙ, БЕЗ ЗАПРОСОВ.
+        # Замер 04.09.2026 на соседнем механизме: этот бесплатный фильтр снял 13
+        # «находок» из 19 — модель показывала на то, чего в записи нет вовсе.
+
         "Answer STRICT JSON only: {\"kind\":\"sentence|collocation\","
         "\"verdict\":\"ok|error|context|style\","
         "\"category\":\"rechtschreibung|kongruenz|kasus|praeposition|wortstellung|stil|\","
@@ -9541,6 +9568,16 @@ def run_phrase_grammar_verdict(*, text: str, kind: str = "sentence",
     except Exception:
         pass
     try:
+        # ⛔ РАСХОД ЭТОЙ РАБОТЫ ДОЛЖЕН БЫТЬ ВИДЕН. Ночная проверка фраз ходила в OpenAI
+        # своим клиентом, мимо учёта: в отчёте по деньгам её не было НИКОГДА (найдено
+        # 04.09.2026 при разборе ведомости). Молчащий расход неотличим от нулевого.
+        try:
+            from backend.openai_usage_logging import log_openai_raw_usage
+            log_openai_raw_usage(action_type="phrase_grammar_verdict",
+                                 model="gpt-4.1-mini",
+                                 usage=getattr(resp, "usage", None), user_id=None)
+        except Exception:
+            pass
         data = json.loads(resp.choices[0].message.content or "{}") or {}
     except Exception:
         return {"verdict": "ok", "category": "", "corrected": "", "why": ""}
@@ -9807,6 +9844,12 @@ def run_phrase_fix_check(*, original: str, meaning_ru: str, fix: str) -> dict:
     except Exception:
         pass
     try:
+        try:
+            from backend.openai_usage_logging import log_openai_raw_usage
+            log_openai_raw_usage(action_type="phrase_fix_check", model="gpt-4.1-mini",
+                                 usage=getattr(resp, "usage", None), user_id=None)
+        except Exception:
+            pass
         data = json.loads(resp.choices[0].message.content or "{}") or {}
     except Exception:
         return {"checked": False, "grammar_ok": None, "meaning_kept": None, "why": ""}

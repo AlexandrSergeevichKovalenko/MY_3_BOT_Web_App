@@ -29,7 +29,7 @@ class ХвостВыключенВТестах(unittest.TestCase):
         строка = {"unit_id": 777, "text": "фраза", "kind": "collocation",
                   "translation": "перевод"}
         with mock.patch.object(ночь, "pick_phrases_for_grammar_check", return_value=[строка]), \
-             mock.patch.object(ночь, "_judge_twice", return_value=[{"verdict": "ok"},
+             mock.patch.object(ночь, "_judge_once", return_value=[{"verdict": "ok"},
                                                                    {"verdict": "ok"}]), \
              mock.patch.object(ночь, "mark_phrase_checked"), \
              mock.patch.object(ночь, "count_phrases_left_for_grammar_check", return_value=0), \
@@ -49,7 +49,7 @@ class ХвостВыключенВТестах(unittest.TestCase):
                   "translation": "перевод"}
         with mock.patch.dict(os.environ, {"SKIP_NIGHT_SIDE_EFFECTS": ""}), \
              mock.patch.object(ночь, "pick_phrases_for_grammar_check", return_value=[строка]), \
-             mock.patch.object(ночь, "_judge_twice", return_value=[{"verdict": "ok"},
+             mock.patch.object(ночь, "_judge_once", return_value=[{"verdict": "ok"},
                                                                    {"verdict": "ok"}]), \
              mock.patch.object(ночь, "mark_phrase_checked"), \
              mock.patch.object(ночь, "count_phrases_left_for_grammar_check", return_value=0), \

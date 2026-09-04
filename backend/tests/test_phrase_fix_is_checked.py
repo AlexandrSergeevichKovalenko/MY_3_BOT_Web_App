@@ -29,8 +29,8 @@ TEXT = "Steck das Portemonnaie in die Tasche."
 BAD_FIX = "Steck das Portemonnaie in den Taschen."
 
 
-def judge(category, fix=BAD_FIX, check=None):
-    out = {"verdict": "error", "category": category, "corrected": fix,
+def judge(category, fix=BAD_FIX, check=None, span="Tasche"):
+    out = {"verdict": "error", "category": category, "corrected": fix, "span": span,
            "corrected_ru": "Положи кошелек в карманы."}
     if check is not None:
         out["corrected_check"] = check
@@ -46,29 +46,25 @@ NOT_CHECKED = {"checked": False}
 
 
 class PhraseFixIsCheckedTests(unittest.TestCase):
-    def test_both_judges_agreeing_is_not_enough_to_write_silently(self):
-        """Согласие двух — это ещё не правильность: ошибиться одинаково они могут."""
-        judges = [judge("kasus", check=BAD_GRAMMAR), judge("kasus", check=BAD_GRAMMAR)]
-        agree, _category, _fix = _both_agree(judges)
-        self.assertFalse(agree, "неграмотная правка не имеет права уехать молча")
+    def test_an_ungrammatical_fix_never_goes_silently(self):
+        """⚠ 04.09.2026 судья стал один, и проверка правки — главная страховка молчаливой
+        записи. Именно она поймала «in den Taschen», когда сверка двух судей не поймала."""
+        self.assertFalse(_both_agree([judge("kasus", check=BAD_GRAMMAR)], TEXT)[0],
+                         "неграмотная правка не имеет права уехать молча")
 
     def test_meaning_change_also_stops_the_silent_write(self):
-        judges = [judge("kasus", check=BAD_MEANING), judge("kasus", check=BAD_MEANING)]
-        self.assertFalse(_both_agree(judges)[0])
+        self.assertFalse(_both_agree([judge("kasus", check=BAD_MEANING)], TEXT)[0])
 
     def test_unchecked_fix_is_not_treated_as_a_good_one(self):
         """«Проверка не ответила» и «проверка сказала, что всё хорошо» — разные миры."""
-        judges = [judge("kasus", check=NOT_CHECKED), judge("kasus", check=NOT_CHECKED)]
-        self.assertFalse(_both_agree(judges)[0])
-        judges_without_the_key = [judge("kasus"), judge("kasus")]
-        self.assertFalse(_both_agree(judges_without_the_key)[0])
+        self.assertFalse(_both_agree([judge("kasus", check=NOT_CHECKED)], TEXT)[0])
+        self.assertFalse(_both_agree([judge("kasus")], TEXT)[0])
 
     def test_a_checked_fix_still_goes_through(self):
         """Проверка не должна запирать всё подряд: годная правка едет как раньше."""
         good = "Weißt du zufällig Bescheid, wem sie gehört?"
-        judges = [judge("rechtschreibung", fix=good, check=PASSED),
-                  judge("rechtschreibung", fix=good, check=PASSED)]
-        agree, category, fix = _both_agree(judges)
+        agree, category, fix = _both_agree(
+            [judge("rechtschreibung", fix=good, check=PASSED)], TEXT)
         self.assertTrue(agree)
         self.assertEqual(category, "rechtschreibung")
         self.assertEqual(fix, good)
