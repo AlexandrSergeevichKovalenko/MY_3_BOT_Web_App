@@ -14066,6 +14066,28 @@ def ensure_webapp_tables() -> None:
                 ALTER TABLE bt_3_rebus_component_images
                 ADD COLUMN IF NOT EXISTS gate_checked_at TIMESTAMPTZ;
             """)
+            # Когда МАШИНА усомнилась в картинке и отложила её владельцу. Отдельная
+            # колонка, а не «pending с текстом причины»: review_status='pending' носят
+            # ДВА разных состояния — свежая картинка, которую владелец ещё не видел, и
+            # картинка, которую машина забраковала. Разбирать их по тексту причины
+            # значит гадать; вопрос владельцу строится по этой отметке.
+            # NULL = машина к картинке претензий не предъявляла.
+            cursor.execute("""
+                ALTER TABLE bt_3_rebus_component_images
+                ADD COLUMN IF NOT EXISTS machine_doubt_at TIMESTAMPTZ;
+            """)
+            # Разовый добор для тех, кого машина отложила ДО появления этой колонки.
+            # На 04.09.2026 это Brand, Edel и Helm: они висели «под вопросом», письмо
+            # владельцу про них ушло, а на экране их не было вовсе. Признак точный —
+            # префикс «машина усомнилась: » пишет только ночной проход
+            # (`sweep_unchecked_rebus_components`), больше никто.
+            cursor.execute("""
+                UPDATE bt_3_rebus_component_images
+                SET machine_doubt_at = COALESCE(gate_checked_at, updated_at)
+                WHERE machine_doubt_at IS NULL
+                  AND review_status = 'pending'
+                  AND review_reason LIKE 'машина усомнилась:%';
+            """)
             # Ходовость слова по DWDS — кеш, чтобы не спрашивать чужой сервис дважды.
             # `hits IS NULL` = «спрашивали, не ответил»: это НЕ ноль вхождений.
             # Разбор 01.09.2026: см. backend/dwds_frequency.py.
@@ -56660,7 +56682,7 @@ def rebus_pool_status() -> dict:
     """Где сейчас стоит игра: сколько карточек готово к отправке, сколько ждут
     дорисовки и сколько половинок ждут приёмки. Нужно, чтобы после «годится» было
     видно, что картинка дошла до банка, а не улетела в никуда."""
-    out = {"ready": 0, "waiting_draw": 0, "awaiting_review": 0}
+    out = {"ready": 0, "waiting_draw": 0, "awaiting_review": 0, "flagged": 0}
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -56678,6 +56700,11 @@ def rebus_pool_status() -> dict:
                     "WHERE review_status = 'pending' AND generation_status = 'ready'"
                 )
                 out["awaiting_review"] = int((cursor.fetchone() or [0])[0])
+                cursor.execute(
+                    "SELECT COUNT(*) FROM bt_3_rebus_component_images "
+                    "WHERE machine_doubt_at IS NOT NULL AND review_status = 'pending'"
+                )
+                out["flagged"] = int((cursor.fetchone() or [0])[0])
     except Exception:
         logging.warning("rebus_pool_status failed", exc_info=True)
     return out
@@ -56909,7 +56936,8 @@ def set_rebus_card_review(compound_id: str, verdict: str, word: str = "", reason
             if words:
                 cursor.execute(
                     "UPDATE bt_3_rebus_component_images "
-                    "SET review_status='approved', review_reason=NULL, updated_at=NOW() "
+                    "SET review_status='approved', review_reason=NULL, "
+                    "    machine_doubt_at=NULL, updated_at=NOW() "
                     "WHERE word = ANY(%s) AND review_status = 'pending'",
                     (words,),
                 )
@@ -57053,7 +57081,8 @@ def set_rebus_component_review(word: str, verdict: str, reason: str = "") -> dic
             with conn.cursor() as cursor:
                 cursor.execute(
                     "UPDATE bt_3_rebus_component_images "
-                    "SET review_status='approved', review_reason=NULL, updated_at=NOW() "
+                    "SET review_status='approved', review_reason=NULL, "
+                    "    machine_doubt_at=NULL, updated_at=NOW() "
                     "WHERE word=%s",
                     (word,),
                 )
@@ -57069,7 +57098,7 @@ def set_rebus_component_review(word: str, verdict: str, reason: str = "") -> dic
                 cursor.execute(
                     "UPDATE bt_3_rebus_component_images "
                     "SET review_status='pending', generation_status='failed', "
-                    "    image_object_key=NULL, review_reason=%s, "
+                    "    image_object_key=NULL, review_reason=%s, machine_doubt_at=NULL, "
                     "    failure_reason=%s, redraw_count=redraw_count+1, updated_at=NOW() "
                     "WHERE word=%s",
                     (hint[:500], f"rejected by owner: {hint}"[:500], word),
@@ -57085,7 +57114,8 @@ def set_rebus_component_review(word: str, verdict: str, reason: str = "") -> dic
             cursor.execute(
                 "UPDATE bt_3_rebus_component_images "
                 "SET review_status='blocked', generation_status='failed', "
-                "    review_reason=%s, failure_reason='blocked by owner', updated_at=NOW() "
+                "    review_reason=%s, machine_doubt_at=NULL, "
+                "    failure_reason='blocked by owner', updated_at=NOW() "
                 "WHERE word=%s",
                 ((hint or "not rebus material")[:500], word),
             )
@@ -57347,20 +57377,140 @@ def mark_rebus_component_gate_checked(word: str) -> None:
 
 
 def send_rebus_component_to_owner_review(word: str, reason: str) -> None:
-    """Машина усомнилась — картинка уходит ВЛАДЕЛЬЦУ в ту же очередь приёмки, где у
-    него уже есть кнопки «годится / перерисовать / снять пару», и до его решения
-    не выдаётся (`pick_next_rebus` требует 'approved'). Мы не удаляем её сами:
-    приговор машины — повод спросить человека, а не заменить его."""
+    """Машина усомнилась — картинка уходит ВЛАДЕЛЬЦУ на вкладку «Под вопросом» и до
+    его решения не выдаётся (`pick_next_rebus` требует 'approved'). Мы не удаляем её
+    сами: приговор машины — повод спросить человека, а не заменить его.
+
+    ┌─ НАЙДЕНО И ПОЧИНЕНО 04.09.2026. НЕ ВОЗВРАЩАТЬ ССЫЛКУ НА ОЧЕРЕДЬ КАРТОЧЕК. ──┐
+    │ До этой даты письмо владельцу вело на вкладку «На приёмке», а она строится   │
+    │ ИЗ БАНКА ЗАДАНИЙ: только карточки, ещё не собранные (composed_status <>      │
+    │ 'ready') и не снятые (retired = FALSE). Отметка же ставится ЗДЕСЬ, на самой  │
+    │ КАРТИНКЕ, и с банком никак не связана.                                       │
+    │                                                                              │
+    │ Замер на боевой базе 04.09.2026: «под вопросом» висели 5 картинок — Brand,   │
+    │ Edel, Feuer, Helm, Wein. Из них 4 стояли только в снятых карточках, а        │
+    │ Waldbrand (Brand) был уже собран. На экране не показывалась НИ ОДНА, при     │
+    │ этом Waldbrand был заморожен на выдаче до решения владельца — то есть        │
+    │ задание вставало намертво, а разморозить его было негде.                     │
+    │                                                                              │
+    │ Поэтому вопрос владельцу строится по картинкам (`list_flagged_rebus_images`),│
+    │ а не по банку. Перемерить: SELECT word, review_reason FROM                   │
+    │ bt_3_rebus_component_images WHERE machine_doubt_at IS NOT NULL.              │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    """
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 "UPDATE bt_3_rebus_component_images "
                 "SET review_status = 'pending', review_reason = %s, "
-                "    gate_checked_at = NOW(), updated_at = NOW() "
+                "    machine_doubt_at = NOW(), gate_checked_at = NOW(), updated_at = NOW() "
                 "WHERE word = %s AND review_status <> 'blocked'",
                 (str(reason)[:500], str(word)),
             )
         conn.commit()
+
+
+def list_flagged_rebus_images(limit: int = 40) -> list[dict]:
+    """Картинки, в которых усомнилась машина и которые ждут слова владельца.
+
+    Единица здесь — КАРТИНКА, а не пара: машина судила именно картинку («на ней
+    шлем, а не штурвал»), и такой вопрос решается по одной картинке. Пара — вопрос
+    другой («складываются ли эти двое в слово»), и у неё свой экран.
+
+    Отбор идёт по отметке `machine_doubt_at` и НИ ПО ЧЕМУ БОЛЬШЕ: картинка обязана
+    доехать до владельца, даже если ни одно живое задание её сейчас не использует
+    (04.09.2026 таких было 4 из 5). Решение владельца 04.09.2026: показывать и такие,
+    но отдельным списком — сперва то, что держит живые задания.
+    """
+    from backend.r2_storage import r2_public_url
+
+    def _url(key) -> str:
+        if not key:
+            return ""
+        try:
+            return r2_public_url(str(key))
+        except Exception:
+            return ""
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word, image_object_key, review_reason, redraw_count, machine_doubt_at
+                FROM bt_3_rebus_component_images
+                WHERE machine_doubt_at IS NOT NULL
+                  AND review_status = 'pending'
+                ORDER BY machine_doubt_at
+                LIMIT %s
+                """,
+                (max(1, min(200, int(limit or 40))),),
+            )
+            rows = cursor.fetchall() or []
+            words = [str(r[0]) for r in rows if r and r[0]]
+            bank_rows: list = []
+            if words:
+                # Снятые карточки тоже берём: владельцу важно видеть, что картинка
+                # сейчас никому не нужна, — иначе он не поймёт, почему его спросили.
+                cursor.execute(
+                    """
+                    SELECT p ->> 'word', b.compound_word, b.meaning_ru,
+                           b.composed_status, b.retired, p ->> 'meaning_ru'
+                    FROM bt_3_rebus_bank b, jsonb_array_elements(b.parts_json) p
+                    WHERE p ->> 'word' = ANY(%s)
+                    ORDER BY b.compound_word
+                    """,
+                    (words,),
+                )
+                bank_rows = cursor.fetchall() or []
+
+    used: dict[str, list[dict]] = {w: [] for w in words}
+    meanings: dict[str, str] = {}
+    for part_word, compound, compound_ru, composed, retired, part_ru in bank_rows:
+        key = str(part_word or "")
+        if key not in used:
+            continue
+        if not meanings.get(key) and str(part_ru or "").strip():
+            meanings[key] = str(part_ru).strip()
+        used[key].append({
+            "compound": str(compound or ""),
+            "compound_ru": str(compound_ru or ""),
+            "live": not bool(retired),
+            "composed": str(composed or "") == "ready",
+        })
+
+    out: list[dict] = []
+    for word, key, reason, redraws, flagged_at in rows:
+        word = str(word or "")
+        cards = used.get(word) or []
+        live = [c for c in cards if c["live"]]
+        out.append({
+            "word": word,
+            "meaning_ru": meanings.get(word, ""),
+            "image_url": _url(key),
+            "reason": str(reason or ""),
+            "redraw_count": int(redraws or 0),
+            "redraws_left": max(0, MAX_REBUS_COMPONENT_REDRAWS - int(redraws or 0)),
+            "flagged_at": flagged_at.isoformat() if flagged_at else "",
+            # Держит ли эта картинка живые задания. Пока она под вопросом, карточки с
+            # ней НЕ выдаются людям (см. страж внутри pick_next_rebus).
+            "blocks_live": bool(live),
+            "live_cards": [c["compound"] for c in live],
+            "retired_cards": [c["compound"] for c in cards if not c["live"]],
+        })
+    # Сперва то, что держит живые задания: это единственное, что стоит времени сейчас.
+    out.sort(key=lambda i: (not i["blocks_live"], i["flagged_at"]))
+    return out
+
+
+def count_flagged_rebus_images() -> int:
+    """Сколько картинок ждут слова владельца — число для заголовка и для письма."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_rebus_component_images "
+                "WHERE machine_doubt_at IS NOT NULL AND review_status = 'pending'"
+            )
+            return int((cursor.fetchone() or [0])[0])
 
 
 _UNCHECKED_IMAGES_WHERE = (

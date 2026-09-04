@@ -32302,13 +32302,17 @@ async def rebus_image_sweep_job(context: CallbackContext) -> None:
                 f"{names}{'…' if len(to_owner) > 12 else ''}\n\n"
                 "Машина посмотрела и решила, что нарисован не тот предмет. Пока не "
                 "решишь ты, эти задания людям не уходят.\n\n"
+                "Кнопка открывает экран сразу на этих картинках: у каждой видно саму "
+                "картинку, слово и три кнопки — «картинка верная», «перерисовать», "
+                "«не рисовать это слово».\n\n"
                 f"Осталось просмотреть: {result.get('backlog_left')}."
             )
             if bot is not None:
                 for admin_id in (get_admin_telegram_ids() or []):
                     try:
-                        await bot.send_message(chat_id=int(admin_id), text=text,
-                                               parse_mode="HTML", reply_markup=_rebus_review_kb())
+                        await bot.send_message(
+                            chat_id=int(admin_id), text=text, parse_mode="HTML",
+                            reply_markup=_rebus_review_kb("🧩 Показать спорные картинки"))
                     except Exception:
                         logging.warning("image_sweep: DM failed admin_id=%s", admin_id, exc_info=True)
         except Exception:

@@ -10110,7 +10110,11 @@ def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", f
         f'literal, dictionary meaning?{forbid_line}{sibling_line} '
         'Reject (ok=false) if the main object is a DIFFERENT thing, a related-but-wrong object '
         '(e.g. a pine cone when a geometric cone was intended), or if it reveals the forbidden answer. '
-        'Answer ONLY strict JSON: {"ok": true|false, "reason": "<=8 words"}.'
+        # Причину читает ВЛАДЕЛЕЦ на экране приёмки, поэтому она по-русски: «This is a
+        # helmet, not a helm» в интерфейсе — это сырой ответ модели, а не текст для
+        # человека (правка 04.09.2026). В запрос на перерисовку идёт не она, а
+        # REBUS_REJECT_REASONS — там английский и остаётся.
+        'Answer ONLY strict JSON: {"ok": true|false, "reason": "<=10 words, IN RUSSIAN"}.'
     )
     try:
         client = build_sync_openai_client(api_key=api_key, timeout=40)

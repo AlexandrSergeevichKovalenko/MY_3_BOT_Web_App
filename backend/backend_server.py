@@ -32124,6 +32124,78 @@ def answer_rebus_review_list():
     return jsonify({"ok": True, "items": items, "status": rebus_pool_status()})
 
 
+@app.route("/api/answer/rebusreview/flagged", methods=["POST"])
+def answer_rebus_review_flagged():
+    """Картинки, в которых усомнилась машина, — ровно то, о чём приходит письмо ночью.
+
+    Очередь строится по картинкам, а не по банку заданий: 04.09.2026 из 5 отложенных
+    картинок на экран не попадала НИ ОДНА, потому что вкладка «На приёмке» показывает
+    только несобранные и неснятые карточки. Подробности — в комментарии у
+    `send_rebus_component_to_owner_review`."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    from backend.database import list_flagged_rebus_images, rebus_pool_status
+    return jsonify({"ok": True, "items": list_flagged_rebus_images(40),
+                    "status": rebus_pool_status()})
+
+
+@app.route("/api/answer/rebusreview/imageverdict", methods=["POST"])
+def answer_rebus_review_image_verdict():
+    """Решение владельца по ОДНОЙ картинке (не по паре).
+
+    keep   — машина ошиблась, картинка верная: она возвращается в оборот, и все
+             карточки, которые её ждали, собираются тут же (это склейка, не генерация).
+    redraw — картинка правда не та: адрес чистится, причина уходит в следующий запрос
+             на отрисовку. Если картинка держит живые задания — рисуем сразу; если её
+             сейчас никто не использует, ждём, пока понадобится: платить за картинку,
+             которая никому не нужна, незачем.
+    block  — это слово вообще не для ребуса: больше не рисуем и снимаем задания с ним.
+    """
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    word = str(payload.get("word") or "").strip()
+    verdict = str(payload.get("verdict") or "").strip().lower()
+    reason = str(payload.get("reason") or "").strip()
+    if not word or verdict not in ("keep", "redraw", "block"):
+        return jsonify({"error": "нужны картинка и решение"}), 400
+
+    from backend.database import (
+        list_flagged_rebus_images, rebus_pool_status, set_rebus_component_review,
+    )
+    item = next((i for i in list_flagged_rebus_images(200) if i["word"] == word), None)
+    live_cards = list((item or {}).get("live_cards") or [])
+
+    if verdict == "keep":
+        result = set_rebus_component_review(word, "approve")
+        composed = 0
+        try:
+            from backend.rebus_generator import compose_rebus_entries_waiting_for
+            composed = int((compose_rebus_entries_waiting_for(word) or {}).get("composed") or 0)
+        except Exception:
+            logging.warning("rebusreview: compose after keep failed word=%s", word, exc_info=True)
+        result["composed"] = composed
+        return jsonify({"ok": True, **result, "status_pool": rebus_pool_status()})
+
+    result = set_rebus_component_review(word, "reject" if verdict == "redraw" else "block", reason)
+    if result.get("status") == "redraw":
+        # Рисуем сразу только то, что держит живые задания. Иначе перерисовка честно
+        # откладывается до первой карточки с этим словом — и это НЕ заглушка: адрес
+        # картинки уже очищен, следующая сборка обязана нарисовать её заново.
+        result["redraw_started"] = False
+        if live_cards:
+            try:
+                from backend.job_queue import enqueue_rebus_draw_job
+                queued = enqueue_rebus_draw_job(chat_id=int(user_id), cards=1, names=live_cards[:1])
+                result["redraw_started"] = bool(queued.get("queued"))
+            except Exception:
+                logging.warning("rebusreview: redraw enqueue failed word=%s", word, exc_info=True)
+        result["live_cards"] = live_cards
+    return jsonify({"ok": True, **result, "status_pool": rebus_pool_status()})
+
+
 @app.route("/api/answer/rebusreview/browse", methods=["POST"])
 def answer_rebus_review_browse():
     """Каталог: что уже собрано и уходит людям («ready») и что ещё не собрано

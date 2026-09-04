@@ -1948,6 +1948,19 @@ html[data-scheme="light"] .pinw {
   background: var(--dmps-card, rgba(148,163,184,0.18));
 }
 .rbrev-mini figcaption { font-size: 0.625rem; color: var(--dmps-text-muted, #94A3B8); }
+/* Картинка под вопросом: на списке карточек её видно так же, как на своей вкладке. */
+.rbrev-mini-flag img { border: 2px solid #EF4444; }
+.rbrev-mini-flag figcaption { color: #EF4444; font-weight: 700; }
+/* Спорная картинка — единица решения, поэтому она крупнее половинки в списке пар. */
+.rbrev-mini-big img, .rbrev-mini-big .rbrev-mini-empty { width: 5.5rem; height: 5.5rem; }
+.rbrev-flag-reason { color: #B45309 !important; }
+.rbrev-sec {
+  font-size: 0.8125rem; font-weight: 800; color: var(--dmps-text-secondary, #CBD5E1);
+  padding: 0.25rem 0.125rem 0;
+}
+.rbrev-tab.alarm { border-color: #EF4444; color: #EF4444; }
+.rbrev-tab.alarm.on { background: #EF4444; border-color: #EF4444; color: #ffffff; }
+.rbrev-keep { color: #15803D; border-color: rgba(21,128,61,0.45); }
 .rbrev-row-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
 .rbrev-row-name b { font-size: 0.9375rem; color: var(--dmps-text-primary, #F8FAFC); }
 .rbrev-row-name i { font-style: normal; font-size: 0.75rem; color: var(--dmps-text-secondary, #CBD5E1); }

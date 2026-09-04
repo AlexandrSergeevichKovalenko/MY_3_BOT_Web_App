@@ -21,8 +21,9 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
-  const [tab, setTab] = useState('queue');          // queue | ready | waiting
+  const [tab, setTab] = useState('flagged');        // flagged | queue | ready | waiting
   const [cards, setCards] = useState(null);         // каталог для вкладок ready/waiting
+  const [flagged, setFlagged] = useState(null);     // картинки, в которых усомнилась машина
   const [redrawFor, setRedrawFor] = useState('');   // слово, которое решили перерисовать
   const [comment, setComment] = useState('');      // своя правка вместо кнопки-причины
   // Тот же каркас `.pinw`, что и у «Спорных фраз»: пока курсор в поле, нижняя панель
@@ -65,9 +66,64 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
     } finally { setBusy(false); }
   }, [api]);
 
+  // Картинки, в которых усомнилась МАШИНА. Это ровно то, о чём приходит ночное письмо,
+  // и до 04.09.2026 попасть сюда с экрана было нельзя: список строился из банка
+  // заданий, а отметка стоит на картинке. Ни одна из 5 отложенных не показывалась.
+  const loadFlagged = useCallback(async (loud = false) => {
+    if (loud) { setBusy(true); setError(''); }
+    try {
+      const r = await api('/api/answer/rebusreview/flagged', {});
+      const list = r.items || [];
+      setFlagged(list);
+      setStatus(r.status || null);
+      if (loud) {
+        setNote(list.length
+          ? `🔄 Проверил: картинок под вопросом — ${list.length}.`
+          : '🔄 Проверил: спорных картинок нет.');
+      }
+      return list;
+    } catch (e) {
+      console.warn('[game] error', e);
+      setError('Не удалось загрузить спорные картинки.');
+      setFlagged([]);
+      return [];
+    } finally { if (loud) setBusy(false); }
+  }, [api]);
+
   const openTab = (next) => {
     setTab(next); setNote(''); setError('');
-    if (next === 'queue') { setCards(null); refresh(false); } else { setCards(null); loadCards(next); }
+    if (next === 'flagged') { setCards(null); loadFlagged(false); }
+    else if (next === 'queue') { setCards(null); refresh(false); }
+    else { setCards(null); loadCards(next); }
+  };
+
+  // Решение по ОДНОЙ картинке: машина судила картинку, а не пару.
+  const decideImage = async (item, verdict) => {
+    if (busy) return;
+    setBusy(true); setError('');
+    try {
+      const r = await api('/api/answer/rebusreview/imageverdict', {
+        word: item.word, verdict, reason: verdict === 'redraw' ? 'wrong_object' : '',
+      });
+      if (verdict === 'keep') {
+        setNote(r.composed
+          ? `✅ «${item.word}» снова в обороте. Заданий собрано: ${r.composed}.`
+          : `✅ «${item.word}» снова в обороте — задания с ней опять уходят людям.`);
+      } else if (verdict === 'redraw') {
+        setNote(r.redraw_started
+          ? `🔄 Перерисовываю «${item.word}» — вернётся на приёмку через пару минут.`
+          : `🔄 «${item.word}» перерисую, когда слово понадобится заданию: сейчас её `
+            + 'никто не использует, и платить за картинку впустую незачем.');
+      } else {
+        setNote(`🚫 «${item.word}» больше не рисуем. Заданий снято: ${r.compounds_touched || 0}.`);
+      }
+      if (r.status_pool) setStatus(r.status_pool);
+      setFlagged((prev) => (prev || []).filter((i) => i.word !== item.word));
+      haptic?.(verdict === 'keep' ? 'ok' : 'bad');
+    } catch (e) {
+      console.warn('[game] error', e);
+      setError('Не удалось сохранить решение.');
+    } finally { setBusy(false); }
   };
 
   // Действие над карточкой ИЗ КАТАЛОГА: снять или перерисовать половинку.
@@ -118,7 +174,18 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
     } finally { setBusy(false); }
   };
 
-  useEffect(() => { refresh(false); }, [refresh]);
+  // Экран открывается на том, из-за чего его позвали: есть спорные картинки — сразу
+  // они, нет — обычная приёмка пар. Кнопка в письме ведёт сюда же, и человек должен
+  // увидеть ответ на вопрос из письма, не разыскивая его по вкладкам.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const list = await loadFlagged(false);
+      if (!alive) return;
+      if (list.length) { setTab('flagged'); } else { setTab('queue'); refresh(false); }
+    })();
+    return () => { alive = false; };
+  }, [loadFlagged, refresh]);
 
   const card = items && items[0];
   useEffect(() => { setRedrawFor(''); setComment(''); }, [card?.compound_id]);
@@ -159,13 +226,101 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
     ? `В банке готовых карточек: ${status.ready} · ждут дорисовки: ${status.waiting_draw}`
     : '';
 
+  const flaggedCount = flagged ? flagged.length : (status ? status.flagged || 0 : 0);
   const tabsRow = (
     <div className="rbrev-tabs">
+      <button className={`rbrev-tab ${tab === 'flagged' ? 'on' : ''} ${flaggedCount ? 'alarm' : ''}`}
+        onClick={() => openTab('flagged')}>
+        Под вопросом{flaggedCount ? ` · ${flaggedCount}` : ''}
+      </button>
       <button className={`rbrev-tab ${tab === 'queue' ? 'on' : ''}`} onClick={() => openTab('queue')}>На приёмке</button>
       <button className={`rbrev-tab ${tab === 'ready' ? 'on' : ''}`} onClick={() => openTab('ready')}>В банке</button>
       <button className={`rbrev-tab ${tab === 'waiting' ? 'on' : ''}`} onClick={() => openTab('waiting')}>Незаконченные</button>
     </div>
   );
+
+  // ── Под вопросом: что отложила машина. Ровно то, о чём пришло письмо ──
+  if (tab === 'flagged') {
+    const blocking = (flagged || []).filter((i) => i.blocks_live);
+    const idle = (flagged || []).filter((i) => !i.blocks_live);
+
+    const row = (item) => (
+      <div className="rbrev-row" key={item.word}>
+        <div className="rbrev-row-top">
+          <figure className="rbrev-mini rbrev-mini-big">
+            {item.image_url
+              ? <img src={item.image_url} alt="" draggable="false" />
+              : <span className="rbrev-mini-empty">?</span>}
+          </figure>
+          <div className="rbrev-row-name">
+            <b>{item.word}{item.meaning_ru ? ` — ${item.meaning_ru}` : ''}</b>
+            {item.reason ? <i className="rbrev-flag-reason">Машина: {item.reason}</i> : null}
+            <em>
+              {item.blocks_live
+                ? `Держит задания: ${item.live_cards.join(', ')} — они не уходят людям, пока ты не решишь.`
+                : 'Сейчас не стоит ни в одном задании — можно решить и потом.'}
+            </em>
+            {item.redraw_count
+              ? <em>Перерисовок было: {item.redraw_count}, осталось: {item.redraws_left}.</em>
+              : null}
+          </div>
+        </div>
+        <div className="rbrev-row-actions">
+          <button className="ans-btn-ghost rbrev-keep" disabled={busy}
+            onClick={() => decideImage(item, 'keep')}>✅ Картинка верная</button>
+          <button className="ans-btn-ghost rbrev-reject" disabled={busy}
+            onClick={() => decideImage(item, 'redraw')}>🔁 Перерисовать</button>
+          <button className="ans-btn-ghost pinrev-skip" disabled={busy}
+            onClick={() => {
+              // eslint-disable-next-line no-alert
+              if (window.confirm(`Больше никогда не рисовать «${item.word}»?`
+                + `${item.live_cards.length ? `\n\nЗаданий будет снято: ${item.live_cards.length}.` : ''}`)) {
+                decideImage(item, 'block');
+              }
+            }}>🚫 Не рисовать это слово</button>
+        </div>
+      </div>
+    );
+
+    return (
+      <div className="pinw">
+        <div className="pinw-top">
+          <div className="pinw-title">🧩 Картинки под вопросом</div>
+          <div className="pinw-sub">
+            {flagged && flagged.length
+              ? `Машина усомнилась в ${flagged.length} — посмотри и скажи, права ли она`
+              : statusLine}
+          </div>
+        </div>
+        {tabsRow}
+        <div className="rbrev-scroll">
+          {note ? <div className="pinrev-note">{note}</div> : null}
+          {error ? <div className="pinrev-err">{error}</div> : null}
+          {flagged === null ? <div className="ans-loading">Загружаю…</div> : null}
+          {flagged && !flagged.length ? (
+            <div className="pinrev-empty-sub">
+              Спорных картинок нет — машина ко всему, что успела посмотреть, претензий
+              не имеет. Она смотрит по 25 штук за ночь и напишет, как только усомнится.
+            </div>
+          ) : null}
+          {blocking.length ? (
+            <div className="rbrev-sec">Держат живые задания — {blocking.length}</div>
+          ) : null}
+          {blocking.map(row)}
+          {idle.length ? (
+            <div className="rbrev-sec">Сейчас не используются — {idle.length}</div>
+          ) : null}
+          {idle.map(row)}
+        </div>
+        <div className="pinw-bar">
+          <button className="ans-btn-ghost" disabled={busy} onClick={() => loadFlagged(true)}>
+            🔄 Проверить ещё раз
+          </button>
+          <button className="pinw-close" onClick={onClose}>Закрыть</button>
+        </div>
+      </div>
+    );
+  }
 
   // ── Каталог: пересмотреть однажды одобренное и проредить ──
   if (tab !== 'queue') {
@@ -188,12 +343,15 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
           {(cards || []).map((c) => (
             <div className="rbrev-row" key={c.compound_id}>
               <div className="rbrev-row-top">
+                {/* Половинка, не принятая владельцем, помечается здесь ТОЖЕ: иначе
+                    карточка молча стоит на выдаче, а причина видна только на другой
+                    вкладке (04.09.2026 — Waldbrand стоял так, и понять это было негде). */}
                 {c.halves.map((h) => (
-                  <figure className="rbrev-mini" key={h.word}>
+                  <figure className={`rbrev-mini ${h.drawn && !h.approved ? 'rbrev-mini-flag' : ''}`} key={h.word}>
                     {h.image_url
                       ? <img src={h.image_url} alt="" draggable="false" />
                       : <span className="rbrev-mini-empty">?</span>}
-                    <figcaption>{h.word}</figcaption>
+                    <figcaption>{h.drawn && !h.approved ? '🔴 ' : ''}{h.word}</figcaption>
                   </figure>
                 ))}
                 <div className="rbrev-row-name">
