@@ -41359,6 +41359,11 @@ def translate_quick():
     acting_user_id = _resolve_webapp_user_id(payload) or user_id_for_billing
     if acting_user_id and _dict_user_has_left_bot(acting_user_id):
         return _dict_gate_response()
+    # Замок бесплатного месяца. Быстрый словарь с иконки на экране первым делом зовёт
+    # ИМЕННО этот адрес, а он лежит вне /api/webapp/* и мимо общей двери — владелец
+    # увидел переводы на запертом аккаунте 04.09.2026. Тот же признак, что и в двери.
+    if acting_user_id and is_access_locked(int(acting_user_id)):
+        return jsonify(_access_locked_payload()), 402
     if user_id_for_billing is None and acting_user_id:
         user_id_for_billing = int(acting_user_id)
 
@@ -41675,6 +41680,9 @@ def translate_quick_article():
     couple of times and merges the article in-place. NO compute on this path — it only
     reads the cache the background job patches, so it stays instant and free."""
     payload = request.get_json(silent=True) or {}
+    _acting = _resolve_webapp_user_id(payload)
+    if _acting and is_access_locked(int(_acting)):  # замок бесплатного месяца
+        return jsonify(_access_locked_payload()), 402
     text = str(payload.get("text") or "").strip()
     target_lang = _normalize_short_lang_code(payload.get("target_lang"), fallback="")
     source_lang_raw = payload.get("source_lang")
@@ -41722,6 +41730,8 @@ def translate_quick_correct():
     acting_user_id = _resolve_webapp_user_id(payload) or user_id_for_billing
     if acting_user_id and _dict_user_has_left_bot(acting_user_id):
         return _dict_gate_response()
+    if acting_user_id and is_access_locked(int(acting_user_id)):  # замок бесплатного месяца
+        return jsonify(_access_locked_payload()), 402
     if user_id_for_billing is None and acting_user_id:
         user_id_for_billing = int(acting_user_id)
 
