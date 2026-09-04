@@ -103,6 +103,7 @@ from backend.background_jobs import (  # noqa: E402
     run_german_form_index_warm_actor,
     run_verb_paradigm_warm_actor,
     run_lex_form_index_report_actor,
+    run_translation_judge_actor,
     run_wiktionary_warm_report_actor,
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
@@ -450,6 +451,10 @@ def _dispatch_verb_paradigm_warm() -> None:
 
 def _dispatch_lex_form_index_report() -> None:
     run_lex_form_index_report_actor.send()
+
+
+def _dispatch_translation_judge() -> None:
+    run_translation_judge_actor.send()
 
 
 def _dispatch_article_review_dm() -> None:
@@ -847,6 +852,22 @@ def _build_scheduler():
             "cron",
             hour=_int_env("VERB_PARADIGM_WARM_HOUR", 4),
             minute=_int_env("VERB_PARADIGM_WARM_MINUTE", 40),
+            timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
+    # -- Судья переводов: ночная порция спорных значений. 05:30 — после всех походов
+    # к справочнику (03:40 роды, 04:10 формы, 04:40 спряжения, 05:10 склонения), чтобы
+    # ночные задачи не толкались в одном окне. Порция 40 слов: спешить некуда, а каждый
+    # спрос — деньги.
+    if _enabled("TRANSLATION_JUDGE_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_translation_judge,
+            "cron",
+            hour=_int_env("TRANSLATION_JUDGE_HOUR", 5),
+            minute=_int_env("TRANSLATION_JUDGE_MINUTE", 30),
             timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
             max_instances=1,
             coalesce=True,
