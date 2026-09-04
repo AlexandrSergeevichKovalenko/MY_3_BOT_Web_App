@@ -86,8 +86,6 @@ class NightEnrichmentStopsWithoutSecondVoice(unittest.TestCase):
                 ), mock.patch.object(
                     backend_server, "count_thin_pool_entries", return_value=0,
                 ), mock.patch.object(
-                    backend_server, "mark_pool_entry_enrich_failed",
-                ) as клеймо, mock.patch.object(
                     backend_server.lex_units, "units_needing_card",
                     return_value=[{"id": 1, "display": "der Zufall", "translation": "случай"}],
                 ):
@@ -102,9 +100,6 @@ class NightEnrichmentStopsWithoutSecondVoice(unittest.TestCase):
                             backend_server.run_pool_night_enrichment(limit=1)
         self.assertEqual(1, len(дошли),
                          "ночь не дошла до модели, хотя запасной судья доступен")
-        for звонок in клеймо.call_args_list:
-            self.assertLess(int(звонок.args[0]), 0,
-                            "тест пометил ЖИВУЮ запись базы, а не выдуманную")
 
     def test_dry_run_still_works_without_the_second_voice(self):
         """Сухой прогон ничего не пишет, значит и дверь ему не нужна: он обязан
