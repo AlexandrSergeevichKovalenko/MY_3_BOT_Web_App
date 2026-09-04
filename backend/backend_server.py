@@ -3139,16 +3139,36 @@ _ACCESS_PROTECTED_EXACT_PATHS = {"/api/message"}
 
 # ── Замок бесплатного месяца (docs/tasks/light_tier_strategy.md §5.1) ─────────────
 # Запертому человеку открыто ровно то, что нужно, чтобы заплатить и не потерять настройки.
-# Всё остальное отвечает 402 с reason='free_month_over'. Список — ЕДИНСТВЕННОЕ место
-# правила; гейтить функции по отдельности запрещено: так двери и теряются.
+# Всё остальное под /api/ отвечает 402 с reason='free_month_over'. Список — ЕДИНСТВЕННОЕ
+# место правила; гейтить функции по отдельности запрещено: так двери и теряются.
+#
+# 04.09.2026: сначала замок стоял только в двери /api/webapp/*, и владелец на запертом
+# аккаунте получил переводы из быстрого словаря (/api/translate/quick). Учебных адресов
+# вне /api/webapp/ — десятки (/api/answer/*, /api/cards/*, /api/today/*, /api/sprint/*…),
+# поэтому замок теперь — отдельный перехватчик на ВЕСЬ /api/ (enforce_access_lock ниже).
 _ACCESS_LOCK_EXEMPT_EXACT = {
     "/api/webapp/bootstrap",
+    "/api/webapp/version",
+    "/api/webapp/topics",
+    "/api/telegram/validate",
+    "/api/user/language-profile",
+    # Гостевой показ слова по ссылке «поделиться» — открыт всем (решение владельца 28.08.2026).
+    "/api/webapp/dictionary/shared",
+    "/api/webapp/dictionary/diff/shared",
 }
 _ACCESS_LOCK_EXEMPT_PREFIXES = (
     "/api/webapp/billing/",
+    "/api/billing/",
     "/api/webapp/settings",
     "/api/webapp/onboarding/",
     "/api/webapp/instance/",
+    "/api/health",
+    "/api/public/",
+    "/api/admin/",
+    "/api/web/auth/",
+    "/api/mobile/auth/",
+    "/api/internal/",
+    "/api/shortcut/",   # у ярлыка своя проверка внутри (токен установки, не initData)
 )
 
 
@@ -3890,24 +3910,42 @@ def enforce_webapp_access():
         # обидеть. Ему полагается номер, причина и обещание написать самим.
         return jsonify(_access_denied_payload(int(resolved_user_id))), 403
 
-    # Замок бесплатного месяца — здесь, в единственной двери (§5.1 стратегии).
-    # Право доступа не прочиталось — человека НЕ запираем (сбой базы не повод отрезать
-    # всех), ошибка целиком в лог, а задания у запертых считает утреннее обещание.
-    if _access_lock_applies(path):
-        try:
-            _locked = bool(is_access_locked(int(resolved_user_id)))
-        except Exception:
-            logging.exception("access lock: право доступа не прочиталось user=%s", resolved_user_id)
-            _locked = False
-        if _locked:
-            return jsonify(_access_locked_payload()), 402
-
     g.telegram_user_id = int(resolved_user_id)
     g.telegram_user = resolved_user_data
     g.telegram_init_data = resolved_parsed
     g.webapp_access_guard_cache_source = allowlist_cache_source
     if resolved_user_data:
         _maybe_persist_display_name(int(resolved_user_id), resolved_user_data)
+    return None
+
+
+@app.before_request
+def enforce_access_lock():
+    """Замок бесплатного месяца на весь /api/ (docs/tasks/light_tier_strategy.md §5.1).
+
+    Человека узнаём тем же резолвером, что и остальные адреса (initData в заголовке,
+    теле или запросе; токен словаря; токен приложения). Аноним проходит: запирать
+    некого. Право не прочиталось — НЕ запираем: сбой базы не повод отрезать всех,
+    ошибка целиком в лог, а задания у запертых считает утреннее обещание."""
+    path = request.path or ""
+    if not path.startswith("/api/") or not _access_lock_applies(path):
+        return None
+    uid = getattr(g, "telegram_user_id", None)  # дверь /api/webapp/* уже узнала человека
+    if not uid:
+        try:
+            uid = _resolve_webapp_user_id()
+        except Exception:
+            logging.exception("access lock: человек не опознался path=%s", path)
+            return None
+    if not uid:
+        return None
+    try:
+        locked = bool(is_access_locked(int(uid)))
+    except Exception:
+        logging.exception("access lock: право доступа не прочиталось user=%s", uid)
+        return None
+    if locked:
+        return jsonify(_access_locked_payload()), 402
     return None
 
 

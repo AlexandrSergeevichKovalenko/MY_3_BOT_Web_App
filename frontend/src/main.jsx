@@ -797,7 +797,16 @@ function showAccessLockedGate(info) {
     : 'Ты позанимался с нами месяц. Чтобы задания и тренажёры работали дальше, выбери тариф — оплата звёздами проходит в Telegram.';
   const lightBtn = `🌿 ${de ? 'Light' : 'Лайт'}${light ? ` — ${light} ⭐` : ''}`;
   const proBtn = `💎 ${de ? 'Voller Zugang' : 'Полный доступ'}${pro ? ` — ${pro} ⭐` : ''}`;
-  const go = (code) => { try { window.open(`https://t.me/${uname}?startapp=${code}`, '_blank'); } catch (_e) { /* ignore */ } };
+  const go = (code) => {
+    const url = `https://t.me/${uname}?startapp=${code}`;
+    // Внутри Telegram ссылка на бота открывается его же средствами — иначе мини-апп
+    // просто не умеет перейти; снаружи — обычная новая вкладка.
+    try {
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg && typeof tg.openTelegramLink === 'function') { tg.openTelegramLink(url); return; }
+    } catch (_e) { /* ignore */ }
+    try { window.open(url, '_blank'); } catch (_e) { /* ignore */ }
+  };
   try {
     const wrap = document.createElement('div');
     wrap.setAttribute('style', [
@@ -892,9 +901,12 @@ function installAccessGateInterceptor() {
           if (resp && resp.status === 402) {
             resp.clone().json().then((j) => {
               if (!j || String(j.reason || '') !== 'free_month_over') return;
-              let inTelegram = false;
-              try { inTelegram = Boolean(window.Telegram?.WebApp?.initData); } catch (_e) { /* ignore */ }
-              if (inTelegram) {
+              // Окно с оплатой в месте рисует главное приложение — если оно смонтировано
+              // (флаг ставит App.jsx). Ответный экран задания, словарь с иконки, браузер —
+              // отдельные страницы без него: там показываем экран с переходом в бота.
+              let appMounted = false;
+              try { appMounted = Boolean(window.__ddsAppMounted); } catch (_e) { /* ignore */ }
+              if (appMounted) {
                 try { window.dispatchEvent(new CustomEvent('dds:access-locked', { detail: j })); } catch (_e) { /* ignore */ }
               } else {
                 showAccessLockedGate(j);
