@@ -112,6 +112,15 @@ def _access_period_night_sweep() -> int:
     return count_access_periods_created_by_night_sweep(days=1)
 
 
+def _access_period_missing() -> int:
+    """Сколько известных боту людей без начала отсчёта бесплатного месяца. Обещано: 0.
+
+    Меряется утром, после ночной страховки: не ноль — значит страховка не отработала, и
+    у этих людей право доступа стоит в состоянии unknown (замка нет, но и срока нет)."""
+    from backend.database import list_known_user_ids_without_access_period
+    return len(list_known_user_ids_without_access_period())
+
+
 def _worldnews_card_old_look_rules() -> int:
     """Читает CSS собранного фронта (frontend/dist/assets/*.css) на сервере. Обещано: 0."""
     from pathlib import Path
@@ -161,6 +170,14 @@ PROMISES: tuple[Promise, ...] = (
         measure=_access_period_night_sweep,
         how="SELECT COUNT(*) FROM bt_3_access_period WHERE source='night_sweep' "
             "AND created_at > NOW() - interval '1 day'",
+    ),
+    Promise(
+        key="access_period_missing",
+        title="Известных людей без начала отсчёта бесплатного месяца",
+        since="04.09.2026",
+        expected=0,
+        measure=_access_period_missing,
+        how="python3 -c \"from backend.database import list_known_user_ids_without_access_period as f; print(len(f()))\"",
     ),
 )
 

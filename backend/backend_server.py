@@ -21860,6 +21860,16 @@ def pro_price_stars() -> int:
     return eur_minor_to_stars(PRO_PRICE_EUR_MINOR)
 
 
+# «Лайт» — подписка с наполнением бесплатного уровня (решение владельца 04.09.2026).
+# Цена 2 € + комиссия Telegram: 246 → ceil(2.46 × 1.30 × 50) = 160 ⭐, тот же курс, что у
+# «Полного доступа» (400 ⭐ за 5 €). Значение по умолчанию — решение владельца 04.09.2026.
+LIGHT_PRICE_EUR_MINOR = int(os.getenv("LIGHT_PRICE_EUR_MINOR") or "246")
+
+
+def light_price_stars() -> int:
+    return eur_minor_to_stars(LIGHT_PRICE_EUR_MINOR)
+
+
 # One-time "thank you" donations (coffee / cheesecake) — sold as one-time Telegram Stars
 # payments now that Stripe is retired. EUR-tunable via env → Stars via the same markup as Pro.
 # These change NOTHING about access — just a sponsor badge + a spot on the wall of thanks.
@@ -39577,7 +39587,9 @@ def get_billing_plans():
                     # the live/DB EUR snapshot below is only a display anchor). Frontend shows this ⭐
                     # figure verbatim so «what you see» == «what Telegram charges».
                     _plan_code_lc = str(item.get("plan_code") or "").strip().lower()
-                    if _plan_code_lc == "pro":
+                    if _plan_code_lc == "light":
+                        amount_stars = light_price_stars()
+                    elif _plan_code_lc == "pro":
                         amount_stars = pro_price_stars()
                     elif _plan_code_lc in SUPPORT_TIER_EUR_MINOR:
                         amount_stars = support_price_stars(_plan_code_lc)
@@ -64375,6 +64387,24 @@ def billing_stars_invoice():
             title="Полный доступ — подписка",
             description="Полный доступ: больше заданий, YouTube-субтитры, переводы и разборы. Продление раз в месяц, отмена в любой момент.",
             payload_obj={"purpose": "pro", "user_id": user_id_int},
+            stars=stars,
+            subscription_period=STARS_SUBSCRIPTION_PERIOD_SECONDS,
+        )
+    elif plan_code == "light":
+        # Пока действует оплаченный «Полный доступ», «Лайт» не продаём: Telegram не умеет
+        # сменить подписку, вышло бы два списания (docs/tasks/light_tier_strategy.md §4.3).
+        _ent = resolve_entitlement(user_id_int)
+        if (str(_ent.get("effective_mode") or "") == "pro"
+                and str(_ent.get("source_of_entitlement") or "") == "paid_subscription"):
+            return jsonify({
+                "error": "У вас уже «Полный доступ». «Лайт» можно оформить после его отмены в настройках Telegram.",
+                "error_code": "already_pro",
+            }), 409
+        stars = light_price_stars()
+        link, detail = create_stars_invoice_link(
+            title="Лайт — подписка",
+            description="Лайт: задания каждый день, словарь и тренажёры в базовом объёме. Продление раз в 30 дней, отмена в любой момент.",
+            payload_obj={"purpose": "light", "user_id": user_id_int},
             stars=stars,
             subscription_period=STARS_SUBSCRIPTION_PERIOD_SECONDS,
         )

@@ -13248,6 +13248,18 @@ def ensure_webapp_tables() -> None:
                         0,
                         "recurring",
                     ),
+                    # «Лайт» (решение владельца 04.09.2026): платный, но с наполнением
+                    # бесплатного уровня — те же лимиты и тот же потолок расходов, что у
+                    # free. Право доступа даёт effective_mode='free', а не 'pro'.
+                    (
+                        "light",
+                        "Лайт",
+                        True,
+                        None,
+                        seed_free_daily_cap,
+                        0,
+                        "recurring",
+                    ),
                     # Донат-тарифы — разовые (mode=payment): доступ не выдают, т.к. one-time
                     # checkout не создаёт active-подписку, поэтому cap здесь почти никогда не
                     # консультируется. Держим pro-cap, чтобы НЕ задушить grandfathered
@@ -43731,8 +43743,8 @@ def revoke_star_payment_fulfillment(charge_id: str) -> dict:
                         out["book_audio_revoked"] = cursor.rowcount or 0
             conn.commit()
 
-        # Pro subscription revert lives in its own helper (separate txn) — do it outside.
-        if out["purpose"] == "pro":
+        # Pro/Light subscription revert lives in its own helper (separate txn) — do it outside.
+        if out["purpose"] in ("pro", "light"):
             try:
                 deactivate_user_subscription(
                     user_id=int(out["user_id"]), status="canceled", plan_code="free",
@@ -50512,6 +50524,12 @@ def resolve_entitlement(
             if _cpe_dt is not None and _now_ref > _cpe_dt + timedelta(days=2):
                 effective_mode = "free"
                 source_of_entitlement = "stars_subscription_lapsed"
+        if plan_code == "light" and source_of_entitlement == "paid_subscription":
+            # «Лайт»: оплачен, но наполнение — бесплатного уровня (решение владельца
+            # 04.09.2026). Все ворота по effective_mode видят его как free; отличает
+            # его только источник и access_state ниже.
+            effective_mode = "free"
+            source_of_entitlement = "paid_light"
     else:
         # Free-plan product trial is discontinued: 'trialing' on the free plan = just Free.
         effective_mode = "free"
@@ -50540,7 +50558,7 @@ def resolve_entitlement(
         if cursor is not None
         else get_billing_plan("free")
     ) or {}
-    pro_plan = current_plan if bool(current_plan.get("is_paid")) else ((
+    pro_plan = current_plan if (bool(current_plan.get("is_paid")) and plan_code != "light") else ((
         _get_billing_plan_with_cursor(cursor, "pro")
         if cursor is not None
         else get_billing_plan("pro")
@@ -50559,6 +50577,39 @@ def resolve_entitlement(
         if effective_mode == "pro"
         else str(free_plan.get("name") or "Free")
     )
+    if source_of_entitlement == "paid_light" and effective_mode == "free":
+        effective_plan_code = "light"
+        effective_plan_name = str(current_plan.get("name") or "Лайт")
+
+    # Состояние доступа (бесплатный месяц, docs/tasks/light_tier_strategy.md §4.1):
+    #   pro        — полный доступ (подписка или выдача);
+    #   light      — подписка «Лайт»;
+    #   free_month — 30 дней после первого контакта ещё идут;
+    #   locked     — месяц кончился, подписки нет: замок (§5);
+    #   unknown    — начала отсчёта нет. Это дефект дверей записи, а не состояние
+    #                человека: на «не знаю» замок НЕ вешаем, число идёт в обещание.
+    access_state = "unknown"
+    free_month_ends_at = None
+    free_month_days_left = 0
+    if effective_mode == "pro":
+        access_state = "pro"
+    elif source_of_entitlement == "paid_light":
+        access_state = "light"
+    else:
+        try:
+            _period = get_access_period(int(user_id))
+        except Exception:
+            logging.exception("entitlement: начало отсчёта не прочиталось user=%s", user_id)
+            _period = None
+        if _period is not None:
+            _ends = _to_aware_datetime(_period["ends_at"])
+            _now_ref2 = now_utc or datetime.now(timezone.utc)
+            free_month_ends_at = _ends.isoformat()
+            if _now_ref2 < _ends:
+                access_state = "free_month"
+                free_month_days_left = max(1, int(math.ceil((_ends - _now_ref2).total_seconds() / 86400.0)))
+            else:
+                access_state = "locked"
 
     # Welcome trial: surface its end date as trial_ends_at (the subscription row has none)
     # so the UI shows a "Pro-триал до …" countdown, and flag it so we can badge it.
@@ -50585,6 +50636,9 @@ def resolve_entitlement(
         "bonus_reason": (str(_earned_reason) if _earned_reason else None),
         "cap_eur": float(cap_eur) if cap_eur is not None else None,
         "reset_at": _next_local_midnight_iso(now_utc, tz=tz),
+        "access_state": access_state,
+        "free_month_ends_at": free_month_ends_at,
+        "free_month_days_left": int(free_month_days_left),
     }
     if _cacheable:
         try:

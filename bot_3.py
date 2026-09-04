@@ -42798,6 +42798,63 @@ async def on_stars_pre_checkout(update: Update, context: CallbackContext) -> Non
         logging.exception("stars pre_checkout answer failed")
 
 
+def _edit_user_star_subscription(user_id: int, charge_id: str, *, is_canceled: bool) -> tuple[bool, str]:
+    """Bot API editUserStarSubscription: отменить (или вернуть) автопродление чужой
+    подписки в звёздах. SYNC. Возвращает (ok, подробность)."""
+    import requests as _requests
+    token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+    if not token:
+        return False, "no_token"
+    try:
+        r = _requests.post(
+            f"https://api.telegram.org/bot{token}/editUserStarSubscription",
+            json={"user_id": int(user_id), "telegram_payment_charge_id": str(charge_id),
+                  "is_canceled": bool(is_canceled)},
+            timeout=20,
+        )
+        data = r.json() if r.content else {}
+        if r.ok and data.get("ok"):
+            return True, "ok"
+        return False, str(data.get("description") or f"http_{r.status_code}")
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+async def _cancel_light_subscription_after_pro(context: CallbackContext, user_id: int) -> None:
+    """Человек с действующим «Лайтом» купил «Полный доступ» — снимаем автопродление
+    Лайта (docs/tasks/light_tier_strategy.md §4.3). Полный выдаётся в любом случае;
+    если отменить не вышло — ошибка в лог и письмо администратору, чтобы вернуть звёзды
+    руками (/refund_star)."""
+    from backend.database import get_user_subscription
+    sub = await asyncio.to_thread(get_user_subscription, int(user_id))
+    if not sub:
+        return
+    if str(sub.get("plan_code") or "").strip().lower() != "light":
+        return
+    if str(sub.get("status") or "").strip().lower() not in ("active", "trialing"):
+        return
+    sub_id = str(sub.get("stripe_subscription_id") or "")
+    if not sub_id.startswith("stars_"):
+        return
+    charge = sub_id[len("stars_"):]
+    ok, detail = await asyncio.to_thread(_edit_user_star_subscription, int(user_id), charge, is_canceled=True)
+    if ok:
+        logging.info("light→pro: автопродление Лайта снято user=%s charge=%s", user_id, charge)
+        return
+    logging.error("light→pro: НЕ удалось снять автопродление Лайта user=%s charge=%s: %s", user_id, charge, detail)
+    text = (
+        "⚠️ Человек купил «Полный доступ», а его «Лайт» отменить не удалось — через 30 дней "
+        "спишется второй раз.\n\n"
+        f"User ID: {user_id}\nПлатёж Лайта: {charge}\nОтвет Telegram: {detail}\n\n"
+        f"Вернуть звёзды за Лайт: /refund_star {charge}"
+    )
+    for admin_id in get_admin_telegram_ids():
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text)
+        except Exception as exc:
+            logging.warning("light→pro: письмо админу %s не ушло: %s", admin_id, exc)
+
+
 async def on_stars_successful_payment(update: Update, context: CallbackContext) -> None:
     """Fulfil a completed Telegram Stars purchase. Idempotent by charge id, so a
     re-delivered update never double-grants. The invoice_payload tells us what was
@@ -42849,7 +42906,7 @@ async def on_stars_successful_payment(update: Update, context: CallbackContext) 
                 )
         except Exception:
             logging.exception("book_audio grant failed charge=%s", charge_id)
-    elif purpose == "pro":
+    elif purpose in ("pro", "light"):
         try:
             from backend.database import set_subscription_from_stripe
             from datetime import datetime, timezone, timedelta
@@ -42858,17 +42915,28 @@ async def on_stars_successful_payment(update: Update, context: CallbackContext) 
                 exp = datetime.fromtimestamp(int(exp), tz=timezone.utc)
             if not exp:
                 exp = datetime.now(timezone.utc) + timedelta(days=31)
+            target_uid = int(payload.get("user_id") or uid)
+            if purpose == "pro":
+                # Telegram не умеет сменить подписку: купленный «Полный доступ» поверх
+                # действующего «Лайта» дал бы два списания. Лайт отменяем сами, ДО того как
+                # строка подписки перезапишется и id его платежа пропадёт.
+                await _cancel_light_subscription_after_pro(context, target_uid)
             set_subscription_from_stripe(
-                user_id=int(payload.get("user_id") or uid),
-                plan_code="pro",
+                user_id=target_uid,
+                plan_code=purpose,
                 stripe_customer_id=None,
                 stripe_subscription_id=f"stars_{charge_id}",
                 status="active",
                 current_period_end=exp,
             )
-            await msg.reply_text(
-                "✅ «Полный доступ» подключён — спасибо! Продлевается автоматически раз в месяц; отменить можно в любой момент в настройках Telegram."
-            )
+            if purpose == "pro":
+                await msg.reply_text(
+                    "✅ «Полный доступ» подключён — спасибо! Продлевается автоматически раз в месяц; отменить можно в любой момент в настройках Telegram."
+                )
+            else:
+                await msg.reply_text(
+                    "✅ «Лайт» подключён — спасибо! Задания приходят как раньше. Продлевается автоматически раз в 30 дней; отменить можно в любой момент в настройках Telegram."
+                )
         except Exception:
             logging.exception("stars pro grant failed charge=%s", charge_id)
     elif purpose in ("support_coffee", "support_cheesecake"):
