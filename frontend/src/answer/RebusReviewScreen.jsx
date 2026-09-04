@@ -251,6 +251,9 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
             {item.image_url
               ? <img src={item.image_url} alt="" draggable="false" />
               : <span className="rbrev-mini-empty">?</span>}
+            {/* Пустая рамка молчит, а решать по ней нельзя: почему картинки нет —
+                говорим словами. */}
+            {item.image_error ? <figcaption>{item.image_error}</figcaption> : null}
           </figure>
           <div className="rbrev-row-name">
             <b>{item.word}{item.meaning_ru ? ` — ${item.meaning_ru}` : ''}</b>

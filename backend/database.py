@@ -57424,19 +57424,25 @@ def list_flagged_rebus_images(limit: int = 40) -> list[dict]:
     """
     from backend.r2_storage import r2_public_url
 
-    def _url(key) -> str:
+    # Адрес строится С ВЕРСИЕЙ содержимого: ключ картинки детерминирован (от слова),
+    # перерисовка ложится в ТОТ ЖЕ адрес, а лежит она под «immutable, max-age=год» —
+    # без версии владелец судил бы по старой картинке из кеша браузера. Ошибку сборки
+    # адреса НЕ глушим в пустую строку: пустой <img> неотличим от «картинки нет».
+    def _url(key, version) -> tuple[str, str]:
         if not key:
-            return ""
+            return "", "адрес картинки не записан"
         try:
-            return r2_public_url(str(key))
+            return r2_public_url(str(key), version=str(version or "")), ""
         except Exception:
-            return ""
+            logging.warning("list_flagged_rebus_images: адрес не собрался key=%s", key, exc_info=True)
+            return "", "адрес картинки не собрался — смотри логи"
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT word, image_object_key, review_reason, redraw_count, machine_doubt_at
+                SELECT word, image_object_key, review_reason, redraw_count, machine_doubt_at,
+                       image_version
                 FROM bt_3_rebus_component_images
                 WHERE machine_doubt_at IS NOT NULL
                   AND review_status = 'pending'
@@ -57479,14 +57485,16 @@ def list_flagged_rebus_images(limit: int = 40) -> list[dict]:
         })
 
     out: list[dict] = []
-    for word, key, reason, redraws, flagged_at in rows:
+    for word, key, reason, redraws, flagged_at, version in rows:
         word = str(word or "")
         cards = used.get(word) or []
         live = [c for c in cards if c["live"]]
+        image_url, image_error = _url(key, version)
         out.append({
             "word": word,
             "meaning_ru": meanings.get(word, ""),
-            "image_url": _url(key),
+            "image_url": image_url,
+            "image_error": image_error,
             "reason": str(reason or ""),
             "redraw_count": int(redraws or 0),
             "redraws_left": max(0, MAX_REBUS_COMPONENT_REDRAWS - int(redraws or 0)),

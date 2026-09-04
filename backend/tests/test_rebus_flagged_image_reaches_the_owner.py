@@ -62,14 +62,14 @@ class FlaggedRebusImageTests(unittest.TestCase):
     def _run(self, images, bank_rows):
         conn = _Connection([images, bank_rows])
         with patch.object(database, "get_db_connection_context", lambda: _fake_db(conn)), \
-             patch("backend.r2_storage.r2_public_url", side_effect=lambda k: f"https://cdn/{k}"):
+             patch("backend.r2_storage.r2_public_url", side_effect=lambda k, version="": f"https://cdn/{k}?v={version}"):
             items = database.list_flagged_rebus_images(40)
         return items, conn.cursor_obj.queries
 
     def test_картинка_без_единого_живого_задания_всё_равно_видна(self):
         """Helm 04.09.2026: обе карточки с ним сняты — и он пропадал с экрана."""
         items, _ = self._run(
-            [("Helm", "rebus/helm.png", "машина усомнилась: на картинке шлем, а не штурвал", 0, None)],
+            [("Helm", "rebus/helm.png", "машина усомнилась: на картинке шлем, а не штурвал", 0, None, "v1")],
             [("Helm", "Fahrradhelm", "велошлем", "pending", True, "шлем"),
              ("Helm", "Schutzhelm", "каска", "pending", True, "шлем")],
         )
@@ -78,13 +78,16 @@ class FlaggedRebusImageTests(unittest.TestCase):
         self.assertEqual(items[0]["live_cards"], [])
         self.assertEqual(sorted(items[0]["retired_cards"]), ["Fahrradhelm", "Schutzhelm"])
         self.assertEqual(items[0]["meaning_ru"], "шлем")
-        self.assertTrue(items[0]["image_url"])
+        # Версия содержимого обязана быть в адресе: ключ при перерисовке не меняется,
+        # и без версии владелец судил бы старую картинку из кеша браузера.
+        self.assertEqual(items[0]["image_url"], "https://cdn/rebus/helm.png?v=v1")
+        self.assertEqual(items[0]["image_error"], "")
 
     def test_картинка_собранной_карточки_тоже_видна(self):
         """Brand 04.09.2026: Waldbrand уже собран, поэтому на вкладке «На приёмке»
         его не бывает по устройству — а решение по картинке всё равно нужно."""
         items, _ = self._run(
-            [("Brand", "rebus/brand.png", "машина усомнилась: огонь, а не пожар", 1, None)],
+            [("Brand", "rebus/brand.png", "машина усомнилась: огонь, а не пожар", 1, None, "v1")],
             [("Brand", "Waldbrand", "лесной пожар", "ready", False, "пожар")],
         )
         self.assertEqual([i["word"] for i in items], ["Brand"])
@@ -95,7 +98,7 @@ class FlaggedRebusImageTests(unittest.TestCase):
         """Первый запрос — только картинки. Банк спрашивается ПОТОМ и лишь для того,
         чтобы показать, где слово стоит: он не имеет права никого отсеивать."""
         _, queries = self._run(
-            [("Helm", "rebus/helm.png", "машина усомнилась: шлем, а не штурвал", 0, None)],
+            [("Helm", "rebus/helm.png", "машина усомнилась: шлем, а не штурвал", 0, None, "v1")],
             [],
         )
         select_images = queries[0][0]
@@ -105,8 +108,8 @@ class FlaggedRebusImageTests(unittest.TestCase):
 
     def test_сперва_то_что_держит_живые_задания(self):
         items, _ = self._run(
-            [("Helm", "rebus/helm.png", "шлем", 0, None),
-             ("Brand", "rebus/brand.png", "огонь", 0, None)],
+            [("Helm", "rebus/helm.png", "шлем", 0, None, "v1"),
+             ("Brand", "rebus/brand.png", "огонь", 0, None, "v1")],
             [("Helm", "Fahrradhelm", "велошлем", "pending", True, "шлем"),
              ("Brand", "Waldbrand", "лесной пожар", "ready", False, "пожар")],
         )
