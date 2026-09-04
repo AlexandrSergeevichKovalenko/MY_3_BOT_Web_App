@@ -2576,6 +2576,27 @@ html[data-scheme="light"] .frrev-w {
 .frrev-row { display: flex; gap: 0.375rem; }
 .frrev-row > * { flex: 1 1 0; width: auto; }
 .frrev-closebtn { flex: 0 0 5.5rem; }
+
+/* ┌─ ГЛАВНОЕ НА ЭТОМ ЭКРАНЕ — САМ РАЗБОР, А НЕ КНОПКИ. Владелец, 04.09.2026. ──────┐
+   │ «Блок кнопок не должен занимать такое большое место по высоте — он просто      │
+   │ съедает 50% экрана… задача не налепить элементы, задача выделить главное.»     │
+   │ Замер по его кадру (iPhone, окно ≈1140 px): нижняя панель ≈ 520 px, из них     │
+   │ 150 px — три строки подписей (убраны совсем) и 230 px — два ряда высоких       │
+   │ кнопок. Теперь второстепенные решения стоят одной плотной строкой, а всё       │
+   │ освободившееся место забирает `.frv-scroll` — она flex:1 и растёт сама.        │
+   │ Главное действие («Записать мои правки») остаётся крупным: оно одно.           │
+   └────────────────────────────────────────────────────────────────────────────────┘ */
+.frrev-w .pinw-bar { gap: 0.375rem; }
+.frrev-w .pinw-bar .ans-btn-ghost {
+  min-height: 2.375rem; font-size: 0.8125rem; font-weight: 600;
+  padding: 0.25rem 0.375rem; border-radius: 0.75rem;
+}
+.frrev-w .pinw-bar .frv-save { padding: 0.5625rem 0.875rem; }
+.frrev-w .pinw-bar .frv-save.frv-main { font-size: 1rem; padding: 0.75rem 0.875rem; }
+/* Плотная строка второстепенных решений: узкие равные кнопки, перенос по месту. */
+.frrev-row-tight { flex-wrap: wrap; gap: 0.3125rem; }
+.frrev-row-tight > * { flex: 1 1 5.5rem; min-width: 0; }
+.frrev-row-tight > .frrev-closebtn { flex: 0 0 2.75rem; }
 .frrev-hint { font-size: 0.75rem; color: var(--dmps-text-muted, #94A3B8); text-align: center; }
 /* Подпись у КАЖДОЙ кнопки. Слитная строка из трёх пунктов не читалась: владелец
    31.08.2026 спрашивал, чем «отложить» отличается от «оставить», хотя ответ стоял
@@ -2613,5 +2634,5 @@ html[data-scheme="light"] .frrev-w {
   .frrev-w .ans-btn-ghost { min-height: 2.5rem; font-size: 0.8438rem; }
   .frrev-w .pinrev-word { min-height: 2.5rem; padding: 0.5rem 0.75rem; }
   .frrev-w .frv-save { padding: 0.5625rem 0.75rem; }
-  .frrev-w .frrev-hint { font-size: 0.6875rem; line-height: 1.3; }
+  .frrev-w .pinw-bar .ans-btn-ghost { min-height: 2.125rem; font-size: 0.75rem; }
 }

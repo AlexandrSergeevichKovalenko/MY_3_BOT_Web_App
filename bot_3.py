@@ -10236,10 +10236,36 @@ def _run_phrase_night_check_safe() -> None:
         stats = run_phrase_night_check()
         _record_sched_heartbeat("phrase_night_check", "completed", stats)
         logging.info("phrase night check result=%s", stats)
-        _send_settled_disputes_report(stats.get("applied") or {})
+        # ⛔ ПИСЬМО ОТСЮДА НЕ УХОДИТ. Оно несёт число «сколько ждёт твоего решения», а
+        # после этой работы очередь ещё меняется: ночная панель в 04:00 добавила
+        # 04.09.2026 четырнадцать вопросов ПОСЛЕ письма — в письме стояло 179, на
+        # экране владелец увидел 193. Письмо шлёт отдельная работа, последней
+        # (`_send_settled_disputes_report_safe`).
     except Exception as exc:
         logging.exception("phrase night check failed")
         _record_sched_heartbeat("phrase_night_check", "failed", {"error": str(exc)[:300]})
+
+
+def _send_settled_disputes_report_safe() -> None:
+    """Письмо «что ночь исправила за тебя» — ПОСЛЕДНИМ действием ночи.
+
+    Читает итог ночной проверки из её отметки о запуске, а не считает заново: работа
+    уже сделана, второй раз её делать незачем. Число «ждёт твоего решения» письмо
+    берёт живым в момент отправки — и потому совпадает с экраном.
+    """
+    try:
+        from backend.database import get_latest_scheduler_run_guard
+        row = get_latest_scheduler_run_guard(job_key="phrase_night_check") or {}
+        if str(row.get("status") or "").lower() != "completed":
+            return
+        from datetime import timezone as _tz   # в модуле импортирован только datetime
+        finished = row.get("finished_at")
+        # Только СЕГОДНЯШНЯЯ ночь: вчерашний итог второй раз не пересылаем.
+        if finished and (datetime.now(_tz.utc) - finished).total_seconds() > 12 * 3600:
+            return
+        _send_settled_disputes_report((row.get("metadata") or {}).get("applied") or {})
+    except Exception:
+        logging.exception("письмо о применённых вердиктах не собралось")
 
 
 def _send_settled_disputes_report(applied: dict) -> None:
@@ -10494,6 +10520,7 @@ def _phrase_panel_line() -> str:
         # прочёл такой 02.09.2026. Полного текста нет нигде — их пересуживают, и число
         # обязано убывать до нуля.
         из_прозы = int(meta.get("вопросы из прозы") or 0)
+        старым_вопросом = int(meta.get("вопросы старой формулировкой") or 0)
         переписано = int(meta.get("вопрос переписан") or 0)
         снято = int(meta.get("вопрос снят") or 0)
         потрачено = float(meta.get("потрачено") or 0.0)
@@ -10530,6 +10557,9 @@ def _phrase_panel_line() -> str:
                         f"<b>{пересудить}</b>")
             if из_прозы:
                 out += (f"\n   из них с оборванным текстом претензии: <b>{из_прозы}</b>")
+            if старым_вопросом:
+                out += (f"\n   из них вынесены прежней формулировкой вопроса: "
+                        f"<b>{старым_вопросом}</b>")
         else:
             out += "\n   ✅ непроверенных карточек не осталось"
         if без_перевода:
@@ -46717,6 +46747,21 @@ def main():
             "cron",
             hour=int((os.getenv("PHRASE_PANEL_HOUR") or "4").strip() or "4"),
             minute=int((os.getenv("PHRASE_PANEL_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- «Что ночь исправила за тебя» — 06:55 Вена, ПОСЛЕДНИМ действием ночи. --
+        # Раньше письмо уходило прямо из ночной проверки в 03:40, а панель в 04:00
+        # добавляла в очередь новые вопросы: в письме 179, на экране 193 (04.09.2026).
+        # Число «ждёт твоего решения» письмо берёт живым, поэтому важно, чтобы к моменту
+        # отправки ночь была ЗАКОНЧЕНА.
+        scheduler.add_job(
+            _send_settled_disputes_report_safe,
+            "cron",
+            hour=int((os.getenv("SETTLED_REPORT_HOUR") or "6").strip() or "6"),
+            minute=int((os.getenv("SETTLED_REPORT_MINUTE") or "55").strip() or "55"),
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
