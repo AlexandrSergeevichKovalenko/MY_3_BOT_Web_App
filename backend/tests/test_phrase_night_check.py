@@ -1,9 +1,16 @@
-"""Ночная проверка фраз: молча правим только то, в чём согласны ОБА судьи.
+"""Ночная проверка фраз: что именно позволяет ночи поправить фразу МОЛЧА.
 
-Почему два судьи. Замер 06.08.2026 на выборке 80 фраз: один судья дал 10 «ошибок», и
-примерно треть из них — выдумка. Признак выдумки виден сразу: «предлог не тот»,
-а в исправленном варианте дописана только точка. Второй независимый прогон такое не
-повторяет, поэтому расхождение — надёжный сигнал «не уверен».
+⚠ ЗАКОН ПЕРЕПИСАН 04.09.2026 (решение владельца: «мне достаточно чтобы один раз модель
+посмотрела и всё»). Судей больше не два, и «согласие двух ответов» больше не страховка —
+оно и не было ею: 19.08.2026 оба судьи дословно предложили «in den Taschen» (неверный
+падеж и другое число), и спасла не их сверка, а отдельная проверка исправленного текста.
+
+Что держит молчаливую правку теперь — четыре проверяемых условия:
+  1) вердикт «ошибка» и категория из тех, что верны или неверны сами по себе;
+  2) правка непустая и отличается от исходного текста не одной точкой на конце;
+  3) модель ПРОЦИТИРОВАЛА неверный кусок, и цитата нашлась в самом тексте (наша
+     арифметика, без запросов);
+  4) исправленный текст прошёл свою проверку, а спор с ней снимает печатный справочник.
 
 Почему порядок слов никогда не правим молча. Кусок, вырванный из предложения, законно
 выглядит переставленным: «Was Sie sich dadurch erhoffen?» верно как придаточное и
@@ -24,10 +31,15 @@ from backend.phrase_night_check import SILENT_CATEGORIES, _both_agree
 CHECK_PASSED = {"checked": True, "grammar_ok": True, "meaning_kept": True, "why": ""}
 
 
+# Текст, на который «показывает» судья в этих проверках, и цитата из него: без цитаты
+# молчаливая правка не проходит по условию 3.
+ТЕКСТ = "Ich habe mir beim Sport das Bein gezehrt."      # опечатка: gezehrt
+
+
 def v(verdict="error", category="rechtschreibung", corrected="", why="", proposal="",
-      check=CHECK_PASSED):
+      check=CHECK_PASSED, span="Bein"):
     return {"verdict": verdict, "category": category, "corrected": corrected,
-            "proposal": proposal, "why": why,
+            "proposal": proposal, "why": why, "span": span,
             "corrected_check": check, "proposal_check": check}
 
 
@@ -67,54 +79,55 @@ class JudgeVariantsTests(unittest.TestCase):
 
     def test_completion_never_reaches_the_silent_night_fix(self):
         """Дописать слова за человека — решение о смысле, его принимает владелец.
-        Ночь молча правит только то, что оба судьи выдали в `corrected`."""
-        agreed, _c, _f = _both_agree([
-            v(corrected="", proposal="das Anliegen an ihn"),
-            v(corrected="", proposal="das Anliegen an ihn"),
-        ])
+        Ночь молча правит только то, что судья выдал в `corrected`."""
+        agreed, _c, _f = _both_agree(
+            [v(corrected="", proposal="das Anliegen an ihn")], ТЕКСТ)
         self.assertFalse(agreed)
 
 
-class BothJudgesMustAgreeTests(unittest.TestCase):
-    def test_word_for_word_agreement_is_accepted(self):
-        agreed, category, fix = _both_agree([
-            v(corrected="Ich habe mir beim Sport das Bein gezerrt"),
-            v(corrected="Ich habe mir beim Sport das Bein gezerrt"),
-        ])
+class ЧтоПропускаетМолчаливуюПравкуTests(unittest.TestCase):
+    """⚠ ЗДЕСЬ БЫЛ ЗАКОН «СОГЛАСНЫ ОБА СУДЬИ». Отменён 04.09.2026 владельцем.
+    Условия перечислены в шапке файла; каждое из них — проверяемый факт, а не совпадение
+    двух мнений."""
+
+    def test_a_quoted_and_checked_fix_is_applied(self):
+        agreed, category, fix = _both_agree(
+            [v(corrected="Ich habe mir beim Sport das Bein gezerrt", span="gezehrt")],
+            ТЕКСТ)
         self.assertTrue(agreed)
         self.assertEqual(category, "rechtschreibung")
         self.assertEqual(fix, "Ich habe mir beim Sport das Bein gezerrt")
 
-    def test_different_correction_is_refused(self):
-        """Та самая выдумка: категория одна, а правки разные."""
-        agreed, _c, _f = _both_agree([
-            v(category="praeposition", corrected="Heute bin ich mit Arbeit überlastet."),
-            v(category="praeposition", corrected="Heute bin ich durch Arbeit überlastet"),
-        ])
-        self.assertFalse(agreed)
+    def test_a_fix_without_a_quote_is_refused(self):
+        """Не показал пальцем — не имеет права молча переписать чужую фразу."""
+        self.assertFalse(_both_agree([v(corrected="Ich habe es", span="")], ТЕКСТ)[0])
 
-    def test_different_category_is_refused(self):
-        agreed, _c, _f = _both_agree([
-            v(category="kasus", corrected="одинаково"),
-            v(category="praeposition", corrected="одинаково"),
-        ])
-        self.assertFalse(agreed)
+    def test_a_quote_that_is_not_in_the_text_is_refused(self):
+        """Та самая выдумка: цитата, которой в записи нет вовсе."""
+        self.assertFalse(
+            _both_agree([v(corrected="Ich habe es", span="Fahrrad")], ТЕКСТ)[0])
 
-    def test_one_judge_says_context_and_nothing_is_applied(self):
-        agreed, _c, _f = _both_agree([
-            v(corrected="Was erhoffen Sie sich dadurch?"),
-            v(verdict="context", category="wortstellung", corrected=""),
-        ])
-        self.assertFalse(agreed)
+    def test_a_fix_that_only_adds_a_full_stop_is_refused(self):
+        """«Предлог не тот», а в правке дописана только точка — пустая придирка."""
+        self.assertFalse(
+            _both_agree([v(category="praeposition",
+                           corrected="Ich habe mir beim Sport das Bein gezerrt",
+                           span="Bein")],
+                        "Ich habe mir beim Sport das Bein gezerrt.")[0])
+
+    def test_context_verdict_is_never_applied(self):
+        self.assertFalse(_both_agree([v(verdict="context", category="wortstellung",
+                                        corrected="Was erhoffen Sie sich dadurch?")],
+                                     ТЕКСТ)[0])
 
     def test_empty_correction_is_refused(self):
-        agreed, _c, _f = _both_agree([v(corrected=""), v(corrected="")])
-        self.assertFalse(agreed)
+        self.assertFalse(_both_agree([v(corrected="")], ТЕКСТ)[0])
 
     def test_a_dead_judge_never_lets_a_fix_through(self):
-        self.assertFalse(_both_agree([v(corrected="x"), {}])[0])
-        self.assertFalse(_both_agree([{}, {}])[0])
-        self.assertFalse(_both_agree([v(corrected="x")])[0])
+        self.assertFalse(_both_agree([{}], ТЕКСТ)[0])
+        self.assertFalse(_both_agree([], ТЕКСТ)[0])
+        # Два ответа сюда больше не приходят — форма изменилась, и это не «согласие».
+        self.assertFalse(_both_agree([v(corrected="x"), v(corrected="x")], ТЕКСТ)[0])
 
 
 class WhatWeFixSilentlyTests(unittest.TestCase):
@@ -218,13 +231,15 @@ class MeaningIsTheContextTests(unittest.TestCase):
     Проверено после правки (08.08.2026, два прогона): с переводом вердикт «ошибки нет»,
     без перевода — «зависит от контекста», а не «ошибка»."""
 
-    def test_night_hands_the_translation_to_both_judges(self):
+    def test_night_hands_the_translation_to_the_judge(self):
+        """⚠ Судья с 04.09.2026 один (`_judge_once`), но перевод ему уезжает так же:
+        предлог и падеж выбираются по смыслу, и без перевода он судит вслепую."""
         import pathlib
         src = (pathlib.Path(__file__).resolve().parents[1] / "phrase_night_check.py").read_text(encoding="utf-8")
-        start = src.index("def _judge_twice")
-        self.assertIn("translation", src[start:start + 700],
+        start = src.index("def _judge_once")
+        self.assertIn("translation", src[start:start + 900],
                       "судья снова судит вслепую, без смысла фразы")
-        self.assertIn('_judge_twice(row["text"], row["kind"], row.get("translation")',
+        self.assertIn('_judge_once(row["text"], row["kind"], row.get("translation")',
                       src, "ночь не передаёт перевод в судью")
 
     def test_prompt_makes_the_saved_meaning_decide(self):
@@ -260,3 +275,46 @@ class MeaningIsTheContextTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ПустаяПридиркаСнимаетсяАрифметикойTests(unittest.TestCase):
+    """⛔ «Предлог не тот», а в правке дописана только точка — это не ошибка.
+
+    ┌─ ЗАМЕР 04.09.2026, 63 ЖИВЫЕ ФРАЗЫ. ─────────────────────────────────────────┐
+    │ Сначала я попросил судью ЦИТИРОВАТЬ неверное место полем `span`. Он вернул    │
+    │ `null` ВО ВСЕХ 63 случаях, включая контрольные с заведомой ошибкой: «Die      │
+    │ Finster der Nacht» исправил верно, а показать пальцем не смог. Требование,    │
+    │ которое модель игнорирует, — не защита, а самообман: строгое правило «нет     │
+    │ цитаты — нет находки» ослепило проверку полностью, 0 находок из 63.           │
+    │                                                                              │
+    │ Изменённое место теперь СЧИТАЕМ САМИ из разницы между текстом и правкой. На   │
+    │ том же замере: 3 находки, обе контрольные ошибки пойманы, одна пустая         │
+    │ придирка снята арифметикой, 63 фразы = 63 обращения к модели.                 │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    """
+
+    def test_a_fix_that_changes_nothing_is_not_an_error(self):
+        from backend.phrase_night_check import _что_изменено
+        self.assertEqual(
+            _что_изменено("Heute bin ich mit Arbeit überlastet",
+                          "Heute bin ich mit Arbeit überlastet."), "")
+
+    def test_the_changed_word_is_named_whole(self):
+        """Человеку нужно видеть СЛОВО, а не разницу в три буквы."""
+        from backend.phrase_night_check import _что_изменено
+        self.assertEqual(
+            _что_изменено("Die Finster der Nacht machte die Straße gefährlich",
+                          "Die Finsternis der Nacht machte die Straße gefährlich"),
+            "Finster")
+        self.assertEqual(
+            _что_изменено("Ich habe gestern ins Kino gegangen",
+                          "Ich bin gestern ins Kino gegangen"), "habe")
+
+    def test_we_do_not_ask_the_model_to_quote_any_more(self):
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[1] / "openai_manager.py").read_text(encoding="utf-8")
+        i = src.index("def run_phrase_grammar_verdict")
+        тело = src[i:src.index("\ndef ", i + 10)]
+        self.assertNotIn("`span` MUST", тело,
+                         "снова просим цитату, которую модель не заполняет")
+        self.assertIn("AN ERROR YOU CANNOT FIX IS NOT AN ERROR", тело)

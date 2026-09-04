@@ -101,7 +101,7 @@ class НочьНеПересобираетРазборПредложения(uni
         import backend.database as db
         with mock.patch.object(phrase_night_check, "pick_phrases_for_grammar_check",
                                return_value=[строка]), \
-             mock.patch.object(phrase_night_check, "_judge_twice", return_value=приговор), \
+             mock.patch.object(phrase_night_check, "_judge_once", return_value=приговор), \
              mock.patch.object(phrase_night_check, "_both_agree",
                                return_value=(True, sorted(phrase_night_check.SILENT_CATEGORIES)[0],
                                              исправленный)), \

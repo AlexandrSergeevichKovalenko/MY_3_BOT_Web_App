@@ -250,30 +250,27 @@ class ArbiterAnswersBeforeTheScreenTests(unittest.TestCase):
 
 
 class ExplanationIsInRussianTests(unittest.TestCase):
-    """29 вопросов из 232 приехали к владельцу с немецким объяснением."""
+    """Объяснение читает человек, который по-немецки только учится.
 
-    def test_the_guard_recognises_german(self):
-        from backend.phrase_night_check import _in_russian
-        self.assertFalse(_in_russian("Das Verb 'fahren' wird hier transitiv verwendet."))
-        self.assertTrue(_in_russian("Глагол «fahren» здесь переходный."))
+    ⚠ ПЕРЕСПРОС УБРАН 04.09.2026. Раньше ответ не по-русски вызывал ЕЩЁ ОДИН платный
+    запрос — тот же самый вопрос заново. Владелец: «мы очень много денег тратим на
+    модели… мне достаточно чтобы один раз модель посмотрела и всё». Требование
+    «объясняй по-русски» стоит отдельным правилом в самом вопросе; пришло не по-русски —
+    показываем как есть, потому что спрятать разбор хуже, чем показать его не на том
+    языке.
+    """
 
-    def test_the_judge_is_asked_again_when_he_answers_in_german(self):
-        from backend import phrase_night_check as nc
-        german = {"verdict": "error", "why": "Das Verb ist falsch.", "corrected": "x"}
-        russian = {"verdict": "error", "why": "Глагол не тот.", "corrected": "x"}
-        with patch("backend.openai_manager.run_phrase_grammar_verdict",
-                   return_value=russian) as again:
-            out = nc._russian_why_or_retry("t", "sentence", "перевод", german)
-        self.assertEqual(out["why"], "Глагол не тот.")
-        self.assertEqual(again.call_count, 1)
+    def test_the_rule_is_stated_in_the_question_itself(self):
+        src = _src("backend/openai_manager.py")
+        i = src.index("def run_phrase_grammar_verdict")
+        тело = src[i:src.index("\ndef ", i + 10)]
+        self.assertIn("`why` MUST be written in RUSSIAN", тело)
+        self.assertIn("German or English", тело)
 
-    def test_a_russian_answer_costs_nothing_extra(self):
-        from backend import phrase_night_check as nc
-        russian = {"verdict": "error", "why": "Глагол не тот."}
-        with patch("backend.openai_manager.run_phrase_grammar_verdict") as again:
-            nc._russian_why_or_retry("t", "sentence", "перевод", russian)
-        self.assertEqual(again.call_count, 0, "переспрашиваем там, где правило не нарушено")
-
+    def test_no_paid_retry_because_of_the_language(self):
+        src = _src("backend/phrase_night_check.py")
+        self.assertNotIn("def _russian_why_or_retry", src,
+                         "платный переспрос из-за языка объяснения вернулся")
 
 class ScreenExplainsItselfTests(unittest.TestCase):
     """Владелец: «мне приходит перечёркнутый текст — и что это значит?»"""
