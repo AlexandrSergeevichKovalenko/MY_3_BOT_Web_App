@@ -30332,10 +30332,17 @@ function AppInner() {
         showNoticeModal({
           emoji: '📖',
           title: tr('Собрать текст этого ролика?', 'Text zu diesem Video erstellen?'),
-          message: tr(
-            'Текст появится книгой в читалке — с переводом по нажатию и закладками. Видео при этом не остановится. Один текст в неделю: следующий можно будет собрать через семь дней.',
-            'Der Text erscheint als Buch im Reader — mit Übersetzung per Tippen und Lesezeichen. Das Video läuft weiter. Ein Text pro Woche: den nächsten gibt es in sieben Tagen.',
-          ),
+          // Админу сервер снимает недельный слот, и обещать ему «через семь дней»
+          // нельзя: это был бы неверный текст на экране (флаг unlimited от сервера).
+          message: data?.unlimited
+            ? tr(
+              'Текст появится книгой в читалке — с переводом по нажатию и закладками. Видео при этом не остановится.',
+              'Der Text erscheint als Buch im Reader — mit Übersetzung per Tippen und Lesezeichen. Das Video läuft weiter.',
+            )
+            : tr(
+              'Текст появится книгой в читалке — с переводом по нажатию и закладками. Видео при этом не остановится. Один текст в неделю: следующий можно будет собрать через семь дней.',
+              'Der Text erscheint als Buch im Reader — mit Übersetzung per Tippen und Lesezeichen. Das Video läuft weiter. Ein Text pro Woche: den nächsten gibt es in sieben Tagen.',
+            ),
           okLabel: tr('Не сейчас', 'Jetzt nicht'),
           confirmLabel: tr('Собрать текст', 'Text erstellen'),
           onConfirm: () => {

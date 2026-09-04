@@ -61970,13 +61970,19 @@ def video_reader_text_start():
                         "document_id": int((document or {}).get("id") or 0)})
 
     # 3. Собирать заново. Вот это стоит денег — значит, недельный слот.
-    slot = get_video_reader_text_slot(int(user_id))
-    if not slot.get("free"):
-        return jsonify({
-            "state": "limit",
-            "next_at": slot.get("next_at") or "",
-            "error": "Один текст видео в неделю. Следующий откроется автоматически.",
-        }), 429
+    #    Админ — без слота (решение владельца 04.09.2026): он проверяет продукт и должен
+    #    успевать пройти несколько роликов подряд, а не ждать неделю между проверками.
+    #    Расход при этом СЧИТАЕТСЯ как у всех: log_video_reader_text_request ниже пишет
+    #    was_new=True и админу тоже, слот просто не спрашивается.
+    is_admin = int(user_id) in {int(a) for a in (get_admin_telegram_ids() or [])}
+    if not is_admin:
+        slot = get_video_reader_text_slot(int(user_id))
+        if not slot.get("free"):
+            return jsonify({
+                "state": "limit",
+                "next_at": slot.get("next_at") or "",
+                "error": "Один текст видео в неделю. Следующий откроется автоматически.",
+            }), 429
 
     data, _tier, _ms = _load_cached_youtube_transcript_data(video_id)
     items = (data or {}).get("items") or []
@@ -61991,6 +61997,7 @@ def video_reader_text_start():
         # он его тратит, ДО того как мы пойдём к модели за деньги.
         return jsonify({"state": "confirm_needed",
                         "title": _video_text_title(video_id, title),
+                        "unlimited": is_admin,
                         "source_chars": len("".join(str((i or {}).get("text") or "") for i in items))})
 
     if not claim_video_reader_text_build(video_id, title=_video_text_title(video_id, title)):
