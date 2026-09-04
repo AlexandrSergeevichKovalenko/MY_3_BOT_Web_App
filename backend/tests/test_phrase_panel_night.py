@@ -154,8 +154,8 @@ class ЧтоНеПроверилиНеПомечаемTests(unittest.TestCase):
              patch.object(pp.Panel, "__init__", _панель_без_сети), \
              patch.object(pp.Panel, "judge",
                           return_value=(pp.DISPUTED, "голоса разошлись", claims)), \
-             patch.object(pp.Panel, "проверить_вариант",
-                          return_value={"state": "ok", "why": ""}), \
+             patch.object(pp.Panel, "проверить_претензию",
+                          return_value={"claim": "right", "fix": "ok", "why": ""}), \
              patch("backend.database.open_panel_card_question",
                    return_value=True) as вопрос:
             отчёт = pp.run_batch(limit=1)

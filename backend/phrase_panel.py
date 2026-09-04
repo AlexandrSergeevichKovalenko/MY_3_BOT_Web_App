@@ -151,6 +151,49 @@ Answer STRICT JSON: {"defects":[{"field":"headword|translation|examples|meaning"
 An empty list means the entry is fine. When unsure, leave it out."""
 
 
+# ⛔ ТРЕТИЙ ГОЛОС, КОГДА GEMINI МОЛЧИТ. Решение владельца 04.09.2026: «если нету у нас
+# Gemini, то пусть используется OpenAI как второй голос».
+#
+# Но НЕ тем же вопросом. Спросить ту же модель то же самое — значит получить то же
+# мнение: замер 23.08.2026 показал, что два голоса OpenAI расходятся всего в 15%
+# случаев, потому что обучены одинаково. Поэтому третий голос здесь спрашивают о
+# ДРУГОМ: не «проверь карточку», а «правда ли то, в чём обвинил её первый голос».
+# Это узкий фактический вопрос, а не повторная оценка своей же работы, — и на нём
+# родственность моделей стоит куда дешевле.
+#
+# ЧТО ЭТО ПОЧИНИЛО (04.09.2026, живой случай владельца). Голос заявил, что в «die Zahl
+# versechsfacht sich» глагол «написан с ошибкой», и предложил «versechsfachte sich» —
+# другое ВРЕМЯ. Претензию не проверял никто: прежняя проверка смотрела только на
+# замену и только на смысл («Judge MEANING, not style»), поэтому смену времени
+# пропускала. Владелец: «я не вижу, что слово написано неверно… перевод тогда должен
+# быть „число увеличилось“». Оба его замечания — это два вопроса ниже.
+SYSTEM_ПРОВЕРКА = """You are the second opinion on ONE complaint about a single entry of
+a German↔Russian learner's dictionary. You are NOT auditing the entry: you are checking
+whether the complaint is TRUE.
+
+You get: the entry as saved (German), the Russian saved with it, which field the
+complaint is about, the complaint itself, and the correction the complainer proposed
+(may be empty).
+
+Answer two questions INDEPENDENTLY.
+
+1. "claim_right" — is the complaint factually true about the entry EXACTLY AS SAVED?
+   Say false when the German as written is correct. In particular, an entry is NOT
+   wrong for being rare, non-idiomatic, absent from dictionaries, stylistically plain,
+   or for being the learner's own free combination of words. «die Zahl versechsfacht
+   sich» is correct present tense and no complaint about its spelling is true.
+
+2. "fix_ok" — does the proposed correction still say the SAME as the saved Russian?
+   Not only the same meaning: the same TENSE, PERSON and NUMBER. Replacing a present
+   tense German with a past tense one while the Russian stays present («увеличивается»)
+   is NOT ok. Answer null when no correction was proposed.
+
+"why" — ONE short sentence in RUSSIAN, Cyrillic letters, for the person who will read
+it on screen. No jargon, no field names.
+
+Answer STRICT JSON: {"claim_right":true|false,"fix_ok":true|false|null,"why":"…"}"""
+
+
 class BudgetSpent(Exception):
     """Деньги кончились — прогон останавливается, а не «доделывает по-быстрому»."""
 
@@ -326,6 +369,9 @@ class Panel:
                 claims.append({**довод, "voice": номер})
 
         answered = [v for v in votes if v is not None]
+        # Сколько голосов реально ответило — нужно вызывающему: при неполной панели
+        # спор 1-1 разрешает проверяющий претензий, а не владелец (см. `разобрать`).
+        self.ответивших = len(answered)
         if len(answered) < 2:
             # Меньше двух голосов — большинства не существует. Записать «чисто» здесь
             # значило бы выдать аварию за проверку.
@@ -343,61 +389,129 @@ class Panel:
                     claims)
         if not union or silent >= 2:
             return CLEAN, "", []
-        if len(answered) < 3:
-            # ┌─ ЗАКРЫТО 04.09.2026. ГЛАВНАЯ ДЫРА ЭТОГО МЕХАНИЗМА. ──────────────────┐
-            # │ Владелец: «я не вижу, что слово versechsfacht написано неверно» — и   │
-            # │ был прав: слово написано верно, а претензию высказал ОДИН голос,      │
-            # │ которого никто не подтвердил и не опроверг.                            │
-            # │                                                                       │
-            # │ Как это выходило. Третий голос молчал (у Gemini кончились деньги,      │
-            # │ HTTP 429 → RuntimeError). Оставались двое: один придрался, второй      │
-            # │ промолчал. Правило «молчание большинства — это „чисто“» требует ДВУХ   │
-            # │ молчащих, а из двоих их взяться неоткуда, — и одинокая догадка ехала   │
-            # │ владельцу под видом «голоса разошлись».                                │
-            # │ Замер того дня: ВСЕ 51 вопрос на его экране родились в прогоне, где    │
-            # │ голос не ответил; 45 из них держались на одном голосе.                 │
-            # │                                                                       │
-            # │ Спор — это когда разошлись ТРИ голоса. Двое, из которых один молчит, — │
-            # │ это неполная панель: вердикта нет, отметку не ставим, карточка         │
-            # │ вернётся, когда спросить будет кого. Так же поступает `NOT_ASKED` при  │
-            # │ одном голосе — это та же авария, просто на шаг позже.                  │
-            # └───────────────────────────────────────────────────────────────────────┘
-            return NOT_ASKED, "; ".join(reasons)[:400], claims
+        # ┌─ ГЛАВНАЯ ДЫРА ЭТОГО МЕХАНИЗМА. НАЙДЕНА И ЗАКРЫТА 04.09.2026. ────────────┐
+        # │ Владелец: «я не вижу, что слово versechsfacht написано неверно» — и был   │
+        # │ прав: слово написано верно, а претензию высказал ОДИН голос, которого     │
+        # │ никто не подтвердил и не опроверг. Третий голос молчал (у Gemini кончились│
+        # │ деньги, HTTP 429), оставались двое: один придрался, второй промолчал.     │
+        # │ Правило «молчание большинства — это „чисто“» требует ДВУХ молчащих, а из  │
+        # │ двоих их взяться неоткуда, — и одинокая догадка ехала владельцу под видом │
+        # │ «голоса разошлись». Замер: ВСЕ 51 вопрос на его экране родились в прогоне,│
+        # │ где голос не ответил; 45 держались на одном голосе.                       │
+        # │                                                                          │
+        # │ Спор владельцу — это разногласие ТРЁХ ответивших голосов. Когда голосов   │
+        # │ было двое, спор 1-1 разрешает проверяющий претензий (решение владельца    │
+        # │ 04.09.2026: «если нету у нас Gemini, пусть OpenAI отрабатывают»), и до    │
+        # │ человека доходит только то, что проверяющий подтвердил. Разбор — в        │
+        # │ `разобрать` ниже; здесь только вердикт голосов.                            │
+        # └──────────────────────────────────────────────────────────────────────────┘
         return DISPUTED, "; ".join(reasons)[:400], claims
 
-    def проверить_вариант(self, *, поле: str, готовое: str, заголовок: str,
-                          перевод: str) -> dict:
-        """ВТОРОЙ ГОЛОС НА ГОТОВЫЙ ВАРИАНТ. Предложение судьи — тоже текст модели.
+    def проверить_претензию(self, *, поле: str, претензия: str, готовое: str,
+                            заголовок: str, перевод: str) -> dict:
+        """ТРЕТИЙ ГОЛОС НА ОДНУ ПРЕТЕНЗИЮ: правда ли она, и годится ли замена.
 
-        Владелец 31.08.2026: диагноз без исправления бесполезен. Но исправление,
-        которое никто не проверил, — то же самое, только опаснее: оно выглядит как
-        ответ и стоит на кнопке. Поэтому предложение сверяется парной проверкой смысла
-        (`openai_manager.run_translation_pair_check`, gpt-4.1-mini, ≈$0.0001).
+        Возвращает {"claim": "right"|"wrong"|"unknown", "fix": "ok"|"bad"|"unknown"|"",
+                    "why": "<по-русски>"}. «unknown» НЕ притворяется ни «правдой», ни
+        «ложью»: спросить не удалось — значит не удалось, и претензия остаётся как есть.
 
-        Три состояния и ни одного молчаливого: годится / не годится / спросить не
-        удалось. Последнее НЕ притворяется ни первым, ни вторым.
+        Спрашиваем ТОЛЬКО о тексте человека (заголовок, перевод): примеры и значение
+        сочинили мы сами, их не оспаривают, а переписывают.
         """
+        претензия = str(претензия or "").strip()
+        заголовок = str(заголовок or "").strip()
+        перевод = str(перевод or "").strip()
         готовое = str(готовое or "").strip()
-        if not готовое or поле not in ("headword", "translation"):
+        if поле not in HUMAN_FIELDS or not претензия or not заголовок or not перевод:
             return {}
-        de = готовое if поле == "headword" else str(заголовок or "").strip()
-        ru = готовое if поле == "translation" else str(перевод or "").strip()
-        if not de or not ru:
-            return {}
-        from backend.openai_manager import _LAST_LLM_USAGE, run_translation_pair_check
+        if self.cost >= self.budget_usd:
+            raise BudgetSpent(f"потрачено ${self.cost:.2f} — потолок ${self.budget_usd:.2f}")
+        payload = json.dumps({"german": заголовок, "russian": перевод, "field": поле,
+                              "complaint": претензия, "proposed_fix": готовое},
+                             ensure_ascii=False)
         try:
-            ответ = run_translation_pair_check(german=de, russian=ru)
+            ответ = self._openai.chat.completions.create(
+                model=MODEL_A, temperature=0, response_format={"type": "json_object"},
+                messages=[{"role": "system", "content": SYSTEM_ПРОВЕРКА},
+                          {"role": "user", "content": payload}])
         except Exception as exc:
-            return {"state": "unknown", "why": f"проверить не удалось: {type(exc).__name__}"}
-        # ⛔ ЭТОТ ЗАПРОС ТОЖЕ ПЛАТНЫЙ, и не учесть его — значит построить потолок расхода
-        # на заниженной арифметике (см. рамку про счёт Google в `_gemini_vote`).
-        usage = _LAST_LLM_USAGE.get() or {}
-        self.cost += (int(usage.get("prompt_tokens") or 0) * PRICE_OPENAI[MODEL_B][0]
-                      + int(usage.get("completion_tokens") or 0) * PRICE_OPENAI[MODEL_B][1])
-        if not ответ.get("checked"):
-            return {"state": "unknown", "why": "проверить не удалось"}
-        return ({"state": "ok", "why": ""} if ответ.get("ok")
-                else {"state": "bad", "why": str(ответ.get("why") or "")[:300]})
+            return {"claim": "unknown", "fix": "unknown",
+                    "why": f"проверить не удалось: {type(exc).__name__}"}
+        # ⛔ ЭТОТ ЗАПРОС ТОЖЕ ПЛАТНЫЙ (см. рамку про счёт Google в `_gemini_vote`).
+        self.cost += (ответ.usage.prompt_tokens * PRICE_OPENAI[MODEL_A][0]
+                      + ответ.usage.completion_tokens * PRICE_OPENAI[MODEL_A][1])
+        try:
+            данные = json.loads(ответ.choices[0].message.content)
+        except (json.JSONDecodeError, TypeError):
+            return {"claim": "unknown", "fix": "unknown", "why": "ответ не разобран"}
+        верна = данные.get("claim_right")
+        замена = данные.get("fix_ok")
+        return {
+            "claim": "right" if верна is True else "wrong" if верна is False else "unknown",
+            "fix": ("" if not готовое else
+                    "ok" if замена is True else "bad" if замена is False else "unknown"),
+            "why": str(данные.get("why") or "")[:300],
+        }
+
+
+def разобрать(panel: "Panel", display: str, kind: str, card: dict | None,
+              перевод: str) -> tuple[str, str, list]:
+    """Судейство карточки ЦЕЛИКОМ: голоса, проверка их претензий, итоговый вердикт.
+
+    ┌─ ОДНА ДВЕРЬ НА ВСЕ ПРОГОНЫ (04.09.2026). ────────────────────────────────────┐
+    │ Раньше каждый прогон сам звал `judge`, сам обходил претензии и сам решал, что │
+    │ с ними делать. Копий было две, и в обеих проверялась только ЗАМЕНА, а само    │
+    │ обвинение — никогда. Здесь это одно место, и оно отвечает на оба вопроса      │
+    │ владельца от 04.09.2026: «правда ли слово написано неверно» и «почему замена  │
+    │ в другом времени».                                                            │
+    └──────────────────────────────────────────────────────────────────────────────┘
+
+    Что делает проверка с претензией:
+      подтвердил      — претензия остаётся, замена помечается годной/негодной;
+      опроверг        — претензия ВЫБРАСЫВАЕТСЯ: показывать человеку то, что мы сами
+                        считаем неправдой, нельзя;
+      спросить не смог — оставляем как есть и говорим об этом словами.
+
+    Если после проверки не осталось ни одной претензии — карточка чистая.
+    Если голосов было меньше трёх, подтверждённая претензия считается подтверждённой
+    ВТОРЫМ голосом: спора нет, есть находка. Владельцу спор уходит только когда
+    разошлись три ответивших голоса.
+    """
+    verdict, why, claims = panel.judge(entry_of(display, kind, card, перевод))
+    if verdict not in (DISPUTED, HUMANS_OWN):
+        return verdict, why, claims
+
+    выжили, пояснения = [], []
+    for claim in claims:
+        поле = str(claim.get("field") or "")
+        приговор = panel.проверить_претензию(
+            поле=поле, претензия=str(claim.get("what") or ""),
+            готовое=str(claim.get("fix") or ""), заголовок=str(display or ""),
+            перевод=перевод)
+        if not приговор:                       # примеры и значение не оспариваем
+            выжили.append(claim)
+            continue
+        if приговор["claim"] == "wrong":
+            пояснения.append(f"претензия про {поле} снята проверкой: {приговор['why']}")
+            continue
+        if приговор["fix"] == "ok":
+            claim["fix_check"] = {"state": "ok", "why": ""}
+        elif приговор["fix"] == "bad":
+            claim["fix_check"] = {"state": "bad", "why": приговор["why"]}
+        elif приговор["fix"] == "unknown":
+            claim["fix_check"] = {"state": "unknown", "why": приговор["why"]}
+        выжили.append(claim)
+
+    if пояснения:
+        why = "; ".join([why] + пояснения)[:400] if why else "; ".join(пояснения)[:400]
+    if not выжили:
+        return CLEAN, why, []
+    if verdict == DISPUTED and int(getattr(panel, "ответивших", 3)) < 3:
+        # Голосов было двое, и проверяющий встал на сторону претензии — это не спор,
+        # а подтверждённая находка. Владельца спором не тревожим.
+        поля = {str(c.get("field") or "") for c in выжили}
+        verdict = DEFECT if поля & OUR_OWN_FIELDS else HUMANS_OWN
+    return verdict, why, выжили
 
 
 def entry_of(display: str, kind: str, card: dict | None, translation: str) -> dict:
@@ -833,9 +947,7 @@ def run_batch(*, limit: int = NIGHT_LIMIT, budget_usd: float = NIGHT_BUDGET,
         # когда панель судить не может.
         отчёт["поднято из старых"] = поднять_старые_отметки()
         отчёт["осталось у людей"] = count_personal_backlog()
-    # Сначала дешёвая проверка ключей, потом живая проверка третьего голоса: спрашивать
-    # сеть, когда ключа и так нет, незачем.
-    нельзя = unavailable_reason() or третий_голос_молчит()
+    нельзя = unavailable_reason()
     if нельзя:
         # Не «сделали как смогли», а честное «не делали»: ухудшенная проверка выглядит
         # как проверка, и отличить её потом нельзя.
@@ -843,6 +955,14 @@ def run_batch(*, limit: int = NIGHT_LIMIT, budget_usd: float = NIGHT_BUDGET,
         отчёт["осталось"] = count_unchecked()
         logging.warning("ночная панель не запускалась: %s", нельзя)
         return отчёт
+
+    # ⛔ ТРЕТИЙ ГОЛОС МОЛЧИТ — РАБОТАЕМ, НО ГОВОРИМ ОБ ЭТОМ ВСЛУХ.
+    # Решение владельца 04.09.2026: «если нету у нас Gemini, пусть OpenAI отрабатывают».
+    # Молчаливой деградации тут нет: пока голосов двое, ни одна одинокая претензия не
+    # доходит до человека без проверки (`разобрать`), а причина стоит в утреннем отчёте.
+    отчёт["третий голос"] = третий_голос_молчит()
+    if отчёт["третий голос"]:
+        logging.warning("панель работает без третьего голоса: %s", отчёт["третий голос"])
 
     rows = unchecked_units(int(limit))
     отчёт["взято"] = len(rows)
@@ -858,21 +978,11 @@ def run_batch(*, limit: int = NIGHT_LIMIT, budget_usd: float = NIGHT_BUDGET,
         if not перевод.strip():
             return unit_id, display, NO_RU, "", [], ""
         try:
-            verdict, why, claims = panel.judge(entry_of(display, kind, card, перевод))
+            verdict, why, claims = разобрать(panel, display, kind, card, перевод)
         except BudgetSpent as stop:
             # Отметку НЕ ставим: карточку не проверяли. Она останется в остатке и
             # достанется следующей ночи — это честнее, чем записать «чисто».
             return unit_id, display, None, str(stop), [], перевод
-        if verdict in (DISPUTED, HUMANS_OWN):
-            # Готовый вариант проверяем вторым голосом — но только там, где он поедет
-            # человеку: это 2,5% + 7% прохода, и лишний запрос на каждую карточку мы
-            # не платим.
-            for claim in claims:
-                приговор = panel.проверить_вариант(
-                    поле=claim.get("field", ""), готовое=claim.get("fix", ""),
-                    заголовок=str(display or ""), перевод=перевод)
-                if приговор:
-                    claim["fix_check"] = приговор
         return unit_id, display, verdict, why, claims, перевод
 
     with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
@@ -998,16 +1108,9 @@ def rejudge_personal(*, limit: int = 500, budget_usd: float = 3.0, workers: int 
         if not перевод.strip():
             return unit_id, display, NO_RU, "", [], ""
         try:
-            verdict, why, claims = panel.judge(entry_of(display, kind, card, перевод))
+            verdict, why, claims = разобрать(panel, display, kind, card, перевод)
         except BudgetSpent as stop:
             return unit_id, display, None, str(stop), [], перевод
-        if verdict in (DISPUTED, HUMANS_OWN):
-            for claim in claims:
-                приговор = panel.проверить_вариант(
-                    поле=claim.get("field", ""), готовое=claim.get("fix", ""),
-                    заголовок=str(display or ""), перевод=перевод)
-                if приговор:
-                    claim["fix_check"] = приговор
         return unit_id, display, verdict, why, claims, перевод
 
     with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
