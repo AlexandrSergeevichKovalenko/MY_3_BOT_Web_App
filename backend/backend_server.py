@@ -432,7 +432,6 @@ from backend.database import (
     get_dictionary_entries_with_stored_raw_text,
     count_dictionary_entries_with_stored_raw_text,
     get_thin_pool_entries_for_enrichment,
-    mark_pool_entry_enrich_failed,
     count_thin_pool_entries,
     get_dictionary_backfill_diagnostics,
     update_dictionary_entry_full_columns,
@@ -12112,6 +12111,18 @@ def run_pool_night_enrichment(
             _POOL_NIGHT_ENRICH_RUNNING = True
     # Когда поиск читает слой единиц, добирать надо ИМЕННО единицы: иначе ночной бюджет
     # уходил бы на строки старого банка, которые больше никто не открывает.
+    #
+    # ┌─ ПРОВЕРЕНО 04.09.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ──────────────────────┐
+    # │ В проде рубильник стоит на MY_3_BOT (он же крутит планировщик), и журнал каждого │
+    # │ ночного прогона пишет mode=units. Ветка ниже по старому банку в проде НЕ          │
+    # │ выполняется. Её карантин (счётчик enrich_attempts, экран «Карантин пула» в боте,  │
+    # │ строка «В карантине» в утреннем отчёте, воскресная рассылка) снесён 04.09.2026:   │
+    # │ метку ставили только прогоны тестов, и она дважды выдала владельцу хорошие слова  │
+    # │ за «ночь не смогла». Слово, которое модель не собрала, в этой ветке просто        │
+    # │ остаётся в очереди; в слое слов отказы считает units-путь и отдаёт владельцу с    │
+    # │ кнопками. Перемерить: bt_3_scheduler_run_guards, job_key=pool_night_enrichment,  │
+    # │ metadata->>'mode'. Обещание об этом — backend/fix_promises.py.                    │
+    # └──────────────────────────────────────────────────────────────────────────────────┘
     if DICTIONARY_UNITS_LOOKUP_ENABLED:
         try:
             return _run_units_night_enrichment(
@@ -12173,7 +12184,6 @@ def run_pool_night_enrichment(
                     report["skipped_empty"] += 1
                     if len(report["skipped_samples"]) < 15:
                         report["skipped_samples"].append({"word": source_text, "reason": "empty"})
-                    mark_pool_entry_enrich_failed(row.get("id"), "empty")
                     continue
                 merged = dict(row.get("response_json") or {})
                 merged.update(enrich_data)
@@ -12191,7 +12201,6 @@ def run_pool_night_enrichment(
                     report["skipped_thin"] += 1
                     if len(report["skipped_samples"]) < 15:
                         report["skipped_samples"].append({"word": source_text, "reason": "thin"})
-                    mark_pool_entry_enrich_failed(row.get("id"), "thin")
                     continue
                 _publish_enriched_card_to_shared_stores(
                     payload=merged, source_lang=row_source_lang, target_lang=row_target_lang,

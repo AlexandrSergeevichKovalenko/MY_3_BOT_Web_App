@@ -25211,9 +25211,7 @@ def backfill_dictionary_pool_entry_kind(limit: int = 50000) -> int:
 
 
 def count_thin_pool_entries(*, source_lang: str = "de", target_lang: str = "ru") -> int:
-    """Сколько ЖИВЫХ тонких записей пула ещё нельзя отдать без GPT. Для отчёта «осталось».
-    Карантин (enrich_attempts >= POOL_ENRICH_MAX_ATTEMPTS) исключён — иначе счётчик вечно
-    висел бы на дне из неисправимого мусора и «наполнен полностью» никогда бы не наступил."""
+    """Сколько ЖИВЫХ тонких записей пула ещё нельзя отдать без GPT. Для отчёта «осталось»."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -25222,9 +25220,6 @@ def count_thin_pool_entries(*, source_lang: str = "de", target_lang: str = "ru")
                 WHERE source_lang = %s AND target_lang = %s
                   AND (response_json IS NULL OR NOT {DICTIONARY_POOL_WORD_FULLY_RICH_SQL})
                   {_DICTIONARY_POOL_SINGLE_WORD_SQL}
-                  AND COALESCE((CASE WHEN response_json->>'enrich_attempts' ~ '^[0-9]+$'
-                                     THEN (response_json->>'enrich_attempts')::int
-                                     ELSE 0 END), 0) < {int(POOL_ENRICH_MAX_ATTEMPTS)}
                   AND COALESCE(response_json->>'merged_into', '') = ''
                 """,
                 (_normalize_lang_code(source_lang), _normalize_lang_code(target_lang)),
@@ -25232,153 +25227,18 @@ def count_thin_pool_entries(*, source_lang: str = "de", target_lang: str = "ru")
             return int((cursor.fetchone() or [0])[0] or 0)
 
 
-# After this many consecutive failed enrichment attempts a thin entry is quarantined —
-# dropped from the nightly enrichment queue. Almost always a garbage token GPT can never
-# turn into a real card (invented compound, typo, fragment), all with demand 0.
-POOL_ENRICH_MAX_ATTEMPTS = 3
-
-
-# ┌─ НАЙДЕНО 01.09.2026. ПРОГОН ТЕСТОВ КЛЕЙМИЛ ЖИВЫЕ СЛОВА. ─────────────────────────┐
-# │ Владелец открыл карантин: 31 слово, все хорошие — die Vorgehensweise, ausführlich,│
-# │ zeigen, ankommen. Замер: у 26 из 31 разбор ЕСТЬ и лежит в слое слов, откуда его и │
-# │ показывает приложение. То есть экран говорил «карточка не собралась» про слова с   │
-# │ собранной карточкой.                                                              │
-# │                                                                                  │
-# │ Откуда метка. В проде ночной добор с 27.07.2026 ходит в слой слов, и ветка добора │
-# │ по старому банку — единственная, что зовёт эту функцию, — НЕ ВЫПОЛНЯЕТСЯ ВООБЩЕ.  │
-# │ Зато на машине разработчика рубильника DICTIONARY_UNITS_LOOKUP_ENABLED нет, а     │
-# │ DATABASE_URL_RAILWAY смотрит в ЖИВУЮ zephyr. Тест ночного добора                  │
-# │ (test_night_enrichment_stops_without_second_voice) запускает настоящий добор,     │
-# │ подсунув пустой ответ модели: добор брал из живой базы САМОЕ ВОСТРЕБОВАННОЕ слово │
-# │ (ORDER BY demand DESC) и вешал ему «не собралась». Три пуша — три метки —         │
-# │ карантин. Воспроизведено 01.09.2026 с подменённой записью: выбралась живая        │
-# │ строка 351664 «knöpfen».                                                          │
-# │ Тот же класс, что 1010 фантомных строк в ведомости (02.08) и 64 правки от тестов  │
-# │ (28.08) — и лечится той же дверью, которую ставит backend/tests/conftest.py.      │
+# ┌─ УДАЛЕНО 04.09.2026: карантин старого банка (enrich_attempts). ─────────────────┐
+# │ Здесь жили POOL_ENRICH_MAX_ATTEMPTS, mark_pool_entry_enrich_failed,             │
+# │ count/get_quarantined_pool_entries. Клеймо «не собралась» в проде не ставил      │
+# │ никто: ночь с 27.07.2026 идёт по слою слов (журнал прогона: mode=units), ветка   │
+# │ по старому банку не выполняется. Метки ставили ТОЛЬКО прогоны тестов, и дважды   │
+# │ (01.09, 04.09) владелец получал хорошие слова с подписью «ночь не смогла». Дверь  │
+# │ закрыта не замком, а сносом: писать метку больше нечем. Отказы ночи живут в слое │
+# │ слов (get_units_awaiting_owner_decision, экран /admin_words_decide). Обещание    │
+# │ «следов карантина в старом банке: 0» — backend/fix_promises.py, каждое утро.     │
 # └──────────────────────────────────────────────────────────────────────────────────┘
-def mark_pool_entry_enrich_failed(entry_id, reason: str = "") -> None:
-    """Записать неудачную попытку обогащения тонкой записи в её response_json (JSONB) —
-    инкремент `enrich_attempts` + причина. После POOL_ENRICH_MAX_ATTEMPTS такие строки
-    выпадают из ночной очереди (get_thin_pool_entries_for_enrichment). Схему не трогает.
-    Никогда не роняет добор: любые ошибки глотаются.
-
-    В прогоне тестов НЕ ПИШЕТ НИЧЕГО и говорит об этом вслух: база под тестами боевая,
-    а клеймо «карточка не собралась» — приговор живому слову. Прод переменную не ставит."""
-    if entry_id is None:
-        return
-    if str(os.getenv("SKIP_NIGHT_SIDE_EFFECTS") or "").strip() == "1":
-        logging.warning(
-            "клеймо «не собралась» НЕ поставлено (прогон тестов, база боевая): "
-            "запись %s, причина %r", entry_id, str(reason or "")[:40],
-        )
-        return
-    try:
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    UPDATE bt_3_dictionary_entries
-                    SET response_json = COALESCE(response_json, '{}'::jsonb)
-                        || jsonb_build_object(
-                            'enrich_attempts',
-                            COALESCE((CASE WHEN response_json->>'enrich_attempts' ~ '^[0-9]+$'
-                                           THEN (response_json->>'enrich_attempts')::int
-                                           ELSE 0 END), 0) + 1,
-                            'enrich_last_reason', %s
-                        )
-                    WHERE id = %s
-                    """,
-                    (str(reason or "")[:40], entry_id),
-                )
-            conn.commit()
-    except Exception:
-        logging.debug("mark_pool_entry_enrich_failed failed entry_id=%s", entry_id, exc_info=True)
 
 
-def count_quarantined_pool_entries() -> int:
-    """Сколько одиночных слов в карантине (enrich_attempts >= POOL_ENRICH_MAX_ATTEMPTS) —
-    неисправимый мусор, выпавший из ночной очереди. Обе стороны пула."""
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT COUNT(*) FROM bt_3_dictionary_entries
-                WHERE COALESCE((CASE WHEN response_json->>'enrich_attempts' ~ '^[0-9]+$'
-                                     THEN (response_json->>'enrich_attempts')::int
-                                     ELSE 0 END), 0) >= {int(POOL_ENRICH_MAX_ATTEMPTS)}
-                  -- «Оставить как есть» — это РЕШЕНИЕ владельца, а не «пока не дошли руки».
-                  -- Решённое не возвращается в список: иначе он превращается в то, от чего
-                  -- владелец и уходил, — одно и то же каждую неделю.
-                  AND COALESCE(response_json->>'quarantine_owner_keep', '') = ''
-                  {_DICTIONARY_POOL_SINGLE_WORD_SQL}
-                """
-            )
-            return int((cursor.fetchone() or [0])[0] or 0)
-
-
-def get_quarantined_pool_entries(limit: int = 1000) -> list[dict]:
-    """Полный список карантина для админ-обзора: слово, перевод, направление, причина
-    (empty/thin), число попыток и востребованность. Порядок — по спросу, затем попыткам."""
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT e.id, e.source_lang, e.target_lang, e.source_text, e.target_text,
-                       COALESCE((CASE WHEN e.response_json->>'enrich_attempts' ~ '^[0-9]+$'
-                                      THEN (e.response_json->>'enrich_attempts')::int
-                                      ELSE 0 END), 0) AS attempts,
-                       e.response_json->>'enrich_last_reason' AS reason,
-                       COALESCE(MAX(c.hit_count), 0) AS demand,
-                       COALESCE((CASE WHEN e.response_json->>'quarantine_releases' ~ '^[0-9]+$'
-                                      THEN (e.response_json->>'quarantine_releases')::int
-                                      ELSE 0 END), 0) AS releases
-                FROM bt_3_dictionary_entries e
-                LEFT JOIN bt_3_dictionary_lookup_cache c
-                       ON c.normalized_word IN (e.source_headword_norm, e.source_text_norm)
-                WHERE COALESCE((CASE WHEN e.response_json->>'enrich_attempts' ~ '^[0-9]+$'
-                                     THEN (e.response_json->>'enrich_attempts')::int
-                                     ELSE 0 END), 0) >= {int(POOL_ENRICH_MAX_ATTEMPTS)}
-                  AND COALESCE(e.response_json->>'quarantine_owner_keep', '') = ''
-                  {_DICTIONARY_POOL_SINGLE_WORD_SQL.replace('source_text', 'e.source_text')}
-                GROUP BY e.id
-                ORDER BY demand DESC, attempts DESC, e.source_text
-                LIMIT %s
-                """,
-                (int(limit),),
-            )
-            rows = cursor.fetchall() or []
-    return [
-        {
-            "id": r[0], "source_lang": r[1], "target_lang": r[2],
-            "source_text": r[3], "target_text": r[4],
-            "attempts": int(r[5] or 0), "reason": str(r[6] or ""), "demand": int(r[7] or 0),
-            "releases": int(r[8] or 0),
-        }
-        for r in rows
-    ]
-
-
-# --------------------------------------------------------------------------- #
-# Quarantine review sessions — interactive «отметь галочками, удали мусор» state.
-# A session snapshots the candidate list (so labels don't shift under the admin) and
-# tracks which entries the admin UNCHECKED (kept). Default = delete everything.
-# --------------------------------------------------------------------------- #
-# ── Ночная проверка грамматики фраз ────────────────────────────────────────────────
-# Слова проверяются справочником родов бесплатно, а фразам справочника нет: их грамматику
-# может рассудить только язык. Поэтому фразы общего словаря проверяются ночью партиями,
-# и результат хранится здесь, чтобы одну и ту же фразу не спрашивать дважды.
-
-# ┌─ НАЙДЕНО И ПОЧИНЕНО 26.08.2026. НЕ ВОЗВРАЩАТЬ DDL В КАЖДЫЙ ВЫЗОВ. ────────────┐
-# │ Ночь зовёт третьего судью в шесть потоков, и каждый поток на каждый вопрос      │
-# │ выполнял здесь CREATE TABLE IF NOT EXISTS и ALTER TABLE ADD COLUMN IF NOT       │
-# │ EXISTS. Обе команды берут AccessExclusiveLock на таблицу даже когда менять      │
-# │ нечего — и два потока встали друг против друга: «deadlock detected, process     │
-# │ 12382 waits for AccessExclusiveLock … blocked by process 12383». Прогон на 142  │
-# │ вопросах оборвался на середине.                                                 │
-# │ Схема одна на процесс и не меняется в его жизни, поэтому DDL выполняется ОДИН   │
-# │ раз, под замком. Проверять «а вдруг таблицы нет» на каждом запросе не нужно     │
-# │ никому: приложение всё равно не работает без своей схемы.                       │
-# └─────────────────────────────────────────────────────────────────────────────────┘
 _PHRASE_CHECK_SCHEMA_READY = False
 _PHRASE_CHECK_SCHEMA_LOCK = threading.Lock()
 
@@ -27398,18 +27258,10 @@ def _ensure_pool_quarantine_review_table(cursor) -> None:
         );
         """
     )
-    # Разбору карантина двух состояний мало: у слова три законных исхода — «оставить как
-    # есть», «на пересбор», «удалить», и ЧЕТВЁРТОЕ состояние «решения ещё нет» обязано
-    # быть исходным. Экран «Слова без разбора» продолжает жить на kept_ids, поэтому
-    # третьему исходу заведена своя колонка, а не переиначен смысл старой.
-    cursor.execute(
-        "ALTER TABLE bt_3_pool_quarantine_review "
-        "ADD COLUMN IF NOT EXISTS marks JSONB NOT NULL DEFAULT '{}'::jsonb;"
-    )
 
 
 def create_quarantine_review_session(admin_id: int, candidates: list[dict]) -> str:
-    """Snapshot the quarantine list into a review session; return its short id. Old
+    """Snapshot the review list into a session; return its short id. Old
     sessions (>7 days) are swept opportunistically so the table never grows unbounded."""
     import secrets
     sid = secrets.token_hex(5)
@@ -27442,7 +27294,7 @@ def get_quarantine_review_session(session_id: str) -> dict | None:
         with conn.cursor() as cursor:
             _ensure_pool_quarantine_review_table(cursor)
             cursor.execute(
-                "SELECT admin_id, candidates, kept_ids, marks "
+                "SELECT admin_id, candidates, kept_ids "
                 "FROM bt_3_pool_quarantine_review WHERE session_id = %s",
                 (str(session_id),),
             )
@@ -27462,24 +27314,10 @@ def get_quarantine_review_session(session_id: str) -> dict | None:
                 return []
         return []
 
-    def _as_map(value) -> dict:
-        if isinstance(value, dict):
-            return value
-        if isinstance(value, str):
-            try:
-                parsed = json.loads(value)
-                return parsed if isinstance(parsed, dict) else {}
-            except Exception:
-                return {}
-        return {}
-
     return {
         "admin_id": int(row[0]),
         "candidates": _as_list(row[1]),
         "kept_ids": [int(x) for x in _as_list(row[2])],
-        # {id записи: "as_is" | "redo" | "drop"}. Записи НЕТ — решения нет, и это не
-        # то же самое, что «оставить»: нерешённое останется в списке и придёт снова.
-        "marks": {int(k): str(v) for k, v in _as_map(row[3]).items()},
     }
 
 
@@ -27505,41 +27343,6 @@ def toggle_quarantine_review_keep(session_id: str, entry_id: int) -> dict | None
     return sess
 
 
-QUARANTINE_MARK_CYCLE = ("", "as_is", "redo", "drop")
-
-
-def cycle_quarantine_review_mark(session_id: str, entry_id: int) -> dict | None:
-    """Тап по слову в разборе карантина: «нет решения» → оставить как есть → на пересбор
-    → удалить → снова «нет решения».
-
-    ПОЧЕМУ ИСХОДНОЕ СОСТОЯНИЕ — «нет решения», А НЕ «удалить» (владелец, 01.09.2026).
-    Экран открывался со ВСЕМИ словами, помеченными 🗑: одно нажатие «Применить», не
-    трогая список, — и 31 хорошее слово исчезало. Это ровно то, что запрещено правилом
-    «молчание — не согласие»: непрокликанное не может означать согласие на удаление."""
-    sess = get_quarantine_review_session(session_id)
-    if not sess:
-        return None
-    marks = dict(sess.get("marks") or {})
-    entry_id = int(entry_id)
-    текущее = str(marks.get(entry_id) or "")
-    следующее = QUARANTINE_MARK_CYCLE[
-        (QUARANTINE_MARK_CYCLE.index(текущее) + 1) % len(QUARANTINE_MARK_CYCLE)
-    ]
-    if следующее:
-        marks[entry_id] = следующее
-    else:
-        marks.pop(entry_id, None)
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                "UPDATE bt_3_pool_quarantine_review SET marks = %s WHERE session_id = %s",
-                (json.dumps({str(k): v for k, v in marks.items()}), str(session_id)),
-            )
-        conn.commit()
-    sess["marks"] = marks
-    return sess
-
-
 def delete_quarantine_review_session(session_id: str) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -27547,104 +27350,6 @@ def delete_quarantine_review_session(session_id: str) -> None:
                 "DELETE FROM bt_3_pool_quarantine_review WHERE session_id = %s", (str(session_id),)
             )
         conn.commit()
-
-
-def delete_pool_entries_by_ids(ids: list[int]) -> int:
-    """Hard-delete pool rows by id — ONLY those still quarantined (enrich_attempts >= max),
-    a safety guard so a word that got un-quarantined meanwhile is never dropped. The pool
-    is a standalone cache (no FKs); a future lookup just re-creates the card via GPT."""
-    clean_ids = [int(x) for x in (ids or []) if str(x).lstrip("-").isdigit()]
-    if not clean_ids:
-        return 0
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                f"""
-                DELETE FROM bt_3_dictionary_entries
-                WHERE id = ANY(%s)
-                  AND COALESCE((CASE WHEN response_json->>'enrich_attempts' ~ '^[0-9]+$'
-                                     THEN (response_json->>'enrich_attempts')::int
-                                     ELSE 0 END), 0) >= {int(POOL_ENRICH_MAX_ATTEMPTS)}
-                """,
-                (clean_ids,),
-            )
-            deleted = cursor.rowcount
-        conn.commit()
-    return int(deleted or 0)
-
-
-def release_pool_entries_from_quarantine(ids: list[int]) -> int:
-    """Вернуть слова из карантина в ночную очередь обогащения.
-
-    Карантин — это НЕ отдельная колонка, а счётчик `enrich_attempts` в response_json:
-    дошёл до POOL_ENRICH_MAX_ATTEMPTS — слово выпало из очереди. Пока счётчик не сброшен,
-    «оставить» в разборе означало только «не удалять сейчас»: слово никуда не уходило и
-    приходило владельцу в воскресном разборе снова и снова. Сброс счётчика — единственный
-    способ вернуть его в работу.
-
-    Считаем, сколько раз слово уже возвращали (`quarantine_releases`) и когда в последний
-    раз (`quarantine_released_at`): по этому видно слова, которые не собираются никогда,
-    и их не приходится вспоминать на память."""
-    clean_ids = [int(x) for x in (ids or []) if str(x).lstrip("-").isdigit()]
-    if not clean_ids:
-        return 0
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE bt_3_dictionary_entries
-                SET response_json = COALESCE(response_json, '{}'::jsonb)
-                    || jsonb_build_object(
-                        'enrich_attempts', 0,
-                        'quarantine_released_at', to_char(NOW() AT TIME ZONE 'UTC',
-                                                          'YYYY-MM-DD"T"HH24:MI:SSZ'),
-                        'quarantine_releases',
-                        COALESCE((CASE WHEN response_json->>'quarantine_releases' ~ '^[0-9]+$'
-                                       THEN (response_json->>'quarantine_releases')::int
-                                       ELSE 0 END), 0) + 1
-                    )
-                WHERE id = ANY(%s)
-                """,
-                (clean_ids,),
-            )
-            released = cursor.rowcount
-        conn.commit()
-    logging.info("pool quarantine release: ids=%s released=%s", len(clean_ids), released)
-    return int(released or 0)
-
-
-def keep_pool_entries_as_is(ids: list[int]) -> int:
-    """Решение владельца: слово остаётся людям КАК ЕСТЬ, подробный разбор ему не нужен.
-
-    Третий исход разбора карантина, рядом с «удалить» и «вернуть на пересбор». Нужен
-    потому, что первых двух не хватало: слово, которое разбором так и не обросло, но
-    людям полезно (перевод есть, его спрашивают), приходилось либо удалять, либо гонять
-    по кругу за деньги. Теперь у него есть третий, честный конец.
-
-    Пишем ОТМЕТКУ РЕШЕНИЯ, а не молчаливое «пропустили»: `quarantine_owner_keep` + дата.
-    По ней слово уходит из списка навсегда, и по ней же видно, что это выбор человека."""
-    clean_ids = [int(x) for x in (ids or []) if str(x).lstrip("-").isdigit()]
-    if not clean_ids:
-        return 0
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE bt_3_dictionary_entries
-                SET response_json = COALESCE(response_json, '{}'::jsonb)
-                    || jsonb_build_object(
-                        'quarantine_owner_keep', 'as_is',
-                        'quarantine_owner_keep_at', to_char(NOW() AT TIME ZONE 'UTC',
-                                                            'YYYY-MM-DD"T"HH24:MI:SSZ')
-                    )
-                WHERE id = ANY(%s)
-                """,
-                (clean_ids,),
-            )
-            kept = cursor.rowcount
-        conn.commit()
-    logging.info("карантин: оставлено как есть по решению владельца — %s", kept)
-    return int(kept or 0)
 
 
 def get_thin_pool_entries_for_enrichment(
@@ -27679,13 +27384,6 @@ def get_thin_pool_entries_for_enrichment(
                   AND (e.response_json IS NULL OR NOT {DICTIONARY_POOL_WORD_FULLY_RICH_SQL.replace(
                       'bt_3_dictionary_entries.response_json', 'e.response_json')})
                   {_DICTIONARY_POOL_SINGLE_WORD_SQL.replace('source_text', 'e.source_text')}
-                  -- Карантин: слова, которые GPT не смог собрать в полную карточку
-                  -- POOL_ENRICH_MAX_ATTEMPTS раз подряд (мусор/выдуманные композиты/
-                  -- опечатки — все с demand 0), выпадают из ночной очереди, чтобы не
-                  -- жечь токены на неисправимое и чтобы «осталось» дошло до реального нуля.
-                  AND COALESCE((CASE WHEN e.response_json->>'enrich_attempts' ~ '^[0-9]+$'
-                                     THEN (e.response_json->>'enrich_attempts')::int
-                                     ELSE 0 END), 0) < {int(POOL_ENRICH_MAX_ATTEMPTS)}
                   -- слитые строки не добираем: разбор пойдёт в победившую запись
                   AND COALESCE(e.response_json->>'merged_into', '') = ''
                 GROUP BY e.id

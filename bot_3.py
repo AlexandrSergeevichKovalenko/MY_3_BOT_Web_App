@@ -9934,6 +9934,53 @@ def _run_provider_cost_truth_report_safe() -> None:
         logging.exception("provider cost truth report (bot scheduler) failed")
 
 
+def _check_fix_promises() -> list[dict]:
+    """Прогнать реестр обещаний (backend/fix_promises.py) и записать журнал.
+
+    Пустой список здесь — НЕ «всё держится»: если сам прогон упал, это видно в логе и в
+    отчёте строкой «проверка обещаний не отработала» (см. _fix_promises_block)."""
+    try:
+        from backend.fix_promises import check_all
+        return check_all(record=True)
+    except Exception:
+        logging.exception("проверка обещаний не отработала целиком")
+        return [{"__failed__": True}]
+
+
+def _fix_promises_block(results: list[dict]) -> str:
+    """Блок «Обещания» для утреннего отчёта. Итог одним взглядом плюс только то, что
+    требует человека. Прогон упал — сказано вслух, а не выдано за «держится»."""
+    if results and results[0].get("__failed__"):
+        return "\n\n🤝 Обещания: ❓ проверка не отработала, подробности в логах."
+    try:
+        from backend.fix_promises import report_lines
+        return "\n\n" + "\n".join(report_lines(results))
+    except Exception:
+        logging.exception("строка об обещаниях не собралась")
+        return "\n\n🤝 Обещания: ❓ строка не собралась, подробности в логах."
+
+
+def _send_fix_promise_alerts(admin_ids: list[int], token: str, results: list[dict]) -> None:
+    """Каждое нарушенное или не измеренное обещание — отдельным письмом с кнопками.
+
+    Отдельно от отчёта намеренно: кнопки живут на своём сообщении, и владелец решает по
+    одному обещанию, а не по всему письму сразу."""
+    try:
+        from backend.fix_promises import BROKEN, UNMEASURED, broken_alert
+    except Exception:
+        logging.exception("письма об обещаниях не собрались")
+        return
+    for r in results or []:
+        if r.get("__failed__") or r.get("status") not in (BROKEN, UNMEASURED):
+            continue
+        text, markup = broken_alert(r)
+        for uid in admin_ids:
+            ok, reason = send_telegram_message(chat_id=uid, text=text, token=token,
+                                               reply_markup=markup, what="обещание нарушено")
+            if not ok:
+                logging.error("письмо об обещании %s не дошло до %s: %s", r.get("key"), uid, reason)
+
+
 def _dictionary_integrity_line() -> str:
     """Вердикт о состоянии словаря одной строкой. Пусто, если проверка недоступна.
 
@@ -10042,6 +10089,7 @@ def _send_pool_enrich_morning_report() -> None:
     try:
         from backend.database import get_admin_telegram_ids, get_latest_scheduler_run_guard
         row = get_latest_scheduler_run_guard(job_key="pool_night_enrichment")
+        обещания = _check_fix_promises()
         meta = (row or {}).get("metadata") or {}
         status = str((row or {}).get("status") or "").lower()
         finished_at = (row or {}).get("finished_at")
@@ -10085,19 +10133,6 @@ def _send_pool_enrich_morning_report() -> None:
                     skip_lines += f"   примеры: <i>{shown}{more}</i>\n"
             else:
                 skip_lines = "Пропущено: 0\n"
-            # Карантин: неисправимый мусор, выпавший из очереди после 3 провалов. Показываем
-            # число + подсказку на команду с полным списком, чтобы админ мог разобрать.
-            quarantine_line = ""
-            try:
-                from backend.database import count_quarantined_pool_entries
-                q = int(count_quarantined_pool_entries() or 0)
-                if q:
-                    quarantine_line = (
-                        f"🗑 В карантине: <b>{q}</b> (GPT не собрать — мусор/опечатки; "
-                        f"весь список и разбор: /admin_pool_quarantine)\n"
-                    )
-            except Exception:
-                logging.debug("quarantine count for morning report failed", exc_info=True)
             # КТО ПРОВЕРЯЛ РАЗБОР ЭТОЙ НОЧЬЮ. Основной судья — Gemini, он чужой и потому
             # сильный. Когда он молчит (кончились деньги, квота, сеть), проверку делает
             # запасной GPT mini — тот же производитель, что и писал разбор, а значит
@@ -10128,7 +10163,6 @@ def _send_pool_enrich_morning_report() -> None:
                 f"Осталось наполнить: <b>{remaining}</b>\n"
                 + (f"Это ещё ~{nights_left} ноч{'ь' if nights_left == 1 else 'и' if nights_left < 5 else 'ей'} "
                    f"по {cap} слов." if remaining else "✅ Пул наполнен полностью.")
-                + (f"\n{quarantine_line}" if quarantine_line else "")
                 + (f"\n{voice_line}" if voice_line else "")
                 # Синонимы — отдельным блоком в конце: это другая работа той же ночи,
                 # и мешать её цифры с основным добором значит запутать обе.
@@ -10145,6 +10179,7 @@ def _send_pool_enrich_morning_report() -> None:
                 # сообщение она не лезет: число, на которое нельзя нажать, это не работа.
                 + _dictionary_integrity_line()
             )
+        text += _fix_promises_block(обещания)
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
         if not token or not admin_ids:
@@ -10153,6 +10188,7 @@ def _send_pool_enrich_morning_report() -> None:
             admin_ids, text=text, token=token, what="отчёт о доборе пула")
         if failures:
             logging.error("отчёт о доборе пула не дошёл: %s", failures)
+        _send_fix_promise_alerts(admin_ids, token, обещания)
     except Exception:
         logging.exception("pool enrich morning report failed")
 
@@ -13391,20 +13427,11 @@ async def admin_pool_enrich_command(update: Update, context: CallbackContext):
     )
 
 
-# ── Карантин пула: интерактивный разбор «мусор — удалить, нормальное — вернуть» ──
-# Все слова по умолчанию отмечены 🗑 (на удаление); тап переводит в ↩️ (вернуть в работу).
-# Внизу одна кнопка «Применить», и она делает ОБА действия: мусор удаляет, отмеченное
-# «вернуть» — выпускает из карантина обратно в ночное обогащение.
-#
-# Почему так. Карантин — это счётчик неудачных попыток внутри записи, а не отдельный
-# список. Пока «оставить» означало просто «не удалять сейчас», счётчик оставался на
-# потолке: слово никуда не уходило, в обогащение не возвращалось и приходило владельцу
-# в воскресном разборе неделя за неделей. Выпустить его может только сброс счётчика.
-#
-# Снимок кандидатов и набор «возвращаемых» живут в сессии (bt_3_pool_quarantine_review),
-# поэтому состояние переживает пагинацию и переключения.
-_QUARANTINE_PAGE_SIZE = 8
-_QUARANTINE_MAX_CANDIDATES = 160  # верхняя граница на одну сессию разбора
+# ── Экраны решений владельца о словах ──
+# Снимок кандидатов и решения живут в сессии (bt_3_pool_quarantine_review), поэтому
+# состояние переживает пагинацию и переключения. Таблица названа по первому экрану,
+# который на ней жил, — «Карантин пула» старого банка. Тот экран удалён 04.09.2026:
+# см. вердикт у run_pool_night_enrichment в backend/backend_server.py.
 
 
 _UNIT_DECISION_PAGE_SIZE = 8
@@ -13417,6 +13444,74 @@ def _unit_decision_candidates() -> list[dict]:
     rows = get_units_awaiting_owner_decision(_UNIT_DECISION_MAX)
     return [{"id": r["unit_id"], "w": r["display"], "t": r["translation"],
              "r": r["reason"], "d": r["saved"]} for r in rows]
+
+
+async def admin_promises_command(update: Update, context: CallbackContext):
+    """Реестр обещаний: что каждая починка обещала измеримо и держится ли это сейчас.
+
+    Тот же прогон, что идёт сам каждое утро в отчёте «Ночной добор словаря», только
+    без записи в журнал и со всеми строками, включая держащиеся и снятые.
+    /admin_promises"""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    note = await message.reply_text("🤝 Проверяю обещания…")
+    try:
+        from backend.fix_promises import check_all, full_lines, muted_keys
+        снятые = await asyncio.to_thread(muted_keys)
+        итог = await asyncio.to_thread(check_all, record=False, muted=снятые)
+        строки = full_lines(итог, снятые)
+    except Exception as exc:
+        logging.exception("реестр обещаний не отработал user_id=%s", int(sender.id))
+        await note.edit_text(f"❌ Проверка обещаний не отработала: {exc}")
+        return
+    await note.edit_text("\n".join(строки), parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def handle_fix_promise_callback(update: Update, context: CallbackContext) -> None:
+    """Кнопки под письмом о нарушенном обещании: держать дальше / снять."""
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    if not _is_admin_user(user.id):
+        await query.answer("Только для администратора.", show_alert=True)
+        return
+    parts = str(query.data or "").split(":")   # fp:<keep|mute>:<key>
+    action = parts[1] if len(parts) > 1 else ""
+    key = parts[2] if len(parts) > 2 else ""
+    from html import escape as _esc
+    from backend.fix_promises import by_key, mute
+    promise = by_key(key)
+    if not promise:
+        await query.answer("Такого обещания в реестре уже нет.", show_alert=True)
+        return
+    try:
+        if action == "mute":
+            await asyncio.to_thread(mute, key, int(user.id))
+            await query.answer("Снято.")
+            await query.edit_message_text(
+                f"🔕 Обещание снято: <b>{_esc(promise.title)}</b>.\n"
+                f"Больше не проверяется и в отчёт не входит. Вернуть: /admin_promises "
+                f"покажет его как снятое, а вернуть в реестр можно словом агенту.",
+                parse_mode="HTML")
+        elif action == "keep":
+            await query.answer("Держим.")
+            await query.edit_message_text(
+                f"👀 Держим дальше: <b>{_esc(promise.title)}</b>. Придёт завтра утром снова, "
+                f"если не выправится.", parse_mode="HTML")
+        else:
+            await query.answer()
+    except Exception:
+        logging.exception("fix promise callback failed action=%s key=%s", action, key)
+        try:
+            await query.answer("Ошибка, попробуй заново.", show_alert=True)
+        except Exception:
+            pass
 
 
 async def admin_words_decide_command(update: Update, context: CallbackContext):
@@ -13610,83 +13705,6 @@ def _build_unit_decision_review(session: dict, sid: str, page: int) -> tuple:
         callback_data=f"uw:go:{sid}")])
     rows_kb.append([InlineKeyboardButton("✖ Закрыть без изменений",
                                          callback_data=f"uw:x:{sid}")])
-    return "\n".join(head), InlineKeyboardMarkup(rows_kb)
-
-
-_QUARANTINE_MARK_ICON = {"": "·", "as_is": "✅", "redo": "↩️", "drop": "🗑"}
-
-
-def _quarantine_counts(session: dict) -> dict:
-    """Сколько слов в каждом исходе. Нерешённые считаются отдельно — они не действие."""
-    marks = session.get("marks") or {}
-    итог = {"as_is": 0, "redo": 0, "drop": 0, "": 0}
-    for c in session.get("candidates") or []:
-        итог[str(marks.get(int(c.get("id"))) or "")] += 1
-    return итог
-
-
-def _build_quarantine_review(session: dict, sid: str, page: int) -> tuple[str, "InlineKeyboardMarkup"]:
-    """Разбор карантина. У слова ТРИ исхода и одно исходное состояние «решения нет».
-
-    ПЕРЕДЕЛАНО 01.09.2026 по решению владельца. Было два исхода — удалить / вернуть на
-    пересбор, — и открывался экран с ПОМЕЧЕННЫМИ НА УДАЛЕНИЕ всеми словами сразу. Не
-    хватало ровно того исхода, который чаще всего и нужен: «слово остаётся людям как
-    есть, подробный разбор ему не нужен». Владелец: «Вот как есть — пусть так и будет
-    слово доступно пользователю!!!»"""
-    from html import escape as _esc
-    reason_ru = {"empty": "пусто", "thin": "неполн"}
-    cands = session.get("candidates") or []
-    marks = session.get("marks") or {}
-    total = len(cands)
-    n_pages = max(1, (total + _QUARANTINE_PAGE_SIZE - 1) // _QUARANTINE_PAGE_SIZE)
-    page = max(0, min(page, n_pages - 1))
-    start = page * _QUARANTINE_PAGE_SIZE
-    chunk = cands[start:start + _QUARANTINE_PAGE_SIZE]
-    сколько = _quarantine_counts(session)
-
-    head = [
-        f"🗑 <b>Карантин пула</b> — {total} слов",
-        "<i>Ночь не смогла собрать подробный разбор, и слово выпало из очереди. Перевод "
-        "у него есть, людям оно видно — не хватает только разбора.</i>",
-        "",
-        "<i>Ничего не трогать — тоже ответ: непомеченное останется как было и придёт "
-        "снова. Тап по слову переключает исход по кругу:</i>",
-        "<i>· нет решения → ✅ оставить как есть → ↩️ на пересбор → 🗑 удалить.</i>",
-        "",
-        f"✅ оставить <b>{сколько['as_is']}</b> · ↩️ пересобрать <b>{сколько['redo']}</b> · "
-        f"🗑 удалить <b>{сколько['drop']}</b> · без решения <b>{сколько['']}</b>",
-        f"Стр. {page + 1}/{n_pages}",
-        "",
-    ]
-    rows_kb: list[list] = []
-    for local_i, c in enumerate(chunk):
-        gidx = start + local_i
-        cid = int(c.get("id"))
-        icon = _QUARANTINE_MARK_ICON.get(str(marks.get(cid) or ""), "·")
-        why = reason_ru.get(str(c.get("r") or ""), "?")
-        word = str(c.get("w") or "")
-        again = int(c.get("rel") or 0)
-        again_note = f", возвращали {again}×" if again else ""
-        head.append(
-            f"{gidx + 1}. <b>{_esc(word)}</b> — {_esc(str(c.get('t') or ''))} "
-            f"<i>[{why}, спрос {int(c.get('d') or 0)}{again_note}]</i>"
-        )
-        label = f"{icon} {gidx + 1}. {word}"
-        if len(label) > 60:
-            label = label[:59] + "…"
-        rows_kb.append([InlineKeyboardButton(label, callback_data=f"qz:t:{sid}:{page}:{gidx}")])
-
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("◀", callback_data=f"qz:p:{sid}:{page - 1}"))
-    if page < n_pages - 1:
-        nav.append(InlineKeyboardButton("▶", callback_data=f"qz:p:{sid}:{page + 1}"))
-    if nav:
-        rows_kb.append(nav)
-    rows_kb.append([InlineKeyboardButton(
-        f"✅ Применить: ✅{сколько['as_is']} ↩️{сколько['redo']} 🗑{сколько['drop']}",
-        callback_data=f"qz:del:{sid}")])
-    rows_kb.append([InlineKeyboardButton("✖ Закрыть без изменений", callback_data=f"qz:x:{sid}")])
     return "\n".join(head), InlineKeyboardMarkup(rows_kb)
 
 
@@ -13957,139 +13975,6 @@ async def admin_dict_integrity_command(update: Update, context: CallbackContext)
     await note.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
 
 
-async def admin_pool_quarantine_command(update: Update, context: CallbackContext):
-    """Интерактивный разбор «мусора» пула: слова, которые GPT не смог собрать в карточку
-    POOL_ENRICH_MAX_ATTEMPTS раз подряд (выдуманные композиты/опечатки/обрывки, спрос ~0).
-    Все отмечены 🗑; тап переключает в ↩️ «вернуть в работу», «Применить» делает оба
-    действия — удаляет мусор и выпускает возвращённые обратно в ночное обогащение.
-    /admin_pool_quarantine"""
-    sender = update.effective_user
-    message = update.effective_message
-    if not sender or not message:
-        return
-    if not _is_admin_user(sender.id):
-        await message.reply_text("⛔️ Команда доступна только администратору.")
-        return
-    try:
-        from backend.database import get_quarantined_pool_entries, create_quarantine_review_session
-        rows = await asyncio.to_thread(get_quarantined_pool_entries, _QUARANTINE_MAX_CANDIDATES)
-    except Exception as exc:
-        logging.exception("pool quarantine list failed user_id=%s", int(sender.id))
-        await message.reply_text(f"❌ Не удалось собрать карантин: {exc}")
-        return
-    if not rows:
-        await message.reply_text("🗑 Карантин пуст — неисправимых слов пока нет.")
-        return
-    sid = await asyncio.to_thread(create_quarantine_review_session, int(sender.id), rows)
-    session = {"admin_id": int(sender.id),
-               "candidates": [{"id": int(r["id"]), "w": r.get("source_text"), "t": r.get("target_text"),
-                               "r": r.get("reason"), "d": r.get("demand"),
-                               "rel": int(r.get("releases") or 0)} for r in rows],
-               "marks": {}}
-    text, markup = _build_quarantine_review(session, sid, 0)
-    await message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
-
-
-async def handle_quarantine_callback(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    user = update.effective_user
-    if not query or not user:
-        return
-    if not _is_admin_user(user.id):
-        await query.answer("Только для администратора.", show_alert=True)
-        return
-    parts = str(query.data or "").split(":")   # qz:<action>:<sid>[:...]
-    action = parts[1] if len(parts) > 1 else ""
-    sid = parts[2] if len(parts) > 2 else ""
-
-    from backend.database import (
-        get_quarantine_review_session, cycle_quarantine_review_mark,
-        delete_pool_entries_by_ids, delete_quarantine_review_session,
-        release_pool_entries_from_quarantine, keep_pool_entries_as_is,
-    )
-    session = await asyncio.to_thread(get_quarantine_review_session, sid)
-    if not session or int(session.get("admin_id") or 0) != int(user.id):
-        await query.answer("Сессия устарела — вызови /admin_pool_quarantine заново.", show_alert=True)
-        return
-
-    try:
-        if action == "t":  # перебрать исход по кругу
-            page = int(parts[3]); gidx = int(parts[4])
-            cands = session.get("candidates") or []
-            if 0 <= gidx < len(cands):
-                session = await asyncio.to_thread(
-                    cycle_quarantine_review_mark, sid, int(cands[gidx]["id"])
-                )
-            await query.answer()
-            text, markup = _build_quarantine_review(session, sid, page)
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup,
-                                          disable_web_page_preview=True)
-        elif action == "p":  # paginate
-            page = int(parts[3])
-            await query.answer()
-            text, markup = _build_quarantine_review(session, sid, page)
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup,
-                                          disable_web_page_preview=True)
-        elif action == "del":  # спросить подтверждение
-            сколько = _quarantine_counts(session)
-            if not (сколько["as_is"] or сколько["redo"] or сколько["drop"]):
-                await query.answer("Ничего не отмечено — применять нечего.", show_alert=True)
-                return
-            await query.answer()
-            kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton(
-                    f"✅ Да: ✅{сколько['as_is']} ↩️{сколько['redo']} 🗑{сколько['drop']}",
-                    callback_data=f"qz:go:{sid}"),
-                InlineKeyboardButton("↩ Назад", callback_data=f"qz:p:{sid}:0"),
-            ]])
-            await query.edit_message_text(
-                f"✅ Оставить как есть: <b>{сколько['as_is']}</b> — слово живёт в словаре с "
-                f"переводом, подробный разбор ему больше не собираем и в этот список оно "
-                f"не вернётся.\n"
-                f"↩️ На пересбор: <b>{сколько['redo']}</b> — бот попробует собрать разбор "
-                f"ближайшей ночью.\n"
-                f"🗑 Удалить безвозвратно: <b>{сколько['drop']}</b> — при следующем запросе "
-                f"слово соберётся заново через GPT.\n\n"
-                f"<i>Без решения: {сколько['']} — с ними ничего не произойдёт.</i>",
-                parse_mode="HTML", reply_markup=kb,
-            )
-        elif action == "go":  # применить отмеченное
-            marks = session.get("marks") or {}
-            по_исходам: dict[str, list] = {"as_is": [], "redo": [], "drop": []}
-            for c in (session.get("candidates") or []):
-                исход = str(marks.get(int(c["id"])) or "")
-                if исход in по_исходам:
-                    по_исходам[исход].append(int(c["id"]))
-            deleted = await asyncio.to_thread(
-                delete_pool_entries_by_ids, по_исходам["drop"]) if по_исходам["drop"] else 0
-            released = await asyncio.to_thread(
-                release_pool_entries_from_quarantine, по_исходам["redo"]) if по_исходам["redo"] else 0
-            kept_as_is = await asyncio.to_thread(
-                keep_pool_entries_as_is, по_исходам["as_is"]) if по_исходам["as_is"] else 0
-            await asyncio.to_thread(delete_quarantine_review_session, sid)
-            await query.answer("Готово.")
-            await query.edit_message_text(
-                f"✅ Оставлено как есть: <b>{kept_as_is}</b> — больше не спрашиваем.\n"
-                f"↩️ Отправлено на пересбор: <b>{released}</b> — бот возьмётся за них ночью.\n"
-                f"🗑 Удалено из пула: <b>{deleted}</b>.",
-                parse_mode="HTML",
-            )
-        elif action == "x":  # close
-            await asyncio.to_thread(delete_quarantine_review_session, sid)
-            await query.answer("Закрыто.")
-            await query.edit_message_text(
-                "🗑 Разбор карантина закрыт. Ничего не изменено — слова остались "
-                "как были.")
-        else:
-            await query.answer()
-    except Exception:
-        logging.exception("quarantine callback failed action=%s sid=%s", action, sid)
-        try:
-            await query.answer("Ошибка, попробуй заново.", show_alert=True)
-        except Exception:
-            pass
-
-
 def _fill_missing_translations_nightly() -> None:
     """Ночью — перевод карточкам, у которых его нет. ПАЧКОЙ и без участия человека.
 
@@ -14224,44 +14109,6 @@ def _send_word_integrity_review(reminder: bool = False) -> None:
                 logging.exception("разбор словаря: не ушло админу %s", uid)
     except Exception:
         logging.exception("разбор словаря: рассылка не удалась")
-
-
-def _send_quarantine_review_weekly() -> None:
-    """Воскресный DM: интерактивный разбор карантина каждому админу (только если он непуст).
-    Крутится в потоке BackgroundScheduler → синхронно; шлём сырым HTTP с inline-клавиатурой,
-    а тапы обрабатывает handle_quarantine_callback в живой петле бота."""
-    try:
-        from backend.database import (
-            get_admin_telegram_ids, get_quarantined_pool_entries, create_quarantine_review_session,
-        )
-        rows = get_quarantined_pool_entries(_QUARANTINE_MAX_CANDIDATES)
-        if not rows:
-            logging.info("weekly quarantine review: карантин пуст, не шлём")
-            return
-        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
-        admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
-        if not token or not admin_ids:
-            return
-        for uid in admin_ids:
-            try:
-                sid = create_quarantine_review_session(uid, rows)
-                session = {"admin_id": uid,
-                           "candidates": [{"id": int(r["id"]), "w": r.get("source_text"),
-                                           "t": r.get("target_text"), "r": r.get("reason"),
-                                           "d": r.get("demand"),
-                                           "rel": int(r.get("releases") or 0)} for r in rows],
-                           "marks": {}}
-                text, markup = _build_quarantine_review(session, sid, 0)
-                ok, reason = send_telegram_message(
-                    chat_id=uid, text=text, token=token,
-                    reply_markup={"inline_keyboard": _inbox_kb_json(markup) or []},
-                    what="недельный разбор карантина")
-                if not ok:
-                    logging.error("разбор карантина не дошёл до %s: %s", uid, reason)
-            except Exception:
-                logging.warning("weekly quarantine review send failed admin_id=%s", uid, exc_info=True)
-    except Exception:
-        logging.exception("weekly quarantine review job failed")
 
 
 async def admin_dict_pool_report_command(update: Update, context: CallbackContext):
@@ -45921,12 +45768,12 @@ def main():
     application.add_handler(CommandHandler("admin_repair_dict_cards", admin_repair_dict_cards_command))
     application.add_handler(CommandHandler("admin_spread_unit_cards", admin_spread_unit_cards_command))
     application.add_handler(CommandHandler("admin_resweep_units", admin_resweep_units_command))
-    application.add_handler(CommandHandler("admin_pool_quarantine", admin_pool_quarantine_command))
     application.add_handler(CommandHandler("admin_words_decide", admin_words_decide_command))
+    application.add_handler(CommandHandler("admin_promises", admin_promises_command))
+    application.add_handler(CallbackQueryHandler(handle_fix_promise_callback, pattern=r"^fp:"))
     application.add_handler(CallbackQueryHandler(handle_unit_decision_callback,
                                                 pattern=r"^uw:"))
     application.add_handler(CommandHandler("admin_dict_integrity", admin_dict_integrity_command))
-    application.add_handler(CallbackQueryHandler(handle_quarantine_callback, pattern=r"^qz:"))
     application.add_handler(CommandHandler("admin_phrase_review", admin_phrase_review_command))
     application.add_handler(CallbackQueryHandler(handle_phrase_review_callback, pattern=r"^pr:"))
     application.add_handler(CommandHandler("videopoolreport", admin_video_pool_report_command))
@@ -46821,32 +46668,16 @@ def main():
             max_instances=1,
             misfire_grace_time=3600,
         )
-        # -- Вс, 09:00 Europe/Vienna: интерактивный разбор карантина пула --
-        # DM со списком «мусора» (слова, что GPT не собрать) + чекбоксами: всё отмечено на
-        # удаление, админ отжимает нужное и жмёт «Удалить отмеченные». Шлётся только если
-        # карантин непуст. Тапы обрабатывает handle_quarantine_callback.
         # -- Вс, 09:15 Вена: слова, которые ночь не смогла собрать ДВАЖДЫ --
         # Две кнопки: оставить как есть либо удалить. «Вернуть в работу» здесь нет
         # намеренно — бесконечный повтор владелец просил убрать (29.08.2026).
-        # Отдельным сообщением от карантина пула и на 15 минут позже: два списка в
-        # одну минуту читаются как один, и второй закрывают не глядя.
+        # Единственный экран «ночь не смогла»: карантин старого банка удалён 04.09.2026.
         scheduler.add_job(
             _send_unit_decision_review_weekly,
             "cron",
             day_of_week=(os.getenv("UNIT_DECISION_REVIEW_DAYS") or "sun").strip() or "sun",
             hour=int((os.getenv("UNIT_DECISION_REVIEW_HOUR") or "9").strip() or "9"),
             minute=int((os.getenv("UNIT_DECISION_REVIEW_MINUTE") or "15").strip() or "15"),
-            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
-            coalesce=True,
-            max_instances=1,
-            misfire_grace_time=3600,
-        )
-        scheduler.add_job(
-            _send_quarantine_review_weekly,
-            "cron",
-            day_of_week=(os.getenv("POOL_QUARANTINE_REVIEW_DAYS") or "sun").strip() or "sun",
-            hour=int((os.getenv("POOL_QUARANTINE_REVIEW_HOUR") or "9").strip() or "9"),
-            minute=int((os.getenv("POOL_QUARANTINE_REVIEW_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
