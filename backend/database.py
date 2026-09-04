@@ -13248,6 +13248,18 @@ def ensure_webapp_tables() -> None:
                         0,
                         "recurring",
                     ),
+                    # «Лайт» (решение владельца 04.09.2026): платный, но с наполнением
+                    # бесплатного уровня — те же лимиты и тот же потолок расходов, что у
+                    # free. Право доступа даёт effective_mode='free', а не 'pro'.
+                    (
+                        "light",
+                        "Лайт",
+                        True,
+                        None,
+                        seed_free_daily_cap,
+                        0,
+                        "recurring",
+                    ),
                     # Донат-тарифы — разовые (mode=payment): доступ не выдают, т.к. one-time
                     # checkout не создаёт active-подписку, поэтому cap здесь почти никогда не
                     # консультируется. Держим pro-cap, чтобы НЕ задушить grandfathered
@@ -14905,6 +14917,12 @@ def ensure_webapp_tables() -> None:
                 "Skill shadow schema bootstrap incomplete: "
                 + ", ".join(missing_phase1_objects)
             )
+        # Бесплатный месяц: существующим до деплоя людям — старт в день деплоя.
+        # Идемпотентно, на старте каждого сервиса; новичков не касается (см. функцию).
+        _ensure_access_period_schema()
+        _backfilled = backfill_access_periods_for_existing_users()
+        if _backfilled:
+            logging.info("access_period: заливка поставила старт %s людям", _backfilled)
         _ENSURE_WEBAPP_TABLES_DONE = True
 
 
@@ -17277,6 +17295,13 @@ def auto_grant_telegram_user(
     if granted:
         invalidate_telegram_user_allowed_cache(uid)
         _invalidate_webapp_allowlist_redis(uid)
+        # Дверь записи начала отсчёта бесплатного месяца. Побочная запись не имеет права
+        # утащить за собой впуск человека: ошибка — в лог, страховка — ночная проверка,
+        # число — в обещание access_period_night_sweep.
+        try:
+            start_access_period(uid, "signup")
+        except Exception:
+            logging.exception("access_period: дверь signup не записала старт user=%s", uid)
     return granted
 
 
@@ -17883,6 +17908,9 @@ def purge_telegram_user_personal_data(
     note: str | None = None,
 ) -> dict[str, Any] | None:
     normalized_note = str(note or "").strip() or None
+    # ⛔ bt_3_access_period и bt_3_pro_grants (welcome_trial) сюда НЕ добавлять: начало
+    # отсчёта бесплатного месяца и пробные 7 дней — одноразовые на всю жизнь, удаление
+    # личных данных их не обнуляет (решение владельца 04.09.2026). Тест это стережёт.
     delete_statements: list[tuple[str, str]] = [
         ("daily_plan_items", """
             DELETE FROM bt_3_daily_plan_items i
@@ -24140,6 +24168,413 @@ def get_welcome_trial_status(user_id: int) -> dict:
                 "ends_at": ends_at_iso, "days_left": int(days_left)}
     except Exception:
         return {"used": False, "active": False, "ends_at": None, "days_left": 0}
+
+
+# ── Бесплатный месяц: начало отсчёта ─────────────────────────────────────────────
+#
+# Решение владельца 04.09.2026: постоянного бесплатного тарифа больше нет. После первого
+# контакта человеку даётся 30 дней (внутри них — 7 дней полного доступа), дальше он
+# выбирает «Лайт» или «Полный доступ». Точка отсчёта — ПЕРВЫЙ контакт, и она никогда не
+# сдвигается: ни выход из бота, ни блокировка, ни удаление личных данных, ни повторный
+# вход её не обнуляют. Стратегия — docs/tasks/light_tier_strategy.md.
+#
+# Источник истины — ЭТА таблица, а не created_at чужих таблиц: таблица личности пишется
+# из фонового потока «запомнить имя» и заведена только 31.07.2026 (для старых людей там
+# день заливки, а не первый вход). Строка ставится синхронно в четырёх дверях: /start в
+# боте, первое сообщение в боте, самозапись по ссылке (auto_grant_telegram_user),
+# открытие приложения (/api/webapp/bootstrap). Первый писатель побеждает.
+#
+# Существующим людям (решение владельца №2) ставится день деплоя, а не их давний вход:
+# иначе замок закрылся бы в день выкладки у 13 из 14 (живая база 04.09.2026).
+ACCESS_PERIOD_FREE_DAYS = max(1, _env_int("ACCESS_PERIOD_FREE_DAYS", 30))
+# День деплоя этой правки. Ставится в день слияния ветки (решение владельца 04.09.2026).
+ACCESS_PERIOD_BACKFILL_AT = "2026-09-04T00:00:00+02:00"
+ACCESS_PERIOD_SOURCES = ("bot_start", "bot_message", "signup", "bootstrap",
+                         "backfill_deploy", "night_sweep")
+_access_period_schema_ready = False
+
+
+def _ensure_access_period_schema() -> None:
+    global _access_period_schema_ready
+    if _access_period_schema_ready:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_access_period (
+                    user_id    BIGINT PRIMARY KEY,
+                    started_at TIMESTAMPTZ NOT NULL,
+                    source     TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_access_period_started "
+                        "ON bt_3_access_period (started_at);")
+        conn.commit()
+    _access_period_schema_ready = True
+
+
+def start_access_period(user_id: int, source: str) -> bool:
+    """Зафиксировать первый контакт. Идемпотентно на всю жизнь: ON CONFLICT DO NOTHING,
+    и никакого UPDATE здесь нет и быть не должно. True — только когда строка НОВАЯ.
+
+    Падение здесь не глушится в «False»: дверь, которая молча не записала начало,
+    неотличима от двери, где человек уже был, — а ночная страховка потом припишет ему
+    поздний старт. Пусть вызывающий видит исключение в логе."""
+    uid = int(user_id)
+    if uid <= 0 or not is_real_telegram_user_id(uid):
+        return False
+    src = str(source or "").strip()
+    if src not in ACCESS_PERIOD_SOURCES:
+        raise ValueError(f"неизвестный источник начала отсчёта: {src!r}")
+    _ensure_access_period_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bt_3_access_period (user_id, started_at, source)
+                VALUES (%s, NOW(), %s)
+                ON CONFLICT (user_id) DO NOTHING
+                RETURNING user_id;
+                """,
+                (uid, src),
+            )
+            created = cur.fetchone() is not None
+        conn.commit()
+    if created:
+        _bust_entitlement_cache(uid)
+    return created
+
+
+def get_access_period(user_id: int) -> dict | None:
+    """{started_at, ends_at, source} или None, если начала отсчёта нет (это дефект дверей,
+    а не состояние человека — см. sweep_access_periods_for_known_users)."""
+    _ensure_access_period_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT started_at, source FROM bt_3_access_period WHERE user_id=%s;",
+                (int(user_id),),
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    started = _to_aware_datetime(row[0])
+    return {
+        "started_at": started,
+        "ends_at": started + timedelta(days=ACCESS_PERIOD_FREE_DAYS),
+        "source": str(row[1] or ""),
+    }
+
+
+def backfill_access_periods_for_existing_users() -> int:
+    """Существующим до деплоя людям — старт в день деплоя (решение владельца 04.09.2026).
+
+    «Существующий» = запись в личности, в списке допуска или в подписках, сделанная
+    ДО ACCESS_PERIOD_BACKFILL_AT. Кто появился после — проходит через двери записи, и
+    заливка его не касается: иначе новичок получил бы старт раньше своего первого
+    контакта. Идемпотентно. Возвращает число созданных строк."""
+    _ensure_access_period_schema()
+    ensure_user_identity_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bt_3_access_period (user_id, started_at, source)
+                SELECT DISTINCT u.user_id, %s::timestamptz, 'backfill_deploy'
+                FROM (
+                    SELECT user_id FROM bt_3_user_identity WHERE created_at < %s::timestamptz
+                    UNION
+                    SELECT user_id FROM bt_3_allowed_users WHERE created_at < %s::timestamptz
+                    UNION
+                    SELECT user_id FROM user_subscriptions WHERE created_at < %s::timestamptz
+                ) u
+                WHERE u.user_id > 0
+                ON CONFLICT (user_id) DO NOTHING;
+                """,
+                (ACCESS_PERIOD_BACKFILL_AT,) * 4,
+            )
+            created = int(cur.rowcount or 0)
+        conn.commit()
+    return created
+
+
+def list_known_user_ids_without_access_period() -> list[int]:
+    """Кого бот знает (личность ∪ допуск ∪ подписки), а начала отсчёта у него нет."""
+    _ensure_access_period_schema()
+    ensure_user_identity_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT u.user_id FROM (
+                    SELECT user_id FROM bt_3_user_identity
+                    UNION SELECT user_id FROM bt_3_allowed_users
+                    UNION SELECT user_id FROM user_subscriptions
+                ) u
+                LEFT JOIN bt_3_access_period p ON p.user_id = u.user_id
+                WHERE u.user_id > 0 AND p.user_id IS NULL
+                ORDER BY u.user_id;
+                """
+            )
+            rows = cur.fetchall() or []
+    return [int(r[0]) for r in rows if is_real_telegram_user_id(r[0])]
+
+
+def sweep_access_periods_for_known_users() -> int:
+    """Ночная страховка: у известного человека нет начала отсчёта — ставим его по самому
+    раннему следу, который у нас есть (created_at личности / допуска / подписки).
+    Это не догадка: это дата, когда мы его впервые записали. Возвращает число созданных
+    строк. Каждая такая строка — дверь, которая промолчала; число идёт в обещание
+    `access_period_night_sweep` (ожидается 0)."""
+    _ensure_access_period_schema()
+    ensure_user_identity_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bt_3_access_period (user_id, started_at, source)
+                SELECT u.user_id, MIN(u.created_at), 'night_sweep'
+                FROM (
+                    SELECT user_id, created_at FROM bt_3_user_identity
+                    UNION ALL SELECT user_id, created_at FROM bt_3_allowed_users
+                    UNION ALL SELECT user_id, created_at FROM user_subscriptions
+                ) u
+                LEFT JOIN bt_3_access_period p ON p.user_id = u.user_id
+                WHERE u.user_id > 0 AND p.user_id IS NULL AND u.created_at IS NOT NULL
+                GROUP BY u.user_id
+                ON CONFLICT (user_id) DO NOTHING;
+                """
+            )
+            created = int(cur.rowcount or 0)
+        conn.commit()
+    return created
+
+
+def is_access_locked(user_id: int) -> bool:
+    """Замок бесплатного месяца (docs/tasks/light_tier_strategy.md §5): месяц прошёл,
+    подписки нет. Единственный источник — resolve_entitlement (кеш Redis ~10 мин).
+    Администраторы не запираются никогда: им отчёты и команды нужны в любом состоянии.
+    «Не знаем начало» (unknown) — не замок."""
+    uid = int(user_id or 0)
+    if uid <= 0:
+        return False
+    try:
+        if uid in {int(a) for a in (get_admin_telegram_ids() or [])}:
+            return False
+    except Exception:
+        logging.exception("access lock: список админов не прочитался")
+    return str(resolve_entitlement(uid).get("access_state") or "") == "locked"
+
+
+def count_learning_content_sent_to_locked_users(days: int = 1) -> int:
+    """Сколько заданий (строк ведомости доставки) за последние `days` суток ушло людям
+    ПОСЛЕ того, как их бесплатный месяц кончился, и они при этом заперты сейчас.
+    Обещано: 0. Ушло хоть одно — дверь §5.2 или §5.3 пропускает."""
+    _ensure_access_period_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT user_id FROM bt_3_access_period "
+                "WHERE started_at + (%s || ' days')::interval <= NOW();",
+                (int(ACCESS_PERIOD_FREE_DAYS),),
+            )
+            ended = [int(r[0]) for r in (cur.fetchall() or [])]
+    locked = [uid for uid in ended if is_access_locked(uid)]
+    if not locked:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_interactive_inbox i
+                JOIN bt_3_access_period p ON p.user_id = i.user_id
+                WHERE i.user_id = ANY(%s)
+                  AND i.created_at > p.started_at + (%s || ' days')::interval
+                  AND i.created_at > NOW() - (%s || ' days')::interval;
+                """,
+                (locked, int(ACCESS_PERIOD_FREE_DAYS), int(days)),
+            )
+            return int((cur.fetchone() or [0])[0] or 0)
+
+
+# ── Напоминание запертым (docs/tasks/light_tier_strategy.md §7) ────────────────
+# Решение владельца 04.09.2026: раз в неделю 8 недель, дальше раз в месяц. Каденс живёт в
+# таблице отправок, а не в памяти процесса: перезапуск бота не должен ни удвоить письмо,
+# ни потерять счёт.
+ACCESS_REMINDER_WEEKLY_COUNT = 8
+ACCESS_REMINDER_WEEKLY_GAP_DAYS = 7
+ACCESS_REMINDER_MONTHLY_GAP_DAYS = 30
+_access_reminder_schema_ready = False
+
+
+def _ensure_access_reminder_schema() -> None:
+    global _access_reminder_schema_ready
+    if _access_reminder_schema_ready:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_access_reminders (
+                    id       BIGSERIAL PRIMARY KEY,
+                    user_id  BIGINT NOT NULL,
+                    seq      INT NOT NULL,
+                    sent_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_access_reminders_user "
+                        "ON bt_3_access_reminders (user_id, sent_at DESC);")
+        conn.commit()
+    _access_reminder_schema_ready = True
+
+
+def access_reminder_gap_days(seq_sent: int) -> int:
+    """Сколько дней ждать после напоминания номер `seq_sent`."""
+    return ACCESS_REMINDER_WEEKLY_GAP_DAYS if int(seq_sent) < ACCESS_REMINDER_WEEKLY_COUNT \
+        else ACCESS_REMINDER_MONTHLY_GAP_DAYS
+
+
+def access_reminder_due(user_id: int, now_utc: datetime | None = None) -> tuple[bool, int]:
+    """(пора ли, номер следующего). Первое — сразу; дальше по каденсу."""
+    _ensure_access_reminder_schema()
+    now_ref = _to_aware_datetime(now_utc)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT seq, sent_at FROM bt_3_access_reminders "
+                        "WHERE user_id=%s ORDER BY sent_at DESC LIMIT 1;", (int(user_id),))
+            row = cur.fetchone()
+    if not row:
+        return True, 1
+    seq = int(row[0] or 0)
+    sent_at = _to_aware_datetime(row[1])
+    gap = access_reminder_gap_days(seq)
+    return (now_ref - sent_at) >= timedelta(days=gap), seq + 1
+
+
+def record_access_reminder(user_id: int, seq: int) -> None:
+    _ensure_access_reminder_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO bt_3_access_reminders (user_id, seq) VALUES (%s, %s);",
+                        (int(user_id), int(seq)))
+        conn.commit()
+
+
+def list_access_reminder_candidates() -> list[int]:
+    """У кого бесплатный месяц уже прошёл и кто не заблокировал бота. Заперт ли он
+    сейчас (нет ли подписки) — решает is_access_locked у вызывающего."""
+    _ensure_access_period_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT p.user_id FROM bt_3_access_period p
+                WHERE p.started_at + (%s || ' days')::interval <= NOW()
+                  AND NOT EXISTS (SELECT 1 FROM bt_3_bot_blocked_users b
+                                  WHERE b.user_id = p.user_id AND b.is_blocked)
+                ORDER BY p.user_id;
+                """,
+                (int(ACCESS_PERIOD_FREE_DAYS),),
+            )
+            return [int(r[0]) for r in (cur.fetchall() or []) if is_real_telegram_user_id(r[0])]
+
+
+def count_access_reminders_over_cadence(days: int = 1) -> int:
+    """Напоминаний за последние `days` суток, отправленных раньше положенного промежутка
+    после предыдущего. Обещано: 0."""
+    _ensure_access_reminder_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH r AS (
+                    SELECT user_id, seq, sent_at,
+                           LAG(seq) OVER (PARTITION BY user_id ORDER BY sent_at) AS prev_seq,
+                           LAG(sent_at) OVER (PARTITION BY user_id ORDER BY sent_at) AS prev_sent
+                    FROM bt_3_access_reminders
+                )
+                SELECT COUNT(*) FROM r
+                WHERE sent_at > NOW() - (%s || ' days')::interval
+                  AND prev_sent IS NOT NULL
+                  AND sent_at - prev_sent < (CASE WHEN prev_seq < %s THEN %s ELSE %s END) * interval '1 day';
+                """,
+                (int(days), ACCESS_REMINDER_WEEKLY_COUNT,
+                 ACCESS_REMINDER_WEEKLY_GAP_DAYS, ACCESS_REMINDER_MONTHLY_GAP_DAYS),
+            )
+            return int((cur.fetchone() or [0])[0] or 0)
+
+
+def access_state_counts() -> dict[str, int]:
+    """Сколько известных людей в каждом состоянии доступа — для утреннего отчёта.
+    Один источник (resolve_entitlement, кеш), никакой параллельной арифметики в SQL."""
+    ensure_user_identity_schema()
+    _ensure_access_period_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT u.user_id FROM (
+                    SELECT user_id FROM bt_3_user_identity
+                    UNION SELECT user_id FROM bt_3_allowed_users
+                    UNION SELECT user_id FROM user_subscriptions
+                ) u WHERE u.user_id > 0;
+                """
+            )
+            ids = [int(r[0]) for r in (cur.fetchall() or []) if is_real_telegram_user_id(r[0])]
+    out = {"pro": 0, "light": 0, "free_month": 0, "locked": 0, "unknown": 0}
+    for uid in ids:
+        state = str(resolve_entitlement(uid).get("access_state") or "unknown")
+        out[state if state in out else "unknown"] += 1
+    return out
+
+
+def count_star_payments_last_day(purposes: tuple[str, ...] = ("light", "pro")) -> dict[str, int]:
+    """Оплат за последние сутки по назначению (light / pro) — строка в утренний отчёт."""
+    out = {p: 0 for p in purposes}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT purpose, COUNT(*) FROM bt_3_star_payments "
+                "WHERE created_at > NOW() - interval '1 day' AND purpose = ANY(%s) GROUP BY purpose;",
+                (list(purposes),),
+            )
+            for purpose, n in cur.fetchall() or []:
+                out[str(purpose)] = int(n or 0)
+    return out
+
+
+def admin_set_access_period_started(user_id: int, started_at: datetime) -> None:
+    """ЕДИНСТВЕННОЕ место, где started_at меняется, — ручная команда администратора
+    /admin_access для проверки замка на тестовом аккаунте, не дожидаясь 30 дней.
+    Для живых людей начало отсчёта не двигается никогда."""
+    _ensure_access_period_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bt_3_access_period (user_id, started_at, source)
+                VALUES (%s, %s, 'signup')
+                ON CONFLICT (user_id) DO UPDATE SET started_at = EXCLUDED.started_at;
+                """,
+                (int(user_id), _to_aware_datetime(started_at)),
+            )
+        conn.commit()
+    _bust_entitlement_cache(int(user_id))
+
+
+def count_access_periods_created_by_night_sweep(days: int = 1) -> int:
+    """Сколько начал отсчёта за последние `days` суток поставила ночная страховка, а не
+    дверь. Обещано: 0."""
+    _ensure_access_period_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM bt_3_access_period "
+                "WHERE source='night_sweep' AND created_at > NOW() - (%s || ' days')::interval;",
+                (int(days),),
+            )
+            return int((cur.fetchone() or [0])[0] or 0)
 
 
 def get_user_streak(user_id: int) -> dict:
@@ -43520,8 +43955,8 @@ def revoke_star_payment_fulfillment(charge_id: str) -> dict:
                         out["book_audio_revoked"] = cursor.rowcount or 0
             conn.commit()
 
-        # Pro subscription revert lives in its own helper (separate txn) — do it outside.
-        if out["purpose"] == "pro":
+        # Pro/Light subscription revert lives in its own helper (separate txn) — do it outside.
+        if out["purpose"] in ("pro", "light"):
             try:
                 deactivate_user_subscription(
                     user_id=int(out["user_id"]), status="canceled", plan_code="free",
@@ -50301,6 +50736,12 @@ def resolve_entitlement(
             if _cpe_dt is not None and _now_ref > _cpe_dt + timedelta(days=2):
                 effective_mode = "free"
                 source_of_entitlement = "stars_subscription_lapsed"
+        if plan_code == "light" and source_of_entitlement == "paid_subscription":
+            # «Лайт»: оплачен, но наполнение — бесплатного уровня (решение владельца
+            # 04.09.2026). Все ворота по effective_mode видят его как free; отличает
+            # его только источник и access_state ниже.
+            effective_mode = "free"
+            source_of_entitlement = "paid_light"
     else:
         # Free-plan product trial is discontinued: 'trialing' on the free plan = just Free.
         effective_mode = "free"
@@ -50329,7 +50770,7 @@ def resolve_entitlement(
         if cursor is not None
         else get_billing_plan("free")
     ) or {}
-    pro_plan = current_plan if bool(current_plan.get("is_paid")) else ((
+    pro_plan = current_plan if (bool(current_plan.get("is_paid")) and plan_code != "light") else ((
         _get_billing_plan_with_cursor(cursor, "pro")
         if cursor is not None
         else get_billing_plan("pro")
@@ -50348,6 +50789,39 @@ def resolve_entitlement(
         if effective_mode == "pro"
         else str(free_plan.get("name") or "Free")
     )
+    if source_of_entitlement == "paid_light" and effective_mode == "free":
+        effective_plan_code = "light"
+        effective_plan_name = str(current_plan.get("name") or "Лайт")
+
+    # Состояние доступа (бесплатный месяц, docs/tasks/light_tier_strategy.md §4.1):
+    #   pro        — полный доступ (подписка или выдача);
+    #   light      — подписка «Лайт»;
+    #   free_month — 30 дней после первого контакта ещё идут;
+    #   locked     — месяц кончился, подписки нет: замок (§5);
+    #   unknown    — начала отсчёта нет. Это дефект дверей записи, а не состояние
+    #                человека: на «не знаю» замок НЕ вешаем, число идёт в обещание.
+    access_state = "unknown"
+    free_month_ends_at = None
+    free_month_days_left = 0
+    if effective_mode == "pro":
+        access_state = "pro"
+    elif source_of_entitlement == "paid_light":
+        access_state = "light"
+    else:
+        try:
+            _period = get_access_period(int(user_id))
+        except Exception:
+            logging.exception("entitlement: начало отсчёта не прочиталось user=%s", user_id)
+            _period = None
+        if _period is not None:
+            _ends = _to_aware_datetime(_period["ends_at"])
+            _now_ref2 = now_utc or datetime.now(timezone.utc)
+            free_month_ends_at = _ends.isoformat()
+            if _now_ref2 < _ends:
+                access_state = "free_month"
+                free_month_days_left = max(1, int(math.ceil((_ends - _now_ref2).total_seconds() / 86400.0)))
+            else:
+                access_state = "locked"
 
     # Welcome trial: surface its end date as trial_ends_at (the subscription row has none)
     # so the UI shows a "Pro-триал до …" countdown, and flag it so we can badge it.
@@ -50374,6 +50848,9 @@ def resolve_entitlement(
         "bonus_reason": (str(_earned_reason) if _earned_reason else None),
         "cap_eur": float(cap_eur) if cap_eur is not None else None,
         "reset_at": _next_local_midnight_iso(now_utc, tz=tz),
+        "access_state": access_state,
+        "free_month_ends_at": free_month_ends_at,
+        "free_month_days_left": int(free_month_days_left),
     }
     if _cacheable:
         try:

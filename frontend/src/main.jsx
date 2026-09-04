@@ -780,6 +780,45 @@ function showAccessClosedGate(botUsername) {
   } catch (_e) { /* ignore */ }
 }
 
+let __accessLockedGateShown = false;
+
+// Экран «бесплатный месяц закончился» вне Telegram (установленное приложение, браузер):
+// звёзды списать здесь нельзя, поэтому обе кнопки ведут в бота на нужный счёт.
+function showAccessLockedGate(info) {
+  if (__accessLockedGateShown || __appBlockedGateShown || __accessClosedGateShown) return;
+  __accessLockedGateShown = true;
+  const uname = String((info && info.bot_username) || 'Ich_Deutsch_bot').trim().replace(/^@/, '') || 'Ich_Deutsch_bot';
+  const de = (() => { try { return (localStorage.getItem('ui_lang') || '').toLowerCase() === 'de'; } catch (_e) { return false; } })();
+  const light = Number(info && info.light_stars) || 0;
+  const pro = Number(info && info.pro_stars) || 0;
+  const title = de ? 'Der Gratismonat ist vorbei' : 'Бесплатный месяц закончился';
+  const body = de
+    ? 'Du hast einen Monat mit uns gelernt. Damit Aufgaben und Übungen weiterlaufen, wähle einen Tarif — die Zahlung mit Sternen läuft in Telegram.'
+    : 'Ты позанимался с нами месяц. Чтобы задания и тренажёры работали дальше, выбери тариф — оплата звёздами проходит в Telegram.';
+  const lightBtn = `🌿 ${de ? 'Light' : 'Лайт'}${light ? ` — ${light} ⭐` : ''}`;
+  const proBtn = `💎 ${de ? 'Voller Zugang' : 'Полный доступ'}${pro ? ` — ${pro} ⭐` : ''}`;
+  const go = (code) => { try { window.open(`https://t.me/${uname}?startapp=${code}`, '_blank'); } catch (_e) { /* ignore */ } };
+  try {
+    const wrap = document.createElement('div');
+    wrap.setAttribute('style', [
+      'position:fixed', 'inset:0', 'z-index:2147483647', 'display:flex',
+      'align-items:center', 'justify-content:center', 'padding:24px', 'box-sizing:border-box',
+      'background:linear-gradient(160deg,#3a7bd5 0%,#1f4f9c 100%)', 'color:#fff',
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif', 'text-align:center',
+    ].join(';'));
+    wrap.innerHTML = `
+      <div style="max-width:340px;display:flex;flex-direction:column;align-items:center;gap:14px">
+        <div style="font-size:56px;line-height:1">🔒</div>
+        <div style="font-size:22px;font-weight:700;line-height:1.25">${title}</div>
+        <div style="font-size:15px;line-height:1.5;opacity:.94">${body}</div>
+        <button type="button" data-code="buylight" style="margin-top:6px;width:100%;border:0;border-radius:14px;padding:14px 22px;font-size:16px;font-weight:700;background:#fff;color:#1f4f9c;cursor:pointer">${lightBtn}</button>
+        <button type="button" data-code="buypro" style="width:100%;border:0;border-radius:14px;padding:14px 22px;font-size:16px;font-weight:700;background:rgba(255,255,255,.18);color:#fff;cursor:pointer">${proBtn}</button>
+      </div>${buildStampNode()}`;
+    wrap.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => go(b.getAttribute('data-code'))));
+    document.body.appendChild(wrap);
+  } catch (_e) { /* ignore */ }
+}
+
 let __accessQueueGateShown = false;
 
 // Экран «вы в очереди». Отдельный от «доступ закрыт» намеренно: это ДВА РАЗНЫХ
@@ -845,6 +884,21 @@ function installAccessGateInterceptor() {
               const reason = String((j && j.reason) || '').trim();
               if (reason === 'in_queue') showAccessQueueGate(j.queue_position, j.bot_username);
               else if (reason === 'access_closed') showAccessClosedGate(j && j.bot_username);
+            }).catch(() => {});
+          }
+          // Замок бесплатного месяца (402, reason=free_month_over). Внутри Telegram окно с
+          // оплатой рисует само приложение (событие ниже); снаружи — установленное на экран
+          // или в браузере — оплатить в месте нельзя, показываем экран с переходом в бота.
+          if (resp && resp.status === 402) {
+            resp.clone().json().then((j) => {
+              if (!j || String(j.reason || '') !== 'free_month_over') return;
+              let inTelegram = false;
+              try { inTelegram = Boolean(window.Telegram?.WebApp?.initData); } catch (_e) { /* ignore */ }
+              if (inTelegram) {
+                try { window.dispatchEvent(new CustomEvent('dds:access-locked', { detail: j })); } catch (_e) { /* ignore */ }
+              } else {
+                showAccessLockedGate(j);
+              }
             }).catch(() => {});
           }
         } catch (_e) { /* ignore */ }

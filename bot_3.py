@@ -446,6 +446,16 @@ from backend.database import (
     create_article_sprint_dispatch,
     update_article_sprint_dispatch_message_id,
     is_user_pro,
+    is_access_locked,
+    start_access_period,
+    sweep_access_periods_for_known_users,
+    list_access_reminder_candidates,
+    access_reminder_due,
+    record_access_reminder,
+    access_state_counts,
+    count_star_payments_last_day,
+    get_access_period,
+    admin_set_access_period_started,
     list_allowed_telegram_user_ids,
     create_article_sprint_battle,
     get_article_sprint_battle,
@@ -1394,6 +1404,49 @@ def _is_user_pro_cached(user_id: int) -> bool:
         return bool(cached[0]) if cached else False
     _PRO_STATUS_CACHE[int(user_id)] = (val, now_ts + _PRO_STATUS_TTL_SECONDS)
     return val
+
+
+# Замок бесплатного месяца (docs/tasks/light_tier_strategy.md §5.2–5.3): та же памятка,
+# что у признака платного тарифа. Ошибка чтения = «не заперт»: молча отрезать человека
+# из-за сбоя базы нельзя, а число заданий у запертых считает обещание по утрам.
+_ACCESS_LOCK_CACHE: dict[int, tuple[bool, float]] = {}
+
+
+def _is_access_locked_cached(user_id: int) -> bool:
+    now_ts = pytime.time()
+    cached = _ACCESS_LOCK_CACHE.get(int(user_id))
+    if cached and cached[1] > now_ts:
+        return cached[0]
+    try:
+        val = bool(is_access_locked(int(user_id)))
+    except Exception:
+        logging.exception("access lock: не прочитался user=%s", user_id)
+        return bool(cached[0]) if cached else False
+    _ACCESS_LOCK_CACHE[int(user_id)] = (val, now_ts + _PRO_STATUS_TTL_SECONDS)
+    return val
+
+
+def _access_locked_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌿 Лайт", url=get_webapp_deeplink("buylight"))],
+        [InlineKeyboardButton("💎 Полный доступ", url=get_webapp_deeplink("buypro"))],
+    ])
+
+
+async def _reply_access_locked(update: Update) -> None:
+    """Ответ запертому на любое учебное действие в чате: коротко, с двумя кнопками
+    оплаты. Один текст на все двери — чтобы не разъезжался."""
+    msg = update.effective_message
+    if not msg:
+        return
+    await msg.reply_text(
+        "🔒 <b>Бесплатный месяц закончился</b>\n\n"
+        "Ты позанимался с нами месяц. Чтобы задания и тренажёры работали дальше, выбери "
+        "тариф: «Лайт» — тот же объём, что был, или «Полный доступ» — всё сразу. "
+        "Оплата звёздами Telegram, отмена в любой момент.",
+        parse_mode="HTML",
+        reply_markup=_access_locked_keyboard(),
+    )
 
 
 def _append_free_pro_teaser(caption: str | None, chat_id: int) -> str:
@@ -3636,6 +3689,9 @@ async def _interaktiv_test_command(update: Update, context: CallbackContext) -> 
     if not update.effective_user or not update.effective_message:
         return
     uid = int(update.effective_user.id)
+    if await asyncio.to_thread(_is_access_locked_cached, uid):
+        await _reply_access_locked(update)
+        return
     try:
         from backend.database import get_latest_interactive_dispatch_ids
         latest = await asyncio.to_thread(get_latest_interactive_dispatch_ids, uid)
@@ -8703,6 +8759,34 @@ async def track_group_member_context(update: Update, context: CallbackContext) -
 _identity_seen_in_process: dict[int, str] = {}
 
 
+# Кому в этом процессе мы уже записали начало отсчёта бесплатного месяца. Запись
+# одноразовая на всю жизнь (ON CONFLICT DO NOTHING), поэтому второй раз ходить в базу
+# на каждое сообщение незачем.
+_access_period_touched_in_process: set[int] = set()
+
+
+def _touch_access_period(user_id: int, source: str) -> None:
+    """Дверь записи начала отсчёта бесплатного месяца из бота. Фоном: первое сообщение
+    человека не должно ждать базу. Ошибка — в лог целиком; страховка — ночная проверка,
+    число промахов — обещание access_period_night_sweep."""
+    try:
+        uid = int(user_id or 0)
+        if uid <= 0 or uid in _access_period_touched_in_process:
+            return
+        _access_period_touched_in_process.add(uid)
+
+        def _run() -> None:
+            try:
+                start_access_period(uid, source)
+            except Exception:
+                _access_period_touched_in_process.discard(uid)
+                logging.exception("access_period: дверь %s не записала старт user=%s", source, uid)
+
+        threading.Thread(target=_run, name="access-period", daemon=True).start()
+    except Exception:
+        logging.exception("access_period: дверь %s не запустилась", source)
+
+
 def _remember_identity_from_telegram_user(user) -> None:
     """Запомнить имя из апдейта Telegram. Фоном и молча: имя — не повод задерживать или
     ронять обработку сообщения."""
@@ -10179,6 +10263,7 @@ def _send_pool_enrich_morning_report() -> None:
                 # сообщение она не лезет: число, на которое нельзя нажать, это не работа.
                 + _dictionary_integrity_line()
             )
+        text += _access_state_line()
         text += _fix_promises_block(обещания)
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
@@ -16688,6 +16773,138 @@ async def _onboarding_nudge_job(context: CallbackContext) -> None:
             await asyncio.sleep(1.0)
 
 
+async def _access_reminder_job(context: CallbackContext) -> None:
+    """Суббота 11:00 (Вена): запертым — картинка с двумя кнопками оплаты.
+    Каденс из таблицы отправок: 8 раз еженедельно, дальше раз в 30 дней; оплатил — стоп
+    (проверка состояния перед каждой отправкой). Стратегия §7."""
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip access reminders")
+        return
+    try:
+        candidates = await asyncio.to_thread(list_access_reminder_candidates)
+    except Exception:
+        logging.exception("access reminder: кандидаты не прочитались")
+        return
+    admin_ids = {int(a) for a in (get_admin_telegram_ids() or [])}
+    from backend.backend_server import light_price_stars, pro_price_stars
+    from backend.access_reminder_card import render_access_reminder_card
+    png = None
+    try:
+        png = await asyncio.to_thread(render_access_reminder_card,
+                                      light_stars=light_price_stars(), pro_stars=pro_price_stars())
+    except Exception:
+        logging.exception("access reminder: карточка не отрисовалась")
+    caption = (
+        "🔒 <b>Бесплатный месяц закончился</b>\n\n"
+        "Ты позанимался с нами месяц. Чтобы задания приходили дальше в том же объёме, "
+        f"выбери «Лайт» ({light_price_stars()} ⭐ / мес) — или «Полный доступ» "
+        f"({pro_price_stars()} ⭐ / мес), где открыто всё."
+    )
+    kb = _access_locked_keyboard()
+    sent = skipped_paid = skipped_cadence = failed = 0
+    for uid in candidates:
+        if uid in admin_ids:
+            continue
+        try:
+            if not await asyncio.to_thread(is_access_locked, uid):
+                skipped_paid += 1
+                continue
+            due, seq = await asyncio.to_thread(access_reminder_due, uid)
+            if not due:
+                skipped_cadence += 1
+                continue
+            if png:
+                await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(png), caption=caption,
+                                             parse_mode="HTML", reply_markup=kb)
+            else:
+                await context.bot.send_message(chat_id=uid, text=caption, parse_mode="HTML", reply_markup=kb)
+            await asyncio.to_thread(record_access_reminder, uid, seq)
+            sent += 1
+        except Exception:
+            failed += 1
+            logging.warning("access reminder: не ушло user=%s", uid, exc_info=True)
+    logging.info("access reminder: sent=%s not_locked=%s cadence_wait=%s failed=%s candidates=%s",
+                 sent, skipped_paid, skipped_cadence, failed, len(candidates))
+
+
+def _access_state_line() -> str:
+    """Строка утреннего отчёта о бесплатном месяце: кто в каком состоянии, сколько
+    оплат за сутки. Числа — из того же права доступа, что видит приложение."""
+    try:
+        c = access_state_counts()
+        p = count_star_payments_last_day()
+    except Exception:
+        logging.exception("строка о доступе не собралась")
+        return "\n🔒 Доступ: ❓ не посчитался, подробности в логах.\n"
+    line = (f"\n🔒 <b>Доступ</b>: бесплатный месяц <b>{c['free_month']}</b> · Лайт <b>{c['light']}</b> · "
+            f"Полный <b>{c['pro']}</b> · заперто <b>{c['locked']}</b>")
+    if c.get("unknown"):
+        line += f" · без начала отсчёта <b>{c['unknown']}</b> ⚠️"
+    line += f"\nОплат за сутки: Лайт {p.get('light', 0)} / Полный {p.get('pro', 0)}\n"
+    return line
+
+
+async def admin_access_command(update: Update, context: CallbackContext):
+    """Состояние доступа человека и — для проверки замка на тестовом аккаунте — сдвиг
+    начала отсчёта. /admin_access <user_id> [ГГГГ-ММ-ДД]"""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    args = list(context.args or [])
+    if not args:
+        await message.reply_text("Использование: /admin_access <user_id> [ГГГГ-ММ-ДД]\n"
+                                 "Без даты — показать состояние. С датой — поставить начало отсчёта "
+                                 "(только для тестового аккаунта).")
+        return
+    try:
+        uid = int(args[0])
+    except Exception:
+        await message.reply_text("user_id должен быть числом.")
+        return
+    if len(args) >= 2:
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            started = _dt.strptime(args[1], "%Y-%m-%d").replace(tzinfo=_tz.utc)
+        except Exception:
+            await message.reply_text("Дата в виде ГГГГ-ММ-ДД.")
+            return
+        await asyncio.to_thread(admin_set_access_period_started, uid, started)
+        _ACCESS_LOCK_CACHE.pop(uid, None)
+        _PRO_STATUS_CACHE.pop(uid, None)
+    from backend.database import resolve_entitlement
+    ent = await asyncio.to_thread(resolve_entitlement, uid)
+    period = await asyncio.to_thread(get_access_period, uid)
+    started_txt = period["started_at"].astimezone(ZoneInfo("Europe/Vienna")).strftime("%d.%m.%Y %H:%M") if period else "нет"
+    ends_txt = period["ends_at"].astimezone(ZoneInfo("Europe/Vienna")).strftime("%d.%m.%Y %H:%M") if period else "—"
+    names = {"pro": "полный доступ", "light": "Лайт", "free_month": "бесплатный месяц",
+             "locked": "ЗАПЕРТ", "unknown": "начала отсчёта нет"}
+    state = str(ent.get("access_state") or "unknown")
+    await message.reply_text(
+        f"👤 {uid}\n"
+        f"Состояние: <b>{names.get(state, state)}</b>\n"
+        f"Тариф: {ent.get('plan_name')} ({ent.get('source_of_entitlement')})\n"
+        f"Начало отсчёта: {started_txt} ({(period or {}).get('source', '')})\n"
+        f"Конец бесплатного месяца: {ends_txt}\n"
+        f"Дней осталось: {ent.get('free_month_days_left')}",
+        parse_mode="HTML",
+    )
+
+
+async def _access_period_sweep_job(context: CallbackContext) -> None:
+    """Ночная страховка: известным людям без начала отсчёта бесплатного месяца ставим
+    старт по самому раннему нашему следу о них. Каждая созданная строка — дверь,
+    которая промолчала; утром это число покажет обещание access_period_night_sweep."""
+    created = await asyncio.to_thread(sweep_access_periods_for_known_users)
+    if created:
+        logging.warning("access_period: ночная страховка поставила старт %s людям — двери пропустили", created)
+    else:
+        logging.info("access_period: ночная страховка — все известные люди с началом отсчёта")
+
+
 async def start(update: Update, context: CallbackContext):
     """Запуск бота и отправка главного меню."""
     user = update.effective_user
@@ -16715,6 +16932,8 @@ async def start(update: Update, context: CallbackContext):
             await _send_access_closed_reply(update, context)
             return
 
+    if user:
+        _touch_access_period(int(user.id), "bot_start")
     context.user_data.setdefault("service_message_ids", [])  # Инициализируем список
     if update.effective_chat and update.effective_chat.type == "private":
         # /start = явный жест пользователя «верни мне меню». Принудительно пере-доставляем
@@ -17204,6 +17423,13 @@ async def handle_user_message(update: Update, context: CallbackContext):
 
     user_id = update.message.from_user.id
     text = update.message.text.strip()
+    if update.effective_chat and update.effective_chat.type == "private":
+        _touch_access_period(int(user_id), "bot_message")
+        # Замок бесплатного месяца (§5.3 стратегии): всё учебное в чате — кнопки, словарь,
+        # вставленный текст, «Следующее задание» — идёт через этот обработчик.
+        if await asyncio.to_thread(_is_access_locked_cached, int(user_id)):
+            await _reply_access_locked(update)
+            return
 
     if _is_admin_user(user_id):
         if await _try_handle_admin_support_reply(update, context, text):
@@ -25255,6 +25481,9 @@ async def check_user_translation(update: Update, context: CallbackContext, trans
     if update.message is None or update.message.text is None:
         logging.warning("⚠️ update.message отсутствует в check_user_translation().")
         return
+    if update.effective_user and await asyncio.to_thread(_is_access_locked_cached, int(update.effective_user.id)):
+        await _reply_access_locked(update)
+        return
     
     if "pending_translations" in context.user_data and context.user_data["pending_translations"]:
         translation_text = "\n".join(context.user_data["pending_translations"])
@@ -26325,6 +26554,21 @@ async def _collect_scheduler_candidate_user_ids(
                 "(bot blocked / chat not found)",
                 len(unreachable),
             )
+
+    # Замок бесплатного месяца (§5.2 стратегии): запертым учебных рассылок нет. Вычитается
+    # ЗДЕСЬ, в общем сборщике, через который идут слоты, добор, напоминание о карточках и
+    # чемпион недели. Админов is_access_locked не запирает сам.
+    def _locked_subset(ids: set[int]) -> set[int]:
+        return {uid for uid in ids if _is_access_locked_cached(uid)}
+    try:
+        locked_ids = await asyncio.to_thread(_locked_subset, set(user_ids))
+    except Exception:
+        logging.exception("scheduler candidates: access-lock lookup failed")
+        locked_ids = set()
+    if locked_ids:
+        user_ids -= locked_ids
+        logging.info("ℹ️ scheduler candidate collection skipped %s locked user id(s) (free month over)",
+                     len(locked_ids))
 
     return sorted(user_ids)
 
@@ -36998,6 +37242,8 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
     date_str = today.strftime("%d.%m.%Y")
     sent_count = 0
     for uid, cats in agg.items():
+        if await asyncio.to_thread(_is_access_locked_cached, int(uid)):  # бесплатный месяц кончился
+            continue
         answered = sum(v[0] for v in cats.values())
         correct = sum(v[1] for v in cats.values())
         acc = round(correct / answered * 100) if answered else 0
@@ -37755,6 +38001,8 @@ async def _send_mistake_review_reminders(context: CallbackContext) -> None:
         n = int(u.get("count") or 0)
         if uid <= 0 or n <= 0:
             continue
+        if await asyncio.to_thread(_is_access_locked_cached, uid):  # бесплатный месяц кончился
+            continue
         # n — сегодняшняя порция (максимум 30), а не вся очередь. Число вроде «185»
         # не зовёт разбирать, а отпугивает: догнать такое нельзя.
         caption = (
@@ -37792,6 +38040,9 @@ async def review_mistakes_command(update: Update, context: CallbackContext) -> N
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
+        return
+    if await asyncio.to_thread(_is_access_locked_cached, int(user.id)):
+        await _reply_access_locked(update)
         return
     try:
         from backend.database import count_due_mistakes
@@ -39437,6 +39688,8 @@ async def _send_certificates_window(context: CallbackContext, *, cur_start, cur_
     subtitle = f"{subtitle_prefix} · {cur_start.date().isoformat()} — {cur_end.date().isoformat()}"
     sent = 0
     for uid in active:
+        if await asyncio.to_thread(_is_access_locked_cached, int(uid)):  # бесплатный месяц кончился
+            continue
         try:
             rows = _build_cert_rows(stats_now.get(uid, {}), stats_prev.get(uid, {}))
             if not rows:
@@ -42759,6 +43012,63 @@ async def on_stars_pre_checkout(update: Update, context: CallbackContext) -> Non
         logging.exception("stars pre_checkout answer failed")
 
 
+def _edit_user_star_subscription(user_id: int, charge_id: str, *, is_canceled: bool) -> tuple[bool, str]:
+    """Bot API editUserStarSubscription: отменить (или вернуть) автопродление чужой
+    подписки в звёздах. SYNC. Возвращает (ok, подробность)."""
+    import requests as _requests
+    token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+    if not token:
+        return False, "no_token"
+    try:
+        r = _requests.post(
+            f"https://api.telegram.org/bot{token}/editUserStarSubscription",
+            json={"user_id": int(user_id), "telegram_payment_charge_id": str(charge_id),
+                  "is_canceled": bool(is_canceled)},
+            timeout=20,
+        )
+        data = r.json() if r.content else {}
+        if r.ok and data.get("ok"):
+            return True, "ok"
+        return False, str(data.get("description") or f"http_{r.status_code}")
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+async def _cancel_light_subscription_after_pro(context: CallbackContext, user_id: int) -> None:
+    """Человек с действующим «Лайтом» купил «Полный доступ» — снимаем автопродление
+    Лайта (docs/tasks/light_tier_strategy.md §4.3). Полный выдаётся в любом случае;
+    если отменить не вышло — ошибка в лог и письмо администратору, чтобы вернуть звёзды
+    руками (/refund_star)."""
+    from backend.database import get_user_subscription
+    sub = await asyncio.to_thread(get_user_subscription, int(user_id))
+    if not sub:
+        return
+    if str(sub.get("plan_code") or "").strip().lower() != "light":
+        return
+    if str(sub.get("status") or "").strip().lower() not in ("active", "trialing"):
+        return
+    sub_id = str(sub.get("stripe_subscription_id") or "")
+    if not sub_id.startswith("stars_"):
+        return
+    charge = sub_id[len("stars_"):]
+    ok, detail = await asyncio.to_thread(_edit_user_star_subscription, int(user_id), charge, is_canceled=True)
+    if ok:
+        logging.info("light→pro: автопродление Лайта снято user=%s charge=%s", user_id, charge)
+        return
+    logging.error("light→pro: НЕ удалось снять автопродление Лайта user=%s charge=%s: %s", user_id, charge, detail)
+    text = (
+        "⚠️ Человек купил «Полный доступ», а его «Лайт» отменить не удалось — через 30 дней "
+        "спишется второй раз.\n\n"
+        f"User ID: {user_id}\nПлатёж Лайта: {charge}\nОтвет Telegram: {detail}\n\n"
+        f"Вернуть звёзды за Лайт: /refund_star {charge}"
+    )
+    for admin_id in get_admin_telegram_ids():
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text)
+        except Exception as exc:
+            logging.warning("light→pro: письмо админу %s не ушло: %s", admin_id, exc)
+
+
 async def on_stars_successful_payment(update: Update, context: CallbackContext) -> None:
     """Fulfil a completed Telegram Stars purchase. Idempotent by charge id, so a
     re-delivered update never double-grants. The invoice_payload tells us what was
@@ -42810,7 +43120,7 @@ async def on_stars_successful_payment(update: Update, context: CallbackContext) 
                 )
         except Exception:
             logging.exception("book_audio grant failed charge=%s", charge_id)
-    elif purpose == "pro":
+    elif purpose in ("pro", "light"):
         try:
             from backend.database import set_subscription_from_stripe
             from datetime import datetime, timezone, timedelta
@@ -42819,17 +43129,28 @@ async def on_stars_successful_payment(update: Update, context: CallbackContext) 
                 exp = datetime.fromtimestamp(int(exp), tz=timezone.utc)
             if not exp:
                 exp = datetime.now(timezone.utc) + timedelta(days=31)
+            target_uid = int(payload.get("user_id") or uid)
+            if purpose == "pro":
+                # Telegram не умеет сменить подписку: купленный «Полный доступ» поверх
+                # действующего «Лайта» дал бы два списания. Лайт отменяем сами, ДО того как
+                # строка подписки перезапишется и id его платежа пропадёт.
+                await _cancel_light_subscription_after_pro(context, target_uid)
             set_subscription_from_stripe(
-                user_id=int(payload.get("user_id") or uid),
-                plan_code="pro",
+                user_id=target_uid,
+                plan_code=purpose,
                 stripe_customer_id=None,
                 stripe_subscription_id=f"stars_{charge_id}",
                 status="active",
                 current_period_end=exp,
             )
-            await msg.reply_text(
-                "✅ «Полный доступ» подключён — спасибо! Продлевается автоматически раз в месяц; отменить можно в любой момент в настройках Telegram."
-            )
+            if purpose == "pro":
+                await msg.reply_text(
+                    "✅ «Полный доступ» подключён — спасибо! Продлевается автоматически раз в месяц; отменить можно в любой момент в настройках Telegram."
+                )
+            else:
+                await msg.reply_text(
+                    "✅ «Лайт» подключён — спасибо! Задания приходят как раньше. Продлевается автоматически раз в 30 дней; отменить можно в любой момент в настройках Telegram."
+                )
         except Exception:
             logging.exception("stars pro grant failed charge=%s", charge_id)
     elif purpose in ("support_coffee", "support_cheesecake"):
@@ -45776,6 +46097,7 @@ def main():
     application.add_handler(CommandHandler("admin_resweep_units", admin_resweep_units_command))
     application.add_handler(CommandHandler("admin_words_decide", admin_words_decide_command))
     application.add_handler(CommandHandler("admin_promises", admin_promises_command))
+    application.add_handler(CommandHandler("admin_access", admin_access_command))
     application.add_handler(CallbackQueryHandler(handle_fix_promise_callback, pattern=r"^fp:"))
     application.add_handler(CallbackQueryHandler(handle_unit_decision_callback,
                                                 pattern=r"^uw:"))
@@ -46415,6 +46737,10 @@ def main():
         # никогда не применяются к тому, что собрано раньше.
         scheduler.add_job(lambda: submit_async(run_daily_video_recheck,CallbackContext(application=application)),"cron", hour=3, minute=20, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         scheduler.add_job(lambda: submit_async(run_standup_shelf_refill,CallbackContext(application=application)),"cron", hour=3, minute=40, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        # Бесплатный месяц: ночная страховка начала отсчёта (кого двери пропустили).
+        scheduler.add_job(lambda: submit_async(_access_period_sweep_job,CallbackContext(application=application)),"cron", hour=3, minute=50, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        # Бесплатный месяц: напоминание запертым — суббота 11:00 (решение владельца 04.09.2026).
+        scheduler.add_job(lambda: submit_async(_access_reminder_job,CallbackContext(application=application)),"cron", day_of_week="sat", hour=11, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Drain Mini-App «⚔️ Battles» create requests every few seconds (bot runs the
         # existing broadcast logic, so invites/images/nudges/digest are unchanged).

@@ -644,6 +644,8 @@ from backend.database import (
     resolve_entitlement,
     grant_welcome_trial_once,
     get_welcome_trial_status,
+    start_access_period,
+    is_access_locked,
     enforce_daily_cost_cap,
     enforce_feature_limit,
     get_user_provider_units_today,
@@ -3134,6 +3136,38 @@ _ACCESS_PUBLIC_WEBAPP_PATHS = {
     "/api/webapp/dictionary/diff/shared",
 }
 _ACCESS_PROTECTED_EXACT_PATHS = {"/api/message"}
+
+# ── Замок бесплатного месяца (docs/tasks/light_tier_strategy.md §5.1) ─────────────
+# Запертому человеку открыто ровно то, что нужно, чтобы заплатить и не потерять настройки.
+# Всё остальное отвечает 402 с reason='free_month_over'. Список — ЕДИНСТВЕННОЕ место
+# правила; гейтить функции по отдельности запрещено: так двери и теряются.
+_ACCESS_LOCK_EXEMPT_EXACT = {
+    "/api/webapp/bootstrap",
+}
+_ACCESS_LOCK_EXEMPT_PREFIXES = (
+    "/api/webapp/billing/",
+    "/api/webapp/settings",
+    "/api/webapp/onboarding/",
+    "/api/webapp/instance/",
+)
+
+
+def _access_lock_applies(path: str) -> bool:
+    p = str(path or "")
+    if p in _ACCESS_LOCK_EXEMPT_EXACT:
+        return False
+    return not p.startswith(_ACCESS_LOCK_EXEMPT_PREFIXES)
+
+
+def _access_locked_payload() -> dict:
+    return {
+        "error": "Бесплатный месяц закончился. Чтобы продолжить, выбери «Лайт» или «Полный доступ».",
+        "error_code": "access_locked",
+        "reason": "free_month_over",
+        "light_stars": light_price_stars(),
+        "pro_stars": pro_price_stars(),
+        "bot_username": (os.getenv("TELEGRAM_BOT_USERNAME") or "").lstrip("@"),
+    }
 _LEGACY_API_PREFIXES = (
     "/webapp/",
     "/web/",
@@ -3855,6 +3889,18 @@ def enforce_webapp_access():
         # двигает ступенями. Сказать ему «доступ закрыт администратором» — соврать и
         # обидеть. Ему полагается номер, причина и обещание написать самим.
         return jsonify(_access_denied_payload(int(resolved_user_id))), 403
+
+    # Замок бесплатного месяца — здесь, в единственной двери (§5.1 стратегии).
+    # Право доступа не прочиталось — человека НЕ запираем (сбой базы не повод отрезать
+    # всех), ошибка целиком в лог, а задания у запертых считает утреннее обещание.
+    if _access_lock_applies(path):
+        try:
+            _locked = bool(is_access_locked(int(resolved_user_id)))
+        except Exception:
+            logging.exception("access lock: право доступа не прочиталось user=%s", resolved_user_id)
+            _locked = False
+        if _locked:
+            return jsonify(_access_locked_payload()), 402
 
     g.telegram_user_id = int(resolved_user_id)
     g.telegram_user = resolved_user_data
@@ -21866,6 +21912,16 @@ def pro_price_stars() -> int:
     return eur_minor_to_stars(PRO_PRICE_EUR_MINOR)
 
 
+# «Лайт» — подписка с наполнением бесплатного уровня (решение владельца 04.09.2026).
+# Цена 2 € + комиссия Telegram: 246 → ceil(2.46 × 1.30 × 50) = 160 ⭐, тот же курс, что у
+# «Полного доступа» (400 ⭐ за 5 €). Значение по умолчанию — решение владельца 04.09.2026.
+LIGHT_PRICE_EUR_MINOR = int(os.getenv("LIGHT_PRICE_EUR_MINOR") or "246")
+
+
+def light_price_stars() -> int:
+    return eur_minor_to_stars(LIGHT_PRICE_EUR_MINOR)
+
+
 # One-time "thank you" donations (coffee / cheesecake) — sold as one-time Telegram Stars
 # payments now that Stripe is retired. EUR-tunable via env → Stars via the same markup as Pro.
 # These change NOTHING about access — just a sponsor badge + a spot on the wall of thanks.
@@ -31289,6 +31345,7 @@ def bootstrap_webapp_session():
     starter_dictionary = None
     translation_session = None
     welcome_trial = None
+    access = None
     try:
         parsed_user = parsed.get("user") if isinstance(parsed.get("user"), dict) else {}
         parsed_user_id = _safe_int(parsed_user.get("id"))
@@ -31296,6 +31353,12 @@ def bootstrap_webapp_session():
             # One-time 7-day Pro trial for everyone (Pro minus book-narration audio) on first
             # Mini-App open. Idempotent per lifetime — a returning user just gets granted=False.
             # Enrich with the app-entry plaque state (active countdown / ended → buy Pro).
+            # Дверь записи начала отсчёта бесплатного месяца (первое открытие приложения).
+            # Идемпотентно на всю жизнь; ошибка — в лог, число промахов — в обещание.
+            try:
+                start_access_period(int(parsed_user_id), "bootstrap")
+            except Exception:
+                logging.exception("access_period: дверь bootstrap не записала старт user=%s", parsed_user_id)
             try:
                 _grant_res = grant_welcome_trial_once(int(parsed_user_id))
                 _ws = get_welcome_trial_status(int(parsed_user_id))
@@ -31313,6 +31376,15 @@ def bootstrap_webapp_session():
                     "days": int(_grant_res.get("days") or 0),
                     "days_left": int(_ws.get("days_left") or 0),
                     "ends_at": _ws.get("ends_at"),
+                }
+                # Бесплатный месяц: состояние доступа для окна при входе
+                # (docs/tasks/light_tier_strategy.md §6.1). Цены — те же, что спишет счёт.
+                access = {
+                    "state": str(_ent.get("access_state") or "unknown"),
+                    "ends_at": _ent.get("free_month_ends_at"),
+                    "days_left": int(_ent.get("free_month_days_left") or 0),
+                    "light_stars": light_price_stars(),
+                    "pro_stars": pro_price_stars(),
                 }
             except Exception:
                 logging.warning("welcome trial grant failed user=%s", parsed_user_id, exc_info=True)
@@ -31353,6 +31425,7 @@ def bootstrap_webapp_session():
             "starter_dictionary": starter_dictionary,
             "translation_session": translation_session,
             "welcome_trial": welcome_trial,
+            "access": access,
         }
     )
 
@@ -38264,6 +38337,13 @@ def _build_billing_status_response_payload(*, user_id: int) -> tuple[dict, dict]
         "sponsor_tier": sponsor_tier,
         "is_welcome_trial": bool(entitlement.get("is_welcome_trial")),
         "trial_ends_at": entitlement.get("trial_ends_at"),
+        "source_of_entitlement": str(entitlement.get("source_of_entitlement") or ""),
+        # Бесплатный месяц (docs/tasks/light_tier_strategy.md): pro | light | free_month | locked | unknown
+        "access_state": str(entitlement.get("access_state") or "unknown"),
+        "free_month_ends_at": entitlement.get("free_month_ends_at"),
+        "free_month_days_left": int(entitlement.get("free_month_days_left") or 0),
+        "light_stars": light_price_stars(),
+        "pro_stars": pro_price_stars(),
         "bonus_pro": bonus_pro,
         "current_period_end": subscription.get("current_period_end"),
         "spent_today_eur": float(round(spent_today, 6)),
@@ -39577,7 +39657,9 @@ def get_billing_plans():
                     # the live/DB EUR snapshot below is only a display anchor). Frontend shows this ⭐
                     # figure verbatim so «what you see» == «what Telegram charges».
                     _plan_code_lc = str(item.get("plan_code") or "").strip().lower()
-                    if _plan_code_lc == "pro":
+                    if _plan_code_lc == "light":
+                        amount_stars = light_price_stars()
+                    elif _plan_code_lc == "pro":
                         amount_stars = pro_price_stars()
                     elif _plan_code_lc in SUPPORT_TIER_EUR_MINOR:
                         amount_stars = support_price_stars(_plan_code_lc)
@@ -64387,6 +64469,24 @@ def billing_stars_invoice():
             stars=stars,
             subscription_period=STARS_SUBSCRIPTION_PERIOD_SECONDS,
         )
+    elif plan_code == "light":
+        # Пока действует оплаченный «Полный доступ», «Лайт» не продаём: Telegram не умеет
+        # сменить подписку, вышло бы два списания (docs/tasks/light_tier_strategy.md §4.3).
+        _ent = resolve_entitlement(user_id_int)
+        if (str(_ent.get("effective_mode") or "") == "pro"
+                and str(_ent.get("source_of_entitlement") or "") == "paid_subscription"):
+            return jsonify({
+                "error": "У вас уже «Полный доступ». «Лайт» можно оформить после его отмены в настройках Telegram.",
+                "error_code": "already_pro",
+            }), 409
+        stars = light_price_stars()
+        link, detail = create_stars_invoice_link(
+            title="Лайт — подписка",
+            description="Лайт: задания каждый день, словарь и тренажёры в базовом объёме. Продление раз в 30 дней, отмена в любой момент.",
+            payload_obj={"purpose": "light", "user_id": user_id_int},
+            stars=stars,
+            subscription_period=STARS_SUBSCRIPTION_PERIOD_SECONDS,
+        )
     elif plan_code in SUPPORT_TIER_EUR_MINOR:
         stars = support_price_stars(plan_code)
         _title = "Кофе разработчику ☕️" if plan_code == "support_coffee" else "Кофе ☕️ и чизкейк 🍰"
@@ -67436,6 +67536,8 @@ def _dispatch_private_analytics(target_date: date) -> dict:
     for user_id, username in users.items():
         if not is_telegram_user_allowed(user_id):
             continue
+        if is_access_locked(user_id):  # бесплатный месяц кончился — учебных писем нет
+            continue
         try:
             source_lang, target_lang, _profile = _get_user_language_pair(user_id)
             summary = fetch_user_summary(
@@ -69006,6 +69108,8 @@ def _dispatch_today_evening_reminders(target_date: date, tz_name: str = TODAY_PL
     for user in users:
         user_id = int(user.get("user_id") or 0)
         if not user_id or not is_telegram_user_allowed(user_id):
+            continue
+        if is_access_locked(user_id):  # бесплатный месяц кончился — учебных писем нет
             continue
         username = _resolve_today_user_label(
             user_id,

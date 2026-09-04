@@ -208,7 +208,7 @@ const STEPS = [
   { id: 'shortcut',   title: t('Захват слов со скриншотов (iPhone) 📲', 'Wörter aus Screenshots (iPhone) 📲'), kind: 'opt' },
   { id: 'howto_morning', title: t('Утром твои слова уже ждут 🌅', 'Morgens warten deine Wörter 🌅'), kind: 'info' },
   { id: 'howto_learn',   title: t('А теперь — как их учить 🎓', 'Und jetzt — wie du sie lernst 🎓'), kind: 'info' },
-  { id: 'plans',      title: t('Тарифы: Free и Полный доступ 💎', 'Tarife: Free und Voller Zugang 💎'), kind: 'info' },
+  { id: 'plans',      title: t('Тарифы: Лайт и Полный доступ 💎', 'Tarife: Light und Voller Zugang 💎'), kind: 'info' },
   { id: 'finale',     title: t('Готово! ✅', 'Fertig! ✅'),                kind: 'finale' },
 ];
 
@@ -433,7 +433,7 @@ const REAL_STEPS = new Set(['install_app', 'language', 'dictionary', 'intensity'
 function StepBody(props) {
   const { step, isPro, confirmed, busy, dictBusy, dictChoice, stepErr, onConfirm, dictOffer, onDictAction,
     selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle,
-    onShortcutSetup, shortcutOpening, proPrice, onOpenSubscription, onShareTour, shareHint } = props;
+    onShortcutSetup, shortcutOpening, proPrice, lightPrice, onOpenSubscription, onShareTour, shareHint } = props;
   const bodyKey = REAL_STEPS.has(step.id) ? step.id : step.kind;
   switch (bodyKey) {
     case 'install_app':
@@ -957,14 +957,14 @@ function StepBody(props) {
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            {t('Ты увидел, что умеет бот. Вот что входит в каждый тариф. «Полный доступ» открывает все функции — отдельных лимитов по разделам нет. Озвучка книг оплачивается отдельно.',
-               'Du hast gesehen, was der Bot kann. Das steckt in jedem Tarif. «Voller Zugang» schaltet alle Funktionen frei — ohne eigene Limits je Bereich. Buch-Vertonung wird separat bezahlt.')}
+            {t('Ты увидел, что умеет бот. Первый месяц — бесплатно: 7 дней полного доступа, потом уровень «Лайт». Дальше выбираешь: «Лайт» — тот же объём, или «Полный доступ» — все функции без отдельных лимитов по разделам. Озвучка книг оплачивается отдельно.',
+               'Du hast gesehen, was der Bot kann. Der erste Monat ist gratis: 7 Tage voller Zugang, danach das Level «Light». Dann wählst du: «Light» — derselbe Umfang, oder «Voller Zugang» — alle Funktionen ohne eigene Limits je Bereich. Buch-Vertonung wird separat bezahlt.')}
           </p>
 
           <div className="ob-cmp">
             <div className="ob-cmp-head">
               <div className="h-feat">{t('Возможность', 'Funktion')}</div>
-              <div className="h-free"><span className="n">Free</span><span className="tag">{t('бесплатно', 'gratis')}</span></div>
+              <div className="h-free"><span className="n">{t('Лайт', 'Light')}</span><span className="tag">{t('1-й месяц бесплатно', '1. Monat gratis')}</span></div>
               <div className="h-pro"><span className="n">{t('Полный доступ', 'Voller Zugang')}</span><span className="tag">💎</span></div>
             </div>
             <div className="ob-cmp-grid">
@@ -1048,16 +1048,16 @@ function StepBody(props) {
                 <b>{t('каждое слово и предложение кликабельно', 'jedes Wort und jeder Satz antippbar')}</b>{' '}
                 {t('— нажми, чтобы увидеть перевод, и сразу сохрани нужные слова в свой словарь для изучения. ',
                    '— tippe drauf für die Übersetzung und speichere passende Wörter direkt in dein Wörterbuch zum Lernen. ')}
-                <b>{t('На Free — 1 статья в день, в «Полном доступе» — без дневного лимита на статьи.', 'Free — 1 Artikel pro Tag, voller Zugang — kein Tageslimit für Artikel.')}</b></p>
+                <b>{t('На «Лайте» — 1 статья в день, в «Полном доступе» — без дневного лимита на статьи.', 'Light — 1 Artikel pro Tag, voller Zugang — kein Tageslimit für Artikel.')}</b></p>
             </div>
           </div>
 
           <div className="ob-info is-trial">
             <div className="ic">🎁</div>
             <div>
-              <h4>{t('7 дней полного доступа — бесплатно каждому', '7 Tage voller Zugang — für jeden gratis')}</h4>
-              <p>{t('Каждый новый пользователь сразу получает полный доступ на 7 дней, чтобы попробовать всё. Без карты, автоматически.',
-                    'Jeder neue Nutzer erhält sofort 7 Tage vollen Zugang, um alles auszuprobieren. Ohne Karte, automatisch.')}</p>
+              <h4>{t('Первый месяц — бесплатно каждому', 'Der erste Monat — für jeden gratis')}</h4>
+              <p>{t('Первые 7 дней — полный доступ, чтобы попробовать всё. До конца первого месяца — «Лайт» бесплатно. Без карты, автоматически. Когда месяц закончится, выбираешь «Лайт» или «Полный доступ» — мы напомним заранее.',
+                    'Die ersten 7 Tage — voller Zugang, um alles auszuprobieren. Bis zum Ende des ersten Monats — «Light» gratis. Ohne Karte, automatisch. Nach dem Monat wählst du «Light» oder «Voller Zugang» — wir erinnern dich rechtzeitig.')}</p>
             </div>
           </div>
 
@@ -1065,8 +1065,8 @@ function StepBody(props) {
             <div className="ic">🔊</div>
             <div>
               <h4>{t('Озвучка книг — отдельно', 'Buch-Vertonung — separat')}</h4>
-              <p>{t('Не входит ни в Free, ни в «Полный доступ». Оплачивается за каждую книгу отдельно звёздами: 3 голоса и 25 / 50 / 100 % книги. ',
-                    'Weder in Free noch im vollen Zugang enthalten. Wird pro Buch separat mit Sternen bezahlt: 3 Stimmen und 25 / 50 / 100 % des Buches. ')}
+              <p>{t('Не входит ни в «Лайт», ни в «Полный доступ». Оплачивается за каждую книгу отдельно звёздами: 3 голоса и 25 / 50 / 100 % книги. ',
+                    'Weder in Light noch im vollen Zugang enthalten. Wird pro Buch separat mit Sternen bezahlt: 3 Stimmen und 25 / 50 / 100 % des Buches. ')}
                 <b>{t('Классика озвучена бесплатно для всех.', 'Klassiker sind für alle gratis vertont.')}</b>{' '}
                 {t('Озвучить книгу можно прямо в Читалке: открываешь книгу → кнопка ▶.',
                    'Ein Buch vertonst du direkt im Reader: Buch öffnen → ▶-Knopf.')}</p>
@@ -1077,17 +1077,17 @@ function StepBody(props) {
             <div className="ic">⭐</div>
             <div>
               <h4>{t('Что такое звёзды Telegram', 'Was sind Telegram-Sterne')}</h4>
-              <p>{t('Звёзды — официальная валюта Telegram. Покупаются в пару тапов прямо в приложении, безопасно, без карт на сторонних сайтах. Ими оплачивается «Полный доступ» и озвучка книг.',
-                    'Sterne sind die offizielle Telegram-Währung. In wenigen Taps direkt in der App gekauft — sicher, ohne Karte auf fremden Seiten. Damit zahlst du vollen Zugang und Buch-Vertonung.')}</p>
+              <p>{t('Звёзды — официальная валюта Telegram. Покупаются в пару тапов прямо в приложении, безопасно, без карт на сторонних сайтах. Ими оплачиваются «Лайт», «Полный доступ» и озвучка книг.',
+                    'Sterne sind die offizielle Telegram-Währung. In wenigen Taps direkt in der App gekauft — sicher, ohne Karte auf fremden Seiten. Damit zahlst du Light, vollen Zugang und Buch-Vertonung.')}</p>
             </div>
           </div>
 
           <div className="ob-info is-cancel">
             <div className="ic">🔁</div>
             <div>
-              <h4>{t('Как отменить «Полный доступ»', 'Vollen Zugang kündigen')}</h4>
-              <p>{t('«Полный доступ» продлевается автоматически раз в месяц. Отменить можно в любой момент прямо в Telegram: Настройки → Telegram Stars и подписки → выбери бота → «Отменить». Доступ сохранится до конца оплаченного периода.',
-                    'Der volle Zugang verlängert sich automatisch monatlich. Jederzeit kündbar direkt in Telegram: Einstellungen → Telegram Stars und Abos → Bot wählen → „Kündigen“. Der Zugang bleibt bis zum Ende des bezahlten Zeitraums.')}</p>
+              <h4>{t('Как отменить подписку', 'Abo kündigen')}</h4>
+              <p>{t('«Лайт» и «Полный доступ» продлеваются автоматически раз в 30 дней. Отменить можно в любой момент прямо в Telegram: Настройки → Telegram Stars и подписки → выбери бота → «Отменить». Доступ сохранится до конца оплаченного периода.',
+                    '«Light» und «Voller Zugang» verlängern sich automatisch alle 30 Tage. Jederzeit kündbar direkt in Telegram: Einstellungen → Telegram Stars und Abos → Bot wählen → „Kündigen“. Der Zugang bleibt bis zum Ende des bezahlten Zeitraums.')}</p>
             </div>
           </div>
 
@@ -1107,6 +1107,7 @@ function StepBody(props) {
                 число разошлось бы молча, показывая новичку неверную цену на первом же
                 экране. Сервер не ответил — цену не называем вовсе: ниже стоит строка
                 «Кнопка откроет экран „Подписка“ — там актуальная цена», и она честна. */}
+            <p className="ob-plan-title">🌿 <b>{t('Лайт', 'Light')}</b>{lightPrice ? <> — <span className="ob-price">{lightPrice}</span></> : null}</p>
             <p className="ob-plan-title">💎 <b>{t('Полный доступ', 'Voller Zugang')}</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : null}</p>
             {IS_GUEST_TOUR ? GUEST_NOTE : (
               <button type="button" className="ob-confirm" onClick={onOpenSubscription}>
@@ -1371,6 +1372,7 @@ export default function OnboardingWizard() {
   const [shortcutOpening, setShortcutOpening] = useState(false); // «Настроить сейчас» in flight
   const [shareHint, setShareHint] = useState('');                // «Поделиться» feedback (copied)
   const [proPrice, setProPrice] = useState('');           // live Pro price label (Stripe-configured)
+  const [lightPrice, setLightPrice] = useState('');       // цена «Лайта» — только с сервера
   const [review, setReview] = useState(false);            // онбординг уже пройден → режим справочника
   const [showToc, setShowToc] = useState(false);          // оглавление (только в режиме справочника)
   const [dictTier, setDictTier] = useState('');           // none|base|full — реальное состояние словаря
@@ -1820,6 +1822,12 @@ export default function OnboardingWizard() {
             : t('месяц', 'Monat');
           setProPrice(`${stars} ⭐ / ${per}`);
         }
+        // «Лайт» — то же правило: цена только с сервера (light_price_stars()).
+        const light = (Array.isArray(d.plans) ? d.plans : []).find((p) => p.plan_code === 'light');
+        const lightStars = light && light.amount_stars != null ? Number(light.amount_stars) : null;
+        if (!off && lightStars != null && !Number.isNaN(lightStars) && lightStars > 0) {
+          setLightPrice(`${lightStars} ⭐ / ${t('месяц', 'Monat')}`);
+        }
       } catch (_e) { /* price hidden; CTA still opens the live paywall */ }
     })();
     return () => { off = true; };
@@ -2016,6 +2024,7 @@ export default function OnboardingWizard() {
             onShortcutSetup={openShortcutSetup}
             shortcutOpening={shortcutOpening}
             proPrice={proPrice}
+            lightPrice={lightPrice}
             onOpenSubscription={openSubscription}
             onShareTour={shareTour}
             shareHint={shareHint}

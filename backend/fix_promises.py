@@ -101,6 +101,41 @@ def _count_worldnews_old_look_rules(css: str) -> int:
     return n
 
 
+def _access_period_night_sweep() -> int:
+    """Сколько начал отсчёта бесплатного месяца за сутки поставила ночная страховка, а
+    не дверь записи. Обещано: 0.
+
+    Дверей четыре: /start, первое сообщение в боте, самозапись по ссылке, открытие
+    приложения. Строка от страховки значит, что человек прошёл мимо всех четырёх —
+    искать, какая молчит (source в bt_3_access_period у соседей подскажет)."""
+    from backend.database import count_access_periods_created_by_night_sweep
+    return count_access_periods_created_by_night_sweep(days=1)
+
+
+def _access_period_missing() -> int:
+    """Сколько известных боту людей без начала отсчёта бесплатного месяца. Обещано: 0.
+
+    Меряется утром, после ночной страховки: не ноль — значит страховка не отработала, и
+    у этих людей право доступа стоит в состоянии unknown (замка нет, но и срока нет)."""
+    from backend.database import list_known_user_ids_without_access_period
+    return len(list_known_user_ids_without_access_period())
+
+
+def _locked_users_got_learning_content() -> int:
+    """Сколько заданий за сутки ушло людям, у которых бесплатный месяц кончился и подписки
+    нет. Обещано: 0. Двери — общий сборщик рассылок и обработчик сообщений бота
+    (docs/tasks/light_tier_strategy.md §5.2–5.3)."""
+    from backend.database import count_learning_content_sent_to_locked_users
+    return count_learning_content_sent_to_locked_users(days=1)
+
+
+def _access_reminders_over_cadence() -> int:
+    """Напоминаний запертым за сутки, ушедших раньше положенного промежутка (7 дней
+    первые 8 раз, дальше 30). Обещано: 0."""
+    from backend.database import count_access_reminders_over_cadence
+    return count_access_reminders_over_cadence(days=1)
+
+
 def _worldnews_card_old_look_rules() -> int:
     """Читает CSS собранного фронта (frontend/dist/assets/*.css) на сервере. Обещано: 0."""
     from pathlib import Path
@@ -141,6 +176,39 @@ PROMISES: tuple[Promise, ...] = (
         measure=_worldnews_card_old_look_rules,
         how="grep -c 'Georgia' frontend/dist/assets/*.css рядом с .worldnews-card-de "
             "и 'clip-path' рядом с .worldnews-step — ждём 0 и 0",
+    ),
+    Promise(
+        key="access_period_night_sweep",
+        title="Людей, кому начало бесплатного месяца поставила ночная страховка, а не дверь",
+        since="04.09.2026",
+        expected=0,
+        measure=_access_period_night_sweep,
+        how="SELECT COUNT(*) FROM bt_3_access_period WHERE source='night_sweep' "
+            "AND created_at > NOW() - interval '1 day'",
+    ),
+    Promise(
+        key="access_period_missing",
+        title="Известных людей без начала отсчёта бесплатного месяца",
+        since="04.09.2026",
+        expected=0,
+        measure=_access_period_missing,
+        how="python3 -c \"from backend.database import list_known_user_ids_without_access_period as f; print(len(f()))\"",
+    ),
+    Promise(
+        key="locked_users_got_learning_content",
+        title="Заданий, ушедших запертым (бесплатный месяц кончился, подписки нет) за сутки",
+        since="04.09.2026",
+        expected=0,
+        measure=_locked_users_got_learning_content,
+        how="python3 -c \"from backend.database import count_learning_content_sent_to_locked_users as f; print(f())\"",
+    ),
+    Promise(
+        key="access_reminders_over_cadence",
+        title="Напоминаний запертым, ушедших чаще положенного (7 дней ×8, потом 30)",
+        since="04.09.2026",
+        expected=0,
+        measure=_access_reminders_over_cadence,
+        how="python3 -c \"from backend.database import count_access_reminders_over_cadence as f; print(f())\"",
     ),
 )
 

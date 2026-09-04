@@ -115,3 +115,56 @@
   color: #9aa4b8;
   text-align: left;
 }
+
+/* ── Бесплатный месяц: режимы «заканчивается» и «заперт» ─────────────────── */
+.prot-card.is-ending::before,
+.prot-card.is-locked::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 118px;
+  z-index: 0;
+  pointer-events: none;
+}
+.prot-card.is-ending::before {
+  background: radial-gradient(120% 90% at 50% 0%, rgba(230, 150, 40, 0.22) 0%, transparent 64%);
+}
+.prot-card.is-locked::before {
+  background: radial-gradient(120% 90% at 50% 0%, rgba(58, 123, 213, 0.20) 0%, transparent 64%);
+}
+.prot-badge.is-ending { color: #9a4e00; background: #fdebd2; }
+.prot-badge.is-locked { color: #1f4f9c; background: #dfeaff; }
+
+.prot-plans {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 2px 0 12px;
+}
+.prot-plan {
+  text-align: left;
+  padding: 10px 12px 6px;
+  border-radius: 13px;
+  border: 1px solid rgba(20, 40, 80, 0.08);
+  background: #f7f9fd;
+}
+.prot-plan--light { border-color: rgba(31, 184, 122, 0.28); background: #f1fbf6; }
+.prot-plan--pro   { border-color: rgba(91, 52, 213, 0.22); background: #f5f2fd; }
+.prot-plan__name {
+  font-size: 13px; font-weight: 800; letter-spacing: 0.01em;
+  margin-bottom: 6px; color: #1f2d45;
+}
+.prot-perks--tight { gap: 5px; margin: 0 0 4px; }
+.prot-perks--tight li { font-size: 13px; }
+
+.prot-cta.is-light {
+  background: linear-gradient(135deg, #1fb87a, #0e9e8e);
+  box-shadow: 0 10px 22px rgba(15, 158, 130, 0.28);
+}
+.prot-fine {
+  margin: 2px 0 8px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: #6b7891;
+  text-align: center;
+}

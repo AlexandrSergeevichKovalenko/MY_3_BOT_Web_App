@@ -7689,6 +7689,26 @@ function AppInner() {
   const [welcomeTrial, setWelcomeTrial] = useState(null);
   const [welcomeTrialModalOpen, setWelcomeTrialModalOpen] = useState(false);
   const welcomeTrialCheckedRef = useRef(false);
+  // Бесплатный месяц (docs/tasks/light_tier_strategy.md): состояние доступа приходит из
+  // bootstrap и обновляется из /api/billing/status после оплаты.
+  // { state:'pro'|'light'|'free_month'|'locked'|'unknown', ends_at, days_left, light_stars, pro_stars }
+  const [accessInfo, setAccessInfo] = useState(null);
+  const [entryPlaqueMode, setEntryPlaqueMode] = useState('active');
+  // Страховка замка: любой запрос, получивший 402 free_month_over (перехватчик в main.jsx),
+  // переводит состояние в locked — даже если bootstrap ещё не успел это сказать.
+  useEffect(() => {
+    const onLocked = (ev) => {
+      const j = ev?.detail || {};
+      setAccessInfo((prev) => ({
+        ...(prev || {}),
+        state: 'locked',
+        light_stars: Number(j.light_stars || prev?.light_stars || 0),
+        pro_stars: Number(j.pro_stars || prev?.pro_stars || 0),
+      }));
+    };
+    window.addEventListener('dds:access-locked', onLocked);
+    return () => window.removeEventListener('dds:access-locked', onLocked);
+  }, []);
   // "What are Telegram Stars" explainer — opened by a small ⓘ next to any Stars price.
   const [starsInfoOpen, setStarsInfoOpen] = useState(false);
   const [bonusDaysInfoOpen, setBonusDaysInfoOpen] = useState(false);
@@ -9198,6 +9218,13 @@ function AppInner() {
       priceLabel: '0 EUR',
       priceLabelDe: '0 EUR',
     },
+    light: {
+      eyebrow: tr('Базовый', 'Basis'),
+      title: tr('Лайт', 'Light'),
+      blurb: tr('Всё важное для учёбы с дневными лимитами — тот же объём, что в бесплатный месяц.', 'Alles Wichtige zum Lernen mit Tageslimits — derselbe Umfang wie im Gratismonat.'),
+      priceLabel: '',
+      priceLabelDe: '',
+    },
     pro: {
       eyebrow: tr('Текущий флагман', 'Aktuelles Flaggschiff'),
       title: tr('Полный доступ', 'Voller Zugang'),
@@ -9229,6 +9256,7 @@ function AppInner() {
   const billingPlanCards = useMemo(() => {
     const order = {
       free: 10,
+      light: 15,
       pro: 20,
       support_coffee: 30,
       support_cheesecake: 40,
@@ -9253,7 +9281,7 @@ function AppInner() {
         // Stripe/DB EUR, which is only a loose anchor and could differ from the wallet debit.
         const stars = Number(item?.amount_stars);
         const hasStars = Number.isFinite(stars) && stars > 0;
-        if (planCode === 'pro' && hasStars) {
+        if ((planCode === 'pro' || planCode === 'light') && hasStars) {
           priceLabel = uiLang === 'de' ? `${stars} ⭐ / Monat` : `${stars} ⭐ / мес`;
         }
         if (planCode.startsWith('support_') && hasStars) {
@@ -9288,6 +9316,13 @@ function AppInner() {
     const stars = Number(pro?.amount_stars);
     return Number.isFinite(stars) && stars > 0 ? stars : 400;
   }, [billingPlans]);
+  // «Лайт» — то же правило: цена с бэкенда (light_price_stars()), запас только до загрузки.
+  const lightPlanStars = useMemo(() => {
+    const rows = Array.isArray(billingPlans) ? billingPlans : [];
+    const light = rows.find((row) => String(row?.plan_code || '').trim().toLowerCase() === 'light');
+    const stars = Number(light?.amount_stars);
+    return Number.isFinite(stars) && stars > 0 ? stars : 160;
+  }, [billingPlans]);
   const billingPlanLimitDetails = useMemo(() => {
     const paidCommon = [
       tr('Переводы, разборы, словарь, карточки, тренажёры — полностью открыты.', 'Übersetzungen, Analysen, Wörterbuch, Karten, Übungen — voll freigeschaltet.'),
@@ -9312,10 +9347,9 @@ function AppInner() {
       tr('Перевод любого слова — всегда бесплатно и без счёта. Запас тратит только полный разбор нового для нашего словаря слова (там уже больше 14 000). Обновляется каждый день в 00:00.',
          'Die Übersetzung jedes Wortes ist immer gratis und ohne Zähler. Das Budget kostet nur die vollständige Analyse eines für unser Wörterbuch neuen Wortes (dort sind schon über 14 000). Erneuert sich täglich um 00:00.'),
     ];
-    return {
-      free: {
-        title: tr('Лимиты тарифа Free', 'Limits des Free-Tarifs'),
-        items: [
+    // Наполнение «Лайта» = наполнение бесплатного месяца (решение владельца 04.09.2026):
+    // один список на оба ключа, чтобы они не разъехались.
+    const baseItems = [
           tr('Переводы с разбором: 1 набор в день (7 предложений).', 'Übersetzungen mit Analyse: 1 Set pro Tag (7 Sätze).'),
           tr('Словарь: 10 запросов + 20 сохранений в день.', 'Wörterbuch: 10 Abfragen + 20 Speicherungen pro Tag.'),
           tr('«Объяснить ошибки» и «Спроси GPT»: по 1 в день.', '„Fehler erklären“ und „GPT fragen“: je 1 pro Tag.'),
@@ -9325,7 +9359,15 @@ function AppInner() {
           tr('YouTube: немецкие субтитры (синхронные русские — в «Полном доступе»).', 'YouTube: deutsche Untertitel (synchrone russische — mit vollem Zugang).'),
           tr('Задания по расписанию: 6 в день (без своей настройки).', 'Aufgaben nach Plan: 6 pro Tag (ohne eigene Einstellung).'),
           tr('Прокачка навыков, «Числа на слух» (тренажёр), аналитика, задачи, план недели, карта навыков — в «Полном доступе».', 'Skill-Training, Zahlen-Diktat (Training), Analyse, Aufgaben, Wochenplan, Skill-Karte — mit vollem Zugang.'),
-        ],
+    ];
+    return {
+      free: {
+        title: tr('Что входит в бесплатный месяц', 'Was im Gratismonat drin ist'),
+        items: baseItems,
+      },
+      light: {
+        title: tr('Лимиты тарифа «Лайт»', 'Limits des Light-Tarifs'),
+        items: baseItems,
       },
       pro: {
         title: tr('Лимиты тарифа «Полный доступ»', 'Limits des vollen Zugangs'),
@@ -9362,8 +9404,13 @@ function AppInner() {
   }, [billingPlanDetailsOpenFor, billingPlanLimitDetails, tr]);
   // Витрина разнесена на две оси: «Доступ» (Free/Pro) и «Поддержать проект»
   // (разовые донат-тарифы support_*). Сплит чисто по plan_code, бэкенд не нужен.
+  // «free» в каталоге остаётся (у него живут лимиты бесплатного месяца), но как карточка
+  // тарифа не показывается: постоянного бесплатного тарифа нет (владелец 04.09.2026).
   const billingAccessCards = useMemo(
-    () => billingPlanCards.filter((offer) => !String(offer.planCode || '').startsWith('support_')),
+    () => billingPlanCards.filter((offer) => {
+      const code = String(offer.planCode || '');
+      return !code.startsWith('support_') && code !== 'free';
+    }),
     [billingPlanCards],
   );
   const billingSupportCards = useMemo(
@@ -9391,12 +9438,19 @@ function AppInner() {
     );
     const isPaidPlan = Boolean(planMeta?.is_paid);
     const isInactivePlan = Boolean(planMeta && planMeta.is_active === false);
-    const canSelect = !isCurrentPlan && isPaidPlan && !isInactivePlan;
+    // Telegram не умеет сменить подписку: пока оплачен «Полный доступ», «Лайт» не продаём
+    // (docs/tasks/light_tier_strategy.md §4.3). Сервер это тоже проверяет (409).
+    const paidProActive = selectedEffectiveMode === 'pro'
+      && String(billingStatus?.source_of_entitlement || '') === 'paid_subscription';
+    const lightBlockedByPro = offer.planCode === 'light' && paidProActive;
+    const canSelect = !isCurrentPlan && isPaidPlan && !isInactivePlan && !lightBlockedByPro;
     let buttonText = isSupportPlan
       ? tr('Поддержать', 'Unterstützen')
       : tr('Выбрать тариф', 'Tarif wählen');
     if (isCurrentPlan) {
       buttonText = tr('Текущий тариф', 'Aktueller Tarif');
+    } else if (lightBlockedByPro) {
+      buttonText = tr('Сначала отмени «Полный доступ»', 'Zuerst vollen Zugang kündigen');
     } else if (!isPaidPlan) {
       buttonText = tr('Бесплатный план', 'Kostenloser Tarif');
     } else if (billingActionLoading) {
@@ -9790,8 +9844,8 @@ function AppInner() {
           <span>
             {tr(
               resetLabel
-                ? `На Free доступен 1 набор переводов в день: 7 предложений. Новый набор будет доступен после сброса: ${resetLabel}.`
-                : 'На Free доступен 1 набор переводов в день: 7 предложений. Новый набор будет доступен завтра после сброса.',
+                ? `На твоём тарифе доступен 1 набор переводов в день: 7 предложений. Новый набор будет доступен после сброса: ${resetLabel}.`
+                : 'На твоём тарифе доступен 1 набор переводов в день: 7 предложений. Новый набор будет доступен завтра после сброса.',
               resetLabel
                 ? `Im Free-Tarif ist 1 Übersetzungsset pro Tag verfügbar: 7 Sätze. Das nächste Set ist nach dem Reset verfügbar: ${resetLabel}.`
                 : 'Im Free-Tarif ist 1 Übersetzungsset pro Tag verfügbar: 7 Sätze. Das nächste Set ist morgen nach dem Reset verfügbar.'
@@ -14982,20 +15036,20 @@ function AppInner() {
           key: 'subscription',
           number: '6',
           title: 'Abo und Telegram Stars',
-          summary: 'Verstehe Free und vollen Zugang, den 7-Tage-Test, die Buch-Vertonung und die Zahlung mit Telegram Stars.',
+          summary: 'Gratismonat, Light und voller Zugang, Buch-Vertonung und Zahlung mit Telegram Stars.',
           sections: [
             {
               title: 'Was der Bereich „Abo“ zeigt',
               items: [
                 'Hier siehst du deinen aktuellen Plan, den Status, den heutigen Verbrauch und dein Tageslimit.',
-                'Außerdem sind alle Funktionen von Free und vollem Zugang als Vergleich sichtbar.',
-                'Jeder neue Nutzer bekommt 7 Tage vollen Zugang gratis zum Ausprobieren; danach Free.',
+                'Außerdem sind alle Funktionen von Light und vollem Zugang als Vergleich sichtbar.',
+                'Der erste Monat ist gratis: die ersten 7 Tage voller Zugang zum Ausprobieren, bis Monatsende das Level Light. Danach Light oder voller Zugang.',
               ],
             },
             {
               title: 'Welche Tarife es gibt',
               items: [
-                'Free: kostenloser Basis-Modus mit Tageslimits.',
+                'Light: Basis-Modus mit Tageslimits — derselbe Umfang wie im Gratismonat.',
                 'Voller Zugang: alle Funktionen freigeschaltet (Übersetzungen, Analysen, Wörterbuch, Karten, Skill-Karte, eigene Bücher u. v. m.).',
                 'Buch-Vertonung ist separat und nicht im vollen Zugang enthalten — sie wird pro Buch mit Sternen bezahlt; Klassiker sind für alle gratis vertont.',
               ],
@@ -15021,7 +15075,7 @@ function AppInner() {
               items: [
                 'Nach dem Kauf kurz 1–3 Sekunden warten und den Abo-Bereich aktualisieren.',
                 'Wenn der Status nicht sofort reagiert, kurz warten, aktualisieren und es noch einmal versuchen.',
-                'Auch mit aktivem vollem Zugang bleibt der Vergleich Free / voller Zugang sichtbar.',
+                'Auch mit aktivem vollem Zugang bleibt der Vergleich Light / voller Zugang sichtbar.',
               ],
             },
           ],
@@ -15412,20 +15466,20 @@ function AppInner() {
         key: 'subscription',
         number: '6',
         title: 'Подписка и Telegram Stars',
-        summary: 'Free и «Полный доступ», 7 дней полного доступа для всех, озвучка книг и оплата в Telegram Stars.',
+        summary: 'Бесплатный месяц, «Лайт» и «Полный доступ», озвучка книг и оплата в Telegram Stars.',
         sections: [
           {
             title: 'Что показывает блок «Подписка»',
             items: [
               'Текущий план, статус и дневной расход.',
-              'Сравнение всех возможностей Free и «Полного доступа» прямо в Mini App.',
-              'Каждый новый пользователь получает 7 дней полного доступа бесплатно, чтобы попробовать всё; потом — Free.',
+              'Сравнение всех возможностей «Лайта» и «Полного доступа» прямо в Mini App.',
+              'Первый месяц бесплатно: первые 7 дней — полный доступ, чтобы попробовать всё, до конца месяца — уровень «Лайт». Потом — «Лайт» или «Полный доступ».',
             ],
           },
           {
             title: 'Какие варианты тарифов есть',
             items: [
-              'Free: бесплатный базовый режим с дневными лимитами.',
+              '«Лайт»: базовый режим с дневными лимитами — тот же объём, что в бесплатный месяц.',
               'Полный доступ: все функции открыты (переводы, разборы, словарь, карточки, аналитика, карта навыков, свои книги и многое другое).',
               'Озвучка книг — отдельно, не входит в «Полный доступ»: оплачивается за каждую книгу звёздами; классика озвучена бесплатно для всех.',
             ],
@@ -15451,7 +15505,7 @@ function AppInner() {
             items: [
               'После оплаты дайте системе 1–3 секунды и обновите блок подписки.',
               'Если статус не отреагировал сразу, подождите немного, обновите раздел и попробуйте ещё раз.',
-              'Даже с активным «Полным доступом» сравнение Free / Полный доступ остаётся видно в Mini App.',
+              'Даже с активным «Полным доступом» сравнение «Лайт» / «Полный доступ» остаётся видно в Mini App.',
             ],
           },
         ],
@@ -19171,6 +19225,9 @@ function AppInner() {
         if (data?.welcome_trial) {
           setWelcomeTrial(data.welcome_trial);
         }
+        if (data?.access && typeof data.access === 'object') {
+          setAccessInfo(data.access);
+        }
         const openTranslationSession = data?.translation_session && typeof data.translation_session === 'object'
           ? data.translation_session
           : null;
@@ -19216,8 +19273,41 @@ function AppInner() {
   // App-entry Pro-trial plaque: show the beautiful card once per calendar day (per state)
   // — an "active" countdown while the free trial runs, an "ended → buy Pro" nudge after.
   // Deferred until onboarding is done so we don't interrupt the wizard.
+  // Бесплатный месяц: замок и предупреждение «осталось ≤ 5 дней» главнее плашки
+  // пробных 7 дней (docs/tasks/light_tier_strategy.md §6.2). Замок не закрывается и
+  // не зависит от «раз в день»; уходит сам, как только оплата подтверждена.
+  const accessState = String(accessInfo?.state || '');
   useEffect(() => {
-    if (!welcomeTrial || welcomeTrialCheckedRef.current || onboardingOpen) return;
+    if (onboardingOpen) return;
+    if (accessState === 'locked') {
+      setEntryPlaqueMode('locked');
+      setWelcomeTrialModalOpen(true);
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set(['subscription']));
+      return;
+    }
+    if (entryPlaqueMode === 'locked') {
+      // Был заперт — оплатил (или состояние уточнилось): окно закрываем.
+      setWelcomeTrialModalOpen(false);
+      setEntryPlaqueMode('active');
+    }
+    if (accessState === 'free_month' && Number(accessInfo?.days_left || 0) <= 5) {
+      let shouldShow = true;
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const key = 'dds_month_ending_plaque_v1';
+        if (String(window.localStorage.getItem(key) || '') === today) shouldShow = false;
+        else window.localStorage.setItem(key, today);
+      } catch (_e) { /* storage optional — still show */ }
+      if (shouldShow) {
+        setEntryPlaqueMode('month_ending');
+        setWelcomeTrialModalOpen(true);
+      }
+      return;
+    }
+    if (accessState === 'light' || accessState === 'pro') return;
+    if (!welcomeTrial || welcomeTrialCheckedRef.current) return;
     const state = String(welcomeTrial.state || 'none');
     if (state !== 'active' && state !== 'ended') return;
     welcomeTrialCheckedRef.current = true;
@@ -19229,8 +19319,11 @@ function AppInner() {
       if (String(window.localStorage.getItem(key) || '') === tag) shouldShow = false;
       else window.localStorage.setItem(key, tag);
     } catch (_e) { /* storage optional — still show */ }
-    if (shouldShow) setWelcomeTrialModalOpen(true);
-  }, [welcomeTrial, onboardingOpen]);
+    if (shouldShow) {
+      setEntryPlaqueMode(state);
+      setWelcomeTrialModalOpen(true);
+    }
+  }, [welcomeTrial, onboardingOpen, accessState, accessInfo?.days_left, entryPlaqueMode]);
 
   useEffect(() => {
     invalidateAsyncGuards(
@@ -20545,13 +20638,13 @@ function AppInner() {
       setSelectedSections(new Set(['subscription']));
       const t = setTimeout(() => { scrollToRef(billingRef, { block: 'start' }); }, 120);
       return () => clearTimeout(t);
-    } else if (startParam === 'buypro') {
-      // «Оформить Pro» from onboarding/PWA → land on «Подписка» AND auto-open the Pro Stars
-      // sheet (a separate effect fires once initData is ready) — no extra screen/tap.
+    } else if (startParam === 'buypro' || startParam === 'buylight') {
+      // «Оформить …» from onboarding/PWA/DM → land on «Подписка» AND auto-open the Stars
+      // sheet of that plan (a separate effect fires once initData is ready) — no extra tap.
       setFlashcardsOnly(false);
       setFlashcardSessionActive(false);
       setSelectedSections(new Set(['subscription']));
-      setAutoProCheckoutPending(true);
+      setAutoProCheckoutPending(startParam === 'buylight' ? 'light' : 'pro');
       const t = setTimeout(() => { scrollToRef(billingRef, { block: 'start' }); }, 120);
       return () => clearTimeout(t);
     } else if (startParam === 'support_coffee' || startParam === 'support_cheesecake') {
@@ -23019,13 +23112,13 @@ function AppInner() {
   ), [tr]);
 
   const getDictionarySaveLimitText = useCallback(() => tr(
-    'На Free можно сохранить до 20 новых слов или фраз в день. Подключите подписку, чтобы сохранять без ограничений.',
-    'Im Free-Tarif kannst du bis zu 20 neue Wörter oder Phrasen pro Tag speichern. Mit Abo speicherst du ohne Limit.'
+    'На твоём тарифе можно сохранить до 20 новых слов или фраз в день. В «Полном доступе» сохранение без ограничений.',
+    'In deinem Tarif kannst du bis zu 20 neue Wörter oder Phrasen pro Tag speichern. Mit vollem Zugang speicherst du ohne Limit.'
   ), [tr]);
 
   const getDictionarySaveLimitToastText = useCallback(() => tr(
-    'Слово не сохранено: лимит Free на сегодня достигнут. В подписке сохранение без ограничений.',
-    'Wort nicht gespeichert: Free-Limit für heute erreicht. Im Abo speicherst du ohne Limit.'
+    'Слово не сохранено: лимит на сегодня достигнут. В «Полном доступе» сохранение без ограничений.',
+    'Wort nicht gespeichert: Tageslimit erreicht. Mit vollem Zugang speicherst du ohne Limit.'
   ), [tr]);
 
   const readDictionarySaveApiError = useCallback(async (response) => {
@@ -35840,6 +35933,16 @@ function AppInner() {
       }
       const data = await response.json();
       setBillingStatus(data || null);
+      if (data && data.access_state) {
+        setAccessInfo((prev) => ({
+          ...(prev || {}),
+          state: String(data.access_state),
+          ends_at: data.free_month_ends_at ?? prev?.ends_at ?? null,
+          days_left: Number(data.free_month_days_left ?? prev?.days_left ?? 0),
+          light_stars: Number(data.light_stars ?? prev?.light_stars ?? 0),
+          pro_stars: Number(data.pro_stars ?? prev?.pro_stars ?? 0),
+        }));
+      }
     } catch (error) {
       setBillingStatusError(normalizeNetworkErrorMessage(error, 'Статус подписки не загрузился. Попробуйте ещё раз через минуту.', 'Der Abo-Status ist nicht geladen. Versuch es in einer Minute noch einmal.'));
     } finally {
@@ -35919,8 +36022,8 @@ function AppInner() {
     // and bounce the user into Telegram, where the bot re-opens the right Stars sheet.
     const code = String(planCode || '').trim().toLowerCase();
     const isSupport = code === 'support_coffee' || code === 'support_cheesecake';
-    if (code !== 'pro' && !isSupport) return;
-    const startAppForCode = code === 'pro' ? 'buypro' : code; // support_coffee | support_cheesecake
+    if (code !== 'pro' && code !== 'light' && !isSupport) return;
+    const startAppForCode = code === 'pro' ? 'buypro' : (code === 'light' ? 'buylight' : code); // support_coffee | support_cheesecake
     // Stars can be charged in place ONLY inside real Telegram AND with initData (the invoice call
     // needs it). Anywhere else → hand off into Telegram instead of failing.
     const canPayHere = appMode === 'telegram' && !!initData && typeof telegramApp?.openInvoice === 'function';
@@ -35969,7 +36072,9 @@ function AppInner() {
                 ? (code === 'support_cheesecake'
                     ? tr('Спасибо! Начислили 14 дней полного доступа, и ты в стене благодарностей 🙏', 'Danke! 14 Tage vollen Zugang gutgeschrieben, und du bist an der Dankeswand 🙏')
                     : tr('Спасибо! Начислили 7 дней полного доступа, и ты в стене благодарностей 🙏', 'Danke! 7 Tage vollen Zugang gutgeschrieben, und du bist an der Dankeswand 🙏'))
-                : tr('Полный доступ подключён! Обновляем доступ…', 'Voller Zugang aktiv! Zugang wird aktualisiert…'),
+                : (code === 'light'
+                    ? tr('«Лайт» подключён! Задания приходят как раньше. Обновляем доступ…', '«Light» aktiv! Aufgaben kommen wie gewohnt. Zugang wird aktualisiert…')
+                    : tr('Полный доступ подключён! Обновляем доступ…', 'Voller Zugang aktiv! Zugang wird aktualisiert…')),
               buttons: [{ type: 'ok' }],
             });
           } catch (_e) { /* popup optional */ }
@@ -36015,8 +36120,10 @@ function AppInner() {
   useEffect(() => {
     if (!autoProCheckoutPending || !initData || autoProCheckoutDoneRef.current) return;
     autoProCheckoutDoneRef.current = true;
+    // true — старый вид флага (только Полный); строка — код тарифа ('pro' | 'light').
+    const code = autoProCheckoutPending === true ? 'pro' : String(autoProCheckoutPending);
     setAutoProCheckoutPending(false);
-    const t = setTimeout(() => { handleBillingUpgradeRef.current?.('pro'); }, 700);
+    const t = setTimeout(() => { handleBillingUpgradeRef.current?.(code); }, 700);
     return () => clearTimeout(t);
   }, [autoProCheckoutPending, initData]);
 
@@ -38721,13 +38828,19 @@ function AppInner() {
 
             <ProTrialModal
               isOpen={welcomeTrialModalOpen}
-              mode={welcomeTrial?.state === 'ended' ? 'ended' : 'active'}
+              mode={entryPlaqueMode}
               daysLeft={Number(welcomeTrial?.days_left || 0)}
               endsAt={welcomeTrial?.ends_at || null}
+              monthEndsAt={accessInfo?.ends_at || null}
+              monthDaysLeft={Number(accessInfo?.days_left || 0)}
               justGranted={Boolean(welcomeTrial?.granted)}
               buying={billingActionLoading}
-              onBuyPro={() => { setWelcomeTrialModalOpen(false); void handleBillingUpgrade('pro'); }}
-              onClose={() => setWelcomeTrialModalOpen(false)}
+              lightStars={Number(accessInfo?.light_stars || lightPlanStars || 0)}
+              proStars={Number(accessInfo?.pro_stars || proPlanStars || 0)}
+              onBuyPro={() => { if (entryPlaqueMode !== 'locked') setWelcomeTrialModalOpen(false); void handleBillingUpgrade('pro'); }}
+              onBuyLight={() => { if (entryPlaqueMode !== 'locked') setWelcomeTrialModalOpen(false); void handleBillingUpgrade('light'); }}
+              onOpenSettings={() => { try { window.location.assign('/settings'); } catch (_e) { /* ignore */ } }}
+              onClose={() => { if (entryPlaqueMode !== 'locked') setWelcomeTrialModalOpen(false); }}
               tr={tr}
             />
 
@@ -45292,6 +45405,15 @@ function AppInner() {
                       <div className="analytics-card">
                         <span>{tr('Статус', 'Status')}</span>
                         <strong>{(() => {
+                          // Состояние доступа главнее статуса подписки: у бесплатного месяца
+                          // подписки нет вовсе, а «Лайт» — подписка, но не «Полный доступ».
+                          const a = String(billingStatus?.access_state || '');
+                          if (a === 'light') return tr('Лайт активен', 'Light aktiv');
+                          if (a === 'free_month') {
+                            const d = Number(billingStatus?.free_month_days_left || 0);
+                            return tr(`Бесплатный месяц · осталось ${d} дн.`, `Gratismonat · noch ${d} Tage`);
+                          }
+                          if (a === 'locked') return tr('Доступ приостановлен — выбери тариф', 'Zugang pausiert — Tarif wählen');
                           const s = String(billingStatus?.status || 'inactive');
                           const map = {
                             active: tr('Полный доступ активен', 'Voller Zugang aktiv'),
@@ -45355,18 +45477,18 @@ function AppInner() {
                     <div className="billing-ribbon">
                       <span className="billing-ribbon__gift">🎁</span>
                       <span className="billing-ribbon__text">
-                        <b>{tr('7 дней полного доступа — бесплатно.', '7 Tage vollen Zugang — gratis.')}</b>{' '}
-                        {tr('Потом автоматически ', 'Danach automatisch ')}<span className="accent">Free</span>{tr('. Оплата полного доступа и озвучки — в Telegram Stars.', '. Voller Zugang und Vertonung — mit Telegram Stars.')}
+                        <b>{tr('Первый месяц — бесплатно.', 'Der erste Monat — gratis.')}</b>{' '}
+                        {tr('Первые 7 дней — полный доступ, до конца месяца — ', 'Die ersten 7 Tage — voller Zugang, bis Monatsende — ')}<span className="accent">{tr('Лайт', 'Light')}</span>{tr('. Дальше — Лайт или Полный доступ, оплата в Telegram Stars.', '. Danach — Light oder voller Zugang, Zahlung mit Telegram Stars.')}
                       </span>
                     </div>
 
                     <div className="billing-plans">
                       <section className="billing-plan">
                         <div className="billing-plan__top">
-                          <h4 className="billing-plan__name">Free</h4>
-                          <span className="billing-plan__price">0 ⭐ / {tr('мес', 'Monat')}</span>
+                          <h4 className="billing-plan__name">{tr('Лайт', 'Light')}</h4>
+                          <span className="billing-plan__price">{lightPlanStars} ⭐ / {tr('мес', 'Monat')}</span>
                         </div>
-                        <p className="billing-plan__tag">{tr('Всё важное для учёбы, с дневными лимитами.', 'Alles Wichtige zum Lernen, mit Tageslimits.')}</p>
+                        <p className="billing-plan__tag">{tr('Первый месяц бесплатно. Всё важное для учёбы, с дневными лимитами.', 'Erster Monat gratis. Alles Wichtige zum Lernen, mit Tageslimits.')}</p>
                         <ul className="billing-feats">
                           <li>{tr('Переводы с разбором: 1 набор/день (7 предложений).', 'Übersetzungen mit Analyse: 1 Set/Tag (7 Sätze).')}</li>
                           <li>{tr('Словарь: перевод любого слова бесплатно и без счёта + 1 полный разбор нового слова в день + 20 сохранений.', 'Wörterbuch: Übersetzung jedes Wortes gratis und ohne Zähler + 1 vollständige Analyse eines neuen Wortes pro Tag + 20 Speicherungen.')}</li>
@@ -45406,7 +45528,7 @@ function AppInner() {
                           <span className="billing-note__chev" aria-hidden="true">›</span>
                         </summary>
                         <div className="billing-note__body">
-                          <p>{tr('Не входит ни в Free, ни в «Полный доступ»: оплачивается за каждую книгу звёздами (3 голоса, 25/50/100 %). «Классика» озвучена бесплатно для всех.', 'Weder in Free noch im vollen Zugang: pro Buch mit Sternen bezahlt (3 Stimmen, 25/50/100 %). „Klassiker“ sind für alle gratis vertont.')}</p>
+                          <p>{tr('Не входит ни в «Лайт», ни в «Полный доступ»: оплачивается за каждую книгу звёздами (3 голоса, 25/50/100 %). «Классика» озвучена бесплатно для всех.', 'Weder in Light noch im vollen Zugang: pro Buch mit Sternen bezahlt (3 Stimmen, 25/50/100 %). „Klassiker“ sind für alle gratis vertont.')}</p>
                         </div>
                       </details>
                       <details className="billing-note">
@@ -45425,11 +45547,11 @@ function AppInner() {
                       <details className="billing-note">
                         <summary>
                           <span className="billing-note__ico">🔁</span>
-                          {tr('Как отменить «Полный доступ»', 'Vollen Zugang kündigen')}
+                          {tr('Как отменить подписку', 'Abo kündigen')}
                           <span className="billing-note__chev" aria-hidden="true">›</span>
                         </summary>
                         <div className="billing-note__body">
-                          <p>{tr('«Полный доступ» продлевается автоматически раз в месяц. Отменить можно в любой момент прямо в Telegram: Настройки → Telegram Stars и подписки → выбери бота → «Отменить». Доступ сохранится до конца оплаченного периода.', 'Der volle Zugang verlängert sich automatisch monatlich. Jederzeit kündbar direkt in Telegram: Einstellungen → Telegram Stars und Abos → Bot wählen → „Kündigen“. Der Zugang bleibt bis zum Ende des bezahlten Zeitraums.')}</p>
+                          <p>{tr('«Лайт» и «Полный доступ» продлеваются автоматически раз в 30 дней. Отменить можно в любой момент прямо в Telegram: Настройки → Telegram Stars и подписки → выбери бота → «Отменить». Доступ сохранится до конца оплаченного периода. Перейти с «Лайта» на «Полный доступ» можно сразу — «Лайт» отменится сам.', '«Light» und «Voller Zugang» verlängern sich automatisch alle 30 Tage. Jederzeit kündbar direkt in Telegram: Einstellungen → Telegram Stars und Abos → Bot wählen → „Kündigen“. Der Zugang bleibt bis zum Ende des bezahlten Zeitraums. Von «Light» auf vollen Zugang wechselst du sofort — «Light» wird automatisch gekündigt.')}</p>
                         </div>
                       </details>
                       <details className="billing-note">
@@ -45460,7 +45582,7 @@ function AppInner() {
                         <div className="billing-zone__head">
                           <h3 className="billing-zone__title">{tr('Поддержать проект ❤️', 'Projekt unterstützen ❤️')}</h3>
                           <p className="billing-zone__hint">
-                            {tr('Поддержать может любой — и на Free, и на «Полном доступе». За кофе даём 7 дней полного доступа в подарок, за кофе с чизкейком — 14 дней. Плюс бейдж спонсора и место на стене благодарностей. Разовый платёж в Telegram Stars.', 'Unterstützen kann jeder — ob Free oder voller Zugang. Für einen Kaffee gibt es 7 Tage vollen Zugang geschenkt, für Kaffee mit Cheesecake 14 Tage. Dazu ein Sponsor-Abzeichen und ein Platz an der Dankeswand. Einmalige Zahlung in Telegram Stars.')}
+                            {tr('Поддержать может любой — на любом тарифе. За кофе даём 7 дней полного доступа в подарок, за кофе с чизкейком — 14 дней. Плюс бейдж спонсора и место на стене благодарностей. Разовый платёж в Telegram Stars.', 'Unterstützen kann jeder — in jedem Tarif. Für einen Kaffee gibt es 7 Tage vollen Zugang geschenkt, für Kaffee mit Cheesecake 14 Tage. Dazu ein Sponsor-Abzeichen und ein Platz an der Dankeswand. Einmalige Zahlung in Telegram Stars.')}
                           </p>
                         </div>
                         {billingStatus?.is_sponsor && (
