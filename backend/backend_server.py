@@ -31293,6 +31293,7 @@ def bootstrap_webapp_session():
     starter_dictionary = None
     translation_session = None
     welcome_trial = None
+    access = None
     try:
         parsed_user = parsed.get("user") if isinstance(parsed.get("user"), dict) else {}
         parsed_user_id = _safe_int(parsed_user.get("id"))
@@ -31323,6 +31324,15 @@ def bootstrap_webapp_session():
                     "days": int(_grant_res.get("days") or 0),
                     "days_left": int(_ws.get("days_left") or 0),
                     "ends_at": _ws.get("ends_at"),
+                }
+                # Бесплатный месяц: состояние доступа для окна при входе
+                # (docs/tasks/light_tier_strategy.md §6.1). Цены — те же, что спишет счёт.
+                access = {
+                    "state": str(_ent.get("access_state") or "unknown"),
+                    "ends_at": _ent.get("free_month_ends_at"),
+                    "days_left": int(_ent.get("free_month_days_left") or 0),
+                    "light_stars": light_price_stars(),
+                    "pro_stars": pro_price_stars(),
                 }
             except Exception:
                 logging.warning("welcome trial grant failed user=%s", parsed_user_id, exc_info=True)
@@ -31363,6 +31373,7 @@ def bootstrap_webapp_session():
             "starter_dictionary": starter_dictionary,
             "translation_session": translation_session,
             "welcome_trial": welcome_trial,
+            "access": access,
         }
     )
 
@@ -38274,6 +38285,13 @@ def _build_billing_status_response_payload(*, user_id: int) -> tuple[dict, dict]
         "sponsor_tier": sponsor_tier,
         "is_welcome_trial": bool(entitlement.get("is_welcome_trial")),
         "trial_ends_at": entitlement.get("trial_ends_at"),
+        "source_of_entitlement": str(entitlement.get("source_of_entitlement") or ""),
+        # Бесплатный месяц (docs/tasks/light_tier_strategy.md): pro | light | free_month | locked | unknown
+        "access_state": str(entitlement.get("access_state") or "unknown"),
+        "free_month_ends_at": entitlement.get("free_month_ends_at"),
+        "free_month_days_left": int(entitlement.get("free_month_days_left") or 0),
+        "light_stars": light_price_stars(),
+        "pro_stars": pro_price_stars(),
         "bonus_pro": bonus_pro,
         "current_period_end": subscription.get("current_period_end"),
         "spent_today_eur": float(round(spent_today, 6)),
