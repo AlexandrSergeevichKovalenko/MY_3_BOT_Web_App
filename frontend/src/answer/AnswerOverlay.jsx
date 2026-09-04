@@ -61,7 +61,20 @@ function parseStartParam(startParam) {
   // поэтому у него свой разбор: общее правило ниже требует цифр.
   const gv = /^ans_gv_([a-z_]{2,40})$/.exec(raw);
   if (gv) return { kind: 'gv', id: gv[1] };
-  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|tr|au|mc|asbl|asb|asp|as|alf|al|rv|adbl|adb|adl|ad|wfbl|wfb|wfl|wf|bh|nd|np|pv|rbv|frv)_(\d+)$/.exec(raw);
+  // ⛔ ДВЕРЬ БЕЗ КЛЮЧА. Владелец 04.09.2026 нажал кнопку «Разобрать карточки (100)» из
+  // сообщения бота и получил «Ungültiger Link». Экран для неё был готов (`kind === 'frvp'`
+  // ниже), кнопка в боте стояла с 26.08.2026 — а вот сюда код `frvp` никто не вписал,
+  // и ссылка не разбиралась вовсе. Тест `test_every_bot_link_opens` сверяет ОБА списка:
+  // код, который бот шлёт кнопкой, обязан разбираться здесь.
+  //
+  // ┌─ ПРОВЕРЕНО 04.09.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────────┐
+  // │ «А не съест ли короткий код длинный — „frv“ раньше „frvp“?» Не съест: у       │
+  // │ чередования есть возврат, а `$` в конце требует совпадения целиком, поэтому   │
+  // │ движок сам дойдёт до нужной ветки. Проверено движком на ans_rbv_0 при «rb»    │
+  // │ впереди — kind=rbv. Порядок здесь дело вкуса; ЕДИНСТВЕННОЕ, что важно, —      │
+  // │ чтобы код вообще был в списке. Перемерить: node -e с этой же регуляркой.      │
+  // └──────────────────────────────────────────────────────────────────────────────┘
+  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|tr|au|mc|asbl|asb|asp|as|alf|al|rv|adbl|adb|adl|ad|wfbl|wfb|wfl|wf|bh|nd|np|pv|rbv|frvp|frv)_(\d+)$/.exec(raw);
   if (!m) return null;
   // qfp's id is a big Telegram poll_id → keep it a string (Number() loses precision).
   return { kind: m[1], id: m[1] === 'qfp' ? m[2] : Number(m[2]) };
