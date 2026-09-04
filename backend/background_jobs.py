@@ -2618,6 +2618,22 @@ def run_verb_paradigm_warm_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_translation_judge_actor() -> None:
+    """Ночная порция: рассудить переводы, которые расходятся с базовым словарём.
+
+    Владелец 03.09.2026 выбрал этот путь сам: «спросить модель — но не как попало, а
+    двумя запросами, и принять ответ только если оба совпали». Порция маленькая
+    нарочно: спешить некуда, а каждый спрос — деньги.
+    """
+    from backend.translation_judge import sweep_translations
+    # Порция 150. Замер живой пачки 03.09.2026: 25 слов за 92 секунды, то есть около
+    # четырёх секунд на слово (два спроса модели). 150 слов — примерно десять минут
+    # ночью, и весь накопленный спор (2769 слов) закрывается за три недели.
+    отчёт = sweep_translations(limit=150, apply=True)
+    logging.info("судья переводов: %s", отчёт)
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_lex_form_index_report_actor() -> None:
     """Недельная строчка владельцу: справочник вырос на столько-то, снято столько-то.
 
