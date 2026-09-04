@@ -645,6 +645,7 @@ from backend.database import (
     grant_welcome_trial_once,
     get_welcome_trial_status,
     start_access_period,
+    is_access_locked,
     enforce_daily_cost_cap,
     enforce_feature_limit,
     get_user_provider_units_today,
@@ -3135,6 +3136,38 @@ _ACCESS_PUBLIC_WEBAPP_PATHS = {
     "/api/webapp/dictionary/diff/shared",
 }
 _ACCESS_PROTECTED_EXACT_PATHS = {"/api/message"}
+
+# ── Замок бесплатного месяца (docs/tasks/light_tier_strategy.md §5.1) ─────────────
+# Запертому человеку открыто ровно то, что нужно, чтобы заплатить и не потерять настройки.
+# Всё остальное отвечает 402 с reason='free_month_over'. Список — ЕДИНСТВЕННОЕ место
+# правила; гейтить функции по отдельности запрещено: так двери и теряются.
+_ACCESS_LOCK_EXEMPT_EXACT = {
+    "/api/webapp/bootstrap",
+}
+_ACCESS_LOCK_EXEMPT_PREFIXES = (
+    "/api/webapp/billing/",
+    "/api/webapp/settings",
+    "/api/webapp/onboarding/",
+    "/api/webapp/instance/",
+)
+
+
+def _access_lock_applies(path: str) -> bool:
+    p = str(path or "")
+    if p in _ACCESS_LOCK_EXEMPT_EXACT:
+        return False
+    return not p.startswith(_ACCESS_LOCK_EXEMPT_PREFIXES)
+
+
+def _access_locked_payload() -> dict:
+    return {
+        "error": "Бесплатный месяц закончился. Чтобы продолжить, выбери «Лайт» или «Полный доступ».",
+        "error_code": "access_locked",
+        "reason": "free_month_over",
+        "light_stars": light_price_stars(),
+        "pro_stars": pro_price_stars(),
+        "bot_username": (os.getenv("TELEGRAM_BOT_USERNAME") or "").lstrip("@"),
+    }
 _LEGACY_API_PREFIXES = (
     "/webapp/",
     "/web/",
@@ -3856,6 +3889,18 @@ def enforce_webapp_access():
         # двигает ступенями. Сказать ему «доступ закрыт администратором» — соврать и
         # обидеть. Ему полагается номер, причина и обещание написать самим.
         return jsonify(_access_denied_payload(int(resolved_user_id))), 403
+
+    # Замок бесплатного месяца — здесь, в единственной двери (§5.1 стратегии).
+    # Право доступа не прочиталось — человека НЕ запираем (сбой базы не повод отрезать
+    # всех), ошибка целиком в лог, а задания у запертых считает утреннее обещание.
+    if _access_lock_applies(path):
+        try:
+            _locked = bool(is_access_locked(int(resolved_user_id)))
+        except Exception:
+            logging.exception("access lock: право доступа не прочиталось user=%s", resolved_user_id)
+            _locked = False
+        if _locked:
+            return jsonify(_access_locked_payload()), 402
 
     g.telegram_user_id = int(resolved_user_id)
     g.telegram_user = resolved_user_data
@@ -67475,6 +67520,8 @@ def _dispatch_private_analytics(target_date: date) -> dict:
     for user_id, username in users.items():
         if not is_telegram_user_allowed(user_id):
             continue
+        if is_access_locked(user_id):  # бесплатный месяц кончился — учебных писем нет
+            continue
         try:
             source_lang, target_lang, _profile = _get_user_language_pair(user_id)
             summary = fetch_user_summary(
@@ -69045,6 +69092,8 @@ def _dispatch_today_evening_reminders(target_date: date, tz_name: str = TODAY_PL
     for user in users:
         user_id = int(user.get("user_id") or 0)
         if not user_id or not is_telegram_user_allowed(user_id):
+            continue
+        if is_access_locked(user_id):  # бесплатный месяц кончился — учебных писем нет
             continue
         username = _resolve_today_user_label(
             user_id,

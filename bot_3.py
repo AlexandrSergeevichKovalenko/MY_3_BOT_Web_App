@@ -446,6 +446,7 @@ from backend.database import (
     create_article_sprint_dispatch,
     update_article_sprint_dispatch_message_id,
     is_user_pro,
+    is_access_locked,
     start_access_period,
     sweep_access_periods_for_known_users,
     list_allowed_telegram_user_ids,
@@ -1396,6 +1397,49 @@ def _is_user_pro_cached(user_id: int) -> bool:
         return bool(cached[0]) if cached else False
     _PRO_STATUS_CACHE[int(user_id)] = (val, now_ts + _PRO_STATUS_TTL_SECONDS)
     return val
+
+
+# Замок бесплатного месяца (docs/tasks/light_tier_strategy.md §5.2–5.3): та же памятка,
+# что у признака платного тарифа. Ошибка чтения = «не заперт»: молча отрезать человека
+# из-за сбоя базы нельзя, а число заданий у запертых считает обещание по утрам.
+_ACCESS_LOCK_CACHE: dict[int, tuple[bool, float]] = {}
+
+
+def _is_access_locked_cached(user_id: int) -> bool:
+    now_ts = pytime.time()
+    cached = _ACCESS_LOCK_CACHE.get(int(user_id))
+    if cached and cached[1] > now_ts:
+        return cached[0]
+    try:
+        val = bool(is_access_locked(int(user_id)))
+    except Exception:
+        logging.exception("access lock: не прочитался user=%s", user_id)
+        return bool(cached[0]) if cached else False
+    _ACCESS_LOCK_CACHE[int(user_id)] = (val, now_ts + _PRO_STATUS_TTL_SECONDS)
+    return val
+
+
+def _access_locked_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌿 Лайт", url=get_webapp_deeplink("buylight"))],
+        [InlineKeyboardButton("💎 Полный доступ", url=get_webapp_deeplink("buypro"))],
+    ])
+
+
+async def _reply_access_locked(update: Update) -> None:
+    """Ответ запертому на любое учебное действие в чате: коротко, с двумя кнопками
+    оплаты. Один текст на все двери — чтобы не разъезжался."""
+    msg = update.effective_message
+    if not msg:
+        return
+    await msg.reply_text(
+        "🔒 <b>Бесплатный месяц закончился</b>\n\n"
+        "Ты позанимался с нами месяц. Чтобы задания и тренажёры работали дальше, выбери "
+        "тариф: «Лайт» — тот же объём, что был, или «Полный доступ» — всё сразу. "
+        "Оплата звёздами Telegram, отмена в любой момент.",
+        parse_mode="HTML",
+        reply_markup=_access_locked_keyboard(),
+    )
 
 
 def _append_free_pro_teaser(caption: str | None, chat_id: int) -> str:
@@ -3638,6 +3682,9 @@ async def _interaktiv_test_command(update: Update, context: CallbackContext) -> 
     if not update.effective_user or not update.effective_message:
         return
     uid = int(update.effective_user.id)
+    if await asyncio.to_thread(_is_access_locked_cached, uid):
+        await _reply_access_locked(update)
+        return
     try:
         from backend.database import get_latest_interactive_dispatch_ids
         latest = await asyncio.to_thread(get_latest_interactive_dispatch_ids, uid)
@@ -17243,6 +17290,11 @@ async def handle_user_message(update: Update, context: CallbackContext):
     text = update.message.text.strip()
     if update.effective_chat and update.effective_chat.type == "private":
         _touch_access_period(int(user_id), "bot_message")
+        # Замок бесплатного месяца (§5.3 стратегии): всё учебное в чате — кнопки, словарь,
+        # вставленный текст, «Следующее задание» — идёт через этот обработчик.
+        if await asyncio.to_thread(_is_access_locked_cached, int(user_id)):
+            await _reply_access_locked(update)
+            return
 
     if _is_admin_user(user_id):
         if await _try_handle_admin_support_reply(update, context, text):
@@ -25294,6 +25346,9 @@ async def check_user_translation(update: Update, context: CallbackContext, trans
     if update.message is None or update.message.text is None:
         logging.warning("⚠️ update.message отсутствует в check_user_translation().")
         return
+    if update.effective_user and await asyncio.to_thread(_is_access_locked_cached, int(update.effective_user.id)):
+        await _reply_access_locked(update)
+        return
     
     if "pending_translations" in context.user_data and context.user_data["pending_translations"]:
         translation_text = "\n".join(context.user_data["pending_translations"])
@@ -26364,6 +26419,21 @@ async def _collect_scheduler_candidate_user_ids(
                 "(bot blocked / chat not found)",
                 len(unreachable),
             )
+
+    # Замок бесплатного месяца (§5.2 стратегии): запертым учебных рассылок нет. Вычитается
+    # ЗДЕСЬ, в общем сборщике, через который идут слоты, добор, напоминание о карточках и
+    # чемпион недели. Админов is_access_locked не запирает сам.
+    def _locked_subset(ids: set[int]) -> set[int]:
+        return {uid for uid in ids if _is_access_locked_cached(uid)}
+    try:
+        locked_ids = await asyncio.to_thread(_locked_subset, set(user_ids))
+    except Exception:
+        logging.exception("scheduler candidates: access-lock lookup failed")
+        locked_ids = set()
+    if locked_ids:
+        user_ids -= locked_ids
+        logging.info("ℹ️ scheduler candidate collection skipped %s locked user id(s) (free month over)",
+                     len(locked_ids))
 
     return sorted(user_ids)
 
@@ -37037,6 +37107,8 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
     date_str = today.strftime("%d.%m.%Y")
     sent_count = 0
     for uid, cats in agg.items():
+        if await asyncio.to_thread(_is_access_locked_cached, int(uid)):  # бесплатный месяц кончился
+            continue
         answered = sum(v[0] for v in cats.values())
         correct = sum(v[1] for v in cats.values())
         acc = round(correct / answered * 100) if answered else 0
@@ -37794,6 +37866,8 @@ async def _send_mistake_review_reminders(context: CallbackContext) -> None:
         n = int(u.get("count") or 0)
         if uid <= 0 or n <= 0:
             continue
+        if await asyncio.to_thread(_is_access_locked_cached, uid):  # бесплатный месяц кончился
+            continue
         # n — сегодняшняя порция (максимум 30), а не вся очередь. Число вроде «185»
         # не зовёт разбирать, а отпугивает: догнать такое нельзя.
         caption = (
@@ -37831,6 +37905,9 @@ async def review_mistakes_command(update: Update, context: CallbackContext) -> N
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
+        return
+    if await asyncio.to_thread(_is_access_locked_cached, int(user.id)):
+        await _reply_access_locked(update)
         return
     try:
         from backend.database import count_due_mistakes
@@ -39476,6 +39553,8 @@ async def _send_certificates_window(context: CallbackContext, *, cur_start, cur_
     subtitle = f"{subtitle_prefix} · {cur_start.date().isoformat()} — {cur_end.date().isoformat()}"
     sent = 0
     for uid in active:
+        if await asyncio.to_thread(_is_access_locked_cached, int(uid)):  # бесплатный месяц кончился
+            continue
         try:
             rows = _build_cert_rows(stats_now.get(uid, {}), stats_prev.get(uid, {}))
             if not rows:

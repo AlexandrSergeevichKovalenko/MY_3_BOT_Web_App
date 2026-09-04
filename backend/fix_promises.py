@@ -121,6 +121,14 @@ def _access_period_missing() -> int:
     return len(list_known_user_ids_without_access_period())
 
 
+def _locked_users_got_learning_content() -> int:
+    """Сколько заданий за сутки ушло людям, у которых бесплатный месяц кончился и подписки
+    нет. Обещано: 0. Двери — общий сборщик рассылок и обработчик сообщений бота
+    (docs/tasks/light_tier_strategy.md §5.2–5.3)."""
+    from backend.database import count_learning_content_sent_to_locked_users
+    return count_learning_content_sent_to_locked_users(days=1)
+
+
 def _worldnews_card_old_look_rules() -> int:
     """Читает CSS собранного фронта (frontend/dist/assets/*.css) на сервере. Обещано: 0."""
     from pathlib import Path
@@ -178,6 +186,14 @@ PROMISES: tuple[Promise, ...] = (
         expected=0,
         measure=_access_period_missing,
         how="python3 -c \"from backend.database import list_known_user_ids_without_access_period as f; print(len(f()))\"",
+    ),
+    Promise(
+        key="locked_users_got_learning_content",
+        title="Заданий, ушедших запертым (бесплатный месяц кончился, подписки нет) за сутки",
+        since="04.09.2026",
+        expected=0,
+        measure=_locked_users_got_learning_content,
+        how="python3 -c \"from backend.database import count_learning_content_sent_to_locked_users as f; print(f())\"",
     ),
 )
 

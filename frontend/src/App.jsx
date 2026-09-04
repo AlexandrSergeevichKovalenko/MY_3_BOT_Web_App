@@ -7694,6 +7694,21 @@ function AppInner() {
   // { state:'pro'|'light'|'free_month'|'locked'|'unknown', ends_at, days_left, light_stars, pro_stars }
   const [accessInfo, setAccessInfo] = useState(null);
   const [entryPlaqueMode, setEntryPlaqueMode] = useState('active');
+  // Страховка замка: любой запрос, получивший 402 free_month_over (перехватчик в main.jsx),
+  // переводит состояние в locked — даже если bootstrap ещё не успел это сказать.
+  useEffect(() => {
+    const onLocked = (ev) => {
+      const j = ev?.detail || {};
+      setAccessInfo((prev) => ({
+        ...(prev || {}),
+        state: 'locked',
+        light_stars: Number(j.light_stars || prev?.light_stars || 0),
+        pro_stars: Number(j.pro_stars || prev?.pro_stars || 0),
+      }));
+    };
+    window.addEventListener('dds:access-locked', onLocked);
+    return () => window.removeEventListener('dds:access-locked', onLocked);
+  }, []);
   // "What are Telegram Stars" explainer — opened by a small ⓘ next to any Stars price.
   const [starsInfoOpen, setStarsInfoOpen] = useState(false);
   const [bonusDaysInfoOpen, setBonusDaysInfoOpen] = useState(false);

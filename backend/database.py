@@ -24351,6 +24351,54 @@ def sweep_access_periods_for_known_users() -> int:
     return created
 
 
+def is_access_locked(user_id: int) -> bool:
+    """Замок бесплатного месяца (docs/tasks/light_tier_strategy.md §5): месяц прошёл,
+    подписки нет. Единственный источник — resolve_entitlement (кеш Redis ~10 мин).
+    Администраторы не запираются никогда: им отчёты и команды нужны в любом состоянии.
+    «Не знаем начало» (unknown) — не замок."""
+    uid = int(user_id or 0)
+    if uid <= 0:
+        return False
+    try:
+        if uid in {int(a) for a in (get_admin_telegram_ids() or [])}:
+            return False
+    except Exception:
+        logging.exception("access lock: список админов не прочитался")
+    return str(resolve_entitlement(uid).get("access_state") or "") == "locked"
+
+
+def count_learning_content_sent_to_locked_users(days: int = 1) -> int:
+    """Сколько заданий (строк ведомости доставки) за последние `days` суток ушло людям
+    ПОСЛЕ того, как их бесплатный месяц кончился, и они при этом заперты сейчас.
+    Обещано: 0. Ушло хоть одно — дверь §5.2 или §5.3 пропускает."""
+    _ensure_access_period_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT user_id FROM bt_3_access_period "
+                "WHERE started_at + (%s || ' days')::interval <= NOW();",
+                (int(ACCESS_PERIOD_FREE_DAYS),),
+            )
+            ended = [int(r[0]) for r in (cur.fetchall() or [])]
+    locked = [uid for uid in ended if is_access_locked(uid)]
+    if not locked:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_interactive_inbox i
+                JOIN bt_3_access_period p ON p.user_id = i.user_id
+                WHERE i.user_id = ANY(%s)
+                  AND i.created_at > p.started_at + (%s || ' days')::interval
+                  AND i.created_at > NOW() - (%s || ' days')::interval;
+                """,
+                (locked, int(ACCESS_PERIOD_FREE_DAYS), int(days)),
+            )
+            return int((cur.fetchone() or [0])[0] or 0)
+
+
 def count_access_periods_created_by_night_sweep(days: int = 1) -> int:
     """Сколько начал отсчёта за последние `days` суток поставила ночная страховка, а не
     дверь. Обещано: 0."""
