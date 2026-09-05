@@ -151,3 +151,54 @@ class КарточкаСловаНовостиДняСобранаВНовомВ
     def test_promise_is_registered(self):
         from backend.fix_promises import by_key
         self.assertEqual(0, by_key("worldnews_card_old_look").expected)
+
+
+class ПроверкаКарточкиНовостиДняЧитаетЖивуюСтраницу(unittest.TestCase):
+    """05.09.2026 обещание «карточка в новом виде» пришло как «не измерено: собранного CSS
+    нет»: проверка искала frontend/dist на сервере бота, а фронт живёт только у
+    веб-сервиса. Теперь она идёт туда, куда идёт человек, — на страницу по WEB_APP_URL, —
+    и обязана находить стили карточки в ОТДЕЛЬНОМ файле, имя которого лежит строкой в
+    скрипте (Vite режет CSS по экранам; в <link> его нет)."""
+
+    def _serve(self, files: dict):
+        import http.server
+        import socketserver
+        import tempfile
+        import threading
+        root = tempfile.mkdtemp()
+        for name, body in files.items():
+            path = pathlib.Path(root) / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+        handler = type("H", (http.server.SimpleHTTPRequestHandler,), {
+            "log_message": lambda *a, **k: None})
+        srv = socketserver.TCPServer(("127.0.0.1", 0), lambda *a, **k: handler(*a, directory=root, **k))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def test_finds_the_card_css_named_inside_the_entry_script(self):
+        from backend.fix_promises import _worldnews_card_old_look_rules
+        base = self._serve({
+            "index.html": '<link rel="stylesheet" href="/assets/index-a.css">'
+                          '<script type="module" src="/assets/index-b.js"></script>',
+            "assets/index-a.css": "body{margin:0}",
+            "assets/index-b.js": 'const deps=["assets/App-c.css","assets/App-c.js"];',
+            "assets/App-c.css": ".worldnews-card-de{font-family:Georgia}.worldnews-step{clip-path:none}",
+        })
+        with mock.patch.dict("os.environ", {"WEB_APP_URL": base}):
+            self.assertEqual(2, _worldnews_card_old_look_rules())
+
+    def test_without_the_card_selector_it_is_unmeasured_not_zero(self):
+        from backend.fix_promises import _worldnews_card_old_look_rules
+        base = self._serve({"index.html": '<link rel="stylesheet" href="/assets/index-a.css">',
+                            "assets/index-a.css": "body{margin:0}"})
+        with mock.patch.dict("os.environ", {"WEB_APP_URL": base}):
+            with self.assertRaises(LookupError):
+                _worldnews_card_old_look_rules()
+
+    def test_night_recheck_promise_is_registered(self):
+        from backend.fix_promises import by_key
+        p = by_key("daily_video_night_recheck_off")
+        self.assertIsNotNone(p)
+        self.assertEqual(0, p.expected)

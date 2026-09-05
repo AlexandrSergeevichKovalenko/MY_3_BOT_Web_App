@@ -141,13 +141,66 @@ def _access_reminders_over_cadence() -> int:
 
 
 def _worldnews_card_old_look_rules() -> int:
-    """Читает CSS собранного фронта (frontend/dist/assets/*.css) на сервере. Обещано: 0."""
-    from pathlib import Path
-    assets = Path(__file__).resolve().parent.parent / "frontend" / "dist" / "assets"
-    files = sorted(assets.glob("*.css"))
-    if not files:
-        raise FileNotFoundError(f"собранного CSS нет: {assets}")
-    return _count_worldnews_old_look_rules("".join(f.read_text(encoding="utf-8") for f in files))
+    """Читает CSS ЖИВОЙ страницы веб-приложения по сети. Обещано: 0.
+
+    ┌─ ПОЧИНЕНО 05.09.2026. Проверка читала frontend/dist/assets на диске — и 05.09 ─────┐
+    │ пришла «не измерено: собранного CSS нет». Обещания проверяет сервис бота, а фронт   │
+    │ собирает и держит только веб-сервис (Dockerfile.backend); в образ бота каталог      │
+    │ frontend/ не попадает вовсе (Dockerfile.bot). Файла там нет и не будет.             │
+    │ Поэтому проверка идёт туда же, куда идёт человек: скачивает страницу по WEB_APP_URL, │
+    │ находит в ней подключённые .css и считает старые правила в них. Это и есть экран    │
+    │ владельца, а не копия исходника. Нет адреса или сеть не ответила — «не измерено».  │
+    └────────────────────────────────────────────────────────────────────────────────────┘
+    """
+    import os
+    import re
+    from urllib.parse import urljoin
+    from urllib.request import Request, urlopen
+    base = str(os.getenv("WEB_APP_URL") or "").strip()
+    if not base:
+        raise LookupError("WEB_APP_URL не задан: где живёт веб-приложение, бот не знает")
+    if not base.endswith("/"):
+        base += "/"
+
+    def _get(url: str) -> str:
+        # Веб-сервис засыпает без трафика и просыпается ~35 с (замер 05.09.2026), поэтому
+        # ожидание длинное: короткое дало бы «не измерено» каждое тихое утро.
+        with urlopen(Request(url, headers={"User-Agent": "fix-promises/1"}), timeout=120) as r:
+            return r.read().decode("utf-8", errors="replace")
+
+    html = _get(base)
+    # Vite режет стили по экранам: в index.html подключён только общий CSS, а стили
+    # карточки лежат в App-*.css, имя которого записано строкой внутри входного скрипта.
+    # Поэтому собираем ОБА слоя: CSS из <link> и CSS, упомянутые в скриптах страницы.
+    css_paths = set(re.findall(r'<link[^>]+href="(/[^"]+\.css[^"]*)"', html))
+    for js in re.findall(r'<script[^>]+src="(/[^"]+\.js)"', html):
+        css_paths.update("/" + m for m in re.findall(r'assets/[A-Za-z0-9_.-]+\.css', _get(urljoin(base, js))))
+    if not css_paths:
+        raise LookupError(f"на странице {base} не нашлось ни одного .css")
+    css = "".join(_get(urljoin(base, path)) for path in sorted(css_paths))
+    return _count_worldnews_old_look_rules(css)
+
+
+def _daily_video_night_recheck_ran() -> int:
+    """Запускалась ли ночная перепроверка карточек «Новости дня» после её снятия. Обещано: 0.
+
+    Снята решением владельца 05.09.2026 (одна проверка на входе; разбор у бывшей
+    run_daily_video_recheck в bot_3.py). Её сердцебиение — job_key
+    'daily_video_recheck_result'. Запись новее даты снятия значит, что работа вернулась
+    в расписание (например, старым деплоем)."""
+    from backend.database import get_latest_scheduler_run_guard
+    row = get_latest_scheduler_run_guard(job_key="daily_video_recheck_result")
+    if not row:
+        return 0
+    when = row.get("finished_at") or row.get("updated_at")
+    if when is None:
+        return 0
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return 1 if when > _NIGHT_RECHECK_REMOVED_AT else 0
+
+
+_NIGHT_RECHECK_REMOVED_AT = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
 _SCREEN_PROMISE_USER_CAP = 200
 
 
@@ -281,8 +334,18 @@ PROMISES: tuple[Promise, ...] = (
         since="04.09.2026",
         expected=0,
         measure=_worldnews_card_old_look_rules,
-        how="grep -c 'Georgia' frontend/dist/assets/*.css рядом с .worldnews-card-de "
-            "и 'clip-path' рядом с .worldnews-step — ждём 0 и 0",
+        how="открыть $WEB_APP_URL, скачать подключённые .css; grep -c 'Georgia' рядом с "
+            ".worldnews-card-de и 'clip-path' рядом с .worldnews-step — ждём 0 и 0",
+    ),
+    Promise(
+        key="daily_video_night_recheck_off",
+        title="Ночная перепроверка карточек «Новости дня» (03:20) не запускалась после снятия",
+        since="05.09.2026",
+        expected=0,
+        measure=_daily_video_night_recheck_ran,
+        how="SELECT finished_at FROM bt_3_scheduler_run_guards WHERE job_key="
+            "'daily_video_recheck_result' ORDER BY finished_at DESC LIMIT 1 — ждём дату "
+            "не позже 05.09.2026 12:00 UTC",
     ),
     Promise(
         key="access_period_night_sweep",
