@@ -1,0 +1,82 @@
+/* ── «Слова со вчерашних тренировок»: экран Space Rep в оверлее интерактивов ──────────
+   Оверлей НЕ грузит App.css, поэтому правила экрана Space Rep перенесены сюда СКРИПТОМ
+   (scripts в коммите 05.09.2026) слово в слово, под обёрткой .wp-root. Тёмная тема — решение
+   владельца 05.09.2026 («сделай дизайн похожий на нашу тренировку интервального повторения»).
+   Источник правды — App.css; правя там, перенеси сюда тем же способом. */
+.wp-root { width: 100%; min-height: 100dvh; padding: 12px 0; box-sizing: border-box;
+  font-family: "Manrope", "Onest", var(--dmps-font-family, system-ui), sans-serif;
+  background: radial-gradient(120% 90% at 50% 0%, #142a52 0%, #0b1730 55%, #070f22 100%); }
+.wp-root *, .wp-root *::before, .wp-root *::after { box-sizing: border-box; }
+.wp-root .fsrs-study-screen { height: calc(100dvh - 24px); max-height: calc(100dvh - 24px); }
+.wp-root .fsrs-done-actions { width: 100%; display: grid; gap: 10px; }
+.wp-root .fsrs-study-screen { height: calc(100dvh - 132px); max-height: calc(100dvh - 132px); overflow: hidden; display: grid; grid-template-rows: auto 1fr auto; gap: 10px; padding: 2px 10px 2px; width: min(430px, 100%); margin: 0 auto; background: radial-gradient(112% 86% at 50% 0%, rgba(80, 136, 255, 0.2), rgba(9, 22, 48, 0.44) 52%, rgba(4, 13, 33, 0.96) 100%); border: 1px solid rgba(96, 139, 206, 0.24); border-radius: 28px; box-shadow: 0 20px 40px rgba(2, 8, 22, 0.62), inset 0 0 0 1px rgba(154, 186, 238, 0.08); }
+.wp-root .fsrs-study-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 10px 8px; border-bottom: 1px solid rgba(124, 156, 208, 0.22); min-width: 0; overflow: hidden; }
+.wp-root .fsrs-study-title { font-size: 24px; line-height: 1.2; font-weight: 700; color: #edf3ff; letter-spacing: 0.01em; white-space: nowrap; flex: 0 1 auto; min-width: 0; }
+.wp-root .fsrs-study-queue { font-size: 13px; line-height: 1.2; color: rgba(214, 228, 255, 0.78); text-align: right; white-space: nowrap; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wp-root .fsrs-study-card { position: relative; /* якорь для лампочки-подсказки в правом верхнем углу */ width: 100%; min-height: 0; margin: 0 auto; border-radius: 18px; padding: 20px 16px; background: radial-gradient(120% 110% at 50% 0%, rgba(92, 140, 236, 0.15), rgba(28, 47, 86, 0.76) 45%, rgba(18, 32, 61, 0.94) 100%); border: 1px solid rgba(122, 154, 212, 0.22); box-shadow: 0 16px 30px rgba(4, 12, 31, 0.55), inset 0 0 0 1px rgba(169, 196, 239, 0.07); display: grid; align-content: center; justify-items: center; gap: 18px; text-align: center; }
+.wp-root .fsrs-loading-card { gap: 12px; }
+.wp-root .fsrs-hourglass { font-size: 54px; line-height: 1; color: rgba(223, 234, 255, 0.9); text-shadow: 0 0 12px rgba(144, 181, 255, 0.25); animation: fsrs-hourglass-pulse 1.4s ease-in-out infinite; }
+.wp-root .fsrs-loading-title { font-size: 22px; line-height: 1.25; font-weight: 600; color: #eaf2ff; }
+.wp-root .fsrs-loading-subtitle { font-size: 14px; line-height: 1.35; color: rgba(210, 225, 252, 0.7); }
+.wp-root .fsrs-divider { width: 100%; height: 1px; background: linear-gradient(90deg, rgba(124, 156, 208, 0.05), rgba(124, 156, 208, 0.44), rgba(124, 156, 208, 0.05)); }
+.wp-root .fsrs-card-source { width: 100%; font-size: clamp(26px, 3.2vw, 30px); line-height: 1.3; font-weight: 700; color: #f3f7ff; text-align: center; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+.wp-root .fsrs-card-source.is-muted-top { font-size: clamp(18px, 2.6vw, 22px); font-weight: 600; color: rgba(202, 220, 249, 0.74); }
+.wp-root .fsrs-card-target-fit { width: 100%; min-width: 0; text-align: center; }
+.wp-root .fsrs-card-target { display: inline-block; max-width: 100%; font-size: clamp(39px, 5vw, 46px); line-height: 1.32; font-weight: 700; color: #ffffff; text-align: center; /* Слово НЕ режем посреди букв: сначала уменьшается кегль (FsrsHeadword), и только если даже минимальный размер не помещается — перенос по пробелу. */ word-break: normal; overflow-wrap: break-word; hyphens: none; }
+.wp-root .fsrs-card-meta { font-size: 13px; line-height: 1.35; color: rgba(205, 220, 245, 0.74); }
+.wp-root .fsrs-card-meta.fsrs-card-meta-answer { margin-top: -2px; }
+.wp-root .flashcard-meaning-list { width: 100%; display: grid; gap: 8px; margin-top: 12px; }
+.wp-root .flashcard-meaning-item { display: flex; align-items: flex-start; gap: 8px; padding: 9px 11px; border-radius: 12px; border: 1px solid rgba(136, 170, 232, 0.24); background: rgba(10, 20, 42, 0.46); color: rgba(223, 234, 252, 0.92); font-size: 14px; line-height: 1.4; text-align: left; }
+.wp-root .flashcard-meaning-rank { flex: 0 0 auto; font-weight: 800; color: #9fc0ff; }
+.wp-root .flashcard-meaning-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.wp-root .fsrs-study-card.is-revealed { display: flex; flex-direction: column; align-items: center; justify-content: center; justify-content: safe center; /* если места совсем нет — режем снизу, не сверху */ overflow-y: auto; min-height: 0; gap: 14px; /* чуть плотнее обычной карточки: больше места остаётся значениям */ }
+.wp-root .fsrs-study-card.is-revealed > * { flex: 0 0 auto; }
+.wp-root .fsrs-study-card.is-revealed > .flashcard-meaning-list { flex: 0 1 auto; min-height: 0; margin-top: 0; /* отступ уже задан gap'ом карточки */ padding-right: 2px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+.wp-root .fsrs-study-card.is-revealed > .flashcard-meaning-list::-webkit-scrollbar { width: 3px; }
+.wp-root .fsrs-study-card.is-revealed > .flashcard-meaning-list::-webkit-scrollbar-thumb { border-radius: 3px; background: rgba(140, 170, 220, 0.42); }
+.wp-root .fsrs-show-answer-btn { width: 100%; min-height: 56px; border-radius: 16px; border: 1px solid rgba(74, 133, 255, 0.65); background: #2f6dff; color: #f5f9ff; font-size: 20px; font-weight: 700; letter-spacing: 0.01em; cursor: pointer; transition: transform 0.14s ease, filter 0.14s ease; }
+.wp-root .fsrs-show-answer-btn:hover { filter: brightness(1.06); }
+.wp-root .fsrs-show-answer-btn:active { transform: scale(0.98); }
+.wp-root .fsrs-show-answer-btn:disabled { opacity: 0.65; cursor: not-allowed; }
+.wp-root .fsrs-rating-wrap { width: 100%; margin: 0 auto; display: grid; gap: 6px; padding: 8px 2px 10px; border-top: 1px solid rgba(124, 156, 208, 0.22); }
+.wp-root .fsrs-rating-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; align-items: start; }
+.wp-root .fsrs-rate-cell { display: grid; gap: 4px; }
+.wp-root .fsrs-rate-btn { min-height: 50px; border: none; border-radius: 10px; padding: 9px 6px 8px; cursor: pointer; display: grid; gap: 4px; align-content: center; justify-items: center; color: #f7fbff; font-weight: 700; transition: transform 0.12s ease, filter 0.16s ease, opacity 0.16s ease, box-shadow 0.16s ease; box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18); }
+.wp-root .fsrs-rate-btn span { font-size: 16px; line-height: 1.1; }
+.wp-root .fsrs-rate-hint { display: block; text-align: center; font-size: 12px; line-height: 1.1; font-weight: 500; color: rgba(196, 213, 243, 0.86); }
+.wp-root .fsrs-rate-btn:hover { filter: brightness(1.06); box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18), 0 3px 10px rgba(0, 0, 0, 0.25); }
+.wp-root .fsrs-rate-btn:active { transform: scale(0.97); }
+.wp-root .fsrs-rate-btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+.wp-root .fsrs-rate-btn.again { background: var(--dmps-danger); }
+.wp-root .fsrs-rate-btn.hard { background: var(--dmps-warning); }
+.wp-root .fsrs-rate-btn.good { background: var(--dmps-success); }
+.wp-root .fsrs-rate-btn.easy { background: var(--dmps-primary); }
+.wp-root .fsrs-empty-note { width: 100%; margin: 0 auto; border-radius: 16px; padding: 14px 16px; background: rgba(17, 29, 54, 0.7); border: 1px solid rgba(116, 156, 218, 0.22); color: rgba(213, 228, 255, 0.86); font-size: 14px; text-align: center; }
+@keyframes fsrs-hourglass-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.88; }
+  50% { transform: scale(1.05); opacity: 1; }
+}
+.wp-root .flashcard-audio-replay { width: 40px; height: 40px; border-radius: 999px; border: 1px solid rgba(125, 211, 252, 0.56); background: linear-gradient(145deg, rgba(56, 189, 248, 0.28), rgba(59, 130, 246, 0.24)); color: #f8fafc; font-size: 16px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 6px 16px rgba(37, 99, 235, 0.2); }
+.wp-root .flashcard-audio-replay:disabled { opacity: 0.55; cursor: not-allowed; }
+.wp-root .flashcard-audio-replay:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(37, 99, 235, 0.26); }
+.wp-root .flashcard-audio-replay.is-loading { background: linear-gradient(145deg, rgba(251, 191, 36, 0.95), rgba(245, 158, 11, 0.92)); border-color: rgba(255, 237, 160, 0.96); color: #111827; box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.52), 0 10px 20px rgba(251, 191, 36, 0.45); animation: tts-button-pulse 0.7s ease-in-out infinite; }
+.wp-root .own-notes { margin-top: 14px; border: 1px solid rgba(214,122,36,0.55); background: rgba(214,122,36,0.07); border-radius: 14px; padding: 10px 12px 11px; }
+.wp-root .own-notes-head { display: flex; align-items: center; justify-content: space-between; font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #f0a04b; margin-bottom: 8px; }
+.wp-root .own-notes-count { letter-spacing: 0.04em; opacity: 0.75; }
+.wp-root .own-notes-empty { margin: 0 0 4px; font-size: 13px; line-height: 1.45; color: rgba(243,238,228,0.6); }
+.wp-root .own-note { display: flex; align-items: flex-start; gap: 8px; padding: 7px 0; border-bottom: 1px solid rgba(214,122,36,0.18); }
+.wp-root .own-note:last-of-type { border-bottom: 0; }
+.wp-root .own-note-body { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.wp-root .own-note-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #f0a04b; }
+.wp-root .own-note-text { font-size: 14px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
+.wp-root .own-note-label-input, .wp-root .own-note-text-input { width: 100%; border: 0; background: transparent; color: inherit; font-family: inherit; padding: 2px 0; outline: none; resize: none; }
+.wp-root .own-note-label-input { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #f0a04b; }
+.wp-root .own-note-text-input { font-size: 14px; line-height: 1.4; }
+.wp-root .own-note-label-input::placeholder, .wp-root .own-note-text-input::placeholder { color: rgba(243,238,228,0.42); text-transform: none; letter-spacing: 0; font-weight: 400; }
+.wp-root .own-note-label-input:focus, .wp-root .own-note-text-input:focus { outline: none; }
+.wp-root .own-note-del { flex: none; width: 24px; height: 24px; border: 0; border-radius: 999px; background: rgba(255,255,255,0.1); color: inherit; font-size: 15px; line-height: 1; display: grid; place-items: center; cursor: pointer; padding: 0; }
+.wp-root .own-note-add { width: 100%; margin-top: 8px; border: 1px dashed rgba(214,122,36,0.75); background: transparent; color: #f0a04b; border-radius: 11px; padding: 9px 0; font-family: inherit; font-size: 13.5px; font-weight: 650; cursor: pointer; }
+.wp-root .own-note-add:disabled { opacity: 0.45; cursor: default; }
+.wp-root .fsrs-study-card .own-notes { margin-top: 10px; padding: 8px 10px 9px; }
+.wp-root .fsrs-study-card .own-note { padding: 5px 0; }
+.wp-root .fsrs-study-card .own-note-text { font-size: 13.5px; }

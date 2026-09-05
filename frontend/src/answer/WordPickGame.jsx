@@ -5,15 +5,16 @@ import CardOwnNotes from '../components/CardOwnNotes.jsx';
 import { splitTranslationSenses } from '../dictionary/senses.js';
 import { playWordTts } from './wordTts.js';
 import Toast, { useToast } from './Toast.jsx';
+import './wordPick.css';
 
 // «Слова со вчерашних тренировок» — разовое повторение того, что человек сам тапнул
 // вчера в конце интерактивов. Стратегия: docs/tasks/word_pick_review_strategy.md.
 //
 // ⚠️ Стили Space Rep живут в App.css, а оверлей интерактивов его НЕ грузит (main.jsx
-// подключает только theme.css, App.css приезжает вместе с App.jsx). 05.09.2026 владелец
-// открыл экран и увидел голую разметку: классы .fsrs-* здесь ничего не значат. Поэтому у
-// экрана СВОИ классы wp-* в answer.css; из Space Rep взяты только сами элементы и порядок.
-// Единственный чужой класс — .fsrs-card-target у FsrsHeadword: он задан в answer.css под .wp-card.
+// подключает только theme.css). Поэтому правила экрана Space Rep перенесены в wordPick.css
+// слово в слово под обёрткой .wp-root (решение владельца 05.09.2026: «сделай дизайн похожий
+// на нашу тренировку интервального повторения», тёмная тема). Разметка ниже повторяет
+// блок fsrs-study-screen из App.jsx: шапка → карточка → ряд оценок.
 //
 // Детали карточки — те же, что в «Карточках Space Rep» (App.jsx, блок fsrs-study-card):
 // русский вопрос → «Показать ответ» (или сам через 5 с) → немецкое слово с автоподгонкой
@@ -152,38 +153,43 @@ export default function WordPickGame({ day, api, haptic, onClose }) {
     }
   }, [api, card, day, haptic, revealedAt, submitting, toast]);
 
-  const shell = (body, cls = '') => (
-    <div className="ans-root ans-root--keepkbd">
-      <div className={`ans-card wp-card ${cls}`}>{body}</div>
+  const frame = (header, card, footer = null) => (
+    <div className="wp-root">
+      <div className="fsrs-study-screen">
+        <div className="fsrs-study-header">
+          <div className="fsrs-study-title">Space Repetition</div>
+          <div className="fsrs-study-queue">{header}</div>
+        </div>
+        {card}
+        {footer || <div />}
+      </div>
       <Toast state={toast.state} onClose={toast.hide} />
     </div>
   );
 
-  if (phase === 'loading') return shell(<><div className="ans-skel" /><div className="ans-skel sm" /></>);
-  if (phase === 'error') return shell(
-    <>
-      <div className="ans-head"><span className="ans-eyebrow">⚠️ Hoppla</span></div>
-      <p className="ans-sub">{error}</p>
-      <button className="ans-btn" onClick={onClose}>Schließen</button>
-    </>
-  );
+  if (phase === 'loading') return frame('Вчера',
+    <div className="fsrs-study-card fsrs-loading-card">
+      <div className="fsrs-hourglass">⌛</div>
+      <div className="fsrs-loading-title">Собираю вчерашние слова…</div>
+    </div>);
+  if (phase === 'error') return frame('Вчера',
+    <div className="fsrs-study-card">
+      <div className="fsrs-loading-title">Не получилось</div>
+      <div className="fsrs-loading-subtitle">{error}</div>
+      <button type="button" className="fsrs-show-answer-btn" onClick={onClose}>Schließen</button>
+    </div>);
   if (phase === 'done') {
     const total = items.length;
-    return shell(
-      <>
-        <div className="ans-head"><span className="ans-eyebrow">🔁 Слова со вчерашних тренировок</span></div>
-        <div className="tr-score">
-          <div className="tr-score-num">{total}</div>
-          <div className="tr-score-sub">{total === 1 ? 'слово повторено' : 'слов повторено'} · {slot === 'am' ? 'утренний' : 'вечерний'} проход</div>
-        </div>
-        <div className="tr-done-note">
+    return frame(`Вчера · ${total} из ${total}`,
+      <div className="fsrs-study-card">
+        <div className="fsrs-loading-title">{total} {total === 1 ? 'слово повторено' : 'слов повторено'}</div>
+        <div className="fsrs-loading-subtitle">
           {slot === 'am'
             ? 'Вечером в 19:35 этот набор придёт ещё раз. Завтра придут те слова, что отберёшь сегодня.'
             : 'Готово на сегодня. Завтра придут те слова, что отберёшь сегодня в тренировках.'}
         </div>
-        <button className="ans-btn" onClick={onClose}>Schließen</button>
-      </>
-    );
+        <button type="button" className="fsrs-show-answer-btn" onClick={onClose}>Schließen</button>
+      </div>);
   }
 
   const done = items.length - queue.length;
@@ -194,61 +200,41 @@ export default function WordPickGame({ day, api, haptic, onClose }) {
   const preview = current?.srs_preview || {};
   const notes = Array.isArray(card?.user_notes) ? card.user_notes : [];
 
-  return shell(
-    <>
-      <div className="ans-head">
-        <span className="ans-eyebrow">🔁 Слова со вчерашних тренировок</span>
-        <span className="wp-progress">{done + 1} из {items.length}</span>
-      </div>
-      <div className={`wp-study ${revealed ? 'is-revealed' : ''}`}>
-        {revealed && hintAvailable && (
-          <button type="button" className="wp-hint-btn" onClick={() => setHintOpen(true)}
-                  aria-label="Всё об этом слове" title="Всё об этом слове">💡</button>
-        )}
-        <div className="wp-source">{sides.question}</div>
-        <div className="wp-divider" />
-        {revealed ? (
-          <>
-            <FsrsHeadword text={sides.answer} />
-            {sides.extra.length > 0 && (
-              <div className="wp-meaning-list">
-                {sides.extra.map((row) => (
-                  <div key={row.rank} className="wp-meaning-item">
-                    <span className="wp-meaning-rank">{row.rank}.</span>
-                    <span className="wp-meaning-text">{row.text}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {notes.length > 0 && <CardOwnNotes notes={notes} tr={ru} readOnly />}
-            <div className="wp-divider" />
-            <div className="wp-meta">Response time: {elapsed}s</div>
-            <button type="button" className="wp-audio"
-                    onClick={() => playWordTts(sides.spoken).catch(() => toast.show('Озвучка не загрузилась.'))}
-                    aria-label="Повторить аудио" title="Повторить аудио">🔊</button>
-          </>
-        ) : (
-          <>
-            <div className="wp-meta">
-              Status: {String(current?.srs?.status || 'new')} · Interval: {current?.srs?.interval_days ?? 0} дн
+  return frame(`Вчера · ${done + 1} из ${items.length}`,
+    <div className={`fsrs-study-card ${revealed ? 'is-revealed' : ''}`}>
+      {revealed && hintAvailable && (
+        <button type="button" className="fsrs-hint-btn" onClick={() => setHintOpen(true)}
+                aria-label="Всё об этом слове" title="Всё об этом слове">💡</button>
+      )}
+      <div className="fsrs-card-source is-muted-top">{sides.question}</div>
+      <div className="fsrs-divider" />
+      {revealed ? (
+        <>
+          <FsrsHeadword text={sides.answer} />
+          {sides.extra.length > 0 && (
+            <div className="flashcard-meaning-list">
+              {sides.extra.map((row) => (
+                <div key={row.rank} className="flashcard-meaning-item">
+                  <span className="flashcard-meaning-rank">{row.rank}.</span>
+                  <span className="flashcard-meaning-text">{row.text}</span>
+                </div>
+              ))}
             </div>
-            <button type="button" className="wp-show-btn" onClick={reveal} disabled={submitting}>Show Answer</button>
-          </>
-        )}
-      </div>
-      {revealed && (
-        <div className="wp-rating-wrap">
-          <div className="wp-rating-grid">
-            {RATINGS.map(([key, label, cls]) => (
-              <div className="wp-rate-cell" key={key}>
-                <button type="button" className={`wp-rate-btn ${cls}`} onClick={() => rate(key)} disabled={submitting}>
-                  <span>{label}</span>
-                </button>
-                <small className="wp-rate-hint">{intervalHint(preview?.[key]?.seconds)}</small>
-              </div>
-            ))}
+          )}
+          {notes.length > 0 && <CardOwnNotes notes={notes} tr={ru} readOnly />}
+          <div className="fsrs-divider" />
+          <div className="fsrs-card-meta fsrs-card-meta-answer">Response time: {elapsed}s</div>
+          <button type="button" className="flashcard-audio-replay"
+                  onClick={() => playWordTts(sides.spoken).catch(() => toast.show('Озвучка не загрузилась.'))}
+                  aria-label="Повторить аудио" title="Повторить аудио">🔊</button>
+        </>
+      ) : (
+        <>
+          <div className="fsrs-card-meta">
+            Status: {String(current?.srs?.status || 'new')} · Interval: {current?.srs?.interval_days ?? 0} дн
           </div>
-        </div>
+          <button type="button" className="fsrs-show-answer-btn" onClick={reveal} disabled={submitting}>Show Answer</button>
+        </>
       )}
       <WordHintModal
         isOpen={hintOpen}
@@ -261,6 +247,20 @@ export default function WordPickGame({ day, api, haptic, onClose }) {
         formRows={[]}
         memoryTip={hintTip}
       />
-    </>
+    </div>,
+    revealed ? (
+      <div className="fsrs-rating-wrap">
+        <div className="fsrs-rating-grid">
+          {RATINGS.map(([key, label, cls]) => (
+            <div className="fsrs-rate-cell" key={key}>
+              <button type="button" className={`fsrs-rate-btn ${cls}`} onClick={() => rate(key)} disabled={submitting}>
+                <span>{label}</span>
+              </button>
+              <small className="fsrs-rate-hint">{intervalHint(preview?.[key]?.seconds)}</small>
+            </div>
+          ))}
+        </div>
+      </div>
+    ) : null,
   );
 }
