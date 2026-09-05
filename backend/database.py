@@ -24233,6 +24233,11 @@ def _ensure_access_period_schema() -> None:
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_access_period_started "
                         "ON bt_3_access_period (started_at);")
+            # Когда дату начала двигали РУКОЙ. Пусто у всех живых людей: у них она
+            # ставится один раз и не меняется никогда. Заполняется только командой
+            # /admin_access (admin_set_access_period_started) — см. 05.09.2026 ниже.
+            cur.execute("ALTER TABLE bt_3_access_period "
+                        "ADD COLUMN IF NOT EXISTS started_moved_at TIMESTAMPTZ;")
         conn.commit()
     _access_period_schema_ready = True
 
@@ -24393,7 +24398,26 @@ def is_access_locked(user_id: int) -> bool:
 def count_learning_content_sent_to_locked_users(days: int = 1) -> int:
     """Сколько заданий (строк ведомости доставки) за последние `days` суток ушло людям
     ПОСЛЕ того, как их бесплатный месяц кончился, и они при этом заперты сейчас.
-    Обещано: 0. Ушло хоть одно — дверь §5.2 или §5.3 пропускает."""
+    Обещано: 0. Ушло хоть одно — дверь §5.2 или §5.3 пропускает.
+
+    ┌─ ПРОВЕРЕНО 05.09.2026. «4 ЗАДАНИЯ ЗАПЕРТОМУ» БЫЛО НЕ УТЕЧКОЙ. НЕ ПОДНИМАТЬ СНОВА. ┐
+    │ 04.09.2026 проверка насчитала 4 и была права арифметически: тестовому аккаунту    │
+    │ 8546091375 в тот день выдали задания в 08:00, 11:00, 12:15 и 15:30, а его дату    │
+    │ начала месяца в тот же день сдвинули РУКОЙ на 1 августа — чтобы посмотреть, как   │
+    │ работает замок, не дожидаясь тридцати дней (/admin_access). Аккаунт мгновенно     │
+    │ стал «запертым», и четыре нормальных утренних выдачи задним числом превратились в │
+    │ нарушение. Дверей никто не проходил: и слоты рассылки                              │
+    │ (_collect_scheduler_candidate_user_ids), и кнопка «Следующее задание» (она         │
+    │ вызывается ИЗНУТРИ handle_user_message, где замок стоит первым) запертого не      │
+    │ пускают — проверено по коду 05.09.2026.                                           │
+    │                                                                                  │
+    │ Поэтому считаем от МОМЕНТА, когда человек стал заперт по-настоящему: это конец    │
+    │ бесплатного месяца, а если дату двигали рукой — момент сдвига. У живых людей      │
+    │ started_moved_at пуст, и для них ничего не меняется: ни одна настоящая утечка сюда│
+    │ не спрячется. Перемерить: python3 -c "from backend.database import               │
+    │ count_learning_content_sent_to_locked_users as f; print(f())".                    │
+    └──────────────────────────────────────────────────────────────────────────────────┘
+    """
     _ensure_access_period_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
@@ -24414,7 +24438,9 @@ def count_learning_content_sent_to_locked_users(days: int = 1) -> int:
                 FROM bt_3_interactive_inbox i
                 JOIN bt_3_access_period p ON p.user_id = i.user_id
                 WHERE i.user_id = ANY(%s)
-                  AND i.created_at > p.started_at + (%s || ' days')::interval
+                  AND i.created_at > GREATEST(
+                        p.started_at + (%s || ' days')::interval,
+                        COALESCE(p.started_moved_at, '-infinity'::timestamptz))
                   AND i.created_at > NOW() - (%s || ' days')::interval;
                 """,
                 (locked, int(ACCESS_PERIOD_FREE_DAYS), int(days)),
@@ -24570,15 +24596,20 @@ def count_star_payments_last_day(purposes: tuple[str, ...] = ("light", "pro")) -
 def admin_set_access_period_started(user_id: int, started_at: datetime) -> None:
     """ЕДИНСТВЕННОЕ место, где started_at меняется, — ручная команда администратора
     /admin_access для проверки замка на тестовом аккаунте, не дожидаясь 30 дней.
-    Для живых людей начало отсчёта не двигается никогда."""
+    Для живых людей начало отсчёта не двигается никогда.
+
+    Отмечаем МОМЕНТ сдвига (`started_moved_at`). Он нужен обещанию «запертым заданий
+    нет»: без него сдвиг даты назад задним числом превращает нормально выданные утром
+    задания в «утечку» — см. count_learning_content_sent_to_locked_users."""
     _ensure_access_period_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO bt_3_access_period (user_id, started_at, source)
-                VALUES (%s, %s, 'signup')
-                ON CONFLICT (user_id) DO UPDATE SET started_at = EXCLUDED.started_at;
+                INSERT INTO bt_3_access_period (user_id, started_at, source, started_moved_at)
+                VALUES (%s, %s, 'signup', NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                   SET started_at = EXCLUDED.started_at, started_moved_at = NOW();
                 """,
                 (int(user_id), _to_aware_datetime(started_at)),
             )

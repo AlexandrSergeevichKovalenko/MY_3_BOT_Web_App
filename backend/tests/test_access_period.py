@@ -123,6 +123,45 @@ class ДвериЗаписи(unittest.TestCase):
         self.assertNotIn("bt_3_pro_grants", тело)
 
 
+class РучнойСдвигДатыНеСчитаетсяУтечкой(unittest.TestCase):
+    """05.09.2026. Обещание «запертым заданий нет» насчитало 4 нарушения на пустом месте.
+
+    Причина: на тестовом аккаунте дату начала месяца сдвинули рукой на месяц назад, чтобы
+    посмотреть замок. Задания, нормально выданные тем же утром, задним числом попали в
+    окно «после конца месяца». Дверей никто не проходил. Теперь окно считается от момента,
+    когда человек стал заперт ПО-НАСТОЯЩЕМУ: конец месяца, а при ручном сдвиге — момент
+    сдвига. У живых людей `started_moved_at` пуст, и для них ничего не меняется."""
+
+    def setUp(self):
+        db._access_period_schema_ready = True
+
+    def test_момент_ручного_сдвига_записывается(self):
+        курсор = mock.MagicMock()
+        with mock.patch.object(db, "get_db_connection_context", _соединение_с_курсором(курсор)), \
+             mock.patch.object(db, "_bust_entitlement_cache"):
+            db.admin_set_access_period_started(
+                8546091375, datetime(2026, 8, 1, tzinfo=timezone.utc))
+        sql = курсор.execute.call_args[0][0]
+        self.assertIn("started_moved_at", sql)
+        self.assertIn("started_moved_at = NOW()", sql)
+
+    def test_подсчёт_ведётся_от_настоящего_замка(self):
+        курсор = mock.MagicMock()
+        курсор.fetchall.return_value = [(8546091375,)]
+        курсор.fetchone.return_value = (0,)
+        with mock.patch.object(db, "get_db_connection_context", _соединение_с_курсором(курсор)), \
+             mock.patch.object(db, "is_access_locked", return_value=True):
+            self.assertEqual(db.count_learning_content_sent_to_locked_users(1), 0)
+        подсчёт = [c[0][0] for c in курсор.execute.call_args_list
+                   if "bt_3_interactive_inbox" in c[0][0]]
+        self.assertEqual(len(подсчёт), 1, "запрос подсчёта заданий не нашёлся")
+        sql = подсчёт[0]
+        self.assertIn("GREATEST", sql)
+        self.assertIn("started_moved_at", sql), (
+            "окно снова считается только от конца месяца — сдвиг даты на тесте опять "
+            "разбудит владельца ложной утечкой")
+
+
 class Обещание(unittest.TestCase):
 
     def test_зарегистрировано_и_ждёт_ноль(self):

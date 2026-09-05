@@ -124,7 +124,11 @@ def _access_period_missing() -> int:
 def _locked_users_got_learning_content() -> int:
     """Сколько заданий за сутки ушло людям, у которых бесплатный месяц кончился и подписки
     нет. Обещано: 0. Двери — общий сборщик рассылок и обработчик сообщений бота
-    (docs/tasks/light_tier_strategy.md §5.2–5.3)."""
+    (docs/tasks/light_tier_strategy.md §5.2–5.3).
+
+    ⚠ 05.09.2026: считается от момента, когда человек стал заперт ПО-НАСТОЯЩЕМУ. Сдвиг
+    даты рукой на тестовом аккаунте больше не превращает нормальные утренние выдачи в
+    «утечку» — разбор в docstring самой функции подсчёта."""
     from backend.database import count_learning_content_sent_to_locked_users
     return count_learning_content_sent_to_locked_users(days=1)
 
