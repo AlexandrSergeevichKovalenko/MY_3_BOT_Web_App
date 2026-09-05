@@ -121,3 +121,33 @@ class Рассылка(unittest.TestCase):
         self.assertIn("_is_access_locked_cached", тело)
         self.assertIn("_user_send_budget", тело)          # «Тишина»
         self.assertIn("list_bot_blocked_user_ids", тело)  # заблокировавшие бота
+
+
+class ОбещанияИОтчёт(unittest.TestCase):
+
+    def test_обещания_зарегистрированы(self):
+        from backend import fix_promises
+        ключи = {p.key for p in fix_promises.PROMISES}
+        self.assertIn("word_pick_door_writes_every_tap", ключи)
+        self.assertIn("word_pick_two_posters_per_picker", ключи)
+        for p in fix_promises.PROMISES:
+            if p.key.startswith("word_pick_"):
+                self.assertEqual(p.expected, 0)
+                self.assertTrue(p.how)
+
+    def test_дверь_меряется_по_вчерашним_сохранениям_из_интерактивов(self):
+        курсор = mock.MagicMock()
+        курсор.fetchone.return_value = (0,)
+        with mock.patch.object(db, "get_db_connection_context", _соединение_с_курсором(курсор)):
+            self.assertEqual(db.count_word_pick_door_misses(), 0)
+        sql = курсор.execute.call_args.args[0]
+        self.assertIn("LEFT JOIN bt_3_word_picks", sql)
+        self.assertIn("p.id IS NULL", sql)
+        for источник in db.WORD_PICK_ORIGINS:
+            self.assertIn(источник, str(курсор.execute.call_args.args[1]))
+
+    def test_строка_отчёта_есть_в_утреннем_отчёте(self):
+        import pathlib
+        bot = (pathlib.Path(__file__).resolve().parents[2] / "bot_3.py").read_text(encoding="utf-8")
+        self.assertIn("text += _word_pick_report_line()", bot)
+        self.assertIn("🔁 <b>Повтор слов</b>", bot)

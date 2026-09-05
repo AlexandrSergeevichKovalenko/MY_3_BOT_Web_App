@@ -64786,6 +64786,80 @@ def word_pick_day_stats(day) -> dict:
             "opened": int(i[2])}
 
 
+def count_word_pick_door_misses() -> int:
+    """Обещание word_pick_door_writes_every_tap: вчерашние (по Вене) сохранения из
+    интерактивов, у которых НЕТ записи отбора на сегодня. Ожидание 0. Сохранение метится
+    updated_at/created_at; другие правки строки тоже двигают updated_at, поэтому ложный
+    «пропуск» возможен — это исход «нарушено», который разбирают руками, а не глушат.
+    Строка COUNT(*) есть всегда; если её нет — это исключение и исход «не измерено»."""
+    ensure_word_pick_schema()
+    origins = sorted(WORD_PICK_ORIGINS)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_webapp_dictionary_queries q
+                LEFT JOIN bt_3_word_picks p
+                       ON p.user_id = q.user_id AND p.card_id = q.id
+                      AND p.for_day = (NOW() AT TIME ZONE %s)::date
+                WHERE q.origin_process = ANY(%s)
+                  AND (COALESCE(q.updated_at, q.created_at) AT TIME ZONE %s)::date
+                      = (NOW() AT TIME ZONE %s)::date - 1
+                  AND p.id IS NULL;
+                """,
+                (_WORD_PICK_TZ, origins, _WORD_PICK_TZ, _WORD_PICK_TZ),
+            )
+            return int(cursor.fetchone()[0])
+
+
+def count_word_pick_posters_missing() -> int:
+    """Обещание word_pick_two_posters_per_picker: у каждого, кто вчера имел отбор и кому
+    постер положен, за вчера две строки `wp` в ведомости. Возвращает число людей, у кого
+    их меньше двух.
+
+    «Кому положен» — ровно те же четыре двери, что у отправителя `_send_word_pick_reviews`
+    в bot_3.py, теми же функциями: настоящий Telegram-id, не заблокировал бота, не заперт
+    (is_access_locked — админы не запираются), не в «Тишине». «Тишина» у отправителя
+    действует только для оплаченного тарифа (`_user_send_budget`: бесплатному всегда
+    положены его слоты), поэтому здесь preset='silent' считается только вместе с
+    is_user_pro. Разойдись эти правила — обещание «нарушено» покажет разницу, а не спрячет."""
+    ensure_word_pick_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT p.user_id, COUNT(i.id)
+                FROM (SELECT DISTINCT user_id FROM bt_3_word_picks
+                      WHERE for_day = (NOW() AT TIME ZONE %s)::date - 1) p
+                LEFT JOIN bt_3_interactive_inbox i
+                       ON i.user_id = p.user_id AND i.kind = 'wp'
+                      AND i.dispatch_id / 10 = to_char((NOW() AT TIME ZONE %s)::date - 1, 'YYYYMMDD')::bigint
+                GROUP BY p.user_id HAVING COUNT(i.id) < 2;
+                """,
+                (_WORD_PICK_TZ, _WORD_PICK_TZ),
+            )
+            short = [int(r[0]) for r in cursor.fetchall()]
+    if not short:
+        return 0
+    blocked = list_bot_blocked_user_ids()
+    prefs = get_user_prefs_bulk(tuple(short))
+    missing = 0
+    for uid in short:
+        if not is_real_telegram_user_id(uid):
+            continue
+        if uid in blocked:
+            continue
+        if is_access_locked(uid):
+            continue
+        # Нет строки настроек — пресет не выбран; отправитель шлёт таким как «Обычно».
+        preset = prefs[uid]["preset"] if uid in prefs else None
+        if preset == "silent" and is_user_pro(uid):
+            continue
+        missing += 1
+    return missing
+
+
 # ── Synonym/Antonym TRAINER (recognition game; feeds the sprint 3 days later) ────
 def ensure_trainer_schema() -> None:
     """Dispatch rows for the trainer overlay (one per user per send), so a numeric

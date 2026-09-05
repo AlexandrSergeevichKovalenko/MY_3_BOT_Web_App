@@ -10264,6 +10264,7 @@ def _send_pool_enrich_morning_report() -> None:
                 + _dictionary_integrity_line()
             )
         text += _access_state_line()
+        text += _word_pick_report_line()
         text += _fix_promises_block(обещания)
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
@@ -16836,6 +16837,20 @@ def _access_state_line() -> str:
         line += f" · без начала отсчёта <b>{c['unknown']}</b> ⚠️"
     line += f"\nОплат за сутки: Лайт {p.get('light', 0)} / Полный {p.get('pro', 0)}\n"
     return line
+
+def _word_pick_report_line() -> str:
+    """Строка утреннего отчёта о «Словах со вчерашних тренировок» за вчера: кто получал,
+    сколько открыли и оценили. Сомнительных случаев здесь не бывает — модели нет."""
+    try:
+        from backend.database import word_pick_day_stats
+        d = (_get_quiz_schedule_now().date() - timedelta(days=1))
+        s = word_pick_day_stats(d)
+    except Exception:
+        logging.exception("строка о повторе слов не собралась")
+        return "\n🔁 Повтор слов: ❓ не посчитался, подробности в логах.\n"
+    return (f"\n🔁 <b>Повтор слов</b> ({d:%d.%m}): отбирали <b>{s['pickers']}</b> чел. · "
+            f"слов <b>{s['cards']}</b> · постеров утром <b>{s['posters_am']}</b> / вечером <b>{s['posters_pm']}</b> · "
+            f"открыли <b>{s['opened']}</b> · оценили утром <b>{s['am_rated_users']}</b> / вечером <b>{s['pm_rated_users']}</b>\n")
 
 
 async def admin_access_command(update: Update, context: CallbackContext):
