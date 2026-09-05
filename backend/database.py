@@ -310,6 +310,9 @@ DICTIONARY_ORIGIN_ALLOWED = {
     "trainer_save",
     "artikel_sprint_save",
     "adjektiv_trainer",
+    # Дискетка в углу карточки интерактива (SaveWordChip.jsx). До 05.09.2026 её здесь НЕ
+    # было: сохранения писались как «unknown» и затирали источник у старых слов.
+    "interactive_save",
     "webapp_quick_dictionary",
     "webapp_quick_dictionary_related",
     "webapp_quick_dictionary_example",
@@ -36577,7 +36580,7 @@ DICTIONARY_ORIGIN_GROUPS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "quick":   ("Быстрый словарь",  "⚡", ("webapp_quick_dictionary", "webapp_quick_dictionary_related",
                                            "webapp_quick_dictionary_example")),
     "artikel": ("Спринт артиклей",  "🔤", ("artikel_sprint_save",)),
-    "trainer": ("Тренажёры",        "🎯", ("trainer_save",)),
+    "trainer": ("Тренажёры",        "🎯", ("trainer_save", "synonym_save", "adjektiv_trainer", "interactive_save")),
     "search":  ("Поиск в словаре",  "🔍", ("webapp_dictionary_save", "webapp_example", "webapp_related",
                                            "webapp_deep_analysis_option", "webapp_deep_analysis_example")),
 }
@@ -64579,6 +64582,74 @@ def get_sprint_dispatch_by_id(dispatch_id: int) -> dict | None:
         return None
     return {"id": int(row[0]), "sprint_id": row[1], "relation": row[2],
             "target_user_id": int(row[3]), "chat_id": int(row[4])}
+
+
+# ── «Слова со вчерашних тренировок» ───────────────────────────────────────────────────
+# Стратегия: docs/tasks/word_pick_review_strategy.md. Тап по слову в конце интерактива
+# отбирает его на ЗАВТРА; утром и вечером человеку приходит постер с кнопкой.
+# Список источников закрытый: ровно те origin_process, которые шлют чипы и дискетки
+# интерактивов. Новый интерактив с чипами добавляет свой источник СЮДА, иначе его тапы
+# на завтра не попадут (и тест test_word_pick_door это поймает по allowlist).
+WORD_PICK_ORIGINS: frozenset[str] = frozenset({
+    "trainer_save", "synonym_save", "artikel_sprint_save", "adjektiv_trainer", "interactive_save",
+})
+_WORD_PICK_TZ = "Europe/Vienna"   # та же граница суток, что у due_at и у рассылки
+_word_pick_schema_ready = False
+
+
+def ensure_word_pick_schema() -> None:
+    global _word_pick_schema_ready
+    if _word_pick_schema_ready:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_word_picks (
+                    id             BIGSERIAL PRIMARY KEY,
+                    user_id        BIGINT NOT NULL,
+                    card_id        BIGINT NOT NULL,
+                    picked_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    pick_day       DATE NOT NULL,
+                    for_day        DATE NOT NULL,
+                    origin_process TEXT NOT NULL,
+                    am_rated_at    TIMESTAMPTZ,
+                    pm_rated_at    TIMESTAMPTZ,
+                    UNIQUE (user_id, card_id, for_day)
+                );
+                CREATE INDEX IF NOT EXISTS idx_word_picks_for_day
+                    ON bt_3_word_picks (for_day, user_id);
+                """
+            )
+        conn.commit()
+    _word_pick_schema_ready = True
+
+
+def record_word_pick(*, user_id: int, card_id: int, origin_process: str) -> dict:
+    """Записать «слово отобрано на завтра». Второй тап в тот же день — та же строка.
+    Возвращает {"for_day": date, "inserted": bool}. Ошибки НЕ глушит: решает вызывающий."""
+    ensure_word_pick_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_word_picks (user_id, card_id, pick_day, for_day, origin_process)
+                VALUES (%s, %s,
+                        (NOW() AT TIME ZONE %s)::date,
+                        (NOW() AT TIME ZONE %s)::date + 1,
+                        %s)
+                ON CONFLICT (user_id, card_id, for_day) DO NOTHING
+                RETURNING for_day;
+                """,
+                (int(user_id), int(card_id), _WORD_PICK_TZ, _WORD_PICK_TZ, str(origin_process)),
+            )
+            row = cursor.fetchone()
+            inserted = row is not None
+            if row is None:
+                cursor.execute("SELECT (NOW() AT TIME ZONE %s)::date + 1;", (_WORD_PICK_TZ,))
+                row = cursor.fetchone()
+        conn.commit()
+    return {"for_day": row[0], "inserted": inserted}
 
 
 # ── Synonym/Antonym TRAINER (recognition game; feeds the sprint 3 days later) ────

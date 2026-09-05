@@ -654,6 +654,10 @@ from backend.database import (
     increment_free_feature_usage,
     reserve_free_feature_usage,
     log_limit_runtime_event,
+    # «Слова со вчерашних тренировок»: дверь отбора на завтра в сохранении слова
+    WORD_PICK_ORIGINS,
+    record_word_pick,
+    _normalize_dictionary_origin_process,
     build_free_limit_error,
     enforce_reader_audio_pro_monthly_limit,
     enforce_reader_audio_global_monthly_limit,
@@ -53002,6 +53006,8 @@ def save_webapp_dictionary_entry():
     if payload_direction and "direction" not in origin_meta:
         origin_meta["direction"] = str(payload_direction)
 
+    # Объявлено ДО try, чтобы итоговый return ниже видел его при любом исходе.
+    pick_for_day = None
     try:
         resolved_word_ru = _strip_bilingual_ru_combo(word_ru or response_json.get("word_ru"))
         resolved_word_de = word_de or response_json.get("word_de")
@@ -53107,6 +53113,22 @@ def save_webapp_dictionary_entry():
                     "origin_process": origin_process,
                 },
             )
+        # «Слова со вчерашних тренировок»: тап по слову в интерактиве отбирает его на завтра.
+        # Одна дверь для всех пяти мест с чипами (стратегия docs/tasks/word_pick_review_strategy.md).
+        # Тап по слову «уже есть» тоже считается — владелец: важно, что человек нажал.
+        # Ошибка записи отбора слово НЕ теряет (оно уже записано) и ответ НЕ подменяет:
+        # pick_for_day уходит null, интерфейс честно говорит «на завтра не отобралось».
+        pick_for_day = None
+        if _normalize_dictionary_origin_process(origin_process) in WORD_PICK_ORIGINS:
+            try:
+                pick = record_word_pick(
+                    user_id=int(user_id), card_id=int(entry_id or 0),
+                    origin_process=_normalize_dictionary_origin_process(origin_process),
+                )
+                pick_for_day = pick["for_day"].isoformat()
+            except Exception:
+                logging.exception("word pick: отбор на завтра не записался user=%s entry=%s origin=%s",
+                                  user_id, entry_id, origin_process)
         # A de→ru entry that arrived without a real Russian gloss (bare-text saves from the
         # games: target_text empty or just echoing the German) must be enriched even when
         # the payload gate says otherwise — otherwise it stays German-on-both-sides forever.
@@ -53155,6 +53177,9 @@ def save_webapp_dictionary_entry():
             # it does NOT appear at the top of the list and the user thinks the save was
             # lost. Say «уже в словаре» instead of a silent 💾.
             "inserted": bool(inserted),
+            # Дата, на которую слово отобрано в «Слова со вчерашних тренировок»; null —
+            # источник не из интерактива ЛИБО запись не удалась (в логе exception).
+            "pick_for_day": pick_for_day,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
