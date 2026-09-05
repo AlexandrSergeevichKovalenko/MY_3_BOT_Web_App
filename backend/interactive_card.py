@@ -792,6 +792,28 @@ def render_review_card(*, level: str = "") -> bytes | None:
                  cta="Разбери ошибки — быстрый путь к грамматике")
 
 
+def _ru_words(n: int) -> str:
+    """«1 слово / 3 слова / 7 слов» — склонение по правилам русского счёта."""
+    n = int(n)
+    last, last2 = n % 10, n % 100
+    if last == 1 and last2 != 11:
+        form = "слово"
+    elif 2 <= last <= 4 and not 12 <= last2 <= 14:
+        form = "слова"
+    else:
+        form = "слов"
+    return f"{n} {form}"
+
+
+def render_word_pick_card(*, count: int = 0) -> bytes | None:
+    """Постер «Слова со вчерашних тренировок»: человек сам тапнул эти слова вчера,
+    сегодня повторяет утром и вечером. Гамма Fuchs-амбер, как у тренажёров."""
+    subtitle = (f"{_ru_words(count)}  ·  ты сам их отобрал") if count else "ты сам их отобрал"
+    return _card(badge="WIEDERHOLEN", title="Слова со вчерашних тренировок",
+                 subtitle=subtitle, accent=(245, 158, 11), motif=_motif_flashcard,
+                 cta="Повтори утром и вечером — и они останутся")
+
+
 def render_sprint_relation_card(relation: str) -> bytes | None:
     """Card for the 60-second synonym/antonym SPRINT race (distinct from the
     single-word synonym/antonym aufgabe). relation = 'synonym' | 'antonym'."""

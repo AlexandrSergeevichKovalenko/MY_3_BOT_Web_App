@@ -82,3 +82,42 @@ class СверхНормы(unittest.TestCase):
         self.assertIn("'wp'", db._INBOX_BONUS_KINDS_SQL)
         from backend.free_delivery_report import BONUS_INBOX_KINDS
         self.assertEqual(BONUS_INBOX_KINDS, {"rv", "wp"})
+
+
+class Рассылка(unittest.TestCase):
+
+    def test_постер_рисуется_и_называет_число_слов(self):
+        from backend import interactive_card as ic
+        if ic.Image is None:
+            self.skipTest("Pillow не установлен")
+        png = ic.render_word_pick_card(count=7)
+        self.assertTrue(png and png[:8] == b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(ic._ru_words(1), "1 слово")
+        self.assertEqual(ic._ru_words(3), "3 слова")
+        self.assertEqual(ic._ru_words(7), "7 слов")
+        self.assertEqual(ic._ru_words(21), "21 слово")
+
+    def test_бот_шлёт_ссылку_которую_приложение_умеет_открыть(self):
+        """Та же сверка, что в test_every_bot_link_opens, только адресно про wp."""
+        import pathlib
+        корень = pathlib.Path(__file__).resolve().parents[2]
+        bot = (корень / "bot_3.py").read_text(encoding="utf-8")
+        jsx = (корень / "frontend/src/answer/AnswerOverlay.jsx").read_text(encoding="utf-8")
+        self.assertIn("deeplink_for(", bot)
+        self.assertRegex(jsx, r"\^ans_\([a-z|]*\bwp\b[a-z|]*\)_")
+
+    def test_слоты_рассылки_равны_решению_владельца(self):
+        import re, pathlib
+        корень = pathlib.Path(__file__).resolve().parents[2]
+        bot = (корень / "bot_3.py").read_text(encoding="utf-8")
+        m = re.search(r"WORD_PICK_SLOT_TIMES\s*=\s*\{([^}]*)\}", bot)
+        self.assertIsNotNone(m)
+        self.assertIn("(7, 25)", m.group(1)); self.assertIn("(19, 35)", m.group(1))
+        # Регистрация крона идёт через make_bonus_gated — сверх нормы, без тарифного среза.
+        self.assertIn('make_bonus_gated("word_pick"', bot)
+        # Тихие часы в отправителе НЕ проверяются (решение владельца 04.09.2026).
+        тело = bot.split("async def _send_word_pick_reviews(", 1)[1].split("\nasync def ", 1)[0]
+        self.assertNotIn("_is_quiet_hours_now", тело)
+        self.assertIn("_is_access_locked_cached", тело)
+        self.assertIn("_user_send_budget", тело)          # «Тишина»
+        self.assertIn("list_bot_blocked_user_ids", тело)  # заблокировавшие бота
