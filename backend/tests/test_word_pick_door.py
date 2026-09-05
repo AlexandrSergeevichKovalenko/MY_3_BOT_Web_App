@@ -60,7 +60,34 @@ class ДверьОтбора(unittest.TestCase):
         for источник in db.WORD_PICK_ORIGINS:
             self.assertEqual(db._normalize_dictionary_origin_process(источник), источник, источник)
         self.assertEqual(db.WORD_PICK_ORIGINS, frozenset({
-            "trainer_save", "synonym_save", "artikel_sprint_save", "adjektiv_trainer", "interactive_save"}))
+            "trainer_save", "synonym_save", "artikel_sprint_save", "adjektiv_trainer",
+            "interactive_save", "rebus_save", "anagram_save", "crossword_save",
+            "artikel_learn_save", "wofrage_learn_save"}))
+
+    def test_каждый_источник_который_шлёт_фронт_разрешён_на_сервере(self):
+        """Класс, а не список. 05.09.2026 нашлось восемь источников, которые фронт шлёт, а
+        сервер превращал в «unknown» (пять экранов дискетки и три поверхности словаря).
+        Неразрешённый источник теряет поверхность И затирает источник у старого слова."""
+        import re
+        фронт = КОРЕНЬ / "frontend/src"
+        шлёт: set[str] = set()
+        for путь in фронт.rglob("*.js*"):
+            src = путь.read_text(encoding="utf-8", errors="ignore")
+            шлёт.update(re.findall(r"""origin(?:_process|Process)?\s*[:=]\s*["']([a-z_]+)["']""", src))
+        self.assertTrue(шлёт, "разбор фронта не нашёл ни одного источника — регулярка сломалась")
+        неразрешённые = sorted(o for o in шлёт if db._normalize_dictionary_origin_process(o) != o)
+        self.assertEqual(неразрешённые, [], "фронт шлёт источники, которые сервер превращает в unknown")
+
+    def test_каждый_экран_дискетки_отбирает_на_завтра(self):
+        """Все originProcess, которые экраны передают в SaveWordChip, входят в дверь отбора."""
+        import re
+        фронт = КОРЕНЬ / "frontend/src"
+        дискетка: set[str] = set()
+        for путь in фронт.rglob("*.jsx"):
+            src = путь.read_text(encoding="utf-8", errors="ignore")
+            дискетка.update(re.findall(r"""originProcess\s*=\s*["']([a-z_]+)["']""", src))
+        self.assertTrue(дискетка)
+        self.assertEqual(sorted(дискетка - db.WORD_PICK_ORIGINS), [])
 
     def test_источники_тапа_показываются_в_группе_тренажёров(self):
         группа = db.DICTIONARY_ORIGIN_GROUPS["trainer"][2]

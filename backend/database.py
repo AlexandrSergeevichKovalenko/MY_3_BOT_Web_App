@@ -310,9 +310,20 @@ DICTIONARY_ORIGIN_ALLOWED = {
     "trainer_save",
     "artikel_sprint_save",
     "adjektiv_trainer",
-    # Дискетка в углу карточки интерактива (SaveWordChip.jsx). До 05.09.2026 её здесь НЕ
-    # было: сохранения писались как «unknown» и затирали источник у старых слов.
+    # Дискетка в углу карточки интерактива (SaveWordChip.jsx) и её пять экранов. До
+    # 05.09.2026 ни одного из них здесь НЕ было: сохранения писались как «unknown» и
+    # затирали источник у старых слов. Класс закрыт тестом test_word_pick_door:
+    # каждый origin, который фронт вообще шлёт, обязан быть в этом списке.
     "interactive_save",
+    "rebus_save",
+    "anagram_save",
+    "crossword_save",
+    "artikel_learn_save",
+    "wofrage_learn_save",
+    # Поверхности словаря, которые фронт шлёт, а список не знал (нашлось тем же тестом).
+    "webapp_corpus_example",
+    "webapp_word_diff_word",
+    "webapp_word_diff_collocation",
     "webapp_quick_dictionary",
     "webapp_quick_dictionary_related",
     "webapp_quick_dictionary_example",
@@ -36589,9 +36600,13 @@ DICTIONARY_ORIGIN_GROUPS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "quick":   ("Быстрый словарь",  "⚡", ("webapp_quick_dictionary", "webapp_quick_dictionary_related",
                                            "webapp_quick_dictionary_example")),
     "artikel": ("Спринт артиклей",  "🔤", ("artikel_sprint_save",)),
-    "trainer": ("Тренажёры",        "🎯", ("trainer_save", "synonym_save", "adjektiv_trainer", "interactive_save")),
+    "trainer": ("Тренажёры",        "🎯", ("trainer_save", "synonym_save", "adjektiv_trainer", "interactive_save",
+                                           "rebus_save", "anagram_save", "crossword_save",
+                                           "artikel_learn_save", "wofrage_learn_save")),
     "search":  ("Поиск в словаре",  "🔍", ("webapp_dictionary_save", "webapp_example", "webapp_related",
-                                           "webapp_deep_analysis_option", "webapp_deep_analysis_example")),
+                                           "webapp_deep_analysis_option", "webapp_deep_analysis_example",
+                                           "webapp_corpus_example", "webapp_word_diff_word",
+                                           "webapp_word_diff_collocation")),
 }
 
 
@@ -64600,7 +64615,11 @@ def get_sprint_dispatch_by_id(dispatch_id: int) -> dict | None:
 # интерактивов. Новый интерактив с чипами добавляет свой источник СЮДА, иначе его тапы
 # на завтра не попадут (и тест test_word_pick_door это поймает по allowlist).
 WORD_PICK_ORIGINS: frozenset[str] = frozenset({
-    "trainer_save", "synonym_save", "artikel_sprint_save", "adjektiv_trainer", "interactive_save",
+    # чипы в конце тренировок
+    "trainer_save", "synonym_save", "artikel_sprint_save", "adjektiv_trainer",
+    # дискетка SaveWordChip: умолчание и пять экранов, которые его переопределяют
+    "interactive_save", "rebus_save", "anagram_save", "crossword_save",
+    "artikel_learn_save", "wofrage_learn_save",
 })
 _WORD_PICK_TZ = "Europe/Vienna"   # та же граница суток, что у due_at и у рассылки
 _word_pick_schema_ready = False
