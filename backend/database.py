@@ -23590,16 +23590,25 @@ def get_windowed_user_prefs() -> list:
     return out
 
 
+# Коды ведомости, которые приходят СВЕРХ дневной нормы и в счёт не идут:
+# rv — «Работа над ошибками», wp — «Слова со вчерашних тренировок». Одно место на три
+# запроса: раньше литерал 'rv' стоял в каждом отдельно, и второй бонусный код пришлось
+# бы вписывать трижды (05.09.2026).
+INBOX_BONUS_KINDS: tuple[str, ...] = ("rv", "wp")
+_INBOX_BONUS_KINDS_SQL = " AND kind NOT IN (" + ", ".join(f"'{k}'" for k in INBOX_BONUS_KINDS) + ")"
+
+
 def get_inbox_delivery_stats_today(user_id: int, since_ts) -> tuple:
     """(delivered_count, last_delivered_at) for the user's inbox since `since_ts`,
-    excluding the spaced-rep review (kind='rv') which is delivered off-schedule —
+    excluding the bonus kinds (INBOX_BONUS_KINDS: «Работа над ошибками» и «Слова со
+    вчерашних тренировок»), which are delivered off-schedule and above the daily norm —
     used to pace the drip (how many already today + when last)."""
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     "SELECT COUNT(*), MAX(created_at) FROM bt_3_interactive_inbox "
-                    "WHERE user_id = %s AND created_at >= %s AND kind <> 'rv';",
+                    "WHERE user_id = %s AND created_at >= %s" + _INBOX_BONUS_KINDS_SQL + ";",
                     (int(user_id), since_ts),
                 )
                 r = cursor.fetchone()
@@ -23613,13 +23622,13 @@ def get_inbox_kinds_today(user_id: int, since_ts) -> set:
     """Коды заданий, которые человек сегодня УЖЕ получил (по всем путям сразу —
     и по слотам, и капельной выдачей). Капля выбирает следующий тип, пропуская их:
     сперва человеку достаётся всё разное, и только когда разного не осталось,
-    идёт второй круг. Повтор дня («работа над ошибками») сюда не входит."""
+    идёт второй круг. Бонусы сверх нормы (INBOX_BONUS_KINDS) сюда не входят."""
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     "SELECT DISTINCT kind FROM bt_3_interactive_inbox "
-                    "WHERE user_id = %s AND created_at >= %s AND kind <> 'rv';",
+                    "WHERE user_id = %s AND created_at >= %s" + _INBOX_BONUS_KINDS_SQL + ";",
                     (int(user_id), since_ts),
                 )
                 return {str(r[0]) for r in cursor.fetchall() or [] if r[0]}
@@ -64650,6 +64659,131 @@ def record_word_pick(*, user_id: int, card_id: int, origin_process: str) -> dict
                 row = cursor.fetchone()
         conn.commit()
     return {"for_day": row[0], "inserted": inserted}
+
+
+def list_word_pick_recipients(for_day) -> list[dict]:
+    """Кому сегодня приходит постер: все, у кого есть отбор на этот день, и сколько слов.
+    Замок, «Тишину» и блокировку бота проверяет рассылка — это её правила, не запроса."""
+    ensure_word_pick_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, COUNT(*) FROM bt_3_word_picks WHERE for_day = %s "
+                "GROUP BY user_id ORDER BY user_id;",
+                (for_day,),
+            )
+            return [{"user_id": int(r[0]), "count": int(r[1])} for r in (cursor.fetchall() or [])]
+
+
+_WORD_PICK_CARD_SQL = """
+    SELECT q.id, q.word_ru, q.translation_de, q.word_de, q.translation_ru,
+           q.source_lang, q.target_lang, q.response_json, q.user_notes,
+           s.status, s.due_at, s.last_review_at, s.interval_days, s.reps, s.lapses,
+           s.stability, s.difficulty, s.step,
+           p.am_rated_at, p.pm_rated_at, p.origin_process
+    FROM bt_3_word_picks p
+    JOIN bt_3_webapp_dictionary_queries q ON q.id = p.card_id AND q.user_id = p.user_id
+    LEFT JOIN bt_3_card_srs_state s ON s.card_id = q.id AND s.user_id = q.user_id
+    WHERE p.user_id = %s AND p.for_day = %s
+    ORDER BY p.picked_at ASC, p.id ASC;
+"""
+
+
+def list_word_pick_cards(*, user_id: int, for_day, cursor=None) -> list[dict]:
+    """Набор дня: карточки, отобранные на этот день, с состоянием повторения (или None,
+    если карточка в Space Rep ещё не бывала). Срок due_at НЕ проверяется намеренно:
+    вечером набор показывается целиком снова (решение владельца 04.09.2026)."""
+    def _fetch(cur):
+        cur.execute(_WORD_PICK_CARD_SQL, (int(user_id), for_day))
+        out = []
+        for r in cur.fetchall() or []:
+            srs = None
+            if r[9] is not None:
+                srs = {
+                    "status": r[9], "due_at": r[10], "last_review_at": r[11],
+                    "interval_days": int(r[12] or 0), "reps": int(r[13] or 0),
+                    "lapses": int(r[14] or 0), "stability": float(r[15] or 0.0),
+                    "difficulty": float(r[16] or 0.0), "step": int(r[17] or 0),
+                }
+            out.append({
+                "card": {
+                    "id": int(r[0]), "word_ru": r[1], "translation_de": r[2], "word_de": r[3],
+                    "translation_ru": r[4], "source_lang": r[5], "target_lang": r[6],
+                    "response_json": r[7], "user_notes": r[8],
+                },
+                "srs": srs,
+                "am_rated_at": r[18], "pm_rated_at": r[19], "origin_process": r[20],
+            })
+        return out
+    if cursor is not None:
+        items = _fetch(cursor)
+    else:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as own:
+                items = _fetch(own)
+    # Разбор берём с единицы — тот же, что видит словарь и Space Rep.
+    attach_unit_content_to_cards([it["card"] for it in items])
+    return items
+
+
+def word_pick_card_ids(*, user_id: int, for_day, cursor=None) -> list[int]:
+    def _fetch(cur):
+        cur.execute("SELECT card_id FROM bt_3_word_picks WHERE user_id = %s AND for_day = %s;",
+                    (int(user_id), for_day))
+        return [int(r[0]) for r in (cur.fetchall() or [])]
+    if cursor is not None:
+        return _fetch(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own:
+            return _fetch(own)
+
+
+def mark_word_pick_rated(*, user_id: int, card_id: int, for_day, slot: str, cursor=None) -> None:
+    """Слово оценено в этом проходе. Первая оценка прохода фиксируется, повторная не
+    двигает время — счётчик «оценено N из M» обязан не прыгать."""
+    if slot not in ("am", "pm"):
+        raise ValueError(f"word pick: неизвестный проход {slot!r}")
+    column = f"{slot}_rated_at"
+    sql = (f"UPDATE bt_3_word_picks SET {column} = COALESCE({column}, NOW()) "
+           "WHERE user_id = %s AND card_id = %s AND for_day = %s;")
+    if cursor is not None:
+        cursor.execute(sql, (int(user_id), int(card_id), for_day))
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own:
+            own.execute(sql, (int(user_id), int(card_id), for_day))
+        conn.commit()
+
+
+def word_pick_day_stats(day) -> dict:
+    """Числа для утреннего отчёта за день `day`: кто получал, сколько открыли, сколько оценили."""
+    ensure_word_pick_schema()
+    day_no = int(day.strftime("%Y%m%d"))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(DISTINCT user_id), COUNT(*),
+                       COUNT(DISTINCT user_id) FILTER (WHERE am_rated_at IS NOT NULL),
+                       COUNT(DISTINCT user_id) FILTER (WHERE pm_rated_at IS NOT NULL)
+                FROM bt_3_word_picks WHERE for_day = %s;
+                """,
+                (day,),
+            )
+            p = cursor.fetchone() or (0, 0, 0, 0)
+            cursor.execute(
+                """
+                SELECT COUNT(*) FILTER (WHERE dispatch_id = %s),
+                       COUNT(*) FILTER (WHERE dispatch_id = %s),
+                       COUNT(DISTINCT user_id) FILTER (WHERE answered)
+                FROM bt_3_interactive_inbox WHERE kind = 'wp' AND dispatch_id IN (%s, %s);
+                """,
+                (day_no * 10 + 1, day_no * 10 + 2, day_no * 10 + 1, day_no * 10 + 2),
+            )
+            i = cursor.fetchone() or (0, 0, 0)
+    return {"pickers": int(p[0]), "cards": int(p[1]), "am_rated_users": int(p[2]),
+            "pm_rated_users": int(p[3]), "posters_am": int(i[0]), "posters_pm": int(i[1]),
+            "opened": int(i[2])}
 
 
 # ── Synonym/Antonym TRAINER (recognition game; feeds the sprint 3 days later) ────

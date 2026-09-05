@@ -22,8 +22,10 @@ from datetime import date
 
 JOB_KEY = "free_delivery_daily"
 
-# Бонусы: приходят сверх шести и в счёт не идут.
-BONUS_INBOX_KINDS = {"rv"}
+from backend.database import INBOX_BONUS_KINDS
+
+# Бонусы: приходят сверх нормы и в счёт не идут. Список один на весь проект — в database.
+BONUS_INBOX_KINDS = set(INBOX_BONUS_KINDS)
 
 # Ротационный вид задания → код в ведомости.
 KIND_TO_INBOX_CODE = {
