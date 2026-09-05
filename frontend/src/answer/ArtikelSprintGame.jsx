@@ -2,6 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import useFitText from './useFitText.js';
 import useWideScreen from './useWideScreen.js';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
+// Строка результата здесь — не чип (знак ✅/❌/💾 слева, артикль жирным), поэтому
+// chipLabel не используется: хвост «· уже есть» / «· завтра повторим» дописывается в
+// свою разметку. Подпись и плашка — общие.
+import { PICK_CAPTION, PICK_FAILED_TOAST } from './pickCopy.js';
 import Toast, { useToast } from './Toast.jsx';
 import { saveErrorToast } from './saveNotice.js';
 
@@ -23,6 +27,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
   const [result, setResult] = useState(null);
   const [savedWords, setSavedWords] = useState(() => new Set());
   const [knownWords, setKnownWords] = useState(() => new Set());  // already in the dictionary
+  const [picked, setPicked] = useState(() => new Set());  // отобрано на завтра («Слова со вчерашних тренировок»)
   const toast = useToast();
   const answersRef = useRef([]);
   const wordsRef = useRef([]);
@@ -145,6 +150,8 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       // Already in the dictionary: the save refreshed that old entry, so it keeps its old
       // place in the list instead of appearing on top. Say so, don't leave them hunting.
       if (res && res.inserted === false) setKnownWords((k) => new Set(k).add(key));
+      if (res && res.pickedForDay) setPicked((p) => new Set(p).add(key));
+      else toast.show(PICK_FAILED_TOAST);
     }).catch((err) => {
       // A failed save used to be signalled by an error vibration alone — the 💾 just
       // flipped back and the word was gone without a word of explanation. Теперь причина
@@ -282,7 +289,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       ) : null}
       {items.length ? (
         <>
-          <div className="as-save-hint">👆 нажми на слово, чтобы сохранить в словарь (с артиклем)</div>
+          <div className="as-save-hint">👆 {PICK_CAPTION} (с артиклем)</div>
           <div className="as-result-list ans-body">
             {items.map((it, i) => {
               const de = `${it.a} ${it.w}`.trim();
@@ -299,6 +306,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
                   <span className="as-row-mark">{isSaved ? '💾' : (it.ok ? '✅' : '❌')}</span>
                   {' '}<b className={it.ok ? '' : 'as-correct-article'}>{it.a}</b> {it.w}
                   {isKnown ? <span className="as-mine"> · уже есть</span> : null}
+                  {picked.has(de) ? <span className="as-mine"> · завтра повторим</span> : null}
                   {!it.ok ? <span className="as-mine"> (ты: {it.chosen || '—'})</span> : null}
                   {it.ru ? <span className="as-ru"> · {it.ru}</span> : null}
                 </button>

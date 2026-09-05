@@ -26,6 +26,7 @@ import BattleHistory from './BattleHistory.jsx';
 import AskOverlay from './AskOverlay.jsx';
 import SaveWordChip from './SaveWordChip.jsx';
 import Toast, { useToast } from './Toast.jsx';
+import { PICK_CAPTION, PICK_FAILED_TOAST, chipLabel } from './pickCopy.js';
 import WordPickGame from './WordPickGame.jsx';
 import { playWordTts } from './wordTts.js';
 import { saveErrorToast } from './saveNotice.js';
@@ -493,6 +494,10 @@ function wordDiff(userText, correctText) {
 
 function AufgabeResult({ result }) {
   const [saved, setSaved] = useState(() => new Set());
+  // До 05.09.2026 у этих чипов не было «уже есть»: сервер отвечал inserted:false, а чип
+  // молча показывал 💾 — человек искал слово наверху списка и не находил (разбор 04.09).
+  const [known, setKnown] = useState(() => new Set());
+  const [picked, setPicked] = useState(() => new Set());  // отобрано на завтра («Слова со вчерашних тренировок»)
   const chipToast = useToast();
   const saveChip = useCallback((de, ru) => {
     if (!de || saved.has(de)) return;
@@ -506,7 +511,12 @@ function AufgabeResult({ result }) {
         source_lang: 'de', target_lang: 'ru', direction: 'de-ru',
         origin_process: 'synonym_save',
       }),
-    ).catch((err) => {
+    ).then((res) => {
+      // Сырой ответ сервера (здесь не saveGermanWordViaLookup): `inserted` и `pick_for_day`.
+      if (res && res.inserted === false) setKnown((k) => new Set(k).add(de));
+      if (res && res.pick_for_day) setPicked((p) => new Set(p).add(de));
+      else chipToast.show(PICK_FAILED_TOAST);
+    }).catch((err) => {
       setSaved((s) => { const n = new Set(s); n.delete(de); return n; });
       chipToast.show(saveErrorToast(err));
       haptic('bad');
@@ -635,13 +645,14 @@ function AufgabeResult({ result }) {
         <div className="sp-all ans-body">
           <div className="sp-all-head">
             {result.format === 'antonym' ? 'Антонимы' : 'Синонимы'}{' '}
-            <span className="sp-all-dim">(👆 нажми, чтобы сохранить в словарь)</span>:
+            <span className="sp-all-dim">(👆 {PICK_CAPTION})</span>:
           </div>
           <div className="sp-chips">
             {saveable.map((a, i) => {
               const de = (a && a.de) || '';
               const ru = (a && a.ru) || '';
               const isSaved = saved.has(de);
+              const isKnown = known.has(de);
               return (
                 <button
                   key={i}
@@ -650,7 +661,7 @@ function AufgabeResult({ result }) {
                   disabled={isSaved}
                   onClick={() => saveChip(de, ru)}
                 >
-                  {isSaved ? '💾 ' : ''}{de}
+                  {chipLabel({ de, saved: isSaved, known: isKnown, picked: picked.has(de) })}
                 </button>
               );
             })}

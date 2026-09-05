@@ -4,6 +4,7 @@ import useWideScreen from './useWideScreen.js';
 import AskOverlay from './AskOverlay.jsx';
 import AdjHint from './AdjHint.jsx';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
+import { PICK_CAPTION, PICK_FAILED_TOAST } from './pickCopy.js';
 import { saveErrorToast } from './saveNotice.js';
 
 // Adjektiv Trainer — self-paced learning deck for adjective endings (companion to
@@ -108,7 +109,15 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
     ).then((res) => {
       // Already in the dictionary: the save refreshed that entry, so it keeps its old
       // place in the list — say so, or the user looks for it at the top and doesn't find it.
-      if (res && res.inserted === false) showToast(`«${word_de}» уже был в словаре`, 'info');
+      // «Слова со вчерашних тренировок»: тап отбирает слово на завтра. Обещаем это вслух,
+      // а если сервер отбор не записал (pickedForDay пуст) — говорим честно, не молчим.
+      if (res && res.pickedForDay) {
+        showToast(res.inserted === false
+          ? `«${word_de}» уже был в словаре · завтра повторим`
+          : `«${word_de}» сохранено · завтра повторим`, 'info');
+      } else {
+        showToast(PICK_FAILED_TOAST, 'info');
+      }
     }).catch((err) => {
       // Причину называем вслух: чаще всего это дневной лимит бесплатного тарифа, а не сбой,
       // и «нажми ещё раз» в этом случае — враньё.

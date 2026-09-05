@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import Toast, { useToast } from './Toast.jsx';
 import { saveErrorToast } from './saveNotice.js';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
+import { PICK_CAPTION, PICK_FAILED_TOAST } from './pickCopy.js';
 import './saveWordChip.css';
 
 /**
@@ -30,18 +31,20 @@ export default function SaveWordChip({
   originProcess = 'interactive_save',
   className = '',
 }) {
-  const [state, setState] = useState('idle'); // idle | saved
+  // «Слова со вчерашних тренировок»: `picked` — сервер отобрал слово на завтра.
+  const [chip, setChip] = useState({ state: 'idle', picked: false }); // state: idle | saved
+  const state = chip.state;
   const toast = useToast();
   const text = String(word || '').trim();
 
   // Следующая карточка — дискетка снова свободна.
-  useEffect(() => { setState('idle'); }, [text]);
+  useEffect(() => { setChip({ state: 'idle', picked: false }); }, [text]);
 
   const save = useCallback(() => {
     if (!text || state === 'saved') return;
     // Оптимистично: галочка и вибрация сразу, сеть — в фоне. Ждать разбор GPT человек
     // не должен. Не получилось — возвращаем дискетку и говорим причину плашкой.
-    setState('saved');
+    setChip({ state: 'saved', picked: false });
     try { window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* ignore */ }
     (async () => {
       try {
@@ -52,11 +55,17 @@ export default function SaveWordChip({
           origin: originProcess,
         });
         const ru = String(res?.targetText || translation || '').trim();
-        toast.show({ kind: 'ok', text: ru ? `«${text}» — ${ru} · в словаре` : `«${text}» в словаре` });
+        const pickedForDay = !!(res && res.pickedForDay);
+        setChip({ state: 'saved', picked: pickedForDay });
+        if (pickedForDay) {
+          toast.show({ kind: 'ok', text: ru ? `«${text}» — ${ru} · в словаре · завтра повторим` : `«${text}» в словаре · завтра повторим` });
+        } else {
+          toast.show(PICK_FAILED_TOAST);
+        }
       } catch (err) {
         // Причина важнее факта: чаще всего это дневной лимит бесплатного тарифа, и
         // «повторить» тут не поможет — человек должен это понимать.
-        setState('idle');
+        setChip({ state: 'idle', picked: false });
         toast.show(saveErrorToast(err));
         try { window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('error'); } catch (_e) { /* ignore */ }
       }
@@ -65,6 +74,10 @@ export default function SaveWordChip({
 
   if (!text) return null;
 
+  // Кнопка — круг в 17px (saveWordChip.css), надпись «завтра повторим» в него не влезет;
+  // видимый знак остаётся одним, а обещание живёт в плашке и в подсказке кнопки.
+  const savedTitle = chip.picked ? 'Слово в словаре · завтра повторим' : 'Слово в словаре';
+
   return (
     <>
       <button
@@ -72,8 +85,8 @@ export default function SaveWordChip({
         className={`save-chip ${state === 'saved' ? 'is-saved' : ''} ${className}`.trim()}
         onClick={(e) => { e.stopPropagation(); save(); }}
         disabled={state === 'saved'}
-        title={state === 'saved' ? 'Слово в словаре' : 'Сохранить в словарь'}
-        aria-label={state === 'saved' ? 'Слово в словаре' : 'Сохранить в словарь'}
+        title={state === 'saved' ? savedTitle : PICK_CAPTION}
+        aria-label={state === 'saved' ? savedTitle : PICK_CAPTION}
       >
         {state === 'saved' ? '✓' : '💾'}
       </button>

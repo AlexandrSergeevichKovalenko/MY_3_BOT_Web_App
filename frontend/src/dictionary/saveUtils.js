@@ -125,12 +125,19 @@ export async function saveGermanWordViaLookup({ api, word, fallbackTranslation =
     direction: 'de-ru',
     origin_process: origin,
   });
-  // Background enrichment — best effort, never surfaced. A capped/offline user keeps the
-  // word; the card fills in later.
-  void enrichSavedGermanWord({ api, word: text, knownRu, origin });
-  // `inserted === false` → the word was already in the dictionary and this updated that
-  // entry (which keeps its old position in the list). Callers say so instead of 💾.
-  return { sourceText: text, targetText: knownRu, inserted: res?.inserted !== false };
+  // Обогащение (запрос разбора) — только для НОВОГО слова: у «уже есть» разбор либо
+  // лежит, либо его доберёт ночь. До 05.09.2026 оно уходило до ответа и для всех.
+  // Best effort, never surfaced: a capped/offline user keeps the word; the card fills in
+  // later. `inserted === false` → the word was already in the dictionary and this updated
+  // that entry (which keeps its old position in the list). Callers say so instead of 💾.
+  if (res?.inserted !== false) void enrichSavedGermanWord({ api, word: text, knownRu, origin });
+  return {
+    sourceText: text,
+    targetText: knownRu,
+    inserted: res?.inserted !== false,
+    // «Слова со вчерашних тренировок»: день, на который слово отобрано; '' — не отобрано.
+    pickedForDay: String(res?.pick_for_day || ''),
+  };
 }
 
 // Persist a card built from a breakdown `item` (which may be null — then only the bare
@@ -165,7 +172,11 @@ async function saveDictionaryCard({
     response_json: item || undefined,
     origin_process: origin,
   });
-  return { sourceText, targetText, inserted: res?.inserted !== false };
+  return {
+    sourceText, targetText, inserted: res?.inserted !== false,
+    // «Слова со вчерашних тренировок»: день, на который слово отобрано; '' — не отобрано.
+    pickedForDay: String(res?.pick_for_day || ''),
+  };
 }
 
 // Fetch the full breakdown for an ALREADY-SAVED German word and re-save the complete card
