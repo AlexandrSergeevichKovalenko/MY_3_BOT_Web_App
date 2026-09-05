@@ -97,6 +97,10 @@ export default function WordPickGame({ day, api, haptic, onClose }) {
     return () => { cancelled = true; };
   }, [api, day]);
 
+  // «Готово» выводится из самой очереди, а не ставится отдельным состоянием: 05.09.2026
+  // после последней оценки очередь пустела на кадр раньше, чем phase становился 'done',
+  // экран пытался нарисовать карточку, которой нет, и падал в белый экран.
+  const finished = phase === 'card' && queue.length === 0;
   const current = phase === 'card' && queue.length ? items[queue[0]] : null;
   const card = current?.card || null;
   const sides = useMemo(() => (card ? sidesOf(card) : null), [card]);
@@ -140,11 +144,7 @@ export default function WordPickGame({ day, api, haptic, onClose }) {
       try { haptic?.('ok'); } catch (_e) { /* noop */ }
       setRatedNow((n) => n + 1);
       setRevealed(false); setRevealedAt(0); setElapsed(0);
-      setQueue((q) => {
-        const rest = q.slice(1);
-        if (!rest.length) setPhase('done');
-        return rest;
-      });
+      setQueue((q) => q.slice(1));
     } catch (e) {
       try { haptic?.('bad'); } catch (_e) { /* noop */ }
       toast.show('Оценка не сохранилась. Проверь связь и нажми ещё раз.');
@@ -178,7 +178,7 @@ export default function WordPickGame({ day, api, haptic, onClose }) {
       <div className="fsrs-loading-subtitle">{error}</div>
       <button type="button" className="fsrs-show-answer-btn" onClick={onClose}>Schließen</button>
     </div>);
-  if (phase === 'done') {
+  if (phase === 'done' || finished) {
     const total = items.length;
     return frame(`Вчера · ${total} из ${total}`,
       <div className="fsrs-study-card">
@@ -192,6 +192,7 @@ export default function WordPickGame({ day, api, haptic, onClose }) {
       </div>);
   }
 
+  if (!card || !sides) return null;   // недостижимо после проверки finished; на всякий случай не падаем
   const done = items.length - queue.length;
   const hintSource = card?.response_json && typeof card.response_json === 'object' ? card.response_json : null;
   const hintExamples = collectHintExamples(hintSource, 3);
