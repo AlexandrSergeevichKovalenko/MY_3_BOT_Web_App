@@ -64678,10 +64678,42 @@ def ensure_word_pick_schema() -> None:
                 );
                 CREATE INDEX IF NOT EXISTS idx_word_picks_for_day
                     ON bt_3_word_picks (for_day, user_id);
+                -- След КАЖДОГО тапа по слову в интерактиве (решение владельца 05.09.2026:
+                -- повторный тап по уже сохранённому слову — тоже тап, «сохрани и дай
+                -- повторить»). Пишется дверью ДО отбора и живёт отдельно от него, чтобы
+                -- обещание «каждый тап отбирает слово на завтра» мерилось по следу двери,
+                -- а не по времени правки карточки, которое двигают и ночные обогащения.
+                CREATE TABLE IF NOT EXISTS bt_3_word_pick_taps (
+                    id             BIGSERIAL PRIMARY KEY,
+                    user_id        BIGINT NOT NULL,
+                    card_id        BIGINT NOT NULL,
+                    origin_process TEXT NOT NULL,
+                    tapped_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_word_pick_taps_tapped_at
+                    ON bt_3_word_pick_taps (tapped_at);
                 """
             )
         conn.commit()
     _word_pick_schema_ready = True
+
+
+def record_word_pick_tap(*, user_id: int, card_id: int, origin_process: str) -> int:
+    """Оставить след тапа по слову в интерактиве. Возвращает id строки. Ошибки НЕ глушит."""
+    ensure_word_pick_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_word_pick_taps (user_id, card_id, origin_process)
+                VALUES (%s, %s, %s)
+                RETURNING id;
+                """,
+                (int(user_id), int(card_id), str(origin_process)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0])
 
 
 def record_word_pick(*, user_id: int, card_id: int, origin_process: str) -> dict:
@@ -64836,29 +64868,43 @@ def word_pick_day_stats(day) -> dict:
             "opened": int(i[2])}
 
 
+# Дверь отбора на завтра слита на сервер 05.09.2026 в 14:22 по Вене (коммит bc533010,
+# слияние 38b54ff2). Решение владельца 05.09.2026: проверка не смотрит на дни раньше
+# рождения двери — до этого момента отбирать было нечему, и «пропуск» там не пропуск.
+WORD_PICK_DOOR_BORN_AT = "2026-09-05 14:22:00+02:00"
+
+
 def count_word_pick_door_misses() -> int:
-    """Обещание word_pick_door_writes_every_tap: вчерашние (по Вене) сохранения из
-    интерактивов, у которых НЕТ записи отбора на сегодня. Ожидание 0. Сохранение метится
-    updated_at/created_at; другие правки строки тоже двигают updated_at, поэтому ложный
-    «пропуск» возможен — это исход «нарушено», который разбирают руками, а не глушат.
-    Строка COUNT(*) есть всегда; если её нет — это исключение и исход «не измерено»."""
+    """Обещание word_pick_door_writes_every_tap: вчерашние (по Вене) тапы по слову в
+    интерактивах, у которых НЕТ записи отбора на сегодня. Ожидание 0.
+
+    ┌─ ПРОВЕРЕНО 05.09.2026. ПЕРВАЯ ДВОЙКА БЫЛА НЕ УТЕЧКОЙ. НЕ ПОДНИМАТЬ СНОВА. ──────────┐
+    │ Утро 05.09: «обещано 0, сейчас 2». Оба — карточки 18316 и 330434 одного человека,   │
+    │ trainer_save, сохранены 04.09 в 20:26 по Вене. Дверь отбора появилась на сервере    │
+    │ 05.09 в 14:22 — вчера писать отбор было нечему. Класс: проверка с окном «за сутки»  │
+    │ в день деплоя всегда смотрит на день ДО двери. Закрыто нижней границей             │
+    │ WORD_PICK_DOOR_BORN_AT.                                                              │
+    │ Второй дефект той же проверки: она считала тапом сдвиг updated_at карточки, а его   │
+    │ двигают и ночные обогащения — ложное «нарушено» после каждой ночи. Закрыто следом   │
+    │ тапа bt_3_word_pick_taps: дверь пишет его ДО отбора, повторный тап по старому слову │
+    │ тоже виден (решение владельца 05.09.2026). Перемерить: how у обещания.              │
+    └──────────────────────────────────────────────────────────────────────────────────────┘
+    """
     ensure_word_pick_schema()
-    origins = sorted(WORD_PICK_ORIGINS)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 SELECT COUNT(*)
-                FROM bt_3_webapp_dictionary_queries q
+                FROM bt_3_word_pick_taps t
                 LEFT JOIN bt_3_word_picks p
-                       ON p.user_id = q.user_id AND p.card_id = q.id
-                      AND p.for_day = (NOW() AT TIME ZONE %s)::date
-                WHERE q.origin_process = ANY(%s)
-                  AND (COALESCE(q.updated_at, q.created_at) AT TIME ZONE %s)::date
-                      = (NOW() AT TIME ZONE %s)::date - 1
+                       ON p.user_id = t.user_id AND p.card_id = t.card_id
+                      AND p.for_day = (t.tapped_at AT TIME ZONE %s)::date + 1
+                WHERE (t.tapped_at AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date - 1
+                  AND t.tapped_at >= %s::timestamptz
                   AND p.id IS NULL;
                 """,
-                (_WORD_PICK_TZ, origins, _WORD_PICK_TZ, _WORD_PICK_TZ),
+                (_WORD_PICK_TZ, _WORD_PICK_TZ, _WORD_PICK_TZ, WORD_PICK_DOOR_BORN_AT),
             )
             return int(cursor.fetchone()[0])
 
