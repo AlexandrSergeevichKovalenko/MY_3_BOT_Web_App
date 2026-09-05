@@ -6811,7 +6811,9 @@ def _normalize_flashcards_mode(mode: str | None) -> str:
     return "quiz"
 
 
-FLASHCARDS_QUEUE_SOURCE_ALLOWED = {"system", "manual"}
+# pick — «Слова со вчерашних тренировок» (docs/tasks/word_pick_review_strategy.md):
+# набор дня человека, оценки в настоящее расписание, вне дневных потолков.
+FLASHCARDS_QUEUE_SOURCE_ALLOWED = {"system", "manual", "pick"}
 MANUAL_TRAINING_SELECTION_MAX_CARDS = 5000
 
 
@@ -32925,6 +32927,43 @@ def answer_review_next():
     return jsonify({"ok": True, **load_review_next(user_id=int(user_id), family=family)})
 
 
+@app.route("/api/answer/wordpick/set", methods=["POST"])
+def answer_word_pick_set():
+    """«Слова со вчерашних тренировок»: набор дня для этого человека и какие из слов уже
+    оценены в ТЕКУЩЕМ проходе (утро/вечер). Срок карточек не проверяется: вечером набор
+    показывается снова целиком (решение владельца 04.09.2026)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    from backend.database import list_word_pick_cards
+    from backend.word_pick import parse_day, slot_now
+    day = parse_day(payload.get("day"))
+    if day is None:
+        return jsonify({"error": "day обязателен: ГГГГММДД"}), 400
+    now_local = datetime.now(ZoneInfo("Europe/Vienna"))
+    slot = slot_now(now_local)
+    try:
+        rows = list_word_pick_cards(user_id=int(user_id), for_day=day)
+    except Exception as exc:
+        logging.exception("word pick set: набор не прочитался user=%s day=%s", user_id, day)
+        return jsonify({"error": f"Набор не прочитался: {exc}"}), 500
+    _inbox_mark_kind_done(int(user_id), "wp")
+    reviewed_at = datetime.now(timezone.utc)
+    new_state = {"status": "new", "due_at": reviewed_at, "last_review_at": None, "interval_days": 0,
+                 "reps": 0, "lapses": 0, "stability": 0.0, "difficulty": 0.0}
+    items = []
+    for r in rows:
+        state = r["srs"] if r["srs"] is not None else new_state
+        items.append({
+            "card": r["card"],
+            "srs": r["srs"],
+            "srs_preview": _build_srs_review_preview(current_state=state, reviewed_at=reviewed_at),
+            "rated": r[f"{slot}_rated_at"] is not None,
+        })
+    return jsonify({"ok": True, "day": day.isoformat(), "slot": slot, "total": len(items), "items": items})
+
+
 @app.route("/api/answer/review/submit", methods=["POST"])
 def answer_review_submit():
     """Grade a review answer + advance/reset its spaced-repetition schedule."""
@@ -58548,6 +58587,14 @@ def review_srs_card():
     response_ms = payload.get("response_ms")
     queue_source = _normalize_flashcards_queue_source(payload.get("queue_source"))
     answered_mode = _normalize_flashcards_mode(payload.get("mode") or "fsrs")
+    # «Слова со вчерашних тренировок»: карточка обязана быть в наборе дня, потолки не
+    # действуют, следующую карточку выбирает экран сам (набор у него на руках).
+    pick_day = None
+    if queue_source == "pick":
+        from backend.word_pick import parse_day
+        pick_day = parse_day(payload.get("day"))
+        if pick_day is None:
+            return jsonify({"error": "day обязателен для queue_source=pick"}), 400
     mark("parsed")
 
     if not init_data:
@@ -58583,6 +58630,10 @@ def review_srs_card():
                 card = get_dictionary_entry_for_user(user_id=user_id, card_id=card_id, cursor=cursor)
                 if not card:
                     return jsonify({"error": "Карточка не найдена"}), 404
+                if queue_source == "pick":
+                    from backend.database import word_pick_card_ids
+                    if card_id not in set(word_pick_card_ids(user_id=int(user_id), for_day=pick_day, cursor=cursor)):
+                        return jsonify({"error": "Это слово не из сегодняшнего набора."}), 403
 
                 current_state = get_card_srs_state(user_id=user_id, card_id=card_id, cursor=cursor)
                 if not current_state:
@@ -58638,63 +58689,70 @@ def review_srs_card():
                     cursor=cursor,
                 )
                 mark("db_write")
-                _log_flashcards_words_answered(
-                    user_id=int(user_id),
-                    mode=answered_mode,
-                    answered_words=1,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                )
-                fsrs_limit_state = _check_flashcards_words_daily_limit(
-                    user_id=int(user_id),
-                    mode="fsrs",
-                    requested_words=1,
-                    cursor=cursor,
-                )
-                if fsrs_limit_state.get("error"):
-                    limit_error = fsrs_limit_state.get("error") or {}
-                    queue_info = _compute_srs_queue_info(
-                        user_id=int(user_id),
-                        now_utc=datetime.now(timezone.utc),
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                        queue_source=queue_source,
-                        allowed_card_ids=manual_selected_card_ids,
-                        cursor=cursor,
-                    )
-                    payload_next = {
-                        "card": None,
-                        "srs": None,
-                        "srs_preview": None,
-                        "queue_info": {
-                            "due_count": int(queue_info.get("due_count") or 0),
-                            "new_remaining_today": int(queue_info.get("new_remaining_today") or 0),
-                            "due_count_total": int(queue_info.get("due_count_total") or 0),
-                            "due_reviewed_today": int(queue_info.get("due_reviewed_today") or 0),
-                            "due_limit_today": int(queue_info.get("due_limit_today") or 30),
-                            "introduced_today": int(queue_info.get("introduced_today") or 0),
-                            "effective_mode": "free",
-                            "free_daily_words_limit": int(limit_error.get("limit") or FREE_FLASHCARDS_WORDS_DAILY_PER_MODE),
-                            "free_daily_words_used": int(limit_error.get("limit") or FREE_FLASHCARDS_WORDS_DAILY_PER_MODE),
-                        },
-                    }
+                if queue_source == "pick":
+                    from backend.database import mark_word_pick_rated
+                    from backend.word_pick import slot_now
+                    mark_word_pick_rated(user_id=int(user_id), card_id=card_id, for_day=pick_day,
+                                         slot=slot_now(datetime.now(ZoneInfo("Europe/Vienna"))), cursor=cursor)
+                    payload_next = None      # набор дня у экрана на руках; потолков нет (всем, вне лимитов)
                 else:
-                    payload_next = _build_next_srs_payload(
+                    _log_flashcards_words_answered(
                         user_id=int(user_id),
+                        mode=answered_mode,
+                        answered_words=1,
                         source_lang=source_lang,
                         target_lang=target_lang,
-                        now_utc=datetime.now(timezone.utc),
-                        queue_source=queue_source,
-                        allowed_card_ids=manual_selected_card_ids,
-                        include_queue_info=True,
+                    )
+                    fsrs_limit_state = _check_flashcards_words_daily_limit(
+                        user_id=int(user_id),
+                        mode="fsrs",
+                        requested_words=1,
                         cursor=cursor,
                     )
-                    if isinstance(payload_next, dict) and isinstance(payload_next.get("queue_info"), dict):
-                        payload_next["queue_info"] = {
-                            **payload_next["queue_info"],
-                            **_flashcards_free_limit_queue_info(fsrs_limit_state),
+                    if fsrs_limit_state.get("error"):
+                        limit_error = fsrs_limit_state.get("error") or {}
+                        queue_info = _compute_srs_queue_info(
+                            user_id=int(user_id),
+                            now_utc=datetime.now(timezone.utc),
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            queue_source=queue_source,
+                            allowed_card_ids=manual_selected_card_ids,
+                            cursor=cursor,
+                        )
+                        payload_next = {
+                            "card": None,
+                            "srs": None,
+                            "srs_preview": None,
+                            "queue_info": {
+                                "due_count": int(queue_info.get("due_count") or 0),
+                                "new_remaining_today": int(queue_info.get("new_remaining_today") or 0),
+                                "due_count_total": int(queue_info.get("due_count_total") or 0),
+                                "due_reviewed_today": int(queue_info.get("due_reviewed_today") or 0),
+                                "due_limit_today": int(queue_info.get("due_limit_today") or 30),
+                                "introduced_today": int(queue_info.get("introduced_today") or 0),
+                                "effective_mode": "free",
+                                "free_daily_words_limit": int(limit_error.get("limit") or FREE_FLASHCARDS_WORDS_DAILY_PER_MODE),
+                                "free_daily_words_used": int(limit_error.get("limit") or FREE_FLASHCARDS_WORDS_DAILY_PER_MODE),
+                            },
                         }
-                mark("build_next")
+                    else:
+                        payload_next = _build_next_srs_payload(
+                            user_id=int(user_id),
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            now_utc=datetime.now(timezone.utc),
+                            queue_source=queue_source,
+                            allowed_card_ids=manual_selected_card_ids,
+                            include_queue_info=True,
+                            cursor=cursor,
+                        )
+                        if isinstance(payload_next, dict) and isinstance(payload_next.get("queue_info"), dict):
+                            payload_next["queue_info"] = {
+                                **payload_next["queue_info"],
+                                **_flashcards_free_limit_queue_info(fsrs_limit_state),
+                            }
+                    mark("build_next")
     except ValueError as exc:
         log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, queue_source, error_text=str(exc))
         return _сбой_запроса(exc, что="запрос", код=400)
