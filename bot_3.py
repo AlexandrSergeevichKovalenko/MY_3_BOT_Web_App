@@ -37539,8 +37539,14 @@ async def _admin_trainer_preview_command(update: Update, context: CallbackContex
 
 
 async def _admin_wordpick_preview_command(update: Update, context: CallbackContext) -> None:
-    """/admin_wordpick_preview [am|pm] — прислать СЕБЕ постер «Слова со вчерашних
-    тренировок» за сегодня, как его получит человек. Ведомость не пишет."""
+    """/admin_wordpick_preview [завтра] — прислать СЕБЕ постер «Слова со вчерашних
+    тренировок», как его получит человек. Ведомость не пишет.
+
+    Без слова — набор на сегодня (то, что тапнули вчера). Со словом «завтра» — набор,
+    который придёт завтра в 07:25 (то, что тапнули сегодня): так владелец видит экран
+    в момент проверки, не дожидаясь утра. Оценки в таком превью пишутся в настоящее
+    расписание, но отметку «проход пройден» на завтрашний день НЕ ставят
+    (backend_server: отметка только для набора сегодняшнего дня)."""
     user = update.effective_user; message = update.effective_message
     if not user or not message:
         return
@@ -37549,17 +37555,23 @@ async def _admin_wordpick_preview_command(update: Update, context: CallbackConte
     from backend.database import list_word_pick_cards
     from backend.interactive_card import render_word_pick_card
     from backend.word_pick import deeplink_for
+    args = [str(a).strip().lower() for a in (context.args or [])]
+    tomorrow = bool(args) and args[0] in ("завтра", "tomorrow")
     today = _get_quiz_schedule_now().date()
-    items = await asyncio.to_thread(list_word_pick_cards, user_id=int(user.id), for_day=today)
+    day = today + timedelta(days=1) if tomorrow else today
+    items = await asyncio.to_thread(list_word_pick_cards, user_id=int(user.id), for_day=day)
     if not items:
+        when = "сегодня" if tomorrow else "вчера"
         await message.reply_text(
-            f"На {today:%d.%m} у тебя нет отобранных слов: вчера ни одного тапа в интерактивах. "
-            "Тапни слово в конце любой тренировки — и постер придёт завтра.")
+            f"На {day:%d.%m} у тебя нет отобранных слов: {when} ни одного тапа в интерактивах. "
+            "Тапни слово в конце любой тренировки — и оно попадёт в завтрашний набор "
+            "(посмотреть сразу: /admin_wordpick_preview завтра).")
         return
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "🔁 Повторить слова", url=get_webapp_deeplink(deeplink_for(today)))]])
+        "🔁 Повторить слова", url=get_webapp_deeplink(deeplink_for(day)))]])
     poster = await asyncio.to_thread(render_word_pick_card, count=len(items))
-    caption = (f"🔁 <b>Слова со вчерашних тренировок</b>\n\nПревью: <b>{len(items)}</b> на повтор.")
+    caption = (f"🔁 <b>Слова со вчерашних тренировок</b>\n\nПревью на {day:%d.%m}: "
+               f"<b>{len(items)}</b> на повтор.")
     await context.bot.send_photo(chat_id=message.chat_id, photo=io.BytesIO(poster),
                                  caption=caption, parse_mode="HTML", reply_markup=kb)
 

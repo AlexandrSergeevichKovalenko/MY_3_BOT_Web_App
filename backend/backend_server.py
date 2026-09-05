@@ -58692,8 +58692,14 @@ def review_srs_card():
                 if queue_source == "pick":
                     from backend.database import mark_word_pick_rated
                     from backend.word_pick import slot_now
-                    mark_word_pick_rated(user_id=int(user_id), card_id=card_id, for_day=pick_day,
-                                         slot=slot_now(datetime.now(ZoneInfo("Europe/Vienna"))), cursor=cursor)
+                    now_vienna = datetime.now(ZoneInfo("Europe/Vienna"))
+                    # Отметка «оценено в этом проходе» — только для набора СЕГОДНЯШНЕГО дня.
+                    # Набор другого дня открывают через превью (/admin_wordpick_preview завтра):
+                    # оценка идёт в настоящее расписание, но завтрашний утренний проход она
+                    # съедать не должна — иначе утром человек увидел бы «всё уже оценено».
+                    if pick_day == now_vienna.date():
+                        mark_word_pick_rated(user_id=int(user_id), card_id=card_id, for_day=pick_day,
+                                             slot=slot_now(now_vienna), cursor=cursor)
                     payload_next = None      # набор дня у экрана на руках; потолков нет (всем, вне лимитов)
                 else:
                     _log_flashcards_words_answered(

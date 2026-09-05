@@ -32,3 +32,12 @@ class ИсточникОчереди(unittest.TestCase):
         self.assertIn("_build_srs_review_preview(", src)
         self.assertIn('_inbox_mark_kind_done(int(user_id), "wp")', src)
         self.assertIn("parse_day(", src)
+
+
+    def test_отметка_прохода_только_для_набора_сегодняшнего_дня(self):
+        """Превью «завтра» открывает завтрашний набор сегодня; его оценки не должны съесть
+        завтрашний утренний проход."""
+        import inspect
+        src = inspect.getsource(srv.review_srs_card)
+        self.assertIn("if pick_day == now_vienna.date():", src)
+        self.assertLess(src.index("if pick_day == now_vienna.date():"), src.index("mark_word_pick_rated("))

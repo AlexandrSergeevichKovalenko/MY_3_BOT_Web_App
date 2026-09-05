@@ -151,3 +151,11 @@ class ОбещанияИОтчёт(unittest.TestCase):
         bot = (pathlib.Path(__file__).resolve().parents[2] / "bot_3.py").read_text(encoding="utf-8")
         self.assertIn("text += _word_pick_report_line()", bot)
         self.assertIn("🔁 <b>Повтор слов</b>", bot)
+
+
+    def test_превью_умеет_показать_завтрашний_набор(self):
+        import pathlib
+        bot = (pathlib.Path(__file__).resolve().parents[2] / "bot_3.py").read_text(encoding="utf-8")
+        тело = bot.split("async def _admin_wordpick_preview_command(", 1)[1].split("\nasync def ", 1)[0]
+        self.assertIn('"завтра"', тело)
+        self.assertIn("timedelta(days=1)", тело)
