@@ -120,3 +120,40 @@ class ДверьОтбора(unittest.TestCase):
         self.assertIn("record_word_pick(", тело)
         self.assertIn("WORD_PICK_ORIGINS", тело)
         self.assertIn('"pick_for_day"', тело)
+
+
+class СледТапаИПроверкаПоНему(unittest.TestCase):
+    """05.09.2026, утро: обещание «каждый тап отбирает слово на завтра» пришло «нарушено 2».
+    Оба — тапы 04.09 в 20:26, дверь появилась 05.09 в 14:22: проверка смотрела на день ДО
+    двери. И считала она тапом сдвиг updated_at карточки, который двигают ночные
+    обогащения. Решение владельца: граница по рождению двери; повторный тап по уже
+    сохранённому слову — тоже тап («сохрани и дай повторить»). Значит, след тапа пишет
+    сама дверь, и проверка читает его, а не карточку."""
+
+    def test_след_тапа_пишется_отдельной_строкой(self):
+        курсор = mock.MagicMock()
+        курсор.fetchone.return_value = (5,)
+        with mock.patch.object(db, "get_db_connection_context", _соединение_с_курсором(курсор)):
+            out = db.record_word_pick_tap(user_id=7, card_id=99, origin_process="trainer_save")
+        self.assertEqual(out, 5)
+        sql = курсор.execute.call_args_list[0].args[0]
+        self.assertIn("INSERT INTO bt_3_word_pick_taps", sql)
+
+    def test_дверь_пишет_след_до_отбора(self):
+        src = (КОРЕНЬ / "backend/backend_server.py").read_text(encoding="utf-8")
+        тело = src.split("def save_webapp_dictionary_entry(", 1)[1].split("\n@app.route", 1)[0]
+        self.assertLess(тело.index("record_word_pick_tap("), тело.index("pick = record_word_pick("),
+                        "след тапа обязан лечь раньше отбора: иначе сбой отбора не оставит следа")
+
+    def test_проверка_читает_след_двери_с_границей_её_рождения(self):
+        курсор = mock.MagicMock()
+        курсор.fetchone.return_value = (0,)
+        with mock.patch.object(db, "get_db_connection_context", _соединение_с_курсором(курсор)):
+            self.assertEqual(0, db.count_word_pick_door_misses())
+        sql, params = курсор.execute.call_args_list[-1].args
+        self.assertIn("FROM bt_3_word_pick_taps", sql)
+        self.assertNotIn("bt_3_webapp_dictionary_queries", sql,
+                         "по времени правки карточки проверка больше не гадает")
+        self.assertIn("t.tapped_at >= %s::timestamptz", sql)
+        self.assertIn(db.WORD_PICK_DOOR_BORN_AT, params)
+        self.assertEqual(db.WORD_PICK_DOOR_BORN_AT, "2026-09-05 14:22:00+02:00")

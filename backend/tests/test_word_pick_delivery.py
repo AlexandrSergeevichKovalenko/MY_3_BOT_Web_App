@@ -138,16 +138,21 @@ class ОбещанияИОтчёт(unittest.TestCase):
                 self.assertEqual(p.expected, 0)
                 self.assertTrue(p.how)
 
-    def test_дверь_меряется_по_вчерашним_сохранениям_из_интерактивов(self):
+    def test_дверь_меряется_по_вчерашним_тапам_из_следа_двери(self):
+        """05.09.2026: раньше проверка перебирала сохранения словаря по origin_process и
+        времени правки карточки — и приносила «нарушено» за день ДО двери и после каждого
+        ночного обогащения. Теперь она читает след тапа, который пишет сама дверь
+        (bt_3_word_pick_taps), с границей рождения двери. Разбор — у
+        count_word_pick_door_misses и в test_word_pick_door."""
         курсор = mock.MagicMock()
         курсор.fetchone.return_value = (0,)
         with mock.patch.object(db, "get_db_connection_context", _соединение_с_курсором(курсор)):
             self.assertEqual(db.count_word_pick_door_misses(), 0)
         sql = курсор.execute.call_args.args[0]
+        self.assertIn("FROM bt_3_word_pick_taps", sql)
         self.assertIn("LEFT JOIN bt_3_word_picks", sql)
         self.assertIn("p.id IS NULL", sql)
-        for источник in db.WORD_PICK_ORIGINS:
-            self.assertIn(источник, str(курсор.execute.call_args.args[1]))
+        self.assertIn(db.WORD_PICK_DOOR_BORN_AT, курсор.execute.call_args.args[1])
 
     def test_строка_отчёта_есть_в_утреннем_отчёте(self):
         import pathlib

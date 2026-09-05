@@ -657,6 +657,7 @@ from backend.database import (
     # «Слова со вчерашних тренировок»: дверь отбора на завтра в сохранении слова
     WORD_PICK_ORIGINS,
     record_word_pick,
+    record_word_pick_tap,
     _normalize_dictionary_origin_process,
     build_free_limit_error,
     enforce_reader_audio_pro_monthly_limit,
@@ -53160,6 +53161,14 @@ def save_webapp_dictionary_entry():
         pick_for_day = None
         if _normalize_dictionary_origin_process(origin_process) in WORD_PICK_ORIGINS:
             try:
+                # След тапа — ДО отбора и отдельной записью: по нему обещание
+                # «каждый тап отбирает слово на завтра» видит и повторный тап по уже
+                # сохранённому слову (решение владельца 05.09.2026), а не гадает по
+                # времени правки карточки.
+                record_word_pick_tap(
+                    user_id=int(user_id), card_id=int(entry_id or 0),
+                    origin_process=_normalize_dictionary_origin_process(origin_process),
+                )
                 pick = record_word_pick(
                     user_id=int(user_id), card_id=int(entry_id or 0),
                     origin_process=_normalize_dictionary_origin_process(origin_process),

@@ -411,11 +411,12 @@ PROMISES: tuple[Promise, ...] = (
     ),
     Promise(
         key="word_pick_door_writes_every_tap",
-        title="Тапов по слову в интерактивах за вчера без отбора на сегодня",
+        title="Тапов по слову в интерактивах за вчера (по следу двери, с 05.09 14:22) без отбора на сегодня",
         since="05.09.2026",
         expected=0,
         measure=_word_pick_door_misses,
-        how="python3 -c \"from backend.database import count_word_pick_door_misses as f; print(f())\"",
+        how="python3 -c \"from backend.database import count_word_pick_door_misses as f; print(f())\" "
+            "— тапы bt_3_word_pick_taps за вчера без строки bt_3_word_picks на сегодня",
     ),
     Promise(
         key="word_pick_two_posters_per_picker",
