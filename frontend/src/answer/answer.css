@@ -2649,3 +2649,12 @@ html[data-scheme="light"] .frrev-w {
   .frrev-w .frv-save { padding: 0.5625rem 0.75rem; }
   .frrev-w .pinw-bar .ans-btn-ghost { min-height: 2.125rem; font-size: 0.75rem; }
 }
+
+/* ── «Слова со вчерашних тренировок» (WordPickGame) ─────────────────────────────────
+   Карточка — детали Space Rep (.fsrs-*, App.css), обёртка — интерактив (.ans-card).
+   Гамма интерактивов: янтарный акцент в шапке, сами кнопки оценок оставлены
+   семантическими (снова/трудно/хорошо/легко), как в Space Rep. */
+.wp-card .ans-head { flex-direction: row; align-items: baseline; justify-content: space-between; }
+.wp-progress { font-size: 0.8125rem; font-weight: 600; color: #d97706; white-space: nowrap; }
+.wp-card .fsrs-study-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(245,158,11,0.25); }
+.wp-card .fsrs-rating-wrap { margin-top: 0.5rem; }

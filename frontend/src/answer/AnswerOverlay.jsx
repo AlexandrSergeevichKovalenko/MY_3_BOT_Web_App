@@ -26,6 +26,8 @@ import BattleHistory from './BattleHistory.jsx';
 import AskOverlay from './AskOverlay.jsx';
 import SaveWordChip from './SaveWordChip.jsx';
 import Toast, { useToast } from './Toast.jsx';
+import WordPickGame from './WordPickGame.jsx';
+import { playWordTts } from './wordTts.js';
 import { saveErrorToast } from './saveNotice.js';
 import installCardAutoFit from './fitCard.js';
 import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
@@ -74,7 +76,7 @@ function parseStartParam(startParam) {
   // │ впереди — kind=rbv. Порядок здесь дело вкуса; ЕДИНСТВЕННОЕ, что важно, —      │
   // │ чтобы код вообще был в списке. Перемерить: node -e с этой же регуляркой.      │
   // └──────────────────────────────────────────────────────────────────────────────┘
-  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|tr|au|mc|asbl|asb|asp|as|alf|al|rv|adbl|adb|adl|ad|wfbl|wfb|wfl|wf|bh|nd|np|pv|rbv|frvp|frv)_(\d+)$/.exec(raw);
+  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|tr|au|mc|asbl|asb|asp|as|alf|al|rv|wp|adbl|adb|adl|ad|wfbl|wfb|wfl|wf|bh|nd|np|pv|rbv|frvp|frv)_(\d+)$/.exec(raw);
   if (!m) return null;
   // qfp's id is a big Telegram poll_id → keep it a string (Number() loses precision).
   return { kind: m[1], id: m[1] === 'qfp' ? m[2] : Number(m[2]) };
@@ -159,28 +161,6 @@ async function api(path, body) {
 
 const arrowOf = (dir) => (dir === 'across' ? '↔' : '↕');
 
-// Play a German word/phrase via the existing TTS pipeline (generate → poll → play).
-async function playWordTts(text) {
-  const t = String(text || '').trim();
-  if (!t) return;
-  const initData = getInitData();
-  await fetch('/api/webapp/tts/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ initData, text: t, language: 'de-DE' }),
-  });
-  const params = new URLSearchParams({ text: t, language: 'de-DE' });
-  for (let i = 0; i < 30; i += 1) {
-    const res = await fetch(`/api/webapp/tts/url?${params.toString()}`, {
-      method: 'GET', headers: { 'X-Telegram-InitData': initData },
-    });
-    const data = await res.json().catch(() => ({}));
-    if (data.status === 'ready' && data.audio_url) { await new Audio(data.audio_url).play(); return; }
-    if (data.status === 'failed') throw new Error(data.message || 'TTS');
-    await new Promise((r) => setTimeout(r, data.retry_after_ms || 700));
-  }
-  throw new Error('Zeitüberschreitung');
-}
 
 
 function RebusResult({ result, api }) {
@@ -829,7 +809,7 @@ export default function AnswerOverlay({ startParam }) {
 
   useEffect(() => {
     if (!parsed) { setFatal('Ungültiger Link.'); setMetaLoading(false); return; }
-    if (['sp', 'tr', 'as', 'asp', 'asb', 'asbl', 'al', 'alf', 'rv', 'ad', 'adb', 'adbl', 'adl', 'wf', 'wfl', 'wfb', 'wfbl', 'bh', 'nd', 'np', 'gv'].includes(parsed.kind)) { setMetaLoading(false); return; }  // these games load themselves
+    if (['sp', 'tr', 'as', 'asp', 'asb', 'asbl', 'al', 'alf', 'rv', 'wp', 'ad', 'adb', 'adbl', 'adl', 'wf', 'wfl', 'wfb', 'wfbl', 'bh', 'nd', 'np', 'gv'].includes(parsed.kind)) { setMetaLoading(false); return; }  // these games load themselves
     let cancelled = false;
     (async () => {
       try {
@@ -1029,6 +1009,10 @@ export default function AnswerOverlay({ startParam }) {
   }
   if (kind === 'rv') {
     return <ReviewSession api={api} haptic={haptic} onClose={close} />;
+  }
+  if (kind === 'wp' && parsed?.id != null) {
+    // id — день ГГГГММДД: у постера нет своего dispatch, как и у «Работы над ошибками».
+    return <WordPickGame day={String(parsed.id)} api={api} haptic={haptic} onClose={close} />;
   }
   if (kind === 'nd' && parsed?.id != null) {
     return <NumberDictationGame dispatchId={parsed.id} api={api} haptic={haptic} onClose={close} />;
