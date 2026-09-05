@@ -26,6 +26,9 @@ import BattleHistory from './BattleHistory.jsx';
 import AskOverlay from './AskOverlay.jsx';
 import SaveWordChip from './SaveWordChip.jsx';
 import Toast, { useToast } from './Toast.jsx';
+import { PICK_CAPTION, PICK_FAILED_TOAST, chipLabel } from './pickCopy.js';
+import WordPickGame from './WordPickGame.jsx';
+import { playWordTts } from './wordTts.js';
 import { saveErrorToast } from './saveNotice.js';
 import installCardAutoFit from './fitCard.js';
 import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
@@ -74,7 +77,7 @@ function parseStartParam(startParam) {
   // │ впереди — kind=rbv. Порядок здесь дело вкуса; ЕДИНСТВЕННОЕ, что важно, —      │
   // │ чтобы код вообще был в списке. Перемерить: node -e с этой же регуляркой.      │
   // └──────────────────────────────────────────────────────────────────────────────┘
-  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|tr|au|mc|asbl|asb|asp|as|alf|al|rv|adbl|adb|adl|ad|wfbl|wfb|wfl|wf|bh|nd|np|pv|rbv|frvp|frv)_(\d+)$/.exec(raw);
+  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|tr|au|mc|asbl|asb|asp|as|alf|al|rv|wp|adbl|adb|adl|ad|wfbl|wfb|wfl|wf|bh|nd|np|pv|rbv|frvp|frv)_(\d+)$/.exec(raw);
   if (!m) return null;
   // qfp's id is a big Telegram poll_id → keep it a string (Number() loses precision).
   return { kind: m[1], id: m[1] === 'qfp' ? m[2] : Number(m[2]) };
@@ -159,28 +162,6 @@ async function api(path, body) {
 
 const arrowOf = (dir) => (dir === 'across' ? '↔' : '↕');
 
-// Play a German word/phrase via the existing TTS pipeline (generate → poll → play).
-async function playWordTts(text) {
-  const t = String(text || '').trim();
-  if (!t) return;
-  const initData = getInitData();
-  await fetch('/api/webapp/tts/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ initData, text: t, language: 'de-DE' }),
-  });
-  const params = new URLSearchParams({ text: t, language: 'de-DE' });
-  for (let i = 0; i < 30; i += 1) {
-    const res = await fetch(`/api/webapp/tts/url?${params.toString()}`, {
-      method: 'GET', headers: { 'X-Telegram-InitData': initData },
-    });
-    const data = await res.json().catch(() => ({}));
-    if (data.status === 'ready' && data.audio_url) { await new Audio(data.audio_url).play(); return; }
-    if (data.status === 'failed') throw new Error(data.message || 'TTS');
-    await new Promise((r) => setTimeout(r, data.retry_after_ms || 700));
-  }
-  throw new Error('Zeitüberschreitung');
-}
 
 
 function RebusResult({ result, api }) {
@@ -513,6 +494,10 @@ function wordDiff(userText, correctText) {
 
 function AufgabeResult({ result }) {
   const [saved, setSaved] = useState(() => new Set());
+  // До 05.09.2026 у этих чипов не было «уже есть»: сервер отвечал inserted:false, а чип
+  // молча показывал 💾 — человек искал слово наверху списка и не находил (разбор 04.09).
+  const [known, setKnown] = useState(() => new Set());
+  const [picked, setPicked] = useState(() => new Set());  // отобрано на завтра («Слова со вчерашних тренировок»)
   const chipToast = useToast();
   const saveChip = useCallback((de, ru) => {
     if (!de || saved.has(de)) return;
@@ -526,7 +511,12 @@ function AufgabeResult({ result }) {
         source_lang: 'de', target_lang: 'ru', direction: 'de-ru',
         origin_process: 'synonym_save',
       }),
-    ).catch((err) => {
+    ).then((res) => {
+      // Сырой ответ сервера (здесь не saveGermanWordViaLookup): `inserted` и `pick_for_day`.
+      if (res && res.inserted === false) setKnown((k) => new Set(k).add(de));
+      if (res && res.pick_for_day) setPicked((p) => new Set(p).add(de));
+      else chipToast.show(PICK_FAILED_TOAST);
+    }).catch((err) => {
       setSaved((s) => { const n = new Set(s); n.delete(de); return n; });
       chipToast.show(saveErrorToast(err));
       haptic('bad');
@@ -655,13 +645,14 @@ function AufgabeResult({ result }) {
         <div className="sp-all ans-body">
           <div className="sp-all-head">
             {result.format === 'antonym' ? 'Антонимы' : 'Синонимы'}{' '}
-            <span className="sp-all-dim">(👆 нажми, чтобы сохранить в словарь)</span>:
+            <span className="sp-all-dim">(👆 {PICK_CAPTION})</span>:
           </div>
           <div className="sp-chips">
             {saveable.map((a, i) => {
               const de = (a && a.de) || '';
               const ru = (a && a.ru) || '';
               const isSaved = saved.has(de);
+              const isKnown = known.has(de);
               return (
                 <button
                   key={i}
@@ -670,7 +661,7 @@ function AufgabeResult({ result }) {
                   disabled={isSaved}
                   onClick={() => saveChip(de, ru)}
                 >
-                  {isSaved ? '💾 ' : ''}{de}
+                  {chipLabel({ de, saved: isSaved, known: isKnown, picked: picked.has(de) })}
                 </button>
               );
             })}
@@ -829,7 +820,7 @@ export default function AnswerOverlay({ startParam }) {
 
   useEffect(() => {
     if (!parsed) { setFatal('Ungültiger Link.'); setMetaLoading(false); return; }
-    if (['sp', 'tr', 'as', 'asp', 'asb', 'asbl', 'al', 'alf', 'rv', 'ad', 'adb', 'adbl', 'adl', 'wf', 'wfl', 'wfb', 'wfbl', 'bh', 'nd', 'np', 'gv'].includes(parsed.kind)) { setMetaLoading(false); return; }  // these games load themselves
+    if (['sp', 'tr', 'as', 'asp', 'asb', 'asbl', 'al', 'alf', 'rv', 'wp', 'ad', 'adb', 'adbl', 'adl', 'wf', 'wfl', 'wfb', 'wfbl', 'bh', 'nd', 'np', 'gv'].includes(parsed.kind)) { setMetaLoading(false); return; }  // these games load themselves
     let cancelled = false;
     (async () => {
       try {
@@ -1029,6 +1020,10 @@ export default function AnswerOverlay({ startParam }) {
   }
   if (kind === 'rv') {
     return <ReviewSession api={api} haptic={haptic} onClose={close} />;
+  }
+  if (kind === 'wp' && parsed?.id != null) {
+    // id — день ГГГГММДД: у постера нет своего dispatch, как и у «Работы над ошибками».
+    return <WordPickGame day={String(parsed.id)} api={api} haptic={haptic} onClose={close} />;
   }
   if (kind === 'nd' && parsed?.id != null) {
     return <NumberDictationGame dispatchId={parsed.id} api={api} haptic={haptic} onClose={close} />;

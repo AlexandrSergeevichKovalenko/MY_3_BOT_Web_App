@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
+import { PICK_CAPTION, PICK_FAILED_TOAST, chipLabel } from './pickCopy.js';
 import useFitText from './useFitText.js';
 import Toast, { useToast } from './Toast.jsx';
 import { saveErrorToast } from './saveNotice.js';
@@ -74,6 +75,9 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
   const [score, setScore] = useState(0);
   const [saved, setSaved] = useState(() => new Set());
   const [known, setKnown] = useState(() => new Set());  // already in the dictionary
+  // «Слова со вчерашних тренировок»: слова, которые сервер отобрал на завтра. Имя не
+  // `picked` — оно здесь уже занято вариантом, который тапнули в раунде.
+  const [pickedDay, setPickedDay] = useState(() => new Set());
   const toast = useToast();
   // Длинное немецкое слово («die Geschwindigkeitsbegrenzung») вылезало за край карточки.
   // Тот же хук, что у карточек артиклей: кегль берём из CSS и уменьшаем ТОЛЬКО если не влезло.
@@ -135,6 +139,8 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
         // The word was already in the dictionary — the save refreshed that old entry, so
         // it stays where it was in the list. Say it, or the user hunts for it at the top.
         if (res && res.inserted === false) setKnown((k) => new Set(k).add(de));
+        if (res && res.pickedForDay) setPickedDay((p) => new Set(p).add(de));
+        else toast.show(PICK_FAILED_TOAST);
       })
       .catch((err) => {
         setSaved((s) => { const n = new Set(s); n.delete(de); return n; });
@@ -263,7 +269,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
       </div>
       {allCorrect.length ? (
         <div className="tr-all ans-body">
-          <div className="tr-all-head">Все {rel.ask}ы <span className="tr-all-dim">· 👆 нажми, чтобы сохранить в словарь</span>:</div>
+          <div className="tr-all-head">Все {rel.ask}ы <span className="tr-all-dim">· 👆 {PICK_CAPTION}</span>:</div>
           <div className="tr-chips">
             {allCorrect.map((c, i) => {
               const de = deOf(c); const isSaved = saved.has(de); const isKnown = known.has(de);
@@ -272,7 +278,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
                         className={`tr-chip${isSaved ? ' saved' : ''}${isKnown ? ' known' : ''}`}
                         disabled={isSaved}
                         onClick={() => saveChip(de, c?.ru || '')}>
-                  {isSaved && !isKnown ? '💾 ' : ''}{de}{isKnown ? ' · уже есть' : ''}
+                  {chipLabel({ de, saved: isSaved, known: isKnown, picked: pickedDay.has(de) })}
                 </button>
               );
             })}

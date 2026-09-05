@@ -10264,6 +10264,7 @@ def _send_pool_enrich_morning_report() -> None:
                 + _dictionary_integrity_line()
             )
         text += _access_state_line()
+        text += _word_pick_report_line()
         text += _fix_promises_block(обещания)
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
@@ -16836,6 +16837,20 @@ def _access_state_line() -> str:
         line += f" · без начала отсчёта <b>{c['unknown']}</b> ⚠️"
     line += f"\nОплат за сутки: Лайт {p.get('light', 0)} / Полный {p.get('pro', 0)}\n"
     return line
+
+def _word_pick_report_line() -> str:
+    """Строка утреннего отчёта о «Словах со вчерашних тренировок» за вчера: кто получал,
+    сколько открыли и оценили. Сомнительных случаев здесь не бывает — модели нет."""
+    try:
+        from backend.database import word_pick_day_stats
+        d = (_get_quiz_schedule_now().date() - timedelta(days=1))
+        s = word_pick_day_stats(d)
+    except Exception:
+        logging.exception("строка о повторе слов не собралась")
+        return "\n🔁 Повтор слов: ❓ не посчитался, подробности в логах.\n"
+    return (f"\n🔁 <b>Повтор слов</b> ({d:%d.%m}): отбирали <b>{s['pickers']}</b> чел. · "
+            f"слов <b>{s['cards']}</b> · постеров утром <b>{s['posters_am']}</b> / вечером <b>{s['posters_pm']}</b> · "
+            f"открыли <b>{s['opened']}</b> · оценили утром <b>{s['am_rated_users']}</b> / вечером <b>{s['pm_rated_users']}</b>\n")
 
 
 async def admin_access_command(update: Update, context: CallbackContext):
@@ -37523,6 +37538,31 @@ async def _admin_trainer_preview_command(update: Update, context: CallbackContex
         await message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
 
 
+async def _admin_wordpick_preview_command(update: Update, context: CallbackContext) -> None:
+    """/admin_wordpick_preview [am|pm] — прислать СЕБЕ постер «Слова со вчерашних
+    тренировок» за сегодня, как его получит человек. Ведомость не пишет."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    from backend.database import list_word_pick_cards
+    from backend.interactive_card import render_word_pick_card
+    from backend.word_pick import deeplink_for
+    today = _get_quiz_schedule_now().date()
+    items = await asyncio.to_thread(list_word_pick_cards, user_id=int(user.id), for_day=today)
+    if not items:
+        await message.reply_text(
+            f"На {today:%d.%m} у тебя нет отобранных слов: вчера ни одного тапа в интерактивах. "
+            "Тапни слово в конце любой тренировки — и постер придёт завтра.")
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🔁 Повторить слова", url=get_webapp_deeplink(deeplink_for(today)))]])
+    poster = await asyncio.to_thread(render_word_pick_card, count=len(items))
+    caption = (f"🔁 <b>Слова со вчерашних тренировок</b>\n\nПревью: <b>{len(items)}</b> на повтор.")
+    await context.bot.send_photo(chat_id=message.chat_id, photo=io.BytesIO(poster),
+                                 caption=caption, parse_mode="HTML", reply_markup=kb)
+
 async def _admin_sprint_distractors_command(update: Update, context: CallbackContext) -> None:
     """/admin_sprint_distractors <слово> [synonym|antonym] [save] — run the nightly
     trainer distractor pipeline on ONE bank word and DM the result. Add `save` to also
@@ -38031,6 +38071,84 @@ async def _send_mistake_review_reminders(context: CallbackContext) -> None:
         except Exception:
             logging.warning("mistake reminder send failed uid=%s", uid, exc_info=True)
     logging.info("mistake_review_reminders sent=%d", sent)
+
+
+async def _send_word_pick_reviews(context: CallbackContext, slot: str) -> None:
+    """«Слова со вчерашних тренировок»: постер + кнопка тем, у кого на сегодня есть слова,
+    отобранные вчера тапом. Стратегия: docs/tasks/word_pick_review_strategy.md.
+
+    Сверх нормы, всем тарифам (бесплатный месяц, Лайт, Полный). Не идёт запертым после
+    бесплатного месяца, «Тишине» и заблокировавшим бота. Тихие часы НЕ проверяются:
+    07:25 — время владельца (решение 04.09.2026), как у утренней новости."""
+    from backend.database import (
+        get_user_prefs_bulk, list_bot_blocked_user_ids, list_word_pick_recipients,
+    )
+    from backend.interactive_card import render_word_pick_card
+    from backend.word_pick import day_id, deeplink_for
+    today = _get_quiz_schedule_now().date()
+    try:
+        rows = await asyncio.to_thread(list_word_pick_recipients, today)
+    except Exception:
+        logging.exception("word pick: список получателей не собрался slot=%s", slot)
+        return
+    if not rows:
+        logging.info("word_pick slot=%s: получателей нет", slot)
+        return
+    uids = [int(r["user_id"]) for r in rows]
+    try:
+        blocked = set(await asyncio.to_thread(list_bot_blocked_user_ids))
+    except Exception:
+        logging.exception("word pick: список заблокировавших не прочитался")
+        return
+    try:
+        prefs = await asyncio.to_thread(get_user_prefs_bulk, tuple(uids))
+    except Exception:
+        logging.exception("word pick: настройки получателей не прочитались")
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🔁 Повторить слова", url=get_webapp_deeplink(deeplink_for(today)))]])
+    when = "Утренний проход" if slot == "am" else "Вечерний проход"
+    sent = skipped_locked = skipped_silent = skipped_blocked = failed = 0
+    for r in rows:
+        uid, n = int(r["user_id"]), int(r["count"])
+        if uid <= 0 or n <= 0 or not _is_deliverable_recipient_user_id(uid):
+            continue
+        if uid in blocked:
+            skipped_blocked += 1
+            continue
+        if await asyncio.to_thread(_is_access_locked_cached, uid):
+            skipped_locked += 1
+            continue
+        p = prefs.get(uid) or {}
+        is_pro = await asyncio.to_thread(_is_user_pro_cached, uid)
+        if _user_send_budget(uid, is_pro=is_pro, preset=p.get("preset")) <= 0:
+            skipped_silent += 1          # «Тишина» соблюдается всегда
+            continue
+        caption = (
+            f"🔁 <b>Слова со вчерашних тренировок</b>\n\n"
+            f"{when}: <b>{n}</b> на повтор — ты сам их отобрал вчера. "
+            f"Оцени каждое, и они лягут в твоё расписание повторения 👇"
+        )
+        try:
+            poster = await asyncio.to_thread(render_word_pick_card, count=n)
+            if poster:
+                msg = await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
+                                                   caption=caption, parse_mode="HTML", reply_markup=kb)
+            else:
+                msg = await context.bot.send_message(chat_id=uid, text=caption,
+                                                     parse_mode="HTML", reply_markup=kb)
+            await asyncio.to_thread(
+                record_interactive_inbox,
+                user_id=uid, kind="wp", dispatch_id=day_id(today, slot), chat_id=uid,
+                telegram_message_id=int(msg.message_id), deeplink=deeplink_for(today),
+                title="🔁 Слова со вчерашних тренировок", keyboard_json=_inbox_kb_json(kb),
+            )
+            sent += 1
+        except Exception:
+            failed += 1
+            logging.warning("word pick: не ушло uid=%s slot=%s", uid, slot, exc_info=True)
+    logging.info("word_pick slot=%s sent=%d locked=%d silent=%d blocked=%d failed=%d candidates=%d",
+                 slot, sent, skipped_locked, skipped_silent, skipped_blocked, failed, len(rows))
 
 
 async def review_mistakes_command(update: Update, context: CallbackContext) -> None:
@@ -42029,6 +42147,9 @@ async def send_sprint_to_chat(context: CallbackContext, *, entry: dict, relation
 
 # ── Synonym/Antonym recognition TRAINER delivery (the rail: trainer today → sprint +3d)
 TRAINER_SLOT_TIMES = {(11, 0): "synonym", (16, 0): "antonym"}  # 1×/day each
+# «Слова со вчерашних тренировок»: утро и вечер, решение владельца 04.09.2026.
+# Само правило «какой проход» — backend/word_pick.py, здесь только время крона.
+WORD_PICK_SLOT_TIMES = {(7, 25): "am", (19, 35): "pm"}
 # Second pass of the SAME training the NEXT day (spaced repetition): free to send (the
 # game is already built), optional for the learner, and a BONUS — it never eats one of
 # the daily N. The rail is untouched: the sprint still comes trainer_sent_date + 3 days,
@@ -46068,6 +46189,7 @@ def main():
     application.add_handler(CommandHandler("admin_sprint_distractors", _admin_sprint_distractors_command))
     application.add_handler(CommandHandler("admin_build_trainers", _admin_build_trainers_command))
     application.add_handler(CommandHandler("admin_trainer_preview", _admin_trainer_preview_command))
+    application.add_handler(CommandHandler("admin_wordpick_preview", _admin_wordpick_preview_command))
     application.add_handler(CommandHandler("admin_send_trainer", _admin_send_trainer_command))
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))
@@ -47750,6 +47872,13 @@ def main():
             minute=0,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
+        # -- «Слова со вчерашних тренировок»: 07:25 и 19:35, сверх нормы, всем тарифам.
+        #    Тихие часы отправитель не проверяет (решение владельца 04.09.2026). --
+        for (wp_h, wp_m), wp_slot in WORD_PICK_SLOT_TIMES.items():
+            scheduler.add_job(
+                make_bonus_gated("word_pick", wp_h, wp_m, _send_word_pick_reviews, wp_slot),
+                "cron", hour=wp_h, minute=wp_m, timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
         # -- Windowed deferred delivery (Этап 3f): every 20 min, release held tasks to
         #    users whose active window is currently open (dormant until 3f wires held). --
         scheduler.add_job(

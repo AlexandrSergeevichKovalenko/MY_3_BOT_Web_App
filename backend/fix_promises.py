@@ -234,6 +234,20 @@ def _lost_spellings_from_the_gate() -> int:
             )
             return int((cursor.fetchone() or [0])[0] or 0)
 
+def _word_pick_door_misses() -> int:
+    """Вчерашних сохранений из интерактивов без отбора на сегодня. Обещано: 0.
+    Дверь стоит внутри сохранения слова (05.09.2026); появится строка — дверь обошли
+    (новый источник не в WORD_PICK_ORIGINS) или запись упала (exception в логе)."""
+    from backend.database import count_word_pick_door_misses
+    return count_word_pick_door_misses()
+
+
+def _word_pick_posters_missing() -> int:
+    """Людей, кому вчера был положен постер «Слова со вчерашних тренировок» дважды,
+    а пришло меньше двух. Обещано: 0."""
+    from backend.database import count_word_pick_posters_missing
+    return count_word_pick_posters_missing()
+
 
 # ── реестр ────────────────────────────────────────────────────────────────────────────
 # Добавляя починку — добавляй строку сюда. Ключ не менять после регистрации: по нему
@@ -327,6 +341,22 @@ PROMISES: tuple[Promise, ...] = (
         how="SELECT w.asked FROM bt_3_word_check w LEFT JOIN bt_3_word_suggestion s "
             "ON s.asked=w.asked WHERE w.source LIKE 'модель предложила другое%' "
             "AND w.checked_at >= '2026-09-05' AND COALESCE(s.suggestion,'')=''",
+    ),
+    Promise(
+        key="word_pick_door_writes_every_tap",
+        title="Тапов по слову в интерактивах за вчера без отбора на сегодня",
+        since="05.09.2026",
+        expected=0,
+        measure=_word_pick_door_misses,
+        how="python3 -c \"from backend.database import count_word_pick_door_misses as f; print(f())\"",
+    ),
+    Promise(
+        key="word_pick_two_posters_per_picker",
+        title="Людей с отбором на вчера, кому пришло меньше двух постеров «Слова со вчерашних тренировок»",
+        since="05.09.2026",
+        expected=0,
+        measure=_word_pick_posters_missing,
+        how="python3 -c \"from backend.database import count_word_pick_posters_missing as f; print(f())\"",
     ),
 )
 
