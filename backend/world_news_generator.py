@@ -1224,7 +1224,7 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
     min_phrases = profile.min_phrases if profile else 6
     max_phrases = profile.max_phrases if profile else 18
     transcript_fp = _quote_fingerprint(transcript_text) if needs_quote else ""
-    dropped_no_quote = 0
+    not_verbatim = 0   # цитат, не найденных в субтитрах буква в букву (карточки живы)
     dropped_thin = 0
     dropped_quote_off_topic = 0
     dropped_neutral = 0
@@ -1264,13 +1264,11 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
                     or (needs_register and not register)):
                 dropped_thin += 1
                 continue
-            # СТРАЖ ПРОТИВ ВЫДУМКИ: цитата обязана дословно найтись в субтитрах ролика.
-            # Модель, которой велено «скопировать строку из транскрипта», иногда
-            # пересказывает её своими словами — и тогда мы показали бы человеку фразу,
-            # которой в ролике не звучало. Такая карточка не показывается.
+            # Недословная цитата НЕ бракует карточку — решение владельца 05.09.2026 (до того
+            # здесь стоял страж «цитата дословно в субтитрах», и он снял 8 из 8 карточек за
+            # ночь). Считаем и пишем в лог, чтобы число было видно, но карточку оставляем.
             if _quote_fingerprint(quote_de) not in transcript_fp:
-                dropped_no_quote += 1
-                continue
+                not_verbatim += 1
             # ВТОРОЙ СТРАЖ ЦИТАТЫ: строка обязана ПОКАЗЫВАТЬ разбираемое слово, а не просто
             # существовать в субтитрах. Карточка «ausrasten» с цитатой про смех (21.08.2026)
             # обманывает: человек читает «вот как это звучит», а слова там нет.
@@ -1307,19 +1305,19 @@ def _validate_and_normalize_pack(data: dict, profile=None, transcript_text: str 
             item["literal_ru"] = str(p.get("literal_ru") or "").strip()
         phrases.append(item)
 
-    if needs_quote and (dropped_no_quote or dropped_thin or dropped_quote_off_topic
+    if needs_quote and (not_verbatim or dropped_thin or dropped_quote_off_topic
                         or dropped_neutral or dropped_form_not_in_quote):
         logger.info(
-            "daily_video[%s]: карточек отброшено — цитаты нет в субтитрах: %d, цитата не "
-            "показывает слово: %d, формы нет в цитате: %d, нейтральных: %d, "
+            "daily_video[%s]: цитат не буква в букву (карточки оставлены): %d; отброшено — "
+            "цитата не показывает слово: %d, формы нет в цитате: %d, нейтральных: %d, "
             "неполных: %d (осталось %d)",
-            getattr(profile, "key", "?"), dropped_no_quote, dropped_quote_off_topic,
+            getattr(profile, "key", "?"), not_verbatim, dropped_quote_off_topic,
             dropped_form_not_in_quote, dropped_neutral, dropped_thin, len(phrases),
         )
     if len(phrases) < min_phrases:
         raise ValueError(
             f"need >={min_phrases} valid phrases, got {len(phrases)} "
-            f"(quote_not_in_transcript={dropped_no_quote}, "
+            f"(quote_not_verbatim_kept={not_verbatim}, "
             f"quote_off_topic={dropped_quote_off_topic}, "
             f"form_not_in_quote={dropped_form_not_in_quote}, neutral={dropped_neutral}, "
             f"incomplete={dropped_thin})"

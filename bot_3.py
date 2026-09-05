@@ -11438,7 +11438,6 @@ _SCHEDULER_HEALTH_CATALOG = [
     # └───────────────────────────────────────────────────────────────────────────────┘
     ("standup_pool_report_result", "Стендап — отчёт о состоянии пула (вс 11:00)", 192, True, "guard"),
     ("standup_shelf_refill_result", "Стендап — пополнение полки (3:40)", 30, True, "guard"),
-    ("daily_video_recheck_result", "Видеорубрика — ночная проверка карточек (3:20)", 30, True, "guard"),
     ("world_news_morning_result", "Новость дня — утренняя рассылка (6:30)", 30, True, "guard"),
     # --- Nightly maintenance / cleanups (heartbeat from the job body in backend_server) ---
     ("system_message_cleanup", "Чистка системных сообщений", 30, True, "guard"),
@@ -12306,48 +12305,15 @@ async def admin_world_news_command(update: Update, context: CallbackContext,
     await status.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
-async def run_daily_video_recheck(context: CallbackContext):
-    """Ночная перепроверка карточек, УЖЕ лежащих в базе.
-
-    Заслон качества стоит на входе: он смотрит свежую карточку и не пускает негодную
-    дальше. Но карточка, уже сохранённая, через него больше никогда не проходит — значит
-    всё, собранное до появления проверки, остаётся с прежними дефектами, а любая НОВАЯ
-    проверка к накопленному не применяется.
-
-    23.08.2026 владелец увидел на экране карточку, которую заслон уже умел ловить, но она
-    собралась раньше. Почищено это было руками, и владелец справедливо спросил: «а в
-    будущем как, опять руками?» Не руками — вот этой работой.
-    """
-    from backend.database import get_admin_telegram_ids
-    try:
-        removed_total, touched, labels_left = await asyncio.to_thread(
-            _recheck_stored_daily_video_cards)
-    except Exception as exc:
-        logging.exception("ночная перепроверка карточек не отработала")
-        _record_sched_heartbeat("daily_video_recheck_result", "failed", {"error": str(exc)[:200]})
-        return
-    _record_sched_heartbeat("daily_video_recheck_result", "completed",
-                            {"removed": len(removed_total), "entries": touched,
-                             "labels_left": labels_left})
-    if not removed_total and not labels_left:
-        return   # тишина, когда чистить нечего: сообщать не о чем
-    admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
-    lines = ["🧹 <b>Ночная проверка карточек</b>", "",
-             f"Убрано негодных: <b>{len(removed_total)}</b> из {touched} записи(ей)", ""]
-    lines += [f"· «{r['de']}» — {r['why']}" for r in removed_total[:8]]
-    if len(removed_total) > 8:
-        lines.append(f"…ещё {len(removed_total) - 8}")
-    if labels_left:
-        # Молчащий пробел неотличим от отсутствующего: если помету так и не добрали,
-        # владелец видит это числом, а не находит потом глазами на экране.
-        lines += ["", f"⚠️ Без служебной пометы осталось карточек: <b>{labels_left}</b> — "
-                      "дозапрос не дал ответа. Карточки на месте, немецкий не тронут."]
-    text = "\n".join(lines)
-    for admin_id in admin_ids:
-        try:
-            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
-        except Exception:
-            logging.debug("перепроверка: ДМ админу не ушёл id=%s", admin_id, exc_info=True)
+# ┌─ СНЯТО 05.09.2026, РЕШЕНИЕ ВЛАДЕЛЬЦА. НОЧНОЙ ПЕРЕПРОВЕРКИ КАРТОЧЕК БОЛЬШЕ НЕТ. ─────────┐
+# │ Здесь жила run_daily_video_recheck (03:20): второй прогон заслона качества по карточкам, │
+# │ уже лежащим в базе. В ночь на 05.09 она сняла ВСЕ 8 карточек новостей за 04.09 с одним  │
+# │ вердиктом «цитаты нет в субтитрах», хотя вечером 03.09 те же карточки ту же сверку      │
+# │ прошли. Причину доказать не удалось: запись и субтитры удалились утром по расписанию.   │
+# │ Владелец: «одной проверки на входе с головой достаточно, вторую убирай». Проверка на    │
+# │ входе (_validate_and_normalize_pack + судья) осталась; _recheck_stored_daily_video_cards │
+# │ ниже живёт только для ручной команды /recheck_cards. Не возвращать по расписанию.       │
+# └──────────────────────────────────────────────────────────────────────────────────────────┘
 
 
 def _recheck_stored_daily_video_cards():
@@ -46864,10 +46830,8 @@ def main():
         # «всё, что я должен вызывать командой, я забуду».
         scheduler.add_job(lambda: submit_async(run_standup_pool_report,CallbackContext(application=application)),"cron", day_of_week="sun", hour=11, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Пополнение полки — ночью, когда нет трафика. Пока запас есть, в YouTube не ходит.
-        # Перепроверка сохранённых карточек — ночью, до пополнения полки. Заслон стоит на
-        # входе, а эта работа прогоняет его по уже накопленному: иначе новые проверки
-        # никогда не применяются к тому, что собрано раньше.
-        scheduler.add_job(lambda: submit_async(run_daily_video_recheck,CallbackContext(application=application)),"cron", hour=3, minute=20, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        # Ночной перепроверки карточек (03:20) больше нет — решение владельца 05.09.2026,
+        # разбор у бывшей run_daily_video_recheck. Одна проверка на входе.
         scheduler.add_job(lambda: submit_async(run_standup_shelf_refill,CallbackContext(application=application)),"cron", hour=3, minute=40, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Бесплатный месяц: ночная страховка начала отсчёта (кого двери пропустили).
         scheduler.add_job(lambda: submit_async(_access_period_sweep_job,CallbackContext(application=application)),"cron", hour=3, minute=50, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)

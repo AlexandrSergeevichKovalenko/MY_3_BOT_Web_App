@@ -552,13 +552,15 @@ def test_standup_card_keeps_the_linguistic_fields():
     assert "literal_ru" in card
 
 
-def test_quote_that_is_not_in_the_video_is_thrown_away():
-    """Модель, которой велено скопировать строку, иногда пересказывает её своими словами.
-    Такая карточка показала бы человеку фразу, которой в ролике не звучало."""
-    phrases = _good_phrases() + [_phrase("выдумка", "diesen Satz hat niemand gesagt")]
+def test_quote_that_is_not_verbatim_keeps_the_card():
+    """Решение владельца 05.09.2026: цитата, не совпавшая с субтитрами буква в букву, карточку
+    НЕ бракует. До того страж «цитата дословно в субтитрах» в ночь на 05.09 снял 8 из 8
+    карточек дня; это была сверка строк, а не смысла. Карточка с верным выражением и
+    переводом остаётся, число недословных идёт в лог."""
+    phrases = _good_phrases() + [_phrase("оборот 5", "ich hab echt null Bock auf den Montag")]
     out = _validate_and_normalize_pack(_pack(phrases), STANDUP_PROFILE, _TRANSCRIPT)
-    assert all(p["de"] != "выдумка" for p in out["phrases"])
-    assert len(out["phrases"]) == 5
+    assert len(out["phrases"]) == 6
+    assert any(p["de"] == "оборот 5" for p in out["phrases"])
 
 
 def test_quote_matching_ignores_punctuation_not_words():
@@ -872,8 +874,10 @@ def test_judge_cannot_invent_under_the_guise_of_a_fix(monkeypatch):
     import backend.daily_video_judge as J
 
     cards = [_judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
-    invented = dict(cards[0], quote_de="diesen Satz hat niemand je gesagt",
-                    de_in_text="diesen Satz")
+    # Выдумка, которую стражи всё ещё ловят: «форма из текста» не лежит в цитате.
+    # (Сама дословность цитаты с 05.09.2026 карточку не бракует — решение владельца,
+    # разбор в daily_video_quality.py у бывшей проверки «цитата выдумана».)
+    invented = dict(cards[0], de_in_text="diesen Satz hat niemand je gesagt")
     monkeypatch.setattr(J, "_ask_judge",
                         lambda c, *, profile, transcript: [{"i": 0, "verdict": "fix",
                                                             "reason": "—", "card": invented}])
@@ -1619,12 +1623,28 @@ def test_a_missing_transcript_is_not_evidence_against_a_card():
     assert result["checked_against_transcript"] is False
 
 
-def test_recheck_is_a_scheduled_job_not_a_manual_chore():
-    """Повторяющаяся работа идёт на автомат, а не в список задач владельца."""
+def test_night_recheck_is_not_scheduled_anymore():
+    """Решение владельца 05.09.2026: одна проверка на входе, ночной перепроверки нет.
+    В ночь на 05.09 она сняла все 8 карточек дня с одним вердиктом — второй прогон той же
+    сверки ничего не добавляет, а испортить может. Сторож расписания её не ждёт."""
     bot = open("bot_3.py", encoding="utf-8").read()
-    assert "run_daily_video_recheck" in bot
-    assert 'hour=3, minute=20' in bot, "перепроверка обязана быть в ночном расписании"
-    assert "daily_video_recheck_result" in bot, "сторож расписания должен о ней знать"
+    assert "submit_async(run_daily_video_recheck" not in bot, "ночная перепроверка вернулась в расписание"
+    assert "async def run_daily_video_recheck" not in bot
+    assert '("daily_video_recheck_result",' not in bot, "сторож расписания не должен ждать снятую работу"
+
+
+def test_a_non_verbatim_quote_keeps_the_card():
+    """Решение владельца 05.09.2026: «если модель чуть переставила слово, а смысл тот же,
+    выбрасывать верное выражение с верным переводом глупо — карточку оставляем».
+    Сверка цитаты со субтитрами буква в букву была сверкой строк, не смысла."""
+    from backend.daily_video_quality import CARD_CHECKS, check_card, recheck_cards
+
+    assert "цитата выдумана" not in [name for name, _ in CARD_CHECKS]
+    card = {"de": "unter Druck stehen", "translation_ru": "быть под давлением",
+            "usage_ru": "о человеке", "form_ru": "устойчивое выражение",
+            "quote_de": "er steht unter Druck", "de_in_text": "unter Druck"}
+    assert check_card(card, transcript="er stand gestern stark unter Druck") == []
+    assert recheck_cards([card], transcript="völlig anderer Text")["removed"] == []
 
 
 # ── Снимок пула пишется там, где вправду идёт обход (23.08.2026) ─────────────
