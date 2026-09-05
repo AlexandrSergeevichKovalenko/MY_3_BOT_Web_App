@@ -2651,10 +2651,77 @@ html[data-scheme="light"] .frrev-w {
 }
 
 /* ── «Слова со вчерашних тренировок» (WordPickGame) ─────────────────────────────────
-   Карточка — детали Space Rep (.fsrs-*, App.css), обёртка — интерактив (.ans-card).
-   Гамма интерактивов: янтарный акцент в шапке, сами кнопки оценок оставлены
-   семантическими (снова/трудно/хорошо/легко), как в Space Rep. */
-.wp-card .ans-head { flex-direction: row; align-items: baseline; justify-content: space-between; }
-.wp-progress { font-size: 0.8125rem; font-weight: 600; color: #d97706; white-space: nowrap; }
-.wp-card .fsrs-study-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(245,158,11,0.25); }
-.wp-card .fsrs-rating-wrap { margin-top: 0.5rem; }
+   Оверлей интерактивов НЕ грузит App.css (main.jsx подключает только theme.css), поэтому
+   у экрана свои классы wp-*: 05.09.2026 владелец увидел голую разметку на классах
+   .fsrs-*. Элементы и порядок — из Space Rep, гамма — интерактивов (Fuchs-амбер),
+   кнопки оценок оставлены семантическими: снова/трудно/хорошо/легко. */
+.wp-card .ans-head { flex-direction: row; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.wp-progress { font-size: 0.8125rem; font-weight: 700; color: #d97706; white-space: nowrap; }
+
+.wp-study {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 0.625rem;
+  width: 100%; min-height: 15rem; justify-content: center;
+  padding: 1.5rem 1rem 1.25rem; text-align: center;
+  background: var(--dmps-card-alt, #f4f6fa);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 1.25rem;
+}
+.wp-source { font-size: 1.125rem; line-height: 1.35; color: var(--dmps-text-muted, #64748b); }
+.wp-divider { width: 100%; height: 1px; background: var(--dmps-border, #d6dbe4); }
+.wp-card .fsrs-card-target-fit { width: 100%; }
+.wp-card .fsrs-card-target {
+  font-size: 2rem; font-weight: 800; line-height: 1.15; white-space: nowrap;
+  background: linear-gradient(180deg, #fbbf24, #d97706);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.wp-meaning-list { display: flex; flex-direction: column; gap: 0.125rem; width: 100%; }
+.wp-meaning-item { display: flex; gap: 0.375rem; justify-content: center; font-size: 0.9375rem; color: var(--dmps-text-secondary, #334155); }
+.wp-meaning-rank { color: var(--dmps-text-subtle, #94a3b8); }
+.wp-meta { font-size: 0.8125rem; color: var(--dmps-text-subtle, #94a3b8); }
+.wp-show-btn {
+  width: 100%; margin-top: 0.25rem; padding: 0.8125rem 1rem;
+  border: 0; border-radius: 1rem; cursor: pointer;
+  font-size: 1.0625rem; font-weight: 800; color: #fff;
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  box-shadow: 0 10px 26px rgba(217, 119, 6, .32);
+}
+.wp-show-btn:active { transform: scale(0.98); }
+.wp-show-btn:disabled { opacity: 0.55; }
+.wp-audio {
+  width: 2.75rem; height: 2.75rem; border-radius: 50%; cursor: pointer;
+  border: 1px solid var(--dmps-border, #d6dbe4); background: var(--dmps-card, #fff);
+  font-size: 1.25rem; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+}
+.wp-hint-btn {
+  position: absolute; top: 0.5rem; right: 0.5rem;
+  width: 2.25rem; height: 2.25rem; border-radius: 50%; cursor: pointer;
+  border: 1px solid rgba(245, 158, 11, 0.45); background: rgba(245, 158, 11, 0.12);
+  font-size: 1.125rem; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+}
+.wp-rating-wrap { width: 100%; }
+.wp-rating-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+.wp-rate-cell { display: flex; flex-direction: column; align-items: stretch; gap: 0.25rem; }
+.wp-rate-btn {
+  width: 100%; padding: 0.75rem 0.5rem; border: 0; border-radius: 0.875rem; cursor: pointer;
+  font-size: 1rem; font-weight: 800; color: #fff;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18);
+}
+.wp-rate-btn:active { transform: scale(0.97); }
+.wp-rate-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.wp-rate-btn.again { background: #ef4444; }
+.wp-rate-btn.hard  { background: #f59e0b; }
+.wp-rate-btn.good  { background: #22c55e; }
+.wp-rate-btn.easy  { background: #3b82f6; }
+.wp-rate-hint { text-align: center; font-size: 0.75rem; font-weight: 600; color: var(--dmps-text-muted, #64748b); }
+
+/* Личные заметки к слову (CardOwnNotes) — его стили тоже в App.css; здесь свои, светлые. */
+.wp-card .own-notes {
+  width: 100%; text-align: left; margin-top: 0.25rem; padding: 0.625rem 0.75rem;
+  border: 1px solid rgba(217, 119, 6, 0.45); background: rgba(245, 158, 11, 0.08); border-radius: 0.875rem;
+}
+.wp-card .own-notes-head { display: flex; justify-content: space-between; font-size: 0.6875rem; letter-spacing: 0.1em; text-transform: uppercase; color: #b45309; }
+.wp-card .own-notes-count { opacity: 0.75; }
+.wp-card .own-note { margin-top: 0.375rem; }
+.wp-card .own-note-label { font-size: 0.75rem; font-weight: 700; color: var(--dmps-text-muted, #64748b); }
+.wp-card .own-note-text { font-size: 0.9375rem; line-height: 1.4; color: var(--dmps-text-primary, #0f172a); white-space: pre-wrap; }

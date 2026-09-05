@@ -96,6 +96,9 @@ class Рассылка(unittest.TestCase):
         self.assertEqual(ic._ru_words(3), "3 слова")
         self.assertEqual(ic._ru_words(7), "7 слов")
         self.assertEqual(ic._ru_words(21), "21 слово")
+        # Мотив — карточка Space Rep (выбор владельца 05.09.2026), не der/die/das.
+        import inspect
+        self.assertIn("motif=_motif_srs_card", inspect.getsource(ic.render_word_pick_card))
 
     def test_бот_шлёт_ссылку_которую_приложение_умеет_открыть(self):
         """Та же сверка, что в test_every_bot_link_opens, только адресно про wp."""

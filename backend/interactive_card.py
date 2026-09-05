@@ -805,12 +805,45 @@ def _ru_words(n: int) -> str:
     return f"{n} {form}"
 
 
+def _motif_srs_card(base, d, cx, cy, accent):
+    """Карточка Space Rep: строка вопроса, строка ответа и четыре кнопки оценки в её
+    цветах (Снова/Трудно/Хорошо/Легко). Выбор владельца 05.09.2026 для постера
+    «Слова со вчерашних тренировок» — раньше стоял _motif_flashcard с der/die/das,
+    а это мотив тренажёра артиклей, к повторению слов он не относится."""
+    cw, ch = 560, 340
+    x0, y0 = cx - cw / 2, cy - ch / 2
+    for off in (28, 14):
+        d.rounded_rectangle([x0 + off, y0 - off, x0 + cw + off, y0 + ch - off],
+                            radius=30, fill=(22, 31, 52))
+    d.rounded_rectangle([x0, y0, x0 + cw, y0 + ch], radius=30, fill=(30, 41, 59), outline=accent, width=6)
+    d.rounded_rectangle([x0 + 150, y0 + 52, x0 + cw - 150, y0 + 84], radius=12, fill=(90, 104, 130))
+    d.rounded_rectangle([x0 + 90, y0 + 118, x0 + cw - 90, y0 + 176], radius=16, fill=(148, 163, 184))
+    labels = [("Снова", (239, 68, 68)), ("Трудно", (245, 158, 11)),
+              ("Хорошо", (34, 197, 94)), ("Легко", (59, 130, 246))]
+    f = _font(26)
+    widths = [f.getlength(t) + 26 for t, _ in labels]
+    gap = 10
+    total = sum(widths) + gap * (len(labels) - 1)
+    x = cx - total / 2
+    py = y0 + ch - 80
+    for (t, col), w in zip(labels, widths):
+        d.rounded_rectangle([x, py - 27, x + w, py + 27], radius=27, fill=col)
+        tw = f.getlength(t)
+        th, off = _text_h(d, t, f)
+        d.text((x + w / 2 - tw / 2, py - th / 2 - off), t, font=f, fill=WHITE)
+        x += w + gap
+    chx = x0 + cw + 54
+    for kk in range(2):
+        ox = chx + kk * 24
+        d.line([(ox, cy - 34), (ox + 28, cy), (ox, cy + 34)], fill=GOLD, width=13, joint="curve")
+
+
 def render_word_pick_card(*, count: int = 0) -> bytes | None:
     """Постер «Слова со вчерашних тренировок»: человек сам тапнул эти слова вчера,
-    сегодня повторяет утром и вечером. Гамма Fuchs-амбер, как у тренажёров."""
+    сегодня повторяет утром и вечером. Гамма Fuchs-амбер, мотив — карточка Space Rep."""
     subtitle = (f"{_ru_words(count)}  ·  ты сам их отобрал") if count else "ты сам их отобрал"
     return _card(badge="WIEDERHOLEN", title="Слова со вчерашних тренировок",
-                 subtitle=subtitle, accent=(245, 158, 11), motif=_motif_flashcard,
+                 subtitle=subtitle, accent=(245, 158, 11), motif=_motif_srs_card,
                  cta="Повтори утром и вечером — и они останутся")
 
 

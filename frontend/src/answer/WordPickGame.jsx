@@ -9,6 +9,12 @@ import Toast, { useToast } from './Toast.jsx';
 // «Слова со вчерашних тренировок» — разовое повторение того, что человек сам тапнул
 // вчера в конце интерактивов. Стратегия: docs/tasks/word_pick_review_strategy.md.
 //
+// ⚠️ Стили Space Rep живут в App.css, а оверлей интерактивов его НЕ грузит (main.jsx
+// подключает только theme.css, App.css приезжает вместе с App.jsx). 05.09.2026 владелец
+// открыл экран и увидел голую разметку: классы .fsrs-* здесь ничего не значат. Поэтому у
+// экрана СВОИ классы wp-* в answer.css; из Space Rep взяты только сами элементы и порядок.
+// Единственный чужой класс — .fsrs-card-target у FsrsHeadword: он задан в answer.css под .wp-card.
+//
 // Детали карточки — те же, что в «Карточках Space Rep» (App.jsx, блок fsrs-study-card):
 // русский вопрос → «Показать ответ» (или сам через 5 с) → немецкое слово с автоподгонкой
 // → озвучка сразу и кнопкой → лампочка, если разбор уже есть → заметки → четыре оценки
@@ -194,51 +200,51 @@ export default function WordPickGame({ day, api, haptic, onClose }) {
         <span className="ans-eyebrow">🔁 Слова со вчерашних тренировок</span>
         <span className="wp-progress">{done + 1} из {items.length}</span>
       </div>
-      <div className={`fsrs-study-card wp-study ${revealed ? 'is-revealed' : ''}`}>
+      <div className={`wp-study ${revealed ? 'is-revealed' : ''}`}>
         {revealed && hintAvailable && (
-          <button type="button" className="fsrs-hint-btn" onClick={() => setHintOpen(true)}
+          <button type="button" className="wp-hint-btn" onClick={() => setHintOpen(true)}
                   aria-label="Всё об этом слове" title="Всё об этом слове">💡</button>
         )}
-        <div className="fsrs-card-source is-muted-top">{sides.question}</div>
-        <div className="fsrs-divider" />
+        <div className="wp-source">{sides.question}</div>
+        <div className="wp-divider" />
         {revealed ? (
           <>
             <FsrsHeadword text={sides.answer} />
             {sides.extra.length > 0 && (
-              <div className="flashcard-meaning-list">
+              <div className="wp-meaning-list">
                 {sides.extra.map((row) => (
-                  <div key={row.rank} className="flashcard-meaning-item">
-                    <span className="flashcard-meaning-rank">{row.rank}.</span>
-                    <span className="flashcard-meaning-text">{row.text}</span>
+                  <div key={row.rank} className="wp-meaning-item">
+                    <span className="wp-meaning-rank">{row.rank}.</span>
+                    <span className="wp-meaning-text">{row.text}</span>
                   </div>
                 ))}
               </div>
             )}
-            <CardOwnNotes notes={notes} tr={ru} readOnly />
-            <div className="fsrs-divider" />
-            <div className="fsrs-card-meta fsrs-card-meta-answer">Response time: {elapsed}s</div>
-            <button type="button" className="flashcard-audio-replay"
+            {notes.length > 0 && <CardOwnNotes notes={notes} tr={ru} readOnly />}
+            <div className="wp-divider" />
+            <div className="wp-meta">Response time: {elapsed}s</div>
+            <button type="button" className="wp-audio"
                     onClick={() => playWordTts(sides.spoken).catch(() => toast.show('Озвучка не загрузилась.'))}
                     aria-label="Повторить аудио" title="Повторить аудио">🔊</button>
           </>
         ) : (
           <>
-            <div className="fsrs-card-meta">
+            <div className="wp-meta">
               Status: {String(current?.srs?.status || 'new')} · Interval: {current?.srs?.interval_days ?? 0} дн
             </div>
-            <button type="button" className="fsrs-show-answer-btn" onClick={reveal} disabled={submitting}>Show Answer</button>
+            <button type="button" className="wp-show-btn" onClick={reveal} disabled={submitting}>Show Answer</button>
           </>
         )}
       </div>
       {revealed && (
-        <div className="fsrs-rating-wrap">
-          <div className="fsrs-rating-grid">
+        <div className="wp-rating-wrap">
+          <div className="wp-rating-grid">
             {RATINGS.map(([key, label, cls]) => (
-              <div className="fsrs-rate-cell" key={key}>
-                <button type="button" className={`fsrs-rate-btn ${cls}`} onClick={() => rate(key)} disabled={submitting}>
+              <div className="wp-rate-cell" key={key}>
+                <button type="button" className={`wp-rate-btn ${cls}`} onClick={() => rate(key)} disabled={submitting}>
                   <span>{label}</span>
                 </button>
-                <small className="fsrs-rate-hint">{intervalHint(preview?.[key]?.seconds)}</small>
+                <small className="wp-rate-hint">{intervalHint(preview?.[key]?.seconds)}</small>
               </div>
             ))}
           </div>
