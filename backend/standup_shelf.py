@@ -72,7 +72,7 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
     from backend.world_news_generator import (
         WORLD_NEWS_MAX_TRANSCRIPT_CHARS, WORLD_NEWS_MIN_TRANSCRIPT_CHARS,
         _gather_candidates, _transcript_to_text, _yt_api_video_details,
-        fetch_transcript_or_verdict,
+        fetch_transcript_or_verdict, record_pool_snapshot,
     )
 
     # ── Сколько времени даём ночной работе ────────────────────────────────────────
@@ -159,24 +159,6 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
     ranked.sort(key=lambda r: (0 if r["has_manual_captions"] else 1,
                                -(r["view_count"] or 0)))
 
-    # СНИМОК ПУЛА пишется ЗДЕСЬ, потому что обход каналов происходит именно здесь.
-    # Раньше он писался в подготовке выпуска — но с появлением полки выпуск берёт готовое
-    # и каналы не обходит вовсе, поэтому снимок не писался никогда, и еженедельный отчёт
-    # показывал владельцу «чем пополнять: 0 годных роликов» при сотнях доступных
-    # (замечено владельцем 23.08.2026).
-    in_range_total = report["swept"] - report["dur_skipped"]
-    try:
-        from backend.database import upsert_daily_video_pool_snapshot
-        upsert_daily_video_pool_snapshot(
-            rubric=STANDUP_PROFILE.key,
-            scanned=report["swept"],
-            in_range=max(0, in_range_total),
-            manual_captions=sum(1 for r in ranked if r["has_manual_captions"]),
-            measured_on=__import__("datetime").date.today(),
-        )
-    except Exception:
-        logger.warning("standup shelf: снимок пула не записан", exc_info=True)
-
     need = want - counts["unused"]
     need = min(need, cap)
 
@@ -243,6 +225,17 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
             continue
         if added:
             report["added"] += 1
+
+    # СНИМОК ПУЛА пишется ЗДЕСЬ, потому что обход каналов происходит именно здесь, и
+    # ПОСЛЕ цикла: то, что этой ночью легло на полку, уже не «чем пополнять», иначе отчёт
+    # посчитал бы один ролик дважды (на полке и у каналов). Тот же счётчик зовёт вечерний
+    # поиск с колёс — см. record_pool_snapshot. Не записался — говорим, но пополнение
+    # это не отменяет: снимок — материал отчёта, а не условие работы.
+    try:
+        report["pool_snapshot"] = record_pool_snapshot(STANDUP_PROFILE, candidates, details)
+    except Exception:
+        logger.warning("standup shelf: снимок пула не записан", exc_info=True)
+        report["pool_snapshot"] = None
 
     after = standup_shelf_counts()
     report["now_unused"] = after["unused"]
