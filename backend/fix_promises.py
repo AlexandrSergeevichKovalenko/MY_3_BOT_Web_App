@@ -44,6 +44,17 @@ class Promise:
     expected: int               # обещанное число
     measure: Callable[[], int]  # как система его считает
     how: str                    # как перемерить руками, чтобы не верить на слово
+    # Экран владельца «после» — тот самый текст, который он видит на месте жалобы (отчёт,
+    # ответ команды). Первые SCREEN_DAYS дней после починки утро присылает его САМО.
+    # Владелец 06.09.2026: «ну я забуду, я же нормальный человек обычный. Всё, что можно
+    # сделать автоматически, делается автоматически». Ручной «отправь команду и пришли
+    # ответ» — это и есть то, чего быть не должно.
+    screen: Callable[[], str] | None = None
+
+
+# Сколько утр подряд после починки экран «после» приходит сам. Три — чтобы застать и
+# первую ночь, когда данные ещё старые, и первую, когда они уже пересчитаны.
+SCREEN_DAYS = 3
 
 
 # ── измерители ────────────────────────────────────────────────────────────────────────
@@ -98,6 +109,12 @@ def _standup_pool_snapshot_stale() -> int:
         raise RuntimeError("снимка пула стендапа ещё нет: обход каналов не доходил до записи")
     age = datetime.now(timezone.utc) - snap["updated_at"]
     return 1 if age > timedelta(days=3) else 0
+
+
+def _standup_pool_screen() -> str:
+    """Тот же текст, что приходит в воскресенье и по /standup_pool, — экран владельца."""
+    from backend.standup_pool_report import format_standup_pool_report, standup_pool_state
+    return format_standup_pool_report(standup_pool_state())
 
 
 _WN_OLD_LOOK = ((".worldnews-card-de", "Georgia"), (".worldnews-step", "clip-path"))
@@ -446,6 +463,7 @@ PROMISES: tuple[Promise, ...] = (
         measure=_standup_pool_snapshot_stale,
         how="/standup_pool в боте: дата в строке «Каналы смотрели …» не старше трёх дней; "
             "в базе — SELECT updated_at FROM bt_3_daily_video_pool_snapshot WHERE rubric='standup'",
+        screen=_standup_pool_screen,
     ),
     Promise(
         key="word_pick_two_posters_per_picker",
@@ -456,6 +474,45 @@ PROMISES: tuple[Promise, ...] = (
         how="python3 -c \"from backend.database import count_word_pick_posters_missing as f; print(f())\"",
     ),
 )
+
+
+def after_screens(*, promises: tuple[Promise, ...] | None = None, muted: set[str] | None = None,
+                  today=None) -> list[dict]:
+    """Экраны «после» свежих починок — для утренней рассылки владельцу.
+
+    Свежая — та, чьё обещание дано не раньше SCREEN_DAYS дней назад и у которой есть экран.
+    Экран не собрался — это говорится словами в том же письме, а не пропускается молча:
+    молчащий экран неотличим от «всё хорошо»."""
+    from datetime import date, datetime
+    реестр = PROMISES if promises is None else promises
+    снятые = muted_keys() if muted is None else muted
+    сегодня = today or date.today()
+    экраны: list[dict] = []
+    for p in реестр:
+        if p.screen is None or p.key in снятые:
+            continue
+        с = datetime.strptime(p.since, "%d.%m.%Y").date()
+        возраст = (сегодня - с).days
+        if возраст < 0 or возраст >= SCREEN_DAYS:
+            continue
+        запись = {"key": p.key, "title": p.title, "since": p.since, "day": возраст + 1,
+                  "text": None, "error": ""}
+        try:
+            запись["text"] = str(p.screen())
+        except Exception as exc:
+            logging.warning("экран «после» для %s не собрался: %s", p.key, exc, exc_info=True)
+            запись["error"] = str(exc)[:200] or exc.__class__.__name__
+        экраны.append(запись)
+    return экраны
+
+
+def screen_message(screen: dict) -> str:
+    """Письмо с экраном «после»: заголовок, сам экран как есть, либо честное «не собрался»."""
+    шапка = (f"📸 <b>Экран после починки</b> (день {screen['day']} из {SCREEN_DAYS}) — "
+             f"{_esc(screen['title'])}, обещание от {_esc(screen['since'])}\n\n")
+    if screen.get("text") is None:
+        return шапка + f"❓ Экран не собрался: {_esc(screen['error'])}"
+    return шапка + screen["text"]
 
 
 def by_key(key: str) -> Promise | None:
