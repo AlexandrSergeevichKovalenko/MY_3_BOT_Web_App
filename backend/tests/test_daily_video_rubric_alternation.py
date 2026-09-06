@@ -562,6 +562,45 @@ def test_pool_snapshot_excludes_shown_shelved_and_judged(monkeypatch):
     assert written["rubric"] == STANDUP_PROFILE.key and written["in_range"] == 2
 
 
+def test_incomplete_video_details_never_become_a_snapshot(monkeypatch):
+    """Проверяющий агент 06.09.2026: справка о роликах приходит пачками, и пачка, на
+    которую YouTube не ответил (сеть, квота, частота), молча даёт роликам «нет длины» —
+    они сошли бы за негодные, а снимок вышел бы заниженным с СЕГОДНЯШНЕЙ датой, то есть
+    неотличимым от честного. Неполная справка — снимка нет, прежний остаётся."""
+    import backend.database as db
+    import backend.world_news_generator as G
+
+    written = {}
+    monkeypatch.setattr(db, "upsert_daily_video_pool_snapshot", lambda **kw: written.update(kw))
+    monkeypatch.setattr(G, "_youtube_api_key", lambda: "key")
+    calls = {"n": 0}
+
+    def _chunk(ids, api_key, details):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            for v in ids:
+                details[v] = {"duration_seconds": 400, "has_manual_captions": True}
+            return True
+        return False                                   # вторая пачка не пришла
+
+    monkeypatch.setattr(G, "_yt_api_video_details_chunk", _chunk)
+    ids = [f"v{i}" for i in range(60)]
+    details = G._yt_api_video_details(ids)
+    assert len(details) == 50 and G._DETAILS_INCOMPLETE is True
+    with pytest.raises(RuntimeError):
+        G.record_pool_snapshot(STANDUP_PROFILE, [{"video_id": v} for v in ids], details)
+    assert not written, "неполная справка не имеет права стать снимком"
+
+    # Полная справка, в которой одного ролика просто нет (удалён/скрыт) — это честный
+    # ответ, а не сбой: снимок пишется.
+    calls["n"] = 0
+    monkeypatch.setattr(G, "_yt_api_video_details_chunk", lambda ids, k, d: True)
+    G._yt_api_video_details(ids[:10])
+    assert G._DETAILS_INCOMPLETE is False
+    G.record_pool_snapshot(STANDUP_PROFILE, [{"video_id": "gone"}], {})
+    assert written["in_range"] == 0
+
+
 # ── Прописные буквы в тезисах ──────────────────────────────────────────────────
 
 def test_prompts_demand_capital_letters_in_theses(monkeypatch):

@@ -80,21 +80,24 @@ def _night_enrichment_runs_in_units_mode() -> int:
     return 1 if режим == "units" else 0
 
 
-def _standup_report_false_alarm() -> int:
-    """Зовёт ли отчёт о пуле стендапа добавлять каналы, когда годных непоказанных роликов
-    хватает на месяц и больше. Обещано: 0.
+def _standup_pool_snapshot_stale() -> int:
+    """Снимок пула стендапа старше трёх дней. Обещано: 0.
 
-    06.09.2026 отчёт писал «пора добавить каналы» при 90 годных у каналов, потому что
-    считал запас по аварийному складу на семь роликов. Меряется тем же путём, каким
-    собирается воскресное письмо и /standup_pool: собрали текст — посмотрели, зовёт ли
-    он за каналами при запасе ≥ 30 дней. Снимка пула ещё нет — измерить нечего."""
-    from backend.standup_pool_report import (ALARM_DAYS, format_standup_pool_report,
-                                             report_calls_for_channels, standup_pool_state)
-    state = standup_pool_state()
-    if not state.get("pool_measured"):
+    06.09.2026 отчёт писал «пора добавить каналы» при 90 годных у каналов: запас считался
+    по аварийному складу на семь роликов. Теперь запас берётся из снимка пула, а снимок
+    пишет каждый обход каналов — вечерний поиск ролика (через день) и ночное пополнение.
+    Значит ложная тревога может прийти только по устаревшему снимку: обход не случился
+    (квота, сеть) или справка о роликах пришла не вся и снимок честно не записался.
+    Первая версия обещания сравнивала текст отчёта с его же числами — тавтология,
+    снятая проверяющим агентом 06.09.2026. Снимка нет вовсе — измерить нечего."""
+    from datetime import datetime, timedelta, timezone
+    from backend.daily_video_rubrics import STANDUP_PROFILE
+    from backend.database import get_daily_video_pool_snapshot
+    snap = get_daily_video_pool_snapshot(STANDUP_PROFILE.key)
+    if not snap or not snap.get("updated_at"):
         raise RuntimeError("снимка пула стендапа ещё нет: обход каналов не доходил до записи")
-    text = format_standup_pool_report(state)
-    return 1 if (report_calls_for_channels(text) and int(state["days_left"]) >= ALARM_DAYS) else 0
+    age = datetime.now(timezone.utc) - snap["updated_at"]
+    return 1 if age > timedelta(days=3) else 0
 
 
 _WN_OLD_LOOK = ((".worldnews-card-de", "Georgia"), (".worldnews-step", "clip-path"))
@@ -436,13 +439,13 @@ PROMISES: tuple[Promise, ...] = (
             "— тапы bt_3_word_pick_taps за вчера без строки bt_3_word_picks на сегодня",
     ),
     Promise(
-        key="standup_report_no_false_channel_alarm",
-        title="Отчётов о пуле стендапа, зовущих добавлять каналы при запасе на месяц и больше",
+        key="standup_pool_snapshot_fresh",
+        title="Снимков пула стендапа старше трёх дней (по нему отчёт считает запас)",
         since="06.09.2026",
         expected=0,
-        measure=_standup_report_false_alarm,
-        how="/standup_pool в боте: при «Годных непоказанных» от 15 и больше в тексте нет "
-            "слов «добавить каналы»",
+        measure=_standup_pool_snapshot_stale,
+        how="/standup_pool в боте: дата в строке «Каналы смотрели …» не старше трёх дней; "
+            "в базе — SELECT updated_at FROM bt_3_daily_video_pool_snapshot WHERE rubric='standup'",
     ),
     Promise(
         key="word_pick_two_posters_per_picker",

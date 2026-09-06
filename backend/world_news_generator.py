@@ -400,19 +400,32 @@ def _yt_api_video_details(video_ids: list[str]) -> dict[str, dict]:
     кандидатов сотни, и обрезка до первых 50 оставила бы остальных без длительности — их
     погнало бы качать субтитры вслепую. Один вызов стоит 1 единицу квоты.
     """
+    global _DETAILS_INCOMPLETE
+    _DETAILS_INCOMPLETE = False
     api_key = _youtube_api_key()
     if not api_key or not video_ids:
+        _DETAILS_INCOMPLETE = bool(video_ids)
         return {}
     details: dict[str, dict] = {}
     for start in range(0, len(video_ids), 50):
         chunk = video_ids[start:start + 50]
         if not chunk:
             continue
-        _yt_api_video_details_chunk(chunk, api_key, details)
+        if not _yt_api_video_details_chunk(chunk, api_key, details):
+            _DETAILS_INCOMPLETE = True
     return details
 
 
-def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dict) -> None:
+# Последний вызов _yt_api_video_details не получил ответа хотя бы на одну пачку (сеть,
+# квота, придушили по частоте). Справка тогда НЕПОЛНАЯ: ролик без строки в ней — это
+# «не спросили», а не «не подходит». Снимок пула по такой справке не пишется — см.
+# record_pool_snapshot. Ролик, которого нет в ответе при УСПЕШНОЙ пачке (удалён, скрыт),
+# флаг не поднимает: про него YouTube ответил честно.
+_DETAILS_INCOMPLETE = False
+
+
+def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dict) -> bool:
+    """Одна пачка до 50 роликов. Возвращает, получен ли ответ; сами данные — в details."""
     params = {
         # statistics добавлен 21.08.2026: по числу просмотров полка стендапов решает,
         # какой ролик ставить раньше. Часть запроса, а не отдельный вызов — цена та же,
@@ -424,7 +437,7 @@ def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dic
     payload = _yt_get("https://www.googleapis.com/youtube/v3/videos", params,
                       cost=1, what="videos.list")  # 1 единица за пачку до 50 роликов
     if not payload:
-        return
+        return False
     for item in (payload.get("items") or []):
         vid = (item.get("id") or "").strip()
         if not vid:
@@ -452,6 +465,7 @@ def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dic
             "region_locked": bool(content.get("regionRestriction")),
             "view_count": _as_int_or_none((item.get("statistics") or {}).get("viewCount")),
         }
+    return True
 
 
 def _as_int_or_none(value):
@@ -586,6 +600,12 @@ def record_pool_snapshot(profile, candidates: list, details_map: dict) -> dict:
     import datetime as _dt
     from backend.database import (get_shown_daily_video_ids, standup_shelf_video_ids,
                                   transcript_video_ids_to_skip, upsert_daily_video_pool_snapshot)
+    # Справка о роликах получена не вся (проверяющий агент, 06.09.2026): ролики без строки
+    # в ней сошли бы за «не по длине», снимок вышел бы заниженным — и с сегодняшней датой,
+    # то есть неотличимым от честного. Такой снимок не пишем: прежний остаётся с прежней
+    # датой, и отчёт покажет, что каналы давно не смотрели.
+    if _DETAILS_INCOMPLETE:
+        raise RuntimeError("справка о роликах получена не вся — снимок пула не пишется")
     taken = set(get_shown_daily_video_ids(profile.key))
     if getattr(profile, "uses_shelf", False):
         taken |= set(standup_shelf_video_ids())
