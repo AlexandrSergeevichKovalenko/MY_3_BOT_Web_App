@@ -145,6 +145,32 @@ was der Comedian mit einer Wendung meint, worüber das Publikum lacht. KEINE Fra
 Zahlen — das ist kein Nachrichtenvideo. Verrate auch hier den AUSGANG nicht."""
 
 
+def re_explain_card(card: dict, remark: str, *, transcript: str, profile, call_json) -> dict:
+    """Автор отвечает на замечание контролёра: та же задача «объяснить», одна единица,
+    замечание и полные субтитры. Цитата берётся из исходной карточки — она сверена с
+    субтитрами, и переписывать её незачем. Ошибки НЕ глушатся."""
+    is_standup = getattr(profile, "key", "") == "standup"
+    system = (_EXPLAIN_SYSTEM.format(extra_fields=_EXPLAIN_STANDUP_EXTRA if is_standup else "")
+              + "\n\nЭто ПОВТОРНОЕ объяснение: корректор нашёл в карточке ошибку. Замечание "
+                "дано ниже. Исправь именно её, сверяясь с субтитрами; остальное не улучшай.")
+    unit = {"de": str(card.get("de") or ""), "quote_de": str(card.get("quote_de") or "")}
+    answer = call_json(
+        system,
+        "Transkript (для контекста):\n" + transcript[:6000]
+        + "\n\nEinheiten:\n" + json.dumps([unit], ensure_ascii=False)
+        + "\n\nПрежняя карточка:\n" + json.dumps(card, ensure_ascii=False)
+        + "\n\nЗамечание корректора:\n" + str(remark or ""),
+        f"ответ на замечание «{unit['de']}»",
+    )
+    got = [c for c in (answer.get("cards") or []) if isinstance(c, dict)]
+    if not got or not str(got[0].get("de") or "").strip():
+        raise ValueError("автор не вернул карточку в ответ на замечание")
+    fixed = dict(card)
+    fixed.update(got[0])
+    fixed["quote_de"] = unit["quote_de"]
+    return fixed
+
+
 def fill_missing_labels(cards: list, *, transcript: str, call_json, is_standup: bool) -> int:
     """Дозапросить у модели ТОЛЬКО недостающие служебные пометы. Возвращает, скольким
     карточкам их так и не хватило.

@@ -31427,6 +31427,46 @@ def get_daily_video_pool_snapshot(rubric: str) -> dict | None:
             }
 
 
+def list_daily_video_control_reports(days: int = 7) -> list:
+    """Отчёты контроля карточек за последние дни — материал недельного числа владельцу."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT news_date, rubric, judge_report FROM bt_3_world_news_daily
+                WHERE news_date >= CURRENT_DATE - %s::int
+                ORDER BY news_date;
+                """,
+                (int(days),),
+            )
+            out = []
+            for news_date, rubric, jr in cursor.fetchall() or []:
+                if isinstance(jr, str):
+                    try:
+                        jr = json.loads(jr)
+                    except Exception:
+                        jr = {}
+                out.append({"news_date": str(news_date), "rubric": str(rubric or ""),
+                            "judge_report": jr or {}})
+            return out
+
+
+def count_daily_video_issues_with_extra_passes(since_date: str) -> int:
+    """Выпуски, где контроль карточек сделал больше двух проходов. Обещано: 0.
+    Контроль (06.09.2026) — один проход плюс повтор только по исправленным; третьего нет."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM bt_3_world_news_daily
+                WHERE news_date >= %s
+                  AND COALESCE((judge_report->>'passes')::int, 0) > 2;
+                """,
+                (since_date,),
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
 def count_sent_daily_videos_without_shown_mark(since_date: str) -> int:
     """Выпуски, ушедшие людям (status='sent'), чей ролик не попал в вечный реестр показанного.
     Обещано: 0 (с 07.09.2026). Каждая такая строка — ролик, который может выйти второй раз."""

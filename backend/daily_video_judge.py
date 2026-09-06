@@ -1,345 +1,223 @@
-"""Судья приёмки карточек — правит ПОКАРТОЧНО, а не бракует выпуск целиком.
+"""Контроль карточек: контролёр без права переписывать → автор отвечает → повтор только по
+исправленным. Всё под капотом, без человека.
 
-Решение владельца 22.08.2026, дословно: «мне не нужно чтобы было переформировать новость
-или стендап, на которой потрачено много денег и времени и ресурсов других».
+┌─ ПЕРЕДЕЛАНО 06.09.2026 (решение владельца) ────────────────────────────────────────┐
+│ Прежний судья был вторым редактором с теми же полномочиями, что и сборщик: на       │
+│ «поправить» он возвращал карточку целиком, шёл до трёх проходов и получал 8000      │
+│ знаков субтитров в каждом. Два редактора одного текста всегда найдут, что           │
+│ переписать: на экране владельца «sich versöhnen» → «versöhnen» → «sich versöhnen»   │
+│ за один вечер, плюс правки, не менявшие ничего видимого. Заслон от качелей ловил    │
+│ это задним числом и не справлялся. Владелец: «чем больше моделей, тем больше        │
+│ путаницы; зачем три прохода?»                                                       │
+│                                                                                     │
+│ Теперь — как в редакции: корректор не переписывает автора, он ставит пометку на     │
+│ полях, и автор правит сам.                                                          │
+│   1. КОНТРОЛЬ, один проход. Модель читает готовые карточки (цитата уже внутри,      │
+│      субтитры не шлём) и на каждую отвечает только «в порядке» или «сомнение: поле, │
+│      в чём». Переписывать ей нельзя — спорить не с чем, качелям неоткуда взяться.   │
+│   2. АВТОР ОТВЕЧАЕТ. Карточка с сомнением возвращается на шаг «объяснить» одной     │
+│      единицей, с замечанием и полным текстом субтитров. Автор с субтитрами и        │
+│      конкретной претензией — самая осведомлённая сторона.                           │
+│   3. ПОВТОРНЫЙ КОНТРОЛЬ только исправленных. Сомнение второй раз — карточка         │
+│      выбрасывается: неверная грамматика к ученику не доходит, выпуск не             │
+│      переделывается. Ролик, субтитры, тест и остальные карточки не трогаются.       │
+│   4. Раз в неделю владельцу приходит ЧИСЛО (bot_3: run_daily_video_control_report), │
+│      не вопрос: «сомневался в N, автор поправил M, выброшено K».                    │
+│ Цена: одно обращение без субтитров вместо трёх с субтитрами плюс точечные запросы  │
+│ по одной карточке.                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────────┘
 
-Почему прежний замысел был негодным. Я собирался выносить вердикт всему пакету: не
-понравилась одна карточка — брак, переделываем заново. Это значит выбросить выбранный
-ролик, скачанные субтитры, четырнадцать хороших карточек и готовый тест из-за одного
-слова со строчной буквы — и получить на выходе новую лотерею. Цена огромная, польза
-никакая.
-
-Поэтому судья работает ПО КАРТОЧКЕ, и у каждой три исхода:
-
-  «годна»    — идёт дальше нетронутой;
-  «поправить» — карточка по сути хорошая, но в подаче огрех: существительное со строчной,
-                потерялся артикль или возвратное «sich», перевод не согласован с
-                показанной формой. Судья возвращает исправленную карточку;
-  «выбросить» — карточку не спасти: единица оказалась репликой из шоу, цитата не
-                показывает слово.
-
-Ролик, субтитры, тест и остальные карточки НЕ ТРОГАЮТСЯ ни при каком исходе.
-
-── Почему правка судьи не является выдумкой ───────────────────────────────────
-Правильное написание не сочиняется, оно ЛЕЖИТ В САМИХ СУБТИТРАХ: в тексте ролика стоит
-«Herzinfarkt» с прописной, и судья лишь переносит это в заголовок. А чтобы он не начал
-сочинять под видом правки, КАЖДАЯ исправленная карточка заново проходит те же
-механические стражи, что и свежая: цитата обязана дословно найтись в субтитрах, форма из
-текста — внутри цитаты, цитата — показывать разбираемое слово. Не прошла — карточка
-выбрасывается, а не показывается «исправленной».
-
-── Несколько проходов ─────────────────────────────────────────────────────────
-Судья идёт по карточкам столько раз, сколько нужно, пока проход не окажется чистым (или
-пока не кончится лимит проходов). Одна правка иногда обнажает следующую, и один проход
-это не ловит.
+Почему исправленная карточка — не выдумка: она заново проходит те же стражи, что и
+свежая (цитата в субтитрах, форма из текста внутри цитаты, помета из закрытого списка),
+и не имеет права потерять помету формы или регистра.
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(str(os.getenv(name) or "").strip() or default)
-    except Exception:
-        return default
-
-
-_JUDGE_SYSTEM = """\
+_CONTROL_SYSTEM = """\
 Du bist Korrektor für Deutschlernmaterial. Du bekommst fertige Vokabelkarten und prüfst
-JEDE EINZELN. Du schreibst das Material NICHT neu — du korrigierst Fehler und wirfst
-Unbrauchbares raus.
+JEDE EINZELN. Du schreibst NICHTS um und lieferst KEINE korrigierte Karte: du sagst nur,
+ob die Karte in Ordnung ist, und wenn nicht — WELCHES Feld und WAS daran falsch ist.
+Die Korrektur macht der Autor der Karte selbst, mit dem vollen Transkript vor Augen.
 
-Prüfe bei jeder Karte:
+Das Zitat "quote_de" ist die einzige Quelle für Schreibweisen und Formen. Prüfe:
 
-1) RECHTSCHREIBUNG. Deutsche Substantive werden GROSS geschrieben, auch mitten in einer
-   Wendung ("einen Herzinfarkt bekommen", nicht "herzinfarkt bekommen"). Ein einzelnes
-   Nomen steht mit Artikel ("die Kohle"). Ein reflexives Verb behält "sich"
-   ("sich ins eigene Bein schießen"). Die richtige Schreibweise steht im Transkript —
-   nimm sie von dort, denk sie dir NICHT aus.
+1) RECHTSCHREIBUNG in "de". Deutsche Substantive GROSS, auch mitten in einer Wendung.
+   Ein einzelnes Nomen steht mit Artikel.
+   ВОЗВРАТНОСТЬ ЧИТАЕТСЯ ИЗ ЦИТАТЫ, А НЕ ДОДУМЫВАЕТСЯ: «habe ich DICH unter den Tisch
+   gesoffen» → «jemanden unter den Tisch saufen», НЕ «sich…»; «um SICH ein Bild zu
+   machen» → «sich ein Bild machen». Нет в цитате ни «sich», ни личного дополнения —
+   претензии нет.
 
+2) GRAMMATIK: ist "de" eine saubere Nachschlageform? Eine Replik in der 2. Person
+   ("Steckst nicht drin") gehört unpersönlich ("da steckt man nicht drin").
 
-   ВОЗВРАТНОСТЬ ЧИТАЕТСЯ ИЗ ЦИТАТЫ, А НЕ ДОДУМЫВАЕТСЯ. Не всякому немецкому глаголу нужно
-   «sich», и подставлять его «для словарной формы» — значит выдумывать грамматику.
-   Смотри, какое дополнение стоит в цитате:
-     • «habe ich DICH unter den Tisch gesoffen» → дополнение не возвратное, значит единица
-       «jemanden unter den Tisch saufen» (перепить кого-то). Ставить «sich» здесь НЕЛЬЗЯ:
-       «sich unter den Tisch saufen» значит другое — напиться до бесчувствия самому.
-     • «um SICH ein Bild zu machen» → возвратное, значит «sich ein Bild machen».
-   Нет в цитате ни «sich», ни личного дополнения — не добавляй ничего от себя.
+3) "form_ru" — ТОЛЬКО одно из: «словарная форма» · «устойчивое выражение» · «инфинитив» ·
+   «именительный падеж» · «винительный падеж» · «дательный падеж» · «родительный падеж» ·
+   «множественное число» · «повелительная форма». Существительное в словарном виде падежа
+   НЕ имеет — это «словарная форма». Немецкие термины и слова в помете — ошибка.
 
-2) GRAMMATIK der Einheit. Ist "de" eine saubere Nachschlageform? Eine in der 2. Person
-   stehende Replik ("Steckst nicht drin") gehört unpersönlich formuliert
-   ("da steckt man nicht drin").
+4) "translation_ru" stimmt mit "de" überein — inhaltlich UND in der Form.
 
-3) "form_ru" EHRLICH — und AUF RUSSISCH. Deine Anweisungen sind deutsch, aber dieses
-   Feld liest ein russischsprachiger Lernender: «винительный падеж», «дательный падеж»,
-   «словарная форма», «устойчивое выражение», «инфинитив», «множественное число».
-   NIEMALS «Akkusativ», «Dativ Plural» oder andere deutsche Grammatikbegriffe — der
-   Nutzer versteht sie nicht. Dasselbe gilt für "register_ru", "translation_ru",
-   "literal_ru", "usage_ru", "quote_ru": alles auf Russisch. Steht in "de" eine Nachschlageform, ist die Antwort «словарная
-   форма» — ein Nomen in der Nennform HAT KEINEN KASUS, und einen dazuzuschreiben heisst,
-   dem Lernenden Grammatik zu erfinden. Einen Kasus nur, wenn die Wortgruppe absichtlich
-   gebeugt stehen blieb. Bei Wendungen ohne Nomen: «устойчивое выражение».
+5) "de_in_text" steht WÖRTLICH im Zitat; "quote_ru" übersetzt genau dieses Zitat.
 
-       ЗАКРЫТЫЙ СПИСОК — пиши ТОЛЬКО одно из этих значений, дословно:
-         «словарная форма» · «устойчивое выражение» · «инфинитив» ·
-         «именительный падеж» · «винительный падеж» · «дательный падеж» ·
-         «родительный падеж» · «множественное число» · «повелительная форма».
-       НИЧЕГО СВОЕГО не сочиняй и НЕ ДОБАВЛЯЙ немецких слов в помету: «инфинитив с
-       sich» — так нельзя, человек не знает, что такое sich, и подпись ему ничего не
-       объясняет. Возвратный глагол в словарном виде — это просто «словарная форма».
-
-4) "translation_ru" stimmt mit "de" überein — inhaltlich UND in der Form. Zeigt das
-   Deutsche einen Akkusativ, steht auch das Russische im Akkusativ.
-
-5) "de_in_text" steht WÖRTLICH im Zitat "quote_de". "quote_ru" übersetzt genau dieses
-   Zitat.
-
-6) WIEDERVERWENDBARKEIT. Die Einheit taugt nur, wenn der Lernende sie in einer ANDEREN
-   Situation benutzen kann. Wirf raus:
+6) WIEDERVERWENDBARKEIT — hier ist die Antwort "drop", nicht "doubt":
      • Repliken aus der Sendung ("Privatversicherte verstehen den Joke");
      • erfundene Wortspiele des Moderators ("Niceinger Diceinger");
-     • ENGLISCHE Wendungen, die nur zitiert werden ("Yes, Queen!") — der Nutzer lernt
-       hier DEUTSCH; nur fest eingedeutschte Anglizismen bleiben (der Shitstorm);
-     • EINMALWITZE über Eigennamen ("Halle an der fucking Saale") — das ist ein Gag über
-       EINEN Ortsnamen, den sagt er nie wieder;
-     • SÄTZE und Satzteile mit Subjekt und konjugiertem Verb («Opfer fordern ihre
-       Rechte», «eine wirksame Kontrolle muss es geben») — daraus gehört die WENDUNG auf
-       die Karte, nicht der Satz. Kannst du die Wendung sauber herausnehmen, korrigiere
-       die Karte; wenn nicht, wirf sie raus;
-     • Karten, deren Name durch die Spracherkennung verstümmelt ist («Bafer» statt BAFA):
-       schreib den Namen richtig, wenn du sicher bist, sonst raus;
-     • MITTEN IM SATZ ABGESCHNITTENE Einheiten («die Koalition auffordern, die») —
-       korrigiere auf den ganzen Ausdruck oder wirf raus. ACHTUNG, das entscheidet die
-       ROLLE des letzten Wortes, nicht das Wort selbst: «mir fällt etwas ein» endet auf
-       eine TRENNBARE VORSILBE und ist vollständig, «es liegt nahe, dass» und
-       «vorausgesetzt, dass» sind vollständige Redemittel, «ohne Wenn und Aber» ist eine
-       Redewendung. Solche Einheiten sind RICHTIG und bleiben;
-     • NEUTRALE Alltagswörter, die jeder kennt ("Applaus"). Solche Karten wirfst du RAUS —
-       du entfernst NICHT ihre Stilmarkierung, um sie durchzulassen. Eine Karte ohne
-       Markierung ist keine reparierte Karte, sondern eine kaputte.
+     • ENGLISCHE Wendungen, die nur zitiert werden ("Yes, Queen!"); fest eingedeutschte
+       Anglizismen bleiben (der Shitstorm);
+     • EINMALWITZE über Eigennamen ("Halle an der fucking Saale");
+     • ganze SÄTZE mit Subjekt und konjugiertem Verb («Opfer fordern ihre Rechte») —
+       das ist "doubt" mit dem Hinweis, welche Wendung herausgehört;
+     • durch die Spracherkennung VERSTÜMMELTE Namen («Bafer» statt BAFA) — "doubt" mit
+       dem richtigen Namen, wenn du sicher bist, sonst "drop";
+     • MITTEN IM SATZ ABGESCHNITTENE Einheiten («die Koalition auffordern, die») — "doubt".
+       ACHTUNG: «mir fällt etwas ein» (trennbare Vorsilbe), «es liegt nahe, dass»,
+       «ohne Wenn und Aber» sind VOLLSTÄNDIG und in Ordnung;
+     • NEUTRALE Alltagswörter, die jeder kennt ("Applaus") — "drop".
 
 {register_rule}
+WICHTIGSTE REGEL: Du meldest FEHLER, nicht Geschmack. Ist die Karte richtig, aber du
+hättest es anders formuliert — "ok". Ein "doubt" muss einen konkreten, prüfbaren Fehler
+nennen: falsche Schreibweise, falsche Grammatik, erfundener Kasus, Übersetzung passt
+nicht zur Form, Zitat belegt die Einheit nicht.
+
 Antworte NUR mit validem JSON:
-{{"cards": [{{"i": <Index der Karte>, "verdict": "ok" | "fix" | "drop",
-             "reason": "<kurz, auf Russisch, WAS falsch war>",
-             "card": {{ …vollständige korrigierte Karte, nur bei verdict "fix"… }}}}]}}
-
-WICHTIGSTE REGEL FÜR DICH: Du korrigierst FEHLER, du verbesserst nicht den STIL.
-Ist eine Karte richtig, aber du hättest es anders formuliert — dann ist sie "ok". Nur
-das, was FALSCH ist, wird angefasst: falsche Schreibweise, falsche Grammatik, erfundener
-Kasus, Übersetzung passt nicht zur Form, Zitat belegt die Einheit nicht, Einheit ist keine
-Spracheinheit. Alles andere lässt du in Ruhe.
-Ohne diese Regel findest du bei jedem Durchgang wieder etwas «Besseres», und die Prüfung
-kommt nie zum Ende — genau das ist am 22.08.2026 passiert: drei Durchgänge, kein einziger
-sauber, keine einzige Karte wirklich schlecht.
-
-Bei "ok" lässt du "card" weg. Bei "fix" gibst du die GANZE Karte mit allen Feldern zurück,
-auch den unveränderten. Ändere NUR das, was falsch ist — erfinde keine neuen Beispiele,
-keine neuen Zitate, keine neuen Bedeutungen."""
+{{"cards": [{{"i": <Index>, "verdict": "ok" | "doubt" | "drop",
+             "field": "<Feldname, bei doubt>",
+             "reason": "<kurz, auf Russisch: WAS falsch ist und wie es richtig wäre>"}}]}}"""
 
 _REGISTER_RULE = """\
 7) "register_ru" — Stilmarkierung («сленг», «разговорное», «грубое», «молодёжное»,
-   «ироничное»). Sie muss stimmen: derbe Sprache darf nicht als «разговорное»
-   verharmlost werden. Neutrale Alltagswörter gehören NICHT in diese Rubrik — raus damit.
-
+   «ироничное»). Derbe Sprache darf nicht als «разговорное» verharmlost werden — "doubt".
+   Neutrale Alltagswörter gehören NICHT in diese Rubrik — "drop".
 """
 
 
-def _judge_model() -> str:
-    return (
-        os.getenv("DAILY_VIDEO_JUDGE_MODEL")
-        or os.getenv("WORLD_NEWS_MODEL")
-        or os.getenv("OPENAI_MODEL")
-        or "gpt-4.1-2025-04-14"
-    ).strip()
-
-
-def _ask_judge(cards: list, *, profile, transcript: str) -> list:
-    """Один проход судьи. Возвращает список вердиктов. Ошибки НЕ глушим: молча пропущенная
-    проверка неотличима от пройденной, а это два разных мира."""
-    import requests
-
-    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set")
-
-    system = _JUDGE_SYSTEM.format(
+def _ask_controller(cards: list, *, profile, call_json) -> list:
+    """Один проход контролёра: только вердикты, без карточек. Субтитры не шлём — цитата
+    к каждой карточке уже лежит в ней самой. Ошибки НЕ глушим: молча пропущенная проверка
+    неотличима от пройденной."""
+    system = _CONTROL_SYSTEM.format(
         register_rule=_REGISTER_RULE if getattr(profile, "requires_register", False) else ""
     )
-    payload = {
-        "model": _judge_model(),
-        "temperature": 0,           # проверка, а не творчество
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content":
-                "Transkript des Videos (die einzige Quelle für Schreibweisen und Zitate):\n"
-                f"{transcript[:8000]}\n\nKarten:\n"
-                + json.dumps([dict(c, i=i) for i, c in enumerate(cards)], ensure_ascii=False)},
-        ],
-    }
-    resp = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json=payload, timeout=_env_int("DAILY_VIDEO_JUDGE_TIMEOUT_SEC", 180),
+    data = call_json(
+        system,
+        "Karten:\n" + json.dumps([dict(c, i=i) for i, c in enumerate(cards)], ensure_ascii=False),
+        "контроль карточек",
+        temperature=0,
     )
-    if not resp.ok:
-        raise RuntimeError(f"судья: OpenAI HTTP {resp.status_code}: {resp.text[:200]}")
-    resp_json = resp.json()
-    try:
-        from backend.openai_usage_logging import log_openai_raw_usage
-        log_openai_raw_usage(action_type=f"judge_{getattr(profile, 'key', 'daily_video')}",
-                             model=str(payload.get("model") or ""),
-                             usage=resp_json.get("usage"), user_id=None)
-    except Exception:
-        logger.debug("судья: расход не записан", exc_info=True)
-    raw = (resp_json.get("choices") or [{}])[0].get("message", {}).get("content") or ""
-    data = json.loads(raw)
     verdicts = data.get("cards")
     if not isinstance(verdicts, list):
-        raise ValueError("судья вернул ответ без списка карточек")
+        raise ValueError("контролёр вернул ответ без списка карточек")
     return verdicts
 
 
-def judge_and_repair_cards(cards: list, *, profile, transcript: str) -> tuple[list, dict]:
-    """Пройти по карточкам столько раз, сколько нужно, пока проход не станет чистым.
+def _by_index(verdicts: list) -> dict:
+    out = {}
+    for v in verdicts:
+        if isinstance(v, dict) and isinstance(v.get("i"), int):
+            out[v["i"]] = v
+    return out
 
-    Возвращает (карточки, отчёт). Ролик, субтитры и тест не затрагиваются вовсе —
-    судья видит только карточки.
 
-    Одна правка иногда обнажает следующую, поэтому проходов несколько: судья идёт по
-    карточкам заново, пока не окажется, что править нечего.
+def _remark(v: dict) -> str:
+    field = str(v.get("field") or "").strip()
+    reason = str(v.get("reason") or "").strip() or "—"
+    return f"{field}: {reason}" if field else reason
+
+
+def control_cards(cards: list, *, profile, transcript: str, call_json) -> tuple[list, dict]:
+    """Контроль → ответ автора → повторный контроль исправленных. Возвращает (карточки, отчёт).
+
+    Отчёт: checked / doubted / repaired / dropped / passes (1 или 2) / clean / reasons.
+    `fixed` дублирует `repaired` — так его читает превью и недельный отчёт.
     """
+    from backend.daily_video_pack import re_explain_card
     from backend.world_news_generator import _card_passes_source_guards
 
-    passes = max(1, _env_int("DAILY_VIDEO_JUDGE_PASSES", 3))
-    report = {"passes": 0, "fixed": 0, "dropped": 0, "reasons": [], "clean": False,
-              "frozen": 0}
-    current = list(cards)
-    # Все состояния, в которых карточка уже побывала. Нужно против КАЧЕЛЕЙ: 22.08.2026
-    # судья три прохода подряд правил перевод «Only-Page-Account» — сначала на одно,
-    # потом на другое, потом обратно на первое. Проверка не сходилась, хотя ни одна
-    # карточка не была ни плохой, ни исправленной. Заслон против одинаковых соседних
-    # состояний этого не ловил: состояния чередовались.
-    # Ключ — цитата плюс исходная единица: она переживает и правку, и выбывание соседей.
-    def _identity(card):
-        return (str(card.get("quote_de") or ""), str(card.get("de") or ""))
+    report = {"checked": len(cards), "doubted": 0, "repaired": 0, "fixed": 0, "dropped": 0,
+              "passes": 1, "clean": False, "reasons": []}
+    verdicts = _by_index(_ask_controller(cards, profile=profile, call_json=call_json))
 
-    def _state(card):
-        return json.dumps(card, ensure_ascii=False, sort_keys=True)
+    kept: list = []
+    to_repair: list = []          # (карточка, замечание)
+    for i, card in enumerate(cards):
+        v = verdicts.get(i) or {}
+        decision = str(v.get("verdict") or "ok").strip().lower()
+        if decision == "drop":
+            report["dropped"] += 1
+            report["reasons"].append(f"выброшена «{card.get('de')}»: {_remark(v)}")
+            continue
+        if decision == "doubt":
+            report["doubted"] += 1
+            to_repair.append((card, _remark(v)))
+            continue
+        kept.append(card)
 
-    seen_states: dict = {}
-    frozen: set = set()
-    for card in current:
-        seen_states.setdefault(_identity(card), {_state(card)})
+    if not to_repair:
+        report["clean"] = report["dropped"] == 0
+        logger.info("контроль[%s]: карточек %d, сомнений 0, выброшено %d",
+                    getattr(profile, "key", "?"), len(cards), report["dropped"])
+        return kept, report
 
-    for attempt in range(passes):
-        report["passes"] = attempt + 1
-        verdicts = _ask_judge(current, profile=profile, transcript=transcript)
-        by_index = {}
-        for v in verdicts:
-            if isinstance(v, dict) and isinstance(v.get("i"), int):
-                by_index[v["i"]] = v
+    # ── Автор отвечает на каждое замечание: одна единица, замечание, полные субтитры ──
+    repaired: list = []           # (карточка «до», карточка «после», замечание)
+    for card, remark in to_repair:
+        try:
+            answer = re_explain_card(card, remark, transcript=transcript, profile=profile,
+                                     call_json=call_json)
+        except Exception:
+            # Автор не ответил — карточка НЕ идёт к людям как проверенная и не молчит.
+            logger.exception("контроль: автор не ответил на замечание к %r", card.get("de"))
+            report["dropped"] += 1
+            report["reasons"].append(f"выброшена «{card.get('de')}»: {remark} (автор не ответил)")
+            continue
+        # Исправленная карточка не имеет права потерять помету формы или регистра.
+        stripped = [name for name in ("form_ru", "register_ru")
+                    if str(card.get(name) or "").strip() and not str(answer.get(name) or "").strip()]
+        if stripped:
+            report["dropped"] += 1
+            what = "пометы регистра" if "register_ru" in stripped else "пометы формы"
+            report["reasons"].append(f"выброшена «{card.get('de')}»: после правки нет {what}")
+            continue
+        ok, why = _card_passes_source_guards(answer, transcript, profile=profile)
+        if not ok:
+            report["dropped"] += 1
+            report["reasons"].append(
+                f"выброшена «{card.get('de')}»: правка не прошла сверку с субтитрами — {why}")
+            continue
+        repaired.append((card, answer, remark))
 
-        next_cards = []
-        touched = 0
-        for i, card in enumerate(current):
-            verdict = by_index.get(i) or {}
-            decision = str(verdict.get("verdict") or "ok").strip().lower()
-            reason = str(verdict.get("reason") or "").strip()
+    if not repaired:
+        report["clean"] = False
+        return kept, report
 
-            if decision == "drop":
-                touched += 1
-                report["dropped"] += 1
-                report["reasons"].append(f"выброшена «{card.get('de')}»: {reason or '—'}")
-                continue
-
-            if decision == "fix":
-                fixed = verdict.get("card")
-                if not isinstance(fixed, dict) or not str(fixed.get("de") or "").strip():
-                    # Судья пометил «поправить», но починки не дал. Оставляем как было и
-                    # говорим об этом: молча проглотить — значит соврать, что проверили.
-                    logger.warning("судья: вердикт «поправить» без карточки для %r", card.get("de"))
-                    next_cards.append(card)
-                    continue
-                merged = dict(card)
-                merged.update({k: v for k, v in fixed.items() if k != "i"})
-                # ПРАВКА, НИЧЕГО НЕ МЕНЯЮЩАЯ, — НЕ ПРАВКА. 22.08.2026 судья три прохода
-                # подряд «исправлял» «das kurze Vergnügen» на «das kurze Vergnügen»,
-                # объясняя это отсутствием артикля, которого не было только в его
-                # объяснении. Проверка не сходилась, потому что он выдумывал себе работу
-                # на уже исправленной карточке. Если после правки карточка та же — значит
-                # править было нечего, и проход считается чистым.
-                if merged == card:
-                    logger.info("судья: пустая правка на %r — считаем годной", card.get("de"))
-                    next_cards.append(card)
-                    continue
-                # КАЧЕЛИ: судья возвращает карточку в состояние, в котором она уже была.
-                # Значит спор идёт о вкусе, а не об ошибке, и продолжать бессмысленно —
-                # замораживаем карточку в текущем виде и больше её не трогаем.
-                ident = _identity(card)
-                if _state(merged) in seen_states.get(ident, set()) or ident in frozen:
-                    frozen.add(ident)
-                    report["frozen"] += 1
-                    logger.info("судья: качели на %r — замораживаю карточку", card.get("de"))
-                    next_cards.append(card)
-                    continue
-                # СУДЬЯ НЕ ИМЕЕТ ПРАВА СНИМАТЬ ПОМЕТУ. Живой случай: у «Applaus» он стёр
-                # помету регистра, потому что слово нейтральное, — и карточка проскочила
-                # в рубрику сленга уже без пометы. Правильный исход «выбросить», а не
-                # «снять помету».
-                #
-                # Проверка стоит ОТДЕЛЬНО от общего заслона и именно здесь, потому что
-                # 27.08.2026 пустая помета перестала быть претензией к карточке: её
-                # дозапрашивают вместо того, чтобы выбрасывать готовую работу. Но
-                # «пометы не дали» и «помету СНЯЛИ, чтобы обойти правило» — разные вещи, и
-                # смешивать их нельзя: второе — обход заслона, а не пробел в данных.
-                stripped = [name for name in ("form_ru", "register_ru")
-                            if str(card.get(name) or "").strip()
-                            and not str(merged.get(name) or "").strip()]
-                if stripped:
-                    touched += 1
-                    report["dropped"] += 1
-                    what = "пометы регистра" if "register_ru" in stripped else "пометы формы"
-                    report["reasons"].append(
-                        f"судья снял {what} у «{card.get('de')}»: {reason or '—'}"
-                    )
-                    continue
-                # ГЛАВНЫЙ ЗАСЛОН: исправленная карточка проходит те же стражи, что и свежая.
-                # Если судья под видом правки что-то присочинил — цитату, которой нет в
-                # субтитрах, или форму, которой нет в цитате, — карточка выбрасывается.
-                ok, why = _card_passes_source_guards(merged, transcript, profile=profile)
-                if not ok:
-                    touched += 1
-                    report["dropped"] += 1
-                    report["reasons"].append(
-                        f"правка судьи не прошла сверку с субтитрами «{card.get('de')}»: {why}"
-                    )
-                    continue
-                touched += 1
-                report["fixed"] += 1
-                report["reasons"].append(f"поправлена «{card.get('de')}» → «{merged.get('de')}»: {reason or '—'}")
-                seen_states.setdefault(_identity(card), set()).add(_state(merged))
-                next_cards.append(merged)
-                continue
-
-            next_cards.append(card)
-
-        current = next_cards
-        if not touched:
-            report["clean"] = True
-            break
-
-    if not report["clean"]:
-        logger.warning("судья: за %d прохода(ов) чистого прогона не вышло — осталось %d карточек",
-                       report["passes"], len(current))
-    logger.info("судья[%s]: проходов %d, поправлено %d, выброшено %d, осталось %d",
-                getattr(profile, "key", "?"), report["passes"], report["fixed"],
-                report["dropped"], len(current))
-    return current, report
+    # ── Повторный контроль ТОЛЬКО исправленных ─────────────────────────────────────
+    report["passes"] = 2
+    second = _by_index(_ask_controller([a for _, a, _ in repaired], profile=profile,
+                                       call_json=call_json))
+    for j, (before, after, remark) in enumerate(repaired):
+        v = second.get(j) or {}
+        decision = str(v.get("verdict") or "ok").strip().lower()
+        if decision == "ok":
+            report["repaired"] += 1
+            report["reasons"].append(
+                f"исправлена «{before.get('de')}» → «{after.get('de')}»: {remark}")
+            kept.append(after)
+            continue
+        # Сомнение второй раз — к ученику не идёт. Выпуск из-за неё не переделывается.
+        report["dropped"] += 1
+        report["reasons"].append(
+            f"выброшена «{before.get('de')}»: сомнение осталось после правки — {_remark(v)}")
+    report["fixed"] = report["repaired"]
+    report["clean"] = report["dropped"] == 0
+    logger.info("контроль[%s]: карточек %d, сомнений %d, исправлено %d, выброшено %d",
+                getattr(profile, "key", "?"), len(cards), report["doubted"],
+                report["repaired"], report["dropped"])
+    return kept, report

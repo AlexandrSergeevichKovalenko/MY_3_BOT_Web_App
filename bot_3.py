@@ -11529,6 +11529,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     # │ Класс закрыт тестом backend/tests/test_scheduler_health_weekly_thresholds.py.  │
     # └───────────────────────────────────────────────────────────────────────────────┘
     ("standup_pool_report_result", "Стендап — отчёт о состоянии пула (вс 11:00)", 192, True, "guard"),
+    ("daily_video_control_report_result", "Контроль карточек — недельное число (вс 11:10)", 192, True, "guard"),
     ("standup_shelf_refill_result", "Стендап — пополнение полки (3:40)", 30, True, "guard"),
     ("world_news_morning_result", "Новость дня — утренняя рассылка (6:30)", 30, True, "guard"),
     # --- Nightly maintenance / cleanups (heartbeat from the job body in backend_server) ---
@@ -12271,13 +12272,15 @@ def _world_news_preview_text(entry: dict, *, header: str) -> str:
     # не по чему — числа остались только в логах, куда они не доехали.
     jr = entry.get("judge_report") or {}
     if jr.get("failed"):
-        lines.append("\n⚠️ <b>Судья приёмки не отработал</b> — разбор НЕ проверен.")
+        lines.append("\n⚠️ <b>Контроль карточек не отработал</b> — разбор НЕ проверен.")
     elif jr:
-        mark = "✅" if jr.get("clean") else "⚠️"
+        # Контроль без права переписывать (06.09.2026): одна строка с числами, ниже —
+        # только то, что вправду изменилось или выбыло.
+        mark = "✅" if jr.get("clean") else "ℹ️"
         lines.append(
-            f"\n{mark} <b>Судья:</b> проходов {jr.get('passes', 0)}, "
-            f"поправлено {jr.get('fixed', 0)}, выброшено {jr.get('dropped', 0)}"
-            + ("" if jr.get("clean") else " · чистого прогона не вышло")
+            f"\n{mark} <b>Контроль:</b> карточек {jr.get('checked', 0)} · "
+            f"сомнений {jr.get('doubted', 0)} · исправлено {jr.get('repaired', jr.get('fixed', 0))} · "
+            f"выброшено {jr.get('dropped', 0)}"
         )
         for reason in (jr.get("reasons") or [])[:4]:
             lines.append(f"   · {reason}")
@@ -12587,6 +12590,60 @@ async def admin_standup_shelf_command(update: Update, context: CallbackContext):
         await status.edit_text(f"❌ Не удалось пополнить полку: {exc}")
         return
     await status.edit_text(format_shelf_refill_report(report), parse_mode="HTML")
+
+
+async def run_daily_video_control_report(context: CallbackContext):
+    """Вс 11:10 — число о контроле карточек за неделю. Не вопрос владельцу, а отчёт:
+    «сомневался в N, автор поправил M, выброшено K» плюс список выброшенных. По нему
+    видно, где задание контролёра стоит подтянуть (решение владельца 06.09.2026)."""
+    from backend.database import get_admin_telegram_ids, list_daily_video_control_reports
+    try:
+        rows = await asyncio.to_thread(list_daily_video_control_reports, 7)
+    except Exception as exc:
+        logging.exception("контроль карточек: недельный отчёт не собрался")
+        _record_sched_heartbeat("daily_video_control_report_result", "failed",
+                                {"error": str(exc)[:200]})
+        return
+    issues = [r for r in rows if r.get("judge_report")]
+    failed = [r for r in issues if r["judge_report"].get("failed")]
+    ok = [r for r in issues if not r["judge_report"].get("failed")]
+    checked = sum(int(r["judge_report"].get("checked") or 0) for r in ok)
+    doubted = sum(int(r["judge_report"].get("doubted") or 0) for r in ok)
+    repaired = sum(int(r["judge_report"].get("repaired") or r["judge_report"].get("fixed") or 0)
+                   for r in ok)
+    dropped = sum(int(r["judge_report"].get("dropped") or 0) for r in ok)
+    lines = ["🔍 <b>Контроль карточек за неделю</b>", ""]
+    if not issues:
+        lines.append("Выпусков с контролем за 7 дней не было.")
+    else:
+        lines.append(f"Выпусков: <b>{len(issues)}</b> · карточек проверено: <b>{checked}</b>")
+        lines.append(f"Сомневался: <b>{doubted}</b> · автор поправил: <b>{repaired}</b> · "
+                     f"выброшено: <b>{dropped}</b>")
+        if failed:
+            lines.append(f"⚠️ Контроль не отработал в {len(failed)} выпуск(ах): "
+                         + ", ".join(r["news_date"] for r in failed))
+        dropped_lines = []
+        for r in ok:
+            for reason in r["judge_report"].get("reasons") or []:
+                if str(reason).startswith("выброшена"):
+                    dropped_lines.append(f"   · {r['news_date']}: {reason}")
+        if dropped_lines:
+            lines += ["", "Выброшено:"] + dropped_lines[:15]
+            if len(dropped_lines) > 15:
+                lines.append(f"   …ещё {len(dropped_lines) - 15}")
+    text = "\n".join(lines)
+    admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    sent = 0
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            logging.warning("контроль карточек: отчёт не дошёл до %s", admin_id, exc_info=True)
+    _record_sched_heartbeat("daily_video_control_report_result",
+                            "completed" if sent or not admin_ids else "failed",
+                            {"sent": sent, "issues": len(issues), "doubted": doubted,
+                             "repaired": repaired, "dropped": dropped})
 
 
 async def run_standup_pool_report(context: CallbackContext):
@@ -47149,6 +47206,7 @@ def main():
         # Состояние пула стендапа — раз в неделю, само. Владелец ничего не вызывает командой:
         # «всё, что я должен вызывать командой, я забуду».
         scheduler.add_job(lambda: submit_async(run_standup_pool_report,CallbackContext(application=application)),"cron", day_of_week="sun", hour=11, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        scheduler.add_job(lambda: submit_async(run_daily_video_control_report,CallbackContext(application=application)),"cron", day_of_week="sun", hour=11, minute=10, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Пополнение полки — ночью, когда нет трафика. Пока запас есть, в YouTube не ходит.
         # Ночной перепроверки карточек (03:20) больше нет — решение владельца 05.09.2026,
         # разбор у бывшей run_daily_video_recheck. Одна проверка на входе.

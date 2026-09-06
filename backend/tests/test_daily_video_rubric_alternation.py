@@ -17,6 +17,8 @@
 5. Рубрики сводят к одному заданию модели. Новостное задание — словарная логика, для
    сленга она вредна.
 """
+import json
+
 import pytest
 
 from backend.daily_video_rubrics import (
@@ -975,253 +977,174 @@ def _judge_card(de, quote, in_text, **over):
     return card
 
 
-def test_judge_fixes_one_card_and_leaves_the_rest_alone(monkeypatch):
-    """Владелец 22.08.2026: «я для этого буду переформировать новость?» Нет. Судья правит
-    ОДНУ карточку, остальные и весь выпуск остаются нетронутыми."""
-    import backend.daily_video_judge as J
+class _FakeModel:
+    """Модель без сети: контролёр отвечает по сценарию, автор — заранее заданной карточкой.
+    Считает обращения и запоминает, что ему присылали."""
 
+    def __init__(self, control_rounds, author=None):
+        self.control_rounds = list(control_rounds)   # ответы контролёра по проходам
+        self.author = author or {}                    # de → карточка «после»
+        self.calls = []
+
+    def __call__(self, system, user, what, **kw):
+        self.calls.append({"system": system, "user": user, "what": what, "kw": kw})
+        if what == "контроль карточек":
+            return {"cards": self.control_rounds.pop(0)}
+        if what.startswith("ответ на замечание"):
+            de = what.split("«", 1)[1].rstrip("»")
+            answer = self.author.get(de)
+            if isinstance(answer, Exception):
+                raise answer
+            return {"cards": [answer]}
+        raise AssertionError(f"неожиданное обращение: {what}")
+
+
+def _control(cards, model, profile=STANDUP_PROFILE):
+    import backend.daily_video_judge as J
+    return J.control_cards(cards, profile=profile, transcript=_JUDGE_TRANSCRIPT, call_json=model)
+
+
+# ── Контроль без права переписывать (владелец 06.09.2026) ──────────────────────
+
+def test_controller_may_not_rewrite_and_sends_no_transcript():
+    """Владелец 06.09.2026: «чем больше моделей, тем больше путаницы; зачем три прохода?»
+    Контролёр только помечает; карточку он не переписывает, даже если прислал свою
+    версию; субтитры ему не шлют — цитата уже в карточке. Чистый прогон — ОДНО обращение."""
+    cards = [_judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock"),
+             _judge_card("die Kohle", "die Kohle ist weg", "die Kohle")]
+    model = _FakeModel([[{"i": 0, "verdict": "ok", "card": {"de": "ПЕРЕПИСАНО"}},
+                         {"i": 1, "verdict": "ok"}]])
+    out, report = _control(cards, model)
+    assert out == cards
+    assert len(model.calls) == 1 and model.calls[0]["kw"].get("temperature") == 0
+    assert "Transkript" not in model.calls[0]["user"] and _JUDGE_TRANSCRIPT[:40] not in model.calls[0]["user"]
+    assert report["passes"] == 1 and report["clean"] and report["doubted"] == 0
+
+
+def test_doubt_goes_back_to_the_author_and_is_rechecked_once():
+    """Сомнение → автор отвечает одной карточкой с замечанием и полными субтитрами →
+    повторный контроль ТОЛЬКО исправленных. Второго «в порядке» достаточно: третьего
+    прохода нет."""
     cards = [
         _judge_card("herzinfarkt bekommen", "Ein Uropa bekaeme einen Herzinfarkt", "bekaeme einen Herzinfarkt"),
         _judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock"),
     ]
-    fixed = dict(cards[0], de="einen Herzinfarkt bekommen")
-    calls = {"n": 0}
-
-    def _fake(cards_in, *, profile, transcript):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return [{"i": 0, "verdict": "fix", "reason": "существительное со строчной",
-                     "card": fixed}, {"i": 1, "verdict": "ok"}]
-        return [{"i": i, "verdict": "ok"} for i in range(len(cards_in))]
-
-    monkeypatch.setattr(J, "_ask_judge", _fake)
-    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
-                                           transcript=_JUDGE_TRANSCRIPT)
-    assert len(out) == 2, "ни одна карточка не должна пропасть"
-    assert out[0]["de"] == "einen Herzinfarkt bekommen"
-    assert out[1] == cards[1], "вторую карточку судья не трогал"
-    assert report["fixed"] == 1 and report["dropped"] == 0
-
-
-def test_judge_cannot_invent_under_the_guise_of_a_fix(monkeypatch):
-    """Если судья под видом правки подставит цитату, которой в ролике не звучало, его
-    правка обязана быть отбита теми же стражами, что стерегут свежие карточки. Иначе
-    судья становится дырой в защите, ради которой он и поставлен."""
-    import backend.daily_video_judge as J
-
-    cards = [_judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
-    # Выдумка, которую стражи всё ещё ловят: «форма из текста» не лежит в цитате.
-    # (Сама дословность цитаты с 05.09.2026 карточку не бракует — решение владельца,
-    # разбор в daily_video_quality.py у бывшей проверки «цитата выдумана».)
-    invented = dict(cards[0], de_in_text="diesen Satz hat niemand je gesagt")
-    monkeypatch.setattr(J, "_ask_judge",
-                        lambda c, *, profile, transcript: [{"i": 0, "verdict": "fix",
-                                                            "reason": "—", "card": invented}])
-    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
-                                           transcript=_JUDGE_TRANSCRIPT)
-    assert out == [], "выдуманная правка не должна попасть на экран"
-    assert report["dropped"] == 1
-    assert any("не прошла сверку" in r for r in report["reasons"])
-
-
-def test_judge_drops_a_show_line(monkeypatch):
-    """Реплика из шоу — не языковая единица. Её судья выбрасывает, но ВЫПУСК не бракует."""
-    import backend.daily_video_judge as J
-
-    cards = [
-        _judge_card("Privatversicherte verstehen den Joke",
-                    "Privatversicherte verstehen den Joke, okay", "Privatversicherte verstehen"),
-        _judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock"),
-    ]
-    monkeypatch.setattr(J, "_ask_judge",
-                        lambda c, *, profile, transcript: [
-                            {"i": 0, "verdict": "drop", "reason": "реплика из шоу"},
-                            {"i": 1, "verdict": "ok"}] if len(c) == 2
-                        else [{"i": 0, "verdict": "ok"}])
-    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
-                                           transcript=_JUDGE_TRANSCRIPT)
-    assert [c["de"] for c in out] == ["Bock haben"]
-    assert report["dropped"] == 1
-
-
-def test_judge_walks_again_until_a_pass_is_clean(monkeypatch):
-    """Одна правка иногда обнажает следующую, и один проход этого не ловит. Судья идёт
-    заново, пока проход не окажется чистым."""
-    import backend.daily_video_judge as J
-
-    cards = [_judge_card("bock haben", "ich hab null Bock auf Montag", "null Bock")]
-    step = {"n": 0}
-
-    def _fake(cards_in, *, profile, transcript):
-        step["n"] += 1
-        if step["n"] == 1:
-            return [{"i": 0, "verdict": "fix", "reason": "строчная",
-                     "card": dict(cards_in[0], de="Bock haben")}]
-        if step["n"] == 2:
-            return [{"i": 0, "verdict": "fix", "reason": "перевод не согласован",
-                     "card": dict(cards_in[0], translation_ru="иметь желание")}]
-        return [{"i": 0, "verdict": "ok"}]
-
-    monkeypatch.setattr(J, "_ask_judge", _fake)
-    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
-                                           transcript=_JUDGE_TRANSCRIPT)
-    assert report["passes"] == 3 and report["clean"] is True
-    assert out[0]["de"] == "Bock haben"
-    assert out[0]["translation_ru"] == "иметь желание"
-
-
-def test_judge_verdict_fix_without_a_card_does_not_silently_pass(monkeypatch):
-    """Вердикт «поправить» без самой починки — не повод молча пропустить карточку как
-    годную: тогда мы соврём, что проверка прошла."""
-    import backend.daily_video_judge as J
-
-    cards = [_judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
-    monkeypatch.setattr(J, "_ask_judge",
-                        lambda c, *, profile, transcript: [{"i": 0, "verdict": "fix",
-                                                            "reason": "что-то не так"}])
-    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
-                                           transcript=_JUDGE_TRANSCRIPT)
-    assert len(out) == 1, "карточка остаётся как была"
-    assert report["fixed"] == 0
-
-
-# ── Работа судьи должна быть ВИДНА ────────────────────────────────────────────
-
-
-def test_judge_is_told_to_fix_errors_not_polish_style():
-    """Судья три прохода подряд не сходился и при этом не выбросил ни одной карточки —
-    он бесконечно «улучшал» вместо того, чтобы исправлять ошибки."""
-    from backend.daily_video_judge import _JUDGE_SYSTEM
-
-    assert "du verbesserst nicht den STIL" in _JUDGE_SYSTEM
-    assert "kommt nie zum Ende" in _JUDGE_SYSTEM
-
-
-# ── Судья: зацикливание и снятие обязательных полей (22.08.2026) ──────────────
-
-def test_empty_fix_does_not_keep_the_judge_spinning(monkeypatch):
-    """Судья три прохода подряд «исправлял» «das kurze Vergnügen» на «das kurze
-    Vergnügen» — до и после одно и то же, а причиной называл отсутствие артикля, которого
-    не было только в его объяснении. Проверка не сходилась, потому что он выдумывал себе
-    работу на уже исправленной карточке. Правка, ничего не меняющая, — не правка."""
-    import backend.daily_video_judge as J
-
-    cards = [_judge_card("das kurze Vergnügen", "ich hab null Bock auf Montag", "null Bock")]
-    monkeypatch.setattr(J, "_ask_judge",
-                        lambda c, *, profile, transcript: [
-                            {"i": 0, "verdict": "fix", "reason": "существительное без артикля",
-                             "card": dict(c[0])}])
-    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
-                                           transcript=_JUDGE_TRANSCRIPT)
-    assert report["passes"] == 1, "пустая правка не должна гнать судью на новый проход"
-    assert report["clean"] is True
-    assert report["fixed"] == 0
-    assert out == cards
-
-
-def test_judge_may_not_strip_a_required_marking(monkeypatch):
-    """Судья снял помету регистра у «Applaus», потому что слово нейтральное, — и карточка
-    проскочила в рубрику сленга уже без пометы. Правильный исход был «выбросить», а не
-    «снять помету»: нейтральным словам в стендапе не место."""
-    import backend.daily_video_judge as J
-
-    # Единица обязана встречаться в цитате, иначе её отобьёт другой заслон, и тест будет
-    # проверять не то, что задумано.
-    cards = [_judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
-    stripped = dict(cards[0], register_ru="")
-    monkeypatch.setattr(J, "_ask_judge",
-                        lambda c, *, profile, transcript: [
-                            {"i": 0, "verdict": "fix", "reason": "нейтральное слово",
-                             "card": stripped}])
-    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
-                                           transcript=_JUDGE_TRANSCRIPT)
-    assert out == [], "карточка без обязательной пометы не должна дойти до экрана"
-    assert any("пометы регистра" in r for r in report["reasons"])
-
-
-def test_news_cards_do_not_need_a_register_marking(monkeypatch):
-    """Защита пометы — правило СТЕНДАПА. В новостях речь нейтральная, и требовать помету
-    там значило бы выбрасывать всё подряд."""
-    import backend.daily_video_judge as J
-
-    card = {"de": "unter Druck stehen", "form_ru": "инфинитив", "translation_ru": "перевод",
-            "usage_ru": "с предлогом", "de_in_text": "null Bock",
-            "quote_de": "ich hab null Bock auf Montag", "quote_ru": "перевод строки"}
-    monkeypatch.setattr(J, "_ask_judge",
-                        lambda c, *, profile, transcript: [{"i": 0, "verdict": "ok"}])
-    out, _ = J.judge_and_repair_cards([card], profile=NEWS_PROFILE,
-                                      transcript=_JUDGE_TRANSCRIPT)
-    assert len(out) == 1
-
-
-# ── Требования владельца 22.08.2026 по слабым карточкам ───────────────────────
-
-def test_judge_is_told_to_drop_one_off_jokes_and_english():
-    """Владелец о карточках стендапа: «Yes, Queen!» — английская фраза, «Halle an der
-    fucking Saale» — разовая шутка про название города, нигде больше не пригодится.
-    Немецкий там не неверный, но и учить там нечего."""
-    from backend.daily_video_judge import _JUDGE_SYSTEM
-
-    assert "Yes, Queen!" in _JUDGE_SYSTEM
-    assert "EINMALWITZE" in _JUDGE_SYSTEM
-    assert "der Shitstorm" in _JUDGE_SYSTEM, "прижившиеся англицизмы остаются"
-    assert "keine reparierte Karte" in _JUDGE_SYSTEM, (
-        "нейтральное слово выбрасывается, а не раздевается ради пропуска"
+    repaired = dict(cards[0], de="einen Herzinfarkt bekommen")
+    model = _FakeModel(
+        [[{"i": 0, "verdict": "doubt", "field": "de", "reason": "существительное со строчной"},
+          {"i": 1, "verdict": "ok"}],
+         [{"i": 0, "verdict": "ok"}]],
+        author={"herzinfarkt bekommen": repaired},
     )
+    out, report = _control(cards, model)
+    assert [c["de"] for c in out] == ["Bock haben", "einen Herzinfarkt bekommen"]
+    whats = [c["what"] for c in model.calls]
+    assert whats == ["контроль карточек", "ответ на замечание «herzinfarkt bekommen»", "контроль карточек"]
+    author_call = model.calls[1]
+    assert "существительное со строчной" in author_call["user"], "автор видит замечание"
+    assert _JUDGE_TRANSCRIPT[:40] in author_call["user"], "автор видит субтитры"
+    assert "ПОВТОРНОЕ объяснение" in author_call["system"]
+    second = json.loads(model.calls[2]["user"].split("Karten:\n", 1)[1])
+    assert [c["de"] for c in second] == ["einen Herzinfarkt bekommen"], "повтор только по исправленным"
+    assert report["passes"] == 2 and report["repaired"] == 1 == report["fixed"] and report["dropped"] == 0
 
 
-def test_judge_stops_when_it_swings_back_and_forth(monkeypatch):
-    """22.08.2026 судья три прохода правил перевод «Only-Page-Account»: сначала на одно,
-    потом на другое, потом обратно на первое. Проверка не сходилась, хотя карточка не была
-    ни плохой, ни исправленной — спор шёл о вкусе. Заслон против ОДИНАКОВЫХ соседних
-    состояний этого не ловил, потому что состояния чередовались."""
-    import backend.daily_video_judge as J
+def test_second_doubt_drops_the_card_and_never_a_third_pass():
+    """Сомнение второй раз — карточка выбрасывается, выпуск не переделывается, и модель
+    больше не спрашивают. Это замена трём проходам."""
+    cards = [_judge_card("sich versöhnen", "wir haben es versöhnt", "versöhnt"),
+             _judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
+    model = _FakeModel(
+        [[{"i": 0, "verdict": "doubt", "field": "de", "reason": "в цитате нет возвратности"},
+          {"i": 1, "verdict": "ok"}],
+         [{"i": 0, "verdict": "doubt", "field": "de", "reason": "всё ещё не так"}]],
+        author={"sich versöhnen": dict(cards[0], de="versöhnen")},
+    )
+    out, report = _control(cards, model)
+    assert [c["de"] for c in out] == ["Bock haben"]
+    assert len(model.calls) == 3 and report["passes"] == 2
+    assert report["dropped"] == 1 and any("сомнение осталось" in r for r in report["reasons"])
 
-    # Единица обязана встречаться в цитате, иначе карточку выбросит заслон источника и
-    # проверять будет нечего.
+
+def test_controller_drop_is_final_and_leaves_the_issue_alone():
+    """Реплика из шоу — не языковая единица. Контролёр её выбрасывает, автора не зовут,
+    остальные карточки и выпуск не трогаются."""
+    cards = [_judge_card("Privatversicherte verstehen den Joke", "Privatversicherte verstehen den Joke", "verstehen den Joke"),
+             _judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
+    model = _FakeModel([[{"i": 0, "verdict": "drop", "reason": "реплика из шоу"},
+                         {"i": 1, "verdict": "ok"}]])
+    out, report = _control(cards, model)
+    assert [c["de"] for c in out] == ["Bock haben"]
+    assert len(model.calls) == 1 and report["dropped"] == 1
+
+
+def test_author_cannot_invent_under_the_guise_of_a_repair():
+    """Если автор в ответ на замечание подставит цитату, которой в ролике не звучало,
+    карточку отбивают те же стражи, что стерегут свежие. Иначе правка — дыра в защите."""
     cards = [_judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
-    step = {"n": 0}
-
-    def _fake(cards_in, *, profile, transcript):
-        step["n"] += 1
-        # Качели: перевод меняется на «Б», потом обратно на исходный «А».
-        new_translation = "вариант Б" if step["n"] == 1 else "перевод"
-        return [{"i": 0, "verdict": "fix", "reason": "перевод неточен",
-                 "card": dict(cards_in[0], translation_ru=new_translation)}]
-
-    monkeypatch.setattr(J, "_ask_judge", _fake)
-    out, report = J.judge_and_repair_cards(cards, profile=STANDUP_PROFILE,
-                                           transcript=_JUDGE_TRANSCRIPT)
-    assert report["passes"] <= 2, "качели обязаны обрываться, а не крутиться до предела"
-    assert report["frozen"] >= 1
-    assert len(out) == 1, "карточка остаётся, её просто перестают трогать"
+    invented = dict(cards[0], de_in_text="volle Kanne", quote_de="volle Kanne Bock auf alles")
+    model = _FakeModel([[{"i": 0, "verdict": "doubt", "field": "de_in_text", "reason": "не в цитате"}]],
+                       author={"Bock haben": invented})
+    out, report = _control(cards, model)
+    assert out == [] and report["dropped"] == 1
+    assert any("сверку с субтитрами" in r for r in report["reasons"])
+    assert len(model.calls) == 2, "до повторного контроля выдумка не доходит"
 
 
-# ── Дефекты четвёртого живого выпуска (22.08.2026, новости) ───────────────────
+def test_repair_may_not_strip_a_required_marking():
+    """У «Applaus» прежний судья стёр помету регистра, и нейтральное слово проскочило в
+    рубрику сленга. Правка без пометы — не правка, а брак."""
+    cards = [_judge_card("Applaus", "Applaus für den Mann", "Applaus", register_ru="сленг")]
+    model = _FakeModel([[{"i": 0, "verdict": "doubt", "field": "register_ru", "reason": "не сленг"}]],
+                       author={"Applaus": dict(cards[0], register_ru="")})
+    out, report = _control(cards, model)
+    assert out == [] and any("пометы регистра" in r for r in report["reasons"])
 
 
-def test_both_prompts_forbid_garbled_proper_names():
-    """Расшифровка субтитров переврала название ведомства — «Bafer» вместо BAFA, — и оно
-    уехало человеку в резюме и в два вопроса теста. Такого ведомства нет, а человек
-    прочтёт его как настоящее."""
-    from backend.world_news_generator import _LLM_SYSTEM
-
-    for prompt in (_LLM_SYSTEM, STANDUP_PROFILE.llm_system):
-        assert "EIGENNAMEN" in prompt
-        assert "Bafer" in prompt, "нужен живой пример искажения"
-        assert "GAR NICHT" in prompt, "не уверен в имени — не использовать вовсе"
+def test_author_failure_drops_loudly_not_silently():
+    """Автор не ответил — карточка не идёт к людям как проверенная и об этом сказано."""
+    cards = [_judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
+    model = _FakeModel([[{"i": 0, "verdict": "doubt", "field": "de", "reason": "x"}]],
+                       author={"Bock haben": RuntimeError("модель молчит")})
+    out, report = _control(cards, model)
+    assert out == [] and any("автор не ответил" in r for r in report["reasons"])
 
 
-def test_judge_also_drops_sentences_and_garbled_names():
-    """Судья видел эти карточки и пропустил: в его требованиях предложения из новости и
-    перевранные имена названы не были."""
-    from backend.daily_video_judge import _JUDGE_SYSTEM
+def test_news_cards_do_not_need_a_register_marking():
+    """Защита пометы — правило СТЕНДАПА. В новостях речь нейтральная."""
+    card = _judge_card("der Schwarzmarkt", "der Schwarzmarkt blüht", "der Schwarzmarkt", register_ru="")
+    model = _FakeModel([[{"i": 0, "verdict": "doubt", "field": "translation_ru", "reason": "форма"}],
+                        [{"i": 0, "verdict": "ok"}]],
+                       author={"der Schwarzmarkt": dict(card, translation_ru="чёрный рынок")})
+    out, report = _control([card], model, profile=NEWS_PROFILE)
+    assert len(out) == 1 and report["repaired"] == 1
+    assert "register_ru" not in model.calls[0]["system"], "новостному контролёру правило регистра не дают"
 
-    assert "SÄTZE und Satzteile mit Subjekt" in _JUDGE_SYSTEM
-    assert "Bafer" in _JUDGE_SYSTEM
+
+def test_controller_prompt_forbids_rewriting_and_keeps_the_rules():
+    from backend.daily_video_judge import _CONTROL_SYSTEM
+    assert "schreibst NICHTS um" in _CONTROL_SYSTEM
+    assert "KEINE korrigierte Karte" in _CONTROL_SYSTEM
+    assert "FEHLER, nicht Geschmack" in _CONTROL_SYSTEM
 
 
-# ── Полка не должна гореть на черновиках (22.08.2026) ─────────────────────────
+def test_generator_uses_the_controller_with_the_shared_model_caller():
+    import inspect
+    from backend.world_news_generator import prepare_world_news
+    src = inspect.getsource(prepare_world_news)
+    assert "control_cards(" in src and "judge_and_repair_cards" not in src
+    assert "call_json=lambda sys_p, usr_p, what, **kw" in src
+
+
+def test_weekly_control_number_is_scheduled_and_guarded():
+    """Владелец 06.09.2026: не вопрос, а число раз в неделю — само."""
+    src = open("bot_3.py", encoding="utf-8").read()
+    assert "run_daily_video_control_report" in src
+    assert 'submit_async(run_daily_video_control_report' in src
+    assert '"daily_video_control_report_result"' in src
+    from backend.fix_promises import by_key
+    assert by_key("daily_video_control_two_passes_max") is not None
+
 
 def test_reformed_day_returns_the_unused_video_to_the_shelf(monkeypatch):
     """Полка опустела за вечер: каждое переформирование помечало выбранный ролик
@@ -1272,14 +1195,13 @@ def test_returning_a_video_is_no_longer_needed():
     )
 
 
-def test_judge_writes_labels_in_russian():
-    """Судья писал пометы формы по-немецки — «Akkusativ», «Dativ Plural». Его задание
-    написано по-немецки, и он отвечал в тон, а читает эту помету русскоязычный человек."""
-    from backend.daily_video_judge import _JUDGE_SYSTEM
+def test_controller_demands_russian_labels_from_a_closed_list():
+    """Судья писал пометы формы по-немецки — «Akkusativ», «Dativ Plural». Контролёр
+    обязан считать это ошибкой: помета — из закрытого русского списка."""
+    from backend.daily_video_judge import _CONTROL_SYSTEM
 
-    assert "AUF RUSSISCH" in _JUDGE_SYSTEM
-    assert "«Akkusativ»" in _JUDGE_SYSTEM, "нужен пример того, чего писать нельзя"
-    assert "винительный падеж" in _JUDGE_SYSTEM
+    assert "Немецкие термины и слова в помете — ошибка" in _CONTROL_SYSTEM
+    assert "винительный падеж" in _CONTROL_SYSTEM
 
 
 def test_emergency_refill_carries_no_hand_made_limits():
@@ -1451,18 +1373,18 @@ _STANDUP_REQUIREMENTS = {
 }
 
 _JUDGE_REQUIREMENTS = {
-    "исправляет ошибки, а не улучшает стиль": ("du verbesserst nicht den STIL",),
-    "пишет пометы по-русски": ("AUF RUSSISCH", "«Akkusativ»"),
-    "закрытый список помет": ("ЗАКРЫТЫЙ СПИСОК",),
-    "предложения из новости — вон": ("SÄTZE und Satzteile mit Subjekt",),
+    "сообщает ошибки, а не вкус": ("FEHLER, nicht Geschmack",),
+    "не переписывает": ("schreibst NICHTS um",),
+    "закрытый список помет": ("«словарная форма» · «устойчивое выражение»", "Немецкие термины и слова в помете — ошибка"),
+    "предложения из новости — сомнение с подсказкой": ("SÄTZE mit Subjekt und konjugiertem Verb",),
     "возвратность читается из цитаты": ("ВОЗВРАТНОСТЬ ЧИТАЕТСЯ ИЗ ЦИТАТЫ", "jemanden unter den Tisch saufen"),
     # Формулировка сменилась 27.08.2026: «кончается артиклем или союзом» убивало законные
     # единицы («mir fällt etwas ein» — отделяемая приставка, «es liegt nahe, dass» —
     # речевая формула). Требование осталось, но названо по существу: обрезано посреди
     # фразы, а решает РОЛЬ последнего слова, а не само слово.
-    "обрезанное посреди фразы — вон": ("MITTEN IM SATZ ABGESCHNITTENE", "TRENNBARE VORSILBE"),
-    "перевранные имена — вон": ("Bafer",),
-    "нейтральное выбрасывают, а не раздевают": ("keine reparierte Karte",),
+    "обрезанное посреди фразы — сомнение": ("MITTEN IM SATZ ABGESCHNITTENE", "trennbare Vorsilbe"),
+    "перевранные имена": ("Bafer",),
+    "нейтральное — вон": ("Applaus",),
     "английские цитаты и разовые шутки — вон": ("EINMALWITZE",),
 }
 
@@ -1487,10 +1409,10 @@ def test_standup_prompt_keeps_every_requirement_we_paid_for():
     _assert_requirements(STANDUP_PROFILE.llm_system, _STANDUP_REQUIREMENTS, "Стендап дня")
 
 
-def test_judge_keeps_every_requirement_we_paid_for():
-    from backend.daily_video_judge import _JUDGE_SYSTEM
+def test_controller_keeps_every_requirement_we_paid_for():
+    from backend.daily_video_judge import _CONTROL_SYSTEM
 
-    _assert_requirements(_JUDGE_SYSTEM, _JUDGE_REQUIREMENTS, "судья приёмки")
+    _assert_requirements(_CONTROL_SYSTEM, _JUDGE_REQUIREMENTS, "контролёр карточек")
 
 
 def test_a_normal_question_may_mention_a_card_unit():

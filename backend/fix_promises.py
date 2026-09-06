@@ -130,6 +130,15 @@ def _shelf_holds_a_draft() -> int:
     return count_shelf_items_holding_a_draft()
 
 
+def _control_extra_passes() -> int:
+    """Выпусков с 07.09.2026, где контроль карточек сделал больше двух проходов. Обещано: 0.
+
+    Судья с тремя проходами и правом переписывать снят 06.09.2026 по решению владельца
+    («зачем три прохода?»); теперь контроль — проход плюс повтор по исправленным."""
+    from backend.database import count_daily_video_issues_with_extra_passes
+    return count_daily_video_issues_with_extra_passes("2026-09-07")
+
+
 def _standup_pool_screen() -> str:
     """Тот же текст, что приходит в воскресенье и по /standup_pool, — экран владельца."""
     from backend.standup_pool_report import format_standup_pool_report, standup_pool_state
@@ -668,6 +677,15 @@ PROMISES: tuple[Promise, ...] = (
         measure=_shelf_holds_a_draft,
         how="SELECT sh.video_id FROM bt_3_standup_shelf sh JOIN bt_3_world_news_daily d "
             "ON d.video_id = sh.video_id WHERE sh.added_at > d.created_at",
+    ),
+    Promise(
+        key="daily_video_control_two_passes_max",
+        title="Выпусков «Новость/Стендап дня», где контроль карточек шёл больше двух проходов (с 07.09)",
+        since="06.09.2026",
+        expected=0,
+        measure=_control_extra_passes,
+        how="SELECT news_date, judge_report->>'passes' FROM bt_3_world_news_daily "
+            "WHERE news_date >= '2026-09-07' AND (judge_report->>'passes')::int > 2",
     ),
     Promise(
         key="word_pick_two_posters_per_picker",

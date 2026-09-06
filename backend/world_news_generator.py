@@ -1153,7 +1153,8 @@ Erzeuge das JSON exakt in diesem Format:
 }}"""
 
 
-def _ask_model(system: str, user: str, profile=None, *, what: str = "") -> dict:
+def _ask_model(system: str, user: str, profile=None, *, what: str = "",
+               temperature: float | None = None) -> dict:
     """Один запрос к модели с разбором JSON. Здесь и только здесь живут ключ, таймаут,
     повторы и учёт расхода — шаги сборки об этом ничего не знают.
 
@@ -1164,7 +1165,8 @@ def _ask_model(system: str, user: str, profile=None, *, what: str = "") -> dict:
         raise RuntimeError("OPENAI_API_KEY not set")
     payload = {
         "model": _model(profile),
-        "temperature": 0.4,
+        # Контроль карточек идёт при 0: это проверка, а не творчество.
+        "temperature": 0.4 if temperature is None else float(temperature),
         "response_format": {"type": "json_object"},
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
@@ -1802,23 +1804,23 @@ def prepare_world_news(
         logger.info("daily_video[%s]: справочник вмешался %d раз(а)",
                     profile.key, len(article_fixes))
 
-    # ── СУДЬЯ ПРИЁМКИ ──────────────────────────────────────────────────────────
-    # Идёт ПО КАРТОЧКАМ и правит их поштучно. Ролик, субтитры и тест не трогает вовсе:
-    # выбрасывать готовый выпуск из-за одного слова со строчной буквы — это выбрасывать
-    # выбранный ролик, скачанные субтитры и десяток хороших карточек, чтобы получить новую
-    # лотерею (решение владельца 22.08.2026).
+    # ── КОНТРОЛЬ КАРТОЧЕК (переделан 06.09.2026, см. daily_video_judge.py) ────────
+    # Контролёр без права переписывать → автор отвечает на замечание → повторный
+    # контроль только исправленных. Ролик, субтитры и тест не трогаются вовсе; выпуск
+    # из-за одной карточки не переделывается (решение владельца 22.08.2026).
     judge_report = {}
     if _env_flag("DAILY_VIDEO_JUDGE_ENABLED", True):
         try:
-            from backend.daily_video_judge import judge_and_repair_cards
-            pack["phrases"], judge_report = judge_and_repair_cards(
-                pack["phrases"], profile=profile, transcript=picked["text"]
+            from backend.daily_video_judge import control_cards
+            pack["phrases"], judge_report = control_cards(
+                pack["phrases"], profile=profile, transcript=picked["text"],
+                call_json=lambda sys_p, usr_p, what, **kw: _ask_model(sys_p, usr_p, profile, what=what, **kw),
             )
         except Exception:
-            # Судья — заслон, а не поставщик содержания. Его падение не должно ронять
+            # Контроль — заслон, а не поставщик содержания. Его падение не должно ронять
             # выпуск, но и молчать нельзя: непроверенный пакет обязан быть виден как
             # непроверенный, иначе мы решим, что проверка была.
-            logger.exception("daily_video[%s]: судья приёмки не отработал", profile.key)
+            logger.exception("daily_video[%s]: контроль карточек не отработал", profile.key)
             judge_report = {"failed": True}
     if article_fixes:
         judge_report = dict(judge_report or {})
