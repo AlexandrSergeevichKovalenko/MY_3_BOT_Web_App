@@ -10108,6 +10108,27 @@ def _send_fix_promise_alerts(admin_ids: list[int], token: str, results: list[dic
                 logging.error("письмо об обещании %s не дошло до %s: %s", r.get("key"), uid, reason)
 
 
+def _send_fix_promise_screens(admin_ids: list[int], token: str) -> None:
+    """Экран «после» каждой свежей починки — отдельным письмом, первые три утра.
+
+    Владелец 06.09.2026: «почему это не может быть автоматически завтра отправлено? Я
+    забуду». Экран, который надо запросить командой, — не сдача работы. Экран приходит
+    сам, рядом с отчётом, пока починка свежая; не собрался — письмо об этом всё равно идёт."""
+    try:
+        from backend.fix_promises import after_screens, screen_message
+        экраны = after_screens()
+    except Exception:
+        logging.exception("экраны «после» не собрались")
+        return
+    for scr in экраны:
+        text = screen_message(scr)
+        for uid in admin_ids:
+            ok, reason = send_telegram_message(chat_id=uid, text=text, token=token,
+                                               what="экран после починки")
+            if not ok:
+                logging.error("экран «после» %s не дошёл до %s: %s", scr.get("key"), uid, reason)
+
+
 def _dictionary_integrity_line() -> str:
     """Вердикт о состоянии словаря одной строкой. Пусто, если проверка недоступна.
 
@@ -10318,6 +10339,7 @@ def _send_pool_enrich_morning_report() -> None:
         if failures:
             logging.error("отчёт о доборе пула не дошёл: %s", failures)
         _send_fix_promise_alerts(admin_ids, token, обещания)
+        _send_fix_promise_screens(admin_ids, token)
     except Exception:
         logging.exception("pool enrich morning report failed")
 
