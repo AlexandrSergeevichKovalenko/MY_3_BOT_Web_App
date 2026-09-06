@@ -47,7 +47,17 @@ class DbPoolStarvationMessageTests(unittest.TestCase):
     """Письмо обязано отличать «запрос упал» от «ушёл мимо пула», а не звать оба
     «резервным путём». Разбор 27.08.2026: DB_POOL_ALLOW_DIRECT_FALLBACK выключен во
     всех сервисах, поэтому в проде срабатывала ровно ветка падения — а письмо при
-    этом писало «Это НЕ падение»."""
+    этом писало «Это НЕ падение».
+
+    06.09.2026 письмо переписано (владелец: «да конечно перепиши»), и ЭТОТ ФАЙЛ Я ТОГДА
+    ПРОПУСТИЛ — проверил только test_pool_measurement_never_steals_a_connection.py.
+    Красный тест поехал всем в хук перед пушем, владельцу пришлось пушить в обход.
+    Урок записан: у письма о голоде пула ДВА файла тестов, чинить оба.
+
+    Ниже сверка идёт БЕЗ ОГЛЯДКИ НА РЕГИСТР: стеречь надо смысл («сказано человеческими
+    словами, а не токеном unspecified»), а не то, заглавными ли буквами это набрано.
+    Прежняя проверка требовала буквально «НЕ ЗАПИСАНО» и покраснела от строчных букв,
+    хотя смысл был на месте."""
 
     @staticmethod
     def _events(kinds, label="unspecified"):
@@ -79,9 +89,24 @@ class DbPoolStarvationMessageTests(unittest.TestCase):
         self.assertIn("3 запрос(ов)", text)
 
     def test_unlabeled_culprit_says_not_recorded_not_unspecified(self):
+        """Метки нет → человеческое «не записано», и НИКОГДА токен unspecified."""
         text = db._build_db_pool_starvation_message(self._events(["failed"] * 5))
-        self.assertIn("НЕ ЗАПИСАНО", text)
+        self.assertIn("не записано", text.lower())
         self.assertNotIn("unspecified", text)
+
+    def test_unlabeled_culprit_is_called_a_victim_not_a_culprit(self):
+        """Добавлено 06.09.2026. Письмо 05.09 назвало виновником того, кто просто пришёл
+        за соединением последним, и владелец пошёл чинить не то место."""
+        text = db._build_db_pool_starvation_message(self._events(["failed"] * 5))
+        self.assertIn("пострадавш", text.lower())
+        self.assertNotIn("Кто не дождался", text)
+
+    def test_letter_never_advises_raising_the_service_pool(self):
+        """Замерено 06.09.2026 на стенде: пул 8 → 274 запроса/с, пул 16 → 170 запроса/с.
+        Совет поднять DB_POOL_MAXCONN урезает пропускную способность, а не спасает."""
+        for kinds in (["failed"] * 5, ["fallback"] * 5):
+            text = db._build_db_pool_starvation_message(self._events(kinds))
+            self.assertNotIn("поднять DB_POOL_MAXCONN", text)
 
     def test_named_culprits_are_listed_with_counts(self):
         events = (
@@ -91,7 +116,9 @@ class DbPoolStarvationMessageTests(unittest.TestCase):
         text = db._build_db_pool_starvation_message(events)
         self.assertIn("http:/api/dictionary/search — 3", text)
         self.assertIn("bot:message — 2", text)
-        self.assertNotIn("НЕ ЗАПИСАНО", text)
+        # Имена есть — строка «кого срезало» НЕ имеет права говорить «не записано».
+        строка = next(s for s in text.split("\n\n") if s.startswith("Кого срезало"))
+        self.assertNotIn("не записано", строка.lower())
 
     def test_named_and_unnamed_are_both_reported(self):
         events = self._events(["failed"] * 3, label="bot:message") + self._events(["failed"] * 2)
