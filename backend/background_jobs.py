@@ -2836,6 +2836,13 @@ def run_retire_review_dm_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_synonym_review_dm_actor() -> None:
+    """Личка с синонимами, которых дверь приёма не пропустила (кнопки оставить/убрать)."""
+    from backend.sprint_accepted_review import send_synonym_review_dm
+    send_synonym_review_dm()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_fill_control_dm_actor() -> None:
     """Сводка по наполнению тем и кнопки под теми, где добор встал сам."""
     from backend.article_fill_control import send_fill_control_dm

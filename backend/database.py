@@ -64278,14 +64278,20 @@ def ensure_sprint_schema() -> None:
 
 
 def upsert_sprint_item(item: dict) -> None:
+    """Единственный вход в банк. `accepted` сюда приходит УЖЕ через дверь
+    backend.sprint_intake.clean_accepted (bot_3._sprint_topup), поэтому запись сразу
+    помечается accepted_checked_at — ночная гигиена её не перепроверяет."""
     import json as _json
+    from backend.sprint_intake import ensure_sprint_intake_schema
+    ensure_sprint_intake_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO bt_3_sprint_bank
-                    (sprint_id, relation, wort, accepted, erklaerung, tip, hint_ru, level)
-                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+                    (sprint_id, relation, wort, accepted, erklaerung, tip, hint_ru, level,
+                     accepted_checked_at)
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, NOW())
                 ON CONFLICT (sprint_id) DO NOTHING
                 """,
                 (

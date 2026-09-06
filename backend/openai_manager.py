@@ -4631,10 +4631,13 @@ nennt der/die Lernende möglichst VIELE Synonyme. Die Bewertung ist automatisch 
 Regeln:
 - "wort" = das Zielwort. Nomen MIT Artikel (z. B. "die Aussage"); Verb im INFINITIV; Adjektiv/Adverb
   in Grundform. B2+, nicht trivial, aber MIT VIELEN gängigen Synonymen (gut "ergiebig").
-- "accepted" = MÖGLICHST VOLLSTÄNDIGE Liste gängiger Synonyme (18–35!) als OBJEKTE {de, ru}:
-  • "de" = das Synonym im SPEICHER-Format (Nomen MIT Artikel, Verb im INFINITIV, Adjektiv Grundform),
-    bedeutungsgleich/-nah und üblich. KEINE Antonyme, keine bloß thematisch verwandten Wörter,
-    keine andere Wortart. Liste WIRKLICH viele Varianten — das ist ein Sammelspiel.
+- "accepted" = Liste der WIRKLICH gängigen, bedeutungsgleichen Synonyme als OBJEKTE {de, ru}.
+  KEINE Mindest- oder Zielzahl: lieber 4 echte als 20 erzwungene. Mindestens 3 müssen
+  existieren, sonst ist das Zielwort ungeeignet — wähle dann ein anderes.
+  • "de" = das Synonym im SPEICHER-Format (Nomen MIT KORREKTEM Artikel, Verb im INFINITIV,
+    Adjektiv Grundform), bedeutungsgleich und üblich. KEINE Antonyme, keine bloß thematisch
+    verwandten Wörter, keine andere Wortart, keine Umschreibungen, keine erfundenen Wörter.
+  • JEDES Wort GENAU EINMAL. Niemals dasselbe "de" mit verschiedenen "ru" wiederholen.
   • "ru" = die russische Übersetzung GENAU dieses Synonyms.
 - "erklaerung" = „lehrbuchartig“ auf Russisch (1–2 Sätze). "tip" = kurzer russischer Merk-Tipp
   (ohne Emoji). "hint_ru" = kurze russische Übersetzung des Zielworts.
