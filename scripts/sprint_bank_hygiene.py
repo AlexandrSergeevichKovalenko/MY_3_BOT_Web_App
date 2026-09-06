@@ -28,6 +28,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--all", action="store_true", help="сухой перемер по всем записям, а не только непроверенным")
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--fix-examples", action="store_true",
+                    help="дочистить дубли в trainer_json.correct_examples у всех записей")
     args = ap.parse_args()
     if not args.apply and not args.dry_run:
         ap.error("нужен --dry-run или --apply")
@@ -36,6 +38,10 @@ def main() -> int:
         print("⛔ bt_3_openthesaurus_synsets пуста — сперва python3 scripts/load_openthesaurus.py --apply")
         return 2
     from backend import sprint_intake
+    if args.fix_examples:
+        n = sprint_intake.dedup_examples_pass(apply=args.apply)
+        print(f"записей с лишними примерами: {n}" + ("" if args.apply else " (сухой прогон)"))
+        return 0
     if args.all:
         if args.apply:
             ap.error("--all только с --dry-run")

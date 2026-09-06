@@ -350,9 +350,43 @@ def _filter_examples(trainer_json: dict, kept_de: set[str]) -> tuple[dict, int]:
     остаться раундом. Ничего не перегенерируем (0 запросов к модели): фильтр."""
     tj = dict(trainer_json or {})
     ex = list(tj.get("correct_examples") or [])
-    new_ex = [e for e in ex if str((e or {}).get("word") or "").strip().lower() in kept_de]
+    # Примеры строились по СТАРОМУ accepted, где «die Option» лежала шесть раз, — значит
+    # и пример к ней лежит несколько раз. Первое вхождение остаётся, остальные — дубли.
+    # Поймано 06.09.2026 на «экране после»: список очистился, а примеры — нет.
+    seen: set[str] = set()
+    new_ex = []
+    for e in ex:
+        key = str((e or {}).get("word") or "").strip().lower()
+        if key in kept_de and key not in seen:
+            seen.add(key)
+            new_ex.append(e)
     tj["correct_examples"] = new_ex
     return tj, len(ex) - len(new_ex)
+
+
+def dedup_examples_pass(*, apply: bool, log: Callable[[str], None] = print) -> int:
+    """Разовый дочист: убрать дубли и снятые слова из trainer_json.correct_examples у ВСЕХ
+    записей (в том числе уже проверенных). Возвращает число изменённых записей."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT sprint_id, wort, accepted, trainer_json FROM bt_3_sprint_bank ORDER BY wort")
+            rows = cur.fetchall() or []
+    changed = 0
+    for sprint_id, wort, accepted, tj in rows:
+        kept = {str((a or {}).get("de") or "").strip().lower() for a in (accepted or [])}
+        new_tj, dropped = _filter_examples(tj or {}, kept)
+        if not dropped:
+            continue
+        changed += 1
+        log(f"{wort}: примеров снято {dropped}")
+        if apply:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE bt_3_sprint_bank SET trainer_json = %s::jsonb WHERE sprint_id = %s",
+                                (json.dumps(new_tj, ensure_ascii=False), sprint_id))
+                conn.commit()
+    return changed
 
 
 def hygiene_pass(*, limit: int | None = None, apply: bool = True,

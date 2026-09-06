@@ -423,7 +423,7 @@ def _db_pool_starvation_today() -> int:
 
 def _sprint_accepted_duplicates_or_self() -> int:
     """Записей банка спринта (не снятых), где в accepted одно слово дважды или само целевое
-    слово. Обещано: 0 (06.09.2026). До двери приёма было 9 + 4 из 56: «die Option» шесть
+    слово, ЛИБО в примерах тренажёра одно слово дважды. Обещано: 0 (06.09.2026). До двери приёма было 9 + 4 из 56: «die Option» шесть
     раз у Gelegenheit — 5 раундов из 8 у пользователя."""
     from backend.database import get_db_connection_context
     with get_db_connection_context() as conn:
@@ -435,9 +435,16 @@ def _sprint_accepted_duplicates_or_self() -> int:
                     FROM bt_3_sprint_bank b, jsonb_array_elements(b.accepted) x
                     WHERE NOT b.retired
                 )
+                , ex AS (
+                    SELECT b.sprint_id, lower(trim(x->>'word')) AS wd
+                    FROM bt_3_sprint_bank b, jsonb_array_elements(b.trainer_json->'correct_examples') x
+                    WHERE NOT b.retired
+                )
                 SELECT COUNT(*) FROM (
                     SELECT sprint_id FROM e GROUP BY sprint_id, w
                     HAVING COUNT(*) > COUNT(DISTINCT de) OR COUNT(*) FILTER (WHERE de = w) > 0
+                    UNION
+                    SELECT sprint_id FROM ex GROUP BY sprint_id HAVING COUNT(*) > COUNT(DISTINCT wd)
                 ) t
                 """
             )
@@ -643,7 +650,7 @@ PROMISES: tuple[Promise, ...] = (
     ),
     Promise(
         key="sprint_accepted_duplicates",
-        title="Слов спринта с повтором синонима или самим словом в списке",
+        title="Слов спринта с повтором синонима (в списке или в примерах) или самим словом в списке",
         since="06.09.2026",
         expected=0,
         measure=_sprint_accepted_duplicates_or_self,

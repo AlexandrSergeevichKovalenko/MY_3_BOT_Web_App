@@ -117,3 +117,11 @@ def test_что_считается_существительным():
     assert _split_noun("Backup") == ("", "Backup")
     assert _split_noun("zur Verfügung geben") is None
     assert _split_noun("erzielen") is None
+
+
+def test_примеры_тренажёра_чистятся_от_дублей_и_снятых_слов():
+    from backend.sprint_intake import _filter_examples
+    tj = {"correct_examples": [{"word": "die Option", "sentence_de": "a"}, {"word": "der Fall", "sentence_de": "b"},
+                               {"word": "die Option", "sentence_de": "c"}, {"word": "die Chance", "sentence_de": "d"}]}
+    new, dropped = _filter_examples(tj, {"die option", "die chance"})
+    assert [e["word"] for e in new["correct_examples"]] == ["die Option", "die Chance"] and dropped == 2
