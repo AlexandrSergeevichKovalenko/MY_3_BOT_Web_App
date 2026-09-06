@@ -382,7 +382,65 @@ def _personal_questions_on_unseen_translation() -> int:
 # Добавляя починку — добавляй строку сюда. Ключ не менять после регистрации: по нему
 # лежат журнал проверок и решение владельца.
 
+def _db_guardrails_alive() -> int:
+    """Обе защиты Postgres от зависшей транзакции на месте. Обещано: 1.
+
+    Повод — остановка базы 05.09.2026 19:48–19:50 UTC: все сервисы разом встали, потому
+    что серверные соединения PgBouncer были заняты транзакциями дольше минуты, а у
+    Postgres не было ни таймаута на брошенную транзакцию, ни лога медленных запросов —
+    поэтому виновника не удалось назвать даже задним числом.
+
+    Настройки живут в postgresql.auto.conf на томе. Ноль здесь означает, что том
+    пересоздали, кто-то сделал ALTER SYSTEM RESET или сервис Postgres заменили."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT setting FROM pg_settings WHERE name IN "
+                "('idle_in_transaction_session_timeout', 'log_min_duration_statement') "
+                "ORDER BY name"
+            )
+            значения = [str(r[0]) for r in (cursor.fetchall() or [])]
+    # порядок по имени: idle_in_transaction_session_timeout, log_min_duration_statement
+    return 1 if значения == ["60000", "5000"] else 0
+
+
+def _db_pool_starvation_today() -> int:
+    """Сколько раз за сегодня запрос не дождался соединения. Обещано: 0.
+
+    Считаем ТОЛЬКО настоящий голод (_note_pool_starvation), а не «пик коснулся потолка»:
+    пик, равный потолку, — норма, это разобрано на живых данных 28.08.2026. Голод был
+    дважды за десять дней и оба раза у MY_3_BOT: 28.08 — 11, 05.09 — 11."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COALESCE(SUM(hits), 0) FROM bt_3_capacity_daily "
+                "WHERE kind = 'db_pool' AND day = CURRENT_DATE"
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="db_guardrails_alive",
+        title="Защиты Postgres от зависшей транзакции на месте (таймаут 60 с + лог медленных запросов)",
+        since="06.09.2026",
+        expected=1,
+        measure=_db_guardrails_alive,
+        how="SELECT name, setting FROM pg_settings WHERE name IN "
+            "('idle_in_transaction_session_timeout','log_min_duration_statement') "
+            "— ждём 60000 и 5000",
+    ),
+    Promise(
+        key="db_pool_starvation_today",
+        title="Запросов, не дождавшихся соединения к базе, за сегодня",
+        since="06.09.2026",
+        expected=0,
+        measure=_db_pool_starvation_today,
+        how="SELECT day, service, hits FROM bt_3_capacity_daily "
+            "WHERE kind='db_pool' AND day=CURRENT_DATE",
+    ),
     Promise(
         key="old_bank_quarantine_traces",
         title="Следов карантина в старом банке словаря",
