@@ -101,6 +101,50 @@ class ОбещаниеВшитоВУтро(unittest.TestCase):
         self.assertIn('CommandHandler("admin_promises"', src)
 
 
+class ЭкранПослеПриходитСам(unittest.TestCase):
+    """Владелец 06.09.2026: «ну я забуду, я же нормальный человек обычный». Экран «после»
+    починки не запрашивается командой — он приходит сам первые три утра."""
+
+    def _реестр(self):
+        from backend.fix_promises import Promise
+        return (
+            Promise("fresh", "свежая", "06.09.2026", 0, lambda: 0, "x", screen=lambda: "ЭКРАН"),
+            Promise("old", "старая", "01.09.2026", 0, lambda: 0, "x", screen=lambda: "СТАРЫЙ"),
+            Promise("noscreen", "без экрана", "06.09.2026", 0, lambda: 0, "x"),
+            Promise("broken", "экран падает", "06.09.2026", 0, lambda: 0, "x",
+                    screen=mock.Mock(side_effect=RuntimeError("база молчит"))),
+            Promise("muted", "снятая", "06.09.2026", 0, lambda: 0, "x", screen=lambda: "X"),
+        )
+
+    def test_only_fresh_screens_and_failures_are_spoken(self):
+        import datetime
+        from backend.fix_promises import after_screens, screen_message
+        экраны = after_screens(promises=self._реестр(), muted={"muted"},
+                               today=datetime.date(2026, 9, 7))
+        по_ключу = {e["key"]: e for e in экраны}
+        self.assertEqual({"fresh", "broken"}, set(по_ключу))
+        self.assertEqual("ЭКРАН", по_ключу["fresh"]["text"])
+        self.assertEqual(2, по_ключу["fresh"]["day"], "второе утро после починки 06.09")
+        self.assertIn("ЭКРАН", screen_message(по_ключу["fresh"]))
+        self.assertIn("не собрался", screen_message(по_ключу["broken"]))
+        self.assertIn("база молчит", screen_message(по_ключу["broken"]))
+
+    def test_screen_stops_after_three_mornings(self):
+        import datetime
+        from backend.fix_promises import after_screens
+        self.assertEqual([], after_screens(promises=self._реестр()[:1], muted=set(),
+                                           today=datetime.date(2026, 9, 9)))
+
+    def test_standup_fix_carries_its_screen(self):
+        from backend.fix_promises import by_key
+        self.assertIsNotNone(by_key("standup_pool_snapshot_fresh").screen)
+
+    def test_morning_sends_the_screens(self):
+        text = BOT.read_text(encoding="utf-8")
+        self.assertIn("_send_fix_promise_screens(admin_ids, token)", text)
+        self.assertIn("after_screens", text)
+
+
 class КарантинСтарогоБанкаСнесён(unittest.TestCase):
     """Первый повод для реестра. Не «дверь закрыта» — писать метку больше нечем."""
 
