@@ -46,10 +46,13 @@ AMBER_DEEP = (150, 106, 30)
 GREEN = (31, 81, 55)
 PAPER = (255, 253, 248)
 
-HERO_R2_KEY = "brand/felix_original.png"
+# Герой карточки — Феликс с учебником немецкого (поза "book" в hero_images.py).
+# Поменял позу — перегенерь её командой /admin_hero_images book: она же пересоберёт
+# карточку в R2, иначе там останется PNG со старым Феликсом.
+HERO_R2_KEY = "brand/felix_book.png"
 
 # Версия в ключе: поменял текст или композицию — подними, иначе в R2 останется старая.
-CARD_VERSION = "v1"
+CARD_VERSION = "v2"  # v2 (06.09.2026): Феликс с книгой вместо галочки
 _CACHE_KEY = "share/invite_card_{version}_{variant}.png"
 
 EYEBROW = "НЕМЕЦКИЙ С ФЕЛИКСОМ"
@@ -103,7 +106,7 @@ def _wrap(d, text, font, max_w):
 
 
 def _load_hero():
-    """Феликс лежит в R2 (его генерит hero_images.py). Нет — рисуем карточку без него."""
+    """Феликс лежит в R2 (его генерит hero_images.py). Нет — карточки НЕ будет, см. render_share_card."""
     try:
         from backend.r2_storage import r2_get_bytes
         data = r2_get_bytes(HERO_R2_KEY)
@@ -118,6 +121,16 @@ def render_share_card(variant: str = "tg", bot_username: str = "") -> bytes | No
     """Отрисовать карточку. Возвращает PNG-байты либо None, если Pillow недоступен."""
     if Image is None:
         logger.warning("share_card: Pillow unavailable")
+        return None
+
+    # Феликс грузится ПЕРВЫМ и до единого пикселя отрисовки. Без него получается не
+    # «чуть хуже», а другая картинка — и она улетела бы в R2 под тем же ключом и
+    # осталась там навсегда: кеш держится ВЕРСИЕЙ, а не содержимым. Честный отказ
+    # виден наружу: inline-режим ответит пустым результатом, /tour отдастся без
+    # og:image, /post скажет человеку, что сначала нужен /admin_hero_images book.
+    hero = _load_hero()
+    if hero is None:
+        logger.error("share_card: нет героя %s в R2 — карточка НЕ отрисована", HERO_R2_KEY)
         return None
 
     img = _base()
@@ -139,11 +152,10 @@ def render_share_card(variant: str = "tg", bot_username: str = "") -> bytes | No
     y += 30
 
     # Феликс справа; колонка текста заканчивается до него, иначе строки наезжают.
-    hero = _load_hero()
     hero_size = 470
     hero_x = W - hero_size - 16
     hero_y = H - hero_size - (128 if variant == "tg" else 150)
-    text_col = hero_x - pad - 24 if hero is not None else W - pad * 2
+    text_col = hero_x - pad - 24
 
     f_item = _font(37, bold=False)
     for bullet in BULLETS:
@@ -154,15 +166,14 @@ def render_share_card(variant: str = "tg", bot_username: str = "") -> bytes | No
                 y += 46
         y += 72
 
-    if hero is not None:
-        hero = hero.resize((hero_size, hero_size), Image.LANCZOS)
-        shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        ImageDraw.Draw(shadow).ellipse(
-            [hero_x + 90, hero_y + hero_size - 74, hero_x + hero_size - 60, hero_y + hero_size + 6],
-            fill=(120, 92, 52, 78))
-        img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(26)))
-        img.alpha_composite(hero, (hero_x, hero_y))
-        d = ImageDraw.Draw(img)
+    hero = hero.resize((hero_size, hero_size), Image.LANCZOS)
+    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).ellipse(
+        [hero_x + 90, hero_y + hero_size - 74, hero_x + hero_size - 60, hero_y + hero_size + 6],
+        fill=(120, 92, 52, 78))
+    img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(26)))
+    img.alpha_composite(hero, (hero_x, hero_y))
+    d = ImageDraw.Draw(img)
 
     if variant == "tg":
         # В Telegram под фото будет настоящая inline-кнопка — рисуем её визуальный двойник.

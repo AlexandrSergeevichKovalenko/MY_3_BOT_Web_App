@@ -3864,6 +3864,49 @@ async def _handle_share_inline_query(update: Update, context: CallbackContext) -
             pass
 
 
+async def promo_post_command(update: Update, context: CallbackContext) -> None:
+    """/post — готовое сообщение о приложении для пересылки в группы: карточка Феликса
+    с книгой, короткий текст поста подписью и рабочая кнопка «Пройти короткий тур».
+
+    Зачем отдельная команда, если есть inline-режим: inline кладёт карточку в ОДИН чат
+    и вызывается заново в каждом следующем. Здесь сообщение приходит владельцу в личку
+    один раз, а дальше просто пересылается — url-кнопка уезжает вместе с пересылкой.
+
+    Присылает ОБА варианта текста (решение владельца 06.09.2026: выбирать глазами на
+    живом экране, а не по числу знаков). /post
+    """
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _is_admin_user(int(user.id)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    from backend.promo_post import CAPTION_LIMIT, POST_VARIANTS
+    from backend.share_card import share_card_url
+
+    bot_username = context.bot.username or (await context.bot.get_me()).username
+    photo_url = await asyncio.to_thread(share_card_url, "tg", bot_username)
+    if not photo_url:
+        # Не подставляем пост без картинки: пересылать в группы полагается карточку.
+        await message.reply_text(
+            "Карточку собрать не из чего: в хранилище нет картинки Феликса с книгой.\n"
+            "Сначала /admin_hero_images book — она нарисует её и сразу пересоберёт карточку."
+        )
+        return
+
+    link = f"https://t.me/{bot_username}?start=ref_{int(user.id)}"
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Пройти короткий тур", url=link)]])
+    for label, text in POST_VARIANTS:
+        await message.reply_text(f"⬇️ Вариант {label} · {len(text)} знаков из {CAPTION_LIMIT}")
+        await message.reply_photo(photo=photo_url, caption=text, reply_markup=kb)
+    await message.reply_text(
+        "Перешли нужное сообщение в группу — кнопка уедет вместе с ним и приведёт "
+        "человека на онбординг."
+    )
+
+
 async def handle_digest_group_callback(update: Update, context: CallbackContext) -> None:
     """«Играть командой» button under the daily «Итоги дня» card → group-play how-to."""
     q = update.callback_query
@@ -33071,10 +33114,16 @@ async def admin_overtaken_images_command(update: Update, context: CallbackContex
 
 
 async def admin_hero_images_command(update: Update, context: CallbackContext) -> None:
-    """Generate the Felix (Fox mascot) hero stickers on a TRANSPARENT background via
-    gpt-image-1 and upload them to R2 (brand/felix_*.png): happy/check, cry/warning,
-    thinking, thumbs-up. Sends each back as a preview photo. A human then converts
-    them to frontend hero_*.webp + the icon set. /admin_hero_images"""
+    """Generate Felix (Fox mascot) hero stickers on a TRANSPARENT background via
+    gpt-image-1 and upload them to R2 (brand/felix_*.png). Sends each back as a preview.
+
+    Позы: original (галочка), cry (грустный), think (думает), sticker (палец вверх),
+    book (с учебником немецкого — герой пригласительной карточки). Аргументами можно
+    перерисовать ТОЛЬКО названные: `/admin_hero_images book`. Без аргументов рисуются
+    все пять заново — а это новые случайные рендеры поверх уже принятых картинок.
+
+    Перерисовал book — карточка приглашения в R2 пересобирается тут же, иначе там
+    остался бы PNG со старым Феликсом. /admin_hero_images [поза…]"""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -33082,11 +33131,14 @@ async def admin_hero_images_command(update: Update, context: CallbackContext) ->
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    status_msg = await message.reply_text("Генерирую hero-стикеры Феликса (прозрачный фон)…")
+    only = [str(a).strip().lower() for a in (context.args or []) if str(a).strip()]
+    what = ", ".join(only) if only else "все позы"
+    status_msg = await message.reply_text(
+        f"Генерирую hero-стикеры Феликса (прозрачный фон): {what}…")
 
     def _gen() -> list:
         from backend.hero_images import generate_and_upload_hero_images
-        return generate_and_upload_hero_images(user_id=getattr(user, "id", 0) or 0)
+        return generate_and_upload_hero_images(user_id=getattr(user, "id", 0) or 0, only=only)
 
     try:
         results = await asyncio.to_thread(_gen)
@@ -33110,6 +33162,26 @@ async def admin_hero_images_command(update: Update, context: CallbackContext) ->
     text = f"✅ Готово: {len(made)}/{len(results)} (R2: brand/felix_*.png)"
     if errs:
         text += "\n🔴 " + "\n".join(errs[:5])
+
+    # Поза book — герой пригласительной карточки. Карточка лежит в R2 готовым PNG и
+    # берётся оттуда по ключу с версией, поэтому сама она не обновится никогда:
+    # пересобираем принудительно прямо здесь, сразу после смены героя.
+    if any(r.get("name") == "book" and not r.get("error") for r in results):
+        def _rebuild() -> list:
+            from backend.share_card import share_card_url
+            uname = context.bot.username or ""
+            return [share_card_url(v, uname, force=True) for v in ("tg", "web")]
+
+        try:
+            urls = await asyncio.to_thread(_rebuild)
+            done = [u for u in urls if u]
+            text += f"\n🃏 Карточка приглашения пересобрана: {len(done)}/2 вариантов"
+            if len(done) < 2:
+                text += " — остальное смотри в логах share_card"
+        except Exception as exc:
+            logging.warning("admin_hero_images: пересборка карточки не удалась", exc_info=True)
+            text += f"\n🔴 Карточку приглашения пересобрать не вышло: {str(exc)[:120]}"
+
     text += ("\n\nДальше: конвертирую их в frontend/hero_*.webp и пересоберу иконки. "
              "Кэш R2 ~10 мин.")
     try:
@@ -46150,6 +46222,7 @@ def main():
     application.add_handler(CommandHandler("streak", _streak_command))
     application.add_handler(CommandHandler("interaktiv_test", _interaktiv_test_command))
     application.add_handler(CommandHandler("invite", _invite_command))
+    application.add_handler(CommandHandler("post", promo_post_command))
     # Inline-режим: «Поделиться» из Mini-App кладёт другу карточку с рабочей кнопкой.
     # Требует включённого inline mode у @BotFather — иначе апдейты просто не придут.
     application.add_handler(InlineQueryHandler(_handle_share_inline_query))
