@@ -418,10 +418,24 @@ def entry_of(display: str, kind: str, card: dict | None, translation: str) -> di
 # │ Правило: карточка, чей вопрос СТОИТ У ЧЕЛОВЕКА НА ЭКРАНЕ, идёт первой. Свежесть │
 # │ важна для того, чего никто не видел; то, что человек читает сейчас, важнее.     │
 # └─────────────────────────────────────────────────────────────────────────────────┘
+# ┌─ ОШИБКА 04.09.2026, НАЙДЕНА 06.09. ЭКРАНОВ ДВА, А СЧИТАЛСЯ ОДИН. ──────────────┐
+# │ Правило «на экране — первый» покрывало только вид 'panel' (спор о карточке,     │
+# │ экран владельца). Вид 'personal' (ошибка в своей фразе, экран автора) в него не  │
+# │ вошёл, хотя это ровно такой же вопрос, который человек читает прямо сейчас.     │
+# │ Владелец 06.09 открыл «Eine drückende Atmosphäre herrschte im Raum»: над       │
+# │ правильным переводом стояло «перевод отсутствует, повторено немецкое» —          │
+# │ вердикт 31.08 по копии в json карточки (см. 4fc4a0a6). Пересуд этой карточки    │
+# │ стоял в общей очереди 447-м при 50 в ночь и ~25 новых фразах в день впереди.    │
+# │ Замер 06.09.2026: открытых личных вопросов 378 карточек, из них 111 вынесены по  │
+# │ переводу, которого автор не видит (73 — претензия к переводу, 38 — к фразе);     │
+# │ в приоритетном списке было 0 карточек. Среди вопросов на экране первыми идут     │
+# │ эти 111: человек читает претензию к тексту, которого перед ним нет.              │
+# │ Обещание: fix_promises «personal_questions_on_unseen_translation» = 0.           │
+# └──────────────────────────────────────────────────────────────────────────────────┘
 ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ = """EXISTS (
       SELECT 1 FROM bt_3_phrase_review r
        WHERE r.unit_id = u.id AND r.status = 'open'
-         AND COALESCE(r.kind, 'grammar') = 'panel')"""
+         AND COALESCE(r.kind, 'grammar') IN ('panel', 'personal'))"""
 
 ВОПРОС_ИЗ_ПРОЗЫ = """EXISTS (
       SELECT 1 FROM bt_3_phrase_review r
@@ -450,6 +464,15 @@ def _где_судить(ru_sql: str) -> str:
             f"            AND COALESCE(c.prompt_v, 1) <> {PROMPT_VERSION}))")
 
 
+def _порядок_отбора(ru_sql: str, fresh_first: bool) -> str:
+    """Вопрос на экране → из них вынесенные по другому переводу → свежее.
+    `NOT` даёт false=0 впереди. Рамка у `ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ` (04.09 и 06.09.2026)."""
+    свежесть = "u.created_at DESC NULLS LAST, u.id DESC" if fresh_first else "u.id"
+    return (f"(NOT {ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ}), "
+            f"(NOT (c.unit_id IS NOT NULL AND c.judged_ru IS DISTINCT FROM {ru_sql})), "
+            f"{свежесть}")
+
+
 def unchecked_units(limit: int, *, fresh_first: bool = True) -> list[tuple]:
     """Карточки фраз, которых панель не видела ИЛИ видела с другим переводом.
 
@@ -459,10 +482,7 @@ def unchecked_units(limit: int, *, fresh_first: bool = True) -> list[tuple]:
     from backend.database import get_db_connection_context
     from backend.lex_units import native_display_sql
     ru = native_display_sql("u")
-    # Сначала то, что человек читает прямо сейчас, потом свежее (см. рамку у
-    # `ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ`). `NOT` даёт false=0 впереди — вопросы на экране первыми.
-    свежесть = "u.created_at DESC NULLS LAST, u.id DESC" if fresh_first else "u.id"
-    порядок = f"(NOT {ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ}), {свежесть}"
+    порядок = _порядок_отбора(ru, fresh_first)
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(f"""
@@ -522,6 +542,20 @@ def count_prose_questions() -> int:
     return _счётчик(f"u.lang = 'de' AND u.kind <> 'word' AND u.card IS NOT NULL\n"
                     f"   AND COALESCE({ru}, '') <> ''\n"
                     f"   AND {ВОПРОС_ИЗ_ПРОЗЫ}")
+
+
+def count_personal_questions_on_unseen_translation() -> int:
+    """Открытых личных вопросов, чей вердикт вынесен по переводу, которого автор не видит
+    (`judged_ru` отметки ≠ живой перевод на экране). Обещано 06.09.2026: 0 каждое утро —
+    ночь берёт такие карточки первыми (`unchecked_units`). Замер до правки: 111."""
+    from backend.lex_units import native_display_sql
+    ru = native_display_sql("u")
+    return _счётчик(f"u.lang = 'de' AND u.kind <> 'word' AND u.card IS NOT NULL\n"
+                    f"   AND COALESCE({ru}, '') <> ''\n"
+                    f"   AND c.unit_id IS NOT NULL AND c.judged_ru IS DISTINCT FROM {ru}\n"
+                    f"   AND EXISTS (SELECT 1 FROM bt_3_phrase_review r\n"
+                    f"                WHERE r.unit_id = u.id AND r.status = 'open'\n"
+                    f"                  AND r.kind = 'personal')")
 
 
 def count_questions_on_the_old_prompt() -> int:

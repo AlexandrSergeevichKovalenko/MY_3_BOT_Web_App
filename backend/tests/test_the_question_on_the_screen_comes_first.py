@@ -33,11 +33,27 @@ class ПервымЧинимТоЧтоЧитаютTests(unittest.TestCase):
         src = _src("backend/phrase_panel.py")
         i = src.index("def unchecked_units(")
         тело = src[i:src.index("\ndef ", i + 1)]
-        self.assertIn("ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ", тело,
+        self.assertIn("_порядок_отбора(", тело,
                       "порядок снова только по свежести — вопрос на экране ждёт месяц")
-        self.assertIn("(NOT ", тело)
+        self.assertIn("(NOT ", pp._порядок_отбора("(SELECT 'живой')", True))
         self.assertIn("status = 'open'", pp.ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ)
-        self.assertIn("= 'panel'", pp.ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ)
+        # Экранов ДВА: спор о карточке у владельца и ошибка в своей фразе у автора.
+        # 06.09.2026 второй вид отсутствовал: вопрос автора стоял 447-м в общей очереди.
+        self.assertIn("'panel'", pp.ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ)
+        self.assertIn("'personal'", pp.ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ)
+        # Среди вопросов на экране первыми — вынесенные по другому переводу.
+        порядок = pp._порядок_отбора("(SELECT 'живой')", True)
+        self.assertLess(порядок.index("(NOT " + pp.ЕСТЬ_ВОПРОС_НА_ЭКРАНЕ),
+                        порядок.index("judged_ru IS DISTINCT FROM"))
+        self.assertLess(порядок.index("judged_ru IS DISTINCT FROM"),
+                        порядок.index("u.created_at DESC"))
+
+    def test_the_promise_counts_exactly_what_the_author_reads(self):
+        from backend import fix_promises, phrase_panel as pp
+        self.assertTrue(hasattr(pp, "count_personal_questions_on_unseen_translation"))
+        p = fix_promises.by_key("personal_questions_on_unseen_translation")
+        self.assertIsNotNone(p)
+        self.assertEqual(p.expected, 0)
 
     def test_the_owner_sees_this_pile_shrink(self):
         from backend import phrase_panel as pp
