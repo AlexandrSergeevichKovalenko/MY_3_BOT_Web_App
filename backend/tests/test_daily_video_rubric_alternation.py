@@ -408,61 +408,158 @@ def test_we_never_patch_a_bad_pack_ourselves():
 
 # ── Отчёт о пуле не тратит квоту ───────────────────────────────────────────────
 
-def test_pool_report_counts_the_shelf_and_never_calls_youtube(monkeypatch):
-    """Первая версия отчёта обходила каналы заново — тратила ту самую квоту, которая нужна
-    продукту. Теперь запас считается по полке, а «чем пополнять» — по снимку, снятому
-    в момент подготовки выпуска. Обращений к YouTube: ноль."""
+import datetime as _dt
+
+_SNAP_AT = _dt.datetime(2026, 9, 6, 3, 40, tzinfo=_dt.timezone.utc)
+
+
+def _pool_report_env(monkeypatch, *, shelf, snapshot, shown, shown_since=None, target=7):
+    """Полка, снимок и реестр показанного — подменяются на backend.database, потому что
+    отчёт импортирует их внутри функции. YouTube запрещён: отчёт не имеет права обходить
+    каналы."""
     import backend.database as db
-    import backend.standup_pool_report as R
+    import backend.standup_shelf as S
     import backend.world_news_generator as G
 
-    monkeypatch.setattr(db, "standup_shelf_counts",
-                        lambda: {"total": 30, "unused": 28, "unused_manual": 11})
-    monkeypatch.setattr(db, "get_daily_video_pool_snapshot",
-                        lambda rubric: {"scanned": 3756, "in_range": 646,
-                                        "manual_captions": 111, "measured_on": "2026-08-21"})
-    monkeypatch.setattr(db, "count_shown_daily_videos", lambda rubric: 2)
+    monkeypatch.setattr(db, "standup_shelf_counts", lambda: shelf)
+    monkeypatch.setattr(db, "get_daily_video_pool_snapshot", lambda rubric: snapshot)
+    monkeypatch.setattr(db, "count_shown_daily_videos", lambda rubric: shown)
+    monkeypatch.setattr(db, "count_shown_from_pool_since",
+                        lambda rubric, since: shown_since or {"total": 0, "manual": 0})
+    monkeypatch.setattr(S, "shelf_target", lambda: target)
     monkeypatch.setattr(G, "_gather_candidates", lambda *a, **kw: (_ for _ in ()).throw(
         AssertionError("отчёт не имеет права обходить каналы")))
 
+
+def _snap(in_range, manual, measured_on="2026-09-06"):
+    return {"scanned": 600, "in_range": in_range, "manual_captions": manual,
+            "measured_on": measured_on, "updated_at": _SNAP_AT}
+
+
+def test_pool_report_counts_shelf_plus_pool_and_never_calls_youtube(monkeypatch):
+    """Первая версия отчёта обходила каналы заново — тратила ту самую квоту, которая нужна
+    продукту. Теперь запас — это полка ПЛЮС годные у каналов по снимку, снятому в момент
+    обхода. Обращений к YouTube: ноль."""
+    import backend.standup_pool_report as R
+
+    _pool_report_env(monkeypatch, shelf={"total": 13, "unused": 7, "unused_manual": 4},
+                     snapshot=_snap(90, 30), shown=6)
     state = R.standup_pool_state()
-    assert state["remaining"] == 28           # запас — это ПОЛКА, а не весь пул каналов
-    assert state["days_left"] == 56           # рубрика выходит через день
-    assert state["pool_in_range"] == 646      # а это то, чем полку можно пополнить
+    assert state["reserve"] == 97             # 7 на складе + 90 у каналов
+    assert state["days_left"] == 194          # рубрика выходит через день
+    assert state["reserve_manual"] == 34
     assert "квоту YouTube отчёт не тратит" in R.format_standup_pool_report(state)
+
+
+def test_full_shelf_and_big_pool_is_not_an_alarm(monkeypatch):
+    """┌─ НАЙДЕНО 06.09.2026 владельцем ─────────────────────────────────────────────┐
+    │ Экран: «⚠️ Запаса меньше месяца. Пора добавить каналы: хватит примерно на 14  │
+    │ дней» — и тут же «Чем пополнять: 90 годных роликов у 12 каналов». Запас       │
+    │ считался по полке, а полка с 29.08 — аварийный склад на семь роликов: семь    │
+    │ через день = 14 < 30, тревога каждое воскресенье при любом состоянии каналов. │
+    └───────────────────────────────────────────────────────────────────────────────┘
+    Ровно те числа с экрана владельца: полка 7 из 7, у каналов 90, показано 6."""
+    import backend.standup_pool_report as R
+
+    _pool_report_env(monkeypatch, shelf={"total": 13, "unused": 7, "unused_manual": 4},
+                     snapshot=_snap(90, 30), shown=6)
+    text = R.format_standup_pool_report(R.standup_pool_state())
+    assert not R.report_calls_for_channels(text), text
+    assert "меньше месяца" not in text
+    assert "✅" in text and "194 дня" in text
+    assert "7 из 7" in text, "склад показывается против цели, а не как запас"
+    assert "Уже показано: 6" in text
+
+
+def test_alarm_fires_when_the_whole_reserve_is_short(monkeypatch):
+    """Тревога осталась — но по запасу целиком: у каналов 5, на складе 7 → 24 дня."""
+    import backend.standup_pool_report as R
+
+    _pool_report_env(monkeypatch, shelf={"total": 13, "unused": 7, "unused_manual": 4},
+                     snapshot=_snap(5, 1), shown=60)
+    text = R.format_standup_pool_report(R.standup_pool_state())
+    assert R.report_calls_for_channels(text)
+    assert "24 дня" in text
+
+
+def test_shown_after_the_snapshot_is_subtracted_from_the_pool(monkeypatch):
+    """Снимок пишется в момент обхода, а показывают потом. Каждый показанный после снимка
+    ролик, взятый не с полки, из «годных у каналов» уже выбыл — иначе отчёт недельной
+    давности завышал бы запас. Полочные не вычитаются: их расход виден по самой полке."""
+    import backend.standup_pool_report as R
+
+    _pool_report_env(monkeypatch, shelf={"total": 13, "unused": 7, "unused_manual": 4},
+                     snapshot=_snap(90, 30), shown=9,
+                     shown_since={"total": 3, "manual": 2})
+    state = R.standup_pool_state()
+    assert state["pool_usable"] == 87
+    assert state["pool_manual"] == 28
+    assert state["reserve"] == 94
 
 
 def test_shelf_and_pool_are_not_confused(monkeypatch):
     """Полка и пул каналов — разные вещи, и путать их нельзя: полка может опустеть при
-    огромном пуле. Отчёт обязан сказать «всё показано, пополнение доберёт», а не
-    «добавь каналы», когда добавлять ничего не надо."""
-    import backend.database as db
+    огромном пуле. Пустой склад при 646 годных у каналов — не повод звать за каналами."""
     import backend.standup_pool_report as R
 
-    monkeypatch.setattr(db, "standup_shelf_counts",
-                        lambda: {"total": 30, "unused": 0, "unused_manual": 0})
-    monkeypatch.setattr(db, "get_daily_video_pool_snapshot",
-                        lambda rubric: {"scanned": 3756, "in_range": 646,
-                                        "manual_captions": 111, "measured_on": "2026-08-21"})
-    monkeypatch.setattr(db, "count_shown_daily_videos", lambda rubric: 30)
+    _pool_report_env(monkeypatch, shelf={"total": 30, "unused": 0, "unused_manual": 0},
+                     snapshot=_snap(646, 111, "2026-08-21"), shown=30)
     text = R.format_standup_pool_report(R.standup_pool_state())
-    assert "всё показано" in text
-    assert "646" in text, "надо показать, чем полку можно пополнить"
+    assert not R.report_calls_for_channels(text)
+    assert "646" in text, "надо показать, сколько годных у каналов"
+    assert "0 из 7" in text
 
 
-def test_report_says_when_the_shelf_was_never_filled(monkeypatch):
-    """Пустая полка на старте и «всё показано» — разные сообщения: первое не требует
-    от владельца ничего, второе может потребовать новых каналов."""
-    import backend.database as db
+def test_report_says_when_channels_were_never_swept(monkeypatch):
+    """Снимка нет — это «не знаем», а не ноль: отчёт говорит об этом словами и не
+    выдаёт ни запаса в днях, ни тревоги."""
     import backend.standup_pool_report as R
 
-    monkeypatch.setattr(db, "standup_shelf_counts",
-                        lambda: {"total": 0, "unused": 0, "unused_manual": 0})
-    monkeypatch.setattr(db, "get_daily_video_pool_snapshot", lambda rubric: None)
-    monkeypatch.setattr(db, "count_shown_daily_videos", lambda rubric: 0)
+    _pool_report_env(monkeypatch, shelf={"total": 0, "unused": 0, "unused_manual": 0},
+                     snapshot=None, shown=0)
+    state = R.standup_pool_state()
+    assert state["pool_measured"] is False and state["reserve"] is None
+    text = R.format_standup_pool_report(state)
+    assert "ещё не обходили" in text
+    assert not R.report_calls_for_channels(text)
+
+
+def test_nothing_left_anywhere_calls_for_channels(monkeypatch):
+    """Единственный случай «добавьте каналы» без тревоги о днях: годных нет нигде."""
+    import backend.standup_pool_report as R
+
+    _pool_report_env(monkeypatch, shelf={"total": 20, "unused": 0, "unused_manual": 0},
+                     snapshot=_snap(0, 0), shown=20)
     text = R.format_standup_pool_report(R.standup_pool_state())
-    assert "ещё не наполнялась" in text
-    assert "всё показано" not in text
+    assert R.report_calls_for_channels(text)
+    assert "Показывать нечего" in text
+
+
+def test_pool_snapshot_excludes_shown_shelved_and_judged(monkeypatch):
+    """«Годный» в снимке — тот, который рубрика вправду может ещё показать: по длине в
+    окне, не показан, не на полке, не под приговором. Прежний счёт брал всё обойдённое
+    минус не по длине — и 90 «годных» включали показанные и осуждённые."""
+    import backend.database as db
+    import backend.world_news_generator as G
+
+    written = {}
+    monkeypatch.setattr(db, "get_shown_daily_video_ids", lambda rubric: {"shown1"})
+    monkeypatch.setattr(db, "standup_shelf_video_ids", lambda: {"shelf1"})
+    monkeypatch.setattr(db, "transcript_video_ids_to_skip", lambda: {"judged1"})
+    monkeypatch.setattr(db, "upsert_daily_video_pool_snapshot", lambda **kw: written.update(kw))
+
+    cands = [{"video_id": v} for v in ("ok1", "ok2", "shown1", "shelf1", "judged1", "long1")]
+    details = {
+        "ok1": {"duration_seconds": 400, "has_manual_captions": True},
+        "ok2": {"duration_seconds": 500, "has_manual_captions": False},
+        "shown1": {"duration_seconds": 400, "has_manual_captions": True},
+        "shelf1": {"duration_seconds": 400, "has_manual_captions": True},
+        "judged1": {"duration_seconds": 400, "has_manual_captions": True},
+        "long1": {"duration_seconds": 5000, "has_manual_captions": True},
+    }
+    snap = G.record_pool_snapshot(STANDUP_PROFILE, cands, details)
+    assert snap == {"scanned": 6, "in_range": 2, "manual_captions": 1}
+    assert written["rubric"] == STANDUP_PROFILE.key and written["in_range"] == 2
 
 
 # ── Прописные буквы в тезисах ──────────────────────────────────────────────────
@@ -1657,10 +1754,14 @@ def test_pool_snapshot_is_written_where_the_sweep_happens():
     import inspect
 
     from backend.standup_shelf import refill_standup_shelf
+    from backend.world_news_generator import _pick_video_with_transcript, prepare_world_news
 
-    src = inspect.getsource(refill_standup_shelf)
-    assert "upsert_daily_video_pool_snapshot" in src, (
-        "снимок обязан писаться там, где происходит обход каналов"
+    # 06.09.2026: обходов два — ночное пополнение и вечерний поиск с колёс (с 29.08 он
+    # главный). Оба пишут снимок одним счётчиком; выпуск сам по себе — нет.
+    assert "record_pool_snapshot" in inspect.getsource(refill_standup_shelf)
+    assert "record_pool_snapshot" in inspect.getsource(_pick_video_with_transcript)
+    assert "upsert_daily_video_pool_snapshot" not in inspect.getsource(prepare_world_news), (
+        "выпуск датировал снимок днём выпуска и клал число вместе с показанными"
     )
 
 

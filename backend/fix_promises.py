@@ -80,6 +80,23 @@ def _night_enrichment_runs_in_units_mode() -> int:
     return 1 if режим == "units" else 0
 
 
+def _standup_report_false_alarm() -> int:
+    """Зовёт ли отчёт о пуле стендапа добавлять каналы, когда годных непоказанных роликов
+    хватает на месяц и больше. Обещано: 0.
+
+    06.09.2026 отчёт писал «пора добавить каналы» при 90 годных у каналов, потому что
+    считал запас по аварийному складу на семь роликов. Меряется тем же путём, каким
+    собирается воскресное письмо и /standup_pool: собрали текст — посмотрели, зовёт ли
+    он за каналами при запасе ≥ 30 дней. Снимка пула ещё нет — измерить нечего."""
+    from backend.standup_pool_report import (ALARM_DAYS, format_standup_pool_report,
+                                             report_calls_for_channels, standup_pool_state)
+    state = standup_pool_state()
+    if not state.get("pool_measured"):
+        raise RuntimeError("снимка пула стендапа ещё нет: обход каналов не доходил до записи")
+    text = format_standup_pool_report(state)
+    return 1 if (report_calls_for_channels(text) and int(state["days_left"]) >= ALARM_DAYS) else 0
+
+
 _WN_OLD_LOOK = ((".worldnews-card-de", "Georgia"), (".worldnews-step", "clip-path"))
 
 
@@ -417,6 +434,15 @@ PROMISES: tuple[Promise, ...] = (
         measure=_word_pick_door_misses,
         how="python3 -c \"from backend.database import count_word_pick_door_misses as f; print(f())\" "
             "— тапы bt_3_word_pick_taps за вчера без строки bt_3_word_picks на сегодня",
+    ),
+    Promise(
+        key="standup_report_no_false_channel_alarm",
+        title="Отчётов о пуле стендапа, зовущих добавлять каналы при запасе на месяц и больше",
+        since="06.09.2026",
+        expected=0,
+        measure=_standup_report_false_alarm,
+        how="/standup_pool в боте: при «Годных непоказанных» от 15 и больше в тексте нет "
+            "слов «добавить каналы»",
     ),
     Promise(
         key="word_pick_two_posters_per_picker",

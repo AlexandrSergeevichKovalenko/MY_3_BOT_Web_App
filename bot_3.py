@@ -12527,7 +12527,8 @@ async def run_standup_pool_report(context: CallbackContext):
     if not sent:
         logging.error("standup pool report: НИ ОДИН админ не получил отчёт. Текст: %s", text)
     _record_sched_heartbeat("standup_pool_report_result", "completed",
-                            {"sent": sent, "remaining": state.get("remaining")})
+                            {"sent": sent, "reserve": state.get("reserve"),
+                             "shelf_unused": state.get("shelf_unused")})
 
 
 async def admin_standup_pool_command(update: Update, context: CallbackContext):

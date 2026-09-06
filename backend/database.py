@@ -31277,20 +31277,50 @@ def get_daily_video_pool_snapshot(rubric: str) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT scanned, in_range, manual_captions, measured_on "
+                "SELECT scanned, in_range, manual_captions, measured_on, updated_at "
                 "FROM bt_3_daily_video_pool_snapshot WHERE rubric = %s;",
                 (str(rubric or "").strip(),),
             )
             row = cursor.fetchone()
             if not row:
                 return None
-            scanned, in_range, manual_captions, measured_on = row
+            scanned, in_range, manual_captions, measured_on, updated_at = row
             return {
                 "scanned": int(scanned or 0),
+                # Годных к показу: по длине, не показанных, не на полке, не под приговором
+                # (см. record_pool_snapshot в world_news_generator, 06.09.2026).
                 "in_range": int(in_range or 0),
                 "manual_captions": int(manual_captions or 0),
                 "measured_on": measured_on.isoformat() if measured_on else None,
+                # Точный момент записи: по нему отчёт вычитает показанное ПОСЛЕ снимка.
+                "updated_at": updated_at,
             }
+
+
+def count_shown_from_pool_since(rubric: str, since) -> dict:
+    """Сколько роликов рубрика показала ПОСЛЕ снимка пула, взяв их не с полки.
+
+    Снимок говорит «у каналов N годных» на момент обхода; каждый показанный с тех пор
+    ролик, который не лежал на полке, из этого N уже выбыл. Полочные не вычитаем: их
+    расход виден по самой полке (used_on), и вычесть их здесь значило бы посчитать дважды.
+    Возвращает общее число и число с ручными субтитрами — оба идут в отчёт владельцу.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*),
+                       COUNT(*) FILTER (WHERE s.had_manual_captions)
+                FROM bt_3_daily_video_shown s
+                WHERE s.rubric = %s
+                  AND s.created_at > %s
+                  AND NOT EXISTS (SELECT 1 FROM bt_3_standup_shelf sh
+                                  WHERE sh.video_id = s.video_id);
+                """,
+                (str(rubric or "").strip(), since),
+            )
+            row = cursor.fetchone() or (0, 0)
+            return {"total": int(row[0] or 0), "manual": int(row[1] or 0)}
 
 
 def count_shown_daily_videos(rubric: str) -> int:
