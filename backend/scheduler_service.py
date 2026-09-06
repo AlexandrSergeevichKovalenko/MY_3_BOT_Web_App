@@ -1033,12 +1033,11 @@ def _build_scheduler():
         )
 
     # Синонимы, которых дверь приёма не пропустила, — владельцу с кнопками (06.09.2026).
-    # Пн и чт: «не реже раза в неделю, чаще — если правок много» (закон цикла, п. 8).
+    # Каждый день по 20 — решение владельца 06.09.2026 («по 20 карточек каждый день»).
     if _enabled("SYNONYM_REVIEW_ENABLED", "1"):
         scheduler.add_job(
             _dispatch_synonym_review_dm,
             "cron",
-            day_of_week="mon,thu",
             hour=_int_env("SYNONYM_REVIEW_HOUR", 12),
             minute=_int_env("SYNONYM_REVIEW_MINUTE", 45),
             timezone=_tz(os.getenv("SYNONYM_REVIEW_TZ") or "Europe/Vienna"),

@@ -9,7 +9,7 @@
 Образец механики — `article_retire_review.py` (одно слово = одно сообщение, две кнопки,
 run-guard, статус прогона по факту доставки). Кнопки `sacc:<keep|der|die|das|drop>:<id>`,
 обработчик — bot_3.handle_synonym_review_callback, ручной вызов — /admin_synonym_review.
-Пачка — SYNONYM_REVIEW_BATCH (20, тот же предел одного человека, что у снятых слов).
+Каждый день в 12:45 по 20 (SYNONYM_REVIEW_BATCH) — число назвал владелец 06.09.2026.
 """
 from __future__ import annotations
 

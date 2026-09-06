@@ -48,7 +48,7 @@
   накопленного (ночная гигиена `sprint_bank_hygiene`, 03:10, и скрипт
   `scripts/sprint_bank_hygiene.py --dry-run/--apply`).
 - `bt_3_sprint_accepted_review` — очередь кандидатов владельцу; письмо
-  `backend/sprint_accepted_review.py` (пн/чт 12:45, пачка 20, образец —
+  `backend/sprint_accepted_review.py` (ежедневно 12:45, пачка 20 — решение владельца, образец —
   `article_retire_review.py`), кнопки `sacc:<keep|der|die|das|drop>:<id>`,
   команда `/admin_synonym_review`.
 - Строка «🧩 Синонимы» в утреннем отчёте «Ночной добор словаря».

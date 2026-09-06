@@ -11443,8 +11443,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("panel_cards_reminder", "Карточки словаря на разбор (вт и пт, 10:00 Вена)", 120, True, "guard"),
     ("translation_links", "Подъём переводов в общий словарь (03:20 Вена)", 30, True, "guard"),
     ("sprint_bank_hygiene_job", "Дверь приёма синонимов по накопленному (03:10 Вена)", 30, True, "guard"),
-    # Понедельник и четверг: между запусками максимум 4 суток — порог 120 часов.
-    ("sprint_accepted_review_dm", "Непропущенные синонимы владельцу (пн и чт, 12:45 Вена)", 120, True, "guard"),
+    ("sprint_accepted_review_dm", "Непропущенные синонимы владельцу (ежедневно 12:45 Вена)", 30, True, "guard"),
     ("private_analytics_auto", "Личная аналитика в личку (19:30)", 30, True, "guard"),
     ("daily_group_summary_auto", "Итоги дня в группе (22:30)", 30, True, "guard"),
     ("weekly_group_summary_auto", "Недельные итоги группы (Вс)", 192, True, "guard"),
@@ -16996,7 +16995,7 @@ def _sprint_intake_report_line() -> str:
         return "\n🧩 Синонимы: ❓ не посчитались, подробности в логах.\n"
     body = " · ".join(parts) if parts else "прогонов ещё не было"
     return (f"\n🧩 <b>Дверь синонимов</b>: {body} · ждут решения: <b>{open_n}</b>"
-            + (" (пн/чт 12:45 или /admin_synonym_review)" if open_n else "") + "\n")
+            + (" (по 20 в день в 12:45 или /admin_synonym_review)" if open_n else "") + "\n")
 
 
 async def admin_access_command(update: Update, context: CallbackContext):
