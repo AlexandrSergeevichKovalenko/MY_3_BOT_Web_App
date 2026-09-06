@@ -354,14 +354,26 @@ def _yt_api_playlist_recent(playlist_id: str, *, max_results: int = 10, pages: i
     allow-filter downstream.
 
     `pages` — сколько страниц по `max_results` пройти. Новостям хватает одной (нужна
-    свежесть), стендапу нужен весь архив: ролики вечнозелёные, и выбирать приходится из
-    сотен, вычитая уже показанное.
+    свежесть), стендапу — свежий срез, а глубже он идёт постранично через
+    `_yt_api_playlist_walk`, не переплачивая за уже пройденные страницы.
     """
+    rows, _token = _yt_api_playlist_walk(playlist_id, max_results=max_results, pages=pages)
+    return rows
+
+
+def _yt_api_playlist_walk(playlist_id: str, *, max_results: int = 10, pages: int = 1,
+                          start_token: str = "") -> tuple[list[dict], str | None]:
+    """Пройти `pages` страниц плейлиста, начиная с `start_token` (пусто — с начала).
+
+    Возвращает ролики и токен СЛЕДУЮЩЕЙ страницы: по нему углубление архива (06.09.2026)
+    продолжает обход с того места, где остановилось, и платит одну единицу за новую
+    страницу, а не за все пройденные заново. None вместо токена — плейлист кончился."""
     api_key = _youtube_api_key()
     if not api_key or not playlist_id:
-        return []
-    out = []
-    page_token = ""
+        return [], None
+    out: list[dict] = []
+    page_token = start_token or ""
+    next_token: str | None = None
     for _ in range(max(1, int(pages or 1))):
         params = {
             "part": "snippet",
@@ -374,6 +386,8 @@ def _yt_api_playlist_recent(playlist_id: str, *, max_results: int = 10, pages: i
         payload = _yt_get("https://www.googleapis.com/youtube/v3/playlistItems", params,
                           cost=1, what=f"playlistItems {playlist_id}")  # 1 единица за страницу
         if not payload:
+            # Ответа нет — где остановились, там и продолжим в следующий раз.
+            next_token = page_token or None
             break
         for item in (payload.get("items") or []):
             snip = item.get("snippet") or {}
@@ -388,9 +402,10 @@ def _yt_api_playlist_recent(playlist_id: str, *, max_results: int = 10, pages: i
                 "trusted": True,
             })
         page_token = (payload.get("nextPageToken") or "").strip()
+        next_token = page_token or None
         if not page_token:
             break
-    return out
+    return out, next_token
 
 
 def _yt_api_video_details(video_ids: list[str]) -> dict[str, dict]:
@@ -648,13 +663,21 @@ def _gather_candidates(profile=None, *, pages: int | None = None) -> list[dict]:
     profile = profile or NEWS_PROFILE
     ttl = _env_int("WORLD_NEWS_CANDIDATE_TTL_SEC", 6 * 3600)
     now = time.time()
-    slot = _CAND_CACHE.setdefault(profile.key, {"ts": 0.0, "items": [], "pages": 0})
+    slot = _CAND_CACHE.setdefault(profile.key, {"ts": 0.0, "items": [], "pages": 0, "tokens": {}})
     archive = profile.pick_strategy == "archive"
     want_pages = int(pages or (profile.archive_pages if archive else 1))
-    # Кэш годен, если он не старше TTL И не мельче запрошенной глубины: углубление
-    # архива (06.09.2026) просит больше страниц, чем лежит в кэше, и должно идти в сеть.
-    if slot["items"] and (now - slot["ts"]) < ttl and int(slot.get("pages") or 0) >= want_pages:
-        return list(slot["items"])
+    cached_pages = int(slot.get("pages") or 0)
+    fresh = bool(slot["items"]) and (now - slot["ts"]) < ttl
+    # ┌─ Глубина в кэше (проверяющий агент, 06.09.2026) ─────────────────────────────┐
+    # │ У каждого ролика в кэше записан номер страницы. Запрос на 1 страницу из кэша,  │
+    # │ пройденного на 8, отдаёт ТОЛЬКО первую: иначе снимок пула и ночной добор       │
+    # │ получали бы весь глубокий обход как «свежий срез» и завышали запас в 8 раз.    │
+    # │ Запрос глубже кэша идёт в сеть за НОВЫМИ страницами по сохранённым токенам —  │
+    # │ пройденные не оплачиваются второй раз.                                         │
+    # └───────────────────────────────────────────────────────────────────────────────┘
+    if fresh and cached_pages >= want_pages:
+        return [c for c in slot["items"] if int(c.get("page") or 1) <= want_pages]
+    resume = fresh and archive and 0 < cached_pages < want_pages
 
     global _QUOTA_LOW
     _QUOTA_EXCEEDED = False
@@ -674,11 +697,12 @@ def _gather_candidates(profile=None, *, pages: int | None = None) -> list[dict]:
     # всегда, даже когда квота исчерпана, — рубрика не должна умирать полностью.
     if archive:
         channels_count = len(profile_channel_ids(profile))
-        # Страницы списка роликов: по одной единице за каждую. Справка о роликах: одна
-        # единица за пачку до 50 — считаем по тому же потолку, что применяется ниже.
-        pages_cost = channels_count * max(1, pages)
+        # Страницы списка роликов: по одной единице за каждую НОВУЮ (при продолжении
+        # обхода — только недостающие). Справка о роликах: одна единица за пачку до 50.
+        new_pages = max(1, pages - cached_pages) if resume else max(1, pages)
+        pages_cost = channels_count * new_pages
         details_cost = -(-min(_env_int("STANDUP_CANDIDATES", 4000),
-                              channels_count * max(1, pages) * 50) // 50)
+                              channels_count * new_pages * 50) // 50)
         est_units = pages_cost + details_cost
         if not _quota_allows(est_units):
             left = _quota_remaining_text()
@@ -689,16 +713,34 @@ def _gather_candidates(profile=None, *, pages: int | None = None) -> list[dict]:
             _QUOTA_LOW = True
             _CAND_CACHE.setdefault(profile.key, {"ts": 0.0, "items": []})
             return []
+    tokens: dict = dict(slot.get("tokens") or {}) if resume else {}
+    if resume:
+        # Продолжаем с сохранённых страниц: уже пройденные ролики остаются, новые — сверху.
+        candidates = [dict(c) for c in slot["items"]]
+        seen = {c["video_id"] for c in candidates}
     for cid in profile_channel_ids(profile):
         pl = _uploads_playlist_id(cid)
         if not pl:
             continue
-        for row in _yt_api_playlist_recent(pl, max_results=per_channel, pages=pages):
+        if resume:
+            if cid not in tokens:
+                continue                      # плейлист этого канала уже кончился
+            start_token, first_page, n_pages = tokens[cid], cached_pages + 1, pages - cached_pages
+        else:
+            start_token, first_page, n_pages = "", 1, pages
+        rows, next_token = _yt_api_playlist_walk(pl, max_results=per_channel, pages=n_pages,
+                                                 start_token=start_token)
+        for i, row in enumerate(rows):
             vid = row["video_id"]
             if vid in seen:
                 continue
             seen.add(vid)
+            row["page"] = first_page + i // max(1, per_channel)
             candidates.append(row)
+        if next_token:
+            tokens[cid] = next_token
+        else:
+            tokens.pop(cid, None)
 
     # Fallback to keyword search only if the cheap path produced nothing (and not because we
     # were rate-limited — in that case searching would just burn 100-unit calls for nothing).
@@ -728,6 +770,7 @@ def _gather_candidates(profile=None, *, pages: int | None = None) -> list[dict]:
         slot["items"] = candidates
         slot["ts"] = now
         slot["pages"] = pages
+        slot["tokens"] = tokens
     return candidates
 
 
@@ -797,8 +840,11 @@ def _pick_video_with_transcript(*, profile=None, manual_url: str | None = None,
     # Свежий срез — одна страница по 50 роликов с канала (решение 29.08.2026, ради
     # квоты). Но срез конечен: показанные и осуждённые из него выбывают, и когда каналы
     # затихают, он пустеет при огромном архиве. Тогда — и ТОЛЬКО тогда — обход идёт
-    # глубже, по странице за раз, до потолка. Цена каждой ступени ≈ каналы + пачки
-    # справки (~24 единицы), и платится она лишь в вечер, когда срез вправду пуст.
+    # глубже, по странице за раз, до потолка. Каждая ступень докупает ТОЛЬКО свою
+    # страницу по сохранённым токенам (~12 единиц списка + ~12 справки), пройденное не
+    # оплачивается заново; до потолка 8 страниц выходит ≈ 190 единиц, и только в вечер,
+    # когда срез вправду пуст. Это не возврат обхода всего архива каждый вечер
+    # (daily_video_rubrics.py, 29.08.2026): обычный вечер по-прежнему стоит одну страницу.
     archive = profile.pick_strategy == "archive"
     first_depth = int(profile.archive_pages if archive else 1)
     max_depth = max(first_depth, _env_int("STANDUP_ARCHIVE_MAX_PAGES", 8)) if archive else 1
@@ -806,10 +852,29 @@ def _pick_video_with_transcript(*, profile=None, manual_url: str | None = None,
     _budget_started = time.monotonic()
     for depth in range(first_depth, max_depth + 1):
         if depth > first_depth:
+            # Бюджет проверяется ДО похода в сеть: обход глубже стоит квоты и времени, и
+            # после исчерпанного бюджета его платить нельзя (проверяющий агент 06.09.2026).
+            if time.monotonic() - _budget_started > WORLD_NEWS_PICK_BUDGET_SEC:
+                diag["budget_exhausted"] = True
+                diag["reason"] = "pick_budget_exhausted"
+                return None, diag
             diag["deepened_to_pages"] = depth
             logger.warning("daily_video[%s]: свежий срез пуст — иду глубже, страниц %d",
                            profile.key, depth)
         candidates = _gather_candidates(profile, pages=depth)
+        if depth > first_depth and not candidates:
+            # Глубже не пустили (квота) или архив кончился. Причина — «срез исчерпан, а
+            # глубже нельзя», и числа свежего среза в diag остаются: это они объясняют вечер.
+            diag["examined"] = len(tried)
+            if _QUOTA_LOW:
+                diag["reason"] = "fresh_slice_exhausted_quota_low"
+                diag["quota_left"] = _quota_remaining_text()
+            elif _QUOTA_EXCEEDED:
+                diag["reason"] = "fresh_slice_exhausted_quota_exceeded"
+            else:
+                diag["reason"] = "archive_exhausted"
+            logger.warning("daily_video[%s]: глубже не вышло (diag=%s)", profile.key, diag)
+            return None, diag
         diag["candidates"] = len(candidates)
         # Ролики, по которым приговор уже вынесен (субтитров нет) или срок отсрочки ещё не
         # вышел, в поиск не берём вовсе: иначе каждый вечер тратим полторы минуты на того же.

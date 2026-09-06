@@ -147,7 +147,7 @@ def test_news_rubric_is_not_gated_by_the_archive_guard(monkeypatch):
     G._CAND_CACHE.clear()
     asked = []
     monkeypatch.setattr(G, "_quota_allows", lambda units: (asked.append(units), False)[1])
-    monkeypatch.setattr(G, "_yt_api_playlist_recent", lambda *a, **kw: [])
+    monkeypatch.setattr(G, "_yt_api_playlist_walk", lambda *a, **kw: ([], None))
     monkeypatch.setattr(G, "_yt_api_search_recent", lambda *a, **kw: [])
     G._gather_candidates(NEWS_PROFILE)
     assert not asked, "новостной обход не должен проходить через архивный сторож"
@@ -2038,3 +2038,61 @@ def test_deepening_stops_at_the_ceiling_and_reports_honestly(monkeypatch):
     picked, diag = G._pick_video_with_transcript(profile=STANDUP_PROFILE)
     assert picked is None and diag["reason"] == "all_candidates_rejected"
     assert calls["pages"] == [1, 2, 3]
+
+
+def test_deepening_pays_only_for_new_pages_and_cache_keeps_page_numbers(monkeypatch):
+    """Проверяющий агент 06.09.2026: первая версия углубления обходила страницы 1..d заново
+    на каждой ступени (~530 единиц до потолка) и отдавала глубокий обход из кэша как
+    «свежий срез» — снимок пула и ночной добор завышали запас в 8 раз.
+    Теперь ступень докупает только СВОЮ страницу по токену, а запрос на 1 страницу из
+    глубокого кэша возвращает только первую."""
+    import backend.world_news_generator as G
+
+    G._CAND_CACHE.clear()
+    walks = []
+
+    def _walk(pl, *, max_results, pages, start_token=""):
+        walks.append((pl, pages, start_token))
+        page = 1 if not start_token else int(start_token[1:]) + 1
+        rows = [{"video_id": f"{pl}-p{page}-{i}", "trusted": True} for i in range(max_results)]
+        return rows, f"t{page}"
+
+    monkeypatch.setattr(G, "_yt_api_playlist_walk", _walk)
+    monkeypatch.setattr(G, "_quota_allows", lambda units: True)
+    monkeypatch.setattr(G, "profile_channel_ids", lambda p: ["UCa", "UCb"], raising=False)
+    import backend.daily_video_rubrics as R
+    monkeypatch.setattr(R, "profile_channel_ids", lambda p: ["UCa", "UCb"])
+
+    first = G._gather_candidates(STANDUP_PROFILE, pages=1)
+    assert len(first) == 2 * G.ARCHIVE_PER_CHANNEL and all(c["page"] == 1 for c in first)
+    assert [w[1:] for w in walks] == [(1, ""), (1, "")]
+
+    deeper = G._gather_candidates(STANDUP_PROFILE, pages=2)
+    assert [w[1:] for w in walks][2:] == [(1, "t1"), (1, "t1")], "докуплена только страница 2"
+    assert len(deeper) == 4 * G.ARCHIVE_PER_CHANNEL
+    assert {c["page"] for c in deeper} == {1, 2}
+
+    again = G._gather_candidates(STANDUP_PROFILE, pages=1)
+    assert len(walks) == 4, "из кэша, без сети"
+    assert len(again) == 2 * G.ARCHIVE_PER_CHANNEL and all(c["page"] == 1 for c in again)
+    assert len(G._gather_candidates(STANDUP_PROFILE)) == 2 * G.ARCHIVE_PER_CHANNEL, (
+        "ночной добор без аргумента видит свежий срез, а не глубокий обход")
+
+
+def test_deepening_respects_the_pick_budget_before_going_to_the_network(monkeypatch):
+    import backend.world_news_generator as G
+    calls = _pick_env(monkeypatch, sweeps={1: ["a"], 2: ["a", "b"]}, transcripts={})
+    clock = iter([0, 0, 1000, 1000, 1000])
+    monkeypatch.setattr(G.time, "monotonic", lambda: next(clock, 1000))
+    picked, diag = G._pick_video_with_transcript(profile=STANDUP_PROFILE)
+    assert picked is None and diag["reason"] == "pick_budget_exhausted"
+    assert calls["pages"] == [1], "глубже за бюджетом не ходим"
+
+
+def test_quota_block_on_deepening_keeps_the_fresh_slice_numbers(monkeypatch):
+    import backend.world_news_generator as G
+    calls = _pick_env(monkeypatch, sweeps={1: ["a", "b"], 2: []}, transcripts={})
+    monkeypatch.setattr(G, "_QUOTA_LOW", True)
+    picked, diag = G._pick_video_with_transcript(profile=STANDUP_PROFILE)
+    assert picked is None and diag["reason"] == "fresh_slice_exhausted_quota_low"
+    assert diag["candidates"] == 2 and diag["examined"] == 2

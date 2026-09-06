@@ -31358,16 +31358,20 @@ def count_sent_daily_videos_without_shown_mark(since_date: str) -> int:
 
 
 def count_shelf_items_holding_a_draft() -> int:
-    """Непоказанные ролики полки, которые одновременно заняты неотправленной записью дня.
-    Обещано: 0. Такая строка — субтитры, скачанные зря, и место на складе, занятое роликом,
-    который и так выйдет."""
+    """Ролики, которые ночной добор положил на полку ПОСЛЕ того, как их уже занял черновик
+    дня. Обещано: 0.
+
+    Ролик, взятый с полки в выпуск, лежит на полке непомеченным до утренней рассылки — это
+    устройство (расход = доставка), а не дефект, и он здесь не считается: у него полка
+    старше записи дня. Дефект — обратный порядок: запись дня старше строки полки, значит
+    добор скачал субтитры к ролику, который и так выйдет (проверяющий агент 06.09.2026)."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 SELECT COUNT(*) FROM bt_3_standup_shelf sh
                 JOIN bt_3_world_news_daily d ON d.video_id = sh.video_id
-                WHERE sh.used_on IS NULL AND d.status <> 'sent';
+                WHERE sh.added_at > d.created_at;
                 """
             )
             return int((cursor.fetchone() or [0])[0] or 0)

@@ -121,10 +121,11 @@ def _sent_without_shown_mark() -> int:
 
 
 def _shelf_holds_a_draft() -> int:
-    """Непоказанных роликов полки, занятых неотправленной записью дня. Обещано: 0.
+    """Роликов, положенных на полку ПОСЛЕ того, как их занял черновик дня. Обещано: 0.
 
     Ночной добор не знал про ролик, который вечер уже выбрал на завтра, и мог положить
-    его же на полку: субтитры скачаны зря, место занято (трассировка 06.09.2026)."""
+    его же на полку: субтитры скачаны зря, место занято (трассировка 06.09.2026).
+    Обратный порядок (сначала полка, потом выпуск с неё) — устройство, не считается."""
     from backend.database import count_shelf_items_holding_a_draft
     return count_shelf_items_holding_a_draft()
 
@@ -661,12 +662,12 @@ PROMISES: tuple[Promise, ...] = (
     ),
     Promise(
         key="standup_shelf_holds_no_draft",
-        title="Роликов на полке стендапа, занятых неотправленной записью дня",
+        title="Роликов, положенных на полку стендапа уже после того, как их занял выпуск",
         since="06.09.2026",
         expected=0,
         measure=_shelf_holds_a_draft,
         how="SELECT sh.video_id FROM bt_3_standup_shelf sh JOIN bt_3_world_news_daily d "
-            "ON d.video_id = sh.video_id WHERE sh.used_on IS NULL AND d.status <> 'sent'",
+            "ON d.video_id = sh.video_id WHERE sh.added_at > d.created_at",
     ),
     Promise(
         key="word_pick_two_posters_per_picker",
