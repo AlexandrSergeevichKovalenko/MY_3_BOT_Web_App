@@ -11514,6 +11514,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     # recorded from the job bodies under dedicated keys, so status='failed' on a bad prep raises a
     # ⚠️ alarm here, and a stalled/never-fired cron goes ПРОТУХЛО past 30h. ---
     ("world_news_evening_result", "Новость дня — вечерняя подготовка (20:00)", 30, True, "guard"),
+    ("world_news_reminder_result", "Новость дня — напоминание об одобрении (22:00)", 30, True, "guard"),
     # ┌─ ПРОВЕРЕНО 28.08.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────────┐
     # │ Вечерняя проверка кричала «⚠️ ПРОТУХЛО • Стендап — отчёт о состоянии пула,     │
     # │ 5.4 дн назад». Отчёт УХОДИЛ исправно: heartbeat в bt_3_scheduler_run_guards —  │
@@ -12895,6 +12896,52 @@ async def run_world_news_evening_prep(context: CallbackContext):
                             {"target": target, "video_id": entry.get("video_id")})
 
 
+async def run_world_news_approval_reminder(context: CallbackContext):
+    """22:00 — повтор вечернего превью, если выпуск на завтра ещё не одобрен.
+
+    Владелец 06.09.2026: «если ролик не одобрен, а мне на одобрение он приходит в 20:00,
+    давай ещё раз в 22:00 это же самое сообщение отправлять, чтобы напомнить». До этого
+    неодобренный выпуск молча не выходил, а сторож расписания писал «выполнено».
+    Уже одобрено / записи нет (о провале подготовки письмо уже было) — не шлём."""
+    from backend.database import get_admin_telegram_ids, get_world_news_for_date
+    target = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    try:
+        entry = await asyncio.to_thread(get_world_news_for_date, target)
+    except Exception as exc:
+        logging.exception("world_news reminder: запись на %s не прочиталась", target)
+        _record_sched_heartbeat("world_news_reminder_result", "failed",
+                                {"target": target, "error": str(exc)[:200]})
+        return
+    if not entry:
+        _record_sched_heartbeat("world_news_reminder_result", "completed",
+                                {"target": target, "resent": False, "why": "no_entry"})
+        return
+    if entry.get("is_pinned"):
+        _record_sched_heartbeat("world_news_reminder_result", "completed",
+                                {"target": target, "resent": False, "why": "approved"})
+        return
+    text = _world_news_preview_text(
+        entry,
+        header=(f"🔔 <b>{_rubric_title(entry)} на завтра ещё не одобрено</b> — без кнопки "
+                "утром в 6:30 рассылки не будет"),
+    )
+    kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
+    admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    reached = 0
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML",
+                                           reply_markup=kb)
+            reached += 1
+        except Exception:
+            logging.warning("world_news reminder: не дошло до %s", admin_id, exc_info=True)
+    if not reached:
+        logging.error("world_news reminder: ни один админ не получил напоминание на %s", target)
+    _record_sched_heartbeat("world_news_reminder_result",
+                            "completed" if reached else "failed",
+                            {"target": target, "resent": True, "reached": reached})
+
+
 async def run_world_news_morning_broadcast(context: CallbackContext):
     """Morning (6:30) broadcast: if today's entry was APPROVED (pinned) last evening, send the
     branded card to the group + the DM of everyone the bot knows. Strict — no approval = no send.
@@ -12976,8 +13023,25 @@ async def run_world_news_morning_broadcast(context: CallbackContext):
         )
         if _rubric_of(entry) == "standup":
             await asyncio.to_thread(mark_standup_shelf_used, entry.get("video_id"), today)
-    except Exception:
-        logging.debug("world_news morning: set status=sent failed", exc_info=True)
+    except Exception as exc:
+        # Выпуск людям УЖЕ ушёл, а след о нём не записался: ролик не в вечном реестре и
+        # может выйти второй раз, запись без status=sent при рестарте до 12:00 разошлётся
+        # снова. До 06.09.2026 это глушилось на уровне debug — молчащая дыра. Теперь:
+        # ошибка в лог, сторож расписания красный, владельцу письмо словами.
+        logging.error("world_news morning: пометка «показано» не записалась для %s: %s",
+                      today, exc, exc_info=True)
+        _record_sched_heartbeat("world_news_morning_result", "failed",
+                                {"date": today, "sent": sent, "error": str(exc)[:200]})
+        from backend.database import get_admin_telegram_ids
+        admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or [])
+                     if int(a) > 0]
+        await _world_news_alert_admins(
+            context, admin_ids,
+            f"⚠️ {_rubric_title(entry)} за {today} ушла людям, но пометка «показано» не "
+            f"записалась: {str(exc)[:200]}\nРолик {entry.get('video_id')} может выйти второй "
+            "раз. Проверка «выпусков без пометки» стоит в реестре обещаний и придёт утром.",
+        )
+        return
     logging.info("world_news morning broadcast %s: group=%s dm_sent=%d/%d", today, group_ok, sent, len(uids))
     _record_sched_heartbeat("world_news_morning_result", "completed",
                             {"date": today, "sent": sent, "total": len(uids), "group": group_ok})
@@ -47080,6 +47144,8 @@ def main():
         # Prepare «Начни день с коротких новостей» before the morning send (heavy work
         # once/day; the 5:05 broadcast only reads the prepared row).
         scheduler.add_job(lambda: submit_async(run_world_news_evening_prep,CallbackContext(application=application)),"cron", hour=20, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        # 22:00 — повтор превью, если завтрашний выпуск не одобрен (владелец 06.09.2026).
+        scheduler.add_job(lambda: submit_async(run_world_news_approval_reminder,CallbackContext(application=application)),"cron", hour=22, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Состояние пула стендапа — раз в неделю, само. Владелец ничего не вызывает командой:
         # «всё, что я должен вызывать командой, я забуду».
         scheduler.add_job(lambda: submit_async(run_standup_pool_report,CallbackContext(application=application)),"cron", day_of_week="sun", hour=11, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)

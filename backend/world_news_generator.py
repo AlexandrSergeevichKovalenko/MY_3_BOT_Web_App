@@ -626,7 +626,7 @@ def record_pool_snapshot(profile, candidates: list, details_map: dict) -> dict:
     return snap
 
 
-def _gather_candidates(profile=None) -> list[dict]:
+def _gather_candidates(profile=None, *, pages: int | None = None) -> list[dict]:
     """Newest-first, de-duplicated candidate videos.
 
     PRIMARY: recent uploads from curated German-news channels via their uploads playlists
@@ -648,8 +648,12 @@ def _gather_candidates(profile=None) -> list[dict]:
     profile = profile or NEWS_PROFILE
     ttl = _env_int("WORLD_NEWS_CANDIDATE_TTL_SEC", 6 * 3600)
     now = time.time()
-    slot = _CAND_CACHE.setdefault(profile.key, {"ts": 0.0, "items": []})
-    if slot["items"] and (now - slot["ts"]) < ttl:
+    slot = _CAND_CACHE.setdefault(profile.key, {"ts": 0.0, "items": [], "pages": 0})
+    archive = profile.pick_strategy == "archive"
+    want_pages = int(pages or (profile.archive_pages if archive else 1))
+    # Кэш годен, если он не старше TTL И не мельче запрошенной глубины: углубление
+    # архива (06.09.2026) просит больше страниц, чем лежит в кэше, и должно идти в сеть.
+    if slot["items"] and (now - slot["ts"]) < ttl and int(slot.get("pages") or 0) >= want_pages:
         return list(slot["items"])
 
     global _QUOTA_LOW
@@ -657,9 +661,8 @@ def _gather_candidates(profile=None) -> list[dict]:
     _QUOTA_LOW = False
     seen: set[str] = set()
     candidates: list[dict] = []
-    archive = profile.pick_strategy == "archive"
     per_channel = ARCHIVE_PER_CHANNEL if archive else _env_int("WORLD_NEWS_PER_CHANNEL", 8)
-    pages = profile.archive_pages if archive else 1
+    pages = want_pages
 
     # СПРАШИВАЕМ РАЗРЕШЕНИЕ ДО ТРАТЫ (21.08.2026). Холодный обход архива стоит примерно
     # столько: по одной единице за страницу списка роликов (каналы × страницы) плюс по
@@ -724,6 +727,7 @@ def _gather_candidates(profile=None) -> list[dict]:
     if candidates:  # only cache a real sweep — never cache an empty (quota-exhausted) result
         slot["items"] = candidates
         slot["ts"] = now
+        slot["pages"] = pages
     return candidates
 
 
@@ -789,132 +793,161 @@ def _pick_video_with_transcript(*, profile=None, manual_url: str | None = None,
             "has_manual_captions": bool(details.get("has_manual_captions")),
         }, diag
 
-    candidates = _gather_candidates(profile)
-    diag["candidates"] = len(candidates)
-    # Ролики, по которым приговор уже вынесен (субтитров нет) или срок отсрочки ещё не
-    # вышел, в поиск не берём вовсе: иначе каждый вечер тратим полторы минуты на того же.
-    try:
-        from backend.database import transcript_video_ids_to_skip
-        _skip = transcript_video_ids_to_skip()
-    except Exception:
-        # Реестр — ускоритель, а не источник ответа. Не прочитали — работаем без него,
-        # но молчать об этом нельзя: без реестра вечер снова пойдёт по кругу.
-        logger.warning("daily_video: реестр разобранных роликов не прочитан", exc_info=True)
-        _skip = set()
-    if _skip:
-        before = len(candidates)
-        candidates = [c for c in candidates if c["video_id"] not in _skip]
-        diag["skipped_known"] = before - len(candidates)
-    diag["quota_exceeded"] = _QUOTA_EXCEEDED
-    if not candidates:
-        if _QUOTA_LOW:
-            diag["reason"] = "youtube_quota_low"
-            diag["quota_left"] = _quota_remaining_text()
-        elif _QUOTA_EXCEEDED:
-            diag["reason"] = "youtube_quota_exceeded"
-        else:
-            diag["reason"] = "no_candidates" if diag["has_yt_key"] else "no_youtube_api_key"
-        logger.warning("world_news: no candidates from YouTube search (diag=%s)", diag)
-        return None, diag
-    details_map = _yt_api_video_details([c["video_id"] for c in candidates])
-    # Reorder the (newest-first) pool so 5–7 min videos are tried FIRST, then longer, then shorter —
-    # a stable sort keeps recency as the tiebreak. Duration comes from videos.list metadata we
-    # already fetched, so this costs no extra transcript fetches (those still stop at the first
-    # valid candidate below). See _length_priority for the tiering.
-    # Снимок пула пишется ПРЯМО ЗДЕСЬ: справка о роликах уже получена и оплачена, значит
-    # «сколько ещё можно показать» достаётся даром. Из него собирается еженедельный отчёт
-    # — без второго обхода. Только для архивных рубрик: у новостей пула нет, есть свежесть.
-    if profile.pick_strategy == "archive":
-        try:
-            snap = record_pool_snapshot(profile, candidates, details_map)
-            diag["pool_scanned"] = snap["scanned"]
-            diag["pool_in_range"] = snap["in_range"]
-            diag["pool_manual_captions"] = snap["manual_captions"]
-        except Exception as exc:
-            # Снимок — материал отчёта, а не условие выпуска: его потеря не повод оставить
-            # людей без ролика. Но и молчать нельзя: причина идёт в diag (лог и письмо о
-            # сбое), а отчёт покажет старую дату обхода — не сегодняшнюю.
-            logger.warning("daily_video[%s]: снимок пула не записан", profile.key, exc_info=True)
-            diag["pool_snapshot_error"] = str(exc)[:200]
-
-    if profile.pick_strategy == "archive":
-        # У вечнозелёного архива нет «свежести», по которой можно было бы разбивать ничьи,
-        # и без перемешивания рубрика месяцами шла бы по одному каналу — тому, чьи ролики
-        # оказались первыми в свипе. Перемешиваем ДО сортировки: устойчивая сортировка
-        # сохранит случайный порядок внутри одинаковых по приоритету роликов.
-        random.shuffle(candidates)
-    candidates.sort(key=lambda c: (
-        # Решение владельца 20.08.2026: ролики с субтитрами, положенными руками, идут
-        # первыми; машинная расшифровка — второй эшелон. Для новостей флаг выключен, и
-        # ключ вырождается в прежний порядок (все нули) — их поведение не меняется.
-        0 if (not profile.prefer_manual_captions
-              or details_map.get(c["video_id"], {}).get("has_manual_captions")) else 1,
-        _length_priority(
-            (details_map.get(c["video_id"], {}).get("duration_seconds") or 0), profile
-        ),
-    ))
+    # ── Глубина обхода архива (решение владельца 06.09.2026) ─────────────────────
+    # Свежий срез — одна страница по 50 роликов с канала (решение 29.08.2026, ради
+    # квоты). Но срез конечен: показанные и осуждённые из него выбывают, и когда каналы
+    # затихают, он пустеет при огромном архиве. Тогда — и ТОЛЬКО тогда — обход идёт
+    # глубже, по странице за раз, до потолка. Цена каждой ступени ≈ каналы + пачки
+    # справки (~24 единицы), и платится она лишь в вечер, когда срез вправду пуст.
+    archive = profile.pick_strategy == "archive"
+    first_depth = int(profile.archive_pages if archive else 1)
+    max_depth = max(first_depth, _env_int("STANDUP_ARCHIVE_MAX_PAGES", 8)) if archive else 1
+    tried: set[str] = set()
     _budget_started = time.monotonic()
-    for cand in candidates:
-        if time.monotonic() - _budget_started > WORLD_NEWS_PICK_BUDGET_SEC:
-            diag["budget_exhausted"] = True
-            diag["reason"] = "pick_budget_exhausted"
-            logger.warning(
-                "world_news: candidate sweep exceeded %ds budget (diag=%s) — likely transcript "
-                "fetch is blocked/slow (proxy?)", WORLD_NEWS_PICK_BUDGET_SEC, diag,
-            )
+    for depth in range(first_depth, max_depth + 1):
+        if depth > first_depth:
+            diag["deepened_to_pages"] = depth
+            logger.warning("daily_video[%s]: свежий срез пуст — иду глубже, страниц %d",
+                           profile.key, depth)
+        candidates = _gather_candidates(profile, pages=depth)
+        diag["candidates"] = len(candidates)
+        # Ролики, по которым приговор уже вынесен (субтитров нет) или срок отсрочки ещё не
+        # вышел, в поиск не берём вовсе: иначе каждый вечер тратим полторы минуты на того же.
+        try:
+            from backend.database import transcript_video_ids_to_skip
+            _skip = transcript_video_ids_to_skip()
+        except Exception:
+            # Реестр — ускоритель, а не источник ответа. Не прочитали — работаем без него,
+            # но молчать об этом нельзя: без реестра вечер снова пойдёт по кругу.
+            logger.warning("daily_video: реестр разобранных роликов не прочитан", exc_info=True)
+            _skip = set()
+        if _skip:
+            before = len(candidates)
+            candidates = [c for c in candidates if c["video_id"] not in _skip]
+            diag["skipped_known"] = before - len(candidates)
+        diag["quota_exceeded"] = _QUOTA_EXCEEDED
+        if not candidates:
+            if _QUOTA_LOW:
+                diag["reason"] = "youtube_quota_low"
+                diag["quota_left"] = _quota_remaining_text()
+            elif _QUOTA_EXCEEDED:
+                diag["reason"] = "youtube_quota_exceeded"
+            else:
+                diag["reason"] = "no_candidates" if diag["has_yt_key"] else "no_youtube_api_key"
+            logger.warning("world_news: no candidates from YouTube search (diag=%s)", diag)
             return None, diag
-        vid = cand["video_id"]
-        if vid in exclude:
-            diag["excluded"] += 1
+        # Глубже уже пробованных не повторяем: страница 1 входит и в обход на 2 страницы.
+        candidates = [c for c in candidates if c["video_id"] not in tried]
+        if not candidates:
             continue
-        det = details_map.get(vid, {})
-        # STRICT news filter: only accept real news channels (reject entertainment/docs/vlogs).
-        # Playlist candidates are pre-trusted (curated channel) and skip this check.
-        channel_title = det.get("channel_title") or cand.get("channel_title") or ""
-        if not cand.get("trusted") and not _is_allowed_news_channel(channel_title):
-            diag["channel_rejected"] += 1
-            continue
-        dur = det.get("duration_seconds") or 0
-        if dur and not (profile.min_seconds <= dur <= profile.max_seconds):
-            diag["dur_skipped"] += 1
-            continue
-        # Таймаут и вердикт — те же, что у добора запаса (29.08.2026). Без них поиск
-        # с колёс каждый вечер спотыкался бы об одни и те же ролики: очередь строится
-        # одинаково, а лестница субтитров у негодного ролика молчит по полторы минуты.
-        # Приговор выносится по ответу YouTube, а не по секундомеру, — см.
-        # backend/transcript_failure.py.
-        data, verdict, reason = fetch_transcript_or_verdict(
-            vid, proxy_first=bool(det.get("region_locked")))
-        if not data:
-            diag["no_transcript"] += 1
+        details_map = _yt_api_video_details([c["video_id"] for c in candidates])
+        # Снимок пула пишется ПРЯМО ЗДЕСЬ: справка о роликах уже получена и оплачена, значит
+        # «сколько ещё можно показать» достаётся даром. Из него собирается еженедельный отчёт
+        # — без второго обхода. Только для архивных рубрик и только по свежему срезу: у
+        # новостей пула нет, есть свежесть; глубокий обход — не тот срез, что меряет отчёт.
+        if archive and depth == first_depth:
             try:
-                from backend.database import record_transcript_verdict
-                record_transcript_verdict(video_id=vid, verdict=verdict, reason=reason)
-            except Exception:
-                logger.warning("daily_video: вердикт %s по %s не записан", verdict, vid,
-                               exc_info=True)
-            continue
-        text = _transcript_to_text(data.get("items") or [])
-        if len(text) < WORLD_NEWS_MIN_TRANSCRIPT_CHARS:
-            diag["short_transcript"] += 1
-            continue
-        return {
-            "video_id": vid,
-            "video_url": f"https://www.youtube.com/watch?v={vid}",
-            "title": det.get("title") or cand.get("title") or "",
-            "channel_title": det.get("channel_title") or cand.get("channel_title") or "",
-            "duration_seconds": dur,
-            "lang": data.get("language") or "de",
-            "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
-            "items": data.get("items") or [],
-            "is_generated": data.get("is_generated"),
-            # Идёт в реестр показанного и в отчёт: так владелец видит числом, сколько
-            # роликов рубрика взяла с ручными субтитрами, а сколько — с машинными.
-            "has_manual_captions": bool(det.get("has_manual_captions")),
-        }, diag
+                snap = record_pool_snapshot(profile, candidates, details_map)
+                diag["pool_scanned"] = snap["scanned"]
+                diag["pool_in_range"] = snap["in_range"]
+                diag["pool_manual_captions"] = snap["manual_captions"]
+            except Exception as exc:
+                # Снимок — материал отчёта, а не условие выпуска: его потеря не повод оставить
+                # людей без ролика. Но и молчать нельзя: причина идёт в diag (лог и письмо о
+                # сбое), а отчёт покажет старую дату обхода — не сегодняшнюю.
+                logger.warning("daily_video[%s]: снимок пула не записан", profile.key, exc_info=True)
+                diag["pool_snapshot_error"] = str(exc)[:200]
+
+        if archive:
+            # У вечнозелёного архива нет «свежести», по которой можно было бы разбивать ничьи,
+            # и без перемешивания рубрика месяцами шла бы по одному каналу — тому, чьи ролики
+            # оказались первыми в свипе. Перемешиваем ДО сортировки: устойчивая сортировка
+            # сохранит случайный порядок внутри одинаковых по приоритету роликов.
+            random.shuffle(candidates)
+        candidates.sort(key=lambda c: (
+            # Решение владельца 20.08.2026: ролики с субтитрами, положенными руками, идут
+            # первыми; машинная расшифровка — второй эшелон. Для новостей флаг выключен, и
+            # ключ вырождается в прежний порядок (все нули) — их поведение не меняется.
+            0 if (not profile.prefer_manual_captions
+                  or details_map.get(c["video_id"], {}).get("has_manual_captions")) else 1,
+            _length_priority(
+                (details_map.get(c["video_id"], {}).get("duration_seconds") or 0), profile
+            ),
+        ))
+        for cand in candidates:
+            if time.monotonic() - _budget_started > WORLD_NEWS_PICK_BUDGET_SEC:
+                diag["budget_exhausted"] = True
+                diag["reason"] = "pick_budget_exhausted"
+                logger.warning(
+                    "world_news: candidate sweep exceeded %ds budget (diag=%s) — likely transcript "
+                    "fetch is blocked/slow (proxy?)", WORLD_NEWS_PICK_BUDGET_SEC, diag,
+                )
+                return None, diag
+            vid = cand["video_id"]
+            tried.add(vid)
+            if vid in exclude:
+                diag["excluded"] += 1
+                continue
+            det = details_map.get(vid, {})
+            # STRICT news filter: only accept real news channels (reject entertainment/docs/vlogs).
+            # Playlist candidates are pre-trusted (curated channel) and skip this check.
+            channel_title = det.get("channel_title") or cand.get("channel_title") or ""
+            if not cand.get("trusted") and not _is_allowed_news_channel(channel_title):
+                diag["channel_rejected"] += 1
+                continue
+            dur = det.get("duration_seconds") or 0
+            if dur and not (profile.min_seconds <= dur <= profile.max_seconds):
+                diag["dur_skipped"] += 1
+                continue
+            # Таймаут и вердикт — те же, что у добора запаса (29.08.2026). Без них поиск
+            # с колёс каждый вечер спотыкался бы об одни и те же ролики: очередь строится
+            # одинаково, а лестница субтитров у негодного ролика молчит по полторы минуты.
+            # Приговор выносится по ответу YouTube, а не по секундомеру, — см.
+            # backend/transcript_failure.py.
+            data, verdict, reason = fetch_transcript_or_verdict(
+                vid, proxy_first=bool(det.get("region_locked")))
+            if not data:
+                diag["no_transcript"] += 1
+                _record_verdict_or_warn(vid, verdict, reason)
+                continue
+            text = _transcript_to_text(data.get("items") or [])
+            if len(text) < WORLD_NEWS_MIN_TRANSCRIPT_CHARS:
+                # Субтитры есть, но их слишком мало для разбора. Это свойство самого ролика,
+                # а не нашей сети, — вердикт окончательный, как и у ночного добора. Без него
+                # (до 06.09.2026) тот же ролик качался каждый вечер заново, съедая бюджет.
+                diag["short_transcript"] += 1
+                from backend.transcript_failure import VERDICT_UNUSABLE
+                _record_verdict_or_warn(
+                    vid, VERDICT_UNUSABLE,
+                    f"субтитры {len(text)} знаков < {WORLD_NEWS_MIN_TRANSCRIPT_CHARS}")
+                continue
+            return {
+                "video_id": vid,
+                "video_url": f"https://www.youtube.com/watch?v={vid}",
+                "title": det.get("title") or cand.get("title") or "",
+                "channel_title": det.get("channel_title") or cand.get("channel_title") or "",
+                "duration_seconds": dur,
+                "lang": data.get("language") or "de",
+                "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
+                "items": data.get("items") or [],
+                "is_generated": data.get("is_generated"),
+                # Идёт в реестр показанного и в отчёт: так владелец видит числом, сколько
+                # роликов рубрика взяла с ручными субтитрами, а сколько — с машинными.
+                "has_manual_captions": bool(det.get("has_manual_captions")),
+            }, diag
     diag["reason"] = "all_candidates_rejected"
     logger.warning("world_news: no candidate passed duration+transcript checks (diag=%s)", diag)
     return None, diag
+
+
+def _record_verdict_or_warn(video_id: str, verdict: str, reason: str | None) -> None:
+    """Вердикт по ролику — в реестр. Реестр — память о попытке, а не сам ответ: не
+    записался — ролик просто попробуют ещё раз, но молчать об этом нельзя."""
+    try:
+        from backend.database import record_transcript_verdict
+        record_transcript_verdict(video_id=video_id, verdict=verdict, reason=reason)
+    except Exception:
+        logger.warning("daily_video: вердикт %s по %s не записан", verdict, video_id, exc_info=True)
 
 
 # ── LLM pack (summary + phrases + 4 MC questions) ───────────────────────────────
@@ -1592,7 +1625,10 @@ def prepare_world_news(
         from backend.database import take_next_from_standup_shelf
         logger.warning("daily_video[%s]: поиск с колёс пуст (diag=%s) — беру из запаса",
                        profile.key, diag)
-        shelf_item = take_next_from_standup_shelf(base_exclude)
+        # Исключаем и показанные, и занятые черновиками: иначе один ролик полки мог стоять
+        # в двух записях дня (найдено трассировкой 06.09.2026).
+        shelf_exclude = base_exclude | shown
+        shelf_item = take_next_from_standup_shelf(shelf_exclude)
         if not shelf_item:
             # Запас пуст. Пробуем добрать ОДИН раз и берём снова: источник тот же, просто
             # добираем сейчас, а не ночью. Если и после этого пусто — честно падаем.
@@ -1602,7 +1638,7 @@ def prepare_world_news(
                 refill_standup_shelf()
             except Exception:
                 logger.exception("daily_video[%s]: добор запаса не удался", profile.key)
-            shelf_item = take_next_from_standup_shelf(base_exclude)
+            shelf_item = take_next_from_standup_shelf(shelf_exclude)
         if shelf_item:
             text = _transcript_to_text(shelf_item["transcript"])
             if len(text) < WORLD_NEWS_MIN_TRANSCRIPT_CHARS:
