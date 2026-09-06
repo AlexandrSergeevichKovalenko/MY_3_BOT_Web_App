@@ -31340,6 +31340,43 @@ def get_daily_video_pool_snapshot(rubric: str) -> dict | None:
             }
 
 
+def count_sent_daily_videos_without_shown_mark(since_date: str) -> int:
+    """Выпуски, ушедшие людям (status='sent'), чей ролик не попал в вечный реестр показанного.
+    Обещано: 0 (с 07.09.2026). Каждая такая строка — ролик, который может выйти второй раз."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM bt_3_world_news_daily d
+                WHERE d.status = 'sent' AND d.news_date >= %s
+                  AND NOT EXISTS (SELECT 1 FROM bt_3_daily_video_shown s
+                                  WHERE s.video_id = d.video_id);
+                """,
+                (since_date,),
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def count_shelf_items_holding_a_draft() -> int:
+    """Ролики, которые ночной добор положил на полку ПОСЛЕ того, как их уже занял черновик
+    дня. Обещано: 0.
+
+    Ролик, взятый с полки в выпуск, лежит на полке непомеченным до утренней рассылки — это
+    устройство (расход = доставка), а не дефект, и он здесь не считается: у него полка
+    старше записи дня. Дефект — обратный порядок: запись дня старше строки полки, значит
+    добор скачал субтитры к ролику, который и так выйдет (проверяющий агент 06.09.2026)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM bt_3_standup_shelf sh
+                JOIN bt_3_world_news_daily d ON d.video_id = sh.video_id
+                WHERE sh.added_at > d.created_at;
+                """
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
 def count_shown_from_pool_since(rubric: str, since) -> dict:
     """Сколько роликов рубрика показала ПОСЛЕ снимка пула, взяв их не с полки.
 

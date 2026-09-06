@@ -64,7 +64,7 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
     """
     from backend.daily_video_rubrics import STANDUP_PROFILE
     from backend.database import (
-        get_shown_daily_video_ids, put_on_standup_shelf, record_transcript_verdict,
+        get_assigned_daily_video_ids, get_shown_daily_video_ids, put_on_standup_shelf, record_transcript_verdict,
         standup_shelf_counts, standup_shelf_video_ids, transcript_verdict_counts,
         transcript_video_ids_to_skip,
     )
@@ -127,6 +127,9 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
     details = _yt_api_video_details([c["video_id"] for c in candidates])
     on_shelf = standup_shelf_video_ids()
     shown = get_shown_daily_video_ids(STANDUP_PROFILE.key)
+    # Ролик, который вечер уже выбрал на завтра, — занят: класть его на полку значит
+    # скачать субтитры второй раз и тут же списать со склада утром (трассировка 06.09.2026).
+    shown = shown | get_assigned_daily_video_ids(STANDUP_PROFILE.key)
 
     # Голова очереди расчищается ЗДЕСЬ. Порядок отбора детерминированный, поэтому без
     # этого списка ночная работа семь раз подряд упиралась в одни и те же два ролика

@@ -147,7 +147,7 @@ def test_news_rubric_is_not_gated_by_the_archive_guard(monkeypatch):
     G._CAND_CACHE.clear()
     asked = []
     monkeypatch.setattr(G, "_quota_allows", lambda units: (asked.append(units), False)[1])
-    monkeypatch.setattr(G, "_yt_api_playlist_recent", lambda *a, **kw: [])
+    monkeypatch.setattr(G, "_yt_api_playlist_walk", lambda *a, **kw: ([], None))
     monkeypatch.setattr(G, "_yt_api_search_recent", lambda *a, **kw: [])
     G._gather_candidates(NEWS_PROFILE)
     assert not asked, "новостной обход не должен проходить через архивный сторож"
@@ -1914,3 +1914,185 @@ def test_a_draft_can_still_be_rebuilt(monkeypatch):
     with pytest.raises(RuntimeError) as err:
         G.prepare_world_news("2026-08-24", rubric=RUBRIC_STANDUP)
     assert "уже отправлен" not in str(err.value)
+
+
+# ── Пять правок цепочки подачи ролика (владелец 06.09.2026: «все пункты важные») ──────
+
+def _bot_src() -> str:
+    return open("bot_3.py", encoding="utf-8").read()
+
+
+def test_unapproved_issue_is_reminded_at_22():
+    """Владелец 06.09.2026: «давай ещё раз в 22:00 это же самое сообщение отправлять,
+    чтобы напомнить, что его нужно одобрить». До этого неодобренный выпуск молча не
+    выходил, а сторож расписания писал «выполнено»."""
+    import inspect
+    src = _bot_src()
+    assert "run_world_news_approval_reminder" in src
+    assert 'submit_async(run_world_news_approval_reminder' in src and 'hour=22, minute=0' in src
+    assert '"world_news_reminder_result"' in src, "сторож расписания обязан знать о напоминании"
+    start = src.index("async def run_world_news_approval_reminder")
+    body = src[start:src.index("\nasync def ", start + 10)]
+    assert 'entry.get("is_pinned")' in body, "одобренное не напоминаем"
+    assert "_world_news_preview_keyboard_rows(entry)" in body, "то же превью с той же кнопкой"
+
+
+def test_morning_mark_failure_is_loud_not_debug():
+    """Пометка «показано» после рассылки глушилась на уровне debug: ролик мог выйти второй
+    раз, и никто бы не узнал. Теперь — ошибка, красный сторож, письмо владельцу."""
+    src = _bot_src()
+    start = src.index("async def run_world_news_morning_broadcast")
+    body = src[start:src.index("\nasync def ", start + 10)]
+    assert 'logging.debug("world_news morning: set status=sent failed"' not in body
+    assert '_record_sched_heartbeat("world_news_morning_result", "failed"' in body
+    assert "пометка «показано» не записалась" in body
+    from backend.fix_promises import by_key
+    assert by_key("daily_video_sent_without_shown_mark") is not None
+
+
+def test_refill_and_shelf_take_skip_videos_held_by_a_draft():
+    """Вечер выбрал ролик на завтра — он занят. Ночной добор не кладёт его на полку, а
+    выбор с полки не берёт то, что уже стоит в записи дня."""
+    import inspect
+    from backend.standup_shelf import refill_standup_shelf
+    from backend.world_news_generator import prepare_world_news
+    assert "get_assigned_daily_video_ids" in inspect.getsource(refill_standup_shelf)
+    src = inspect.getsource(prepare_world_news)
+    assert "take_next_from_standup_shelf(shelf_exclude)" in src
+    assert "shelf_exclude = base_exclude | shown" in src
+    from backend.fix_promises import by_key
+    assert by_key("standup_shelf_holds_no_draft") is not None
+
+
+def _pick_env(monkeypatch, *, sweeps: dict, transcripts: dict):
+    """Поиск с колёс без сети: обход отдаёт заранее заданные страницы, субтитры — словарь."""
+    import backend.database as db
+    import backend.world_news_generator as G
+
+    calls = {"pages": [], "verdicts": []}
+
+    def _gather(profile=None, *, pages=None):
+        calls["pages"].append(pages)
+        return [dict(video_id=v, trusted=True) for v in sweeps.get(pages, [])]
+
+    monkeypatch.setattr(G, "_gather_candidates", _gather)
+    # Порядок в тесте задан списком: перемешивание архива выключаем, иначе «хороший»
+    # ролик может встать первым, и до «короткого» очередь не дойдёт.
+    monkeypatch.setattr(G.random, "shuffle", lambda seq: None)
+    monkeypatch.setattr(G, "_yt_api_video_details",
+                        lambda ids: {v: {"duration_seconds": 400, "has_manual_captions": True}
+                                     for v in ids})
+    monkeypatch.setattr(G, "record_pool_snapshot", lambda *a, **k: {"scanned": 0, "in_range": 0,
+                                                                     "manual_captions": 0})
+    monkeypatch.setattr(db, "transcript_video_ids_to_skip", lambda: set())
+    monkeypatch.setattr(db, "record_transcript_verdict",
+                        lambda **kw: calls["verdicts"].append((kw["video_id"], kw["verdict"])))
+    monkeypatch.setattr(G, "fetch_transcript_or_verdict",
+                        lambda vid, **kw: (transcripts.get(vid), "timeout", None))
+    monkeypatch.setattr(G, "_env_int", lambda name, default: 3 if name == "STANDUP_ARCHIVE_MAX_PAGES" else default)
+    return calls
+
+
+def test_short_transcript_gets_a_final_verdict_in_the_evening_pick(monkeypatch):
+    """Ночной добор давал коротким субтитрам приговор, вечерний поиск — нет: тот же ролик
+    качался каждый вечер заново и съедал бюджет. Теперь вердикт один и тот же."""
+    import backend.world_news_generator as G
+    from backend.transcript_failure import VERDICT_UNUSABLE
+
+    long_items = [{"text": "x" * 400}]
+    calls = _pick_env(monkeypatch,
+                      sweeps={1: ["short", "good"]},
+                      transcripts={"short": {"items": [{"text": "zu kurz"}]},
+                                   "good": {"items": long_items}})
+    picked, diag = G._pick_video_with_transcript(profile=STANDUP_PROFILE)
+    assert picked and picked["video_id"] == "good"
+    assert ("short", VERDICT_UNUSABLE) in calls["verdicts"]
+
+
+def test_pick_goes_deeper_only_when_the_fresh_slice_is_empty(monkeypatch):
+    """Свежий срез (страница 1) исчерпан → обход идёт на страницу 2, до потолка. Пока срез
+    даёт ролик, глубже не ходим — это и есть экономия квоты, решённая 29.08.2026."""
+    import backend.world_news_generator as G
+
+    long_items = [{"text": "x" * 400}]
+    calls = _pick_env(monkeypatch,
+                      sweeps={1: ["dead1", "dead2"], 2: ["dead1", "dead2", "deep_ok"]},
+                      transcripts={"deep_ok": {"items": long_items}})
+    picked, diag = G._pick_video_with_transcript(profile=STANDUP_PROFILE)
+    assert picked and picked["video_id"] == "deep_ok"
+    assert calls["pages"] == [1, 2]
+    assert diag["deepened_to_pages"] == 2
+    # Уже пробованные на странице 1 второй раз не качаются.
+    assert calls["verdicts"].count(("dead1", "timeout")) == 1
+
+    calls = _pick_env(monkeypatch, sweeps={1: ["ok"]}, transcripts={"ok": {"items": long_items}})
+    picked, diag = G._pick_video_with_transcript(profile=STANDUP_PROFILE)
+    assert picked["video_id"] == "ok" and calls["pages"] == [1]
+    assert "deepened_to_pages" not in diag
+
+
+def test_deepening_stops_at_the_ceiling_and_reports_honestly(monkeypatch):
+    import backend.world_news_generator as G
+    calls = _pick_env(monkeypatch, sweeps={1: ["a"], 2: ["a", "b"], 3: ["a", "b", "c"]},
+                      transcripts={})
+    picked, diag = G._pick_video_with_transcript(profile=STANDUP_PROFILE)
+    assert picked is None and diag["reason"] == "all_candidates_rejected"
+    assert calls["pages"] == [1, 2, 3]
+
+
+def test_deepening_pays_only_for_new_pages_and_cache_keeps_page_numbers(monkeypatch):
+    """Проверяющий агент 06.09.2026: первая версия углубления обходила страницы 1..d заново
+    на каждой ступени (~530 единиц до потолка) и отдавала глубокий обход из кэша как
+    «свежий срез» — снимок пула и ночной добор завышали запас в 8 раз.
+    Теперь ступень докупает только СВОЮ страницу по токену, а запрос на 1 страницу из
+    глубокого кэша возвращает только первую."""
+    import backend.world_news_generator as G
+
+    G._CAND_CACHE.clear()
+    walks = []
+
+    def _walk(pl, *, max_results, pages, start_token=""):
+        walks.append((pl, pages, start_token))
+        page = 1 if not start_token else int(start_token[1:]) + 1
+        rows = [{"video_id": f"{pl}-p{page}-{i}", "trusted": True} for i in range(max_results)]
+        return rows, f"t{page}"
+
+    monkeypatch.setattr(G, "_yt_api_playlist_walk", _walk)
+    monkeypatch.setattr(G, "_quota_allows", lambda units: True)
+    monkeypatch.setattr(G, "profile_channel_ids", lambda p: ["UCa", "UCb"], raising=False)
+    import backend.daily_video_rubrics as R
+    monkeypatch.setattr(R, "profile_channel_ids", lambda p: ["UCa", "UCb"])
+
+    first = G._gather_candidates(STANDUP_PROFILE, pages=1)
+    assert len(first) == 2 * G.ARCHIVE_PER_CHANNEL and all(c["page"] == 1 for c in first)
+    assert [w[1:] for w in walks] == [(1, ""), (1, "")]
+
+    deeper = G._gather_candidates(STANDUP_PROFILE, pages=2)
+    assert [w[1:] for w in walks][2:] == [(1, "t1"), (1, "t1")], "докуплена только страница 2"
+    assert len(deeper) == 4 * G.ARCHIVE_PER_CHANNEL
+    assert {c["page"] for c in deeper} == {1, 2}
+
+    again = G._gather_candidates(STANDUP_PROFILE, pages=1)
+    assert len(walks) == 4, "из кэша, без сети"
+    assert len(again) == 2 * G.ARCHIVE_PER_CHANNEL and all(c["page"] == 1 for c in again)
+    assert len(G._gather_candidates(STANDUP_PROFILE)) == 2 * G.ARCHIVE_PER_CHANNEL, (
+        "ночной добор без аргумента видит свежий срез, а не глубокий обход")
+
+
+def test_deepening_respects_the_pick_budget_before_going_to_the_network(monkeypatch):
+    import backend.world_news_generator as G
+    calls = _pick_env(monkeypatch, sweeps={1: ["a"], 2: ["a", "b"]}, transcripts={})
+    clock = iter([0, 0, 1000, 1000, 1000])
+    monkeypatch.setattr(G.time, "monotonic", lambda: next(clock, 1000))
+    picked, diag = G._pick_video_with_transcript(profile=STANDUP_PROFILE)
+    assert picked is None and diag["reason"] == "pick_budget_exhausted"
+    assert calls["pages"] == [1], "глубже за бюджетом не ходим"
+
+
+def test_quota_block_on_deepening_keeps_the_fresh_slice_numbers(monkeypatch):
+    import backend.world_news_generator as G
+    calls = _pick_env(monkeypatch, sweeps={1: ["a", "b"], 2: []}, transcripts={})
+    monkeypatch.setattr(G, "_QUOTA_LOW", True)
+    picked, diag = G._pick_video_with_transcript(profile=STANDUP_PROFILE)
+    assert picked is None and diag["reason"] == "fresh_slice_exhausted_quota_low"
+    assert diag["candidates"] == 2 and diag["examined"] == 2

@@ -111,6 +111,25 @@ def _standup_pool_snapshot_stale() -> int:
     return 1 if age > timedelta(days=3) else 0
 
 
+def _sent_without_shown_mark() -> int:
+    """Выпусков, ушедших людям без пометки «показано» в вечном реестре. Обещано: 0.
+
+    До 06.09.2026 сбой этой пометки глушился на уровне debug: ролик мог выйти второй раз,
+    и никто бы не узнал. Считается с 07.09.2026 — первого утра после починки."""
+    from backend.database import count_sent_daily_videos_without_shown_mark
+    return count_sent_daily_videos_without_shown_mark("2026-09-07")
+
+
+def _shelf_holds_a_draft() -> int:
+    """Роликов, положенных на полку ПОСЛЕ того, как их занял черновик дня. Обещано: 0.
+
+    Ночной добор не знал про ролик, который вечер уже выбрал на завтра, и мог положить
+    его же на полку: субтитры скачаны зря, место занято (трассировка 06.09.2026).
+    Обратный порядок (сначала полка, потом выпуск с неё) — устройство, не считается."""
+    from backend.database import count_shelf_items_holding_a_draft
+    return count_shelf_items_holding_a_draft()
+
+
 def _standup_pool_screen() -> str:
     """Тот же текст, что приходит в воскресенье и по /standup_pool, — экран владельца."""
     from backend.standup_pool_report import format_standup_pool_report, standup_pool_state
@@ -630,6 +649,25 @@ PROMISES: tuple[Promise, ...] = (
         how="/standup_pool в боте: дата в строке «Каналы смотрели …» не старше трёх дней; "
             "в базе — SELECT updated_at FROM bt_3_daily_video_pool_snapshot WHERE rubric='standup'",
         screen=_standup_pool_screen,
+    ),
+    Promise(
+        key="daily_video_sent_without_shown_mark",
+        title="Выпусков «Новость/Стендап дня», ушедших людям без пометки «показано» (с 07.09)",
+        since="06.09.2026",
+        expected=0,
+        measure=_sent_without_shown_mark,
+        how="SELECT news_date, video_id FROM bt_3_world_news_daily d WHERE status='sent' AND "
+            "news_date >= '2026-09-07' AND NOT EXISTS (SELECT 1 FROM bt_3_daily_video_shown s "
+            "WHERE s.video_id = d.video_id)",
+    ),
+    Promise(
+        key="standup_shelf_holds_no_draft",
+        title="Роликов, положенных на полку стендапа уже после того, как их занял выпуск",
+        since="06.09.2026",
+        expected=0,
+        measure=_shelf_holds_a_draft,
+        how="SELECT sh.video_id FROM bt_3_standup_shelf sh JOIN bt_3_world_news_daily d "
+            "ON d.video_id = sh.video_id WHERE sh.added_at > d.created_at",
     ),
     Promise(
         key="word_pick_two_posters_per_picker",
