@@ -132,5 +132,35 @@ class Обещание(unittest.TestCase):
         self.assertEqual(promise.expected, 0)
 
 
+class НочнаяЧисткаСнимков(unittest.TestCase):
+
+    def test_сначала_схема_потом_чистка_и_сердцебиение(self):
+        import bot_3
+        calls = []
+        with patch.object(server, "_ensure_weekly_global_ranking_schema", side_effect=lambda: calls.append("schema")), \
+             patch.object(server, "_repair_weekly_global_ranking_snapshots",
+                          side_effect=lambda: (calls.append("repair") or {"zero_rank_removed": 12, "ranked_rows_recomputed": 2})), \
+             patch.object(bot_3, "_record_sched_heartbeat", side_effect=lambda *a: calls.append(a)):
+            bot_3._run_weekly_ranking_snapshot_repair_safe()
+        self.assertEqual(calls[:2], ["schema", "repair"])
+        self.assertEqual(calls[2], ("weekly_ranking_snapshot_repair", "completed",
+                                    {"zero_rank_removed": 12, "ranked_rows_recomputed": 2}))
+
+    def test_падение_оставляет_след_failed(self):
+        import bot_3
+        beats = []
+        with patch.object(server, "_ensure_weekly_global_ranking_schema", side_effect=RuntimeError("база не ответила")), \
+             patch.object(bot_3, "_record_sched_heartbeat", side_effect=lambda *a: beats.append(a)):
+            bot_3._run_weekly_ranking_snapshot_repair_safe()
+        self.assertEqual(beats[0][:2], ("weekly_ranking_snapshot_repair", "failed"))
+        self.assertIn("база не ответила", beats[0][2]["error"])
+
+    def test_задание_стоит_в_расписании_бота(self):
+        import inspect
+        import bot_3
+        src = inspect.getsource(bot_3)
+        self.assertIn("_run_weekly_ranking_snapshot_repair_safe,\n            \"cron\",\n            hour=3,\n            minute=15,", src)
+
+
 if __name__ == "__main__":
     unittest.main()

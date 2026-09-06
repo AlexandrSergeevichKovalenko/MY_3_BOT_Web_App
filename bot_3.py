@@ -10414,6 +10414,29 @@ def _run_pool_night_enrichment_safe() -> None:
         _record_sched_heartbeat("pool_night_enrichment", "failed", {"error": str(exc)[:300]})
 
 
+def _run_weekly_ranking_snapshot_repair_safe() -> None:
+    """Ночная чистка снимков недельного рейтинга (03:15 Вена). Идемпотентна, базы почти
+    не стоит: две правки по маленькой таблице.
+
+    Решение владельца 06.09.2026: место не даётся за ноль, равный балл — одно место. Сама
+    рассылка чинит снимки перед отправкой, но она воскресная, а её защита от повтора за
+    текущую неделю уже занята — без ночной работы накопленные алфавитные места у нулей
+    лежали бы до 13.09, и обещание weekly_ranking_no_place_for_zero кричало бы «нарушено»
+    каждое утро. Сначала схема (rank становится NULL-able), потом чистка."""
+    try:
+        from backend.backend_server import (
+            _ensure_weekly_global_ranking_schema,
+            _repair_weekly_global_ranking_snapshots,
+        )
+        _ensure_weekly_global_ranking_schema()
+        stats = _repair_weekly_global_ranking_snapshots()
+        _record_sched_heartbeat("weekly_ranking_snapshot_repair", "completed", stats)
+        logging.info("weekly ranking snapshot repair result=%s", stats)
+    except Exception as exc:
+        logging.exception("weekly ranking snapshot repair failed")
+        _record_sched_heartbeat("weekly_ranking_snapshot_repair", "failed", {"error": str(exc)[:300]})
+
+
 def _run_phrase_night_check_safe() -> None:
     """Ночная проверка грамматики фраз общего словаря (03:40 Вена — после добора слов).
     Крутится в потоке BackgroundScheduler → обязан быть синхронным. Тратит GPT, поэтому
@@ -47044,6 +47067,19 @@ def main():
             "cron",
             hour=int((os.getenv("POOL_NIGHT_ENRICH_HOUR") or "3").strip() or "3"),
             minute=int((os.getenv("POOL_NIGHT_ENRICH_MINUTE") or "10").strip() or "10"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Ночная чистка снимков недельного рейтинга (03:15 Europe/Vienna) --
+        # Место не даётся за ноль (владелец 06.09.2026); старые снимки с алфавитными
+        # местами у нулей чинятся здесь, а не ждут воскресной рассылки.
+        scheduler.add_job(
+            _run_weekly_ranking_snapshot_repair_safe,
+            "cron",
+            hour=3,
+            minute=15,
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
