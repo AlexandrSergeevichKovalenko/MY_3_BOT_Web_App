@@ -552,6 +552,20 @@ def _sprint_accepted_article_mismatch() -> int:
     return n
 
 
+def _sprint_review_unjudged_stale() -> int:
+    """Кандидатов в очереди синонимов, которых судья-модель не оценил за двое суток.
+    Обещано: 0 (06.09.2026). Судья идёт ночью в 03:10 после гигиены и после набора в
+    03:20; строка старше двух суток без вердикта значит, что оба голоса молчат
+    (Gemini без кредитов И GPT не отвечает) либо задача не запускается."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM bt_3_sprint_accepted_review "
+                           "WHERE status = 'open' AND judge_verdict IS NULL "
+                           "AND created_at < NOW() - interval '2 days'")
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
 def _sprint_bank_unchecked() -> int:
     """Записей банка спринта без отметки accepted_checked_at — то есть попавших в банк мимо
     двери приёма. Обещано: 0 (06.09.2026): новое слово помечается при вставке, накопленное
@@ -771,6 +785,15 @@ PROMISES: tuple[Promise, ...] = (
         expected=0,
         measure=_sprint_accepted_article_mismatch,
         how="python3 -c \"from backend.fix_promises import _sprint_accepted_article_mismatch as f; print(f())\"",
+    ),
+    Promise(
+        key="sprint_review_unjudged_stale",
+        title="Кандидатов-синонимов без вердикта судьи старше двух суток",
+        since="06.09.2026",
+        expected=0,
+        measure=_sprint_review_unjudged_stale,
+        how="SELECT COUNT(*) FROM bt_3_sprint_accepted_review WHERE status='open' AND judge_verdict IS NULL "
+            "AND created_at < NOW() - interval '2 days'",
     ),
     Promise(
         key="sprint_bank_unchecked",
