@@ -8499,12 +8499,71 @@ _DB_POOL_ALERT_LAST_SENT_TS: float = 0.0
 # это два разных мира для человека у экрана.
 _DB_POOL_STARVATION_EVENTS: list[tuple[float, str, str]] = []
 
+# ⛔ БЕЗ ЭТОГО ПИСЬМО НАЗЫВАЕТ ВИНОВНИКОМ ЖЕРТВУ. Владелец 06.09.2026, про письмо от
+# 05.09: «какой у нас тогда слабое место? что ты имеешь в виду?» — потому что письмо
+# показало пальцем на _record_sched_heartbeat, который всего лишь пришёл за соединением
+# последним, и посоветовало поднять DB_POOL_MAXCONN, что сделало бы хуже.
+#
+# Голод пула — это ДВА разных мира, и путать их нельзя:
+#   • соединения ДЕРЖАТ долго (медленная транзакция, вставшая база) — тогда размер пула
+#     ни при чём, больше мест лишь удлинит очередь;
+#   • соединения оборачиваются быстро, но их правда не хватает — тогда узкое место
+#     потолок PgBouncer (MAX_DB_CONNECTIONS, общий на ВСЕ сервисы), а не пул сервиса.
+# Отличить их можно только одним фактом: держал ли кто-то соединение долго. Он у нас уже
+# считается на возврате соединения — надо лишь не выбрасывать его, а помнить окно.
+#
+# Стоимость: одна запись в список на КАЖДОЕ длинное удержание (>= DB_CHECKOUT_HOLD_WARN_MS,
+# по умолчанию 1500 мс). На горячий путь не попадает — короткие возвраты сюда не заходят.
+_DB_LONG_HOLD_LOCK = threading.Lock()
+_DB_LONG_HOLD_EVENTS: list[tuple[float, int, str]] = []
+
+# Порог «это держал ОН». Длинное удержание по DB_CHECKOUT_HOLD_WARN_MS (1.5 с) — обычное
+# дело для тяжёлого запроса и виновником не делает. Виновником делает удержание, сравнимое
+# с ожиданием в очереди: 05.09.2026 держали 70–118 с при ожидании 1.5 с.
+DB_HOLD_BLAME_MS = max(1000, int(os.getenv("DB_HOLD_BLAME_MS", "10000")))
+
+
+def _note_long_hold(hold_ms: int, context_label: str) -> None:
+    """Запомнить, что соединение держали долго. Читает только письмо о голоде."""
+    now_ts = time.time()
+    cutoff = now_ts - int(DB_POOL_SATURATION_ALERT_COOLDOWN_MIN) * 60
+    with _DB_LONG_HOLD_LOCK:
+        _DB_LONG_HOLD_EVENTS[:] = [item for item in _DB_LONG_HOLD_EVENTS if item[0] >= cutoff]
+        _DB_LONG_HOLD_EVENTS.append((now_ts, int(hold_ms), str(context_label or "").strip()))
+
+
+def _recent_long_holds() -> tuple[int, int, list[str]]:
+    """Сколько соединений держали дольше порога вины за окно сигнала, самое долгое, кто.
+
+    Возвращает (сколько, самое_долгое_мс, кто держал). Пустой список имён — не «никто»,
+    а «у этих мест нет метки db_acquire_scope()»: значение отличается, и в письме это
+    сказано словами."""
+    cutoff = time.time() - int(DB_POOL_SATURATION_ALERT_COOLDOWN_MIN) * 60
+    with _DB_LONG_HOLD_LOCK:
+        свежие = [item for item in _DB_LONG_HOLD_EVENTS
+                  if item[0] >= cutoff and item[1] >= DB_HOLD_BLAME_MS]
+    if not свежие:
+        return 0, 0, []
+    самое_долгое = max(item[1] for item in свежие)
+    имена: dict[str, int] = {}
+    for _, _, имя in свежие:
+        if имя and имя != "unspecified":
+            имена[имя] = имена.get(имя, 0) + 1
+    топ = [f"{имя} — {сколько}" for имя, сколько
+           in sorted(имена.items(), key=lambda pair: (-pair[1], pair[0]))[:3]]
+    return len(свежие), самое_долгое, топ
+
+
 
 def _describe_db_pool_starvation_culprits(labels: list[str]) -> str:
-    """Кто именно не дождался соединения — человеческой строкой.
+    """Кого СРЕЗАЛО нехваткой соединений — человеческой строкой.
 
-    Имя берётся из db_acquire_scope(). Если метки нет, honest-ответ — «не записано»,
-    а НЕ технический токен «unspecified», который владелец не может ни с чем соотнести.
+    ⛔ ЭТО НЕ ВИНОВНИКИ. Имя берётся из стека того, кто ПРИШЁЛ за соединением и не
+    дождался, то есть пострадавшего. 05.09.2026 письмо назвало так
+    `_record_sched_heartbeat`, владелец пошёл разбираться с ним, а держали соединения
+    совсем другие места. Виновника показывает строка «Кто держал» ниже в письме.
+
+    Метки нет — честный ответ «не записано», а НЕ технический токен «unspecified».
     """
     counted: dict[str, int] = {}
     unnamed = 0
@@ -8515,13 +8574,13 @@ def _describe_db_pool_starvation_culprits(labels: list[str]) -> str:
             continue
         counted[name] = counted.get(name, 0) + 1
     if not counted:
-        return ("Кто именно не дождался — НЕ ЗАПИСАНО: у этих мест нет метки "
-                "db_acquire_scope(). Без имени виновника решение принять не по чему.")
+        return ("Кого срезало: не записано — у этих мест нет метки db_acquire_scope(). "
+                "Это в любом случае пострадавшие, а не виновники.")
     top = sorted(counted.items(), key=lambda pair: (-pair[1], pair[0]))[:5]
-    line = "Кто не дождался: " + ", ".join(f"{name} — {count}" for name, count in top)
+    line = "Кого срезало: " + ", ".join(f"{name} — {count}" for name, count in top)
     if unnamed:
         line += f"; ещё {unnamed} без метки"
-    return line + "."
+    return line + ". Это пострадавшие: они пришли за соединением, когда пул был уже выпит."
 
 
 def _откуда_позвали() -> str:
@@ -8549,6 +8608,42 @@ def _откуда_позвали() -> str:
         return ""
 
 
+# ┌─ ПРОВЕРЕНО 05–06.09.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ──────────────────────┐
+# │ ПОВОД: письмо 05.09.2026 19:50 UTC — MY_3_BOT, пул 8, 5 падений «DB pool exhausted», │
+# │ виновником назван bot_3.py:11474 _record_sched_heartbeat, совет «поднять             │
+# │ DB_POOL_MAXCONN». Обе строки были НЕПРАВДОЙ, и владелец пошёл чинить не то.          │
+# │                                                                                      │
+# │ Разложение сырого числа на классы:                                                   │
+# │  • ДЕФЕКТА В БОТЕ НЕТ. В 19:50:53 ВСЕ сервисы разом отпустили соединения, которые    │
+# │    держали 70–118 с (MY_3_BOT 8 из 8, BACKGROUND_JOBS 6, BACKEND_WEB 1,              │
+# │    SCHEDULER_SERVICE 1). Одновременность = причина ОБЩАЯ, а не в боте.               │
+# │  • Названные «виновники» — ЖЕРТВЫ: стек называет того, кто ПРИШЁЛ за соединением,    │
+# │    а не того, кто его держал. Отсюда «Кого срезало» и отдельная строка «Кто держал». │
+# │  • ПРИЧИНА БЫЛА ВЫШЕ НАС: PgBouncer MAX_DB_CONNECTIONS=4 — четыре серверных          │
+# │    соединения на ВСЁ приложение при DEFAULT_POOL_SIZE=16, max_connections=500 у      │
+# │    Postgres (он в этот момент простаивал: в его логе за окно только checkpoint) и    │
+# │    50 местах в пулах шести сервисов. Лог PgBouncer 19:50:00 — 0 xacts/s, 0 queries/s │
+# │    за целую минуту, затем 5× closing because: query_wait_timeout (age=120s).         │
+# │                                                                                      │
+# │ ПОЧИНЕНО 06.09.2026 (решение владельца): MAX_DB_CONNECTIONS 4 → 24, у Postgres       │
+# │ idle_in_transaction_session_timeout 0 → 60 с и log_min_duration_statement -1 →       │
+# │ 5000 мс (ALTER SYSTEM, живут в postgresql.auto.conf на томе). Замер после правки:    │
+# │ 10 параллельных транзакций через PgBouncer дали 19 бэкендов у Postgres, 11 активных  │
+# │ одновременно — до правки больше 4 было невозможно. Цена замерена: соединение стоит   │
+# │ 1.8 MiB в простое и 2.6 MiB под нагрузкой (открыл 20 штук, смотрел memory.current    │
+# │ контейнера), 20 лишних ≈ $0.5/мес в худшем случае при $10 за ГБ памяти.              │
+# │ Обещания: db_guardrails_alive, db_pool_starvation_today (backend/fix_promises.py).   │
+# │                                                                                      │
+# │ ЭТО ПИСЬМО ПЕРЕПИСАНО 06.09.2026 по прямой просьбе владельца. Совет «поднять         │
+# │ DB_POOL_MAXCONN» УБРАН НАСОВСЕМ: он расширяет приёмную перед той же дверью и делает  │
+# │ хуже. Не возвращать. Теперь письмо разделяет два мира по факту длинных удержаний     │
+# │ (_recent_long_holds): держали долго → виноват запрос, ищи его в логе медленных;      │
+# │ не держали → упёрлись в общий потолок PgBouncer, а не в пул сервиса.                 │
+# │                                                                                      │
+# │ Перемерить: railway variables --service PgBouncer --json | grep MAX_DB_CONNECTIONS;  │
+# │ SELECT count(*) FROM pg_stat_activity WHERE backend_type='client backend' — прямым   │
+# │ подключением к Postgres, выше потолка это число не поднимется.                       │
+# └──────────────────────────────────────────────────────────────────────────────────────┘
 def _build_db_pool_starvation_message(events: list[tuple[float, str, str]]) -> str:
     """Письмо владельцу по СОБЫТИЯМ окна, а не по одному последнему.
 
@@ -8556,20 +8651,26 @@ def _build_db_pool_starvation_message(events: list[tuple[float, str, str]]) -> s
       • "failed"   — соединения не дали, get_db_connection() поднял RuntimeError,
                      запрос УПАЛ и человек увидел ошибку;
       • "fallback" — ушли мимо пула прямым соединением, данные человек получил.
-    Прежний текст называл падение «резервным путём» и добавлял «это НЕ падение» —
-    см. рамку «НАЙДЕНО 27.08.2026» выше.
+
+    Письмо обязано ответить на ДВА разных вопроса, и раньше отвечало только на первый:
+    кого срезало (это пострадавшие) и КТО ДЕРЖАЛ (это виновник). От второго ответа
+    зависит вывод: держали долго — размер пула ни при чём; не держали — упёрлись в
+    потолок PgBouncer, общий на все сервисы.
     """
     failed_count = sum(1 for item in events if item[1] == "failed")
     fallback_count = len(events) - failed_count
     window_min = int(DB_POOL_SATURATION_ALERT_COOLDOWN_MIN)
     timeout_ms = int(DB_POOL_ACQUIRE_TIMEOUT_MS)
+    held_count, held_max_ms, held_names = _recent_long_holds()
+    порог_с = DB_HOLD_BLAME_MS // 1000
     lines: list[str] = []
+
     if failed_count:
-        lines.append("🛑 Запросы ПАДАЮТ: базе не хватает соединений")
+        lines.append("🛑 Запросы к базе падают: свободных соединений не было")
         lines.append(
-            f"{failed_count} запрос(ов) за последние ~{window_min} мин прождали свободное "
-            f"соединение все {timeout_ms} мс и не дождались — упали с ошибкой «DB pool "
-            f"exhausted». Это не тихая деградация: человек на экране увидел ошибку."
+            f"{failed_count} запрос(ов) за последние ~{window_min} мин прождали соединение "
+            f"все {timeout_ms} мс и упали с ошибкой «DB pool exhausted». Это не тихая "
+            f"деградация: человек на экране увидел ошибку."
         )
     else:
         lines.append("⚠️ DB-пул под устойчивой нагрузкой")
@@ -8580,58 +8681,41 @@ def _build_db_pool_starvation_message(events: list[tuple[float, str, str]]) -> s
             f"но такие соединения открываются сверх размера пула — на масштабе это упрётся "
             f"в потолок PgBouncer."
         )
+
     lines.append(_describe_db_pool_starvation_culprits([item[2] for item in events]))
+
+    if held_count:
+        кто = ("; держали: " + ", ".join(held_names)) if held_names else (
+            "; кто именно — не записано, у этих мест нет метки db_acquire_scope()")
+        lines.append(
+            f"Кто держал: за те же ~{window_min} мин {held_count} соединени(й) отпустились "
+            f"после удержания дольше {порог_с} с, самое долгое — {held_max_ms // 1000} с{кто}."
+        )
+        lines.append(
+            "➜ Значит пул выпили ДЛИННЫЕ транзакции, а не наплыв запросов. Поднимать "
+            "DB_POOL_MAXCONN здесь бесполезно и вредно: мест в приёмной станет больше, "
+            "дверь останется прежней, ждущих прибавится. Искать надо тот запрос:\n"
+            "railway logs --service Postgres | grep 'duration:'\n"
+            "(лог медленных запросов включён 06.09.2026, порог 5 с)"
+        )
+    else:
+        lines.append(
+            f"Кто держал: удержаний дольше {порог_с} с за ~{window_min} мин НЕ БЫЛО — "
+            f"соединения оборачивались быстро."
+        )
+        lines.append(
+            "➜ Значит это честная нехватка мест, и смотреть надо на ОБЩИЙ потолок, а не "
+            "на пул одного сервиса. Серверные соединения к Postgres делятся между всеми "
+            "сервисами сразу:\n"
+            "railway variables --service PgBouncer | grep MAX_DB_CONNECTIONS\n"
+            "(05.09.2026 он стоял на 4 при 50 местах в пулах сервисов и уронил базу для "
+            "всех; 06.09.2026 поднят до 24)"
+        )
+
     lines.append(
-        f"Размер пула: {int(DB_POOL_MAXCONN)}. Ждём соединение: {timeout_ms} мс. Сигнал "
-        f"приходит только при устойчивом голоде (≥{DB_POOL_SATURATION_ALERT_MIN_EVENTS} "
+        f"Пул этого сервиса: {int(DB_POOL_MAXCONN)}. Ждём соединение: {timeout_ms} мс. "
+        f"Сигнал приходит только при устойчивом голоде (≥{DB_POOL_SATURATION_ALERT_MIN_EVENTS} "
         f"событий за {window_min} мин), единичные всплески — норма."
-    )
-    # ┌─ ПРОВЕРЕНО 05.09.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────────────┐
-    # │ Совет НИЖЕ («поднять DB_POOL_MAXCONN») в нашем проде НЕВЕРЕН и делает хуже.        │
-    # │                                                                                    │
-    # │ Что мерили: письмо 05.09.2026 19:50 UTC, MY_3_BOT, пул 8, 5 падений «DB pool       │
-    # │ exhausted», виновником назван bot_3.py:11474 _record_sched_heartbeat.              │
-    # │                                                                                    │
-    # │ На какие классы разложилось:                                                       │
-    # │  • ДЕФЕКТА В БОТЕ НЕТ. В 19:50:53 ВСЕ сервисы разом отпустили соединения, которые  │
-    # │    держали 70–118 с (MY_3_BOT 8 шт., BACKGROUND_JOBS 6, BACKEND_WEB 1,             │
-    # │    SCHEDULER_SERVICE 1). Одновременность = причина ОБЩАЯ, а не в боте.             │
-    # │  • Названные «виновники» (_record_sched_heartbeat и пр.) — ЖЕРТВЫ: они пришли за   │
-    # │    соединением, когда пул уже был выпит. Стек называет пришедшего, а не держащего. │
-    # │  • НАСТОЯЩАЯ ПРИЧИНА ВЫШЕ НАС: PgBouncer. `MAX_DB_CONNECTIONS=4` (railway          │
-    # │    variables --service PgBouncer) — на ВСЁ приложение 4 серверных соединения к     │
-    # │    Postgres, хотя `DEFAULT_POOL_SIZE=16`, а у Postgres `max_connections=500` и он  │
-    # │    в этот момент простаивал (в его логе за окно инцидента — только checkpoint).    │
-    # │    Логи PgBouncer 19:50:53: `closing because: query_wait_timeout` (age=120s) —     │
-    # │    клиенты стояли в ЕГО очереди, а не в нашей. Стат-строка 19:50:00 — 0 xacts/s,   │
-    # │    0 queries/s за целую минуту.                                                    │
-    # │  • Локальных слотов у сервисов суммарно 50 (8+10+8+2+12+10) на эти 4. Поднять      │
-    # │    DB_POOL_MAXCONN значит удлинить очередь ПЕРЕД тем же горлышком. Это уже было    │
-    # │    разобрано 10.07.2026, когда горлышком был DEFAULT_POOL_SIZE=4.                  │
-    # │                                                                                    │
-    # │ Как перемерить (обе проверки, обязательно обе):                                    │
-    # │   railway variables --service PgBouncer --json | grep -E 'MAX_DB_CONNECTIONS|POOL' │
-    # │   SELECT count(*) FROM pg_stat_activity WHERE backend_type='client backend';       │
-    # │     — прямым подключением к Postgres; больше MAX_DB_CONNECTIONS оно не вырастет.   │
-    # │                                                                                    │
-    # │ ПОЧИНЕНО 06.09.2026 (решение владельца): MAX_DB_CONNECTIONS 4 → 24, плюс у         │
-    # │ Postgres подняты две защиты от зависшей транзакции —                               │
-    # │ idle_in_transaction_session_timeout 0 → 60 с и log_min_duration_statement -1 →     │
-    # │ 5000 мс (ALTER SYSTEM, живут в postgresql.auto.conf на томе). Замер после правки:  │
-    # │ 10 параллельных транзакций через PgBouncer дали 19 бэкендов у Postgres, 11 из них  │
-    # │ активных одновременно, — до правки больше 4 было невозможно. Цена замерена: одно   │
-    # │ соединение = 1.8 MiB в простое и 2.6 MiB под нагрузкой (открыл 20 штук, смотрел    │
-    # │ memory.current контейнера), то есть 20 лишних ≈ $0.5/мес в худшем случае.          │
-    # │ Обещания в backend/fix_promises.py: db_guardrails_alive, db_pool_starvation_today. │
-    # │                                                                                    │
-    # │ ОТКРЫТО, ЖДЁТ РЕШЕНИЯ ВЛАДЕЛЬЦА (текст письма НЕ трогали, разрешения не было):     │
-    # │ (1) переписать ли совет ниже; (2) научить ли сигнал отличать «наш пул мал» от      │
-    # │ «PgBouncer/база недоступны» — сейчас он этой разницы не видит вовсе, поэтому и     │
-    # │ назвал виновником жертву.                                                          │
-    # └────────────────────────────────────────────────────────────────────────────────────┘
-    lines.append(
-        "Что с этим делать: поднять DB_POOL_MAXCONN у названного сервиса или вынести его "
-        "тяжёлые операции в фон."
     )
     return "\n\n".join(lines)
 
@@ -8788,6 +8872,9 @@ def _record_db_checkout_return_event(
     if isinstance(scoped_events, list):
         scoped_events.append(event)
     if bool(long_hold):
+        # Помним окно длинных удержаний: без него письмо о голоде не отличит
+        # «соединения держат» от «соединений мало». См. _note_long_hold.
+        _note_long_hold(event["checkout_hold_ms"], context_label)
         _log_flow_observation(
             "db",
             "long_hold",

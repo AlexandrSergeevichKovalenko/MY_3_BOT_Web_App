@@ -89,5 +89,63 @@ class СигналНазываетВиновника(unittest.TestCase):
         self.assertIn('имя == "unspecified"', код)
 
 
+class ПисьмоНеПоказываетПальцемНаЖертву(unittest.TestCase):
+    """Переписано 06.09.2026 по прямой просьбе владельца.
+
+    Письмо 05.09 назвало виновником `_record_sched_heartbeat` (он всего лишь пришёл за
+    соединением последним) и посоветовало поднять DB_POOL_MAXCONN — совет, который в
+    нашем проде делает ХУЖЕ: настоящим горлышком был потолок PgBouncer
+    MAX_DB_CONNECTIONS=4 на всё приложение. Владелец: «А какой у нас тогда слабое
+    место? что ты имеешь в виду?» Обе неправды закрыты тестом, чтобы не вернулись.
+    """
+
+    def setUp(self):
+        db._DB_LONG_HOLD_EVENTS.clear()
+
+    @staticmethod
+    def _голод():
+        import time as _t
+        сейчас = _t.time()
+        return [(сейчас, "failed", "bot_3.py:11474 _record_sched_heartbeat")] * 5
+
+    def test_совет_поднять_пул_сервиса_НЕ_возвращается(self):
+        письмо = db._build_db_pool_starvation_message(self._голод())
+        self.assertNotIn("поднять DB_POOL_MAXCONN", письмо,
+                         "этот совет расширяет приёмную перед той же дверью — он вреден")
+
+    def test_пришедшего_называют_пострадавшим_а_не_виновником(self):
+        письмо = db._build_db_pool_starvation_message(self._голод())
+        self.assertIn("Кого срезало", письмо)
+        self.assertIn("пострадавшие", письмо)
+        self.assertNotIn("Кто не дождался", письмо)
+
+    def test_держали_долго_письмо_ведёт_в_лог_медленных_запросов(self):
+        db._note_long_hold(118_000, "unspecified")
+        db._note_long_hold(70_000, "unspecified")
+        письмо = db._build_db_pool_starvation_message(self._голод())
+        self.assertIn("Кто держал", письмо)
+        self.assertIn("118 с", письмо, "самое долгое удержание обязано быть названо")
+        self.assertIn("duration:", письмо, "иначе владельцу негде искать виновный запрос")
+        self.assertIn("бесполезно", письмо)
+
+    def test_не_держали_письмо_ведёт_к_общему_потолку_pgbouncer(self):
+        письмо = db._build_db_pool_starvation_message(self._голод())
+        self.assertIn("НЕ БЫЛО", письмо)
+        self.assertIn("MAX_DB_CONNECTIONS", письмо,
+                      "общий потолок делится между всеми сервисами — вот куда смотреть")
+
+    def test_короткое_удержание_виновником_не_делает(self):
+        db._note_long_hold(1_600, "unspecified")   # длинное по логу, но не по вине
+        письмо = db._build_db_pool_starvation_message(self._голод())
+        self.assertIn("НЕ БЫЛО", письмо,
+                      "1.6 с для тяжёлого запроса — норма, виновником это не делает")
+
+    def test_длинное_удержание_вправду_запоминается_на_возврате(self):
+        import inspect
+        код = inspect.getsource(db._record_db_checkout_return_event)
+        self.assertIn("_note_long_hold(", код,
+                      "без записи на возврате письмо снова не отличит две причины")
+
+
 if __name__ == "__main__":
     unittest.main()
