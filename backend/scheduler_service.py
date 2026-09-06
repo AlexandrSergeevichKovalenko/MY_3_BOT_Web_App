@@ -97,6 +97,7 @@ from backend.background_jobs import (  # noqa: E402
     run_word_audit_reminder_actor,
     run_reference_forms_warm_actor,
     run_retire_review_dm_actor,
+    run_synonym_review_dm_actor,
     run_fill_control_dm_actor,
     run_wiktionary_warm_actor,
     run_monthly_budget_policy_actor,
@@ -483,6 +484,10 @@ def _dispatch_reference_forms_review_dm() -> None:
 
 def _dispatch_retire_review_dm() -> None:
     run_retire_review_dm_actor.send()
+
+
+def _dispatch_synonym_review_dm() -> None:
+    run_synonym_review_dm_actor.send()
 
 
 def _dispatch_fill_control_dm() -> None:
@@ -1027,6 +1032,20 @@ def _build_scheduler():
             misfire_grace_time=1800,
         )
 
+    # Синонимы, которых дверь приёма не пропустила, — владельцу с кнопками (06.09.2026).
+    # Пн и чт: «не реже раза в неделю, чаще — если правок много» (закон цикла, п. 8).
+    if _enabled("SYNONYM_REVIEW_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_synonym_review_dm,
+            "cron",
+            day_of_week="mon,thu",
+            hour=_int_env("SYNONYM_REVIEW_HOUR", 12),
+            minute=_int_env("SYNONYM_REVIEW_MINUTE", 45),
+            timezone=_tz(os.getenv("SYNONYM_REVIEW_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
     if _enabled("RETIRE_REVIEW_ENABLED", "1"):
         scheduler.add_job(
             _dispatch_retire_review_dm,

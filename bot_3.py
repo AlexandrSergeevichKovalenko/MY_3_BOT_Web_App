@@ -10329,6 +10329,7 @@ def _send_pool_enrich_morning_report() -> None:
             )
         text += _access_state_line()
         text += _word_pick_report_line()
+        text += _sprint_intake_report_line()
         text += _fix_promises_block(обещания)
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
@@ -11441,6 +11442,9 @@ _SCHEDULER_HEALTH_CATALOG = [
     # Вторник и пятница: между запусками максимум 4 суток, поэтому порог 120 часов.
     ("panel_cards_reminder", "Карточки словаря на разбор (вт и пт, 10:00 Вена)", 120, True, "guard"),
     ("translation_links", "Подъём переводов в общий словарь (03:20 Вена)", 30, True, "guard"),
+    ("sprint_bank_hygiene_job", "Дверь приёма синонимов по накопленному (03:10 Вена)", 30, True, "guard"),
+    # Понедельник и четверг: между запусками максимум 4 суток — порог 120 часов.
+    ("sprint_accepted_review_dm", "Непропущенные синонимы владельцу (пн и чт, 12:45 Вена)", 120, True, "guard"),
     ("private_analytics_auto", "Личная аналитика в личку (19:30)", 30, True, "guard"),
     ("daily_group_summary_auto", "Итоги дня в группе (22:30)", 30, True, "guard"),
     ("weekly_group_summary_auto", "Недельные итоги группы (Вс)", 192, True, "guard"),
@@ -15706,6 +15710,57 @@ async def handle_reference_forms_review_callback(update: Update, context: Callba
         logging.debug("reference forms review: сообщение не заменилось", exc_info=True)
 
 
+async def handle_synonym_review_callback(update: Update, context: CallbackContext) -> None:
+    """Тап «оставить» / der/die/das / «убрать» по синониму, которого дверь не пропустила."""
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+    parts = str(query.data or "").split(":")   # sacc:<keep|der|die|das|drop>:<row_id>
+    action = parts[1] if len(parts) > 1 else ""
+    row_id = parts[2] if len(parts) > 2 else ""
+    if not action or not str(row_id).isdigit():
+        await query.answer("Не понял кнопку.", show_alert=True)
+        return
+    await query.answer("Записываю…", show_alert=False)
+    try:
+        from backend.sprint_accepted_review import apply_synonym_review
+        text = await asyncio.to_thread(apply_synonym_review, action, int(row_id))
+    except Exception:
+        logging.warning("synonym review action failed", exc_info=True)
+        try:
+            await query.message.reply_text("Не получилось записать. Подробности в логах.")
+        except Exception:
+            pass
+        return
+    try:
+        await query.edit_message_text(text, parse_mode="HTML")
+    except Exception:
+        try:
+            await query.message.reply_text(text, parse_mode="HTML")
+        except Exception:
+            pass
+
+
+async def admin_synonym_review_command(update: Update, context: CallbackContext) -> None:
+    """/admin_synonym_review — прислать порцию непропущенных синонимов сейчас."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _is_admin_user(user.id):
+        await message.reply_text("⛔️ Команда доступна только администратору."); return
+    from backend.sprint_accepted_review import send_synonym_review_dm
+    res = await asyncio.to_thread(send_synonym_review_dm, force=True)
+    if res.get("reason") == "nothing_to_review":
+        await message.reply_text("✅ Очередь синонимов пуста — спрашивать нечего."); return
+    if not res.get("ok"):
+        await message.reply_text(f"⚠️ Не отправилось: {res.get('error') or 'ни одному админу не дошло'}"); return
+    await message.reply_text(f"📨 Отправил {res.get('cards')} карточек, ещё в очереди: {res.get('left')}.")
+
+
 async def handle_retire_review_callback(update: Update, context: CallbackContext) -> None:
     """Тап «вернуть в игру» / «мусор» по снятому слову в личке."""
     query = update.callback_query
@@ -16906,6 +16961,42 @@ def _word_pick_report_line() -> str:
     return (f"\n🔁 <b>Повтор слов</b> ({d:%d.%m}): отбирали <b>{s['pickers']}</b> чел. · "
             f"слов <b>{s['cards']}</b> · постеров утром <b>{s['posters_am']}</b> / вечером <b>{s['posters_pm']}</b> · "
             f"открыли <b>{s['opened']}</b> · оценили утром <b>{s['am_rated_users']}</b> / вечером <b>{s['pm_rated_users']}</b>\n")
+
+
+def _sprint_intake_report_line() -> str:
+    """Строка о двери приёма синонимов: что сняла ночная гигиена и набор, сколько ждёт
+    владельца. Числа — из сводок последних прогонов (admin_kv) и живой очереди."""
+    try:
+        import json as _json
+        from backend.database import admin_kv_get
+        from backend.sprint_intake import count_open_reviews
+        parts = []
+        for kind, label in (("hygiene", "гигиена"), ("topup_synonym", "набор синонимов"),
+                            ("topup_antonym", "набор антонимов")):
+            raw = admin_kv_get(f"sprint_intake_last_{kind}")
+            if not raw:
+                continue
+            s = _json.loads(raw)
+            at = str(s.get("at") or "")[:10]
+            if s.get("error"):
+                parts.append(f"{label} ({at}): ⛔ {s['error']}")
+                continue
+            removed = sum(int(s.get(k) or 0) for k in
+                          ("duplicate", "self", "article_mismatch", "article_unknown", "unconfirmed"))
+            if kind == "hygiene":
+                parts.append(f"{label} ({at}): проверено {s.get('checked', 0)}, снято {removed}"
+                             + (f", слов снято с показа {s['retired_thin']}" if s.get("retired_thin") else ""))
+            else:
+                parts.append(f"{label} ({at}): сгенерировано {s.get('generated', 0)}, принято {s.get('stored', 0)}, "
+                             f"снято кандидатов {removed}"
+                             + (f", слов отброшено {s['thin']}" if s.get("thin") else ""))
+        open_n = count_open_reviews()
+    except Exception:
+        logging.exception("строка о двери синонимов не собралась")
+        return "\n🧩 Синонимы: ❓ не посчитались, подробности в логах.\n"
+    body = " · ".join(parts) if parts else "прогонов ещё не было"
+    return (f"\n🧩 <b>Дверь синонимов</b>: {body} · ждут решения: <b>{open_n}</b>"
+            + (" (пн/чт 12:45 или /admin_synonym_review)" if open_n else "") + "\n")
 
 
 async def admin_access_command(update: Update, context: CallbackContext):
@@ -42085,34 +42176,77 @@ async def _sprint_topup(relation: str, want: int) -> int:
         return 0
     from backend.openai_manager import run_generate_aufgabe
     fmt = "synonym_sprint" if relation == "synonym" else "antonym_sprint"
-    min_accepted = 8 if relation == "synonym" else 5
     try:
         items = await run_generate_aufgabe(fmt, count=max(2, want), level="B2")
     except Exception:
         logging.warning("sprint_topup: generation failed relation=%s", relation, exc_info=True)
         return 0
     from backend.answer_eval import accepted_pairs
+    # ⛔ ДВЕРЬ ПРИЁМА (06.09.2026). Список от модели идёт в банк ТОЛЬКО через
+    # backend.sprint_intake.clean_accepted: дубли и самослово снимаются, артикль
+    # существительного сверяется со справочником рода, синоним обязан подтвердиться
+    # OpenThesaurus или Wiktionary; непропущенное с решением — владельцу с кнопками.
+    # До этого «die Option» лежала у Gelegenheit шесть раз, «die Potenzial» — с неверным
+    # артиклем, и всё это доходило до экрана ученика. Стратегия —
+    # docs/tasks/synonym_intake_gate_strategy.md.
+    from backend.sprint_intake import clean_accepted, queue_for_owner, remember_last_stats
     made = 0
+    stats = {"generated": 0, "stored": 0, "thin": 0, "queued": 0,
+             "duplicate": 0, "self": 0, "article_mismatch": 0, "article_unknown": 0, "unconfirmed": 0}
     for it in (items or []):
         wort = str((it or {}).get("wort") or "").strip()
         pairs = accepted_pairs((it or {}).get("accepted"))  # [{de, ru}]
-        if not wort or len(pairs) < min_accepted:
+        if not wort or not pairs:
+            continue
+        stats["generated"] += 1
+        gate = await asyncio.to_thread(clean_accepted, wort, relation, pairs)
+        for k in ("duplicate", "self", "article_mismatch", "article_unknown", "unconfirmed"):
+            stats[k] += gate.stats[k]
+        if not gate.enough:
+            # Меньше порога (synonym=3, antonym=5) — слово не берём, кандидатов владельцу
+            # не шлём: без записи в банке их некуда «оставлять».
+            stats["thin"] += 1
+            logging.info("sprint_topup: «%s» не принято — подтверждённых %d < %d",
+                         wort, len(gate.kept), gate.min_needed)
             continue
         slug = re.sub(r"[^a-z0-9]+", "_", wort.lower()).strip("_")[:40]
         sprint_id = f"sp_{relation}_{slug}"
         try:
             await asyncio.to_thread(upsert_sprint_item, {
-                "sprint_id": sprint_id, "relation": relation, "wort": wort, "accepted": pairs,
+                "sprint_id": sprint_id, "relation": relation, "wort": wort, "accepted": gate.kept,
                 "erklaerung": str((it or {}).get("erklaerung") or ""),
                 "tip": str((it or {}).get("tip") or ""),
                 "hint_ru": str((it or {}).get("hint_ru") or ""), "level": "B2",
             })
             made += 1
+            stats["stored"] += 1
+            stats["queued"] += await asyncio.to_thread(
+                queue_for_owner, sprint_id=sprint_id, relation=relation, wort=wort,
+                hint_ru=str((it or {}).get("hint_ru") or ""), rejected=gate.rejected)
         except Exception:
             logging.warning("sprint_topup: upsert failed id=%s", sprint_id, exc_info=True)
     if made:
         logging.info("sprint_topup relation=%s made=%s", relation, made)
+    await asyncio.to_thread(remember_last_stats, f"topup_{relation}", stats)
     return made
+
+
+async def sprint_bank_hygiene_job(context: CallbackContext) -> dict:
+    """03:10 Вена: накопленное в банке спринта проходит ту же дверь приёма, что и новое
+    слово (backend.sprint_intake.hygiene_pass). Берёт только записи без
+    accepted_checked_at, поэтому после первой ночи это страж на случай записи в обход
+    двери. Итог — в admin_kv для строки «🧩 Синонимы» утреннего отчёта."""
+    from backend.sprint_intake import hygiene_pass, remember_last_stats
+    from backend.synonym_sources import openthesaurus_loaded
+    if not await asyncio.to_thread(openthesaurus_loaded):
+        # Без выгрузки словаря дверь отправила бы владельцу ВСЁ как «не подтверждено».
+        logging.error("sprint_bank_hygiene: таблица OpenThesaurus пуста — прогон не делаю "
+                      "(python3 scripts/load_openthesaurus.py --apply)")
+        await asyncio.to_thread(remember_last_stats, "hygiene", {"error": "openthesaurus_missing"})
+        return {"error": "openthesaurus_missing"}
+    summary = await asyncio.to_thread(hygiene_pass, apply=True, log=logging.info)
+    await asyncio.to_thread(remember_last_stats, "hygiene", summary)
+    return summary
 
 
 async def prepare_sprint_pool_job(context: CallbackContext) -> None:
@@ -46416,6 +46550,8 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_access_gate_callback, pattern=r"^accessgate:"))
     application.add_handler(CallbackQueryHandler(handle_article_review_callback, pattern=r"^artrev:"))
     application.add_handler(CallbackQueryHandler(handle_retire_review_callback, pattern=r"^artret:"))
+    application.add_handler(CallbackQueryHandler(handle_synonym_review_callback, pattern=r"^sacc:"))
+    application.add_handler(CommandHandler("admin_synonym_review", admin_synonym_review_command))
     application.add_handler(CallbackQueryHandler(handle_word_review_callback, pattern=r"^wrev:"))
     application.add_handler(CallbackQueryHandler(handle_reference_forms_review_callback, pattern=r"^reffrm:"))
     application.add_handler(CallbackQueryHandler(handle_fill_control_callback, pattern=r"^artfill:"))
@@ -47775,6 +47911,14 @@ def main():
                 max_instances=1,
                 misfire_grace_time=1800,
             )
+        # -- Sprint bank hygiene (03:10): накопленное через дверь приёма синонимов --
+        scheduler.add_job(
+            lambda: submit_async(sprint_bank_hygiene_job, CallbackContext(application=application)),
+            "cron",
+            hour=3,
+            minute=10,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
         # -- Sprint pool nightly top-up (03:20) --
         scheduler.add_job(
             lambda: submit_async(prepare_sprint_pool_job, CallbackContext(application=application)),

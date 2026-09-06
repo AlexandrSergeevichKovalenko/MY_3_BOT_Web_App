@@ -421,6 +421,62 @@ def _db_pool_starvation_today() -> int:
             return int((cursor.fetchone() or [0])[0] or 0)
 
 
+def _sprint_accepted_duplicates_or_self() -> int:
+    """Записей банка спринта (не снятых), где в accepted одно слово дважды или само целевое
+    слово. Обещано: 0 (06.09.2026). До двери приёма было 9 + 4 из 56: «die Option» шесть
+    раз у Gelegenheit — 5 раундов из 8 у пользователя."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH e AS (
+                    SELECT b.sprint_id, lower(trim(b.wort)) AS w, lower(trim(x->>'de')) AS de
+                    FROM bt_3_sprint_bank b, jsonb_array_elements(b.accepted) x
+                    WHERE NOT b.retired
+                )
+                SELECT COUNT(*) FROM (
+                    SELECT sprint_id FROM e GROUP BY sprint_id, w
+                    HAVING COUNT(*) > COUNT(DISTINCT de) OR COUNT(*) FILTER (WHERE de = w) > 0
+                ) t
+                """
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def _sprint_accepted_article_mismatch() -> int:
+    """Существительных-синонимов в банке (не снятых), чей артикль расходится со справочником
+    рода. Обещано: 0 (06.09.2026). Было 4: die Potenzial, die Backup, die Beistand, das Konsens."""
+    from backend.database import get_db_connection_context
+    from backend.sprint_intake import _split_noun
+    from backend.article_authority import authoritative_article
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT x->>'de' FROM bt_3_sprint_bank b, jsonb_array_elements(b.accepted) x "
+                           "WHERE NOT b.retired")
+            words = [str(r[0] or "") for r in cursor.fetchall() or []]
+    n = 0
+    for de in words:
+        noun = _split_noun(de)
+        if not noun or not noun[0]:
+            continue
+        ref, _ = authoritative_article(noun[1])
+        if ref and ref != noun[0]:
+            n += 1
+    return n
+
+
+def _sprint_bank_unchecked() -> int:
+    """Записей банка спринта без отметки accepted_checked_at — то есть попавших в банк мимо
+    двери приёма. Обещано: 0 (06.09.2026): новое слово помечается при вставке, накопленное
+    — ночной гигиеной 03:10."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM bt_3_sprint_bank WHERE accepted_checked_at IS NULL")
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
 PROMISES: tuple[Promise, ...] = (
     Promise(
         key="db_guardrails_alive",
@@ -584,6 +640,30 @@ PROMISES: tuple[Promise, ...] = (
         measure=_personal_questions_on_unseen_translation,
         how="python3 -c \"from backend.phrase_panel import "
             "count_personal_questions_on_unseen_translation as f; print(f())\"",
+    ),
+    Promise(
+        key="sprint_accepted_duplicates",
+        title="Слов спринта с повтором синонима или самим словом в списке",
+        since="06.09.2026",
+        expected=0,
+        measure=_sprint_accepted_duplicates_or_self,
+        how="python3 scripts/sprint_bank_hygiene.py --dry-run (печатает, что дверь сняла бы; 0 строк «ИЗМЕНИТСЯ»)",
+    ),
+    Promise(
+        key="sprint_accepted_article_mismatch",
+        title="Синонимов-существительных с артиклем не по справочнику рода",
+        since="06.09.2026",
+        expected=0,
+        measure=_sprint_accepted_article_mismatch,
+        how="python3 -c \"from backend.fix_promises import _sprint_accepted_article_mismatch as f; print(f())\"",
+    ),
+    Promise(
+        key="sprint_bank_unchecked",
+        title="Записей банка спринта, попавших мимо двери приёма",
+        since="06.09.2026",
+        expected=0,
+        measure=_sprint_bank_unchecked,
+        how="SELECT COUNT(*) FROM bt_3_sprint_bank WHERE accepted_checked_at IS NULL",
     ),
 )
 
