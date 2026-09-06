@@ -371,6 +371,13 @@ def _word_pick_posters_missing() -> int:
     return count_word_pick_posters_missing()
 
 
+def _personal_questions_on_unseen_translation() -> int:
+    """Открытых личных вопросов, вынесенных по переводу, которого автор не видит на
+    экране. Обещано: 0 — ночь берёт такие карточки первыми (06.09.2026, было 111)."""
+    from backend.phrase_panel import count_personal_questions_on_unseen_translation
+    return count_personal_questions_on_unseen_translation()
+
+
 # ── реестр ────────────────────────────────────────────────────────────────────────────
 # Добавляя починку — добавляй строку сюда. Ключ не менять после регистрации: по нему
 # лежат журнал проверок и решение владельца.
@@ -510,6 +517,15 @@ PROMISES: tuple[Promise, ...] = (
         expected=0,
         measure=_word_pick_posters_missing,
         how="python3 -c \"from backend.database import count_word_pick_posters_missing as f; print(f())\"",
+    ),
+    Promise(
+        key="personal_questions_on_unseen_translation",
+        title="Личных вопросов автору, вынесенных по переводу, которого он не видит",
+        since="06.09.2026",
+        expected=0,
+        measure=_personal_questions_on_unseen_translation,
+        how="python3 -c \"from backend.phrase_panel import "
+            "count_personal_questions_on_unseen_translation as f; print(f())\"",
     ),
 )
 
