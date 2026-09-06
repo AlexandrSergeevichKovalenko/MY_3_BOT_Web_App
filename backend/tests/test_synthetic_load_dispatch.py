@@ -390,5 +390,57 @@ class ConcurrentDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tg["callback_answer"], 0)
 
 
+class ЖивойПродНикогдаНеСтановитсяМишенью(unittest.TestCase):
+    """⛔ ПРОВЕРЕНО 06.09.2026: список боевых хостов БЫЛ ПРОТУХШИМ.
+
+    В нём лежали только centerbeam.proxy.rlwy.net и kodama.proxy.rlwy.net — оба
+    мёртвые. Живая база с тех пор на zephyr.proxy.rlwy.net, PgBouncer — на приватном
+    pgbouncer.railway.internal. Значит безусловная защита («сюда нельзя даже под
+    arming») не покрывала ни одного живого боевого хоста: сегодняшний прод считался
+    «staging» и был бы допущен под нагрузку, поставь кто-то две переменные.
+
+    Список имён протухает при каждом переезде базы, поэтому здесь стережётся и
+    ПРАВИЛО: вся приватная сеть Railway — прод по определению.
+    """
+
+    def test_живой_публичный_прокси_postgres_запрещён_безусловно(self):
+        self.assertTrue(disp._is_known_production_host("zephyr.proxy.rlwy.net"))
+
+    def test_живой_pgbouncer_запрещён_безусловно(self):
+        self.assertTrue(disp._is_known_production_host("pgbouncer.railway.internal"))
+
+    def test_любой_хост_приватной_сети_railway_запрещён_правилом(self):
+        """Имя может смениться, правило — нет."""
+        for хост in ("postgres.railway.internal", "redis.railway.internal",
+                     "какой-угодно-новый-сервис.railway.internal"):
+            with self.subTest(хост=хост):
+                self.assertTrue(disp._is_known_production_host(хост))
+
+    def test_arming_не_пробивает_безусловный_запрет(self):
+        with self.assertRaises(disp.SyntheticSafetyError):
+            disp._assert_host_safe("zephyr.proxy.rlwy.net", "DB", required=True,
+                                   armed=True, allowed_host="zephyr.proxy.rlwy.net")
+
+    def test_локальный_стенд_по_прежнему_пускают_без_arming(self):
+        disp._assert_host_safe("127.0.0.1", "DB", required=True, armed=False, allowed_host="")
+        disp._assert_host_safe("pgbouncer", "DB", required=True, armed=False, allowed_host="")
+
+
+class СтендПовторяетПотолкиПрода(unittest.TestCase):
+    """Стенд без MAX_DB_CONNECTIONS мерил бы систему, которой у нас нет.
+
+    Именно этот потолок уронил прод 05.09.2026 (стоял на 4), а в
+    docker-compose.synthetic.yml его не было вовсе — только DEFAULT_POOL_SIZE.
+    Замер на таком стенде показал бы запас, которого в проде не существует."""
+
+    def test_в_стенде_задан_общий_потолок_базы(self):
+        import pathlib
+        текст = pathlib.Path(__file__).resolve().parents[2].joinpath(
+            "docker-compose.synthetic.yml").read_text(encoding="utf-8")
+        self.assertIn("MAX_DB_CONNECTIONS", текст,
+                      "без него стенд не воспроизводит горлышко, которое роняло прод")
+        self.assertIn("POOL_MODE: transaction", текст)
+
+
 if __name__ == "__main__":
     unittest.main()

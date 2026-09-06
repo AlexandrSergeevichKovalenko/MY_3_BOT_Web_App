@@ -43,7 +43,17 @@ services:
       POOL_MODE: transaction          # mirror production PgBouncer
       AUTH_TYPE: scram-sha-256
       MAX_CLIENT_CONN: "200"
-      DEFAULT_POOL_SIZE: "20"
+      DEFAULT_POOL_SIZE: "16"
+      # ⛔ БЕЗ ЭТОЙ СТРОКИ СТЕНД МЕРИЛ БЫ СИСТЕМУ, КОТОРОЙ У НАС НЕТ.
+      # Именно MAX_DB_CONNECTIONS уронил прод 05.09.2026: он стоял на 4 при
+      # DEFAULT_POOL_SIZE=16, и все сервисы разом встали на 2 минуты. Это ПОТОЛОК
+      # НА ВСЮ БАЗУ, он перекрывает DEFAULT_POOL_SIZE (тот считается на пару
+      # пользователь+база). Стенд обязан повторять оба числа, иначе замер покажет
+      # запас, которого в проде нет.
+      # Прод на 06.09.2026: DEFAULT_POOL_SIZE=16, MAX_DB_CONNECTIONS=24, MIN_POOL_SIZE=1.
+      # Перемерить: railway variables --service PgBouncer --json
+      MAX_DB_CONNECTIONS: "24"
+      MIN_POOL_SIZE: "1"
       LISTEN_PORT: "5432"
     ports:
       - "127.0.0.1:56432:5432"        # localhost-only

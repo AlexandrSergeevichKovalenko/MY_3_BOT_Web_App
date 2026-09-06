@@ -45,7 +45,28 @@ from scripts.synthetic_load_runner import generate_updates
 # --------------------------------------------------------------------------- #
 
 # Known production hosts that are refused UNCONDITIONALLY (even when fully armed).
-KNOWN_PRODUCTION_HOSTS = {"centerbeam.proxy.rlwy.net", "kodama.proxy.rlwy.net"}
+# ⛔ СПИСОК ПРОТУХАЕТ ПРИ КАЖДОМ ПЕРЕЕЗДЕ БАЗЫ. ПРОВЕРЕНО 06.09.2026 — БЫЛ ПРОТУХШИМ.
+# Здесь стояли ТОЛЬКО centerbeam.proxy.rlwy.net и kodama.proxy.rlwy.net — оба МЁРТВЫ:
+# живая база с тех пор переехала на zephyr.proxy.rlwy.net, а PgBouncer — на приватный
+# pgbouncer.railway.internal (публичный прокси пулера снят 30.07.2026). То есть
+# безусловная защита «этот хост нельзя даже под arming» не покрывала НИ ОДНОГО живого
+# боевого хоста: сегодняшний прод считался «staging» и был бы допущен, поставь кто-то
+# SYNTHETIC_STAGING_ARMED=1 и SYNTHETIC_ALLOWED_HOST=zephyr.proxy.rlwy.net.
+#
+# Чтобы список не протухал молча, к нему добавлено ПРАВИЛО, а не только имена:
+# всё в приватной сети Railway (*.railway.internal) — это прод по определению, снаружи
+# оно недостижимо, а изнутри это и есть боевые сервисы. Стенд там не ставят.
+#
+# Перемерить имена: railway variables --service Postgres --json | grep DATABASE_PUBLIC_URL
+KNOWN_PRODUCTION_HOSTS = {
+    "zephyr.proxy.rlwy.net",        # живой публичный прокси Postgres (06.09.2026)
+    "pgbouncer.railway.internal",   # живой PgBouncer, приватная сеть
+    "postgres.railway.internal",    # живой Postgres, приватная сеть
+    "centerbeam.proxy.rlwy.net",    # мёртв, но пусть остаётся: вдруг воскресят
+    "kodama.proxy.rlwy.net",        # мёртв (публичный прокси пулера снят 30.07.2026)
+}
+# Вся приватная сеть Railway — прод безусловно. Правило вместо перечисления имён.
+PRODUCTION_HOST_SUFFIXES_ABSOLUTE = (".railway.internal",)
 # Backwards-compatible alias (older callers/tests refer to PRODUCTION_HOSTS).
 PRODUCTION_HOSTS = KNOWN_PRODUCTION_HOSTS
 # Production-LIKE Railway suffixes. A host on one of these is non-local, so it is
@@ -95,6 +116,8 @@ def _is_known_production_host(host: str) -> bool:
     h = (host or "").strip().lower()
     if not h:
         return False
+    if h.endswith(PRODUCTION_HOST_SUFFIXES_ABSOLUTE):
+        return True  # приватная сеть Railway — это прод по определению
     return h in KNOWN_PRODUCTION_HOSTS or h in _extra_production_hosts()
 
 
