@@ -12273,15 +12273,30 @@ def _world_news_preview_text(entry: dict, *, header: str) -> str:
     jr = entry.get("judge_report") or {}
     if jr.get("failed"):
         lines.append("\n⚠️ <b>Контроль карточек не отработал</b> — разбор НЕ проверен.")
-    elif jr:
+    elif "checked" in jr:
         # Контроль без права переписывать (06.09.2026): одна строка с числами, ниже —
         # только то, что вправду изменилось или выбыло.
         mark = "✅" if jr.get("clean") else "ℹ️"
         lines.append(
             f"\n{mark} <b>Контроль:</b> карточек {jr.get('checked', 0)} · "
-            f"сомнений {jr.get('doubted', 0)} · исправлено {jr.get('repaired', jr.get('fixed', 0))} · "
+            f"сомнений {jr.get('doubted', 0)} · исправлено {jr.get('repaired', 0)} · "
             f"выброшено {jr.get('dropped', 0)}"
         )
+        if jr.get("second_pass_failed"):
+            lines.append("   ⚠️ повторный контроль не отработал — исправленные карточки не вошли")
+        for reason in (jr.get("reasons") or [])[:4]:
+            lines.append(f"   · {reason}")
+    elif jr.get("passes"):
+        # Запись подготовлена ещё старым судьёй (до 06.09.2026): показываем его числа
+        # честно, как его, а не как контроль.
+        lines.append(
+            f"\nℹ️ <b>Проверено прежним судьёй:</b> проходов {jr.get('passes', 0)}, "
+            f"поправлено {jr.get('fixed', 0)}, выброшено {jr.get('dropped', 0)}"
+        )
+        for reason in (jr.get("reasons") or [])[:4]:
+            lines.append(f"   · {reason}")
+    elif jr.get("reasons"):
+        # Контроль выключен, вмешался только справочник артиклей.
         for reason in (jr.get("reasons") or [])[:4]:
             lines.append(f"   · {reason}")
     lines.append(f"\n🧩 <b>Тест ({len(quiz)} вопр.):</b>")
@@ -12604,7 +12619,10 @@ async def run_daily_video_control_report(context: CallbackContext):
         _record_sched_heartbeat("daily_video_control_report_result", "failed",
                                 {"error": str(exc)[:200]})
         return
-    issues = [r for r in rows if r.get("judge_report")]
+    # Считаем только выпуски, прошедшие через контроль (ключ checked); записи старого
+    # судьи и выпуски без контроля в число не входят.
+    issues = [r for r in rows if r.get("judge_report")
+              and ("checked" in r["judge_report"] or r["judge_report"].get("failed"))]
     failed = [r for r in issues if r["judge_report"].get("failed")]
     ok = [r for r in issues if not r["judge_report"].get("failed")]
     checked = sum(int(r["judge_report"].get("checked") or 0) for r in ok)

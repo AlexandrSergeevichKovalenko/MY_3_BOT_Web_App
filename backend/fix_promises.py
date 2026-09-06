@@ -130,13 +130,15 @@ def _shelf_holds_a_draft() -> int:
     return count_shelf_items_holding_a_draft()
 
 
-def _control_extra_passes() -> int:
-    """Выпусков с 07.09.2026, где контроль карточек сделал больше двух проходов. Обещано: 0.
+def _control_extra_calls() -> int:
+    """Выпусков с 07.09.2026, где контроль карточек сделал больше обращений к модели, чем
+    2 + число сомнений. Обещано: 0.
 
     Судья с тремя проходами и правом переписывать снят 06.09.2026 по решению владельца
-    («зачем три прохода?»); теперь контроль — проход плюс повтор по исправленным."""
-    from backend.database import count_daily_video_issues_with_extra_passes
-    return count_daily_video_issues_with_extra_passes("2026-09-07")
+    («зачем три прохода?»); теперь контроль — проход, ответ автора на каждое сомнение и
+    повтор по исправленным. Считается по числу обращений, записанному при работе."""
+    from backend.database import count_daily_video_issues_with_extra_calls
+    return count_daily_video_issues_with_extra_calls("2026-09-07")
 
 
 def _standup_pool_screen() -> str:
@@ -679,13 +681,14 @@ PROMISES: tuple[Promise, ...] = (
             "ON d.video_id = sh.video_id WHERE sh.added_at > d.created_at",
     ),
     Promise(
-        key="daily_video_control_two_passes_max",
-        title="Выпусков «Новость/Стендап дня», где контроль карточек шёл больше двух проходов (с 07.09)",
+        key="daily_video_control_calls_bounded",
+        title="Выпусков «Новость/Стендап дня», где контроль карточек сделал больше обращений, чем 2 + число сомнений (с 07.09)",
         since="06.09.2026",
         expected=0,
-        measure=_control_extra_passes,
-        how="SELECT news_date, judge_report->>'passes' FROM bt_3_world_news_daily "
-            "WHERE news_date >= '2026-09-07' AND (judge_report->>'passes')::int > 2",
+        measure=_control_extra_calls,
+        how="SELECT news_date, judge_report->>'calls', judge_report->>'doubted' FROM "
+            "bt_3_world_news_daily WHERE news_date >= '2026-09-07' AND (judge_report->>'calls')::int "
+            "> 2 + COALESCE((judge_report->>'doubted')::int, 0)",
     ),
     Promise(
         key="word_pick_two_posters_per_picker",

@@ -31451,16 +31451,19 @@ def list_daily_video_control_reports(days: int = 7) -> list:
             return out
 
 
-def count_daily_video_issues_with_extra_passes(since_date: str) -> int:
-    """Выпуски, где контроль карточек сделал больше двух проходов. Обещано: 0.
-    Контроль (06.09.2026) — один проход плюс повтор только по исправленным; третьего нет."""
+def count_daily_video_issues_with_extra_calls(since_date: str) -> int:
+    """Выпуски, где контроль карточек сделал больше обращений к модели, чем положено:
+    один проход + по одному ответу автора на сомнение + один повторный проход, то есть
+    calls > 2 + doubted. Обещано: 0. Число `calls` считается при работе, а не пишется
+    константой (проверяющий агент 06.09.2026: обещание по `passes` было тавтологией)."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 SELECT COUNT(*) FROM bt_3_world_news_daily
                 WHERE news_date >= %s
-                  AND COALESCE((judge_report->>'passes')::int, 0) > 2;
+                  AND judge_report ? 'calls'
+                  AND (judge_report->>'calls')::int > 2 + COALESCE((judge_report->>'doubted')::int, 0);
                 """,
                 (since_date,),
             )

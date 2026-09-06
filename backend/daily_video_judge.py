@@ -115,6 +115,13 @@ def _ask_controller(cards: list, *, profile, call_json) -> list:
     verdicts = data.get("cards")
     if not isinstance(verdicts, list):
         raise ValueError("контролёр вернул ответ без списка карточек")
+    # Вердикт обязан быть у КАЖДОЙ карточки. Пропущенная — не «в порядке», а
+    # непроверенная; считать её проверенной значило бы соврать (проверяющий агент
+    # 06.09.2026: пустой ответ давал «чисто» при нуле проверенных).
+    got = {v.get("i") for v in verdicts if isinstance(v, dict)}
+    missing = [i for i in range(len(cards)) if i not in got]
+    if missing:
+        raise ValueError(f"контролёр ответил не по всем карточкам: нет вердикта у {missing[:5]}")
     return verdicts
 
 
@@ -139,14 +146,22 @@ def control_cards(cards: list, *, profile, transcript: str, call_json) -> tuple[
     `fixed` дублирует `repaired` — так его читает превью и недельный отчёт.
     """
     from backend.daily_video_pack import re_explain_card
-    from backend.world_news_generator import _card_passes_source_guards
+    from backend.world_news_generator import _card_passes_source_guards, _quote_shows_the_unit
 
+    # `calls` — сколько обращений к модели сделал контроль. По нему живёт обещание
+    # «не больше 2 + число сомнений»: это считается, а не пишется константой.
     report = {"checked": len(cards), "doubted": 0, "repaired": 0, "fixed": 0, "dropped": 0,
-              "passes": 1, "clean": False, "reasons": []}
-    verdicts = _by_index(_ask_controller(cards, profile=profile, call_json=call_json))
+              "passes": 1, "calls": 0, "clean": False, "reasons": []}
 
-    kept: list = []
-    to_repair: list = []          # (карточка, замечание)
+    def _ask(cards_in):
+        report["calls"] += 1
+        return _by_index(_ask_controller(cards_in, profile=profile, call_json=call_json))
+
+    verdicts = _ask(cards)
+
+    # Порядок карточек сохраняется: место каждой запоминается, исправленная встаёт на своё.
+    kept: dict = {}               # позиция → карточка
+    to_repair: list = []          # (позиция, карточка, замечание)
     for i, card in enumerate(cards):
         v = verdicts.get(i) or {}
         decision = str(v.get("verdict") or "ok").strip().lower()
@@ -156,20 +171,24 @@ def control_cards(cards: list, *, profile, transcript: str, call_json) -> tuple[
             continue
         if decision == "doubt":
             report["doubted"] += 1
-            to_repair.append((card, _remark(v)))
+            to_repair.append((i, card, _remark(v)))
             continue
-        kept.append(card)
+        kept[i] = card
+
+    def _ordered():
+        return [kept[i] for i in sorted(kept)]
 
     if not to_repair:
         report["clean"] = report["dropped"] == 0
         logger.info("контроль[%s]: карточек %d, сомнений 0, выброшено %d",
                     getattr(profile, "key", "?"), len(cards), report["dropped"])
-        return kept, report
+        return _ordered(), report
 
     # ── Автор отвечает на каждое замечание: одна единица, замечание, полные субтитры ──
-    repaired: list = []           # (карточка «до», карточка «после», замечание)
-    for card, remark in to_repair:
+    repaired: list = []           # (позиция, карточка «до», карточка «после», замечание)
+    for pos, card, remark in to_repair:
         try:
+            report["calls"] += 1
             answer = re_explain_card(card, remark, transcript=transcript, profile=profile,
                                      call_json=call_json)
         except Exception:
@@ -186,30 +205,50 @@ def control_cards(cards: list, *, profile, transcript: str, call_json) -> tuple[
             what = "пометы регистра" if "register_ru" in stripped else "пометы формы"
             report["reasons"].append(f"выброшена «{card.get('de')}»: после правки нет {what}")
             continue
+        # Та же планка, что у свежей карточки на приёме (проверяющий агент 06.09.2026:
+        # общие стражи не включали двух проверок приёма — цитата показывает единицу и
+        # перевод цитаты не пуст; исправленная карточка проходила ниже свежей).
         ok, why = _card_passes_source_guards(answer, transcript, profile=profile)
+        if ok and not _quote_shows_the_unit(str(answer.get("de") or ""),
+                                            str(answer.get("quote_de") or "")):
+            ok, why = False, "цитата не показывает единицу"
+        if ok and not str(answer.get("quote_ru") or "").strip():
+            ok, why = False, "нет перевода цитаты"
         if not ok:
             report["dropped"] += 1
             report["reasons"].append(
                 f"выброшена «{card.get('de')}»: правка не прошла сверку с субтитрами — {why}")
             continue
-        repaired.append((card, answer, remark))
+        repaired.append((pos, card, answer, remark))
 
     if not repaired:
         report["clean"] = False
-        return kept, report
+        return _ordered(), report
 
     # ── Повторный контроль ТОЛЬКО исправленных ─────────────────────────────────────
     report["passes"] = 2
-    second = _by_index(_ask_controller([a for _, a, _ in repaired], profile=profile,
-                                       call_json=call_json))
-    for j, (before, after, remark) in enumerate(repaired):
+    try:
+        second = _ask([a for _, _, a, _ in repaired])
+    except Exception as exc:
+        # Второй контроль не отработал. Решения первого прохода в силе, оплаченные
+        # ответы автора не выбрасываются в никуда, но и к людям непроверенными не идут:
+        # исправленные карточки выбывают, и об этом сказано в отчёте и превью.
+        logger.exception("контроль: повторный проход не отработал")
+        report["second_pass_failed"] = str(exc)[:200] or exc.__class__.__name__
+        for _, before, _, remark in repaired:
+            report["dropped"] += 1
+            report["reasons"].append(
+                f"выброшена «{before.get('de')}»: повторный контроль не отработал — {remark}")
+        report["clean"] = False
+        return _ordered(), report
+    for j, (pos, before, after, remark) in enumerate(repaired):
         v = second.get(j) or {}
         decision = str(v.get("verdict") or "ok").strip().lower()
         if decision == "ok":
             report["repaired"] += 1
             report["reasons"].append(
                 f"исправлена «{before.get('de')}» → «{after.get('de')}»: {remark}")
-            kept.append(after)
+            kept[pos] = after
             continue
         # Сомнение второй раз — к ученику не идёт. Выпуск из-за неё не переделывается.
         report["dropped"] += 1
@@ -220,4 +259,4 @@ def control_cards(cards: list, *, profile, transcript: str, call_json) -> tuple[
     logger.info("контроль[%s]: карточек %d, сомнений %d, исправлено %d, выброшено %d",
                 getattr(profile, "key", "?"), len(cards), report["doubted"],
                 report["repaired"], report["dropped"])
-    return kept, report
+    return _ordered(), report

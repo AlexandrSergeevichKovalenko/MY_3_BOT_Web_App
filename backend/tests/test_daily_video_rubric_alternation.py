@@ -1037,7 +1037,7 @@ def test_doubt_goes_back_to_the_author_and_is_rechecked_once():
         author={"herzinfarkt bekommen": repaired},
     )
     out, report = _control(cards, model)
-    assert [c["de"] for c in out] == ["Bock haben", "einen Herzinfarkt bekommen"]
+    assert [c["de"] for c in out] == ["einen Herzinfarkt bekommen", "Bock haben"]
     whats = [c["what"] for c in model.calls]
     assert whats == ["контроль карточек", "ответ на замечание «herzinfarkt bekommen»", "контроль карточек"]
     author_call = model.calls[1]
@@ -1136,6 +1136,69 @@ def test_generator_uses_the_controller_with_the_shared_model_caller():
     assert "call_json=lambda sys_p, usr_p, what, **kw" in src
 
 
+def test_missing_verdict_is_not_a_pass():
+    """Контролёр ответил не по всем карточкам — это непроверенный выпуск, а не «чисто».
+    Проверяющий агент 06.09.2026: пустой ответ давал clean при нуле проверенных."""
+    cards = [_judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock"),
+             _judge_card("die Kohle", "die Kohle ist weg", "die Kohle")]
+    model = _FakeModel([[{"i": 0, "verdict": "ok"}]])
+    with pytest.raises(ValueError):
+        _control(cards, model)
+
+
+def test_second_pass_failure_keeps_first_pass_decisions_and_drops_unverified():
+    """Второй контроль упал: решения первого прохода в силе, исправленные карточки к
+    людям непроверенными не идут, и это видно в отчёте."""
+    cards = [_judge_card("Privatversicherte verstehen den Joke", "Privatversicherte verstehen den Joke", "verstehen den Joke"),
+             _judge_card("herzinfarkt bekommen", "Ein Uropa bekaeme einen Herzinfarkt", "bekaeme einen Herzinfarkt"),
+             _judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
+    model = _FakeModel(
+        [[{"i": 0, "verdict": "drop", "reason": "реплика"},
+          {"i": 1, "verdict": "doubt", "field": "de", "reason": "строчная"},
+          {"i": 2, "verdict": "ok"}],
+         RuntimeError("сеть")],
+        author={"herzinfarkt bekommen": dict(cards[1], de="einen Herzinfarkt bekommen")},
+    )
+    orig = model.__call__
+
+    def _call(system, user, what, **kw):
+        if what == "контроль карточек" and isinstance(model.control_rounds[0], Exception):
+            model.calls.append({"what": what})
+            raise model.control_rounds.pop(0)
+        return orig(system, user, what, **kw)
+
+    model.__call__ = _call
+    import backend.daily_video_judge as J
+    out, report = J.control_cards(cards, profile=STANDUP_PROFILE, transcript=_JUDGE_TRANSCRIPT,
+                                  call_json=_call)
+    assert [c["de"] for c in out] == ["Bock haben"]
+    assert report["dropped"] == 2 and report["second_pass_failed"]
+    assert any("повторный контроль не отработал" in r for r in report["reasons"])
+
+
+def test_repaired_card_faces_the_same_bar_as_a_fresh_one():
+    """Автор вынес из предложения оборот, которого цитата не показывает, — на приёме такую
+    карточку бракуют, значит и после правки она не проходит."""
+    cards = [_judge_card("Opfer fordern ihre Rechte", "Opfer fordern ihre Rechte", "fordern ihre Rechte")]
+    model = _FakeModel([[{"i": 0, "verdict": "doubt", "field": "de", "reason": "предложение"}]],
+                       author={"Opfer fordern ihre Rechte": dict(cards[0], de="unter Druck stehen")})
+    out, report = _control(cards, model)
+    assert out == [] and any("цитата не показывает единицу" in r for r in report["reasons"])
+
+
+def test_repaired_card_returns_to_its_place_and_calls_are_counted():
+    cards = [_judge_card("herzinfarkt bekommen", "Ein Uropa bekaeme einen Herzinfarkt", "bekaeme einen Herzinfarkt"),
+             _judge_card("Bock haben", "ich hab null Bock auf Montag", "null Bock")]
+    model = _FakeModel([[{"i": 0, "verdict": "doubt", "field": "de", "reason": "строчная"},
+                         {"i": 1, "verdict": "ok"}],
+                        [{"i": 0, "verdict": "ok"}]],
+                       author={"herzinfarkt bekommen": dict(cards[0], de="einen Herzinfarkt bekommen", i=7)})
+    out, report = _control(cards, model)
+    assert [c["de"] for c in out] == ["einen Herzinfarkt bekommen", "Bock haben"], "порядок сохранён"
+    assert "i" not in out[0]
+    assert report["calls"] == 3 == 2 + report["doubted"]
+
+
 def test_weekly_control_number_is_scheduled_and_guarded():
     """Владелец 06.09.2026: не вопрос, а число раз в неделю — само."""
     src = open("bot_3.py", encoding="utf-8").read()
@@ -1143,7 +1206,7 @@ def test_weekly_control_number_is_scheduled_and_guarded():
     assert 'submit_async(run_daily_video_control_report' in src
     assert '"daily_video_control_report_result"' in src
     from backend.fix_promises import by_key
-    assert by_key("daily_video_control_two_passes_max") is not None
+    assert by_key("daily_video_control_calls_bounded") is not None
 
 
 def test_reformed_day_returns_the_unused_video_to_the_shelf(monkeypatch):

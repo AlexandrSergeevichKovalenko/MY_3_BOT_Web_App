@@ -166,7 +166,7 @@ def re_explain_card(card: dict, remark: str, *, transcript: str, profile, call_j
     if not got or not str(got[0].get("de") or "").strip():
         raise ValueError("автор не вернул карточку в ответ на замечание")
     fixed = dict(card)
-    fixed.update(got[0])
+    fixed.update({k: v for k, v in got[0].items() if k != "i"})
     fixed["quote_de"] = unit["quote_de"]
     return fixed
 
