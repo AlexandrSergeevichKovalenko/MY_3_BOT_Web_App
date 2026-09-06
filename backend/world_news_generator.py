@@ -400,19 +400,32 @@ def _yt_api_video_details(video_ids: list[str]) -> dict[str, dict]:
     кандидатов сотни, и обрезка до первых 50 оставила бы остальных без длительности — их
     погнало бы качать субтитры вслепую. Один вызов стоит 1 единицу квоты.
     """
+    global _DETAILS_INCOMPLETE
+    _DETAILS_INCOMPLETE = False
     api_key = _youtube_api_key()
     if not api_key or not video_ids:
+        _DETAILS_INCOMPLETE = bool(video_ids)
         return {}
     details: dict[str, dict] = {}
     for start in range(0, len(video_ids), 50):
         chunk = video_ids[start:start + 50]
         if not chunk:
             continue
-        _yt_api_video_details_chunk(chunk, api_key, details)
+        if not _yt_api_video_details_chunk(chunk, api_key, details):
+            _DETAILS_INCOMPLETE = True
     return details
 
 
-def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dict) -> None:
+# Последний вызов _yt_api_video_details не получил ответа хотя бы на одну пачку (сеть,
+# квота, придушили по частоте). Справка тогда НЕПОЛНАЯ: ролик без строки в ней — это
+# «не спросили», а не «не подходит». Снимок пула по такой справке не пишется — см.
+# record_pool_snapshot. Ролик, которого нет в ответе при УСПЕШНОЙ пачке (удалён, скрыт),
+# флаг не поднимает: про него YouTube ответил честно.
+_DETAILS_INCOMPLETE = False
+
+
+def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dict) -> bool:
+    """Одна пачка до 50 роликов. Возвращает, получен ли ответ; сами данные — в details."""
     params = {
         # statistics добавлен 21.08.2026: по числу просмотров полка стендапов решает,
         # какой ролик ставить раньше. Часть запроса, а не отдельный вызов — цена та же,
@@ -424,7 +437,7 @@ def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dic
     payload = _yt_get("https://www.googleapis.com/youtube/v3/videos", params,
                       cost=1, what="videos.list")  # 1 единица за пачку до 50 роликов
     if not payload:
-        return
+        return False
     for item in (payload.get("items") or []):
         vid = (item.get("id") or "").strip()
         if not vid:
@@ -452,6 +465,7 @@ def _yt_api_video_details_chunk(video_ids: list[str], api_key: str, details: dic
             "region_locked": bool(content.get("regionRestriction")),
             "view_count": _as_int_or_none((item.get("statistics") or {}).get("viewCount")),
         }
+    return True
 
 
 def _as_int_or_none(value):
@@ -556,6 +570,62 @@ def _transcript_to_text(items: list) -> str:
 
 # ── Candidate selection ─────────────────────────────────────────────────────────
 
+# Глубина обхода архива: столько последних роликов с КАЖДОГО канала видит рубрика за
+# страницу. Число открытое: отчёт владельцу называет его вслух, потому что «90 годных у 12
+# каналов» — это 90 в этом срезе, а не во всём архиве канала.
+ARCHIVE_PER_CHANNEL = 50
+
+
+def archive_slice_per_channel(profile) -> int:
+    """Сколько последних роликов с канала обходит рубрика (страницы × размер страницы)."""
+    return ARCHIVE_PER_CHANNEL * max(1, int(getattr(profile, "archive_pages", 1) or 1))
+
+
+def record_pool_snapshot(profile, candidates: list, details_map: dict) -> dict:
+    """Записать, что рубрика ВПРАВДУ может ещё показать, — по уже оплаченному обходу.
+
+    ┌─ НАЙДЕНО 06.09.2026. Снимок пула считал не то и писался не там. ──────────────────┐
+    │ «Чем пополнять: 90 годных роликов» считалось как «обойдено минус не по длине» — то │
+    │ есть ВМЕСТЕ с уже показанными, с лежащими на полке и с осуждёнными («субтитров     │
+    │ нет»). А писался снимок только ночным пополнением, которое с 29.08 ходит в сеть     │
+    │ лишь при неполной полке; вечерний поиск с колёс обходил те же каналы каждый день и  │
+    │ снимок не писал (числа считались в diag и умирали там).                            │
+    │ Теперь один счётчик, и его зовут оба обхода. «Годный» здесь значит: по длине в     │
+    │ окне рубрики, НЕ показан, НЕ на полке, НЕ под приговором и не в отсрочке.           │
+    └───────────────────────────────────────────────────────────────────────────────────┘
+    Источник каждого вычета — наша база: реестр показанного, полка, реестр вердиктов.
+    Ошибка базы поднимается наверх: снимок с неполным вычетом хуже отсутствующего,
+    потому что выглядит как честный.
+    """
+    import datetime as _dt
+    from backend.database import (get_shown_daily_video_ids, standup_shelf_video_ids,
+                                  transcript_video_ids_to_skip, upsert_daily_video_pool_snapshot)
+    # Справка о роликах получена не вся (проверяющий агент, 06.09.2026): ролики без строки
+    # в ней сошли бы за «не по длине», снимок вышел бы заниженным — и с сегодняшней датой,
+    # то есть неотличимым от честного. Такой снимок не пишем: прежний остаётся с прежней
+    # датой, и отчёт покажет, что каналы давно не смотрели.
+    if _DETAILS_INCOMPLETE:
+        raise RuntimeError("справка о роликах получена не вся — снимок пула не пишется")
+    taken = set(get_shown_daily_video_ids(profile.key))
+    if getattr(profile, "uses_shelf", False):
+        taken |= set(standup_shelf_video_ids())
+    taken |= set(transcript_video_ids_to_skip())
+    usable = manual = 0
+    for c in candidates:
+        vid = c["video_id"]
+        if vid in taken:
+            continue
+        det = details_map.get(vid) or {}
+        dur = int(det.get("duration_seconds") or 0)
+        if dur and profile.min_seconds <= dur <= profile.max_seconds:
+            usable += 1
+            if det.get("has_manual_captions"):
+                manual += 1
+    snap = {"scanned": len(candidates), "in_range": usable, "manual_captions": manual}
+    upsert_daily_video_pool_snapshot(rubric=profile.key, measured_on=_dt.date.today(), **snap)
+    return snap
+
+
 def _gather_candidates(profile=None) -> list[dict]:
     """Newest-first, de-duplicated candidate videos.
 
@@ -588,7 +658,7 @@ def _gather_candidates(profile=None) -> list[dict]:
     seen: set[str] = set()
     candidates: list[dict] = []
     archive = profile.pick_strategy == "archive"
-    per_channel = 50 if archive else _env_int("WORLD_NEWS_PER_CHANNEL", 8)
+    per_channel = ARCHIVE_PER_CHANNEL if archive else _env_int("WORLD_NEWS_PER_CHANNEL", 8)
     pages = profile.archive_pages if archive else 1
 
     # СПРАШИВАЕМ РАЗРЕШЕНИЕ ДО ТРАТЫ (21.08.2026). Холодный обход архива стоит примерно
@@ -751,21 +821,21 @@ def _pick_video_with_transcript(*, profile=None, manual_url: str | None = None,
     # a stable sort keeps recency as the tiebreak. Duration comes from videos.list metadata we
     # already fetched, so this costs no extra transcript fetches (those still stop at the first
     # valid candidate below). See _length_priority for the tiering.
-    # Считаем пул ПРЯМО ЗДЕСЬ: справка о роликах уже получена и оплачена, значит «сколько
-    # подходит по длине и сколько с ручными субтитрами» достаётся даром. Эти числа уходят
-    # в снимок пула, из которого потом собирается еженедельный отчёт — без второго обхода.
-    _in_range = 0
-    _manual = 0
-    for _c in candidates:
-        _d = details_map.get(_c["video_id"]) or {}
-        _dur = int(_d.get("duration_seconds") or 0)
-        if _dur and profile.min_seconds <= _dur <= profile.max_seconds:
-            _in_range += 1
-            if _d.get("has_manual_captions"):
-                _manual += 1
-    diag["pool_scanned"] = len(candidates)
-    diag["pool_in_range"] = _in_range
-    diag["pool_manual_captions"] = _manual
+    # Снимок пула пишется ПРЯМО ЗДЕСЬ: справка о роликах уже получена и оплачена, значит
+    # «сколько ещё можно показать» достаётся даром. Из него собирается еженедельный отчёт
+    # — без второго обхода. Только для архивных рубрик: у новостей пула нет, есть свежесть.
+    if profile.pick_strategy == "archive":
+        try:
+            snap = record_pool_snapshot(profile, candidates, details_map)
+            diag["pool_scanned"] = snap["scanned"]
+            diag["pool_in_range"] = snap["in_range"]
+            diag["pool_manual_captions"] = snap["manual_captions"]
+        except Exception as exc:
+            # Снимок — материал отчёта, а не условие выпуска: его потеря не повод оставить
+            # людей без ролика. Но и молчать нельзя: причина идёт в diag (лог и письмо о
+            # сбое), а отчёт покажет старую дату обхода — не сегодняшнюю.
+            logger.warning("daily_video[%s]: снимок пула не записан", profile.key, exc_info=True)
+            diag["pool_snapshot_error"] = str(exc)[:200]
 
     if profile.pick_strategy == "archive":
         # У вечнозелёного архива нет «свежести», по которой можно было бы разбивать ничьи,
@@ -1425,7 +1495,7 @@ def prepare_world_news(
     from backend.database import (
         upsert_world_news_daily, get_world_news_for_date, get_recent_world_news_video_ids,
         upsert_youtube_transcript_cache, get_shown_daily_video_ids,
-        get_assigned_daily_video_ids, upsert_daily_video_pool_snapshot,
+        get_assigned_daily_video_ids,
     )
     from backend.daily_video_rubrics import get_profile, rubric_for_date
 
@@ -1690,22 +1760,10 @@ def prepare_world_news(
     # Чтобы черновик всё же не выбрали второй раз на другой день, выбор исключает ролики,
     # уже занятые какой-нибудь записью дня — это занятость, а не трата.
 
-    # Снимок пула — из того, что обход и так увидел. Отчёт владельцу собирается потом из
-    # него и из реестра показанного, не тратя ни единицы квоты. При ручной выдаче по ссылке
-    # обхода не было, и снимка нет — тогда прежний остаётся нетронутым, а не обнуляется.
-    if diag.get("pool_in_range") is not None:
-        try:
-            upsert_daily_video_pool_snapshot(
-                rubric=profile.key,
-                scanned=int(diag.get("pool_scanned") or 0),
-                in_range=int(diag.get("pool_in_range") or 0),
-                manual_captions=int(diag.get("pool_manual_captions") or 0),
-                measured_on=date_str,
-            )
-        except Exception:
-            # Снимок — материал для отчёта, а не для выпуска: его потеря не повод рушить
-            # уже собранный разбор. Но и молчать нельзя, иначе отчёт тихо застареет.
-            logger.warning("daily_video[%s]: снимок пула не записан", profile.key, exc_info=True)
+    # Снимок пула («чем ещё можно пополнить») пишет сам поиск с колёс в момент обхода —
+    # record_pool_snapshot. Здесь его больше нет (06.09.2026): прежняя запись отсюда клала
+    # число, в которое входили уже показанные и осуждённые ролики, и датировала его днём
+    # ВЫПУСКА, а не днём обхода.
     # Warm the shared transcript library so EVERY user — not just the library admin — gets the
     # German subtitles for this curated video. Without this, non-admin users (free AND non-admin
     # Pro) hit the library gate in the /youtube_transcript endpoint and see «Субтитры недоступны»,
