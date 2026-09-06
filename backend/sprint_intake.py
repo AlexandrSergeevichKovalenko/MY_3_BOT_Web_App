@@ -25,8 +25,14 @@ docs/tasks/synonym_intake_gate_strategy.md):
 накопленное (`hygiene_pass`). Всё, что дверь не пропустила и что требует решения,
 ложится в `bt_3_sprint_accepted_review`; письмо с кнопками — `sprint_accepted_review.py`.
 
-Антонимы: дедуп, самослово, артикль — да; подтверждение источником — НЕТ (OpenThesaurus
-антонимов не знает, {{Gegenwörter}} тонкий; владелец это не решал — открытый вопрос).
+Антонимы (владелец 06.09.2026: «механика та же самая»): дедуп, самослово, артикль,
+подтверждение {{Gegenwörter}} de.wiktionary (OpenThesaurus антонимов не знает), порог 3;
+неподтверждённое — судье (`synonym_judge.py`), сомнения судьи — владельцу.
+
+СУДЬЯ (владелец 06.09.2026: «если модель говорит да — зачем я? если нет — тоже зачем я?»):
+всё, что дверь не пропустила и что требует решения, сперва судит модель подстановкой
+(backend/synonym_judge.py). «Да» — входит само, «нет» — снимается само, владельцу
+уходит ТОЛЬКО «сомневаюсь» и «да» при неизвестном справочнику артикле.
 """
 from __future__ import annotations
 
@@ -37,8 +43,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-MIN_ACCEPTED = {"synonym": 3, "antonym": 5}   # synonym=3 — решение владельца 06.09.2026;
-                                               # antonym=5 — прежний порог, не обсуждался.
+MIN_ACCEPTED = {"synonym": 3, "antonym": 3}   # 3 — решение владельца 06.09.2026;
+                                               # антонимы: «механика та же самая» (06.09).
 
 _ARTICLES = ("der", "die", "das")
 
@@ -100,8 +106,8 @@ def clean_accepted(wort: str, relation: str, pairs: list[dict], *,
     `article_authority.authoritative_article`, без сети у справочника рода)."""
     from backend.synonym_sources import term_key
     if confirm is None:
-        from backend.synonym_sources import confirm_synonyms
-        confirm = lambda t, c: confirm_synonyms(t, c)                # noqa: E731
+        from backend.synonym_sources import confirm_relation
+        confirm = lambda t, c, rel: confirm_relation(t, c, relation=rel)   # noqa: E731
     if article is None:
         from backend.article_authority import authoritative_article
         article = lambda n: authoritative_article(n)                 # noqa: E731
@@ -132,10 +138,12 @@ def clean_accepted(wort: str, relation: str, pairs: list[dict], *,
             continue
         survivors.append({"de": de, "ru": ru})
 
-    # 4. Подтверждение источником — только у синонимов; один запрос на всё слово.
+    # 4. Подтверждение источником; один запрос на всё слово. Синонимы — OpenThesaurus или
+    # Wiktionary {{Synonyme}}; антонимы — Wiktionary {{Gegenwörter}} (у OpenThesaurus
+    # антонимов нет). Неподтверждённое дальше судит модель (synonym_judge).
     conf = {}
-    if relation == "synonym" and survivors:
-        conf = confirm(wort, [s["de"] for s in survivors])
+    if survivors:
+        conf = confirm(wort, [s["de"] for s in survivors], relation)
 
     kept: list[dict] = []
     for s in survivors:
@@ -207,6 +215,13 @@ def ensure_sprint_intake_schema() -> None:
                     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE (sprint_id, de_key)
                 );
+                ALTER TABLE bt_3_sprint_accepted_review
+                    ADD COLUMN IF NOT EXISTS judge_verdict TEXT,
+                    ADD COLUMN IF NOT EXISTS judge_reason TEXT NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS judge_example_target TEXT NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS judge_example_candidate TEXT NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS judge_voice TEXT NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS judged_at TIMESTAMPTZ;
                 """
             )
         conn.commit()
@@ -244,12 +259,25 @@ def queue_for_owner(*, sprint_id: str, relation: str, wort: str, hint_ru: str,
     return n
 
 
-def count_open_reviews() -> int:
+def count_open_reviews(*, judged_only: bool = True) -> int:
+    """Сколько ждёт владельца. judged_only — только то, где судья уже сказал своё слово
+    (иначе владельцу ушло бы то, что назавтра снимет судья)."""
     from backend.database import get_db_connection_context
     ensure_sprint_intake_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM bt_3_sprint_accepted_review WHERE status = 'open'")
+            cur.execute("SELECT COUNT(*) FROM bt_3_sprint_accepted_review WHERE status = 'open'"
+                        + (" AND judge_verdict IS NOT NULL" if judged_only else ""))
+            return int((cur.fetchone() or [0])[0] or 0)
+
+
+def count_unjudged_reviews() -> int:
+    from backend.database import get_db_connection_context
+    ensure_sprint_intake_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM bt_3_sprint_accepted_review "
+                        "WHERE status = 'open' AND judge_verdict IS NULL")
             return int((cur.fetchone() or [0])[0] or 0)
 
 
@@ -258,12 +286,15 @@ def list_open_reviews(limit: int) -> list[dict]:
     ensure_sprint_intake_schema()
     cols = ("id", "sprint_id", "relation", "wort", "hint_ru", "de", "ru", "reason", "reasons",
             "stored_article", "noun", "reference_article", "reference_source", "confirmed_by",
-            "ot_knows_candidate", "wikt_candidate", "wikt_target")
+            "ot_knows_candidate", "wikt_candidate", "wikt_target",
+            "judge_verdict", "judge_reason", "judge_example_target", "judge_example_candidate", "judge_voice")
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
+            # Владельцу — только то, где судья уже высказался (сомнение либо «да» при
+            # неизвестном артикле). Несудимое ждёт судью, а не человека.
             cur.execute(
                 f"SELECT {', '.join(cols)} FROM bt_3_sprint_accepted_review "
-                "WHERE status = 'open' ORDER BY wort, id LIMIT %s", (int(limit),),
+                "WHERE status = 'open' AND judge_verdict IS NOT NULL ORDER BY wort, id LIMIT %s", (int(limit),),
             )
             rows = cur.fetchall() or []
     return [dict(zip(cols, r)) for r in rows]
@@ -280,13 +311,17 @@ def mark_asked(ids: list[int]) -> None:
         conn.commit()
 
 
-def apply_owner_decision(row_id: int, decision: str) -> dict | None:
+def apply_owner_decision(row_id: int, decision: str, *, by: str = "owner") -> dict | None:
     """«keep» / «der|die|das» — кандидат входит в accepted (существительное — с артиклем
-    решения владельца или справочника); «drop» — остаётся снятым. None — уже решено."""
+    решения владельца или справочника); «drop» — остаётся снятым. None — уже решено.
+    `by` — кто решил: 'owner' (кнопка) или 'judge' (модель); пишется в decision, чтобы
+    в базе было видно, чьё это слово."""
     from backend.database import get_db_connection_context
     dec = str(decision or "").strip().lower()
     if dec not in ("keep", "drop", *_ARTICLES):
         raise ValueError(f"неизвестное решение: {decision!r}")
+    who = str(by or "owner")
+    decision_label = dec if who == "owner" else f"judge_{'no' if dec == 'drop' else 'yes'}"
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -311,9 +346,21 @@ def apply_owner_decision(row_id: int, decision: str) -> dict | None:
                 raise ValueError("у существительного нет артикля — нужна кнопка der/die/das")
             if dec == "drop":
                 cur.execute(
-                    "UPDATE bt_3_sprint_accepted_review SET status = 'removed', decision = 'drop', "
-                    "decided_at = NOW() WHERE id = %s", (int(row_id),),
+                    "UPDATE bt_3_sprint_accepted_review SET status = 'removed', decision = %s, "
+                    "decided_at = NOW() WHERE id = %s", (decision_label, int(row_id)),
                 )
+                # Пример к снятому слову больше не нужен — иначе тренажёр показал бы
+                # карточку «верного выбора» для слова, которого в списке нет.
+                cur.execute("SELECT accepted, trainer_json FROM bt_3_sprint_bank WHERE sprint_id = %s FOR UPDATE",
+                            (sprint_id,))
+                bank = cur.fetchone()
+                if bank:
+                    ex = list((bank[1] or {}).get("correct_examples") or [])
+                    new_ex = [e for e in ex if str((e or {}).get("word") or "").strip().lower() != de.lower()]
+                    if len(new_ex) != len(ex):
+                        tj = dict(bank[1] or {}); tj["correct_examples"] = new_ex
+                        cur.execute("UPDATE bt_3_sprint_bank SET trainer_json = %s::jsonb WHERE sprint_id = %s",
+                                    (json.dumps(tj, ensure_ascii=False), sprint_id))
                 conn.commit()
                 return {"sprint_id": sprint_id, "wort": wort, "de": de, "ru": ru, "kept": False}
             cur.execute("SELECT accepted, retired, retired_reason FROM bt_3_sprint_bank "
@@ -336,7 +383,7 @@ def apply_owner_decision(row_id: int, decision: str) -> dict | None:
             )
             cur.execute(
                 "UPDATE bt_3_sprint_accepted_review SET status = 'kept', decision = %s, "
-                "decided_at = NOW() WHERE id = %s", (dec, int(row_id)),
+                "decided_at = NOW() WHERE id = %s", (decision_label, int(row_id)),
             )
         conn.commit()
     return {"sprint_id": sprint_id, "wort": wort, "de": final_de, "ru": ru, "kept": True,
@@ -344,6 +391,11 @@ def apply_owner_decision(row_id: int, decision: str) -> dict | None:
 
 
 # ── применение двери к записи банка (накопленное) ─────────────────────────────
+
+def pending_example_keys(res: "GateResult") -> set[str]:
+    """Кандидаты, у которых решение ещё впереди (судья / владелец) — их примеры живут."""
+    return {r.de.lower() for r in res.rejected if r.reason in ASK_OWNER}
+
 
 def _filter_examples(trainer_json: dict, kept_de: set[str]) -> tuple[dict, int]:
     """Примеры «верного выбора» строились по старому accepted; снятое слово не должно
@@ -389,20 +441,27 @@ def dedup_examples_pass(*, apply: bool, log: Callable[[str], None] = print) -> i
     return changed
 
 
-def hygiene_pass(*, limit: int | None = None, apply: bool = True,
+def hygiene_pass(*, limit: int | None = None, apply: bool = True, relation: str | None = None,
+                 force: bool = False,
                  confirm=None, article=None, log: Callable[[str], None] = print) -> dict:
-    """Прогнать накопленное через ту же дверь. Записи с accepted_checked_at IS NULL.
+    """Прогнать накопленное через ту же дверь. Записи с accepted_checked_at IS NULL;
+    force=True — и уже проверенные (нужно, когда правило двери стало строже: 06.09.2026
+    антонимы получили подтверждение источником после первого прохода).
 
     apply=False — сухой прогон: печатает «было → стало» по каждой записи, базу не трогает.
     Возвращает сводку для отчёта."""
     from backend.database import get_db_connection_context
     ensure_sprint_intake_schema()
+    where = ["TRUE" if force else "accepted_checked_at IS NULL"]
+    params: list = []
+    if relation:
+        where.append("relation = %s"); params.append(str(relation))
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT sprint_id, relation, wort, hint_ru, accepted, trainer_json, retired "
-                "FROM bt_3_sprint_bank WHERE accepted_checked_at IS NULL ORDER BY created_at, sprint_id"
-                + (" LIMIT %s" if limit else ""), ((int(limit),) if limit else ()),
+                "FROM bt_3_sprint_bank WHERE " + " AND ".join(where) + " ORDER BY created_at, sprint_id"
+                + (" LIMIT %s" if limit else ""), tuple(params + ([int(limit)] if limit else [])),
             )
             rows = cur.fetchall() or []
     summary = {"checked": 0, "changed": 0, "retired_thin": 0, "queued": 0,
@@ -412,7 +471,10 @@ def hygiene_pass(*, limit: int | None = None, apply: bool = True,
         res = clean_accepted(wort, relation, list(accepted or []), confirm=confirm, article=article)
         for k in (DUPLICATE, SELF, ARTICLE_MISMATCH, ARTICLE_UNKNOWN, UNCONFIRMED):
             summary[k] += res.stats[k]
-        kept_de = {k["de"].lower() for k in res.kept}
+        # Пример стираем только у окончательно снятого (дубль, самослово). У того, что
+        # ушло судье или владельцу, пример остаётся до решения: скажут «да» — карточка
+        # «верного выбора» уже готова, без второго похода к модели.
+        kept_de = {k["de"].lower() for k in res.kept} | pending_example_keys(res)
         new_tj, dropped = _filter_examples(trainer_json or {}, kept_de)
         changed = [dict(a) for a in (accepted or [])] != res.kept or dropped > 0
         thin = not res.enough
@@ -442,6 +504,51 @@ def hygiene_pass(*, limit: int | None = None, apply: bool = True,
             conn.commit()
         summary["queued"] += queue_for_owner(sprint_id=sprint_id, relation=relation, wort=wort,
                                              hint_ru=hint_ru or "", rejected=res.rejected)
+    return summary
+
+
+async def backfill_missing_examples(*, limit_words: int | None = None, log: Callable[[str], None] = print) -> dict:
+    """Каждому слову списка — пример для карточки «верного выбора». Раньше примеров было
+    не больше 10 на слово (CORRECT_EXAMPLE_CAP) и они строились по грязному списку;
+    теперь список короткий и честный, а у части слов (в т.ч. принятых судьёй) примера нет.
+    Один запрос к модели на слово (run_substitute_correct_examples), только там, где есть
+    базовое предложение (trainer_json.target_example.de)."""
+    from backend.database import get_db_connection_context
+    from backend.openai_manager import run_substitute_correct_examples
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT sprint_id, relation, wort, accepted, trainer_json FROM bt_3_sprint_bank "
+                        "WHERE NOT retired AND COALESCE(trainer_json->'target_example'->>'de', '') <> '' "
+                        "ORDER BY wort")
+            rows = cur.fetchall() or []
+    summary = {"words": 0, "asked": 0, "added": 0, "failed": 0}
+    for sprint_id, relation, wort, accepted, tj in rows:
+        tj = dict(tj or {})
+        have = {str((e or {}).get("word") or "").strip().lower() for e in (tj.get("correct_examples") or [])}
+        missing = [str(a.get("de") or "").strip() for a in (accepted or [])
+                   if str(a.get("de") or "").strip() and str(a.get("de") or "").strip().lower() not in have]
+        if not missing:
+            continue
+        summary["words"] += 1
+        if limit_words and summary["asked"] >= limit_words:
+            continue
+        summary["asked"] += 1
+        got = await run_substitute_correct_examples(target_word=wort, relation=relation,
+                                                    base_de=str(tj["target_example"]["de"]), answers=missing)
+        got = [g for g in (got or []) if str((g or {}).get("word") or "").strip().lower() in {m.lower() for m in missing}
+               and str((g or {}).get("sentence_de") or "").strip()]
+        if not got:
+            summary["failed"] += 1
+            log(f"{wort}: примеры не собрались для {len(missing)}: {', '.join(missing)}")
+            continue
+        tj["correct_examples"] = list(tj.get("correct_examples") or []) + got
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE bt_3_sprint_bank SET trainer_json = %s::jsonb WHERE sprint_id = %s",
+                            (json.dumps(tj, ensure_ascii=False), sprint_id))
+            conn.commit()
+        summary["added"] += len(got)
+        log(f"{wort}: добавлено примеров {len(got)} из {len(missing)}")
     return summary
 
 

@@ -12,7 +12,7 @@ from backend.synonym_sources import Confirmation
 
 def _conf(confirmed: set[str]):
     """Подтверждение: всё из confirmed — да, остальное — нет."""
-    def f(target, cands):
+    def f(target, cands, relation="synonym"):
         return {c: Confirmation(confirmed=c in confirmed,
                                 by=("openthesaurus",) if c in confirmed else (),
                                 ot_knows_target=True, ot_knows_candidate=True,
@@ -90,20 +90,26 @@ def test_порог_три_для_синонимов_и_пять_для_анто
     res = clean_accepted("die Gelegenheit", "synonym", two, confirm=_conf({"die Chance", "die Option"}),
                          article=_art(ART))
     assert len(res.kept) == 2 and not res.enough and res.min_needed == 3
-    five = [{"de": w, "ru": ""} for w in ("geizig", "kleinlich", "knauserig", "sparsam", "schäbig")]
-    res = clean_accepted("großzügig", "antonym", five, confirm=_conf(set()), article=_art({}))
-    assert res.enough and res.min_needed == 5
+    three = [{"de": w, "ru": ""} for w in ("geizig", "kleinlich", "knauserig")]
+    res = clean_accepted("großzügig", "antonym", three, confirm=_conf(set(three_de := {"geizig", "kleinlich", "knauserig"})),
+                         article=_art({}))
+    assert res.enough and res.min_needed == 3
 
 
-def test_антонимы_не_проверяются_источником_синонимов():
-    """Владелец не решал про источник антонимов — дверь их не отбрасывает как
-    «не подтверждено», только дубли/самослово/артикль."""
+def test_антонимы_проходят_ту_же_дверь_с_источником_антонимов():
+    """Владелец 06.09.2026: «по антонимам механика та же самая». Подтверждение идёт
+    с relation='antonym' ({{Gegenwörter}} Wiktionary), неподтверждённое — судье."""
     calls = []
-    def spy(t, c):
-        calls.append(t); return {}
-    pairs = [{"de": "geizig", "ru": ""}, {"de": "geizig", "ru": ""}, {"de": "großzügig", "ru": ""}]
+    def spy(t, c, relation="synonym"):
+        calls.append(relation)
+        return {x: Confirmation(confirmed=(x == "geizig"), by=("wiktionary",) if x == "geizig" else (),
+                                ot_knows_target=False, ot_knows_candidate=False,
+                                wikt_target="listed", wikt_candidate="not_listed") for x in c}
+    pairs = [{"de": "geizig", "ru": ""}, {"de": "geizig", "ru": ""}, {"de": "großzügig", "ru": ""},
+             {"de": "freigebig", "ru": ""}]
     res = clean_accepted("großzügig", "antonym", pairs, confirm=spy, article=_art({}))
-    assert calls == [] and [k["de"] for k in res.kept] == ["geizig"]
+    assert calls == ["antonym"] and [k["de"] for k in res.kept] == ["geizig"]
+    assert [r.de for r in res.rejected if r.reason == UNCONFIRMED] == ["freigebig"]
 
 
 def test_возвратный_глагол_совпадает_с_самим_собой():
@@ -125,3 +131,11 @@ def test_примеры_тренажёра_чистятся_от_дублей_и
                                {"word": "die Option", "sentence_de": "c"}, {"word": "die Chance", "sentence_de": "d"}]}
     new, dropped = _filter_examples(tj, {"die option", "die chance"})
     assert [e["word"] for e in new["correct_examples"]] == ["die Option", "die Chance"] and dropped == 2
+
+
+def test_пример_живёт_пока_кандидат_ждёт_судью_или_владельца():
+    from backend.sprint_intake import pending_example_keys
+    res = clean_accepted("die Gelegenheit", "synonym", GELEGENHEIT,
+                         confirm=_conf({"die Möglichkeit", "die Chance", "die Option"}), article=_art(ART))
+    # der Zufall не подтверждён → ждёт судью → его пример не стирается; дубли и самослово — стираются
+    assert pending_example_keys(res) == {"der zufall"}

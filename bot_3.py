@@ -17128,13 +17128,24 @@ def _sprint_intake_report_line() -> str:
                 parts.append(f"{label} ({at}): сгенерировано {s.get('generated', 0)}, принято {s.get('stored', 0)}, "
                              f"снято кандидатов {removed}"
                              + (f", слов отброшено {s['thin']}" if s.get("thin") else ""))
+        raw = admin_kv_get("sprint_intake_last_judge")
+        if raw:
+            j = _json.loads(raw)
+            voice = " / ".join(f"{k} {j.get(k, 0)}" for k in ("gemini", "openai") if j.get(k))
+            parts.append(f"судья ({str(j.get('at') or '')[:10]}): да {j.get('yes', 0)}, нет {j.get('no', 0)}, "
+                         f"сомнения {j.get('unsure', 0)}"
+                         + (f", не ответил по {j['unjudged']}" if j.get("unjudged") else "")
+                         + (f" · голос: {voice}" if voice else ""))
+        from backend.sprint_intake import count_unjudged_reviews
         open_n = count_open_reviews()
+        unjudged = count_unjudged_reviews()
     except Exception:
         logging.exception("строка о двери синонимов не собралась")
         return "\n🧩 Синонимы: ❓ не посчитались, подробности в логах.\n"
     body = " · ".join(parts) if parts else "прогонов ещё не было"
-    return (f"\n🧩 <b>Дверь синонимов</b>: {body} · ждут решения: <b>{open_n}</b>"
-            + (" (по 20 в день в 12:45 или /admin_synonym_review)" if open_n else "") + "\n")
+    return (f"\n🧩 <b>Дверь синонимов</b>: {body} · ждут вас: <b>{open_n}</b>"
+            + (" (по 20 в день в 12:45 или /admin_synonym_review)" if open_n else "")
+            + (f" · ждут судью: {unjudged}" if unjudged else "") + "\n")
 
 
 async def admin_access_command(update: Update, context: CallbackContext):
@@ -42366,6 +42377,11 @@ async def _sprint_topup(relation: str, want: int) -> int:
     if made:
         logging.info("sprint_topup relation=%s made=%s", relation, made)
     await asyncio.to_thread(remember_last_stats, f"topup_{relation}", stats)
+    if stats["queued"]:
+        # Кандидатов новых слов судит модель той же ночью — владельцу только сомнения.
+        from backend.synonym_judge import judge_open_reviews
+        judged = await asyncio.to_thread(judge_open_reviews, apply=True, log=logging.info)
+        await asyncio.to_thread(remember_last_stats, "judge", judged)
     return made
 
 
@@ -42384,6 +42400,14 @@ async def sprint_bank_hygiene_job(context: CallbackContext) -> dict:
         return {"error": "openthesaurus_missing"}
     summary = await asyncio.to_thread(hygiene_pass, apply=True, log=logging.info)
     await asyncio.to_thread(remember_last_stats, "hygiene", summary)
+    # Непропущенное — судье (модель подстановкой), владельцу только его сомнения.
+    from backend.synonym_judge import judge_open_reviews
+    judged = await asyncio.to_thread(judge_open_reviews, apply=True, log=logging.info)
+    await asyncio.to_thread(remember_last_stats, "judge", judged)
+    # Принятым словам — пример для карточки «верного выбора» (1 запрос на слово).
+    from backend.sprint_intake import backfill_missing_examples
+    examples = await backfill_missing_examples(log=logging.info)
+    await asyncio.to_thread(remember_last_stats, "examples", examples)
     return summary
 
 

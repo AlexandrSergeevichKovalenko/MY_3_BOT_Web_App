@@ -30,6 +30,13 @@ def main() -> int:
     ap.add_argument("--limit", type=int)
     ap.add_argument("--fix-examples", action="store_true",
                     help="дочистить дубли в trainer_json.correct_examples у всех записей")
+    ap.add_argument("--judge", action="store_true",
+                    help="открытые кандидаты без вердикта — судье (модель подстановкой)")
+    ap.add_argument("--judge-words", type=int, help="ограничить число слов для --judge")
+    ap.add_argument("--examples", action="store_true",
+                    help="дособрать примеры «верного выбора» словам списка без примера (1 запрос на слово)")
+    ap.add_argument("--recheck", choices=["synonym", "antonym"],
+                    help="прогнать через дверь и УЖЕ проверенные записи этого типа")
     args = ap.parse_args()
     if not args.apply and not args.dry_run:
         ap.error("нужен --dry-run или --apply")
@@ -38,6 +45,28 @@ def main() -> int:
         print("⛔ bt_3_openthesaurus_synsets пуста — сперва python3 scripts/load_openthesaurus.py --apply")
         return 2
     from backend import sprint_intake
+    if args.judge:
+        from backend.synonym_judge import judge_open_reviews
+        summary = judge_open_reviews(apply=args.apply, limit_words=args.judge_words)
+        print("СУДЬЯ:", summary)
+        if args.apply:
+            sprint_intake.remember_last_stats("judge", summary)
+        return 0
+    if args.examples:
+        import asyncio
+        if not args.apply:
+            ap.error("--examples только с --apply (запросы к модели пишутся сразу)")
+        summary = asyncio.run(sprint_intake.backfill_missing_examples(limit_words=args.limit))
+        print("ПРИМЕРЫ:", summary)
+        sprint_intake.remember_last_stats("examples", summary)
+        return 0
+    if args.recheck:
+        summary = sprint_intake.hygiene_pass(limit=args.limit, apply=args.apply,
+                                             relation=args.recheck, force=True)
+        print("ИТОГ:", summary)
+        if args.apply:
+            sprint_intake.remember_last_stats("hygiene", summary)
+        return 0
     if args.fix_examples:
         n = sprint_intake.dedup_examples_pass(apply=args.apply)
         print(f"записей с лишними примерами: {n}" + ("" if args.apply else " (сухой прогон)"))
