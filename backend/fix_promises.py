@@ -196,18 +196,14 @@ def _access_reminders_over_cadence() -> int:
     return count_access_reminders_over_cadence(days=1)
 
 
-def _worldnews_card_old_look_rules() -> int:
-    """Читает CSS ЖИВОЙ страницы веб-приложения по сети. Обещано: 0.
+def _served_webapp_css() -> str:
+    """CSS ЖИВОЙ страницы веб-приложения, скачанный по сети, — то, что получает телефон.
 
-    ┌─ ПОЧИНЕНО 05.09.2026. Проверка читала frontend/dist/assets на диске — и 05.09 ─────┐
-    │ пришла «не измерено: собранного CSS нет». Обещания проверяет сервис бота, а фронт   │
-    │ собирает и держит только веб-сервис (Dockerfile.backend); в образ бота каталог      │
-    │ frontend/ не попадает вовсе (Dockerfile.bot). Файла там нет и не будет.             │
-    │ Поэтому проверка идёт туда же, куда идёт человек: скачивает страницу по WEB_APP_URL, │
-    │ находит в ней подключённые .css и считает старые правила в них. Это и есть экран    │
-    │ владельца, а не копия исходника. Нет адреса или сеть не ответила — «не измерено».  │
-    └────────────────────────────────────────────────────────────────────────────────────┘
-    """
+    Обещания проверяет сервис бота, у которого фронта на диске нет (Dockerfile.bot), поэтому
+    единственный честный источник — сам сайт по WEB_APP_URL. Vite режет стили по экранам:
+    в index.html подключён только общий CSS, остальные .css названы строками внутри
+    скриптов страницы — собираем оба слоя. Нет адреса, нет сети, нет ни одного .css —
+    исключение, и проверка получает исход «не измерено», а не «0»."""
     import os
     import re
     from urllib.parse import urljoin
@@ -234,7 +230,60 @@ def _worldnews_card_old_look_rules() -> int:
     if not css_paths:
         raise LookupError(f"на странице {base} не нашлось ни одного .css")
     css = "".join(_get(urljoin(base, path)) for path in sorted(css_paths))
-    return _count_worldnews_old_look_rules(css)
+    return css
+
+
+def _worldnews_card_old_look_rules() -> int:
+    """Читает CSS ЖИВОЙ страницы веб-приложения по сети. Обещано: 0.
+
+    ┌─ ПОЧИНЕНО 05.09.2026. Проверка читала frontend/dist/assets на диске — и 05.09 ─────┐
+    │ пришла «не измерено: собранного CSS нет». Обещания проверяет сервис бота, а фронт   │
+    │ собирает и держит только веб-сервис (Dockerfile.backend); в образ бота каталог      │
+    │ frontend/ не попадает вовсе (Dockerfile.bot). Файла там нет и не будет.             │
+    │ Поэтому проверка идёт туда же, куда идёт человек: скачивает страницу по WEB_APP_URL, │
+    │ находит в ней подключённые .css и считает старые правила в них. Это и есть экран    │
+    │ владельца, а не копия исходника. Нет адреса или сеть не ответила — «не измерено».  │
+    └────────────────────────────────────────────────────────────────────────────────────┘
+    """
+    return _count_worldnews_old_look_rules(_served_webapp_css())
+
+
+_HINT_MODAL_ROOT = ".word-hint-overlay"
+
+
+def _count_hint_modal_own_box_sizing(css: str) -> int:
+    """Сколько правил в CSS задают box-sizing: border-box ВСЕМУ поддереву окна подсказки
+    по слову (селектор «.word-hint-overlay *»). Ожидается ровно 1.
+
+    Окно живёт в двух хозяевах: в приложении (App.css со сбросом на всё) и в интерактиве
+    «Слова со вчерашних тренировок», который приходит в личку и App.css не грузит. Окно
+    порталом уходит в <body>, мимо сбросов интерактива, — и 06.09.2026 считалось там по
+    content-box: кнопка «Понятно» уходила под нижний край экрана на всех десяти телефонах
+    матрицы. Починка — сброс у самого окна (WordHintModal.css). Нет самого селектора
+    .word-hint-overlay — это не собранный фронт, считать нечего: «не измерено»."""
+    import re
+    if not re.search(re.escape(_HINT_MODAL_ROOT) + r"\s*[{,]", css):
+        raise LookupError(f"в CSS нет {_HINT_MODAL_ROOT} — это не собранный фронт")
+    n = 0
+    for m in re.finditer(r"([^{}]+)\{([^}]*)\}", css):
+        selectors = [x.strip() for x in m.group(1).split(",")]
+        if f"{_HINT_MODAL_ROOT} *" in selectors and re.search(r"box-sizing\s*:\s*border-box", m.group(2)):
+            n += 1
+    return n
+
+
+def _hint_modal_box_sizing_missing() -> int:
+    """1, если в отданном телефону CSS нет собственного сброса окна подсказки; иначе 0."""
+    return 0 if _count_hint_modal_own_box_sizing(_served_webapp_css()) >= 1 else 1
+
+
+def _hint_modal_screen() -> str:
+    """Экран «после» для окна подсказки в интерактиве: что реально отдаёт сайт."""
+    n = _count_hint_modal_own_box_sizing(_served_webapp_css())
+    return ("🪟 Окно «Подсказка по слову» в интерактиве «Слова со вчерашних тренировок»: "
+            + ("сброс box-sizing у самого окна в живом CSS ЕСТЬ — кнопка «Понятно» стоит "
+               "внутри экрана на любом телефоне" if n >= 1 else
+               "сброса box-sizing в живом CSS НЕТ — кнопка «Понятно» снова под краем экрана"))
 
 
 def _daily_video_night_recheck_ran() -> int:
@@ -709,6 +758,19 @@ PROMISES: tuple[Promise, ...] = (
         expected=0,
         measure=_sprint_bank_unchecked,
         how="SELECT COUNT(*) FROM bt_3_sprint_bank WHERE accepted_checked_at IS NULL",
+    ),
+    Promise(
+        key="hint_modal_own_box_sizing",
+        title="Окно «Подсказка по слову» в интерактиве без собственного сброса box-sizing "
+              "(кнопка «Понятно» под краем экрана)",
+        since="06.09.2026",
+        expected=0,
+        measure=_hint_modal_box_sizing_missing,
+        how="curl -s $WEB_APP_URL → найти .css из <link> и из строк входного скрипта → "
+            "grep '.word-hint-overlay \\*' с box-sizing:border-box; руками — открыть слово "
+            "в интерактиве «Слова со вчерашних тренировок», лампочка → кнопка «Понятно» "
+            "целиком на экране",
+        screen=_hint_modal_screen,
     ),
 )
 
