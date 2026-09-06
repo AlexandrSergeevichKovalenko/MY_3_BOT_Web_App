@@ -299,6 +299,34 @@ def _word_pick_door_misses() -> int:
     return count_word_pick_door_misses()
 
 
+def _weekly_ranking_places_given_wrongly() -> int:
+    """Строк снимка недельного рейтинга, где место стоит у нуля или не совпадает с местом
+    по баллу «как в спорте». Обещано: 0.
+
+    Решение владельца 06.09.2026: ноль активности — места нет (rank NULL), равный балл —
+    одно место. До того «@salesdoc» неделями видел «#8 из 14» по алфавиту имени.
+    Снимки чинятся при каждом запуске рейтинга (_repair_weekly_global_ranking_snapshots);
+    строка здесь значит, что чинилка не отработала или место снова раздал старый код."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM bt_3_weekly_global_ranking_snapshots
+                      WHERE final_score <= 0 AND rank IS NOT NULL)
+                  + (SELECT COUNT(*) FROM (
+                        SELECT rank, total_users,
+                               RANK() OVER (PARTITION BY week_start ORDER BY final_score DESC) AS rk,
+                               COUNT(*) OVER (PARTITION BY week_start) AS n
+                          FROM bt_3_weekly_global_ranking_snapshots
+                         WHERE final_score > 0) r
+                      WHERE r.rank IS DISTINCT FROM r.rk OR r.total_users IS DISTINCT FROM r.n);
+                """
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
 def _word_pick_posters_missing() -> int:
     """Людей, кому вчера был положен постер «Слова со вчерашних тренировок» дважды,
     а пришло меньше двух. Обещано: 0."""
@@ -408,6 +436,16 @@ PROMISES: tuple[Promise, ...] = (
         how="SELECT w.asked FROM bt_3_word_check w LEFT JOIN bt_3_word_suggestion s "
             "ON s.asked=w.asked WHERE w.source LIKE 'модель предложила другое%' "
             "AND w.checked_at >= '2026-09-05' AND COALESCE(s.suggestion,'')=''",
+    ),
+    Promise(
+        key="weekly_ranking_no_place_for_zero",
+        title="Строк недельного рейтинга с местом у нуля или не по баллу (1, 2, 2, 4)",
+        since="06.09.2026",
+        expected=0,
+        measure=_weekly_ranking_places_given_wrongly,
+        how="SELECT COUNT(*) FROM bt_3_weekly_global_ranking_snapshots WHERE final_score<=0 "
+            "AND rank IS NOT NULL — ждём 0; места занимавшихся сверить с RANK() OVER "
+            "(PARTITION BY week_start ORDER BY final_score DESC)",
     ),
     Promise(
         key="word_pick_door_writes_every_tap",

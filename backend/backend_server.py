@@ -67774,6 +67774,14 @@ def _dispatch_private_analytics(target_date: date) -> dict:
     return {"ok": True, "date": target_date.isoformat(), "sent": sent, "errors": errors}
 
 
+# Текст человеку без занятий за неделю (решение владельца 06.09.2026: место за ноль не
+# даётся, карточка не рисуется, но и молчать нельзя).
+WEEKLY_GLOBAL_RANKING_IDLE_TEXT = (
+    "🏆 Недельный рейтинг\n\n"
+    "На этой неделе занятий не было, поэтому место не считалось.\n"
+    "Новая неделя — новый шанс: одно задание, и ты снова в рейтинге."
+)
+
 WEEKLY_GLOBAL_RANKING_WEIGHTS = {
     "practice": 0.35,
     "quality": 0.25,
@@ -67825,6 +67833,50 @@ def _ensure_weekly_global_ranking_schema() -> None:
                 ON bt_3_weekly_global_ranking_snapshots (week_start DESC, rank ASC);
                 """
             )
+            # 06.09.2026: у человека без занятий места нет — rank NULL (решение владельца).
+            cursor.execute(
+                """
+                ALTER TABLE bt_3_weekly_global_ranking_snapshots
+                ALTER COLUMN rank DROP NOT NULL;
+                """
+            )
+
+
+def _repair_weekly_global_ranking_snapshots() -> dict[str, int]:
+    """Чинит накопленные снимки под правило «место не даётся за ноль». Идемпотентно.
+
+    До 06.09.2026 снимки хранили место у нулей (по алфавиту имени) и «из N» со всеми
+    подряд. Зовётся при каждом запуске рейтинга: у нулей место снимается, у занимавшихся
+    места пересчитываются «как в спорте» (RANK по баллу внутри недели), «из N» = число
+    занимавшихся. Возвращает, сколько строк поправлено, — число уходит в журнал запуска.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_weekly_global_ranking_snapshots
+                SET rank = NULL, rank_delta = NULL, updated_at = NOW()
+                WHERE final_score <= 0 AND rank IS NOT NULL;
+                """
+            )
+            zero_fixed = int(cursor.rowcount or 0)
+            cursor.execute(
+                """
+                UPDATE bt_3_weekly_global_ranking_snapshots s
+                SET rank = r.rk, total_users = r.n, updated_at = NOW()
+                FROM (
+                    SELECT id,
+                           RANK() OVER (PARTITION BY week_start ORDER BY final_score DESC) AS rk,
+                           COUNT(*) OVER (PARTITION BY week_start) AS n
+                    FROM bt_3_weekly_global_ranking_snapshots
+                    WHERE final_score > 0
+                ) r
+                WHERE s.id = r.id
+                  AND (s.rank IS DISTINCT FROM r.rk OR s.total_users IS DISTINCT FROM r.n);
+                """
+            )
+            ranked_fixed = int(cursor.rowcount or 0)
+    return {"zero_rank_removed": zero_fixed, "ranked_rows_recomputed": ranked_fixed}
 
 
 def _safe_percent(value: float) -> float:
@@ -67984,7 +68036,11 @@ def _collect_weekly_global_ranking_rows(start_date: date, end_date: date) -> lis
                     COALESCE(ps.prev_srs_reviews, 0),
                     COALESCE(pv.prev_voice_minutes, 0),
                     COALESCE(pr.prev_reader_minutes, 0),
-                    COALESCE(prevsnap.rank, NULL)
+                    -- Прошлое место засчитывается, только если оно было настоящим:
+                    -- до 06.09.2026 место раздавалось и нулям (по алфавиту имени),
+                    -- и стрелка «up/down» от такого места — ложь. Правило здесь, а не
+                    -- чистка истории: старые снимки чинит _repair_weekly_global_ranking_snapshots.
+                    CASE WHEN prevsnap.final_score > 0 THEN prevsnap.rank ELSE NULL END
                 FROM eligible e
                 LEFT JOIN trans t ON t.user_id = e.user_id
                 LEFT JOIN prev_trans pt ON pt.user_id = e.user_id
@@ -68052,6 +68108,28 @@ def _collect_weekly_global_ranking_rows(start_date: date, end_date: date) -> lis
             }
         )
 
+    return _score_and_rank_weekly_global_ranking_rows(base_rows)
+
+
+def _weekly_global_ranking_row_was_active(item: dict[str, Any]) -> bool:
+    """Занимался ли человек на неделе хоть чем-то. Ноль здесь — ноль во всех пяти
+    источниках (переводы, повторения, голос, чтение, сессии), и балл у него ровно 0.0."""
+    return float(item.get("current_units") or 0.0) > 0 or int(item.get("active_days") or 0) > 0
+
+
+def _score_and_rank_weekly_global_ranking_rows(base_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Балл и место для каждой строки недели. Чистая функция: базы не трогает.
+
+    ┌─ ПОЧИНЕНО 06.09.2026. Решение владельца: место не даётся за ноль. ─────────────────┐
+    │ До этого место получали ВСЕ подряд, а у нулей (12 из 14 на неделе 30.08–05.09)     │
+    │ порядок решал алфавит имени: «@salesdoc» неделя за неделей стоял «#8 из 14» с     │
+    │ подписью «same», а на третьей ступени пьедестала стоял человек с 0.0.             │
+    │ Теперь: (1) ноль активности → rank None, в «из N» и в топ не входит; (2) равный   │
+    │ балл → одно место, как в спорте (1, 2, 2, 4); (3) строка без места всё равно      │
+    │ возвращается — ей уходит текст, а не карточка (см. _dispatch_…_report).           │
+    │ Тест: backend/tests/test_weekly_ranking_no_place_for_zero.py.                     │
+    └────────────────────────────────────────────────────────────────────────────────────┘
+    """
     max_translations = max((item["translations_count"] for item in base_rows), default=0)
     max_srs = max((item["srs_reviews"] for item in base_rows), default=0)
     max_minutes = max((item["voice_minutes"] + item["reader_minutes"] for item in base_rows), default=0.0)
@@ -68106,13 +68184,22 @@ def _collect_weekly_global_ranking_rows(start_date: date, end_date: date) -> lis
         scored_rows.append(item)
 
     scored_rows.sort(key=lambda item: (-float(item["final_score"]), -int(item["active_days"]), str(item["username"]).casefold(), int(item["user_id"])))
-    total_users = len(scored_rows)
-    for index, item in enumerate(scored_rows, start=1):
-        item["rank"] = index
+    ranked = [item for item in scored_rows if _weekly_global_ranking_row_was_active(item)]
+    idle = [item for item in scored_rows if not _weekly_global_ranking_row_was_active(item)]
+    total_users = len(ranked)
+    # Место по баллу «как в спорте»: 1 + число тех, у кого балл строго выше.
+    # Одинаковый балл — одно место; порядок внутри места (дни, имя) только для показа.
+    for position, item in enumerate(ranked):
+        rank = 1 + sum(1 for other in ranked[:position] if float(other["final_score"]) > float(item["final_score"]))
+        item["rank"] = rank
         item["total_users"] = total_users
         previous_rank = item.get("previous_rank")
-        item["rank_delta"] = (int(previous_rank) - index) if previous_rank else None
-    return scored_rows
+        item["rank_delta"] = (int(previous_rank) - rank) if previous_rank else None
+    for item in idle:
+        item["rank"] = None
+        item["total_users"] = total_users
+        item["rank_delta"] = None
+    return ranked + idle
 
 
 def _persist_weekly_global_ranking_snapshot(start_date: date, end_date: date, rows: list[dict[str, Any]]) -> None:
@@ -68143,8 +68230,8 @@ def _persist_weekly_global_ranking_snapshot(start_date: date, end_date: date, ro
                         end_date,
                         int(item["user_id"]),
                         str(item.get("username") or "Student"),
-                        int(item.get("total_users") or len(rows)),
-                        int(item["rank"]),
+                        int(item.get("total_users") if item.get("total_users") is not None else len(rows)),
+                        int(item["rank"]) if item.get("rank") is not None else None,
                         item.get("rank_delta"),
                         float(item["final_score"]),
                         json.dumps(item.get("components") or {}, ensure_ascii=False),
@@ -68338,7 +68425,7 @@ def _render_weekly_global_ranking_card_png(row: dict[str, Any], *, start_date: d
     for idx, top in enumerate(top_rows[:3], start=1):
         row_y = y + ((idx - 1) * 72)
         draw.ellipse([(110, row_y), (160, row_y + 50)], fill=medal_fills[idx - 1], outline=(128, 92, 47), width=2)
-        draw.text((135, row_y + 10), str(idx), fill=white, font=_font(24, True), anchor="ma")
+        draw.text((135, row_y + 10), str(top.get("rank") or idx), fill=white, font=_font(24, True), anchor="ma")
         top_name = str(top.get("username") or "Student").strip() or "Student"
         top_font = _fit_text(draw, top_name, 29, 520, bold=True, min_size=22)
         draw.text((184, row_y + 5), top_name, fill=navy, font=top_font)
@@ -68384,6 +68471,7 @@ def _dispatch_weekly_global_ranking_report(*, tz_name: str = TODAY_PLAN_DEFAULT_
 
     try:
         _ensure_weekly_global_ranking_schema()
+        repaired = _repair_weekly_global_ranking_snapshots()
         rows = _collect_weekly_global_ranking_rows(start_date, end_date)
         _persist_weekly_global_ranking_snapshot(start_date, end_date, rows)
         if not rows:
@@ -68393,9 +68481,11 @@ def _dispatch_weekly_global_ranking_report(*, tz_name: str = TODAY_PLAN_DEFAULT_
             return result
 
         limit = max(1, int((os.getenv("WEEKLY_GLOBAL_RANKING_SEND_LIMIT") or "5000").strip() or "5000"))
-        top_rows = rows[:3]
+        # В топ и в «из N» входят только занимавшиеся: у строки без места rank None.
+        top_rows = [row for row in rows if row.get("rank") is not None][:3]
         already_delivered = _weekly_global_ranking_delivered_user_ids(start_date)
         sent = 0
+        sent_idle_notice = 0
         skipped_delivered = 0
         errors: list[str] = []
         for row in rows[:limit]:
@@ -68406,6 +68496,14 @@ def _dispatch_weekly_global_ranking_report(*, tz_name: str = TODAY_PLAN_DEFAULT_
                 skipped_delivered += 1
                 continue
             try:
+                if row.get("rank") is None:
+                    # Занятий не было — места нет, карточки нет. Молчать нельзя (глушение
+                    # по неактивности снято 11.08.2026), поэтому честный короткий текст.
+                    _send_private_message(user_id=user_id, text=WEEKLY_GLOBAL_RANKING_IDLE_TEXT)
+                    _mark_weekly_global_ranking_delivery(week_start=start_date, user_id=user_id, status="sent")
+                    already_delivered.add(user_id)
+                    sent_idle_notice += 1
+                    continue
                 image_bytes = _render_weekly_global_ranking_card_png(row, start_date=start_date, end_date=end_date, top_rows=top_rows)
                 if not image_bytes:
                     raise RuntimeError("ranking card renderer unavailable")
@@ -68434,7 +68532,10 @@ def _dispatch_weekly_global_ranking_report(*, tz_name: str = TODAY_PLAN_DEFAULT_
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "users": len(rows),
+            "ranked_users": sum(1 for row in rows if row.get("rank") is not None),
             "sent": sent,
+            "sent_idle_notice": sent_idle_notice,
+            "snapshots_repaired": repaired,
             "skipped_delivered": skipped_delivered,
             "errors": errors[:20],
             "duration_ms": _elapsed_ms_since(started_perf),
