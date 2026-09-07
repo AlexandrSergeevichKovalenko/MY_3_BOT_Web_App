@@ -130,6 +130,16 @@ class ЧиталкаПрикладываетИсточник(unittest.TestCase):
         opener = re.search(r"const handleSelectionGptLookup = async \(\) => \{(.*?)\n  \};", self.source, re.S)
         self.assertIn("selectionGptOriginRef.current = resolveSelectionSurface();", opener.group(1),
                       "поверхность запоминается при открытии шита, пока выделение живо")
+        # Метку читают ДО первого await: закрытие шита во время сетевого запроса стирает её.
+        for fn_name in ("saveSelectionGptOriginalWord", "saveSelectionGptExample", "saveSelectionGptWordByLookup"):
+            start = self.source.index(f"  const {fn_name} = async (")
+            # первый await В КОДЕ, а не в комментарии (комментарий как раз про await)
+            first_await = re.search(r"^(?!\s*//).*\bawait\b", self.source[start:], re.M)
+            head = self.source[start:start + first_await.start()]
+            self.assertIn("const surface = selectionGptOriginRef.current;", head, fn_name)
+            body = self.source[start:self.source.index("\n  };\n", start)]
+            self.assertIn("saveSelectionGptDictionaryEntry({\n", body)
+            self.assertNotIn("saveSelectionGptDictionaryEntry({\n" + " " * 10 + "sourceText", body, f"{fn_name}: surface не передан")
 
     def test_reader_source_comes_from_the_server_and_only_for_the_open_book(self):
         builder = re.search(r"const buildReaderSourcePayload = \(\) => \{(.*?)\n  \};", self.source, re.S)

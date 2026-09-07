@@ -24629,6 +24629,10 @@ function AppInner() {
   };
 
   const saveSelectionGptOriginalWord = async (rawText) => {
+    // Поверхность снимаем СРАЗУ, до первого await: закрытие шита во время сетевого
+    // запроса стирает метку, и отложенное чтение дало бы «словарь» без источника
+    // (найдено проверкой 07.09.2026).
+    const surface = selectionGptOriginRef.current;
     const cleaned = normalizeSelectionText(rawText);
     if (!cleaned) return false;
     const gptItem = selectionGptData?.dictionaryItem && typeof selectionGptData.dictionaryItem === 'object'
@@ -24658,6 +24662,7 @@ function AppInner() {
       ).trim();
       if (sourceText && targetText) {
         await saveSelectionGptDictionaryEntry({
+          surface,
           sourceText,
           targetText,
           sourceLang: directionSourceLang,
@@ -24687,6 +24692,10 @@ function AppInner() {
   // Тонкую запись «слово + перевод» здесь не создаём: сохранённое должно нести тот же
   // разбор, что человек видел на экране.
   const saveSelectionGptWordByLookup = async (rawText, originMeta) => {
+    // Поверхность снимаем СРАЗУ, до первого await: закрытие шита во время сетевого
+    // запроса стирает метку, и отложенное чтение дало бы «словарь» без источника
+    // (найдено проверкой 07.09.2026).
+    const surface = selectionGptOriginRef.current;
     const cleaned = normalizeSelectionText(rawText);
     if (!cleaned) return false;
     const normalized = await normalizeForLookup(cleaned);
@@ -24753,6 +24762,7 @@ function AppInner() {
       }
     }
     await saveSelectionGptDictionaryEntry({
+      surface,
       sourceText,
       targetText,
       sourceLang: directionSourceLang,
@@ -24770,6 +24780,10 @@ function AppInner() {
   // что человек ВИДИТ рядом с примером; своего не сочиняем, а если его нет — спрашиваем
   // быстрый перевод и честно падаем, когда и он молчит.
   const saveSelectionGptExample = async (exampleDe, exampleRu) => {
+    // Поверхность снимаем СРАЗУ, до первого await: закрытие шита во время сетевого
+    // запроса стирает метку, и отложенное чтение дало бы «словарь» без источника
+    // (найдено проверкой 07.09.2026).
+    const surface = selectionGptOriginRef.current;
     const pair = resolveLanguagePairForUI(selectionGptData?.languagePair || dictionaryLanguagePair);
     const cleaned = normalizeSelectionText(exampleDe);
     if (!cleaned) return false;
@@ -24788,6 +24802,7 @@ function AppInner() {
       throw new Error(tr('Перевод примера не получен', 'Beispielübersetzung fehlt'));
     }
     await saveSelectionGptDictionaryEntry({
+      surface,
       sourceText,
       targetText,
       sourceLang,
