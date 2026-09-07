@@ -6758,6 +6758,9 @@ function AppInner() {
   const [readerTitle, setReaderTitle] = useState('');
   const [readerSourceType, setReaderSourceType] = useState('');
   const [readerSourceUrl, setReaderSourceUrl] = useState('');
+  // Под каким источником лягут слова, сохранённые из открытой книги (ролик / книга /
+  // статья). Называет сервер при открытии книги; фронт прикладывает к сохранению как есть.
+  const [readerDictionarySource, setReaderDictionarySource] = useState(null);
   const [readerDetectedLanguage, setReaderDetectedLanguage] = useState('');
   const [readerDocumentId, setReaderDocumentId] = useState(null);
   const [readerDocuments, setReaderDocuments] = useState([]);
@@ -7017,6 +7020,11 @@ function AppInner() {
   const [selectionGptCardSections, setSelectionGptCardSections] = useState(() => new Set());
   const [selectionGptSavedChips, setSelectionGptSavedChips] = useState(() => new Set());
   const selectionGptSeqRef = useRef(0);
+  // Откуда открыт шит разбора: 'youtube' | 'translations' | 'reader' | 'dictionary'.
+  // Шит один на четыре экрана, а книга в читалке остаётся «открытой» в состоянии и после
+  // ухода с экрана. Без этой метки слово из блока переводов получало бы источник книги
+  // (найдено проверкой 07.09.2026). Метка ставится при открытии шита — пока выделение живо.
+  const selectionGptOriginRef = useRef('');
   const selectionGptAbortRef = useRef(null);
   const [selectionGptSaveOriginalChecked, setSelectionGptSaveOriginalChecked] = useState(true);
   const [selectionGptSaveLoading, setSelectionGptSaveLoading] = useState(false);
@@ -23266,6 +23274,19 @@ function AppInner() {
     return { kind: 'youtube', key: videoId, title: title || '', title_source: title ? 'player' : '' };
   };
 
+  // Источник слова из читалки: ролик (книга «Текст видео»), книга или статья. Владелец
+  // 07.09.2026: слово из текста ролика ложится под то же название ролика, что и слова
+  // из плеера, — «это же всё равно относится к тому видео». Карточку назвал сервер при
+  // открытии книги (dictionary_source); здесь только проверяем, что она про ОТКРЫТУЮ
+  // книгу, а не осталась от предыдущей. Нет карточки — нет источника, ничего не выдумываем.
+  const buildReaderSourcePayload = () => {
+    const source = readerDictionarySource;
+    if (!source || typeof source !== 'object') return null;
+    if (!source.kind || !source.key) return null;
+    if (Number(source.document_id || 0) !== Number(readerDocumentId || 0)) return null;
+    return { kind: String(source.kind), key: String(source.key), title: String(source.title || ''), title_source: String(source.title_source || '') };
+  };
+
 
   const resolveDictionaryDirection = (item) => {
     const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
@@ -24238,7 +24259,10 @@ function AppInner() {
         : '';
       // Ролик записывается как ИСТОЧНИК слова, а не как папку: тему слову ставит разбор,
       // и она остаётся его домом (решение владельца 31.08.2026).
-      const youtubeSource = isYoutubeInline ? buildYoutubeSourcePayload() : null;
+      const isReaderInline = inlineMode && inlineOrigin === 'reader' && !isYoutubeInline;
+      const selectionSource = isYoutubeInline
+        ? buildYoutubeSourcePayload()
+        : (isReaderInline ? buildReaderSourcePayload() : null);
       if (!inlineMode) {
         setDictionaryResult(data.item || null);
         setDictionaryDirection(detectedDirection);
@@ -24251,12 +24275,12 @@ function AppInner() {
           ...prev,
           translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
         }));
-        if (isYoutubeInline) {
+        if (isYoutubeInline || isReaderInline) {
           // Название ролика может не прийти — тогда говорим просто «Сохранено».
           // Подставлять сюда идентификатор ролика нельзя: человеку он ничего не значит.
-          const youtubeTitle = String(youtubeSource?.title || '').trim();
-          showInlineToast(youtubeTitle
-            ? `${tr('Сохранено', 'Gespeichert')} · ${youtubeTitle}`
+          const sourceTitle = String(selectionSource?.title || '').trim();
+          showInlineToast(sourceTitle
+            ? `${tr('Сохранено', 'Gespeichert')} · ${sourceTitle}`
             : tr('Сохранено ✅', 'Gespeichert ✅'));
         }
       } else {
@@ -24278,6 +24302,9 @@ function AppInner() {
               : (isTranslationsInline ? 'translations_result_selection' : 'reader_selection')
           )
           : 'dictionary_lookup',
+        // Номер книги — след, по которому слово можно привязать к книге задним числом.
+        // До 07.09.2026 его не было, и старые слова из читалки привязать не к чему.
+        ...(isReaderInline && readerDocumentId ? { document_id: Number(readerDocumentId) } : {}),
       };
 
       (async () => {
@@ -24298,7 +24325,7 @@ function AppInner() {
               direction: detectedDirection || undefined,
               response_json: data.item || {},
               folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
-              ...(youtubeSource ? { source: youtubeSource } : {}),
+              ...(selectionSource ? { source: selectionSource } : {}),
               origin_process: saveOriginProcess,
               origin_meta: saveOriginMeta,
             }),
@@ -24460,6 +24487,15 @@ function AppInner() {
     || String(selectionInlineLookup?.direction || '').startsWith('youtube_')
   );
 
+  // На какой поверхности сейчас выделено слово. Тот же порядок, что у кнопки «Сохранить»
+  // в handleSelectionSave: плеер → блок переводов → читалка с открытой книгой → словарь.
+  const resolveSelectionSurface = () => {
+    if (isYoutubeSelectionContext()) return 'youtube';
+    if (String(selectionType || '').startsWith('translation_result_')) return 'translations';
+    if (isSectionVisible('reader') && readerHasContent && !readerArchiveOpen) return 'reader';
+    return 'dictionary';
+  };
+
   // ЧТО ИМЕННО УЙДЁТ В СЛОВАРЬ, если нажать «Сохранить». Не то, что человек тапнул.
   //
   // Владелец 02.09.2026 нажал в фильме «wühlt», внизу карточки увидел галочку «wühlt» и
@@ -24515,6 +24551,8 @@ function AppInner() {
     direction,
     responseJson,
     originMeta,
+    // Поверхность, с которой сохраняют; по умолчанию — та, на которой открыли шит.
+    surface,
   }) => {
     const source = String(sourceText || '').trim();
     const target = String(targetText || '').trim();
@@ -24527,7 +24565,18 @@ function AppInner() {
     const resolvedDirection = String(direction || `${resolvedSourceLang}-${resolvedTargetLang}`).trim().toLowerCase();
     const sanitizedTarget = sanitizeBilingualTargetText(source, target, resolvedTargetLang);
     const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(resolvedDirection);
-    const youtubeSource = isYoutubeSelectionContext() ? buildYoutubeSourcePayload() : null;
+    const selectionSurface = String(surface || selectionGptOriginRef.current || '').trim() || 'dictionary';
+    // Источник слова есть только у плеера и у книги читалки; блок переводов и словарь
+    // его не имеют — и не должны получать чужой.
+    const selectionSource = selectionSurface === 'youtube'
+      ? buildYoutubeSourcePayload()
+      : (selectionSurface === 'reader' ? buildReaderSourcePayload() : null);
+    const selectionOriginProcess = {
+      youtube: 'youtube',
+      reader: 'reader',
+      translations: 'translations_block',
+      dictionary: 'webapp_dictionary_save',
+    }[selectionSurface];
     const responseJsonPayload = buildSelectionGptResponseJson({
       ...(responseJson && typeof responseJson === 'object' ? responseJson : {}),
       source_text: source,
@@ -24556,12 +24605,13 @@ function AppInner() {
         target_lang: resolvedTargetLang || undefined,
         direction: resolvedDirection || undefined,
         folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
-        ...(youtubeSource ? { source: youtubeSource } : {}),
-        origin_process: isYoutubeSelectionContext() ? 'youtube' : 'reader',
+        ...(selectionSource ? { source: selectionSource } : {}),
+        origin_process: selectionOriginProcess,
         origin_meta: {
           endpoint: '/api/webapp/dictionary/save',
           flow: 'reader_gpt_sheet',
-          from: isYoutubeSelectionContext() ? 'youtube_gpt_sheet' : 'reader_gpt_sheet',
+          from: `${selectionSurface}_gpt_sheet`,
+          ...(selectionSurface === 'reader' && readerDocumentId ? { document_id: Number(readerDocumentId) } : {}),
           ...(responseJsonPayload.semantic_category ? { semantic_category: responseJsonPayload.semantic_category } : {}),
           ...(originMeta && typeof originMeta === 'object' ? originMeta : {}),
         },
@@ -24579,6 +24629,10 @@ function AppInner() {
   };
 
   const saveSelectionGptOriginalWord = async (rawText) => {
+    // Поверхность снимаем СРАЗУ, до первого await: закрытие шита во время сетевого
+    // запроса стирает метку, и отложенное чтение дало бы «словарь» без источника
+    // (найдено проверкой 07.09.2026).
+    const surface = selectionGptOriginRef.current;
     const cleaned = normalizeSelectionText(rawText);
     if (!cleaned) return false;
     const gptItem = selectionGptData?.dictionaryItem && typeof selectionGptData.dictionaryItem === 'object'
@@ -24608,6 +24662,7 @@ function AppInner() {
       ).trim();
       if (sourceText && targetText) {
         await saveSelectionGptDictionaryEntry({
+          surface,
           sourceText,
           targetText,
           sourceLang: directionSourceLang,
@@ -24637,6 +24692,10 @@ function AppInner() {
   // Тонкую запись «слово + перевод» здесь не создаём: сохранённое должно нести тот же
   // разбор, что человек видел на экране.
   const saveSelectionGptWordByLookup = async (rawText, originMeta) => {
+    // Поверхность снимаем СРАЗУ, до первого await: закрытие шита во время сетевого
+    // запроса стирает метку, и отложенное чтение дало бы «словарь» без источника
+    // (найдено проверкой 07.09.2026).
+    const surface = selectionGptOriginRef.current;
     const cleaned = normalizeSelectionText(rawText);
     if (!cleaned) return false;
     const normalized = await normalizeForLookup(cleaned);
@@ -24703,6 +24762,7 @@ function AppInner() {
       }
     }
     await saveSelectionGptDictionaryEntry({
+      surface,
       sourceText,
       targetText,
       sourceLang: directionSourceLang,
@@ -24720,6 +24780,10 @@ function AppInner() {
   // что человек ВИДИТ рядом с примером; своего не сочиняем, а если его нет — спрашиваем
   // быстрый перевод и честно падаем, когда и он молчит.
   const saveSelectionGptExample = async (exampleDe, exampleRu) => {
+    // Поверхность снимаем СРАЗУ, до первого await: закрытие шита во время сетевого
+    // запроса стирает метку, и отложенное чтение дало бы «словарь» без источника
+    // (найдено проверкой 07.09.2026).
+    const surface = selectionGptOriginRef.current;
     const pair = resolveLanguagePairForUI(selectionGptData?.languagePair || dictionaryLanguagePair);
     const cleaned = normalizeSelectionText(exampleDe);
     if (!cleaned) return false;
@@ -24738,6 +24802,7 @@ function AppInner() {
       throw new Error(tr('Перевод примера не получен', 'Beispielübersetzung fehlt'));
     }
     await saveSelectionGptDictionaryEntry({
+      surface,
       sourceText,
       targetText,
       sourceLang,
@@ -24878,6 +24943,7 @@ function AppInner() {
     selectionGptAbortRef.current = controller;
 
     setSelectionGptWord(cleaned);
+    selectionGptOriginRef.current = resolveSelectionSurface();
     setSelectionGptOpen(true);
     setSelectionGptLoading(true);
     setSelectionGptError('');
@@ -25002,6 +25068,7 @@ function AppInner() {
     try { selectionGptAbortRef.current?.abort(); } catch (_e) { /* уже закрыт */ }
     selectionGptAbortRef.current = null;
     selectionGptSeqRef.current += 1;
+    selectionGptOriginRef.current = '';
     setSelectionGptOpen(false);
     setSelectionGptWord('');
     setSelectionGptLoading(false);
@@ -26359,6 +26426,7 @@ function AppInner() {
       setReaderLayoutMode(preferredLayoutMode);
       setReaderSourceType(sourceType);
       setReaderSourceUrl(String(data?.source_url || doc?.source_url || ''));
+      setReaderDictionarySource(data?.dictionary_source && typeof data.dictionary_source === 'object' ? data.dictionary_source : null);
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
       setReaderProgressPercent(progress);
@@ -27889,6 +27957,7 @@ function AppInner() {
         setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
         setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
         setReaderSourceUrl(String(data?.source_url || doc?.source_url || rawInput));
+        setReaderDictionarySource(null);
         setReaderContent('');
         setReaderPages([]);
         setReaderDynamicPages([]);
@@ -27935,6 +28004,7 @@ function AppInner() {
       setReaderLayoutMode(preferredLayoutMode);
       setReaderSourceType(sourceType);
       setReaderSourceUrl(String(data?.source_url || rawInput));
+      setReaderDictionarySource(data?.dictionary_source && typeof data.dictionary_source === 'object' ? data.dictionary_source : null);
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
       setReaderDocumentId(docId);
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
@@ -31838,6 +31908,7 @@ function AppInner() {
       let savedCount = 0;
       for (const variant of selectedVariants) {
         await saveSelectionGptDictionaryEntry({
+          surface: 'translations',
           sourceText: variant.source_text,
           targetText: variant.target_text,
           sourceLang,
@@ -41119,7 +41190,7 @@ function AppInner() {
                                     const title = String(item.title || '').trim();
                                     rows.push({
                                       key: `s${item.id}`,
-                                      icon: item.kind === 'youtube' ? '🎬' : '📖',
+                                      icon: item.kind === 'youtube' ? '🎬' : (item.kind === 'article' ? '📰' : '📖'),
                                       // Названия нет — говорим это словами. Идентификатор ролика
                                       // как имя не годится: по «nLiOMhqDvC8» через два месяца
                                       // ничего не вспомнить (владелец, 31.08.2026).

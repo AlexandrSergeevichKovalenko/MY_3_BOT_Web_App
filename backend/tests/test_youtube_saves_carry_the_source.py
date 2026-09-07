@@ -27,15 +27,20 @@ class YoutubeSavesCarryTheSourceTests(unittest.TestCase):
         bodies += re.findall(r"JSON\.stringify\(\{(.*?)\n          \}\)", self.source, re.S)
         checked = 0
         for body in bodies:
-            found = re.search(r"origin_process:\s*(?:'([^']*)'|isYoutubeSelectionContext\(\))", body)
+            # selectionOriginProcess — шит разбора (07.09.2026): плеер, читалка, переводы,
+            # словарь. Он тоже путь из плеера, и источник в нём обязателен.
+            found = re.search(r"origin_process:\s*(?:'([^']*)'|isYoutubeSelectionContext\(\)|selectionOriginProcess)", body)
             if not found:
                 continue
             origin = found.group(1) or "youtube"
             if "youtube" not in origin:
                 continue
             checked += 1
-            self.assertIn(
-                "source: youtubeSource", body,
+            # 07.09.2026: два пути из трёх стали общими с читалкой (selectionSource —
+            # ролик из плеера ИЛИ книга/статья/книга-видео из читалки), третий —
+            # виджет под роликом — по-прежнему свой (youtubeSource).
+            self.assertTrue(
+                "source: youtubeSource" in body or "source: selectionSource" in body,
                 f"сохранение с origin_process={origin!r} не шлёт источник — "
                 "слова этого ролика не соберутся в списке «Откуда»",
             )

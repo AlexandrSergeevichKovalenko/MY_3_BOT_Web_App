@@ -62121,11 +62121,90 @@ def _video_text_cover_url(video_id: str) -> str:
     return f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
 
 
+_VIDEO_TEXT_TITLE_PLACEHOLDER = "Текст видео"
+
+
 def _video_text_title(video_id: str, title: str) -> str:
     """Заголовок книги — название ролика. Названия нет — ставим честное «Текст
     видео», а не подсовываем человеку идентификатор из YouTube."""
     clean = str(title or "").strip()
-    return clean[:300] if clean else "Текст видео"
+    return clean[:300] if clean else _VIDEO_TEXT_TITLE_PLACEHOLDER
+
+
+def _video_text_video_id_from_source_url(source_url: str) -> str:
+    """Обратная к _video_text_source_url: из ссылки книги-видео достаём идентификатор
+    ролика. Ссылку пишем мы сами в одном виде, поэтому это разбор своей записи, а не
+    догадка по чужому адресу. Не наш вид — пустая строка, и это считается выше."""
+    m = re.fullmatch(r"https://youtu\.be/([A-Za-z0-9_-]+)", str(source_url or "").strip())
+    return m.group(1) if m else ""
+
+
+# Тип книги в читалке → вид источника слова (bt_3_dictionary_sources.kind).
+# Виды заданы в backend.database.DICTIONARY_SOURCE_KINDS: youtube / book / article.
+_DICTIONARY_SOURCE_KIND_BY_READER_SOURCE_TYPE = {
+    "video": "youtube",
+    "url": "article",
+    "html": "article",
+    "epub": "book",
+    "pdf": "book",
+    "text": "book",
+    "txt": "book",
+    "file": "book",
+}
+
+
+def _reader_document_dictionary_source(document: dict | None) -> dict | None:
+    """Источник для слов, сохранённых ИЗ ЭТОЙ КНИГИ читалки.
+
+    Владелец 07.09.2026: слово, сохранённое из текста ролика, обязано лечь под название
+    того же ролика, что и слова из плеера, — «это же всё равно относится к тому видео».
+    И то же для книг и статей: у каждой свой источник с её названием.
+
+    Книга-видео ссылается на ролик той же карточкой, что и плеер (kind='youtube',
+    key=идентификатор ролика): сервер заводит ролик один раз, и слова из плеера и из
+    текста собираются вместе. Название ролика — заголовок книги; он и был взят из
+    плеера при создании книги. Заголовок-заглушка «Текст видео» названием не считается:
+    вместо него честное «не знаем» (NULL), которое допишет плеер.
+
+    Книга и статья: key — номер книги в библиотеке, название — её заголовок.
+
+    Возвращает None, когда источник назвать нельзя (нет номера книги, тип книги
+    неизвестен, у книги-видео ссылка не нашего вида). Слово тогда сохранится без
+    источника, и утро посчитает это нарушением обещания reader_saves_without_source —
+    так дефект данных всплывает сам, а не прячется за подставленным значением.
+    """
+    doc = document if isinstance(document, dict) else {}
+    document_id = int(doc.get("id") or 0)
+    if document_id <= 0:
+        return None
+    source_type = str(doc.get("source_type") or "").strip().lower()
+    kind = _DICTIONARY_SOURCE_KIND_BY_READER_SOURCE_TYPE.get(source_type)
+    if not kind:
+        logging.warning("источник слова: неизвестный тип книги source_type=%r doc=%s", source_type, document_id)
+        return None
+    title = str(doc.get("title") or "").strip()
+    if kind == "youtube":
+        video_id = _video_text_video_id_from_source_url(str(doc.get("source_url") or ""))
+        if not video_id:
+            logging.warning("источник слова: у книги-видео %s ссылка не нашего вида: %r",
+                            document_id, doc.get("source_url"))
+            return None
+        if title == _VIDEO_TEXT_TITLE_PLACEHOLDER:
+            title = ""
+        return {
+            "kind": "youtube",
+            "key": video_id,
+            "title": title,
+            "title_source": "video_text_book" if title else "",
+            "document_id": document_id,
+        }
+    return {
+        "kind": kind,
+        "key": str(document_id),
+        "title": title,
+        "title_source": "reader_document" if title else "",
+        "document_id": document_id,
+    }
 
 
 def _run_video_reader_text_build(*, video_id: str, user_id: int) -> None:
@@ -62759,6 +62838,7 @@ def ingest_reader_content():
             "detected_language": detected_lang,
             "detected_language_label": _language_label(detected_lang),
             "document": document,
+            "dictionary_source": _reader_document_dictionary_source(document),
         }
     )
 
@@ -63488,6 +63568,9 @@ def reader_library_open():
             "title": str(doc.get("title") or "Untitled"),
             "source_type": str(doc.get("source_type") or "text"),
             "source_url": doc.get("source_url"),
+            # Под каким источником лягут слова, сохранённые из этой книги (ролик /
+            # книга / статья). Фронт прикладывает это к каждому сохранению как есть.
+            "dictionary_source": _reader_document_dictionary_source(doc),
             "detected_language": detected_lang,
             "detected_language_label": _language_label(detected_lang),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
