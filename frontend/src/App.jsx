@@ -6758,6 +6758,9 @@ function AppInner() {
   const [readerTitle, setReaderTitle] = useState('');
   const [readerSourceType, setReaderSourceType] = useState('');
   const [readerSourceUrl, setReaderSourceUrl] = useState('');
+  // Под каким источником лягут слова, сохранённые из открытой книги (ролик / книга /
+  // статья). Называет сервер при открытии книги; фронт прикладывает к сохранению как есть.
+  const [readerDictionarySource, setReaderDictionarySource] = useState(null);
   const [readerDetectedLanguage, setReaderDetectedLanguage] = useState('');
   const [readerDocumentId, setReaderDocumentId] = useState(null);
   const [readerDocuments, setReaderDocuments] = useState([]);
@@ -23266,6 +23269,19 @@ function AppInner() {
     return { kind: 'youtube', key: videoId, title: title || '', title_source: title ? 'player' : '' };
   };
 
+  // Источник слова из читалки: ролик (книга «Текст видео»), книга или статья. Владелец
+  // 07.09.2026: слово из текста ролика ложится под то же название ролика, что и слова
+  // из плеера, — «это же всё равно относится к тому видео». Карточку назвал сервер при
+  // открытии книги (dictionary_source); здесь только проверяем, что она про ОТКРЫТУЮ
+  // книгу, а не осталась от предыдущей. Нет карточки — нет источника, ничего не выдумываем.
+  const buildReaderSourcePayload = () => {
+    const source = readerDictionarySource;
+    if (!source || typeof source !== 'object') return null;
+    if (!source.kind || !source.key) return null;
+    if (Number(source.document_id || 0) !== Number(readerDocumentId || 0)) return null;
+    return { kind: String(source.kind), key: String(source.key), title: String(source.title || ''), title_source: String(source.title_source || '') };
+  };
+
 
   const resolveDictionaryDirection = (item) => {
     const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
@@ -24238,7 +24254,10 @@ function AppInner() {
         : '';
       // Ролик записывается как ИСТОЧНИК слова, а не как папку: тему слову ставит разбор,
       // и она остаётся его домом (решение владельца 31.08.2026).
-      const youtubeSource = isYoutubeInline ? buildYoutubeSourcePayload() : null;
+      const isReaderInline = inlineMode && inlineOrigin === 'reader' && !isYoutubeInline;
+      const selectionSource = isYoutubeInline
+        ? buildYoutubeSourcePayload()
+        : (isReaderInline ? buildReaderSourcePayload() : null);
       if (!inlineMode) {
         setDictionaryResult(data.item || null);
         setDictionaryDirection(detectedDirection);
@@ -24251,12 +24270,12 @@ function AppInner() {
           ...prev,
           translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
         }));
-        if (isYoutubeInline) {
+        if (isYoutubeInline || isReaderInline) {
           // Название ролика может не прийти — тогда говорим просто «Сохранено».
           // Подставлять сюда идентификатор ролика нельзя: человеку он ничего не значит.
-          const youtubeTitle = String(youtubeSource?.title || '').trim();
-          showInlineToast(youtubeTitle
-            ? `${tr('Сохранено', 'Gespeichert')} · ${youtubeTitle}`
+          const sourceTitle = String(selectionSource?.title || '').trim();
+          showInlineToast(sourceTitle
+            ? `${tr('Сохранено', 'Gespeichert')} · ${sourceTitle}`
             : tr('Сохранено ✅', 'Gespeichert ✅'));
         }
       } else {
@@ -24278,6 +24297,9 @@ function AppInner() {
               : (isTranslationsInline ? 'translations_result_selection' : 'reader_selection')
           )
           : 'dictionary_lookup',
+        // Номер книги — след, по которому слово можно привязать к книге задним числом.
+        // До 07.09.2026 его не было, и старые слова из читалки привязать не к чему.
+        ...(isReaderInline && readerDocumentId ? { document_id: Number(readerDocumentId) } : {}),
       };
 
       (async () => {
@@ -24298,7 +24320,7 @@ function AppInner() {
               direction: detectedDirection || undefined,
               response_json: data.item || {},
               folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
-              ...(youtubeSource ? { source: youtubeSource } : {}),
+              ...(selectionSource ? { source: selectionSource } : {}),
               origin_process: saveOriginProcess,
               origin_meta: saveOriginMeta,
             }),
@@ -24527,7 +24549,7 @@ function AppInner() {
     const resolvedDirection = String(direction || `${resolvedSourceLang}-${resolvedTargetLang}`).trim().toLowerCase();
     const sanitizedTarget = sanitizeBilingualTargetText(source, target, resolvedTargetLang);
     const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(resolvedDirection);
-    const youtubeSource = isYoutubeSelectionContext() ? buildYoutubeSourcePayload() : null;
+    const selectionSource = isYoutubeSelectionContext() ? buildYoutubeSourcePayload() : buildReaderSourcePayload();
     const responseJsonPayload = buildSelectionGptResponseJson({
       ...(responseJson && typeof responseJson === 'object' ? responseJson : {}),
       source_text: source,
@@ -24556,12 +24578,13 @@ function AppInner() {
         target_lang: resolvedTargetLang || undefined,
         direction: resolvedDirection || undefined,
         folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
-        ...(youtubeSource ? { source: youtubeSource } : {}),
+        ...(selectionSource ? { source: selectionSource } : {}),
         origin_process: isYoutubeSelectionContext() ? 'youtube' : 'reader',
         origin_meta: {
           endpoint: '/api/webapp/dictionary/save',
           flow: 'reader_gpt_sheet',
           from: isYoutubeSelectionContext() ? 'youtube_gpt_sheet' : 'reader_gpt_sheet',
+          ...(!isYoutubeSelectionContext() && readerDocumentId ? { document_id: Number(readerDocumentId) } : {}),
           ...(responseJsonPayload.semantic_category ? { semantic_category: responseJsonPayload.semantic_category } : {}),
           ...(originMeta && typeof originMeta === 'object' ? originMeta : {}),
         },
@@ -26359,6 +26382,7 @@ function AppInner() {
       setReaderLayoutMode(preferredLayoutMode);
       setReaderSourceType(sourceType);
       setReaderSourceUrl(String(data?.source_url || doc?.source_url || ''));
+      setReaderDictionarySource(data?.dictionary_source && typeof data.dictionary_source === 'object' ? data.dictionary_source : null);
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
       setReaderProgressPercent(progress);
@@ -27889,6 +27913,7 @@ function AppInner() {
         setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
         setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
         setReaderSourceUrl(String(data?.source_url || doc?.source_url || rawInput));
+        setReaderDictionarySource(null);
         setReaderContent('');
         setReaderPages([]);
         setReaderDynamicPages([]);
@@ -27935,6 +27960,7 @@ function AppInner() {
       setReaderLayoutMode(preferredLayoutMode);
       setReaderSourceType(sourceType);
       setReaderSourceUrl(String(data?.source_url || rawInput));
+      setReaderDictionarySource(data?.dictionary_source && typeof data.dictionary_source === 'object' ? data.dictionary_source : null);
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
       setReaderDocumentId(docId);
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
@@ -41119,7 +41145,7 @@ function AppInner() {
                                     const title = String(item.title || '').trim();
                                     rows.push({
                                       key: `s${item.id}`,
-                                      icon: item.kind === 'youtube' ? '🎬' : '📖',
+                                      icon: item.kind === 'youtube' ? '🎬' : (item.kind === 'article' ? '📰' : '📖'),
                                       // Названия нет — говорим это словами. Идентификатор ролика
                                       // как имя не годится: по «nLiOMhqDvC8» через два месяца
                                       // ничего не вспомнить (владелец, 31.08.2026).

@@ -36881,6 +36881,32 @@ DICTIONARY_ORIGIN_GROUPS: dict[str, tuple[str, str, tuple[str, ...]]] = {
 }
 
 
+def count_reader_dictionary_saves_without_source(since: str) -> int:
+    """Сколько слов, сохранённых из читалки НАЧИНАЯ с `since` (ISO-время), легло без
+    источника. Обещано: 0 (реестр обещаний, ключ reader_saves_without_source).
+
+    С 07.09.2026 каждое сохранение из читалки несёт карточку источника: ролик у книги
+    «Текст видео», книга или статья у остальных (решение владельца 07.09.2026). Слово
+    без source_id после этой даты значит одно из: фронт не приложил карточку, сервер
+    её не принял, у книги-видео ссылка не нашего вида. Все три — дефект, и все три
+    видны только так. Старые слова из читалки (до `since`) привязать не к чему — у них
+    нет ни номера книги, ни ролика, — и в счёт они не входят.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_webapp_dictionary_queries
+                WHERE origin_process = 'reader'
+                  AND source_id IS NULL
+                  AND created_at >= %s
+                """,
+                (since,),
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
 def get_dictionary_sources_with_counts(user_id: int) -> dict:
     """Список «Откуда» для экрана словаря.
 

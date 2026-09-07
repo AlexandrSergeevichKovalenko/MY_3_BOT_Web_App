@@ -34,8 +34,11 @@ class YoutubeSavesCarryTheSourceTests(unittest.TestCase):
             if "youtube" not in origin:
                 continue
             checked += 1
-            self.assertIn(
-                "source: youtubeSource", body,
+            # 07.09.2026: два пути из трёх стали общими с читалкой (selectionSource —
+            # ролик из плеера ИЛИ книга/статья/книга-видео из читалки), третий —
+            # виджет под роликом — по-прежнему свой (youtubeSource).
+            self.assertTrue(
+                "source: youtubeSource" in body or "source: selectionSource" in body,
                 f"сохранение с origin_process={origin!r} не шлёт источник — "
                 "слова этого ролика не соберутся в списке «Откуда»",
             )

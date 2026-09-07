@@ -563,6 +563,43 @@ def _sprint_bank_unchecked() -> int:
             return int((cursor.fetchone() or [0])[0] or 0)
 
 
+# Момент деплоя починки «слово из читалки несёт источник» (UTC). Слова из читалки,
+# сохранённые раньше, привязать не к чему — у них нет ни номера книги, ни ролика.
+_READER_SOURCE_SINCE = "2026-09-07T00:00:00+00:00"
+
+
+def _reader_saves_without_source() -> int:
+    """Слов, сохранённых из читалки после починки БЕЗ источника. Обещано: 0.
+
+    Владелец 07.09.2026: слово из книги «Текст видео» обязано лечь под название того
+    же ролика, что и слова из плеера; книги и статьи — под своё название. Дверь одна
+    (/api/webapp/dictionary/save), карточку источника называет сервер при открытии
+    книги, фронт прикладывает её к каждому сохранению. Не ноль — карточка не доехала:
+    фронт не приложил, сервер не принял или у книги-видео ссылка не нашего вида."""
+    from backend.database import count_reader_dictionary_saves_without_source
+    return count_reader_dictionary_saves_without_source(_READER_SOURCE_SINCE)
+
+
+def _reader_sources_screen() -> str:
+    """Экран владельца «Откуда» в личном словаре: ролики, книги, статьи с числом слов и
+    общие группы. Ровно то, что рисует список в приложении (тот же запрос
+    get_dictionary_sources_with_counts), — а не свой похожий подсчёт."""
+    from backend.database import get_admin_telegram_ids, get_dictionary_sources_with_counts
+    ids = sorted(get_admin_telegram_ids() or [])
+    if not ids:
+        raise LookupError("не знаем, кто владелец: список админов пуст")
+    data = get_dictionary_sources_with_counts(int(ids[0]))
+    icons = {"youtube": "🎬", "article": "📰", "book": "📖"}
+    lines = ["📚 «Откуда» в личном словаре владельца — как в приложении:"]
+    for item in data.get("sources") or []:
+        title = str(item.get("title") or "").strip() or "Ролик без названия"
+        lines.append(f"{icons.get(item.get('kind'), '📖')} {title} · {int(item.get('word_count') or 0)}")
+    for group in data.get("groups") or []:
+        lines.append(f"{group.get('icon')} {group.get('name')} · {int(group.get('word_count') or 0)}")
+    lines.append(f"🤝 Слов из читалки без источника с 07.09.2026: {_reader_saves_without_source()}")
+    return "\n".join(lines)
+
+
 PROMISES: tuple[Promise, ...] = (
     Promise(
         key="db_guardrails_alive",
@@ -792,6 +829,17 @@ PROMISES: tuple[Promise, ...] = (
             "в интерактиве «Слова со вчерашних тренировок», лампочка → кнопка «Понятно» "
             "целиком на экране",
         screen=_hint_modal_screen,
+    ),
+    Promise(
+        key="reader_saves_without_source",
+        title="Слов из читалки (текст ролика, книга, статья), сохранённых без источника",
+        since="07.09.2026",
+        expected=0,
+        measure=_reader_saves_without_source,
+        how="SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries WHERE origin_process='reader' "
+            "AND source_id IS NULL AND created_at >= '2026-09-07'; руками — открыть книгу "
+            "«Текст видео», сохранить слово, в словаре «Откуда» найти его под названием ролика",
+        screen=_reader_sources_screen,
     ),
 )
 
