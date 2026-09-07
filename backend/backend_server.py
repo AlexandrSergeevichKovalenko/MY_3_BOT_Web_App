@@ -62131,11 +62131,20 @@ def _video_text_title(video_id: str, title: str) -> str:
     return clean[:300] if clean else _VIDEO_TEXT_TITLE_PLACEHOLDER
 
 
+# Идентификатор ролика YouTube: буквы, цифры, дефис, подчёркивание. Одно правило и на
+# входе (книгу-видео заводят только с таким id), и на выходе (разбор своей же ссылки).
+_VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _is_valid_video_id(video_id: str) -> bool:
+    return bool(_VIDEO_ID_RE.fullmatch(str(video_id or "")))
+
+
 def _video_text_video_id_from_source_url(source_url: str) -> str:
     """Обратная к _video_text_source_url: из ссылки книги-видео достаём идентификатор
     ролика. Ссылку пишем мы сами в одном виде, поэтому это разбор своей записи, а не
     догадка по чужому адресу. Не наш вид — пустая строка, и это считается выше."""
-    m = re.fullmatch(r"https://youtu\.be/([A-Za-z0-9_-]+)", str(source_url or "").strip())
+    m = re.fullmatch(r"https://youtu\.be/(" + _VIDEO_ID_RE.pattern + r")", str(source_url or "").strip())
     return m.group(1) if m else ""
 
 
@@ -62337,6 +62346,11 @@ def video_reader_text_start():
     video_id = str(payload.get("video_id") or "").strip()
     if not video_id:
         return jsonify({"error": "video_id обязателен"}), 400
+    # Книга-видео помнит ролик только через ссылку https://youtu.be/<id>, и источник слов
+    # из неё собирается разбором этой ссылки. Кривой id завёл бы книгу, слова из которой
+    # никогда не привяжутся к ролику (закрыто 07.09.2026 по слову владельца).
+    if not _is_valid_video_id(video_id):
+        return jsonify({"error": "video_id не похож на идентификатор ролика YouTube"}), 400
     title = str(payload.get("title") or "").strip()
     confirmed = bool(payload.get("confirm"))
 
@@ -62444,6 +62458,11 @@ def video_reader_text_status():
     video_id = str(payload.get("video_id") or "").strip()
     if not video_id:
         return jsonify({"error": "video_id обязателен"}), 400
+    # Книга-видео помнит ролик только через ссылку https://youtu.be/<id>, и источник слов
+    # из неё собирается разбором этой ссылки. Кривой id завёл бы книгу, слова из которой
+    # никогда не привяжутся к ролику (закрыто 07.09.2026 по слову владельца).
+    if not _is_valid_video_id(video_id):
+        return jsonify({"error": "video_id не похож на идентификатор ролика YouTube"}), 400
     title = str(payload.get("title") or "").strip()
 
     cached = get_video_reader_text(video_id)
