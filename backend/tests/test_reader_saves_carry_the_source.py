@@ -102,7 +102,7 @@ class ЧиталкаПрикладываетИсточник(unittest.TestCase):
             end = min(end, self.source.index("\n          });", m.start()) if "\n          });" in self.source[m.start():m.start() + 6000] else end)
             windows.append(self.source[m.start():end])
         reader_windows = [w for w in windows if re.search(
-            r"origin_process:\s*(?:saveOriginProcess|isYoutubeSelectionContext\(\) \? 'youtube' : 'reader')", w)]
+            r"origin_process:\s*(?:saveOriginProcess|selectionOriginProcess)", w)]
         self.assertEqual(len(reader_windows), 2, "путей сохранения из читалки два: быстрое и из шита разбора")
         for w in reader_windows:
             self.assertIn("source: selectionSource", w,
@@ -112,9 +112,24 @@ class ЧиталкаПрикладываетИсточник(unittest.TestCase):
         quick_meta = re.search(r"const saveOriginMeta = \{(.*?)\n      \};", self.source, re.S)
         self.assertIsNotNone(quick_meta, "saveOriginMeta не найден")
         self.assertIn("isReaderInline && readerDocumentId ? { document_id: Number(readerDocumentId) }", quick_meta.group(1))
-        sheet = [w for w in reader_windows if "isYoutubeSelectionContext() ? 'youtube' : 'reader'" in w]
+        sheet = [w for w in reader_windows if "origin_process: selectionOriginProcess" in w]
         self.assertEqual(len(sheet), 1)
-        self.assertIn("readerDocumentId ? { document_id: Number(readerDocumentId) }", sheet[0])
+        self.assertIn("selectionSurface === 'reader' && readerDocumentId ? { document_id: Number(readerDocumentId) }", sheet[0])
+
+    def test_gpt_sheet_gives_a_source_only_to_the_player_and_the_reader(self):
+        """Шит разбора один на четыре экрана, а книга остаётся «открытой» в состоянии и после
+        ухода из читалки. Слово из блока переводов или словаря НЕ получает источник книги,
+        а его origin_process — не 'reader' (найдено проверкой 07.09.2026)."""
+        fn = re.search(r"const saveSelectionGptDictionaryEntry = async \(\{(.*?)\n  \};", self.source, re.S)
+        self.assertIsNotNone(fn)
+        body = fn.group(1)
+        self.assertIn("selectionSurface === 'reader' ? buildReaderSourcePayload() : null", body)
+        self.assertIn("translations: 'translations_block'", body)
+        self.assertIn("dictionary: 'webapp_dictionary_save'", body)
+        self.assertNotIn("isYoutubeSelectionContext() ? 'youtube' : 'reader'", body)
+        opener = re.search(r"const handleSelectionGptLookup = async \(\) => \{(.*?)\n  \};", self.source, re.S)
+        self.assertIn("selectionGptOriginRef.current = resolveSelectionSurface();", opener.group(1),
+                      "поверхность запоминается при открытии шита, пока выделение живо")
 
     def test_reader_source_comes_from_the_server_and_only_for_the_open_book(self):
         builder = re.search(r"const buildReaderSourcePayload = \(\) => \{(.*?)\n  \};", self.source, re.S)

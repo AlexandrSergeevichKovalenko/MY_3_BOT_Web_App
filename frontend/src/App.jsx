@@ -7020,6 +7020,11 @@ function AppInner() {
   const [selectionGptCardSections, setSelectionGptCardSections] = useState(() => new Set());
   const [selectionGptSavedChips, setSelectionGptSavedChips] = useState(() => new Set());
   const selectionGptSeqRef = useRef(0);
+  // Откуда открыт шит разбора: 'youtube' | 'translations' | 'reader' | 'dictionary'.
+  // Шит один на четыре экрана, а книга в читалке остаётся «открытой» в состоянии и после
+  // ухода с экрана. Без этой метки слово из блока переводов получало бы источник книги
+  // (найдено проверкой 07.09.2026). Метка ставится при открытии шита — пока выделение живо.
+  const selectionGptOriginRef = useRef('');
   const selectionGptAbortRef = useRef(null);
   const [selectionGptSaveOriginalChecked, setSelectionGptSaveOriginalChecked] = useState(true);
   const [selectionGptSaveLoading, setSelectionGptSaveLoading] = useState(false);
@@ -24482,6 +24487,15 @@ function AppInner() {
     || String(selectionInlineLookup?.direction || '').startsWith('youtube_')
   );
 
+  // На какой поверхности сейчас выделено слово. Тот же порядок, что у кнопки «Сохранить»
+  // в handleSelectionSave: плеер → блок переводов → читалка с открытой книгой → словарь.
+  const resolveSelectionSurface = () => {
+    if (isYoutubeSelectionContext()) return 'youtube';
+    if (String(selectionType || '').startsWith('translation_result_')) return 'translations';
+    if (isSectionVisible('reader') && readerHasContent && !readerArchiveOpen) return 'reader';
+    return 'dictionary';
+  };
+
   // ЧТО ИМЕННО УЙДЁТ В СЛОВАРЬ, если нажать «Сохранить». Не то, что человек тапнул.
   //
   // Владелец 02.09.2026 нажал в фильме «wühlt», внизу карточки увидел галочку «wühlt» и
@@ -24537,6 +24551,8 @@ function AppInner() {
     direction,
     responseJson,
     originMeta,
+    // Поверхность, с которой сохраняют; по умолчанию — та, на которой открыли шит.
+    surface,
   }) => {
     const source = String(sourceText || '').trim();
     const target = String(targetText || '').trim();
@@ -24549,7 +24565,18 @@ function AppInner() {
     const resolvedDirection = String(direction || `${resolvedSourceLang}-${resolvedTargetLang}`).trim().toLowerCase();
     const sanitizedTarget = sanitizeBilingualTargetText(source, target, resolvedTargetLang);
     const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(resolvedDirection);
-    const selectionSource = isYoutubeSelectionContext() ? buildYoutubeSourcePayload() : buildReaderSourcePayload();
+    const selectionSurface = String(surface || selectionGptOriginRef.current || '').trim() || 'dictionary';
+    // Источник слова есть только у плеера и у книги читалки; блок переводов и словарь
+    // его не имеют — и не должны получать чужой.
+    const selectionSource = selectionSurface === 'youtube'
+      ? buildYoutubeSourcePayload()
+      : (selectionSurface === 'reader' ? buildReaderSourcePayload() : null);
+    const selectionOriginProcess = {
+      youtube: 'youtube',
+      reader: 'reader',
+      translations: 'translations_block',
+      dictionary: 'webapp_dictionary_save',
+    }[selectionSurface];
     const responseJsonPayload = buildSelectionGptResponseJson({
       ...(responseJson && typeof responseJson === 'object' ? responseJson : {}),
       source_text: source,
@@ -24579,12 +24606,12 @@ function AppInner() {
         direction: resolvedDirection || undefined,
         folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
         ...(selectionSource ? { source: selectionSource } : {}),
-        origin_process: isYoutubeSelectionContext() ? 'youtube' : 'reader',
+        origin_process: selectionOriginProcess,
         origin_meta: {
           endpoint: '/api/webapp/dictionary/save',
           flow: 'reader_gpt_sheet',
-          from: isYoutubeSelectionContext() ? 'youtube_gpt_sheet' : 'reader_gpt_sheet',
-          ...(!isYoutubeSelectionContext() && readerDocumentId ? { document_id: Number(readerDocumentId) } : {}),
+          from: `${selectionSurface}_gpt_sheet`,
+          ...(selectionSurface === 'reader' && readerDocumentId ? { document_id: Number(readerDocumentId) } : {}),
           ...(responseJsonPayload.semantic_category ? { semantic_category: responseJsonPayload.semantic_category } : {}),
           ...(originMeta && typeof originMeta === 'object' ? originMeta : {}),
         },
@@ -24901,6 +24928,7 @@ function AppInner() {
     selectionGptAbortRef.current = controller;
 
     setSelectionGptWord(cleaned);
+    selectionGptOriginRef.current = resolveSelectionSurface();
     setSelectionGptOpen(true);
     setSelectionGptLoading(true);
     setSelectionGptError('');
@@ -25025,6 +25053,7 @@ function AppInner() {
     try { selectionGptAbortRef.current?.abort(); } catch (_e) { /* уже закрыт */ }
     selectionGptAbortRef.current = null;
     selectionGptSeqRef.current += 1;
+    selectionGptOriginRef.current = '';
     setSelectionGptOpen(false);
     setSelectionGptWord('');
     setSelectionGptLoading(false);
@@ -31864,6 +31893,7 @@ function AppInner() {
       let savedCount = 0;
       for (const variant of selectedVariants) {
         await saveSelectionGptDictionaryEntry({
+          surface: 'translations',
           sourceText: variant.source_text,
           targetText: variant.target_text,
           sourceLang,
