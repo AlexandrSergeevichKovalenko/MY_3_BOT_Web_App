@@ -4653,9 +4653,13 @@ nennt der/die Lernende möglichst VIELE Gegenteile. Bewertung automatisch gegen 
 Regeln:
 - "wort" = das Zielwort. Nomen MIT Artikel; Verb im INFINITIV; Adjektiv/Adverb in Grundform. B2+,
   nicht trivial, aber MIT VIELEN möglichen Gegenteilen.
-- "accepted" = MÖGLICHST VOLLSTÄNDIGE Liste gängiger GEGENTEILE (12–25) als OBJEKTE {de, ru}:
-  • "de" = das Antonym im SPEICHER-Format (Nomen MIT Artikel, Verb im INFINITIV, Adjektiv Grundform),
-    echtes Antonym im üblichen Gebrauch, gleiche Wortart. KEINE Synonyme, keine bloß verwandten Wörter.
+- "accepted" = Liste der WIRKLICH gängigen GEGENTEILE als OBJEKTE {de, ru}. KEINE Mindest-
+  oder Zielzahl: lieber 4 echte als 15 erzwungene. Mindestens 3 müssen existieren, sonst ist
+  das Zielwort ungeeignet — wähle dann ein anderes.
+  • "de" = das Antonym im SPEICHER-Format (Nomen MIT KORREKTEM Artikel, Verb im INFINITIV,
+    Adjektiv Grundform), echtes Antonym im üblichen Gebrauch, gleiche Wortart. KEINE Synonyme,
+    keine bloß verwandten Wörter, keine Umschreibungen, keine erfundenen Wörter.
+  • JEDES Wort GENAU EINMAL. Niemals dasselbe "de" mit verschiedenen "ru" wiederholen.
   • "ru" = die russische Übersetzung GENAU dieses Antonyms.
 - "erklaerung" = „lehrbuchartig“ auf Russisch. "tip" = kurzer russischer Merk-Tipp (ohne Emoji).
   "hint_ru" = kurze russische Übersetzung.

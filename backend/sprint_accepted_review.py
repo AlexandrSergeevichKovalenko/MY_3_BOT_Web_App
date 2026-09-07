@@ -81,6 +81,15 @@ def _card_text(row: dict, *, index: int, total: int, left: int) -> str:
             lines.append("❓ Синонимия НЕ подтверждена: OpenThesaurus — " + ot_txt
                          + (f"; Wiktionary у «{wort}» — {wt}" if wt else "")
                          + (f", у «{de}» — {wc}" if wc else "") + ".")
+    jv = str(row.get("judge_verdict") or "")
+    if jv:
+        voice = {"gemini": "Gemini", "openai": "GPT"}.get(str(row.get("judge_voice") or ""), "модель")
+        head = {"yes": "считает, что взаимозаменяемы", "unsure": "сомневается",
+                "no": "считает, что НЕ взаимозаменяемы"}.get(jv, jv)
+        lines.append(f"⚖️ Судья ({voice}) {head}: {row.get('judge_reason') or ''}")
+        et, ec = str(row.get("judge_example_target") or ""), str(row.get("judge_example_candidate") or "")
+        if et and ec:
+            lines.append(f"   «{et}» → «{ec}»")
     lines.append("")
     lines.append("«Оставить» — слово войдёт в список и будет засчитываться в спринте и "
                  "показываться в тренировке. «Убрать» — не покажем никогда.")
@@ -110,10 +119,10 @@ def send_synonym_review_dm(*, force: bool = False) -> dict[str, Any]:
                 finish_scheduler_run_guard(job_key=JOB_KEY, run_period=run_period, target_scope="global",
                                            status="completed", metadata={"sent": 0, "reason": "nothing_to_review"})
             return {"ok": True, "sent": 0, "reason": "nothing_to_review"}
-        head = ("🧩 <b>Синонимы, которые проверка не пропустила</b>\n"
-                "Список к слову пишет модель; в игру идёт только то, что подтвердил словарь "
-                "(OpenThesaurus или Wiktionary) и чей артикль сошёлся со справочником рода. "
-                "Остальное — здесь, по одному, с тем, что о нём известно.")
+        head = ("🧩 <b>Синонимы и антонимы, где судья засомневался</b>\n"
+                "Список к слову пишет модель; в игру идёт то, что подтвердил словарь "
+                "(OpenThesaurus или Wiktionary) или судья-модель подстановкой. Здесь — только то, "
+                "где судья сомневается или справочник не знает артикль. По одному, с тем, что известно.")
         sent = 0
         for uid in admin_ids:
             дошла, почему = send_telegram_message(chat_id=uid, text=head, token=token, what="шапка разбора синонимов")

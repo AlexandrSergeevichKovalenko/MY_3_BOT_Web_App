@@ -259,25 +259,33 @@ class Confirmation:
     wikt_candidate: str
 
 
-def confirm_synonyms(target: str, candidates: list[str], *, allow_network: bool = True
-                     ) -> dict[str, Confirmation]:
-    """{candidate: Confirmation}. Симметрично: пара подтверждена, если target и candidate
-    делят гнездо OpenThesaurus, ИЛИ candidate стоит в {{Synonyme}} статьи target,
-    ИЛИ target стоит в {{Synonyme}} статьи candidate."""
-    t_sets = openthesaurus_synsets(target)
+def confirm_relation(target: str, candidates: list[str], *, relation: str = "synonym",
+                     allow_network: bool = True) -> dict[str, Confirmation]:
+    """{candidate: Confirmation}. Симметрично: пара подтверждена, если (синонимы) target и
+    candidate делят гнездо OpenThesaurus, ИЛИ candidate стоит в {{Synonyme}} статьи target,
+    ИЛИ target — в {{Synonyme}} статьи candidate; (антонимы) то же по {{Gegenwörter}},
+    OpenThesaurus антонимов не знает и не участвует."""
+    is_syn = relation == "synonym"
+    t_sets = openthesaurus_synsets(target) if is_syn else set()
     wikt = wiktionary_relations([target, *candidates], allow_network=allow_network)
     tkey = term_key(target)
     w_t = wikt.get(target)
-    t_syn_keys = {term_key(s) for s in (w_t.synonyms if w_t and not w_t.missing else [])}
+
+    def _list(rel: WiktionaryRelations | None) -> list[str]:
+        if not rel or rel.missing:
+            return []
+        return rel.synonyms if is_syn else rel.antonyms
+
+    t_syn_keys = {term_key(s) for s in _list(w_t)}
     out: dict[str, Confirmation] = {}
     for cand in candidates:
         ckey = term_key(cand)
-        c_sets = openthesaurus_synsets(cand)
+        c_sets = openthesaurus_synsets(cand) if is_syn else set()
         by: list[str] = []
         if t_sets and c_sets and (t_sets & c_sets):
             by.append("openthesaurus")
         w_c = wikt.get(cand)
-        c_syn_keys = {term_key(s) for s in (w_c.synonyms if w_c and not w_c.missing else [])}
+        c_syn_keys = {term_key(s) for s in _list(w_c)}
         if ckey in t_syn_keys or tkey in c_syn_keys:
             by.append("wiktionary")
 
@@ -295,3 +303,8 @@ def confirm_synonyms(target: str, candidates: list[str], *, allow_network: bool 
             wikt_candidate=_state(w_c, tkey, c_syn_keys),
         )
     return out
+
+
+def confirm_synonyms(target: str, candidates: list[str], *, allow_network: bool = True
+                     ) -> dict[str, Confirmation]:
+    return confirm_relation(target, candidates, relation="synonym", allow_network=allow_network)
