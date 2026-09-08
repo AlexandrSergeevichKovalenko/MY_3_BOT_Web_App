@@ -321,6 +321,20 @@ def queue_for_judge(*, sprint_id: str, relation: str, wort: str, hint_ru: str,
 queue_for_owner = queue_for_judge   # прежнее имя (до 08.09.2026)
 
 
+def load_open_keys(sprint_id: str) -> set[str]:
+    """de.lower() кандидатов этого слова, которые ещё ждут судью. Их примеры «верного
+    выбора» живут: скажет «да» — карточка готова без второго похода к модели. Без этого
+    перепроверка накопленного стирала бы примеры у всего, чего нет в accepted (сухой
+    прогон 08.09.2026: 40 примеров у 20 слов)."""
+    from backend.database import get_db_connection_context
+    ensure_sprint_intake_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT lower(de) FROM bt_3_sprint_accepted_review WHERE sprint_id = %s AND status = 'open'",
+                        (sprint_id,))
+            return {str(r[0]) for r in cur.fetchall() or []}
+
+
 def load_decided_keep(sprint_id: str) -> dict[str, str]:
     """{de.lower(): decision} всего, что по этому слову уже впущено решением (судьи или
     владельца). Ключ — форма, которая ЛЕЖИТ в accepted (у существительного — с артиклем
@@ -561,7 +575,7 @@ def hygiene_pass(*, limit: int | None = None, apply: bool = True, relation: str 
         # Пример стираем только у окончательно снятого (дубль, самослово). У того, что
         # ушло судье или владельцу, пример остаётся до решения: скажут «да» — карточка
         # «верного выбора» уже готова, без второго похода к модели.
-        kept_de = {k["de"].lower() for k in res.kept} | pending_example_keys(res)
+        kept_de = {k["de"].lower() for k in res.kept} | pending_example_keys(res) | load_open_keys(sprint_id)
         new_tj, dropped = _filter_examples(trainer_json or {}, kept_de)
         changed = [dict(a) for a in (accepted or [])] != res.kept or dropped > 0
         thin = not res.enough

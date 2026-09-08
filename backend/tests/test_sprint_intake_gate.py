@@ -149,7 +149,8 @@ def _conf_exist(confirmed: set[str], missing: set[str] = frozenset(), unknown: s
         return {c: Confirmation(confirmed=c in confirmed, by=("wiktionary",) if c in confirmed else (),
                                 ot_knows_target=True, ot_knows_candidate=c not in missing and c not in unknown,
                                 wikt_target="not_listed",
-                                wikt_candidate="no_page" if c in missing else ("unknown" if c in unknown else "not_listed"))
+                                wikt_candidate="no_page" if c in missing else ("unknown" if c in unknown else "not_listed"),
+                                dwds_candidate=False if c in missing else None)
                 for c in cands}
     return f
 

@@ -573,11 +573,12 @@ _sprint_review_unjudged_stale = _sprint_review_open_stale   # прежнее и�
 
 def _sprint_accepted_no_dictionary() -> int:
     """Однословных ответов в показе (accepted не снятых слов), которых нет ни в
-    Wiktionary (кеш bt_3_wiktionary_synonyms: страницы нет), ни в OpenThesaurus, и
-    которые не оставил владелец кнопкой. Обещано: 0 (08.09.2026). Повод —
-    «befehlsgebunden» у «unabhängig»: судья сказал «да», а слова нет ни в Duden, ни в
-    DWDS, ни в Wiktionary. Слова без строки в кеше Wiktionary не считаются: их
-    существование не проверено, а не опровергнуто (их проверит ночная гигиена)."""
+    Wiktionary (кеш bt_3_wiktionary_synonyms: страницы нет), ни в OpenThesaurus, ни в
+    DWDS (кеш bt_3_dwds_lemmas: known=false), и которые не оставил владелец кнопкой.
+    Обещано: 0 (08.09.2026). Повод — «befehlsgebunden» у «unabhängig»: судья сказал
+    «да», а слова нет ни в Duden, ни в DWDS, ни в Wiktionary. Слова без строки в кеше
+    Wiktionary или DWDS не считаются: их существование не проверено, а не опровергнуто
+    (их проверит ночная гигиена)."""
     from backend.database import get_db_connection_context
     from backend.synonym_sources import _page_title, term_key
     with get_db_connection_context() as conn:
@@ -599,7 +600,11 @@ def _sprint_accepted_no_dictionary() -> int:
                     continue
                 cursor.execute("SELECT 1 FROM bt_3_openthesaurus_synsets WHERE term_key = %s LIMIT 1",
                                (term_key(de),))
-                if cursor.fetchone() is None:
+                if cursor.fetchone() is not None:
+                    continue
+                cursor.execute("SELECT known FROM bt_3_dwds_lemmas WHERE title = %s", (title,))
+                row = cursor.fetchone()
+                if row is not None and not row[0]:
                     n += 1
             return n
 

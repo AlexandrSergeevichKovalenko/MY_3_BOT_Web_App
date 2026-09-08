@@ -31,7 +31,8 @@ WIKT = {
 
 def _confirm(cands, **kw):
     with patch.object(ss, "openthesaurus_synsets", lambda t: set(SYNSETS.get(ss.term_key(t), set()))), \
-         patch.object(ss, "wiktionary_relations", lambda terms, allow_network=True: {t: WIKT.get(t) for t in terms}):
+         patch.object(ss, "wiktionary_relations", lambda terms, allow_network=True: {t: WIKT.get(t) for t in terms}), \
+         patch.object(ss, "dwds_knows", lambda t, allow_network=True: False):
         return ss.confirm_relation("unabhängig", cands, relation="antonym", **kw)
 
 
@@ -93,3 +94,22 @@ def test_синонимы_косвенный_шаг_не_делают():
         out = ss.confirm_relation("a", ["b", "c"], relation="synonym")
     assert out["b"].confirmed and set(out["b"].by) == {"openthesaurus", "wiktionary"}
     assert not out["c"].confirmed and "indirect" not in out["c"].by
+
+
+def test_dwds_третий_словарь_существования():
+    """Сухой прогон 08.09.2026: правило «нет в Wiktionary и OpenThesaurus» сняло бы
+    «entgrenzen» и «unsorgfältig» — оба есть в DWDS и Duden. DWDS спрашивается только
+    когда двух первых словарей не хватило; «befehlsgebunden» не знает и он."""
+    asked = []
+    def dwds(term, allow_network=True):
+        asked.append(term)
+        return {"entgrenzen": True, "befehlsgebunden": False}.get(term)
+    wikt = dict(WIKT); wikt["entgrenzen"] = ss.WiktionaryRelations("entgrenzen", True)
+    with patch.object(ss, "openthesaurus_synsets", lambda t: set(SYNSETS.get(ss.term_key(t), set()))), \
+         patch.object(ss, "wiktionary_relations", lambda terms, allow_network=True: {t: wikt.get(t) for t in terms}), \
+         patch.object(ss, "dwds_knows", dwds):
+        out = ss.confirm_relation("unabhängig", ["entgrenzen", "befehlsgebunden", "unfrei"], relation="antonym")
+    assert out["entgrenzen"].exists_in_dictionaries is True and out["entgrenzen"].dwds_candidate is True
+    assert out["befehlsgebunden"].exists_in_dictionaries is False
+    assert out["unfrei"].dwds_candidate is None and "unfrei" not in asked   # Wiktionary знает — DWDS не трогали
+    assert asked == ["entgrenzen", "befehlsgebunden"]
