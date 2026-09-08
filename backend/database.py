@@ -64483,8 +64483,8 @@ def upsert_sprint_item(item: dict) -> None:
                 """
                 INSERT INTO bt_3_sprint_bank
                     (sprint_id, relation, wort, accepted, erklaerung, tip, hint_ru, level,
-                     accepted_checked_at)
-                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, NOW())
+                     accepted_checked_at, retired, retired_reason)
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, NOW(), %s, %s)
                 ON CONFLICT (sprint_id) DO NOTHING
                 """,
                 (
@@ -64492,6 +64492,9 @@ def upsert_sprint_item(item: dict) -> None:
                     _json.dumps(list(item.get("accepted") or []), ensure_ascii=False),
                     str(item.get("erklaerung") or ""), str(item.get("tip") or ""),
                     str(item.get("hint_ru") or ""), str(item.get("level") or "B2"),
+                    # 08.09.2026: слово с нехваткой подтверждённых кладётся снятым и ждёт
+                    # судью, а не выбрасывается (retired_reason='thin_accepted').
+                    bool(item.get("retired") or False), str(item.get("retired_reason") or ""),
                 ),
             )
         conn.commit()

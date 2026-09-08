@@ -552,18 +552,85 @@ def _sprint_accepted_article_mismatch() -> int:
     return n
 
 
-def _sprint_review_unjudged_stale() -> int:
-    """Кандидатов в очереди синонимов, которых судья-модель не оценил за двое суток.
-    Обещано: 0 (06.09.2026). Судья идёт ночью в 03:10 после гигиены и после набора в
-    03:20; строка старше двух суток без вердикта значит, что оба голоса молчат
-    (Gemini без кредитов И GPT не отвечает) либо задача не запускается."""
+def _sprint_review_open_stale() -> int:
+    """Кандидатов в очереди синонимов без итогового решения старше двух суток.
+    Обещано: 0 (08.09.2026, владелец: «модель ставит итоговую точку»). До 08.09 считалось
+    только «без вердикта»: 65 строк с вердиктом «сомневаюсь» ждали владельца по 20 в день
+    и в обещание не попадали. Теперь открытая строка — это строка, которую судья ещё не
+    решил; судья идёт ночью в 03:10 и после набора в 03:20. Строка старше двух суток
+    значит: оба голоса молчат (Gemini без кредитов И GPT не отвечает) либо задача не
+    запускается."""
     from backend.database import get_db_connection_context
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT COUNT(*) FROM bt_3_sprint_accepted_review "
-                           "WHERE status = 'open' AND judge_verdict IS NULL "
-                           "AND created_at < NOW() - interval '2 days'")
+                           "WHERE status = 'open' AND created_at < NOW() - interval '2 days'")
             return int((cursor.fetchone() or [0])[0] or 0)
+
+
+_sprint_review_unjudged_stale = _sprint_review_open_stale   # прежнее имя (до 08.09.2026)
+
+
+def _sprint_accepted_no_dictionary() -> int:
+    """Однословных ответов в показе (accepted не снятых слов), которых нет ни в
+    Wiktionary (кеш bt_3_wiktionary_synonyms: страницы нет), ни в OpenThesaurus, ни в
+    DWDS (кеш bt_3_dwds_lemmas: known=false), и которые не оставил владелец кнопкой.
+    Обещано: 0 (08.09.2026). Повод — «befehlsgebunden» у «unabhängig»: судья сказал
+    «да», а слова нет ни в Duden, ни в DWDS, ни в Wiktionary. Слова без строки в кеше
+    Wiktionary или DWDS не считаются: их существование не проверено, а не опровергнуто
+    (их проверит ночная гигиена)."""
+    from backend.database import get_db_connection_context
+    from backend.synonym_sources import _page_title, term_key
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT b.sprint_id, x->>'de' FROM bt_3_sprint_bank b, jsonb_array_elements(b.accepted) x "
+                           "WHERE NOT b.retired")
+            rows = [(str(r[0]), str(r[1] or "")) for r in cursor.fetchall() or []]
+            cursor.execute("SELECT sprint_id, lower(de) FROM bt_3_sprint_accepted_review "
+                           "WHERE status = 'kept' AND decision IN ('keep','der','die','das')")
+            owner_kept = {(str(r[0]), str(r[1])) for r in cursor.fetchall() or []}
+            n = 0
+            for sprint_id, de in rows:
+                title = _page_title(de)
+                if not title or " " in title or (sprint_id, de.lower()) in owner_kept:
+                    continue
+                cursor.execute("SELECT missing FROM bt_3_wiktionary_synonyms WHERE title = %s", (title,))
+                row = cursor.fetchone()
+                if not row or not row[0]:
+                    continue
+                cursor.execute("SELECT 1 FROM bt_3_openthesaurus_synsets WHERE term_key = %s LIMIT 1",
+                               (term_key(de),))
+                if cursor.fetchone() is not None:
+                    continue
+                cursor.execute("SELECT known FROM bt_3_dwds_lemmas WHERE title = %s", (title,))
+                row = cursor.fetchone()
+                if row is not None and not row[0]:
+                    n += 1
+            return n
+
+
+def _sprint_gate_screen() -> str:
+    """Экран владельца «после»: те же списки, что видит человек на финале тренажёра
+    («Все антонимы» / «Все синонимы») у слов, по которым пришла жалоба 08.09.2026, плюс
+    сколько строк очереди ждёт судью. Первые три утра приходит сам."""
+    from backend.database import get_db_connection_context
+    lines = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for wort, relation in (("unabhängig", "antonym"), ("die Gelegenheit", "synonym")):
+                cursor.execute("SELECT accepted, retired FROM bt_3_sprint_bank "
+                               "WHERE lower(wort) = lower(%s) AND relation = %s", (wort, relation))
+                row = cursor.fetchone()
+                if not row:
+                    lines.append(f"{wort}: записи в банке нет")
+                    continue
+                words = [str((a or {}).get("de") or "") for a in (row[0] or [])]
+                lines.append(f"{'Все антонимы' if relation == 'antonym' else 'Все синонимы'} «{wort}»"
+                             f"{' (снято с показа)' if row[1] else ''}: {len(words)} — " + ", ".join(words))
+            cursor.execute("SELECT COUNT(*) FROM bt_3_sprint_accepted_review WHERE status = 'open'")
+            open_n = int((cursor.fetchone() or [0])[0] or 0)
+    lines.append(f"Ждут судью: {open_n}" + ("" if open_n else " (на согласование никому ничего не уходит)"))
+    return "\n".join(lines)
 
 
 def _sprint_bank_unchecked() -> int:
@@ -824,13 +891,24 @@ PROMISES: tuple[Promise, ...] = (
         how="python3 -c \"from backend.fix_promises import _sprint_accepted_article_mismatch as f; print(f())\"",
     ),
     Promise(
-        key="sprint_review_unjudged_stale",
-        title="Кандидатов-синонимов без вердикта судьи старше двух суток",
-        since="06.09.2026",
+        key="sprint_review_open_stale",
+        title="Кандидатов-синонимов без итогового решения судьи старше двух суток (никто никого не ждёт)",
+        since="08.09.2026",
         expected=0,
-        measure=_sprint_review_unjudged_stale,
-        how="SELECT COUNT(*) FROM bt_3_sprint_accepted_review WHERE status='open' AND judge_verdict IS NULL "
+        measure=_sprint_review_open_stale,
+        how="SELECT COUNT(*) FROM bt_3_sprint_accepted_review WHERE status='open' "
             "AND created_at < NOW() - interval '2 days'",
+        screen=_sprint_gate_screen,
+    ),
+    Promise(
+        key="sprint_accepted_no_dictionary",
+        title="Ответов в показе спринта/тренажёра, которых нет ни в Wiktionary, ни в OpenThesaurus",
+        since="08.09.2026",
+        expected=0,
+        measure=_sprint_accepted_no_dictionary,
+        how="python3 -c \"from backend.fix_promises import _sprint_accepted_no_dictionary as f; print(f())\" "
+            "— однословные ответы не снятых слов: bt_3_wiktionary_synonyms.missing И нет в "
+            "bt_3_openthesaurus_synsets, кроме оставленных владельцем кнопкой",
     ),
     Promise(
         key="sprint_bank_unchecked",

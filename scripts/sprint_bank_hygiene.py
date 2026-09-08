@@ -31,7 +31,8 @@ def main() -> int:
     ap.add_argument("--fix-examples", action="store_true",
                     help="дочистить дубли в trainer_json.correct_examples у всех записей")
     ap.add_argument("--judge", action="store_true",
-                    help="открытые кандидаты без вердикта — судье (модель подстановкой)")
+                    help="ВСЕ открытые кандидаты — судье (три голоса, итоговое да/нет; с 08.09.2026 "
+                         "пересуживает и прежние «сомневаюсь»)")
     ap.add_argument("--judge-words", type=int, help="ограничить число слов для --judge")
     ap.add_argument("--examples", action="store_true",
                     help="дособрать примеры «верного выбора» словам списка без примера (1 запрос на слово)")

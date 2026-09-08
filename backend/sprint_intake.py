@@ -33,6 +33,21 @@ docs/tasks/synonym_intake_gate_strategy.md):
 всё, что дверь не пропустила и что требует решения, сперва судит модель подстановкой
 (backend/synonym_judge.py). «Да» — входит само, «нет» — снимается само, владельцу
 уходит ТОЛЬКО «сомневаюсь» и «да» при неизвестном справочнику артикле.
+
+ВТОРОЙ ЗАХОД (владелец 08.09.2026, «Do it»): человека из цепочки убрать совсем.
+«Я человек, не модель, я всё равно пойду советоваться с моделью или со словарём. Модель
+ставит итоговую точку.» Что изменилось (стратегия, раздел «Второй заход»):
+- генератор даёт ПОЛНЫЙ список, отсев — дверь и судья;
+- антонимы получили второй источник — косвенную антонимию из двух словарей
+  (`synonym_sources.confirm_relation`, `by='indirect'`);
+- слово без страницы в Wiktionary, которого не знает и OpenThesaurus, снимается ДО судьи
+  (`NO_DICTIONARY`) — «befehlsgebunden» вошло по «да» судьи, а его нет ни в одном словаре;
+- судья без «сомневаюсь», три голоса, большинство; неизвестный артикль после похода в
+  Wiktionary — слово снимается и СЧИТАЕТСЯ (`decision='article_unknown'`);
+- письмо 12:45 с кнопками отменено; очередь `bt_3_sprint_accepted_review` — след решений,
+  а не список для человека;
+- дверь помнит принятое (`decided_keep`): перепроверка не снимает слово, которое судья
+  или владелец уже впустили.
 """
 from __future__ import annotations
 
@@ -46,12 +61,30 @@ from typing import Callable
 MIN_ACCEPTED = {"synonym": 3, "antonym": 3}   # 3 — решение владельца 06.09.2026;
                                                # антонимы: «механика та же самая» (06.09).
 
+# Версия правила двери. Ночная гигиена проверяет запись один раз за её жизнь
+# (accepted_checked_at); когда правило стало строже или шире, накопленное надо прогнать
+# ЗАНОВО — и это делает сама ночь, а не человек со скриптом (владелец 19.08: «всё
+# автоматически, ночью»). Меняешь правило — меняй строку, ночь сделает force-проход.
+#   2026-09-06          — дверь построена;
+#   2026-09-08-dwds     — существование по трём словарям, косвенная антонимия,
+#                         память о решениях (befehlsgebunden снимается, unabhängig
+#                         уходит в thin до пересуда и возвращается судьёй).
+GATE_RULE_VERSION = "2026-09-08-dwds"
+_RULE_VERSION_KV = "sprint_intake_rule_version"
+
 _ARTICLES = ("der", "die", "das")
 
-# Причины отказа. Первые две не спрашивают владельца (там нечего решать), остальные — да.
-DUPLICATE, SELF = "duplicate", "self"
+# Причины отказа. Дубль, самослово и «нет ни в одном словаре» — окончательные (решать
+# нечего); остальные три уходят судье-модели (backend/synonym_judge.py), который и ставит
+# точку. Владельцу с 08.09.2026 не уходит ничего.
+DUPLICATE, SELF, NO_DICTIONARY = "duplicate", "self", "no_dictionary"
 ARTICLE_MISMATCH, ARTICLE_UNKNOWN, UNCONFIRMED = "article_mismatch", "article_unknown", "unconfirmed"
-ASK_OWNER = (ARTICLE_MISMATCH, ARTICLE_UNKNOWN, UNCONFIRMED)
+FOR_JUDGE = (ARTICLE_MISMATCH, ARTICLE_UNKNOWN, UNCONFIRMED)
+ASK_OWNER = FOR_JUDGE   # прежнее имя (до 08.09.2026); оставлено для старых вызовов
+ALL_REASONS = (DUPLICATE, SELF, NO_DICTIONARY, ARTICLE_MISMATCH, ARTICLE_UNKNOWN, UNCONFIRMED)
+# Решения владельца кнопкой — единственные, которые дверь не пересматривает даже по
+# правилу «нет в словаре» (он видел слово и сказал «оставить»).
+OWNER_DECISIONS = ("keep", "der", "die", "das")
 
 
 @dataclass
@@ -68,6 +101,7 @@ class Rejected:
     ot_knows_candidate: bool | None = None
     wikt_candidate: str = ""
     wikt_target: str = ""
+    via: str = ""                       # косвенная антонимия: через какое слово
 
 
 @dataclass
@@ -100,10 +134,17 @@ def _split_noun(de: str) -> tuple[str, str] | None:
 def clean_accepted(wort: str, relation: str, pairs: list[dict], *,
                    confirm: Callable[[str, list[str]], dict] | None = None,
                    article: Callable[[str], tuple[str | None, str]] | None = None,
+                   decided_keep: dict[str, str] | None = None,
                    ) -> GateResult:
     """Прогнать список через дверь. `confirm` и `article` подставляются в тестах; по
-    умолчанию — живые источники (`synonym_sources.confirm_synonyms`,
-    `article_authority.authoritative_article`, без сети у справочника рода)."""
+    умолчанию — живые источники (`synonym_sources.confirm_relation`,
+    `article_authority.authoritative_article`, без сети у справочника рода).
+
+    `decided_keep` — {de.lower(): decision} того, что уже впущено решением (судья
+    `judge_yes`, владелец `keep`/`der`/`die`/`das`): дверь это не пересматривает —
+    иначе перепроверка снимала бы принятое слово молча (найдено 08.09.2026). Одно
+    исключение: «нет ни в одном словаре» бьёт решение судьи (он смысл судил, а не
+    существование), но не решение владельца."""
     from backend.synonym_sources import term_key
     if confirm is None:
         from backend.synonym_sources import confirm_relation
@@ -112,11 +153,13 @@ def clean_accepted(wort: str, relation: str, pairs: list[dict], *,
         from backend.article_authority import authoritative_article
         article = lambda n: authoritative_article(n)                 # noqa: E731
 
-    stats = {DUPLICATE: 0, SELF: 0, ARTICLE_MISMATCH: 0, ARTICLE_UNKNOWN: 0, UNCONFIRMED: 0}
+    from backend.synonym_sources import _page_title
+    stats = {k: 0 for k in ALL_REASONS}
     rejected: list[Rejected] = []
     seen: set[str] = set()
     target_key = term_key(wort)
     survivors: list[dict] = []
+    decided = {str(k).lower(): str(v) for k, v in (decided_keep or {}).items()}
 
     # 1–2. Дубли (первое вхождение остаётся — с ЕГО переводом; решение владельца
     # 06.09.2026: берём первый ответ модели, сами не выбираем) и самослово.
@@ -138,9 +181,10 @@ def clean_accepted(wort: str, relation: str, pairs: list[dict], *,
             continue
         survivors.append({"de": de, "ru": ru})
 
-    # 4. Подтверждение источником; один запрос на всё слово. Синонимы — OpenThesaurus или
-    # Wiktionary {{Synonyme}}; антонимы — Wiktionary {{Gegenwörter}} (у OpenThesaurus
-    # антонимов нет). Неподтверждённое дальше судит модель (synonym_judge).
+    # Подтверждение источником; один запрос на всё слово. Синонимы — OpenThesaurus или
+    # Wiktionary {{Synonyme}}; антонимы — Wiktionary {{Gegenwörter}} либо косвенная
+    # антонимия через гнездо OpenThesaurus прямой противоположности (08.09.2026).
+    # Неподтверждённое дальше судит модель (synonym_judge) — и ставит точку.
     conf = {}
     if survivors:
         conf = confirm(wort, [s["de"] for s in survivors], relation)
@@ -150,7 +194,28 @@ def clean_accepted(wort: str, relation: str, pairs: list[dict], *,
         de, ru = s["de"], s["ru"]
         reasons: list[str] = []
         rej = Rejected(de, ru, "", [])
-        # 3. Артикль по справочнику.
+        c = conf.get(de)
+        if c is not None:
+            rej.confirmed_by = list(c.by)
+            rej.ot_knows_candidate = c.ot_knows_candidate
+            rej.wikt_candidate, rej.wikt_target = c.wikt_candidate, c.wikt_target
+            rej.via = str(getattr(c, "via", "") or "")
+        decision = decided.get(de.lower(), "")
+        # 3. Слово обязано существовать. Однословный кандидат без страницы в Wiktionary,
+        #    которого не знает и OpenThesaurus, — не слово, а догадка модели; снимается
+        #    до судьи. «Не удалось проверить» (сеть) — не «нет страницы». Обороты из
+        #    нескольких слов существованием не проверяются — их судит судья.
+        single_word = " " not in _page_title(de)
+        if (c is not None and single_word and getattr(c, "exists_in_dictionaries", True) is False
+                and decision not in OWNER_DECISIONS):
+            rej.reason, rej.reasons = NO_DICTIONARY, [NO_DICTIONARY]
+            stats[NO_DICTIONARY] += 1
+            rejected.append(rej)
+            continue
+        if decision:
+            kept.append({"de": de, "ru": ru})
+            continue
+        # 4. Артикль по справочнику.
         noun = _split_noun(de)
         if noun:
             stored, word = noun
@@ -161,13 +226,9 @@ def clean_accepted(wort: str, relation: str, pairs: list[dict], *,
                 reasons.append(ARTICLE_UNKNOWN)
             elif ref != stored:
                 reasons.append(ARTICLE_MISMATCH)
-        c = conf.get(de)
-        if c is not None:
-            rej.confirmed_by = list(c.by)
-            rej.ot_knows_candidate = c.ot_knows_candidate
-            rej.wikt_candidate, rej.wikt_target = c.wikt_candidate, c.wikt_target
-            if not c.confirmed:
-                reasons.append(UNCONFIRMED)
+        # 5. Подтверждение источником.
+        if c is not None and not c.confirmed:
+            reasons.append(UNCONFIRMED)
         if reasons:
             rej.reason, rej.reasons = reasons[0], reasons
             stats[reasons[0]] += 1
@@ -221,18 +282,21 @@ def ensure_sprint_intake_schema() -> None:
                     ADD COLUMN IF NOT EXISTS judge_example_target TEXT NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS judge_example_candidate TEXT NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS judge_voice TEXT NOT NULL DEFAULT '',
-                    ADD COLUMN IF NOT EXISTS judged_at TIMESTAMPTZ;
+                    ADD COLUMN IF NOT EXISTS judged_at TIMESTAMPTZ,
+                    ADD COLUMN IF NOT EXISTS via TEXT NOT NULL DEFAULT '';
                 """
             )
         conn.commit()
 
 
-def queue_for_owner(*, sprint_id: str, relation: str, wort: str, hint_ru: str,
+def queue_for_judge(*, sprint_id: str, relation: str, wort: str, hint_ru: str,
                     rejected: list[Rejected]) -> int:
-    """Положить в очередь владельцу то, что требует его решения. Дубли и самослово не
-    кладём — там решать нечего. Уже лежащее (та же пара) не задваивается."""
+    """Положить в очередь судье то, что требует решения (FOR_JUDGE), и оставить след о
+    снятом без словаря (NO_DICTIONARY — сразу status='removed', чтобы в базе было видно,
+    почему слова нет). Дубли и самослово не кладём — там решать нечего. Уже лежащее
+    (та же пара) не задваивается. Возвращает число строк, ушедших судье."""
     from backend.database import get_db_connection_context
-    rows = [r for r in rejected if r.reason in ASK_OWNER]
+    rows = [r for r in rejected if r.reason in FOR_JUDGE or r.reason == NO_DICTIONARY]
     if not rows:
         return 0
     ensure_sprint_intake_schema()
@@ -240,28 +304,70 @@ def queue_for_owner(*, sprint_id: str, relation: str, wort: str, hint_ru: str,
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             for r in rows:
+                final = r.reason == NO_DICTIONARY
                 cur.execute(
                     """
                     INSERT INTO bt_3_sprint_accepted_review
                         (sprint_id, relation, wort, hint_ru, de, de_key, ru, reason, reasons,
                          stored_article, noun, reference_article, reference_source,
-                         confirmed_by, ot_knows_candidate, wikt_candidate, wikt_target)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s::jsonb,%s,%s,%s)
+                         confirmed_by, ot_knows_candidate, wikt_candidate, wikt_target, via,
+                         status, decision, decided_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,
+                            %s,%s,%s)
                     ON CONFLICT (sprint_id, de_key) DO NOTHING
                     """,
                     (sprint_id, relation, wort, hint_ru, r.de, r.de.lower(), r.ru, r.reason,
                      json.dumps(r.reasons), r.stored_article, r.noun, r.reference_article,
                      r.reference_source, json.dumps(r.confirmed_by), r.ot_knows_candidate,
-                     r.wikt_candidate, r.wikt_target),
+                     r.wikt_candidate, r.wikt_target, r.via,
+                     "removed" if final else "open", NO_DICTIONARY if final else "",
+                     datetime.now(timezone.utc) if final else None),
                 )
-                n += cur.rowcount
+                if not final:
+                    n += cur.rowcount
         conn.commit()
     return n
 
 
-def count_open_reviews(*, judged_only: bool = True) -> int:
-    """Сколько ждёт владельца. judged_only — только то, где судья уже сказал своё слово
-    (иначе владельцу ушло бы то, что назавтра снимет судья)."""
+queue_for_owner = queue_for_judge   # прежнее имя (до 08.09.2026)
+
+
+def load_open_keys(sprint_id: str) -> set[str]:
+    """de.lower() кандидатов этого слова, которые ещё ждут судью. Их примеры «верного
+    выбора» живут: скажет «да» — карточка готова без второго похода к модели. Без этого
+    перепроверка накопленного стирала бы примеры у всего, чего нет в accepted (сухой
+    прогон 08.09.2026: 40 примеров у 20 слов)."""
+    from backend.database import get_db_connection_context
+    ensure_sprint_intake_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT lower(de) FROM bt_3_sprint_accepted_review WHERE sprint_id = %s AND status = 'open'",
+                        (sprint_id,))
+            return {str(r[0]) for r in cur.fetchall() or []}
+
+
+def load_decided_keep(sprint_id: str) -> dict[str, str]:
+    """{de.lower(): decision} всего, что по этому слову уже впущено решением (судьи или
+    владельца). Ключ — форма, которая ЛЕЖИТ в accepted (у существительного — с артиклем
+    решения), потому что дверь сверяет именно её."""
+    from backend.database import get_db_connection_context
+    ensure_sprint_intake_schema()
+    out: dict[str, str] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT de, noun, decision FROM bt_3_sprint_accepted_review "
+                        "WHERE sprint_id = %s AND status = 'kept'", (sprint_id,))
+            for de, noun, decision in cur.fetchall() or []:
+                dec = str(decision or "")
+                out[str(de or "").lower()] = dec
+                if dec in _ARTICLES and noun:
+                    out[f"{dec} {noun}".lower()] = dec
+    return out
+
+
+def count_open_reviews(*, judged_only: bool = False) -> int:
+    """Сколько открытых строк очереди. С 08.09.2026 открытое ждёт СУДЬЮ (ночь 03:10 и
+    сразу после набора), а не владельца; judged_only оставлен для старых вызовов."""
     from backend.database import get_db_connection_context
     ensure_sprint_intake_schema()
     with get_db_connection_context() as conn:
@@ -311,17 +417,19 @@ def mark_asked(ids: list[int]) -> None:
         conn.commit()
 
 
-def apply_owner_decision(row_id: int, decision: str, *, by: str = "owner") -> dict | None:
+def apply_decision(row_id: int, decision: str, *, by: str = "owner",
+                   label: str | None = None) -> dict | None:
     """«keep» / «der|die|das» — кандидат входит в accepted (существительное — с артиклем
-    решения владельца или справочника); «drop» — остаётся снятым. None — уже решено.
-    `by` — кто решил: 'owner' (кнопка) или 'judge' (модель); пишется в decision, чтобы
-    в базе было видно, чьё это слово."""
+    решения или справочника); «drop» — остаётся снятым. None — уже решено.
+    `by` — кто решил: 'owner' (кнопка на старом письме) или 'judge' (модель); пишется в
+    decision, чтобы в базе было видно, чьё это слово. `label` — своя подпись решения
+    (например 'article_unknown': судья сказал «да», а артикля не знает никто)."""
     from backend.database import get_db_connection_context
     dec = str(decision or "").strip().lower()
     if dec not in ("keep", "drop", *_ARTICLES):
         raise ValueError(f"неизвестное решение: {decision!r}")
     who = str(by or "owner")
-    decision_label = dec if who == "owner" else f"judge_{'no' if dec == 'drop' else 'yes'}"
+    decision_label = label or (dec if who == "owner" else f"judge_{'no' if dec == 'drop' else 'yes'}")
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -390,11 +498,14 @@ def apply_owner_decision(row_id: int, decision: str, *, by: str = "owner") -> di
             "unretired": unretired, "article_changed": final_de != de}
 
 
+apply_owner_decision = apply_decision   # прежнее имя (до 08.09.2026)
+
+
 # ── применение двери к записи банка (накопленное) ─────────────────────────────
 
 def pending_example_keys(res: "GateResult") -> set[str]:
-    """Кандидаты, у которых решение ещё впереди (судья / владелец) — их примеры живут."""
-    return {r.de.lower() for r in res.rejected if r.reason in ASK_OWNER}
+    """Кандидаты, у которых решение ещё впереди (судья) — их примеры живут."""
+    return {r.de.lower() for r in res.rejected if r.reason in FOR_JUDGE}
 
 
 def _filter_examples(trainer_json: dict, kept_de: set[str]) -> tuple[dict, int]:
@@ -459,37 +570,43 @@ def hygiene_pass(*, limit: int | None = None, apply: bool = True, relation: str 
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT sprint_id, relation, wort, hint_ru, accepted, trainer_json, retired "
+                "SELECT sprint_id, relation, wort, hint_ru, accepted, trainer_json, retired, retired_reason "
                 "FROM bt_3_sprint_bank WHERE " + " AND ".join(where) + " ORDER BY created_at, sprint_id"
                 + (" LIMIT %s" if limit else ""), tuple(params + ([int(limit)] if limit else [])),
             )
             rows = cur.fetchall() or []
     summary = {"checked": 0, "changed": 0, "retired_thin": 0, "queued": 0,
-               DUPLICATE: 0, SELF: 0, ARTICLE_MISMATCH: 0, ARTICLE_UNKNOWN: 0, UNCONFIRMED: 0,
-               "examples_dropped": 0}
-    for sprint_id, relation, wort, hint_ru, accepted, trainer_json, retired in rows:
-        res = clean_accepted(wort, relation, list(accepted or []), confirm=confirm, article=article)
-        for k in (DUPLICATE, SELF, ARTICLE_MISMATCH, ARTICLE_UNKNOWN, UNCONFIRMED):
+               **{k: 0 for k in ALL_REASONS}, "examples_dropped": 0}
+    for sprint_id, relation, wort, hint_ru, accepted, trainer_json, retired, retired_reason in rows:
+        # Принятое решением (судья «да», владелец «оставить») дверь не пересматривает.
+        res = clean_accepted(wort, relation, list(accepted or []), confirm=confirm, article=article,
+                             decided_keep=load_decided_keep(sprint_id))
+        for k in ALL_REASONS:
             summary[k] += res.stats[k]
         # Пример стираем только у окончательно снятого (дубль, самослово). У того, что
         # ушло судье или владельцу, пример остаётся до решения: скажут «да» — карточка
         # «верного выбора» уже готова, без второго похода к модели.
-        kept_de = {k["de"].lower() for k in res.kept} | pending_example_keys(res)
+        kept_de = {k["de"].lower() for k in res.kept} | pending_example_keys(res) | load_open_keys(sprint_id)
         new_tj, dropped = _filter_examples(trainer_json or {}, kept_de)
         changed = [dict(a) for a in (accepted or [])] != res.kept or dropped > 0
         thin = not res.enough
+        # Снятое за нехватку слово, у которого подтверждённых снова хватает (судья
+        # добавил, косвенная антонимия подтвердила), возвращается в показ.
+        revive = (not thin) and bool(retired) and str(retired_reason or "") == "thin_accepted"
         summary["checked"] += 1
-        summary["changed"] += int(changed)
+        summary["changed"] += int(changed or revive)
         summary["retired_thin"] += int(thin and not retired)
+        summary["revived"] = summary.get("revived", 0) + int(revive)
         summary["examples_dropped"] += dropped
         removed = [f"{r.de} [{r.reason}]" for r in res.rejected]
         log(f"{'ИЗМЕНИТСЯ' if changed else 'без изменений'} {relation} «{wort}»: "
             f"{len(accepted or [])} → {len(res.kept)}"
             + (f", примеров снято {dropped}" if dropped else "")
             + (f", СНИМАЕТСЯ С ПОКАЗА (меньше {res.min_needed})" if thin else "")
+            + (", ВОЗВРАЩАЕТСЯ В ПОКАЗ" if revive else "")
             + (": " + ", ".join(removed) if removed else ""))
         if not apply:
-            summary["queued"] += sum(1 for r in res.rejected if r.reason in ASK_OWNER)
+            summary["queued"] += sum(1 for r in res.rejected if r.reason in FOR_JUDGE)
             continue
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
@@ -497,12 +614,13 @@ def hygiene_pass(*, limit: int | None = None, apply: bool = True, relation: str 
                     "UPDATE bt_3_sprint_bank SET accepted = %s::jsonb, trainer_json = %s::jsonb, "
                     "accepted_checked_at = NOW()"
                     + (", retired = TRUE, retired_reason = 'thin_accepted'" if thin and not retired else "")
+                    + (", retired = FALSE, retired_reason = ''" if revive else "")
                     + " WHERE sprint_id = %s",
                     (json.dumps(res.kept, ensure_ascii=False), json.dumps(new_tj, ensure_ascii=False),
                      sprint_id),
                 )
             conn.commit()
-        summary["queued"] += queue_for_owner(sprint_id=sprint_id, relation=relation, wort=wort,
+        summary["queued"] += queue_for_judge(sprint_id=sprint_id, relation=relation, wort=wort,
                                              hint_ru=hint_ru or "", rejected=res.rejected)
     return summary
 
@@ -550,6 +668,17 @@ async def backfill_missing_examples(*, limit_words: int | None = None, log: Call
         summary["added"] += len(got)
         log(f"{wort}: добавлено примеров {len(got)} из {len(missing)}")
     return summary
+
+
+def hygiene_force_needed() -> bool:
+    """Правило двери сменилось с прошлой ночи? Тогда гигиена идёт по ВСЕМ записям."""
+    from backend.database import admin_kv_get
+    return str(admin_kv_get(_RULE_VERSION_KV) or "") != GATE_RULE_VERSION
+
+
+def remember_rule_version() -> None:
+    from backend.database import admin_kv_set
+    admin_kv_set(_RULE_VERSION_KV, GATE_RULE_VERSION)
 
 
 def remember_last_stats(kind: str, stats: dict) -> None:

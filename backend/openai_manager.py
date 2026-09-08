@@ -4631,8 +4631,10 @@ nennt der/die Lernende möglichst VIELE Synonyme. Die Bewertung ist automatisch 
 Regeln:
 - "wort" = das Zielwort. Nomen MIT Artikel (z. B. "die Aussage"); Verb im INFINITIV; Adjektiv/Adverb
   in Grundform. B2+, nicht trivial, aber MIT VIELEN gängigen Synonymen (gut "ergiebig").
-- "accepted" = Liste der WIRKLICH gängigen, bedeutungsgleichen Synonyme als OBJEKTE {de, ru}.
-  KEINE Mindest- oder Zielzahl: lieber 4 echte als 20 erzwungene. Mindestens 3 müssen
+- "accepted" = VOLLSTÄNDIGE Liste der gängigen, bedeutungsgleichen Synonyme als OBJEKTE {de, ru}:
+  alle echten Synonyme, die ein gutes Synonymwörterbuch (Duden, OpenThesaurus) nennt — auch
+  gehobene/umgangssprachliche Varianten. Lass kein echtes weg; die Liste wird anschließend
+  gegen Wörterbücher geprüft, nichts erzwingen und nichts erfinden. Mindestens 3 müssen
   existieren, sonst ist das Zielwort ungeeignet — wähle dann ein anderes.
   • "de" = das Synonym im SPEICHER-Format (Nomen MIT KORREKTEM Artikel, Verb im INFINITIV,
     Adjektiv Grundform), bedeutungsgleich und üblich. KEINE Antonyme, keine bloß thematisch
@@ -4653,9 +4655,11 @@ nennt der/die Lernende möglichst VIELE Gegenteile. Bewertung automatisch gegen 
 Regeln:
 - "wort" = das Zielwort. Nomen MIT Artikel; Verb im INFINITIV; Adjektiv/Adverb in Grundform. B2+,
   nicht trivial, aber MIT VIELEN möglichen Gegenteilen.
-- "accepted" = Liste der WIRKLICH gängigen GEGENTEILE als OBJEKTE {de, ru}. KEINE Mindest-
-  oder Zielzahl: lieber 4 echte als 15 erzwungene. Mindestens 3 müssen existieren, sonst ist
-  das Zielwort ungeeignet — wähle dann ein anderes.
+- "accepted" = VOLLSTÄNDIGE Liste der gängigen GEGENTEILE als OBJEKTE {de, ru}: das direkte
+  Antonym UND dessen gängige Synonyme in derselben Bedeutung (z. B. zu "unabhängig": abhängig,
+  unselbstständig, gebunden, unfrei, angewiesen, hörig). Lass kein echtes weg; die Liste wird
+  anschließend gegen Wörterbücher geprüft, nichts erzwingen und nichts erfinden. Mindestens 3
+  müssen existieren, sonst ist das Zielwort ungeeignet — wähle dann ein anderes.
   • "de" = das Antonym im SPEICHER-Format (Nomen MIT KORREKTEM Artikel, Verb im INFINITIV,
     Adjektiv Grundform), echtes Antonym im üblichen Gebrauch, gleiche Wortart. KEINE Synonyme,
     keine bloß verwandten Wörter, keine Umschreibungen, keine erfundenen Wörter.

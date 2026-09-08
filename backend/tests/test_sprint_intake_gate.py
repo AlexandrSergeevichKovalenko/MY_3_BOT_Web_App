@@ -5,7 +5,7 @@
 «rememembern» синонимом. Каждый тест — один случай класса на живом примере из базы."""
 from __future__ import annotations
 
-from backend.sprint_intake import (ARTICLE_MISMATCH, ARTICLE_UNKNOWN, DUPLICATE, SELF,
+from backend.sprint_intake import (ARTICLE_MISMATCH, ARTICLE_UNKNOWN, DUPLICATE, NO_DICTIONARY, SELF,
                                    UNCONFIRMED, clean_accepted, _split_noun)
 from backend.synonym_sources import Confirmation
 
@@ -55,7 +55,7 @@ def test_само_слово_не_синоним_себе():
     assert res.stats[SELF] == 1 and res.stats[DUPLICATE] == 3
 
 
-def test_неподтверждённый_синоним_не_в_списке_а_у_владельца():
+def test_неподтверждённый_синоним_не_в_списке_а_у_судьи():
     res = clean_accepted("die Gelegenheit", "synonym", GELEGENHEIT,
                          confirm=_conf({"die Möglichkeit", "die Chance", "die Option"}), article=_art(ART))
     assert "der Zufall" not in [k["de"] for k in res.kept]
@@ -64,7 +64,7 @@ def test_неподтверждённый_синоним_не_в_списке_а
     assert res.stats[UNCONFIRMED] == 1
 
 
-def test_артикль_не_по_справочнику_уходит_владельцу_с_вердиктом():
+def test_артикль_не_по_справочнику_уходит_судье_с_вердиктом():
     pairs = [{"de": "die Potenzial", "ru": "потенциал"}, {"de": "die Chance", "ru": "шанс"},
              {"de": "die Option", "ru": "вариант"}, {"de": "die Alternative", "ru": "альтернатива"}]
     res = clean_accepted("die Möglichkeit", "synonym", pairs,
@@ -77,7 +77,7 @@ def test_артикль_не_по_справочнику_уходит_владе
     assert bad.confirmed_by == ["openthesaurus"]   # владелец видит: синонимия подтверждена, спор об артикле
 
 
-def test_справочник_не_знает_слово_кнопки_der_die_das():
+def test_справочник_не_знает_слово_судья_спросит_wiktionary():
     pairs = [{"de": "das Okay", "ru": "окей"}, {"de": "die Chance", "ru": "шанс"}]
     res = clean_accepted("die Zustimmung", "synonym", pairs, confirm=_conf({"das Okay", "die Chance"}),
                          article=_art({"Chance": "die"}))
@@ -85,7 +85,7 @@ def test_справочник_не_знает_слово_кнопки_der_die_da
     assert okay.reason == ARTICLE_UNKNOWN and okay.reference_article == ""
 
 
-def test_порог_три_для_синонимов_и_пять_для_антонимов():
+def test_порог_три_и_для_синонимов_и_для_антонимов():
     two = [{"de": "die Chance", "ru": "шанс"}, {"de": "die Option", "ru": "вариант"}]
     res = clean_accepted("die Gelegenheit", "synonym", two, confirm=_conf({"die Chance", "die Option"}),
                          article=_art(ART))
@@ -133,9 +133,84 @@ def test_примеры_тренажёра_чистятся_от_дублей_и
     assert [e["word"] for e in new["correct_examples"]] == ["die Option", "die Chance"] and dropped == 2
 
 
-def test_пример_живёт_пока_кандидат_ждёт_судью_или_владельца():
+def test_пример_живёт_пока_кандидат_ждёт_судью():
     from backend.sprint_intake import pending_example_keys
     res = clean_accepted("die Gelegenheit", "synonym", GELEGENHEIT,
                          confirm=_conf({"die Möglichkeit", "die Chance", "die Option"}), article=_art(ART))
     # der Zufall не подтверждён → ждёт судью → его пример не стирается; дубли и самослово — стираются
     assert pending_example_keys(res) == {"der zufall"}
+
+
+# ── 08.09.2026: человека из цепочки убрать; слово обязано существовать; дверь помнит решения ──
+
+def _conf_exist(confirmed: set[str], missing: set[str] = frozenset(), unknown: set[str] = frozenset()):
+    """missing — нет страницы и OpenThesaurus не знает; unknown — проверить не удалось."""
+    def f(target, cands, relation="synonym"):
+        return {c: Confirmation(confirmed=c in confirmed, by=("wiktionary",) if c in confirmed else (),
+                                ot_knows_target=True, ot_knows_candidate=c not in missing and c not in unknown,
+                                wikt_target="not_listed",
+                                wikt_candidate="no_page" if c in missing else ("unknown" if c in unknown else "not_listed"),
+                                dwds_candidate=False if c in missing else None)
+                for c in cands}
+    return f
+
+
+UNABHAENGIG = [{"de": w, "ru": ""} for w in ("abhängig", "unselbständig", "befehlsgebunden", "hörig", "nicht da")]
+
+
+def test_слово_без_словаря_снимается_до_судьи():
+    """«befehlsgebunden» вошло по «да» судьи, а его нет ни в Duden, ни в DWDS, ни в
+    Wiktionary. Однословный кандидат без страницы, которого не знает и OpenThesaurus, —
+    окончательный отказ, судье не показывается."""
+    res = clean_accepted("unabhängig", "antonym", UNABHAENGIG,
+                         confirm=_conf_exist({"abhängig"}, missing={"befehlsgebunden", "nicht da"}), article=_art({}))
+    assert [k["de"] for k in res.kept] == ["abhängig"]
+    gone = next(r for r in res.rejected if r.de == "befehlsgebunden")
+    assert gone.reason == NO_DICTIONARY and res.stats[NO_DICTIONARY] == 1
+    # оборот из нескольких слов существованием не проверяется — его судит судья
+    phrase = next(r for r in res.rejected if r.de == "nicht da")
+    assert phrase.reason == UNCONFIRMED
+    from backend.sprint_intake import pending_example_keys
+    assert "befehlsgebunden" not in pending_example_keys(res) and "nicht da" in pending_example_keys(res)
+
+
+def test_не_удалось_проверить_существование_это_судье_а_не_отказ():
+    res = clean_accepted("unabhängig", "antonym", [{"de": "hörig", "ru": ""}],
+                         confirm=_conf_exist(set(), unknown={"hörig"}), article=_art({}))
+    assert res.rejected[0].reason == UNCONFIRMED and res.stats[NO_DICTIONARY] == 0
+
+
+def test_дверь_помнит_принятое_судьёй_и_владельцем():
+    """Перепроверка (--recheck) снимала бы слово, которое судья уже впустил: источник
+    его по-прежнему не подтверждает. Найдено трассировкой 08.09.2026. Принятое решением
+    дверь не пересматривает — кроме «нет в словаре» для решения судьи."""
+    decided = {"unselbständig": "judge_yes", "hörig": "keep", "befehlsgebunden": "judge_yes"}
+    res = clean_accepted("unabhängig", "antonym", UNABHAENGIG,
+                         confirm=_conf_exist({"abhängig"}, missing={"befehlsgebunden"}), article=_art({}),
+                         decided_keep=decided)
+    assert [k["de"] for k in res.kept] == ["abhängig", "unselbständig", "hörig"]
+    assert next(r for r in res.rejected if r.de == "befehlsgebunden").reason == NO_DICTIONARY
+
+
+def test_оставленное_владельцем_кнопкой_не_снимается_даже_без_словаря():
+    res = clean_accepted("erreichen", "synonym", [{"de": "zustandebringen", "ru": ""}, {"de": "schaffen", "ru": ""}],
+                         confirm=_conf_exist({"schaffen"}, missing={"zustandebringen"}), article=_art({}),
+                         decided_keep={"zustandebringen": "keep"})
+    assert [k["de"] for k in res.kept] == ["zustandebringen", "schaffen"]
+
+
+def test_принятое_с_артиклем_владельца_не_спрашивает_справочник_снова():
+    """Владелец нажал «das» на «Okay»: в accepted лежит «das Okay», справочник его не
+    знает — без памяти о решении дверь снова сняла бы слово как article_unknown."""
+    res = clean_accepted("die Zustimmung", "synonym", [{"de": "das Okay", "ru": ""}, {"de": "die Chance", "ru": ""}],
+                         confirm=_conf({"das Okay", "die Chance"}), article=_art({"Chance": "die"}),
+                         decided_keep={"das okay": "das"})
+    assert [k["de"] for k in res.kept] == ["das Okay", "die Chance"]
+
+
+def test_косвенная_антонимия_доходит_до_очереди_с_именем_головы():
+    def conf(target, cands, relation="synonym"):
+        return {c: Confirmation(confirmed=True, by=("indirect",), ot_knows_target=True, ot_knows_candidate=True,
+                                wikt_target="not_listed", wikt_candidate="not_listed", via="abhängig") for c in cands}
+    res = clean_accepted("unabhängig", "antonym", [{"de": "unfrei", "ru": ""}], confirm=conf, article=_art({}))
+    assert [k["de"] for k in res.kept] == ["unfrei"]

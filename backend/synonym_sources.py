@@ -244,29 +244,122 @@ def wiktionary_relations(terms: list[str], *, allow_network: bool = True,
     return out
 
 
+# ── DWDS: существует ли слово ─────────────────────────────────────────────────
+#
+# Третий словарь только для вопроса «есть ли такое слово» (08.09.2026). Сухой прогон
+# правила «нет в Wiktionary и в OpenThesaurus» снял бы «entgrenzen» и «unsorgfältig» —
+# оба есть в DWDS (Digitales Wörterbuch der deutschen Sprache, БАН) и в Duden, а
+# «befehlsgebunden» DWDS не знает, как и остальные. API: /api/wb/snippet?q=<слово>,
+# пустой список = леммы нет. Ответ кешируется навсегда: словарная статья не исчезает.
+
+_DWDS_URL = "https://www.dwds.de/api/wb/snippet"
+
+
+def ensure_dwds_schema() -> None:
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_dwds_lemmas (
+                    title      TEXT PRIMARY KEY,
+                    known      BOOLEAN NOT NULL,
+                    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+        conn.commit()
+
+
+def dwds_knows(term: str, *, allow_network: bool = True) -> bool | None:
+    """True — в DWDS есть лемма; False — нет; None — не удалось узнать (сеть, кеша нет).
+    Заголовок — как у Wiktionary: без артикля и без «sich»."""
+    from backend.database import get_db_connection_context
+    title = _page_title(term)
+    if not title:
+        return None
+    ensure_dwds_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT known FROM bt_3_dwds_lemmas WHERE title = %s", (title,))
+            row = cur.fetchone()
+    if row is not None:
+        return bool(row[0])
+    if not allow_network:
+        return None
+    try:
+        import requests
+        resp = requests.get(_DWDS_URL, params={"q": title}, timeout=20,
+                            headers={"User-Agent": "schlaufuchs-dictionary/1.0"})
+        if resp.status_code != 200:
+            logging.warning("DWDS не ответил: HTTP %s для %r", resp.status_code, title)
+            return None
+        data = resp.json()
+    except Exception as exc:                        # noqa: BLE001 — причину наверх, не «нет»
+        logging.warning("DWDS не ответил для %r: %s", title, exc)
+        return None
+    known = isinstance(data, list) and any(
+        str((e or {}).get("lemma") or "").strip().lower() == title.lower() for e in data)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO bt_3_dwds_lemmas (title, known) VALUES (%s, %s) "
+                        "ON CONFLICT (title) DO UPDATE SET known = EXCLUDED.known, fetched_at = NOW()",
+                        (title, known))
+        conn.commit()
+    return known
+
+
 # ── единый вердикт ────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Confirmation:
     confirmed: bool
-    # Кто подтвердил — по именам, чтобы владелец в письме видел источник:
-    # 'openthesaurus', 'wiktionary'. Пусто — никто.
+    # Кто подтвердил — по именам, чтобы в очереди и отчёте был виден источник:
+    # 'openthesaurus', 'wiktionary', 'indirect' (косвенная антонимия, см. ниже). Пусто — никто.
     by: tuple[str, ...]
-    # Что источники вообще знают об этой паре — для письма владельцу.
+    # Что источники вообще знают об этой паре — для очереди и для проверки существования.
     ot_knows_target: bool
     ot_knows_candidate: bool
     wikt_target: str      # 'listed' | 'not_listed' | 'no_page' | 'unknown'
     wikt_candidate: str
+    # Через какое слово подтверждена косвенная антонимия («unfrei» через «abhängig»).
+    via: str = ""
+    # DWDS спрашивается только когда Wiktionary страницы не нашёл и OpenThesaurus не
+    # знает: True/False — ответ словаря, None — не спрашивали или не дозвонились.
+    dwds_candidate: bool | None = None
+
+    @property
+    def exists_in_dictionaries(self) -> bool | None:
+        """Есть ли кандидат хоть в одном из трёх словарей (OpenThesaurus, Wiktionary,
+        DWDS). None — не удалось проверить (сеть): это НЕ «нет», такой кандидат идёт
+        судье. Владелец 08.09.2026: судья впустил «befehlsgebunden», которого нет ни в
+        Duden, ни в DWDS, ни в Wiktionary."""
+        if self.ot_knows_candidate:
+            return True
+        if self.wikt_candidate == "unknown":
+            return None
+        if self.wikt_candidate != "no_page":
+            return True
+        return self.dwds_candidate
 
 
 def confirm_relation(target: str, candidates: list[str], *, relation: str = "synonym",
                      allow_network: bool = True) -> dict[str, Confirmation]:
     """{candidate: Confirmation}. Симметрично: пара подтверждена, если (синонимы) target и
     candidate делят гнездо OpenThesaurus, ИЛИ candidate стоит в {{Synonyme}} статьи target,
-    ИЛИ target — в {{Synonyme}} статьи candidate; (антонимы) то же по {{Gegenwörter}},
-    OpenThesaurus антонимов не знает и не участвует."""
+    ИЛИ target — в {{Synonyme}} статьи candidate; (антонимы) то же по {{Gegenwörter}}.
+
+    Антонимы, второй источник (владелец 08.09.2026, «только из словарей, никаких
+    приставок») — КОСВЕННАЯ АНТОНИМИЯ, как в WordNet/GermaNet: X — противоположность
+    цели по Wiktionary, кандидат лежит с X в одном гнезде OpenThesaurus ⇒ кандидат —
+    антоним цели (`by` += 'indirect', `via` = X). Симметрично: противоположность
+    КАНДИДАТА по Wiktionary в одном гнезде с ЦЕЛЬЮ. Оговорка записана в стратегии:
+    гнёзда OpenThesaurus разбиты по значению, но какое из гнёзд головы отвечает значению
+    цели, словари не говорят — берутся все гнёзда головы.
+    OpenThesaurus сам по себе антонимов не знает; для антонимов его гнёзда нужны только
+    для косвенного шага и для проверки, что слово вообще существует."""
     is_syn = relation == "synonym"
-    t_sets = openthesaurus_synsets(target) if is_syn else set()
+    t_sets = openthesaurus_synsets(target)
     wikt = wiktionary_relations([target, *candidates], allow_network=allow_network)
     tkey = term_key(target)
     w_t = wikt.get(target)
@@ -277,17 +370,37 @@ def confirm_relation(target: str, candidates: list[str], *, relation: str = "syn
         return rel.synonyms if is_syn else rel.antonyms
 
     t_syn_keys = {term_key(s) for s in _list(w_t)}
+    # Косвенный шаг: гнёзда OpenThesaurus каждой прямой противоположности цели.
+    head_sets: dict[str, set[int]] = {}
+    if not is_syn:
+        for head in _list(w_t):
+            sets = openthesaurus_synsets(head)
+            if sets:
+                head_sets[head] = sets
     out: dict[str, Confirmation] = {}
     for cand in candidates:
         ckey = term_key(cand)
-        c_sets = openthesaurus_synsets(cand) if is_syn else set()
+        c_sets = openthesaurus_synsets(cand)
         by: list[str] = []
-        if t_sets and c_sets and (t_sets & c_sets):
+        via = ""
+        if is_syn and t_sets and c_sets and (t_sets & c_sets):
             by.append("openthesaurus")
         w_c = wikt.get(cand)
         c_syn_keys = {term_key(s) for s in _list(w_c)}
         if ckey in t_syn_keys or tkey in c_syn_keys:
             by.append("wiktionary")
+        if not is_syn and not by:
+            # кандидат — синоним прямой противоположности цели …
+            for head, sets in head_sets.items():
+                if c_sets & sets:
+                    by.append("indirect"); via = head
+                    break
+            # … либо цель — синоним прямой противоположности кандидата.
+            if not by and t_sets:
+                for head in _list(w_c):
+                    if openthesaurus_synsets(head) & t_sets:
+                        by.append("indirect"); via = head
+                        break
 
         def _state(rel: WiktionaryRelations | None, other_key: str, keys: set[str]) -> str:
             if rel is None:
@@ -296,11 +409,16 @@ def confirm_relation(target: str, candidates: list[str], *, relation: str = "syn
                 return "no_page"
             return "listed" if other_key in keys else "not_listed"
 
+        wikt_c = _state(w_c, tkey, c_syn_keys)
+        dwds = None
+        if not c_sets and wikt_c == "no_page" and " " not in _page_title(cand):
+            dwds = dwds_knows(cand, allow_network=allow_network)
         out[cand] = Confirmation(
             confirmed=bool(by), by=tuple(by),
             ot_knows_target=bool(t_sets), ot_knows_candidate=bool(c_sets),
             wikt_target=_state(w_t, ckey, t_syn_keys),
-            wikt_candidate=_state(w_c, tkey, c_syn_keys),
+            wikt_candidate=wikt_c,
+            via=via, dwds_candidate=dwds,
         )
     return out
 
