@@ -40828,10 +40828,11 @@ function AppInner() {
                                 </span>
                               )}
                               {/* «Сбросить» — не действие НАД словами, а снятие выбора, и
-                                  среди «Учить / PDF / Переместить / Удалить» ему не место.
-                                  Крестик у счётчика освобождает четвёртое место под PDF и
-                                  оставляет кнопкам нормальный размер (решение владельца
-                                  31.08.2026). */}
+                                  среди «Учить / PDF / Переместить / Удалить» ему не место:
+                                  оно стоит у счётчика, к которому относится (решение
+                                  владельца 31.08.2026). 08.09.2026 владелец: крестик 22 px
+                                  «очень неудобно» — вместо него текстовая кнопка нормального
+                                  размера в той же строке; ряд из четырёх не ужимается. */}
                               <button
                                 type="button"
                                 className="vocab-selection-clear"
@@ -40839,7 +40840,10 @@ function AppInner() {
                                 disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
                                 aria-label={tr('Снять выбор', 'Auswahl aufheben')}
                                 title={tr('Снять выбор', 'Auswahl aufheben')}
-                              >✕</button>
+                              >
+                                <span aria-hidden="true">✕</span>
+                                <span>{tr('Сбросить', 'Aufheben')}</span>
+                              </button>
                             </div>
                             <div className="vocab-sel-tabs">
                               <button
