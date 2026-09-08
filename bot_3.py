@@ -42396,8 +42396,8 @@ async def _sprint_topup(relation: str, want: int) -> int:
 async def sprint_bank_hygiene_job(context: CallbackContext) -> dict:
     """03:10 Вена: накопленное в банке спринта проходит ту же дверь приёма, что и новое
     слово (backend.sprint_intake.hygiene_pass). Берёт только записи без
-    accepted_checked_at, поэтому после первой ночи это страж на случай записи в обход
-    двери. Итог — в admin_kv для строки «🧩 Синонимы» утреннего отчёта."""
+    accepted_checked_at — а при смене правила двери (GATE_RULE_VERSION) один раз все.
+    Итог — в admin_kv для строки «🧩 Синонимы» утреннего отчёта."""
     from backend.sprint_intake import hygiene_pass, remember_last_stats
     from backend.synonym_sources import openthesaurus_loaded
     if not await asyncio.to_thread(openthesaurus_loaded):
@@ -42406,7 +42406,14 @@ async def sprint_bank_hygiene_job(context: CallbackContext) -> dict:
                       "(python3 scripts/load_openthesaurus.py --apply)")
         await asyncio.to_thread(remember_last_stats, "hygiene", {"error": "openthesaurus_missing"})
         return {"error": "openthesaurus_missing"}
-    summary = await asyncio.to_thread(hygiene_pass, apply=True, log=logging.info)
+    # Правило двери сменилось (GATE_RULE_VERSION) — накопленное проходит дверь заново,
+    # само, этой же ночью; версия запоминается только после удачного прохода.
+    from backend.sprint_intake import hygiene_force_needed, remember_rule_version
+    force = await asyncio.to_thread(hygiene_force_needed)
+    summary = await asyncio.to_thread(hygiene_pass, apply=True, force=force, log=logging.info)
+    summary["forced_by_rule_change"] = bool(force)
+    if force:
+        await asyncio.to_thread(remember_rule_version)
     await asyncio.to_thread(remember_last_stats, "hygiene", summary)
     # Непропущенное — судье (модель подстановкой, три голоса); он ставит точку сам.
     from backend.synonym_judge import judge_open_reviews

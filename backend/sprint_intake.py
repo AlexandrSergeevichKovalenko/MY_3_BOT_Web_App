@@ -61,6 +61,17 @@ from typing import Callable
 MIN_ACCEPTED = {"synonym": 3, "antonym": 3}   # 3 — решение владельца 06.09.2026;
                                                # антонимы: «механика та же самая» (06.09).
 
+# Версия правила двери. Ночная гигиена проверяет запись один раз за её жизнь
+# (accepted_checked_at); когда правило стало строже или шире, накопленное надо прогнать
+# ЗАНОВО — и это делает сама ночь, а не человек со скриптом (владелец 19.08: «всё
+# автоматически, ночью»). Меняешь правило — меняй строку, ночь сделает force-проход.
+#   2026-09-06          — дверь построена;
+#   2026-09-08-dwds     — существование по трём словарям, косвенная антонимия,
+#                         память о решениях (befehlsgebunden снимается, unabhängig
+#                         уходит в thin до пересуда и возвращается судьёй).
+GATE_RULE_VERSION = "2026-09-08-dwds"
+_RULE_VERSION_KV = "sprint_intake_rule_version"
+
 _ARTICLES = ("der", "die", "das")
 
 # Причины отказа. Дубль, самослово и «нет ни в одном словаре» — окончательные (решать
@@ -657,6 +668,17 @@ async def backfill_missing_examples(*, limit_words: int | None = None, log: Call
         summary["added"] += len(got)
         log(f"{wort}: добавлено примеров {len(got)} из {len(missing)}")
     return summary
+
+
+def hygiene_force_needed() -> bool:
+    """Правило двери сменилось с прошлой ночи? Тогда гигиена идёт по ВСЕМ записям."""
+    from backend.database import admin_kv_get
+    return str(admin_kv_get(_RULE_VERSION_KV) or "") != GATE_RULE_VERSION
+
+
+def remember_rule_version() -> None:
+    from backend.database import admin_kv_set
+    admin_kv_set(_RULE_VERSION_KV, GATE_RULE_VERSION)
 
 
 def remember_last_stats(kind: str, stats: dict) -> None:

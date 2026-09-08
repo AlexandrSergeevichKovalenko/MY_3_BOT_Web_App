@@ -60,3 +60,20 @@ def test_тонкое_слово_кладётся_снятым_и_идёт_су�
     assert stored and stored[0]["retired"] is True and stored[0]["retired_reason"] == "thin_accepted"
     assert queued and queued[0]["sprint_id"] == "sp_antonym_unabh_ngig"
     assert judged, "судья не вызван — кандидаты остались бы висеть до ночи"
+
+
+def test_смена_правила_двери_запускает_полный_проход_сама():
+    """Правку живой базы с ноутбука делать нельзя (и не нужно): ночь 03:10 видит, что
+    правило двери сменилось, и один раз проходит ВСЕ записи, потом запоминает версию."""
+    from backend import sprint_intake as si
+    kv = {}
+    with patch("backend.database.admin_kv_get", lambda k: kv.get(k)), \
+         patch("backend.database.admin_kv_set", lambda k, v: kv.__setitem__(k, v)):
+        assert si.hygiene_force_needed() is True
+        si.remember_rule_version()
+        assert si.hygiene_force_needed() is False
+        kv[si._RULE_VERSION_KV] = "2026-09-06"
+        assert si.hygiene_force_needed() is True
+    import bot_3, inspect
+    src = inspect.getsource(bot_3.sprint_bank_hygiene_job)
+    assert "hygiene_force_needed" in src and "force=force" in src
