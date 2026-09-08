@@ -249,24 +249,46 @@ def wiktionary_relations(terms: list[str], *, allow_network: bool = True,
 @dataclass(frozen=True)
 class Confirmation:
     confirmed: bool
-    # Кто подтвердил — по именам, чтобы владелец в письме видел источник:
-    # 'openthesaurus', 'wiktionary'. Пусто — никто.
+    # Кто подтвердил — по именам, чтобы в очереди и отчёте был виден источник:
+    # 'openthesaurus', 'wiktionary', 'indirect' (косвенная антонимия, см. ниже). Пусто — никто.
     by: tuple[str, ...]
-    # Что источники вообще знают об этой паре — для письма владельцу.
+    # Что источники вообще знают об этой паре — для очереди и для проверки существования.
     ot_knows_target: bool
     ot_knows_candidate: bool
     wikt_target: str      # 'listed' | 'not_listed' | 'no_page' | 'unknown'
     wikt_candidate: str
+    # Через какое слово подтверждена косвенная антонимия («unfrei» через «abhängig»).
+    via: str = ""
+
+    @property
+    def exists_in_dictionaries(self) -> bool | None:
+        """Есть ли кандидат хоть в одном словаре. None — не удалось проверить (сеть):
+        это НЕ «нет», такой кандидат идёт судье. Владелец 08.09.2026: судья впустил
+        «befehlsgebunden», которого нет ни в Duden, ни в DWDS, ни в Wiktionary."""
+        if self.ot_knows_candidate:
+            return True
+        if self.wikt_candidate == "unknown":
+            return None
+        return self.wikt_candidate != "no_page"
 
 
 def confirm_relation(target: str, candidates: list[str], *, relation: str = "synonym",
                      allow_network: bool = True) -> dict[str, Confirmation]:
     """{candidate: Confirmation}. Симметрично: пара подтверждена, если (синонимы) target и
     candidate делят гнездо OpenThesaurus, ИЛИ candidate стоит в {{Synonyme}} статьи target,
-    ИЛИ target — в {{Synonyme}} статьи candidate; (антонимы) то же по {{Gegenwörter}},
-    OpenThesaurus антонимов не знает и не участвует."""
+    ИЛИ target — в {{Synonyme}} статьи candidate; (антонимы) то же по {{Gegenwörter}}.
+
+    Антонимы, второй источник (владелец 08.09.2026, «только из словарей, никаких
+    приставок») — КОСВЕННАЯ АНТОНИМИЯ, как в WordNet/GermaNet: X — противоположность
+    цели по Wiktionary, кандидат лежит с X в одном гнезде OpenThesaurus ⇒ кандидат —
+    антоним цели (`by` += 'indirect', `via` = X). Симметрично: противоположность
+    КАНДИДАТА по Wiktionary в одном гнезде с ЦЕЛЬЮ. Оговорка записана в стратегии:
+    гнёзда OpenThesaurus разбиты по значению, но какое из гнёзд головы отвечает значению
+    цели, словари не говорят — берутся все гнёзда головы.
+    OpenThesaurus сам по себе антонимов не знает; для антонимов его гнёзда нужны только
+    для косвенного шага и для проверки, что слово вообще существует."""
     is_syn = relation == "synonym"
-    t_sets = openthesaurus_synsets(target) if is_syn else set()
+    t_sets = openthesaurus_synsets(target)
     wikt = wiktionary_relations([target, *candidates], allow_network=allow_network)
     tkey = term_key(target)
     w_t = wikt.get(target)
@@ -277,17 +299,37 @@ def confirm_relation(target: str, candidates: list[str], *, relation: str = "syn
         return rel.synonyms if is_syn else rel.antonyms
 
     t_syn_keys = {term_key(s) for s in _list(w_t)}
+    # Косвенный шаг: гнёзда OpenThesaurus каждой прямой противоположности цели.
+    head_sets: dict[str, set[int]] = {}
+    if not is_syn:
+        for head in _list(w_t):
+            sets = openthesaurus_synsets(head)
+            if sets:
+                head_sets[head] = sets
     out: dict[str, Confirmation] = {}
     for cand in candidates:
         ckey = term_key(cand)
-        c_sets = openthesaurus_synsets(cand) if is_syn else set()
+        c_sets = openthesaurus_synsets(cand)
         by: list[str] = []
-        if t_sets and c_sets and (t_sets & c_sets):
+        via = ""
+        if is_syn and t_sets and c_sets and (t_sets & c_sets):
             by.append("openthesaurus")
         w_c = wikt.get(cand)
         c_syn_keys = {term_key(s) for s in _list(w_c)}
         if ckey in t_syn_keys or tkey in c_syn_keys:
             by.append("wiktionary")
+        if not is_syn and not by:
+            # кандидат — синоним прямой противоположности цели …
+            for head, sets in head_sets.items():
+                if c_sets & sets:
+                    by.append("indirect"); via = head
+                    break
+            # … либо цель — синоним прямой противоположности кандидата.
+            if not by and t_sets:
+                for head in _list(w_c):
+                    if openthesaurus_synsets(head) & t_sets:
+                        by.append("indirect"); via = head
+                        break
 
         def _state(rel: WiktionaryRelations | None, other_key: str, keys: set[str]) -> str:
             if rel is None:
@@ -301,6 +343,7 @@ def confirm_relation(target: str, candidates: list[str], *, relation: str = "syn
             ot_knows_target=bool(t_sets), ot_knows_candidate=bool(c_sets),
             wikt_target=_state(w_t, ckey, t_syn_keys),
             wikt_candidate=_state(w_c, tkey, c_syn_keys),
+            via=via,
         )
     return out
 

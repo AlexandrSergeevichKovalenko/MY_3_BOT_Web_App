@@ -487,6 +487,8 @@ def _dispatch_retire_review_dm() -> None:
 
 
 def _dispatch_synonym_review_dm() -> None:
+    """Не планируется с 08.09.2026 (письмо отменено владельцем); оставлено на случай
+    ручного вызова из консоли."""
     run_synonym_review_dm_actor.send()
 
 
@@ -1032,19 +1034,11 @@ def _build_scheduler():
             misfire_grace_time=1800,
         )
 
-    # Синонимы, которых дверь приёма не пропустила, — владельцу с кнопками (06.09.2026).
-    # Каждый день по 20 — решение владельца 06.09.2026 («по 20 карточек каждый день»).
-    if _enabled("SYNONYM_REVIEW_ENABLED", "1"):
-        scheduler.add_job(
-            _dispatch_synonym_review_dm,
-            "cron",
-            hour=_int_env("SYNONYM_REVIEW_HOUR", 12),
-            minute=_int_env("SYNONYM_REVIEW_MINUTE", 45),
-            timezone=_tz(os.getenv("SYNONYM_REVIEW_TZ") or "Europe/Vienna"),
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=1800,
-        )
+    # ┌─ ПИСЬМО О СИНОНИМАХ (12:45, по 20 с кнопками) ОТМЕНЕНО 08.09.2026. ──────────────┐
+    # │ Владелец: «я не понимаю, зачем мне вообще высылается это на согласование…       │
+    # │ модель ставит итоговую точку». Очередь решает судья (backend/synonym_judge.py) │
+    # │ ночью и сразу после набора; числа — строкой в утреннем отчёте. Не возвращать.    │
+    # └────────────────────────────────────────────────────────────────────────────────┘
     if _enabled("RETIRE_REVIEW_ENABLED", "1"):
         scheduler.add_job(
             _dispatch_retire_review_dm,
