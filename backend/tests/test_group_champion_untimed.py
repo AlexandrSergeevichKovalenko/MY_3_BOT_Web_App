@@ -24,12 +24,12 @@ class UntimedScoringTests(unittest.TestCase):
         lb = compute_quiz_leaderboard(rows)
         by = {l["user_id"]: l for l in lb["leaders"]}
         self.assertEqual((by[1]["points"], by[1]["golds"]), (15, 1))   # timed fastest → +10 +5 gold
-        self.assertEqual((by[2]["points"], by[2]["golds"]), (20, 0))   # 2 untimed correct → +10 each
+        self.assertEqual((by[2]["points"], by[2]["golds"]), (25, 0))   # untimed rb 10 + au 15 (цены типов, 09.09.2026)
         self.assertEqual(by[2]["ctime_n"], 0)                          # untimed excluded from "fastest"
         self.assertEqual(lb["fastest"]["user_id"], 1)
 
     def test_sprint_set_is_one_task_scored_by_completion(self):
-        # Artikel/Adjektiv sets: ONE task each, fractional score {0,0.5,1} -> 0/5/10 points,
+        # Artikel/Adjektiv sets: ONE task each, fractional score {0,0.5,1} -> 0/15/30 points,
         # solved at >=0.5, untimed (no gold). Never per-word (that would let a 143-word set
         # dominate the champion).
         rows = [
@@ -40,7 +40,7 @@ class UntimedScoringTests(unittest.TestCase):
         lb = compute_quiz_leaderboard(rows)
         a = {l["user_id"]: l for l in lb["leaders"]}[1]
         self.assertEqual(a["answered"], 3)   # 3 sets = 3 tasks (not word counts)
-        self.assertEqual(a["points"], 15)    # 10 + 5 + 0
+        self.assertEqual(a["points"], 45)    # 30 + 15 + 0 (набор спринта стоит 30, 09.09.2026)
         self.assertEqual(a["correct"], 2)    # the 1.0 and 0.5 sets solved; 0.0 not
         self.assertEqual(a["golds"], 0)      # untimed → no gold
         self.assertIsNone(lb["fastest"])     # no timed rows

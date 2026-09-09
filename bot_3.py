@@ -35817,6 +35817,11 @@ async def _render_battle_podium(context: CallbackContext, ranked: list, *, heade
         "answered": int(r.get("count") or 0), "golds": (1 if i == 0 else 0),
         "ctime_sum": 0, "ctime_n": 0,
     } for i, r in enumerate(ranked)]
+    # Плакат с 09.09.2026 ставит на пьедестал только тех, у кого есть место: равный счёт —
+    # один номер, ноль решённых — без места (та же функция, что у чемпиона дня).
+    from backend.quiz_leaderboard import assign_ranks
+    leaders.sort(key=lambda l: (-l["points"], l["user_id"]))
+    assign_ranks(leaders)
     lb = {"leaders": leaders, "total_players": len(leaders), "total_tasks": 0,
           "fastest": None, "accurate": None, "active": None}
     avatars: dict[int, bytes] = {}
@@ -38001,12 +38006,16 @@ def _build_group_daily_report(lb: dict, title: str | None, *, period: str = "day
     if not leaders:
         return None
     esc = lambda s: html.escape(str(s or ""))
-    medal = lambda i: "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"{i + 1}."
-    champ = leaders[0]
+    # 09.09.2026: место только за очки (rank с сервера), равные — один номер, ноль — прочерк.
+    medal = lambda rk: "🥇" if rk == 1 else "🥈" if rk == 2 else "🥉" if rk == 3 else (f"{rk}." if rk else "—")
+    champions = [l for l in leaders if l.get("rank") == 1]
+    if not champions:
+        return None   # ни у кого нет очков — чемпиона нет, отчёт не уходит
+    champ = champions[0]
+    champ_names = " & ".join(esc(c["name"]) for c in champions)
     is_week = period == "week"
     period_paren = "итоги недели" if is_week else "итоги дня"
     champ_word   = "недели" if is_week else "дня"
-    tasks_word   = "заданий недели" if is_week else "заданий дня"
     head = (
         f"🏁 <b>Групповой рейтинг — {esc(title)}</b>" if str(title or "").strip()
         else f"🏁 <b>Групповой рейтинг ({period_paren})</b>"
@@ -38016,15 +38025,11 @@ def _build_group_daily_report(lb: dict, title: str | None, *, period: str = "day
         "<i>Только участники этой группы. Общий рейтинг по всем — в приложении.</i>",
         "",
         f"👥 Активных: <b>{lb.get('total_players', 0)}</b> · 🧩 заданий: <b>{lb.get('total_tasks', 0)}</b>",
-        f"🏆 Чемпион {champ_word} в группе: <b>{esc(champ['name'])}</b> — {champ['points']} очк.",
+        f"🏆 Чемпион {champ_word} в группе: <b>{champ_names}</b> — {champ['points']} очк.",
         "",
     ]
-    for i, l in enumerate(leaders[:5]):
-        crown = "" if l.get("prize_eligible", True) else " ·💤"
-        lines.append(f"{medal(i)} {esc(l['name'])} — {l['points']} очк. ({l['correct']}✓){crown}")
-    mfp = int(lb.get("min_for_prize") or 0)
-    if mfp:
-        lines += ["", f"🏅 Призовые места — кто ответил ≥ {mfp} (≥50% {tasks_word})."]
+    for l in leaders[:5]:
+        lines.append(f"{medal(l.get('rank'))} {esc(l['name'])} — {l['points']} очк. ({l['correct']}✓)")
     lines += ["", "🌍 Глобальный рейтинг и Кубок чемпиона — по кнопке ниже 👇"]
     return "\n".join(lines)
 
@@ -38133,23 +38138,28 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
 
 
 def _build_champion_card(lb: dict, *, week_no: int, days: int) -> str | None:
+    """Текстовая карточка чемпиона. Владелец 09.09.2026: место только за очки, ноль —
+    без места (прочерк внизу), равные очки — один номер. Если очков нет ни у кого —
+    чемпиона нет, карточка не собирается (None), плакат не уходит."""
     leaders = lb.get("leaders") or []
-    if not leaders:
+    champions = [l for l in leaders if l.get("rank") == 1]
+    if not champions:
         return None
-    medal = lambda i: "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"{i + 1}."
+    medal = lambda rk: "🥇" if rk == 1 else "🥈" if rk == 2 else "🥉" if rk == 3 else (f"{rk}." if rk else "—")
     esc = lambda s: html.escape(str(s or "Student"))
-    champ = leaders[0]
+    champ = champions[0]
     period = "недели" if days == 7 else f"{days} дн."
+    names = " & ".join(esc(c["name"]) for c in champions)
     lines = [
         f"🏆🏆🏆  <b>ЧЕМПИОН {period.upper()} №{week_no}</b>  🏆🏆🏆",
         "",
-        f"👑 <b>{esc(champ['name'])}</b>",
+        f"👑 <b>{names}</b>",
         f"🏅 {champ['points']} очков · {champ['correct']}/{champ['answered']} верно · {champ['golds']}× 🥇",
         "",
         "<b>📊 Топ игроков</b>",
     ]
-    for i, l in enumerate(leaders[:7]):
-        lines.append(f"{medal(i)} <b>{esc(l['name'])}</b> — {l['points']} очк. ({l['correct']}✓)")
+    for l in leaders[:7]:
+        lines.append(f"{medal(l.get('rank'))} <b>{esc(l['name'])}</b> — {l['points']} очк. ({l['correct']}✓)")
     if len(leaders) > 7:
         lines.append("⋮")
 
@@ -38213,11 +38223,11 @@ async def _post_champion_card(context: CallbackContext, *, days: int, chat_ids: 
         poster = await asyncio.to_thread(render_champion_poster, lb, week_no=week_no, days=days, avatars=avatars)
     except Exception:
         logging.warning("champion poster render failed", exc_info=True)
-    champ = (lb.get("leaders") or [{}])[0]
+    champions = [l for l in (lb.get("leaders") or []) if l.get("rank") == 1]
     period_word = "недели" if days == 7 else ("дня" if days == 1 else f"{days} дн.")
     caption = (
         f"🏆 <b>Чемпион {period_word}</b>{'' if days == 1 else f' №{week_no}'} — "
-        f"<b>{html.escape(str(champ.get('name') or ''))}</b>! 🎉\nРешай интерактивы — попади в топ 🎮"
+        f"<b>{' & '.join(html.escape(str(c.get('name') or '')) for c in champions)}</b>! 🎉\nРешай интерактивы — попади в топ 🎮"
     )
     if chat_ids is None:
         targets = await _collect_quiz_delivery_user_targets(context)
