@@ -80,6 +80,7 @@ _DEFAULT_TASK_MODELS = {
     # quality regression shows up on a specific block.
     "dictionary_enrichment_multilang_word_compact": "gpt-4.1-mini",
     "dictionary_enrichment_multilang_phrase_compact": "gpt-4.1-mini",
+    "pool_translation_judge": "gpt-4.1-mini",
     # CORE meaning of a single word (which translation to pick, what it means) is the
     # one place quality can't be compromised in a language app: mini confused genuinely
     # ambiguous words (RU "Провод" → mixed Draht+Kabel). It runs ONCE per new word and
@@ -4044,6 +4045,36 @@ Rules:
 - Keep every note concise and practical.
 - If information is genuinely unknown, use null.
 """,
+"pool_translation_judge": """
+You judge Russian renderings of a German phrase or sentence.
+
+Input JSON:
+{ "german": "<the German source>", "variant_a": "<Russian, currently stored>", "variant_b": "<Russian, from DeepL>" }
+
+WORK IN THIS ORDER — the order matters:
+1. FIRST translate "german" into Russian YOURSELF, without looking at either variant.
+   Put it in "own". Resolve the German by meaning: "raten" is «гадать/угадывать» when it
+   is guessing and «советовать» only with a dative object; an idiom is rendered by its
+   Russian sense, never word for word.
+2. THEN compare each variant against YOUR translation and against the German.
+3. Only then fill "best".
+
+Return STRICT JSON:
+{ "own": "<your Russian translation>", "a_is_correct": true|false, "b_is_correct": true|false,
+  "best": "a"|"b"|"own", "why": "string" }
+
+Rules:
+- "correct" means the variant conveys the SAME meaning as the German and reads as natural
+  Russian. Two different but equally accurate renderings are BOTH correct — style,
+  synonyms and word order are NOT errors. Mark false only for a real defect: a different
+  sense (the classic one: «Ich rate ins Blaue hinein» rendered as «Я даю совет наугад»
+  instead of «Я гадаю наугад»), an idiom taken literally («Haare auf den Zähnen haben» →
+  «иметь волосы на зубах»), a missing or invented part, or non-existent Russian.
+- best = "a" when a is correct — keeping what is already stored beats swapping one correct
+  translation for another. "b" when a is wrong and b is right. "own" when BOTH are wrong.
+- "why" — one short phrase in Russian, only when something is wrong; otherwise "".
+- Output ONLY JSON.
+""",
 "translate_subtitles_ru": """
 You translate short subtitle lines from German to Russian.
 Input JSON: { "lines": [ "...", "...", ... ] }
@@ -7816,6 +7847,34 @@ async def run_dictionary_enrichment_multilang(
             **({"input_kind": kind} if kind else {}),
         },
     )
+
+
+
+async def run_pool_translation_judge(*, german: str, variant_a: str, variant_b: str) -> dict:
+    """Судья над двумя русскими вариантами одной немецкой строки.
+
+    Заведён 09.09.2026 для чистки общего пула после того, как из него убрали слабого
+    переводчика. Отличить его строки от хороших постфактум нечем (след биллинга хеширован
+    целиком), а слепая замена всех 864 строк на новый перевод меняла бы и ВЕРНЫЕ:
+    сухой прогон дал 23 расхождения на 30 строк, и большинство — «верное на другое
+    верное» («Я вывихнул ногу» → «Я подвернул ногу»). Судья отвечает не «какой лучше», а
+    «есть ли в старом ошибка», и хорошее остаётся на месте."""
+    payload = {
+        "german": str(german or "").strip(),
+        "variant_a": str(variant_a or "").strip(),
+        "variant_b": str(variant_b or "").strip(),
+    }
+    text = await llm_execute(
+        task_name="pool_translation_judge",
+        system_instruction_key="pool_translation_judge",
+        user_message=json.dumps(payload, ensure_ascii=False),
+        # Только Responses. Список LLM_RESPONSES_TASKS в проде задан ПЕРЕЧИСЛЕНИЕМ, и
+        # новая задача в него не входит: без этого флага она уезжала в Assistants, где
+        # ассистента нет, и получала 404 (проверено 09.09.2026).
+        responses_only=True,
+        allow_assistants_fallback=False,
+    )
+    return parse_llm_json_object(text, context="pool_translation_judge")
 
 
 async def run_dictionary_synonyms_backfill(

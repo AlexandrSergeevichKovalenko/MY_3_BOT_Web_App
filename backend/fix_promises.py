@@ -821,6 +821,65 @@ def _sentence_lookups_screen() -> str:
     return "\n".join(lines)
 
 
+def _pool_rows_without_translator() -> int:
+    """Машинные многословные строки общего пула БЕЗ следа переводчика. Обещано: 0.
+
+    09.09.2026 из быстрого перевода убрали MyMemory (замер: 6 ошибок на 20 живых фраз
+    против одной у DeepL; именно он выдал владельцу «Я даю совет наугад» вместо «Я гадаю
+    наугад»). Накопленные строки перепроверены заново с судьёй, и каждая несёт поле
+    translator. Появилась строка без него — значит либо чистка не доехала, либо в пул
+    снова пишет путь, не называющий переводчика."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(*) FROM bt_3_dictionary_entries
+                WHERE source_lang = 'de' AND target_lang = 'ru'
+                  AND created_at >= '2026-09-01'
+                  AND source_text LIKE '%% %%'
+                  AND (response_json IS NULL
+                       OR NOT (response_json ? 'meanings' OR response_json ? 'translations'))
+                  AND (response_json IS NULL OR NOT (response_json ? 'translator'));
+            """)
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def _expression_reference_size() -> int:
+    """Сколько устойчивых выражений в справочнике. Обещано: не меньше 2900.
+
+    Справочник (идиомы и пословицы немецкого Викисловаря) отвечает на вопрос «это
+    выражение или текст», и от его ответа зависит, будет ли у идиомы из пяти слов
+    крупным шрифтом буквальный машинный перевод. Пустой справочник = молчаливый возврат
+    к счёту слов."""
+    from backend.german_expressions import counters
+    return int(counters().get("всего") or 0)
+
+
+def _expression_reference_screen() -> str:
+    """Экран «после»: как система называет форму ввода на живых примерах владельца."""
+    from backend.backend_server import _resolve_input_kind
+    from backend.german_expressions import counters, expression_of
+    примеры = [
+        "Ich weiß die Antwort nicht, ich rate ins Blaue hinein",
+        "Haare auf den Zähnen haben",
+        "die Katze aus dem Sack lassen",
+        "jemanden an der Nase herumführen",
+        "raten",
+    ]
+    подписи = {"word": "слово", "phrase": "выражение", "sentence": "предложение"}
+    строки = ["📖 Как система называет форму ввода (словарь важнее счёта слов):"]
+    for текст in примеры:
+        вид = _resolve_input_kind(текст, "de")
+        из_справочника = "из справочника" if expression_of(текст) else "по форме"
+        строки.append(f"  {подписи.get(вид, вид)} · {из_справочника} · {текст[:52]}")
+    ч = counters()
+    строки.append(f"📚 В справочнике выражений: {ч.get('всего')} "
+                  f"(идиом {ч.get('идиом')}, пословиц {ч.get('пословиц')}, "
+                  f"без немецкого значения {ч.get('без_значения')})")
+    строки.append(f"🤝 Строк пула без следа переводчика: {_pool_rows_without_translator()}")
+    return "\n".join(строки)
+
+
 PROMISES: tuple[Promise, ...] = (
     Promise(
         key="db_guardrails_alive",
@@ -1117,6 +1176,29 @@ PROMISES: tuple[Promise, ...] = (
             "Руками — быстрый словарь, «Ich weiß die Antwort nicht, ich rate ins Blaue hinein», «Подробный разбор»: "
             "крупно перевод предложения, ниже блок «Выражение в предложении»",
         screen=_sentence_lookups_screen,
+    ),
+    Promise(
+        key="pool_rows_carry_their_translator",
+        title="Машинных строк пула без следа переводчика (кто перевёл) не осталось",
+        since="10.09.2026",
+        expected=0,
+        measure=_pool_rows_without_translator,
+        how="SELECT COUNT(*) FROM bt_3_dictionary_entries WHERE source_lang='de' AND target_lang='ru' "
+            "AND created_at >= '2026-09-01' AND source_text LIKE '%% %%' AND (response_json IS NULL OR "
+            "NOT (response_json ? 'meanings' OR response_json ? 'translations')) AND (response_json IS NULL "
+            "OR NOT (response_json ? 'translator')); руками — перевести фразу в быстром словаре и "
+            "посмотреть строку пула: у неё должно быть поле translator",
+    ),
+    Promise(
+        key="expression_reference_alive",
+        title="Справочник устойчивых выражений на месте (идиомы и пословицы, ≥2900)",
+        since="10.09.2026",
+        expected=2900,
+        measure=lambda: min(_expression_reference_size(), 2900),
+        how="SELECT count(*) FROM bt_3_german_expressions; руками — быстрый словарь, "
+            "«Haare auf den Zähnen haben»: заголовок не должен быть «иметь волосы на зубах», "
+            "а разбор должен прийти как про выражение, а не про предложение",
+        screen=_expression_reference_screen,
     ),
 )
 

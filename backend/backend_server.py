@@ -89,7 +89,7 @@ import multiprocessing
 import inspect
 from contextlib import contextmanager
 from typing import Any, Iterator
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed, wait as futures_wait, FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from zoneinfo import ZoneInfo
 from datetime import timedelta, date
 from calendar import monthrange
@@ -1387,6 +1387,12 @@ DICTIONARY_AUTHORITATIVE_ARTICLE_ENABLED = str(os.getenv("DICTIONARY_AUTHORITATI
 QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC = max(
     1.0,
     min(12.0, float((os.getenv("QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC") or "3.5").strip() or "3.5")),
+)
+# Две попытки DeepL перед тем, как отдать запрос следующему в цепочке: замер
+# 09.09.2026 показал, что его подвисания разовые, а качество выше остальных.
+QUICK_TRANSLATE_DEEPL_ATTEMPTS = max(
+    1,
+    min(3, int((os.getenv("QUICK_TRANSLATE_DEEPL_ATTEMPTS") or "2").strip() or "2")),
 )
 QUICK_TRANSLATE_CACHE_TTL_SEC = max(
     15,
@@ -8155,6 +8161,13 @@ def _store_quick_translate_in_pool(
                 source_lang=resolved_source_lang, target_lang=resolved_target_lang,
             ),
         }
+        # КТО ПЕРЕВЁЛ. Без этого следа вопрос «сколько у нас строк от слабого
+        # переводчика» не имеет ответа: 09.09.2026 пришлось перепереводить весь
+        # сентябрь вслепую, потому что отличить строку MyMemory от строки DeepL было
+        # нечем (логи живут один деплой).
+        translator = str(result.get("translator") or result.get("provider") or "").strip()
+        if translator:
+            payload["translator"] = translator
         article = str(result.get("article") or "").strip()
         if article:
             payload["article"] = article
@@ -10340,6 +10353,41 @@ def _lookup_input_kind(text: str | None, lang: str | None) -> str:
     return "phrase"
 
 
+def _resolve_input_kind(text: str | None, lang: str | None) -> str:
+    """Форма ввода с ОГЛЯДКОЙ НА СПРАВОЧНИК ВЫРАЖЕНИЙ, а не по одному счёту слов.
+
+    ┌─ Владелец, 09.09.2026: «словарь вместо счёта слов». ──────────────────────────────┐
+    │ Счёт слов один не годится: «Haare auf den Zähnen haben» — пять слов, но это не    │
+    │ предложение, а идиома, и крупный заголовок у неё не должен быть буквальным        │
+    │ машинным переводом («иметь волосы на зубах», замер DeepL 09.09.2026).             │
+    │                                                                                  │
+    │ Порядок ровно как у PONS: сперва спрашиваем СВОЙ справочник выражений             │
+    │ (backend/german_expressions.py, 2933 идиомы и пословицы из немецкого Викисловаря),│
+    │ и только если он молчит — работает правило формы (_lookup_input_kind).            │
+    │                                                                                  │
+    │ Справочник знает не всё, и это сказано вслух: молчит — значит для нас это текст,  │
+    │ и разбор всё равно найдёт выражение ВНУТРИ (поле embedded_expression).            │
+    └──────────────────────────────────────────────────────────────────────────────────┘
+    """
+    kind = _lookup_input_kind(text, lang)
+    if kind != "sentence":
+        return kind
+    # Справочник спрашиваем ТОЛЬКО у длинного многословного ввода: одиночное слово и
+    # короткая фраза уже разобраны правилом формы, и лишний запрос им не нужен.
+    normalized_lang = _normalize_short_lang_code(lang, fallback="")
+    if normalized_lang and normalized_lang != "de":
+        return kind
+    try:
+        from backend.german_expressions import expression_of
+        if expression_of(text):
+            return "phrase"
+    except Exception:
+        # Справочник не ответил — об этом говорим вслух и работаем по правилу формы.
+        # Молча объявить «предложение» нельзя: это не ответ справочника, это его отказ.
+        logging.warning("справочник выражений не ответил про %r", str(text or "")[:60], exc_info=True)
+    return kind
+
+
 def _stamp_input_kind(item, *, word: str = "", lang: str = ""):
     """Проставить карточке форму ввода, если её ещё нет. Кеш, пул, обратная сторона и
     хвост дообогащения собирают карточку мимо потокового пути, и без штампа полный
@@ -10354,7 +10402,7 @@ def _stamp_input_kind(item, *, word: str = "", lang: str = ""):
         de_side = str(item.get("word_de") or "").strip()
         probe, probe_lang = (de_side, "de") if de_side else (str(item.get("word_ru") or "").strip(), "ru")
     if probe:
-        item["input_kind"] = _lookup_input_kind(probe, probe_lang)
+        item["input_kind"] = _resolve_input_kind(probe, probe_lang)
     return item
 
 
@@ -17806,32 +17854,6 @@ def _quick_translate_libretranslate(text: str, source_lang: str | None, target_l
     }
 
 
-def _quick_translate_mymemory(text: str, source_lang: str | None, target_lang: str) -> dict:
-    target = _normalize_short_lang_code(target_lang, fallback="de")
-    source = _normalize_short_lang_code(source_lang, fallback="auto") if source_lang else "auto"
-    resp = requests.get(
-        "https://api.mymemory.translated.net/get",
-        params={
-            "q": str(text or ""),
-            "langpair": f"{source}|{target}",
-        },
-        timeout=QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC,
-    )
-    if not resp.ok:
-        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:240]}")
-    data = resp.json() if resp.content else {}
-    response_data = data.get("responseData") if isinstance(data, dict) else {}
-    translated = str((response_data or {}).get("translatedText") or "").strip()
-    translated = html.unescape(translated)
-    if not translated:
-        raise RuntimeError("Empty translation from MyMemory")
-    return {
-        "translation": translated,
-        "provider": "mymemory",
-        "detected_source_lang": None,
-    }
-
-
 def _quick_translate_azure(text: str, source_lang: str | None, target_lang: str) -> dict:
     if not AZURE_TRANSLATOR_KEY:
         raise RuntimeError("AZURE_TRANSLATOR_KEY not configured")
@@ -23231,23 +23253,17 @@ def _force_translate_text(
     if not cleaned:
         return ""
 
-    # First: fast non-LLM providers (DeepL/Azure/Google/etc.).
+    # Та же цепочка, что и у быстрого перевода: DeepL → Google → Azure, по очереди.
+    # MyMemory убран отсюда вместе с быстрым переводом (владелец, 09.09.2026): это
+    # запасной путь перевода, и подставлять на нём заведомо слабый источник значит
+    # раздавать неверный немецкий там, где человек его уже не перепроверит.
     quick_providers: list[tuple[str, callable]] = []
     if DEEPL_AUTH_KEY:
         quick_providers.append(("deepl_free", _quick_translate_deepl))
-    if LIBRETRANSLATE_URL:
-        quick_providers.append(("libretranslate", _quick_translate_libretranslate))
-    if AZURE_TRANSLATOR_KEY:
-        quick_providers.append(("azure_translator", _quick_translate_azure))
-    if ARGOS_TRANSLATE_ENABLED:
-        quick_providers.append(("argos_offline", _quick_translate_argos))
-    quick_providers.append(("mymemory", _quick_translate_mymemory))
-    # Google Translate LAST: its 500k/mo free tier expires after the Google Cloud account's
-    # first 12 months, after which it bills from the very first char. So exhaust every
-    # perpetually-free provider above first (DeepL/Libre/Azure-F0/Argos/MyMemory); Google is a
-    # last resort only (the monthly budget still caps it, but we avoid paying while free options exist).
     if GOOGLE_TRANSLATE_API_KEY:
         quick_providers.append(("google_translate", _quick_translate_google))
+    if AZURE_TRANSLATOR_KEY:
+        quick_providers.append(("azure_translator", _quick_translate_azure))
 
     for provider_name, provider_fn in quick_providers:
         try:
@@ -23290,7 +23306,7 @@ def _run_dictionary_core_lookup_sync(
     query_target_lang: str,
     lookup_lang: str,
 ) -> dict[str, Any]:
-    input_kind = _lookup_input_kind(word, query_source_lang)
+    input_kind = _resolve_input_kind(word, query_source_lang)
     raw = asyncio.run(
         run_dictionary_lookup_multilang_core_fast(
             word=word,
@@ -23531,7 +23547,7 @@ def _run_dictionary_enrichment_job(lookup_id: str) -> None:
         enrichment_raw = asyncio.run(
             run_dictionary_enrichment_multilang(
                 word=str(job.get("word") or ""),
-                input_kind=_lookup_input_kind(str(job.get("word") or ""), str(job.get("query_source_lang") or job.get("source_lang") or "")),
+                input_kind=_resolve_input_kind(str(job.get("word") or ""), str(job.get("query_source_lang") or job.get("source_lang") or "")),
                 source_lang=str(job.get("query_source_lang") or ""),
                 target_lang=str(job.get("query_target_lang") or ""),
                 core_result=core_raw,
@@ -41041,12 +41057,6 @@ _QUICK_ARTICLE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="
 # Shared pool for racing the free MT providers concurrently. Module-level (not
 # per-request) so a burst of lookups doesn't churn threads; bounded so it can't run
 # away. Abandoned stragglers just finish and get GC'd — we never shut it down.
-_QUICK_TRANSLATE_PROVIDER_EXECUTOR = ThreadPoolExecutor(
-    max_workers=max(4, min(64, int((os.getenv("QUICK_TRANSLATE_PROVIDER_MAX_WORKERS") or "24").strip() or "24"))),
-    thread_name_prefix="qtrans",
-)
-
-
 _LEADING_GERMAN_ARTICLE_RE = re.compile(r"^(?:der|die|das)\s+", re.IGNORECASE)
 
 
@@ -41606,25 +41616,32 @@ def translate_quick():
 
     attempts: list[dict] = []
     provider_timings_ms: dict[str, int] = {}
-    # Two tiers. The FREE providers (DeepL Free, LibreTranslate, offline Argos,
-    # MyMemory) are raced CONCURRENTLY so a slow/throttled DeepL no longer stalls the
-    # whole request behind a 3.5s timeout before the fallback even starts — we now
-    # keep the highest-priority successful result and return the moment nothing still
-    # running can outrank it. Paid providers (Azure/Google) stay a SEQUENTIAL last
-    # resort so we don't spend per-char money on every lookup when a free one answers.
-    free_providers = []
+    # ┌─ ЦЕПОЧКА ПЕРЕВОДЧИКОВ ПО ОЧЕРЕДИ, А НЕ ГОНКА. Владелец, 09.09.2026. ──────────┐
+    # │ Было: DeepL и MyMemory вызывались ОДНОВРЕМЕННО на каждый запрос, и если DeepL │
+    # │ не успевал за 3 секунды, наружу уходил ответ MyMemory. Владелец: «Зачем       │
+    # │ отправлять всем? Почему не отдать кому-то одному, если не дал ответ — то      │
+    # │ другому?»                                                                    │
+    # │                                                                              │
+    # │ MyMemory — не переводчик, а память чужих переводов с машинной затычкой, и     │
+    # │ качество у неё плавает от фразы к фразе. Замер 09.09.2026 на 20 живых фразах  │
+    # │ из общего пула: MyMemory ошибся в 6 («Ich rate ins Blaue hinein» → «Советую   │
+    # │ залезть в синеву», «Ich habe mich in der Uhrzeit vertan!» → «Я вовремя        │
+    # │ облажался!», «auf taube Ohren stoßen» → «упасть на глухие уши»), DeepL — в    │
+    # │ одной (буквальная идиома). Именно MyMemory дал владельцу «Я даю совет наугад» │
+    # │ вместо «Я гадаю наугад». Он убран отсюда СОВСЕМ, а не понижен в приоритете.   │
+    # │                                                                              │
+    # │ Теперь строго по очереди: DeepL (две попытки) → Google → Azure. Никто не      │
+    # │ ответил — честная ошибка человеку, а НЕ ответ похуже. Порядок Google перед    │
+    # │ Azure — решение владельца 09.09.2026 по качеству; Azure F0 дешевле, и если    │
+    # │ счёт Google вырастет, они меняются местами одной строкой.                     │
+    # └──────────────────────────────────────────────────────────────────────────────┘
+    translate_chain: list[tuple[str, callable, int]] = []
     if DEEPL_AUTH_KEY:
-        free_providers.append(("deepl_free", _quick_translate_deepl))
-    if LIBRETRANSLATE_URL:
-        free_providers.append(("libretranslate", _quick_translate_libretranslate))
-    if ARGOS_TRANSLATE_ENABLED:
-        free_providers.append(("argos_offline", _quick_translate_argos))
-    free_providers.append(("mymemory", _quick_translate_mymemory))
-    paid_providers = []
-    if AZURE_TRANSLATOR_KEY:
-        paid_providers.append(("azure_translator", _quick_translate_azure))
+        translate_chain.append(("deepl_free", _quick_translate_deepl, QUICK_TRANSLATE_DEEPL_ATTEMPTS))
     if GOOGLE_TRANSLATE_API_KEY:
-        paid_providers.append(("google_translate", _quick_translate_google))
+        translate_chain.append(("google_translate", _quick_translate_google, 1))
+    if AZURE_TRANSLATOR_KEY:
+        translate_chain.append(("azure_translator", _quick_translate_azure, 1))
 
     def _has_translation(res) -> bool:
         return isinstance(res, dict) and bool(str(res.get("translation") or "").strip())
@@ -41633,51 +41650,8 @@ def translate_quick():
     chosen_result: dict | None = None
 
     try:
-        # --- Tier 1: race the free providers, decide by priority ---
-        if free_providers:
-            rank = {name: idx for idx, (name, _fn) in enumerate(free_providers)}
-            results_by_name: dict[str, dict] = {}
-            future_started: dict = {}
-            future_name: dict = {}
-            for name, fn in free_providers:
-                fut = _QUICK_TRANSLATE_PROVIDER_EXECUTOR.submit(fn, text, source_lang, target_lang)
-                future_started[fut] = time.perf_counter()
-                future_name[fut] = name
-            pending = set(future_name.keys())
-            deadline = time.perf_counter() + QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC
-            while pending:
-                remaining = deadline - time.perf_counter()
-                if remaining <= 0:
-                    break
-                done, pending = futures_wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
-                if not done:
-                    break
-                for fut in done:
-                    name = future_name[fut]
-                    provider_timings_ms[name] = _elapsed_ms_since(future_started[fut])
-                    try:
-                        res = fut.result()
-                    except Exception as exc:
-                        attempts.append({"provider": name, "error": str(exc)})
-                        continue
-                    if _has_translation(res):
-                        results_by_name[name] = res
-                    else:
-                        attempts.append({"provider": name, "error": "empty"})
-                # Return as soon as the best result so far can't be beaten by
-                # anything still running (no pending provider outranks it). Abandoned
-                # stragglers finish on the shared pool and are discarded.
-                if results_by_name:
-                    best_rank = min(rank[n] for n in results_by_name)
-                    if not any(rank[future_name[f]] < best_rank for f in pending):
-                        break
-            if results_by_name:
-                chosen_name = min(results_by_name, key=lambda n: rank[n])
-                chosen_result = results_by_name[chosen_name]
-
-        # --- Tier 2: paid providers, sequential, only if the free tier came up empty ---
-        if chosen_result is None:
-            for provider_name, translate_func in paid_providers:
+        for provider_name, translate_func, max_attempts in translate_chain:
+            for attempt in range(max_attempts):
                 provider_started_perf = time.perf_counter()
                 try:
                     if provider_name == "google_translate":
@@ -41692,16 +41666,22 @@ def translate_quick():
                     if _has_translation(res):
                         chosen_name, chosen_result = provider_name, res
                         break
-                    attempts.append({"provider": provider_name, "error": "empty"})
+                    attempts.append({"provider": provider_name, "error": "empty", "attempt": attempt + 1})
                 except GoogleTranslateBudgetExceededError as exc:
+                    # Бюджет — не сетевой сбой: повторять этому провайдеру нечего.
                     provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
                     attempts.append({"provider": provider_name, "error": str(exc), "error_code": "MONTHLY_LIMIT_REACHED"})
-                except requests.Timeout:
+                    break
+                except ProviderBudgetExceededError as exc:
                     provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
-                    attempts.append({"provider": provider_name, "error": "timeout"})
+                    attempts.append({"provider": provider_name, "error": str(exc), "error_code": "MONTHLY_LIMIT_REACHED"})
+                    break
                 except Exception as exc:
+                    # Сеть/таймаут — вторая попытка тому же провайдеру, потом следующий.
                     provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
-                    attempts.append({"provider": provider_name, "error": str(exc)})
+                    attempts.append({"provider": provider_name, "error": str(exc)[:200], "attempt": attempt + 1})
+            if chosen_result is not None:
+                break
 
         if chosen_result is not None:
             result = chosen_result
@@ -41714,7 +41694,11 @@ def translate_quick():
                 result["detected_source_lang"] = source_lang
             # Форма ввода — экрану с первого ответа: для предложения крупный заголовок
             # остаётся переводом предложения, что бы ни прислала потом модель (09.09.2026).
-            result["input_kind"] = _lookup_input_kind(text, result.get("detected_source_lang") or source_lang)
+            result["input_kind"] = _resolve_input_kind(text, result.get("detected_source_lang") or source_lang)
+            # Кто перевёл — едет вместе со строкой и ложится в общий пул. До 09.09.2026
+            # этого следа не было, и на вопрос «сколько у нас строк от слабого
+            # переводчика» ответить было нечем: логи живут один деплой.
+            result["translator"] = chosen_name
             # Instant article (Wiktionary only); LLM fill happens in the background.
             _attach_quick_translate_article(result, text, source_lang, target_lang)
             # Часть речи — из нашего же банка слов, тем же дешёвым путём, что и артикль.
@@ -41807,6 +41791,10 @@ def translate_quick():
             {
                 "error": "quick_translation_failed",
                 "error_code": "QUICK_TRANSLATION_FAILED",
+                # Человеческая строка едет вместе с кодом: цепочка провайдеров стала
+                # честной (не ответили — молчим), и этот ответ теперь доходит до экрана.
+                "message": "Переводчик сейчас не отвечает. Попробуй ещё раз через минуту — "
+                           "мы не показываем перевод, в котором не уверены.",
                 "details": attempts,
             }
         ), 502
@@ -42430,7 +42418,7 @@ def lookup_webapp_dictionary():
                     event_type="llm_call",
                     origin="webapp_dictionary",
                     metadata={"word": word_ru, "cache_scope": "gpt",
-                              "input_kind": _lookup_input_kind(word_ru, query_source_lang)},
+                              "input_kind": _resolve_input_kind(word_ru, query_source_lang)},
                 )
             mark("llm_main")
             usage_main = core_payload.get("usage")
@@ -42484,7 +42472,7 @@ def lookup_webapp_dictionary():
                     "direction": direction,
                     "lookup_lang": lookup_lang or None,
                     "lookup_status": "enriching",
-                    "input_kind": _lookup_input_kind(word_ru, query_source_lang),
+                    "input_kind": _resolve_input_kind(word_ru, query_source_lang),
                 },
             )
             _billing_log_openai_usage(
@@ -42923,7 +42911,7 @@ def stream_webapp_dictionary():
         }
 
     # Форма ввода — наш вердикт, он уходит модели фактом. Считается один раз на запрос.
-    input_kind = _lookup_input_kind(word_ru, query_source_lang)
+    input_kind = _resolve_input_kind(word_ru, query_source_lang)
 
     def _generate():
         # The breakdown (разбор) this user opened is personal consumption → attribute its
@@ -75621,6 +75609,18 @@ try:
         )
     except Exception as exc:
         logging.warning("Phase1 projection schema ensure at startup failed: %s", exc)
+
+    try:
+        from backend.german_expressions import ensure_schema as _ensure_expressions_schema
+        _run_startup_phase(
+            "ensure_german_expressions_schema",
+            _ensure_expressions_schema,
+            enabled=_startup_schema_bootstrap_enabled(),
+            category="schema_bootstrap",
+            required_before_first_request=False,
+        )
+    except Exception as exc:
+        logging.warning("German expressions schema ensure at startup failed: %s", exc)
 
     try:
         _run_startup_phase(
