@@ -26578,6 +26578,10 @@ body.worldnews-active .webapp-topbar {
   .webapp-page.is-dict-fill .webapp-video-dictionary {
     padding-bottom: calc(32px + env(safe-area-inset-bottom, 0px));
   }
+  /* Большое поле поиска живёт в этой вписанной в экран цепочке. ПРОВЕРЕНО
+     09.09.2026 (scripts/keyboard_field_audit.py): второе из двух мест с той же
+     архитектурой, что у сломанной карточки «Новости дня». Владелец решил не
+     трогать. Разбор — в App.jsx у обработчика клавиатуры. */
   .webapp-page.is-dict-fill .webapp-shell {
     display: flex;
     flex-direction: column;
@@ -30900,6 +30904,11 @@ html[data-scheme="light"] .story-modal-guess-answer,
   position:relative;             /* снять sticky/fit-content базы */
   overflow:hidden;
 }
+/* Поле «Название» новой папки живёт в этой вписанной в экран цепочке. ПРОВЕРЕНО
+   09.09.2026 в переписи полей (scripts/keyboard_field_audit.py): это одно из двух
+   мест с той же архитектурой, что у сломанной карточки «Новости дня». Владелец
+   решил не трогать — поле короткое и стоит сверху, кнопок под ним нет. Разбор и
+   границы проверки — в App.jsx у обработчика клавиатуры. */
 .webapp-page.is-vocab-library-fixed .webapp-main{
   display:flex; flex-direction:column;
   flex:1 1 auto; min-height:0; overflow:hidden;
