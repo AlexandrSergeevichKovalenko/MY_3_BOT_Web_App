@@ -34478,6 +34478,8 @@ def api_leaderboard():
     def _slim(l):
         return {"user_id": int(l["user_id"]), "name": str(l["name"]), "points": int(l["points"]),
                 "correct": int(l["correct"]), "answered": int(l["answered"]), "golds": int(l["golds"]),
+                # 09.09.2026: место только за очки, равные делят место, ноль — rank null.
+                "rank": l.get("rank"),
                 "prize_eligible": bool(l.get("prize_eligible", True)),
                 "avg_s": round(l["ctime_sum"] / l["ctime_n"] / 1000, 1) if l["ctime_n"] else None}
 

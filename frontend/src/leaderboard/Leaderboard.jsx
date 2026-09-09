@@ -21,13 +21,18 @@ function parseDays(startParam) {
   return Math.max(1, Math.min(365, n || 7));
 }
 
-const medal = (i) => (i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}`);
+// Место приходит с сервера (09.09.2026): только за очки, равные делят место (1, 2, 2, 4),
+// ноль — без места (прочерк). Раньше медаль шла по индексу строки.
+const medal = (rank) => (rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank ? `${rank}` : '—');
 const initials = (n) => (String(n || '?').trim()[0] || '?').toUpperCase();
 
-function PodiumCol({ entry, rank, you }) {
+function PodiumCol({ entry, slot, you }) {
   if (!entry) return <div className="lb-podium-col" />;
-  const cls = rank === 1 ? 'gold' : rank === 2 ? 'silver' : 'bronze';
-  const h = rank === 1 ? 130 : rank === 2 ? 92 : 70;
+  // slot — где стоит столбик (1 в центре, 2 слева, 3 справа); rank — настоящее место,
+  // у равных очков одинаковое.
+  const rank = entry.rank ?? slot;
+  const cls = slot === 1 ? 'gold' : slot === 2 ? 'silver' : 'bronze';
+  const h = slot === 1 ? 130 : slot === 2 ? 92 : 70;
   return (
     <div className={`lb-podium-col ${cls}`}>
       <div className="lb-ava-wrap">
@@ -71,8 +76,9 @@ export default function Leaderboard({ startParam }) {
   if (!data) return <div className="lb-root"><div className="lb-card"><div className="lb-skel" /><div className="lb-skel sm" /></div></div>;
 
   const leaders = data.leaders || [];
-  const top3 = leaders.slice(0, 3);
-  const rest = leaders.slice(3);
+  const ranked = leaders.filter((l) => l.rank != null);
+  const top3 = ranked.slice(0, 3);
+  const rest = leaders.filter((l) => !top3.includes(l));
   const you = data.you;
   const noms = [
     data.fastest && { icon: '⚡', label: 'Самый быстрый', who: data.fastest.name, val: data.fastest.avg_s != null ? `${data.fastest.avg_s} с` : '' },
@@ -87,15 +93,13 @@ export default function Leaderboard({ startParam }) {
           <div className="lb-trophy">🏆</div>
           <h1 className="lb-title">🌍 Глобальный рейтинг</h1>
           <div className="lb-sub">{days === 7 ? 'неделя' : `${days} дн.`} · все игроки приложения · игроков {data.total_players} · заданий {data.total_tasks}</div>
-          {data.min_for_prize ? (
-            <div className="lb-sub">🏅 Для призовых мест нужно ответить ≥ {data.min_for_prize} (≥50% заданий)</div>
-          ) : null}
+          <div className="lb-sub">🏅 Место — за очки: верный ответ даёт цену задания, быстрый — бонус. Без очков места нет.</div>
         </div>
 
         <div className="lb-podium">
-          <PodiumCol entry={top3[1]} rank={2} you={you} />
-          <PodiumCol entry={top3[0]} rank={1} you={you} />
-          <PodiumCol entry={top3[2]} rank={3} you={you} />
+          <PodiumCol entry={top3[1]} slot={2} you={you} />
+          <PodiumCol entry={top3[0]} slot={1} you={you} />
+          <PodiumCol entry={top3[2]} slot={3} you={you} />
         </div>
 
         {rest.length ? (
@@ -103,7 +107,7 @@ export default function Leaderboard({ startParam }) {
             {rest.map((l, i) => (
               <div className={`lb-row${l.user_id === you ? ' me' : ''}`} key={l.user_id}
                 style={{ animationDelay: `${Math.min(i, 12) * 0.04}s` }}>
-                <span className="lb-rank">{medal(i + 3)}</span>
+                <span className="lb-rank">{medal(l.rank)}</span>
                 <span className="lb-ava sm">{initials(l.name)}</span>
                 <span className="lb-name">{l.name}</span>
                 <span className="lb-stat">{l.correct}✓</span>

@@ -167,7 +167,10 @@ def render_champion_poster(lb: dict, *, week_no: int, days: int, avatars: dict |
                            hero_png: bytes | None = None) -> bytes | None:
     if Image is None:
         return None
-    leaders = (lb or {}).get("leaders") or []
+    # Владелец 09.09.2026: на пьедестал — только с очками (rank задан), равные очки — один
+    # номер в значке, в строке чемпиона — все имена первого места. Нет ни одного с очками —
+    # плаката нет.
+    leaders = [l for l in ((lb or {}).get("leaders") or []) if l.get("rank") is not None]
     if not leaders:
         return None
     avatars = avatars or {}
@@ -195,7 +198,8 @@ def render_champion_poster(lb: dict, *, week_no: int, days: int, avatars: dict |
 
     # Champion
     champ = leaders[0]
-    _ctext(d, W // 2, 600, _ltext_trunc(champ["name"], _font(70), d, W - 120), _font(70), WHITE)
+    champ_names = " & ".join(str(l["name"]) for l in leaders if l.get("rank") == 1) or str(champ["name"])
+    _ctext(d, W // 2, 600, _ltext_trunc(champ_names, _font(70), d, W - 120), _font(70), WHITE)
     _ctext(d, W // 2, 686,
            f"{champ['points']} очков · {champ['correct']}/{champ['answered']} ✓ · {champ['golds']}× Gold",
            _font(34, False), GOLD_LT)
@@ -216,7 +220,7 @@ def render_champion_poster(lb: dict, *, week_no: int, days: int, avatars: dict |
         ldr = order.get(rank)
         if not ldr:
             continue
-        _podium_bar(base, d, x, base_y, bw, h, col, dk, rank, ldr["name"], ldr["points"],
+        _podium_bar(base, d, x, base_y, bw, h, col, dk, ldr.get("rank") or rank, ldr["name"], ldr["points"],
                     avatars.get(int(ldr["user_id"])))
 
     # Nominations

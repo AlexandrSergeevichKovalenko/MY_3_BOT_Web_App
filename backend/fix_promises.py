@@ -552,6 +552,35 @@ def _sprint_accepted_article_mismatch() -> int:
     return n
 
 
+def _champion_zero_with_place() -> int:
+    """Игроков суточного рейтинга (тот же расчёт, что у вечернего «Чемпиона дня» и
+    мини-аппа) с 0 очков и назначенным местом. Обещано: 0 (09.09.2026). Повод —
+    «Olga: 1 место, 0 очков, 0/7» над Oleg 45 из-за ворот «половина заданий»."""
+    from backend.quiz_leaderboard import get_quiz_leaderboard
+    lb = get_quiz_leaderboard(1)
+    return sum(1 for l in (lb.get("leaders") or []) if int(l.get("points") or 0) <= 0 and l.get("rank") is not None)
+
+
+def _champion_day_screen() -> str:
+    """Экран владельца «после»: сегодняшний суточный рейтинг тем же расчётом, что плакат
+    «Чемпион дня» — место, имя, очки, верно/отвечено. Первые три утра приходит сам."""
+    from backend.quiz_leaderboard import get_quiz_leaderboard
+    lb = get_quiz_leaderboard(1)
+    leaders = lb.get("leaders") or []
+    if not leaders:
+        return "За сутки никто не отвечал — чемпиона дня нет, плакат не уходит."
+    lines = [f"Суточный рейтинг (заданий {lb.get('total_tasks', 0)}):"]
+    for l in leaders[:7]:
+        place = f"{l['rank']} место" if l.get("rank") else "без места"
+        lines.append(f"{place}: {l['name']} — {l['points']} очк., {l['correct']}/{l['answered']} верно")
+    noms = []
+    for key, label in (("accurate", "самый точный"), ("active", "самый активный"), ("fastest", "самый быстрый")):
+        if lb.get(key):
+            noms.append(f"{label} — {lb[key]['name']}")
+    lines.append("Номинации: " + ("; ".join(noms) if noms else "нет (ни у кого нет очков)"))
+    return "\n".join(lines)
+
+
 def _sprint_review_open_stale() -> int:
     """Кандидатов в очереди синонимов без итогового решения старше двух суток.
     Обещано: 0 (08.09.2026, владелец: «модель ставит итоговую точку»). До 08.09 считалось
@@ -889,6 +918,16 @@ PROMISES: tuple[Promise, ...] = (
         expected=0,
         measure=_sprint_accepted_article_mismatch,
         how="python3 -c \"from backend.fix_promises import _sprint_accepted_article_mismatch as f; print(f())\"",
+    ),
+    Promise(
+        key="champion_no_place_for_zero",
+        title="Игроков суточного рейтинга (чемпион дня / мини-апп) с 0 очков и местом",
+        since="09.09.2026",
+        expected=0,
+        measure=_champion_zero_with_place,
+        how="python3 -c \"from backend.quiz_leaderboard import get_quiz_leaderboard as g; "
+            "print([(l['name'], l['points'], l['rank']) for l in g(1)['leaders']])\" — у points=0 rank None",
+        screen=_champion_day_screen,
     ),
     Promise(
         key="sprint_review_open_stale",
