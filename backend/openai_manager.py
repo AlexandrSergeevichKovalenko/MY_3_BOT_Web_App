@@ -3396,10 +3396,9 @@ Task:
   * embedded_expression: if the sentence CONTAINS an idiom, saying or fixed collocation, return
     {"source": "<the expression in its dictionary form, e.g. 'ins Blaue hinein raten'>",
      "target": "<its meaning in target_language>", "kind": "idiom|saying|collocation"}; otherwise null.
-    Then meanings, synonyms, examples, etymology_note, memory_tip, when_to_use describe THAT
-    expression, not the sentence.
+    Then meanings and examples describe THAT expression, not the sentence.
   * With no embedded expression: meanings.primary.value = the sentence translation, secondary = [],
-    synonyms/antonyms/etymology_note/memory_tip = null or [] — a plain sentence is not a headword.
+    — a plain sentence is not a headword.
 - Detect obvious typos only when confidence is high and normalize the lookup form.
 
 Return STRICT JSON with keys:
