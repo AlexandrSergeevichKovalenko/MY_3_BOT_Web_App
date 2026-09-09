@@ -3397,8 +3397,8 @@ Task:
     {"source": "<the expression in its dictionary form, e.g. 'ins Blaue hinein raten'>",
      "target": "<its meaning in target_language>", "kind": "idiom|saying|collocation"}; otherwise null.
     Then meanings and examples describe THAT expression, not the sentence.
-  * With no embedded expression: meanings.primary.value = the sentence translation, secondary = [],
-    — a plain sentence is not a headword.
+  * With no embedded expression: meanings.primary.value = the sentence translation, secondary = []
+    (a plain sentence is not a headword).
 - Detect obvious typos only when confidence is high and normalize the lookup form.
 
 Return STRICT JSON with keys:

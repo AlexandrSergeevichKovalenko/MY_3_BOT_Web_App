@@ -118,3 +118,26 @@ class TestTheExpressionInsideTheSentenceReachesTheCard:
         assert item["embedded_expression"]["source"] == "ins Blaue hinein raten"
         assert item["phrase_kind"] == "sentence"
         assert item["translation_ru"] == "Я не знаю ответа, я гадаю наугад"
+
+
+class TestEveryServedCardCarriesTheVerdict:
+    """Кеш, пул, обратная сторона и хвост дообогащения собирают карточку мимо потокового
+    пути; без штампа полный словарь возвращал подмену заголовка через опрос статуса
+    (найдено опровергателем 09.09.2026)."""
+
+    def test_stamp_from_the_asked_word(self):
+        from backend.backend_server import _stamp_input_kind
+        item = _stamp_input_kind({"source_text": "x"}, word=OWNERS_SENTENCE, lang="de")
+        assert item["input_kind"] == "sentence"
+
+    def test_stamp_from_the_card_itself_when_no_word_given(self):
+        from backend.backend_server import _stamp_input_kind
+        item = _stamp_input_kind({"source_text": OWNERS_SENTENCE, "language_pair": {"source_lang": "de"}})
+        assert item["input_kind"] == "sentence"
+        word = _stamp_input_kind({"word_de": "der Hund", "word_ru": "собака"})
+        assert word["input_kind"] == "word"
+
+    def test_an_existing_verdict_is_never_overwritten(self):
+        from backend.backend_server import _stamp_input_kind
+        item = _stamp_input_kind({"input_kind": "phrase", "source_text": OWNERS_SENTENCE}, word=OWNERS_SENTENCE, lang="de")
+        assert item["input_kind"] == "phrase"

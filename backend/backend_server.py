@@ -10340,6 +10340,24 @@ def _lookup_input_kind(text: str | None, lang: str | None) -> str:
     return "phrase"
 
 
+def _stamp_input_kind(item, *, word: str = "", lang: str = ""):
+    """Проставить карточке форму ввода, если её ещё нет. Кеш, пул, обратная сторона и
+    хвост дообогащения собирают карточку мимо потокового пути, и без штампа полный
+    словарь снова подменял заголовок предложения ответом модели (найдено
+    опровергателем 09.09.2026). Слово — то, что спросили; нет его — исходная сторона
+    самой карточки."""
+    if not isinstance(item, dict) or str(item.get("input_kind") or "").strip():
+        return item
+    probe = str(word or item.get("source_text") or "").strip()
+    probe_lang = str(lang or (item.get("language_pair") or {}).get("source_lang") or "").strip()
+    if not probe:
+        de_side = str(item.get("word_de") or "").strip()
+        probe, probe_lang = (de_side, "de") if de_side else (str(item.get("word_ru") or "").strip(), "ru")
+    if probe:
+        item["input_kind"] = _lookup_input_kind(probe, probe_lang)
+    return item
+
+
 def _detect_dictionary_entry_kind(
     *,
     source_text: str,
@@ -23536,6 +23554,9 @@ def _run_dictionary_enrichment_job(lookup_id: str) -> None:
             query_source_lang=str(job.get("query_source_lang") or ""),
             query_target_lang=str(job.get("query_target_lang") or ""),
             lookup_lang=str(job.get("lookup_lang") or ""),
+        )
+        final_item = _stamp_input_kind(
+            final_item, word=str(job.get("word") or ""), lang=str(job.get("query_source_lang") or ""),
         )
         cache_payload = {
             "item": final_item,
@@ -41927,6 +41948,7 @@ def _serve_dictionary_item(item):
             item,
             native_lang=str((item.get("language_pair") or {}).get("source_lang") or "ru"),
         )
+        item = _stamp_input_kind(item)
     return _with_corpus_examples(_with_grammar_tables(item))
 
 
@@ -42462,6 +42484,7 @@ def lookup_webapp_dictionary():
                     "direction": direction,
                     "lookup_lang": lookup_lang or None,
                     "lookup_status": "enriching",
+                    "input_kind": _lookup_input_kind(word_ru, query_source_lang),
                 },
             )
             _billing_log_openai_usage(

@@ -455,7 +455,9 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
   // One clean der/die/das for both the source and translation spans. Артикль
   // выбранной статьи главнее всего: он приехал вместе с её частью речи и родом,
   // а не был приклеен к чужому слову отдельным запросом.
-  const dqArticle = chosenEntry ? String(chosenEntry.gender || '') : resolveArticle(item, quick);
+  // У предложения артикля нет: первое слово «Der Hund bellt…» — не артикль заголовка,
+  // и рисовать его цветной плашкой значило бы получить «der Der Hund…».
+  const dqArticle = isSentence ? '' : (chosenEntry ? String(chosenEntry.gender || '') : resolveArticle(item, quick));
   // Показанная поверхность может быть формой слова. Тогда артикль у неё свой («die»
   // у именительного множественного), а само слово подписывается отдельной строкой —
   // как это делают dict.cc и DWDS. Артикль леммы берём из разбора, если он уже пришёл.
@@ -1532,8 +1534,6 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
               <WordBreakdown
                 item={item}
                 tts={tts}
-                // Предложение без выражения внутри: «Значения» повторили бы заголовок.
-                hideMeanings={isSentence && !item?.embedded_expression?.source}
                 // Строку «форма слова …» здесь не дублируем: своя «мн. ч. от …» уже выше.
                 hideFormNote={dqNumber === 'pl' && !!dqLemma}
                 onSaveChip={saveChip}

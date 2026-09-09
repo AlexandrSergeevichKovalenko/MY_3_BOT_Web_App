@@ -768,8 +768,11 @@ def _sentence_lookups_without_input_kind() -> int:
     «Подробного разбора» показал крупно «угадывать без оснований, наугад» — модель сама
     решила, что перед ней выражение. Теперь форму ввода решает сервер
     (_lookup_input_kind) и сообщает модели фактом; след — metadata.input_kind у события
-    dictionary_lookup. Предложение без этой пометки — значит, к модели снова ушёл
-    вопрос, а не факт."""
+    dictionary_lookup (provider app_internal, одно на обращение; у строк расхода токенов
+    OpenAI своё поле input_kind = fresh|cached, их не считаем). Предложение без пометки
+    — значит, разбор прошёл через дверь, где сервер форму ввода не назвал (откат кода
+    или новая дверь без штампа). Что модель получила поле — проверяет тест
+    test_sentence_headline_stays_the_sentence.py, не этот замер."""
     from backend.backend_server import _looks_like_dictionary_sentence
     from backend.database import get_db_connection_context
     with get_db_connection_context() as conn:
@@ -777,9 +780,9 @@ def _sentence_lookups_without_input_kind() -> int:
             cursor.execute("""SELECT metadata->>'word', metadata->>'input_kind'
                               FROM bt_3_billing_events
                               WHERE action_type = 'dictionary_lookup'
+                                AND provider = 'app_internal' AND units_type = 'requests'
                                 AND created_at >= '2026-09-10'
-                                AND (metadata->>'lookup_status' = 'stream'
-                                     OR metadata->>'cache_scope' = 'gpt')""")
+                                AND metadata->>'lookup_status' IN ('stream', 'enriching')""")
             rows = cursor.fetchall() or []
     return sum(1 for word, kind in rows
                if _looks_like_dictionary_sentence(word) and (kind or "") != "sentence")
@@ -795,9 +798,9 @@ def _sentence_lookups_screen() -> str:
             cursor.execute("""SELECT created_at::date, metadata->>'word', metadata->>'input_kind'
                               FROM bt_3_billing_events
                               WHERE action_type = 'dictionary_lookup'
+                                AND provider = 'app_internal' AND units_type = 'requests'
                                 AND created_at >= '2026-09-10'
-                                AND (metadata->>'lookup_status' = 'stream'
-                                     OR metadata->>'cache_scope' = 'gpt')
+                                AND metadata->>'lookup_status' IN ('stream', 'enriching')
                                 AND metadata->>'word' LIKE '% %'
                               ORDER BY created_at DESC LIMIT 8""")
             recent = cursor.fetchall() or []
@@ -1108,8 +1111,9 @@ PROMISES: tuple[Promise, ...] = (
         expected=0,
         measure=_sentence_lookups_without_input_kind,
         how="SELECT metadata->>'word', metadata->>'input_kind' FROM bt_3_billing_events WHERE "
-            "action_type='dictionary_lookup' AND created_at >= '2026-09-10' AND (metadata->>'lookup_status'='stream' "
-            "OR metadata->>'cache_scope'='gpt'); предложения (5+ слов или 3+ со знаком конца) без input_kind='sentence'. "
+            "action_type='dictionary_lookup' AND provider='app_internal' AND units_type='requests' AND "
+            "created_at >= '2026-09-10' AND metadata->>'lookup_status' IN ('stream','enriching'); "
+            "предложения (5+ слов или 3+ со знаком конца) без input_kind='sentence'. "
             "Руками — быстрый словарь, «Ich weiß die Antwort nicht, ich rate ins Blaue hinein», «Подробный разбор»: "
             "крупно перевод предложения, ниже блок «Выражение в предложении»",
         screen=_sentence_lookups_screen,
