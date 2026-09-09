@@ -183,6 +183,19 @@ with get_db_connection_context() as conn:
         n, classes = cur.fetchone()
         print("   %-52s %s" % ("решений владельца в реестре (классов: %d)" % classes, n))
 
+# 13. предложение переводится как предложение (09.09.2026): две строки пула, где заголовок
+# предложения был схлопнут в лемму, несут перевод предложения; разборы предложений с 10.09
+# уходят к модели с пометкой «предложение» (обещание sentence_lookups_carry_input_kind).
+with get_db_connection_context() as conn:
+    with conn.cursor() as cur:
+        cur.execute("""SELECT count(*) FROM bt_3_dictionary_entries
+                       WHERE id IN (33971, 30299)
+                         AND target_text IN ('надеяться, что найдётся решение',
+                                             'постепенно начинать доверять кому-либо')""")
+        check("пул: предложение схлопнуто в лемму (id 33971, 30299)", cur.fetchone()[0], 0)
+from backend.fix_promises import _sentence_lookups_without_input_kind
+check("разборы предложений без пометки «предложение» с 10.09", _sentence_lookups_without_input_kind(), 0)
+
 # 12. живая выдача
 for q, want in (("schlammig", "schlammig"), ("Gericht", "das Gericht"), ("die Habe", "die Habe")):
     it = LU.lookup(q, source_lang="de", target_lang="ru")

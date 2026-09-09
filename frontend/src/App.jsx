@@ -24156,6 +24156,9 @@ function AppInner() {
         // Ответ машинного переводчика, а не словарная статья. Именно он 01.09.2026
         // выдал «рыется» — слова, которого в русском нет. Показываем, но подписываем.
         machine: !!data?.machine,
+        // Форма ввода — вердикт сервера (word | phrase | sentence). Для предложения
+        // заголовок остаётся переводом предложения и после разбора (09.09.2026).
+        inputKind: String(data?.input_kind || '').trim(),
       };
       quickTranslateCacheRef.current.set(cacheKey, { ts: Date.now(), payload });
       if (quickTranslateCacheRef.current.size > 200) {
@@ -32755,6 +32758,7 @@ function AppInner() {
       forms: {},
       usage_examples: [],
       provider: quick.provider || '',
+      input_kind: String(quick.inputKind || '').trim(),
       quick_mode: true,
       __offer_breakdown: Boolean(offerBreakdown),
     });
@@ -32849,8 +32853,20 @@ function AppInner() {
 
   // Promote a fetched breakdown response into the visible card + start the tail poll.
   const applyDictBreakdown = (data) => {
-    const rich = data && data.item ? data.item : null;
+    let rich = data && data.item ? data.item : null;
     if (!rich) return null;
+    // ПРЕДЛОЖЕНИЕ ПЕРЕВОДИТСЯ КАК ПРЕДЛОЖЕНИЕ (владелец, 09.09.2026). Разбор модели
+    // приходит про выражение внутри предложения, и его word_target раньше подменял
+    // заголовок целиком: «Ich weiß die Antwort nicht, ich rate ins Blaue hinein» →
+    // «угадывать без оснований, наугад». Заголовок предложения — перевод от
+    // переводчика, снятый быстрым переводом; разбор идёт под ним.
+    const prev = dictionaryResult;
+    const kind = String(rich.input_kind || prev?.input_kind || '').trim();
+    if (kind === 'sentence' && prev?.quick_mode && prev.target_text) {
+      // Заголовок читает source_text / target_text (getDictionarySourceTarget);
+      // остальные поля модели остаются карточке под ним.
+      rich = { ...rich, input_kind: 'sentence', source_text: prev.source_text, target_text: prev.target_text };
+    }
     setDictionaryResult(rich);
     if (data.direction) setDictionaryDirection(data.direction || resolveDictionaryDirection(rich));
     if (data.language_pair) setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));

@@ -10316,6 +10316,30 @@ def _is_single_word_dictionary_entry(value: str | None, lang: str | None) -> boo
     return len(tokens) == 1
 
 
+def _lookup_input_kind(text: str | None, lang: str | None) -> str:
+    """Форма того, что человек набрал: «word» | «phrase» | «sentence».
+
+    ┌─ ПОВОД, владелец 09.09.2026 ──────────────────────────────────────────────────┐
+    │ Набрал «Ich weiß die Antwort nicht, ich rate ins Blaue hinein», нажал         │
+    │ «Подробный разбор» — и крупно вместо перевода предложения встало толкование   │
+    │ идиомы «угадывать без оснований, наугад». Кто решал, предложение это или      │
+    │ выражение? Только модель, полем phrase_kind, и в потоковой подсказке значения │
+    │ «предложение» не было вовсе. На двери СОХРАНЕНИЯ то же решает наш текст       │
+    │ (_looks_like_dictionary_sentence). Две двери — два разных судьи — два разных  │
+    │ ответа. Теперь судья один: этот, и его вердикт уходит модели как факт,        │
+    │ а не как вопрос. Это не грамматика, а форма ввода: число слов и знаки конца.  │
+    └───────────────────────────────────────────────────────────────────────────────┘
+    """
+    value = str(text or "").strip()
+    if not value:
+        return "word"
+    if _is_single_word_dictionary_entry(value, lang):
+        return "word"
+    if _looks_like_dictionary_sentence(value):
+        return "sentence"
+    return "phrase"
+
+
 def _detect_dictionary_entry_kind(
     *,
     source_text: str,
@@ -23145,6 +23169,10 @@ def _build_multilang_dictionary_result(
         "phrase_kind",
         "literal_meaning",
         "when_to_use",
+        # Выражение, найденное ВНУТРИ предложения (input_kind = sentence): заголовок —
+        # перевод предложения, а это — отдельный блок под ним (владелец, 09.09.2026).
+        "embedded_expression",
+        "input_kind",
         "connotation",
         "synonym_differences",
         "register_examples",
@@ -23244,6 +23272,7 @@ def _run_dictionary_core_lookup_sync(
     query_target_lang: str,
     lookup_lang: str,
 ) -> dict[str, Any]:
+    input_kind = _lookup_input_kind(word, query_source_lang)
     raw = asyncio.run(
         run_dictionary_lookup_multilang_core_fast(
             word=word,
@@ -23251,6 +23280,7 @@ def _run_dictionary_core_lookup_sync(
             target_lang=query_target_lang,
             # explanations always in the user's native language, never the swapped query source
             explanation_lang=source_lang,
+            input_kind=input_kind,
         )
     )
     usage = get_last_llm_usage(reset=True)
@@ -23264,6 +23294,8 @@ def _run_dictionary_core_lookup_sync(
         query_target_lang=query_target_lang,
         lookup_lang=lookup_lang,
     )
+    if isinstance(item, dict):
+        item["input_kind"] = input_kind
     return {
         "raw": raw if isinstance(raw, dict) else {},
         "item": item,
@@ -23481,6 +23513,7 @@ def _run_dictionary_enrichment_job(lookup_id: str) -> None:
         enrichment_raw = asyncio.run(
             run_dictionary_enrichment_multilang(
                 word=str(job.get("word") or ""),
+                input_kind=_lookup_input_kind(str(job.get("word") or ""), str(job.get("query_source_lang") or job.get("source_lang") or "")),
                 source_lang=str(job.get("query_source_lang") or ""),
                 target_lang=str(job.get("query_target_lang") or ""),
                 core_result=core_raw,
@@ -41094,6 +41127,8 @@ def _build_quick_translate_from_entries(entries, text, source_lang, target_lang)
         # Весь список — то, ради чего всё и затевалось.
         "entries": entries,
         "entry_lang": other_lang,
+        # Статьи находятся только у одиночного слова (слой статей отбрасывает пробел).
+        "input_kind": "word",
     }
 
 
@@ -41656,6 +41691,9 @@ def translate_quick():
             result["machine"] = True
             if not result.get("detected_source_lang") and source_lang:
                 result["detected_source_lang"] = source_lang
+            # Форма ввода — экрану с первого ответа: для предложения крупный заголовок
+            # остаётся переводом предложения, что бы ни прислала потом модель (09.09.2026).
+            result["input_kind"] = _lookup_input_kind(text, result.get("detected_source_lang") or source_lang)
             # Instant article (Wiktionary only); LLM fill happens in the background.
             _attach_quick_translate_article(result, text, source_lang, target_lang)
             # Часть речи — из нашего же банка слов, тем же дешёвым путём, что и артикль.
@@ -42369,7 +42407,8 @@ def lookup_webapp_dictionary():
                     feature_code=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
                     event_type="llm_call",
                     origin="webapp_dictionary",
-                    metadata={"word": word_ru, "cache_scope": "gpt"},
+                    metadata={"word": word_ru, "cache_scope": "gpt",
+                              "input_kind": _lookup_input_kind(word_ru, query_source_lang)},
                 )
             mark("llm_main")
             usage_main = core_payload.get("usage")
@@ -42811,6 +42850,8 @@ def stream_webapp_dictionary():
             query_source_lang=query_source_lang, query_target_lang=query_target_lang,
             lookup_lang=lookup_lang,
         )
+        if isinstance(item, dict):
+            item["input_kind"] = input_kind
         deep_id = _store_quick_dict_deep_record(
             user_id=user_id, word=word_ru, source_lang=source_lang, target_lang=target_lang,
             direction=direction, raw=raw if isinstance(raw, dict) else {},
@@ -42839,7 +42880,8 @@ def stream_webapp_dictionary():
             user_id=user_id, action_type="dictionary_lookup", provider="app_internal", units_type="requests",
             units_value=1.0, source_lang=source_lang, target_lang=target_lang,
             idempotency_seed=f"dict_lookup_stream:{user_id}:{source_lang}:{target_lang}:{word_ru.lower()}:{direction}:{time.time_ns()}",
-            status="estimated", metadata={"word": word_ru, "direction": direction, "lookup_status": "stream"},
+            status="estimated", metadata={"word": word_ru, "direction": direction, "lookup_status": "stream",
+                                          "input_kind": input_kind},
         )
         _billing_log_openai_usage(
             user_id=user_id, action_type="dictionary_lookup", source_lang=source_lang, target_lang=target_lang,
@@ -42857,6 +42899,9 @@ def stream_webapp_dictionary():
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
 
+    # Форма ввода — наш вердикт, он уходит модели фактом. Считается один раз на запрос.
+    input_kind = _lookup_input_kind(word_ru, query_source_lang)
+
     def _generate():
         # The breakdown (разбор) this user opened is personal consumption → attribute its
         # OpenAI cost (auto-logged as dictionary_assistant_multilang by the gateway) to THEM.
@@ -42871,7 +42916,7 @@ def stream_webapp_dictionary():
             try:
                 for section in stream_dictionary_breakdown_sections(
                     word=word_ru, source_lang=query_source_lang, target_lang=query_target_lang,
-                    explanation_lang=source_lang,
+                    explanation_lang=source_lang, input_kind=input_kind,
                 ):
                     if not isinstance(section, dict):
                         continue

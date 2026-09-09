@@ -420,13 +420,26 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
   // Strip the article from EVERY German fallback (not just word_de). The colored
   // article renders in its own span, so an un-stripped "das Kabel" here plus the
   // span produced "der das Kabel".
+  // ПРЕДЛОЖЕНИЕ ПЕРЕВОДИТСЯ КАК ПРЕДЛОЖЕНИЕ. Владелец 09.09.2026 набрал «Ich weiß die
+  // Antwort nicht, ich rate ins Blaue hinein», и после «Подробного разбора» крупно
+  // встало «угадывать без оснований, наугад» — толкование идиомы вместо перевода
+  // предложения. Ответ модели про выражение внутри предложения идёт блоком ниже
+  // («Выражение в предложении»), а заголовок он не трогает ни в потоке, ни по done.
+  const isSentence = quick?.inputKind === 'sentence';
   const headTranslation = chosenEntry
     ? (quick?.targetLang === 'de'
       ? (chosenEntry.headword || '—')
       : (chosenEntry.translation || chosenEntry.translations?.[0] || '—'))
-    : (quick?.targetLang === 'de'
-      ? (corrDe || stripLeadingArticle(quick?.translation) || '—')
-      : (bestRu || quick?.translation || '—'));
+    : (isSentence
+      ? (quick?.translation || '—')
+      : (quick?.targetLang === 'de'
+        ? (corrDe || stripLeadingArticle(quick?.translation) || '—')
+        : (bestRu || quick?.translation || '—')));
+  // Заголовок сейчас действительно машинный? Пока не приехал разбор — да; для
+  // предложения — всегда. Подпись «машинный перевод» обязана говорить про то, что
+  // человек видит крупно, а не про первый ответ переводчика.
+  const headIsMachine = !!quick?.machine && !entries.length
+    && (isSentence || !(quick?.targetLang === 'de' ? corrDe : bestRu));
   // Текст для обратного поиска — ровно то, что человек видит крупно как перевод.
   // Пусто — значит переворачивать нечего (ещё не переводили, или ответ пуст), и
   // кнопка ⇄ гаснет, а не делает вид, что работает.
@@ -516,6 +529,10 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
         // Спросили форму («ging»), отвечаем словарной формой («gehen»). Подпись
         // обязательна: иначе человек решит, что мы подменили его слово.
         formOf: String(data?.form_of || '').trim(),
+        // Форма ввода — вердикт сервера (word | phrase | sentence), тем же правилом,
+        // что стоит на двери сохранения. Для предложения крупный заголовок остаётся
+        // переводом предложения, что бы ни прислала потом модель (владелец, 09.09.2026).
+        inputKind: String(data?.input_kind || '').trim(),
       };
       setChosen(0);
       setQuick(nextQuick);
@@ -1475,8 +1492,12 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
             {/* Ответ машинного переводчика, а не словарная статья: слова у нас нет,
                 грамматику мы про него не знаем и выдумывать не станем. Человек
                 должен видеть разницу — это ровно то, чего не хватало. */}
-            {quick.machine && !entries.length && (
-              <div className="dq-machine-note">машинный перевод — этого слова нет в словаре</div>
+            {headIsMachine && (
+              <div className="dq-machine-note">
+                {isSentence
+                  ? 'перевод предложения — машинный переводчик'
+                  : 'машинный перевод — этого слова нет в словаре'}
+              </div>
             )}
             {/* Ответ по СЛОВОФОРМЕ: статью нашли не по написанию, а через справочник
                 спряжений («ging» напечатано целой ячейкой у «gehen»). Подписываем так
@@ -1511,6 +1532,8 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
               <WordBreakdown
                 item={item}
                 tts={tts}
+                // Предложение без выражения внутри: «Значения» повторили бы заголовок.
+                hideMeanings={isSentence && !item?.embedded_expression?.source}
                 // Строку «форма слова …» здесь не дублируем: своя «мн. ч. от …» уже выше.
                 hideFormNote={dqNumber === 'pl' && !!dqLemma}
                 onSaveChip={saveChip}

@@ -760,6 +760,64 @@ def _reader_sources_screen() -> str:
     return "\n".join(lines)
 
 
+def _sentence_lookups_without_input_kind() -> int:
+    """Сколько разборов ПРЕДЛОЖЕНИЙ с 10.09.2026 ушли к модели без пометки «предложение».
+    Обещано: 0.
+
+    Владелец 09.09.2026: «Ich weiß die Antwort nicht, ich rate ins Blaue hinein» после
+    «Подробного разбора» показал крупно «угадывать без оснований, наугад» — модель сама
+    решила, что перед ней выражение. Теперь форму ввода решает сервер
+    (_lookup_input_kind) и сообщает модели фактом; след — metadata.input_kind у события
+    dictionary_lookup. Предложение без этой пометки — значит, к модели снова ушёл
+    вопрос, а не факт."""
+    from backend.backend_server import _looks_like_dictionary_sentence
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""SELECT metadata->>'word', metadata->>'input_kind'
+                              FROM bt_3_billing_events
+                              WHERE action_type = 'dictionary_lookup'
+                                AND created_at >= '2026-09-10'
+                                AND (metadata->>'lookup_status' = 'stream'
+                                     OR metadata->>'cache_scope' = 'gpt')""")
+            rows = cursor.fetchall() or []
+    return sum(1 for word, kind in rows
+               if _looks_like_dictionary_sentence(word) and (kind or "") != "sentence")
+
+
+def _sentence_lookups_screen() -> str:
+    """Экран «после»: последние разборы многословного ввода и как их назвал сервер, плюс
+    строки пула для фразы владельца — ровно то, что стоит крупно в заголовке."""
+    from backend.backend_server import _lookup_input_kind
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""SELECT created_at::date, metadata->>'word', metadata->>'input_kind'
+                              FROM bt_3_billing_events
+                              WHERE action_type = 'dictionary_lookup'
+                                AND created_at >= '2026-09-10'
+                                AND (metadata->>'lookup_status' = 'stream'
+                                     OR metadata->>'cache_scope' = 'gpt')
+                                AND metadata->>'word' LIKE '% %'
+                              ORDER BY created_at DESC LIMIT 8""")
+            recent = cursor.fetchall() or []
+            cursor.execute("""SELECT source_text, target_text FROM bt_3_dictionary_entries
+                              WHERE source_lang = 'de' AND target_lang = 'ru'
+                                AND source_text_norm LIKE '%rate ins blaue%'
+                              ORDER BY updated_at DESC LIMIT 4""")
+            pool = cursor.fetchall() or []
+    lines = ["📖 Разборы многословного ввода с 10.09 — как сервер назвал форму ввода:"]
+    if not recent:
+        lines.append("  (пока ни одного)")
+    for day, word, kind in recent:
+        lines.append(f"  {day} · {kind or '— БЕЗ ПОМЕТКИ'} · {str(word)[:70]}")
+    lines.append("📌 Фраза владельца в пуле (заголовок = перевод предложения):")
+    for src, tgt in pool:
+        lines.append(f"  {src[:60]} → {tgt[:60]} · {_lookup_input_kind(src, 'de')}")
+    lines.append(f"🤝 Разборов предложений без пометки с 10.09: {_sentence_lookups_without_input_kind()}")
+    return "\n".join(lines)
+
+
 PROMISES: tuple[Promise, ...] = (
     Promise(
         key="db_guardrails_alive",
@@ -1042,6 +1100,19 @@ PROMISES: tuple[Promise, ...] = (
             "AND source_id IS NULL AND created_at >= '2026-09-07'; руками — открыть книгу "
             "«Текст видео», сохранить слово, в словаре «Откуда» найти его под названием ролика",
         screen=_reader_sources_screen,
+    ),
+    Promise(
+        key="sentence_lookups_carry_input_kind",
+        title="Разбор предложения уходит к модели с пометкой «предложение», заголовок остаётся переводом предложения",
+        since="10.09.2026",
+        expected=0,
+        measure=_sentence_lookups_without_input_kind,
+        how="SELECT metadata->>'word', metadata->>'input_kind' FROM bt_3_billing_events WHERE "
+            "action_type='dictionary_lookup' AND created_at >= '2026-09-10' AND (metadata->>'lookup_status'='stream' "
+            "OR metadata->>'cache_scope'='gpt'); предложения (5+ слов или 3+ со знаком конца) без input_kind='sentence'. "
+            "Руками — быстрый словарь, «Ich weiß die Antwort nicht, ich rate ins Blaue hinein», «Подробный разбор»: "
+            "крупно перевод предложения, ниже блок «Выражение в предложении»",
+        screen=_sentence_lookups_screen,
     ),
 )
 

@@ -761,7 +761,14 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
   if (!item) return null;
   const pos = clean(item.part_of_speech).toLowerCase();
   const phraseKind = clean(item.phrase_kind).toLowerCase();
-  const PHRASE_KIND_LABELS = { idiom: 'идиома', saying: 'поговорка', collocation: 'устойчивое сочетание' };
+  const PHRASE_KIND_LABELS = { idiom: 'идиома', saying: 'поговорка', collocation: 'устойчивое сочетание', sentence: 'предложение' };
+  // Выражение, найденное ВНУТРИ предложения: заголовок карточки — перевод предложения,
+  // а это — отдельный блок под ним (владелец, 09.09.2026). Приходит от модели, когда
+  // сервер сообщил ей input_kind = sentence.
+  const embedded = (item.embedded_expression && typeof item.embedded_expression === 'object')
+    ? { source: clean(item.embedded_expression.source), target: clean(item.embedded_expression.target), kind: clean(item.embedded_expression.kind).toLowerCase() }
+    : null;
+  const embeddedKindLabel = embedded ? (PHRASE_KIND_LABELS[embedded.kind] || '') : '';
   const isPhrase = pos === 'phrase' || pos === 'other';
   const posLabel = (isPhrase && PHRASE_KIND_LABELS[phraseKind])
     || (Object.prototype.hasOwnProperty.call(POS_LABELS, pos) ? POS_LABELS[pos] : clean(item.part_of_speech));
@@ -866,6 +873,17 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
               {h.translation && <span className="dq-homograph-gloss">— {h.translation}</span>}
             </button>
           ))}
+        </div>
+      )}
+
+      {embedded && embedded.source && (
+        <div className="dq-block dq-note dq-embedded">
+          <strong>Выражение в предложении{embeddedKindLabel ? ` · ${embeddedKindLabel}` : ''}</strong>
+          <span className="dq-embedded-row">
+            <b lang="de">{embedded.source}</b>
+            {tts && <SpeakButton text={embedded.source} tts={tts} />}
+            {embedded.target && <span className="dq-embedded-gloss">— {embedded.target}</span>}
+          </span>
         </div>
       )}
 

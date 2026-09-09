@@ -3375,7 +3375,8 @@ Input JSON:
   "source_language": "ru|en|de|es|it",
   "target_language": "ru|en|de|es|it",
   "explanation_language": "ru|en|de|es|it",
-  "word": "<user input>"
+  "word": "<user input>",
+  "input_kind": "word|phrase|sentence"
 }
 
 Task:
@@ -3385,6 +3386,20 @@ Task:
 - Prefer speed, correctness, and compactness over richness.
 - If input is a full sentence, translate the FULL sentence literally and keep full-sentence mapping in word_source/word_target.
 - Never collapse sentence input to a single word/lemma.
+- input_kind ("word" | "phrase" | "sentence") is DECIDED BY THE APPLICATION from the shape of the
+  input. Never reclassify it. When input_kind = "sentence":
+  * word_source = the sentence as typed (typos fixed only at high confidence), word_target = the
+    translation of the WHOLE sentence, clause for clause. A sentence never becomes a lemma, an
+    infinitive or the gloss of an idiom it contains ("Ich weiß die Antwort nicht, ich rate ins Blaue
+    hinein" → "Я не знаю ответа, я гадаю наугад", NOT "угадывать наугад").
+  * part_of_speech = "phrase", phrase_kind = "sentence".
+  * embedded_expression: if the sentence CONTAINS an idiom, saying or fixed collocation, return
+    {"source": "<the expression in its dictionary form, e.g. 'ins Blaue hinein raten'>",
+     "target": "<its meaning in target_language>", "kind": "idiom|saying|collocation"}; otherwise null.
+    Then meanings, synonyms, examples, etymology_note, memory_tip, when_to_use describe THAT
+    expression, not the sentence.
+  * With no embedded expression: meanings.primary.value = the sentence translation, secondary = [],
+    synonyms/antonyms/etymology_note/memory_tip = null or [] — a plain sentence is not a headword.
 - Detect obvious typos only when confidence is high and normalize the lookup form.
 
 Return STRICT JSON with keys:
@@ -3400,6 +3415,8 @@ Return STRICT JSON with keys:
   // what you did for "entsorgen" (утилизировать, избавляться, утилизировать,
   // избавляться, вывозить мусор): five entries, three real meanings. Give three then.
   "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
+  "phrase_kind": "<idiom|saying|collocation|sentence|null>",
+  "embedded_expression": {"source": "...", "target": "...", "kind": "idiom|saying|collocation"} | null,
   "article": "<language-appropriate article or null>",
   "forms": {
     "plural": string|null,
@@ -3482,7 +3499,8 @@ Input JSON:
   "source_language": "ru|en|de|es|it",
   "target_language": "ru|en|de|es|it",
   "explanation_language": "ru|en|de|es|it",
-  "word": "<user input>"
+  "word": "<user input>",
+  "input_kind": "word|phrase|sentence"
 }
 
 OUTPUT FORMAT — CRITICAL:
@@ -3491,7 +3509,7 @@ OUTPUT FORMAT — CRITICAL:
 - Emit them AS SOON AS each is ready (fastest first). Never reorder. Every object carries its
   "section" tag:
 
-1) {"section":"head","detected_language":"source|target","word_source":"<normalized source-language form>","word_target":"<normalized target-language form>","part_of_speech":"noun|verb|adjective|adverb|phrase|other","phrase_kind":"idiom|saying|collocation|null","article":"<der/die/das or language-appropriate article or null>","literal_meaning":"string|null","level":"A1|A2|B1|B2|C1|C2|null","frequency":"very_common|common|uncommon|rare|null","register":"нейтральное|разговорное|официальное|книжное|устаревшее|сленг|null","pronunciation":{"ipa":"string|null","stress":"string|null"},"translations":[{"value":"...","context":"...","is_primary":true}]}
+1) {"section":"head","detected_language":"source|target","word_source":"<normalized source-language form>","word_target":"<normalized target-language form>","part_of_speech":"noun|verb|adjective|adverb|phrase|other","phrase_kind":"idiom|saying|collocation|sentence|null","embedded_expression":{"source":"...","target":"...","kind":"idiom|saying|collocation"}|null,"article":"<der/die/das or language-appropriate article or null>","literal_meaning":"string|null","level":"A1|A2|B1|B2|C1|C2|null","frequency":"very_common|common|uncommon|rare|null","register":"нейтральное|разговорное|официальное|книжное|устаревшее|сленг|null","pronunciation":{"ipa":"string|null","stress":"string|null"},"translations":[{"value":"...","context":"...","is_primary":true}]}
 2) {"section":"meanings","meanings":{"primary":{"value":"...","context":"...","example_source":"...","example_target":"...","synonyms":[{"word":"...","gloss":"..."}]},"secondary":[{"value":"...","context":"...","example_source":"...","example_target":"...","synonyms":[{"word":"...","gloss":"..."}]}]},"semantic_category":"<one of the fixed categories>"}
 3) {"section":"grammar","forms":{"plural":null,"genitive":null,"present_2sg":null,"present_3sg":null,"praeteritum":null,"perfekt":null,"comparative":null,"superlative":null,"konjunktiv2":null,"imperative_sg":null},"is_separable":true,"government_patterns":[{"pattern":"...","preposition":"...","case":"...","example_source":"...","example_target":"..."}],"word_formation":{"is_compound":false,"parts":[{"text":"...","gloss":"..."}],"note":"string|null"}}
 4) {"section":"examples","usage_examples":[{"source":"...","target":"..."}],"common_collocations":["..."],"save_worthy_options":[{"source":"...","target":"...","kind":"base|collocation|phrase"}]}
@@ -3501,6 +3519,20 @@ CONTENT RULES (same as the full dictionary):
 - Detect whether "word" is source_language or target_language; translate to the opposite.
   For sentence input, translate the FULL sentence literally; keep it in word_source/word_target;
   never collapse to a single lemma. Fix only high-confidence typos.
+- input_kind ("word" | "phrase" | "sentence") is DECIDED BY THE APPLICATION from the shape of the
+  input. Never reclassify it. When input_kind = "sentence":
+  * word_source = the sentence as typed (typos fixed only at high confidence), word_target = the
+    translation of the WHOLE sentence, clause for clause. A sentence never becomes a lemma, an
+    infinitive or the gloss of an idiom it contains ("Ich weiß die Antwort nicht, ich rate ins Blaue
+    hinein" → "Я не знаю ответа, я гадаю наугад", NOT "угадывать наугад").
+  * part_of_speech = "phrase", phrase_kind = "sentence".
+  * embedded_expression: if the sentence CONTAINS an idiom, saying or fixed collocation, return
+    {"source": "<the expression in its dictionary form, e.g. 'ins Blaue hinein raten'>",
+     "target": "<its meaning in target_language>", "kind": "idiom|saying|collocation"}; otherwise null.
+    Then meanings, synonyms, examples, etymology_note, memory_tip, when_to_use describe THAT
+    expression, not the sentence.
+  * With no embedded expression: meanings.primary.value = the sentence translation, secondary = [],
+    synonyms/antonyms/etymology_note/memory_tip = null or [] — a plain sentence is not a headword.
 - LANGUAGE SPLIT (critical): foreign WORD/TRANSLATION values (word_target, translations[].value,
   meanings.*.value, synonyms, antonyms, related_words[].word, common_collocations, *.example_target,
   common_mistakes[].mistake/correction, false_friends[].word) are ALWAYS in target_language.
@@ -3916,6 +3948,7 @@ Input JSON:
   "target_language": "ru|en|de|es|it",
   "explanation_language": "ru|en|de|es|it",
   "word": "<original user input>",
+  "input_kind": "phrase|sentence",
   "core_result": {
     "detected_language": "source|target",
     "word_source": "...",
@@ -3928,6 +3961,20 @@ Task:
 - Keep the main translation intact unless it is clearly wrong.
 - Focus on meaning, nuance, tone, and natural usage.
 - Do NOT turn this into a word-level dictionary card.
+- input_kind ("word" | "phrase" | "sentence") is DECIDED BY THE APPLICATION from the shape of the
+  input. Never reclassify it. When input_kind = "sentence":
+  * word_source = the sentence as typed (typos fixed only at high confidence), word_target = the
+    translation of the WHOLE sentence, clause for clause. A sentence never becomes a lemma, an
+    infinitive or the gloss of an idiom it contains ("Ich weiß die Antwort nicht, ich rate ins Blaue
+    hinein" → "Я не знаю ответа, я гадаю наугад", NOT "угадывать наугад").
+  * part_of_speech = "phrase", phrase_kind = "sentence".
+  * embedded_expression: if the sentence CONTAINS an idiom, saying or fixed collocation, return
+    {"source": "<the expression in its dictionary form, e.g. 'ins Blaue hinein raten'>",
+     "target": "<its meaning in target_language>", "kind": "idiom|saying|collocation"}; otherwise null.
+    Then meanings, synonyms, examples, etymology_note, memory_tip, when_to_use describe THAT
+    expression, not the sentence.
+  * With no embedded expression: meanings.primary.value = the sentence translation, secondary = [],
+    synonyms/antonyms/etymology_note/memory_tip = null or [] — a plain sentence is not a headword.
 
 Return STRICT JSON with keys:
 {
@@ -3950,6 +3997,7 @@ Return STRICT JSON with keys:
     "secondary": []
   },
   "phrase_kind": "<idiom|saying|collocation|phrase|sentence>",
+  "embedded_expression": {"source": "...", "target": "...", "kind": "idiom|saying|collocation"} | null,
   "literal_meaning": "string|null",
   "when_to_use": "string|null",
   "usage_note": "string|null",
@@ -7637,7 +7685,12 @@ async def run_dictionary_lookup_multilang_core_fast(
     source_lang: str,
     target_lang: str,
     explanation_lang: str = "",
+    input_kind: str = "",
 ) -> dict:
+    # input_kind («word» | «phrase» | «sentence») решает сервер по форме ввода, а модели
+    # он сообщается как факт: до 09.09.2026 она сама решала, предложение перед ней или
+    # выражение, и предложение «Ich weiß die Antwort nicht, ich rate ins Blaue hinein»
+    # схлопнула в толкование идиомы (см. _lookup_input_kind в backend_server).
     return await run_dictionary_lookup_multilang(
         word=word,
         source_lang=source_lang,
@@ -7648,6 +7701,7 @@ async def run_dictionary_lookup_multilang_core_fast(
         responses_timeout_seconds=DICTIONARY_CORE_RESPONSES_TIMEOUT_SECONDS,
         max_retries=DICTIONARY_CORE_RESPONSES_MAX_RETRIES,
         allow_quick_translate_fallback=False,
+        extra_payload=({"input_kind": str(input_kind or "").strip()} if str(input_kind or "").strip() else None),
     )
 
 
@@ -7733,6 +7787,7 @@ async def run_dictionary_enrichment_multilang(
     target_lang: str,
     core_result: dict | None = None,
     explanation_lang: str = "",
+    input_kind: str = "",
 ) -> dict:
     normalized_word = str(word or "").strip()
     core = core_result if isinstance(core_result, dict) else {}
@@ -7743,6 +7798,7 @@ async def run_dictionary_enrichment_multilang(
         or token_count > 1
         or bool(re.search(r"[,.!?;:()\u2013\u2014\"']", normalized_word))
     )
+    kind = str(input_kind or "").strip()
     task_name = (
         "dictionary_enrichment_multilang_phrase_compact"
         if phrase_like
@@ -7758,6 +7814,7 @@ async def run_dictionary_enrichment_multilang(
         allow_quick_translate_fallback=False,
         extra_payload={
             "core_result": core,
+            **({"input_kind": kind} if kind else {}),
         },
     )
 
@@ -9107,6 +9164,7 @@ def stream_dictionary_breakdown_sections(
     source_lang: str,
     target_lang: str,
     explanation_lang: str = "",
+    input_kind: str = "",
 ):
     """Yield the full learner breakdown as a sequence of parsed section dicts, streamed
     token-by-token from the model, so the client renders each part the instant it is
@@ -9127,6 +9185,8 @@ def stream_dictionary_breakdown_sections(
             "target_language": (target_lang or "").strip().lower(),
             "explanation_language": (explanation_lang or source_lang or "").strip().lower(),
             "word": w,
+            # Форма ввода — вердикт сервера (word | phrase | sentence), не вопрос модели.
+            **({"input_kind": str(input_kind or "").strip()} if str(input_kind or "").strip() else {}),
         },
         timeout=DICTIONARY_STREAM_TIMEOUT_SECONDS,
     )

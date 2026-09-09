@@ -2145,3 +2145,16 @@ html[data-scheme="light"] .dq-gt > summary,
   color: var(--dmps-text-title, #f1f5f9); font: inherit; font-size: 15px;
 }
 .wi-input::placeholder { color: var(--dmps-text-muted, #94a3b8); }
+
+/* Выражение, найденное внутри предложения: заголовок карточки остаётся переводом
+   предложения, само выражение — отдельным блоком (владелец, 09.09.2026). */
+.dq-embedded {
+  background: rgba(139, 92, 246, 0.10);
+}
+.dq-embedded-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.dq-embedded-gloss { opacity: 0.85; }
