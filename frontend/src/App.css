@@ -18363,84 +18363,168 @@ body.worldnews-active .webapp-topbar {
   font-weight: 700;
 }
 .worldnews-card-own-open:hover { color: #2563eb; }
-.worldnews-card-own {
-  margin-top: 10px;
+/* ── Окно «Сохранить по-своему» ─────────────────────────────────────────────────
+   09.09.2026. Раньше поля стояли внутри карточки, а карточка вписана в экран и
+   целиком не прокручивается — с открытой клавиатурой верхнее поле с немецкой
+   фразой срезалось верхним краем (снимок владельца «Слово 7 из 11»).
+   Теперь это лист снизу поверх экрана, как редактирование слова в словаре
+   (.vocab-modal-sheet). Рост слоя — ровно видимая часть: --app-height считается
+   по visualViewport, поэтому лист садится НАД клавиатурой, а не под ней. */
+.worldnews-own-overlay {
+  position: fixed;
+  inset: 0;
+  height: var(--app-height, 100dvh);
+  z-index: 420;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+.worldnews-own-sheet {
   width: 100%;
-  text-align: left;
-}
-.worldnews-card-own-label {
+  max-width: 480px;
+  max-height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-  font-weight: 700;
-  color: #64748b;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  gap: 10px;
+  padding: 8px 18px calc(16px + env(safe-area-inset-bottom, 0px));
+  border-radius: 22px 22px 0 0;
+  background: var(--wn-card, #ffffff);
+  box-shadow: 0 -18px 44px -22px rgba(15, 23, 42, 0.5);
+  text-align: left;
+  animation: worldnews-own-in 0.26s cubic-bezier(.32, 1.12, .64, 1) both;
 }
-.worldnews-card-own-input {
-  min-height: 44px;
-  padding: 0 14px;
-  border-radius: 12px;
+@keyframes worldnews-own-in {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+.worldnews-own-grab {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 4px;
+  margin: 4px auto 4px;
+  border-radius: 2px;
+  background: rgba(15, 23, 42, 0.14);
+}
+.worldnews-own-title {
+  flex: 0 0 auto;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+}
+/* Откуда фраза: с чем сверять свою запись. Стоит ВНУТРИ прокручиваемой середины:
+   прибитая наверху длинная цитата на трёх строках отбирала место у самих полей
+   (замер 09.09.2026 при клавиатуре, видимая часть 481px). */
+.worldnews-own-source {
+  flex: 0 0 auto;
+  margin-bottom: -2px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--wn-muted, #64748b);
+}
+.worldnews-own-source-label {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+/* Прокручивается только середина с полями: заголовок сверху и кнопки снизу видны
+   всегда — тот же порядок, что и в карточке слова. min-height: 0 обязателен, иначе
+   блок не сожмётся ниже содержимого и прокрутка не включится. */
+.worldnews-own-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 2px 0;
+}
+.worldnews-own-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #8fa0b8;
+}
+/* Поле растёт под текст (высоту ставит useLayoutEffect в App.jsx), потолок здесь:
+   дальше поле прокручивается само и не выдавливает кнопки с экрана.
+   16px — не «на глаз»: при меньшем кегле iOS зумит страницу на фокусе поля. */
+.worldnews-own-input {
+  width: 100%;
+  min-height: 48px;
+  max-height: 30dvh;
+  padding: 12px 14px;
+  border-radius: 14px;
   border: 1px solid rgba(15, 23, 42, 0.14);
   background: #fff;
-  font-size: 15px;
+  font-family: inherit;
+  font-size: 16px;
   font-weight: 600;
+  line-height: 1.35;
   color: #0f172a;
   text-transform: none;
   letter-spacing: normal;
+  resize: none;
+  overflow-y: auto;
 }
-.worldnews-card-own-input:focus { outline: none; border-color: #2563eb; }
-.worldnews-card-own-row,
-.worldnews-card-own-hint-row {
-  display: flex;
-  gap: 8px;
-}
-.worldnews-card-own-save,
-.worldnews-card-own-take {
-  flex: 1;
-  min-height: 46px;
-  border-radius: 13px;
-  border: none;
-  background: #2563eb;
-  color: #fff;
-  font-size: 14.5px;
-  font-weight: 700;
-  cursor: pointer;
-  box-shadow: 0 10px 20px -10px rgba(37, 99, 235, 0.6);
-}
-.worldnews-card-own-save:disabled { background: #cbd5e1; cursor: default; box-shadow: none; }
-.worldnews-card-own-cancel,
-.worldnews-card-own-keep {
-  flex: 1;
-  min-height: 46px;
-  border-radius: 13px;
-  border: none;
-  background: rgba(15, 23, 42, 0.06);
-  color: #334155;
-  font-size: 14.5px;
-  font-weight: 650;
-  cursor: pointer;
+.worldnews-own-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 /* Мнение судьи — подсказка, а не приговор: песочный фон, обе кнопки равны по весу. */
-.worldnews-card-own-hint {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.worldnews-own-hint {
   padding: 10px 12px;
   border-radius: 12px;
   background: rgba(245, 158, 11, 0.10);
   border: 1px solid rgba(245, 158, 11, 0.35);
 }
-.worldnews-card-own-hint-text {
+.worldnews-own-hint-text {
   font-size: 13.5px;
   line-height: 1.4;
   color: #78350f;
 }
-
+.worldnews-own-row {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+}
+.worldnews-own-save {
+  flex: 1;
+  min-height: 50px;
+  border-radius: 14px;
+  border: none;
+  background: #2563eb;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 10px 20px -10px rgba(37, 99, 235, 0.6);
+}
+.worldnews-own-save:disabled { background: #cbd5e1; cursor: default; box-shadow: none; }
+.worldnews-own-cancel {
+  flex: 1;
+  min-height: 50px;
+  border-radius: 14px;
+  border: none;
+  background: rgba(15, 23, 42, 0.06);
+  color: #334155;
+  font-size: 15px;
+  font-weight: 650;
+  cursor: pointer;
+}
 .worldnews-deck-nav {
   display: flex;
   align-items: center;

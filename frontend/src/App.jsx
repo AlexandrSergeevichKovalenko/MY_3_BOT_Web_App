@@ -34524,6 +34524,28 @@ function AppInner() {
     })();
   }, [worldNewsOwnIndex, worldNewsOwnDe, worldNewsOwnRu, initData, saveWorldNewsOwn]);
 
+  // Поля окна растут под текст: длинная фраза видна целиком, а не прячется за правым
+  // краем однострочного поля. Потолок высоты задан в CSS (max-height) — дальше поле
+  // прокручивается само. Тот же приём, что у поля поиска в словаре (dq-input--multi).
+  const worldNewsOwnDeRef = useRef(null);
+  const worldNewsOwnRuRef = useRef(null);
+  useLayoutEffect(() => {
+    [worldNewsOwnDeRef.current, worldNewsOwnRuRef.current].forEach((el) => {
+      if (!el) return;
+      el.style.height = 'auto';
+      el.style.height = `${el.scrollHeight}px`;
+    });
+  }, [worldNewsOwnIndex, worldNewsOwnDe, worldNewsOwnRu, worldNewsOwnHint]);
+
+  // Окно закрывается тремя способами: «Отмена», тап по затемнению и Esc (внешняя
+  // клавиатура на планшете). Закрытие — это отказ от правки, ничего не сохраняет.
+  useEffect(() => {
+    if (worldNewsOwnIndex === null) return undefined;
+    const onKey = (event) => { if (event.key === 'Escape') closeWorldNewsOwn(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [worldNewsOwnIndex, closeWorldNewsOwn]);
+
   const saveWorldNewsCard = useCallback((index) => {
     const phrases = Array.isArray(worldNewsData?.phrases) ? worldNewsData.phrases : [];
     const phrase = phrases[index];
@@ -39765,7 +39787,7 @@ function AppInner() {
                             </button>
                             {/* Второй кнопкой, а не вопросом каждому: девяносто девять раз
                                 из ста человек жмёт «Сохранить» и листает дальше. */}
-                            {!saved && worldNewsOwnIndex !== idx && (
+                            {!saved && (
                               <button
                                 type="button"
                                 className="worldnews-card-own-open"
@@ -39773,83 +39795,6 @@ function AppInner() {
                               >
                                 {tr('Сохранить по-своему', 'Eigene Fassung speichern')}
                               </button>
-                            )}
-                            {!saved && worldNewsOwnIndex === idx && (
-                              <div className="worldnews-card-own">
-                                <label className="worldnews-card-own-label">
-                                  {tr('Как записать в словарь', 'Wie ins Wörterbuch')}
-                                  <input
-                                    type="text"
-                                    className="worldnews-card-own-input"
-                                    value={worldNewsOwnDe}
-                                    onChange={(e) => setWorldNewsOwnDe(e.target.value)}
-                                    dir="ltr"
-                                  />
-                                </label>
-                                <label className="worldnews-card-own-label">
-                                  {tr('Перевод', 'Übersetzung')}
-                                  <input
-                                    type="text"
-                                    className="worldnews-card-own-input"
-                                    value={worldNewsOwnRu}
-                                    onChange={(e) => setWorldNewsOwnRu(e.target.value)}
-                                  />
-                                </label>
-                                {/* Мнение судьи ПОКАЗЫВАЕМ, а не подставляем: решает человек. */}
-                                {worldNewsOwnHint && (
-                                  <div className="worldnews-card-own-hint">
-                                    <div className="worldnews-card-own-hint-text">
-                                      {tr('Мы бы записали так:', 'Wir würden so schreiben:')}{' '}
-                                      <b>{worldNewsOwnHint.suggestion_de}</b>
-                                      {worldNewsOwnHint.why ? ` — ${worldNewsOwnHint.why}` : ''}
-                                    </div>
-                                    <div className="worldnews-card-own-hint-row">
-                                      <button
-                                        type="button"
-                                        className="worldnews-card-own-take"
-                                        onClick={() => saveWorldNewsOwn(
-                                          idx,
-                                          worldNewsOwnHint.suggestion_de,
-                                          worldNewsOwnHint.suggestion_ru || worldNewsOwnRu,
-                                          'took_suggestion',
-                                        )}
-                                      >
-                                        {tr('Взять наш вариант', 'Unsere Fassung nehmen')}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="worldnews-card-own-keep"
-                                        onClick={() => saveWorldNewsOwn(
-                                          idx, worldNewsOwnDe, worldNewsOwnRu, 'kept_own',
-                                        )}
-                                      >
-                                        {tr('Оставить моё', 'Meine behalten')}
-                                      </button>
-                                    </div>
-                                  </div>
-                                )}
-                                {!worldNewsOwnHint && (
-                                  <div className="worldnews-card-own-row">
-                                    <button
-                                      type="button"
-                                      className="worldnews-card-own-save"
-                                      onClick={checkWorldNewsOwn}
-                                      disabled={worldNewsOwnBusy || !worldNewsOwnDe.trim() || !worldNewsOwnRu.trim()}
-                                    >
-                                      {worldNewsOwnBusy
-                                        ? tr('Проверяем…', 'Wird geprüft…')
-                                        : tr('Сохранить', 'Speichern')}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="worldnews-card-own-cancel"
-                                      onClick={closeWorldNewsOwn}
-                                    >
-                                      {tr('Отмена', 'Abbrechen')}
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
                             )}
                           </div>
                           <div className="worldnews-deck-nav">
@@ -39864,6 +39809,123 @@ function AppInner() {
                           <button type="button" className="worldnews-next-cta" onClick={() => worldNewsGoToStage('video')}>
                             {tr('▶ Смотреть видео', '▶ Video ansehen')}
                           </button>
+                          {/* ┌─ Своя версия слова правится в ОКНЕ ПОВЕРХ экрана (09.09.2026) ──────┐
+                              │ До этого форма стояла последним блоком внутри карточки. Карточка   │
+                              │ вписана в экран и целиком НЕ прокручивается (прокрутка только у     │
+                              │ середины, .worldnews-card-body) — а с открытой клавиатурой видимая  │
+                              │ высота падает вдвое. Верхнее поле с немецкой фразой срезалось       │
+                              │ верхним краем карточки: владелец не видел, что правит, и добраться  │
+                              │ до поля было нечем (снимок 09.09.2026, «Слово 7 из 11»).            │
+                              │ Окно живёт своей высотой, встаёт НАД клавиатурой (--app-height      │
+                              │ считается по visualViewport) и прокручивается само. Поля внутри     │
+                              │ прибитого слоя уже обслуживает общий обработчик focusin — он держит │
+                              │ прокрутку страницы (см. «ИЗМЕРЕНО 28.08.2026» выше по файлу).       │
+                              │ Цепочка сохранения ТА ЖЕ: checkWorldNewsOwn → судья → saveWorldNewsOwn. │
+                              └────────────────────────────────────────────────────────────────────┘ */}
+                          {!saved && worldNewsOwnIndex === idx && (
+                            <div
+                              className="worldnews-own-overlay"
+                              onClick={(e) => { if (e.target === e.currentTarget) closeWorldNewsOwn(); }}
+                            >
+                              <div className="worldnews-own-sheet" role="dialog" aria-modal="true">
+                                <div className="worldnews-own-grab" />
+                                <div className="worldnews-own-title">
+                                  {tr('Сохранить по-своему', 'Eigene Fassung speichern')}
+                                </div>
+                                {/* Прокручивается только середина с полями: заголовок сверху и
+                                    кнопки снизу видны всегда — тот же порядок, что в карточке. */}
+                                <div className="worldnews-own-body">
+                                  {/* Откуда фраза: с чем сверять свою запись. Кавычки ролика снимаем,
+                                      чтобы не получилось «««так»»». */}
+                                  {phrase.quote_de && (
+                                    <div className="worldnews-own-source">
+                                      <span className="worldnews-own-source-label">{tr('В ролике', 'Im Video')}</span>
+                                      {'«'}{String(phrase.quote_de).trim().replace(/^[«"']+|[»"']+$/g, '')}{'»'}
+                                    </div>
+                                  )}
+                                  <label className="worldnews-own-label">
+                                    {tr('Как записать в словарь', 'Wie ins Wörterbuch')}
+                                    <textarea
+                                      ref={worldNewsOwnDeRef}
+                                      className="worldnews-own-input"
+                                      rows={1}
+                                      value={worldNewsOwnDe}
+                                      onChange={(e) => setWorldNewsOwnDe(e.target.value)}
+                                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.target.blur(); } }}
+                                      dir="ltr"
+                                      autoFocus
+                                    />
+                                  </label>
+                                  <label className="worldnews-own-label">
+                                    {tr('Перевод', 'Übersetzung')}
+                                    <textarea
+                                      ref={worldNewsOwnRuRef}
+                                      className="worldnews-own-input"
+                                      rows={1}
+                                      value={worldNewsOwnRu}
+                                      onChange={(e) => setWorldNewsOwnRu(e.target.value)}
+                                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.target.blur(); } }}
+                                    />
+                                  </label>
+                                  {/* Мнение судьи ПОКАЗЫВАЕМ, а не подставляем: решает человек. */}
+                                  {worldNewsOwnHint && (
+                                    <div className="worldnews-own-hint">
+                                      <div className="worldnews-own-hint-text">
+                                        {tr('Мы бы записали так:', 'Wir würden so schreiben:')}{' '}
+                                        <b>{worldNewsOwnHint.suggestion_de}</b>
+                                        {worldNewsOwnHint.why ? ` — ${worldNewsOwnHint.why}` : ''}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                                {worldNewsOwnHint ? (
+                                  <div className="worldnews-own-row">
+                                    <button
+                                      type="button"
+                                      className="worldnews-own-save"
+                                      onClick={() => saveWorldNewsOwn(
+                                        idx,
+                                        worldNewsOwnHint.suggestion_de,
+                                        worldNewsOwnHint.suggestion_ru || worldNewsOwnRu,
+                                        'took_suggestion',
+                                      )}
+                                    >
+                                      {tr('Взять наш вариант', 'Unsere Fassung nehmen')}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="worldnews-own-cancel"
+                                      onClick={() => saveWorldNewsOwn(
+                                        idx, worldNewsOwnDe, worldNewsOwnRu, 'kept_own',
+                                      )}
+                                    >
+                                      {tr('Оставить моё', 'Meine behalten')}
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="worldnews-own-row">
+                                    <button
+                                      type="button"
+                                      className="worldnews-own-save"
+                                      onClick={checkWorldNewsOwn}
+                                      disabled={worldNewsOwnBusy || !worldNewsOwnDe.trim() || !worldNewsOwnRu.trim()}
+                                    >
+                                      {worldNewsOwnBusy
+                                        ? tr('Проверяем…', 'Wird geprüft…')
+                                        : tr('Сохранить', 'Speichern')}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="worldnews-own-cancel"
+                                      onClick={closeWorldNewsOwn}
+                                    >
+                                      {tr('Отмена', 'Abbrechen')}
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })()}

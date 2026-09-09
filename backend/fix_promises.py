@@ -297,6 +297,56 @@ def _hint_modal_screen() -> str:
                "сброса box-sizing в живом CSS НЕТ — кнопка «Понятно» снова под краем экрана"))
 
 
+_OWN_SHEET_ROOT = ".worldnews-own-overlay"
+_OWN_INLINE_FIELD = ".worldnews-card-own-input"
+
+
+def _count_own_sheet_defects(css: str) -> int:
+    """Сколько примет СТАРОГО устройства окна «Сохранить по-своему» осталось в живом CSS.
+
+    Обещано: 0. Приметы считаются отдельно, каждая — свой рубль:
+      1) слоя поверх экрана нет или он не прибит (у .worldnews-own-overlay нет
+         position: fixed) — значит поля снова живут внутри карточки слова;
+      2) в CSS остался класс поля старой встроенной формы (.worldnews-card-own-input).
+    Нет самого селектора заголовка карточки — это не собранный фронт, считать нечего:
+    исход «не измерено», а не «0»."""
+    import re
+    if not re.search(r"\.worldnews-card-de\s*\{", css):
+        raise LookupError("в CSS нет .worldnews-card-de — это не собранный фронт")
+    defects = 0
+    pinned = any(
+        re.search(r"position\s*:\s*fixed", m.group(1))
+        for m in re.finditer(re.escape(_OWN_SHEET_ROOT) + r"\s*\{([^}]*)\}", css)
+    )
+    if not pinned:
+        defects += 1
+    if re.search(re.escape(_OWN_INLINE_FIELD) + r"\s*[{,]", css):
+        defects += 1
+    return defects
+
+
+def _worldnews_own_sheet_defects() -> int:
+    """Правится ли своя версия слова в окне ПОВЕРХ экрана. Обещано: 0.
+
+    Повод 09.09.2026: форма стояла последним блоком ВНУТРИ карточки «Новости дня» и
+    стендапа. Карточка вписана в экран и целиком не прокручивается (прокрутка только у
+    середины), а с открытой клавиатурой видимая высота падает вдвое — верхнее поле с
+    немецкой фразой срезалось верхним краем, и владелец не видел, что правит.
+    Вернётся старое устройство (откат деплоя, чужая правка) — число станет не нулём."""
+    return _count_own_sheet_defects(_served_webapp_css())
+
+
+def _worldnews_own_sheet_screen() -> str:
+    """Экран «после»: что про это окно говорит CSS, который сайт отдаёт телефону."""
+    defects = _count_own_sheet_defects(_served_webapp_css())
+    return ("✏️ «Сохранить по-своему» («Новость дня» и стендап): "
+            + ("правится в окне ПОВЕРХ экрана — фраза и перевод видны целиком даже с "
+               "открытой клавиатурой, кнопки «Сохранить»/«Отмена» стоят над ней"
+               if defects == 0 else
+               "окна поверх экрана в живом CSS НЕТ — поля снова внутри карточки, и "
+               "верхний край срезает немецкую фразу"))
+
+
 def _daily_video_night_recheck_ran() -> int:
     """Запускалась ли ночная перепроверка карточек «Новости дня» после её снятия. Обещано: 0.
 
@@ -755,6 +805,18 @@ PROMISES: tuple[Promise, ...] = (
         measure=_worldnews_card_old_look_rules,
         how="открыть $WEB_APP_URL, скачать подключённые .css; grep -c 'Georgia' рядом с "
             ".worldnews-card-de и 'clip-path' рядом с .worldnews-step — ждём 0 и 0",
+    ),
+    Promise(
+        key="worldnews_own_variant_sheet",
+        title="Своя версия слова в «Новости дня» правится в окне поверх экрана, а не в срезанной карточке",
+        since="09.09.2026",
+        expected=0,
+        measure=_worldnews_own_sheet_defects,
+        screen=_worldnews_own_sheet_screen,
+        how="открыть $WEB_APP_URL, скачать подключённые .css; в них должно быть правило "
+            ".worldnews-own-overlay с position: fixed и НЕ должно быть "
+            ".worldnews-card-own-input — ждём 0 дефектов. Глазами: утренняя новость → "
+            "«Слова» → «Сохранить по-своему» → окно поверх экрана, обе строки видны целиком",
     ),
     Promise(
         key="daily_video_night_recheck_off",
