@@ -109,6 +109,7 @@ def main() -> None:
     print(f"строк к перепроверке с {args.since}: {len(rows)}")
 
     заменено = сохранено = сбоев = оставлено_судьёй = 0
+    снесено_дублей_счёт = [0]
     примеры: list[tuple[str, str, str]] = []
     for idx, (rid, source, target, payload) in enumerate(rows):
         if idx:
@@ -175,20 +176,49 @@ def main() -> None:
             norm = " ".join(новый.split()).casefold()
             with get_db_connection_context() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE bt_3_dictionary_entries
-                        SET target_text = %s, target_text_norm = %s, translation_ru = %s,
-                            word_ru = %s, response_json = %s, updated_at = NOW()
-                        WHERE id = %s;
-                        """,
-                        (новый, norm, новый, новый, json.dumps(payload, ensure_ascii=False), rid),
-                    )
+                    # ПРАВИЛЬНЫЙ ПЕРЕВОД МОЖЕТ УЖЕ ЛЕЖАТЬ ОТДЕЛЬНОЙ СТРОКОЙ. Пул хранит
+                    # пару «исходник ↔ перевод» и не терпит двух одинаковых пар. Пример
+                    # с живой базы 10.09.2026: «bis auf ihre entsetzlichsten Verbrechen»
+                    # лежало и с плохим переводом, и с хорошим. Тогда плохая строка не
+                    # правится, а СНОСИТСЯ, а её счётчик обращений переезжает к хорошей:
+                    # иначе мы теряем историю показов.
+                    # SAVEPOINT — то самое единственное исключение из правила ноль: он
+                    # защищает транзакцию, а не подменяет ответ.
+                    cur.execute("SAVEPOINT попытка_правки;")
+                    try:
+                        cur.execute(
+                            """
+                            UPDATE bt_3_dictionary_entries
+                            SET target_text = %s, target_text_norm = %s, translation_ru = %s,
+                                word_ru = %s, response_json = %s, updated_at = NOW()
+                            WHERE id = %s;
+                            """,
+                            (новый, norm, новый, новый, json.dumps(payload, ensure_ascii=False), rid),
+                        )
+                    except Exception:
+                        cur.execute("ROLLBACK TO SAVEPOINT попытка_правки;")
+                        cur.execute(
+                            """
+                            UPDATE bt_3_dictionary_entries победитель
+                            SET hit_count = победитель.hit_count + плохая.hit_count,
+                                last_hit_at = GREATEST(победитель.last_hit_at, плохая.last_hit_at)
+                            FROM bt_3_dictionary_entries плохая
+                            WHERE плохая.id = %s
+                              AND победитель.source_lang = плохая.source_lang
+                              AND победитель.target_lang = плохая.target_lang
+                              AND победитель.source_text_norm = плохая.source_text_norm
+                              AND победитель.target_text_norm = %s;
+                            """,
+                            (rid, norm),
+                        )
+                        cur.execute("DELETE FROM bt_3_dictionary_entries WHERE id = %s;", (rid,))
+                        снесено_дублей_счёт[0] += 1
                 conn.commit()
 
     print()
     print(f"совпало с DeepL:      {сохранено}")
     print(f"судья оставил старое:  {оставлено_судьёй}")
+    print(f"снесено дублей:        {снесено_дублей_счёт[0]}")
     print(f"разошлось (заменено): {заменено}" if args.apply else f"разошлось (заменить):  {заменено}")
     print(f"сбоев перевода:       {сбоев}")
     if примеры:
