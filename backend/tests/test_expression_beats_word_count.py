@@ -101,3 +101,28 @@ class TestTheTranslatorChain:
         assert "quick_translation_failed" in text and "Переводчик сейчас не отвечает" in text, (
             "человек увидит машинный код вместо человеческой строки"
         )
+
+
+class TestAFoundEntryIsNeverCalledASingleWord:
+    """Написание, у которого НАШЛАСЬ словарная статья, — словарная единица, и форма
+    ввода у него не может быть «одиночное слово», если слов несколько.
+
+    Найдено на живом экране 10.09.2026, сразу после того как слой статей открыли для
+    многословного ввода: «jemanden an der Nase herumführen» находилось статьёй («водить
+    за нос»), но уезжало к модели с пометкой «word»."""
+
+    def test_multiword_entry_is_a_phrase(self):
+        result = bs._build_quick_translate_from_entries(
+            [{"headword": "jemanden an der Nase herumführen", "pos": "", "gender": "",
+              "translations": ["водить за нос"], "display": "jemanden an der Nase herumführen"}],
+            "jemanden an der Nase herumführen", "de", "ru",
+        )
+        assert result["input_kind"] == "phrase"
+
+    def test_single_word_entry_stays_a_word(self):
+        result = bs._build_quick_translate_from_entries(
+            [{"headword": "raten", "pos": "verb", "gender": "", "translations": ["угадать"],
+              "display": "raten"}],
+            "raten", "de", "ru",
+        )
+        assert result["input_kind"] == "word"

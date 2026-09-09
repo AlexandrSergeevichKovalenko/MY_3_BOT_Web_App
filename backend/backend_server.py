@@ -41158,8 +41158,12 @@ def _build_quick_translate_from_entries(entries, text, source_lang, target_lang)
         # Весь список — то, ради чего всё и затевалось.
         "entries": entries,
         "entry_lang": other_lang,
-        # Статьи находятся только у одиночного слова (слой статей отбрасывает пробел).
-        "input_kind": "word",
+        # Форма ввода у найденной статьи. До 10.09.2026 здесь стояло жёсткое «word» —
+        # это было верно ровно до того дня, когда слой статей научился отвечать на
+        # многословный ввод: «jemanden an der Nase herumführen» нашлось статьёй и
+        # уехало к модели как ОДИНОЧНОЕ СЛОВО. Написание со статьёй — всегда словарная
+        # единица, поэтому «phrase», а не «sentence».
+        "input_kind": "word" if " " not in str(text or "").strip() else "phrase",
     }
 
 
