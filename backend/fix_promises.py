@@ -822,13 +822,31 @@ def _sentence_lookups_screen() -> str:
 
 
 def _pool_rows_without_translator() -> int:
-    """Машинные многословные строки общего пула БЕЗ следа переводчика. Обещано: 0.
+    """Строки общего пула ОТ ПЕРЕВОДЧИКА без следа «кто перевёл». Обещано: 0.
 
     09.09.2026 из быстрого перевода убрали MyMemory (замер: 6 ошибок на 20 живых фраз
     против одной у DeepL; именно он выдал владельцу «Я даю совет наугад» вместо «Я гадаю
     наугад»). Накопленные строки перепроверены заново с судьёй, и каждая несёт поле
     translator. Появилась строка без него — значит либо чистка не доехала, либо в пул
-    снова пишет путь, не называющий переводчика."""
+    снова пишет путь, не называющий переводчика.
+
+    ┌─ ПРОВЕРЕНО 10.09.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────────┐
+    │ Первая версия замера считала ЛЮБУЮ строку без разбора и без следа, и наутро    │
+    │ показала 49 «нарушений». Разложение: 49 из 49 — СОХРАНЕНИЯ ЛЮДЕЙ (примеры и    │
+    │ синонимы, сохранённые из карточки: «unentschlossen», «Maria ist sehr           │
+    │ zielstrebig.»). У них response_json = NULL, потому что дверь сохранения кладёт │
+    │ тонкую запись, и переводчика у них не было вовсе — перевод дала модель или сам │
+    │ человек. Это устройство системы, а не дефект.                                  │
+    │                                                                               │
+    │ Заполнять им response_json ради пометки НЕЛЬЗЯ: на «response_json IS NULL»     │
+    │ завязаны 17 мест в коде (миграции, поиск карточек без разбора), и подмена NULL │
+    │ на объект меняет их поведение молча.                                           │
+    │                                                                               │
+    │ Поэтому замер сужен до строк, у которых разбор ЕСТЬ как объект (их кладёт путь │
+    │ перевода), но следа переводчика нет. На 10.09.2026: 871 строка со следом,      │
+    │ 0 без следа, 49 сохранений людей вне замера. Перемерить — запросом ниже.       │
+    └───────────────────────────────────────────────────────────────────────────────┘
+    """
     from backend.database import get_db_connection_context
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -837,9 +855,9 @@ def _pool_rows_without_translator() -> int:
                 WHERE source_lang = 'de' AND target_lang = 'ru'
                   AND created_at >= '2026-09-01'
                   AND source_text LIKE '%% %%'
-                  AND (response_json IS NULL
-                       OR NOT (response_json ? 'meanings' OR response_json ? 'translations'))
-                  AND (response_json IS NULL OR NOT (response_json ? 'translator'));
+                  AND response_json IS NOT NULL
+                  AND NOT (response_json ? 'meanings' OR response_json ? 'translations')
+                  AND NOT (response_json ? 'translator');
             """)
             return int((cursor.fetchone() or [0])[0] or 0)
 
@@ -1184,10 +1202,11 @@ PROMISES: tuple[Promise, ...] = (
         expected=0,
         measure=_pool_rows_without_translator,
         how="SELECT COUNT(*) FROM bt_3_dictionary_entries WHERE source_lang='de' AND target_lang='ru' "
-            "AND created_at >= '2026-09-01' AND source_text LIKE '%% %%' AND (response_json IS NULL OR "
-            "NOT (response_json ? 'meanings' OR response_json ? 'translations')) AND (response_json IS NULL "
-            "OR NOT (response_json ? 'translator')); руками — перевести фразу в быстром словаре и "
-            "посмотреть строку пула: у неё должно быть поле translator",
+            "AND created_at >= '2026-09-01' AND source_text LIKE '%% %%' AND response_json IS NOT NULL "
+            "AND NOT (response_json ? 'meanings' OR response_json ? 'translations') AND NOT "
+            "(response_json ? 'translator'); сохранения людей (response_json IS NULL) сюда НЕ входят — "
+            "у них переводчика не было. Руками: перевести фразу в быстром словаре и посмотреть строку "
+            "пула — у неё должно быть поле translator",
     ),
     Promise(
         key="expression_reference_alive",

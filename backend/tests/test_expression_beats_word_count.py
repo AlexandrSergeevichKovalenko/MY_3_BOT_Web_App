@@ -126,3 +126,23 @@ class TestAFoundEntryIsNeverCalledASingleWord:
             "raten", "de", "ru",
         )
         assert result["input_kind"] == "word"
+
+
+class TestThePromiseMeasuresTheRightRows:
+    """Замер «строк без следа переводчика» считает строки ОТ ПЕРЕВОДЧИКА, а не всё
+    подряд.
+
+    Проверено 10.09.2026: первая версия замера показала наутро 49 «нарушений», и все 49
+    оказались сохранениями людей (примеры и синонимы из карточки, response_json = NULL).
+    Переводчика у них не было вовсе. Тест держит границу замера, чтобы её не расширили
+    обратно и утро снова не начало кричать на устройство системы."""
+
+    def test_the_query_excludes_thin_user_saves(self):
+        import inspect
+
+        from backend import fix_promises
+        текст = inspect.getsource(fix_promises._pool_rows_without_translator)
+        assert "response_json IS NOT NULL" in текст, (
+            "замер снова считает тонкие сохранения людей — у них переводчика не было"
+        )
+        assert "NOT (response_json ? 'translator')" in текст
