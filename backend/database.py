@@ -6110,6 +6110,9 @@ def _upsert_dictionary_canonical_entry_with_cursor(
     word_de: str | None,
     translation_ru: str | None,
     response_json: dict | None,
+    # Кто дал этот перевод: имя машинного переводчика или имя нашего пути. Называет
+    # СЕБЯ тот, кто пишет, — здесь ничего не выводится из данных строки (10.09.2026).
+    translator: str | None = None,
 ) -> int:
     normalized_source_lang = _normalize_lang_code(source_lang)
     normalized_target_lang = _normalize_lang_code(target_lang)
@@ -6152,6 +6155,22 @@ def _upsert_dictionary_canonical_entry_with_cursor(
         )
     payload = _coerce_json_object(response_json)
 
+    # ── ПОДПИСЬ СТРОКИ: кто перевёл и что это за запись ───────────────────────────
+    # Обе величины идут в СВОИ КОЛОНКИ, а не внутрь response_json: пул закрыт для
+    # разбора (05.08.2026), payload на дне выбрасывается, и всё, что положили внутрь
+    # него, до базы не доезжает. Именно так 09.09 потерялась подпись переводчика —
+    # замер 10.09: 49 строк за сутки, имени нет ни у одной.
+    #
+    # Ничего не выводим и не угадываем: имя называет тот, кто пишет (аргумент), либо
+    # оно уже лежит в payload у быстрого перевода. Не назвал никто — NULL, и такие
+    # строки считает обещание pool_rows_carry_their_translator.
+    resolved_translator = str(translator or "").strip() or None
+    if not resolved_translator and payload:
+        resolved_translator = str(payload.get("translator") or "").strip() or None
+    resolved_entry_kind = None
+    if payload:
+        resolved_entry_kind = str(payload.get("entry_kind") or "").strip() or None
+
     # Сначала пробуем дописать УЖЕ СУЩЕСТВУЮЩУЮ строку этого слова — иначе на каждый
     # артикль и каждую формулировку перевода заводилась бы своя (см. слот-резолвер).
     slot_id = _resolve_canonical_entry_slot_with_cursor(
@@ -6174,6 +6193,10 @@ def _upsert_dictionary_canonical_entry_with_cursor(
                 translation_ru = COALESCE(NULLIF(translation_ru, ''), %(translation_ru)s),
                 -- Текст и его нормализованные ключи НЕ трогаем: они держат уникальность
                 -- строки, а мы сюда пришли именно для того, чтобы новой строки не заводить.
+                -- Подпись НЕ переписываем: текст перевода остаётся прежним (строкой выше
+                -- он под COALESCE), значит и автор у него прежний. Заполняем только пустое.
+                translator = COALESCE(translator, %(translator)s),
+                entry_kind = COALESCE(entry_kind, %(entry_kind)s),
                 response_json = {_pool_card_update_sql("%(payload)s::jsonb")},
                 updated_at = NOW()
             WHERE id = %(slot_id)s
@@ -6187,6 +6210,8 @@ def _upsert_dictionary_canonical_entry_with_cursor(
                 "word_de": str(word_de or "").strip() or None,
                 "translation_ru": str(translation_ru or "").strip() or None,
                 "payload": Json(payload) if payload else None,
+                "translator": resolved_translator,
+                "entry_kind": resolved_entry_kind,
                 "slot_id": int(slot_id),
             },
         )
@@ -6210,10 +6235,12 @@ def _upsert_dictionary_canonical_entry_with_cursor(
             word_de,
             translation_ru,
             response_json,
+            translator,
+            entry_kind,
             created_at,
             updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
         ON CONFLICT (source_lang, target_lang, source_text_norm, target_text_norm)
         DO UPDATE SET
             source_headword_norm = COALESCE(bt_3_dictionary_entries.source_headword_norm, EXCLUDED.source_headword_norm),
@@ -6224,6 +6251,9 @@ def _upsert_dictionary_canonical_entry_with_cursor(
             translation_de = COALESCE(NULLIF(bt_3_dictionary_entries.translation_de, ''), EXCLUDED.translation_de),
             word_de = COALESCE(NULLIF(bt_3_dictionary_entries.word_de, ''), EXCLUDED.word_de),
             translation_ru = COALESCE(NULLIF(bt_3_dictionary_entries.translation_ru, ''), EXCLUDED.translation_ru),
+            -- Подпись первого автора текста не переписываем, пустую — заполняем.
+            translator = COALESCE(bt_3_dictionary_entries.translator, EXCLUDED.translator),
+            entry_kind = COALESCE(bt_3_dictionary_entries.entry_kind, EXCLUDED.entry_kind),
             -- Общий пул: побеждает БОЛЕЕ ПОЛНАЯ карточка, а не первый писатель.
             -- Раньше стоял COALESCE(старое, новое) — тонкая запись (сохранение из
             -- личного чата бота, импорт, тап в тренажёре) навсегда фиксировала пустую
@@ -6248,6 +6278,10 @@ def _upsert_dictionary_canonical_entry_with_cursor(
             # Пул закрыт для разбора — новая строка заводится как опознавательная:
             # тексты и связь есть, содержимого нет. Разбор живёт на единице.
             Json(payload) if (payload and DICTIONARY_POOL_CARD_WRITES_ENABLED) else None,
+            # А подпись едет ВСЕГДА: она про происхождение строки, а не про разбор,
+            # и от рубильника пула не зависит (решение владельца 10.09.2026).
+            resolved_translator,
+            resolved_entry_kind,
         ),
     )
     row = cursor.fetchone()
@@ -10015,6 +10049,44 @@ def ensure_webapp_tables() -> None:
                            "ADD COLUMN IF NOT EXISTS hit_count BIGINT NOT NULL DEFAULT 0;")
             cursor.execute("ALTER TABLE bt_3_dictionary_entries "
                            "ADD COLUMN IF NOT EXISTS last_hit_at TIMESTAMPTZ;")
+            # ┌─ КТО ДАЛ ЭТОТ ПЕРЕВОД. Решение владельца 10.09.2026, вариант «А». ──────┐
+            # │ 09.09 из быстрого перевода убрали MyMemory (6 ошибок на 20 живых фраз   │
+            # │ против одной у DeepL) и стали писать имя переводчика — но клали его     │
+            # │ ВНУТРЬ response_json. А пул закрыт для разбора с 05.08.2026, и на дне    │
+            # │ записи payload выбрасывается: замер 10.09 по живой базе — 49 строк за    │
+            # │ сутки, у ВСЕХ response_json пустой, имени нет ни у одной. До закрытия    │
+            # │ пула (01.07–04.08) пустых json было 0 из 1966, после (06.08–31.08) —     │
+            # │ 2406 из 2484. То есть след терялся месяц, а не «откатилась починка».     │
+            # │                                                                          │
+            # │ Поэтому имя живёт КОЛОНКОЙ, рядом с текстом, и не зависит от того,       │
+            # │ открыт пул для разбора или закрыт. Значение — не догадка, а подпись      │
+            # │ того, кто строку завёл: имя машинного переводчика (deepl_free,           │
+            # │ google_translate, azure_translator) либо наш собственный путь            │
+            # │ («разбор модели», «обогащение»). Не знаем — NULL, и это видно числом.    │
+            # └──────────────────────────────────────────────────────────────────────────┘
+            cursor.execute("ALTER TABLE bt_3_dictionary_entries "
+                           "ADD COLUMN IF NOT EXISTS translator TEXT;")
+            # Вид записи (слово / выражение / предложение) считался при укладке и уезжал
+            # в тот же выброшенный json: у всех 49 строк за 10.09 он пуст. Теперь колонка.
+            cursor.execute("ALTER TABLE bt_3_dictionary_entries "
+                           "ADD COLUMN IF NOT EXISTS entry_kind TEXT;")
+            # Накопленное поднимаем из json ОДИН раз: 871 строка несёт имя переводчика
+            # (их переписал скрипт чистки 09.09), 5 793 — вид записи. Условие делает
+            # прогон идемпотентным: со второго раза строк под него не попадает.
+            cursor.execute("""
+                UPDATE bt_3_dictionary_entries
+                   SET translator = response_json->>'translator'
+                 WHERE translator IS NULL
+                   AND response_json ? 'translator'
+                   AND NULLIF(btrim(response_json->>'translator'), '') IS NOT NULL;
+            """)
+            cursor.execute("""
+                UPDATE bt_3_dictionary_entries
+                   SET entry_kind = response_json->>'entry_kind'
+                 WHERE entry_kind IS NULL
+                   AND response_json ? 'entry_kind'
+                   AND NULLIF(btrim(response_json->>'entry_kind'), '') IS NOT NULL;
+            """)
             cursor.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_dictionary_entries_pair_text
                 ON bt_3_dictionary_entries (source_lang, target_lang, source_text_norm, target_text_norm);
@@ -28422,10 +28494,16 @@ def upsert_dictionary_pool_entry(
     word_de: str | None = None,
     translation_ru: str | None = None,
     response_json: dict | None = None,
+    translator: str | None = None,
 ) -> int:
     """Положить слово в общий пул ВНЕ пути сохранения — так в пул попадают и обычные
     запросы перевода (никто ничего не сохранял), и результаты дообогащения карточки.
-    Конфликт разрешает тот же upsert: более полная карточка вытесняет тонкую."""
+    Конфликт разрешает тот же upsert: более полная карточка вытесняет тонкую.
+
+    `translator` — кто дал этот перевод: имя машинного переводчика (deepl_free,
+    google_translate, azure_translator) или имя нашего пути («разбор модели»,
+    «обогащение»). Пишется в КОЛОНКУ и живёт независимо от того, принимает ли пул
+    разбор: внутри response_json подпись терялась целиком (замер 10.09.2026)."""
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -28440,6 +28518,7 @@ def upsert_dictionary_pool_entry(
                     word_de=word_de,
                     translation_ru=translation_ru,
                     response_json=response_json,
+                    translator=translator,
                 )
             conn.commit()
         return int(entry_id or 0)
