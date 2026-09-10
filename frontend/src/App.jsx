@@ -6145,6 +6145,549 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   );
 });
 
+// ── Немецкий текст, по которому работают пальцем ─────────────────────────────
+// Один компонент на все «текстовые» поверхности разбора и перевода: результат
+// перевода, обратная связь, объяснение и модалка «Разбор ошибок». Жесты ровно
+// те же, что в читалке: тап — слово, двойной тап — предложение, УДЕРЖАНИЕ И
+// ПРОТЯЖКА — фраза (её и сохраняют целиком).
+//
+// ┌─ ПРОВЕРЕНО 10.09.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────┐
+// │ Жалоба: в модалке «Разбор ошибок» нельзя выделить несколько слов протяжкой,│
+// │ хотя в читалке можно. Померили по коду: одинаковых жестов было ТРИ разных  │
+// │ реализации — читалка (beginReaderPhraseDrag), субтитры YouTube (скопирована│
+// │ с читалки) и вот эта. Здесь она была своя и слабее по двум причинам:       │
+// │  1) не было удержания: жест заводился, только если ПЕРВОЕ движение ушло    │
+// │     вбок больше чем на 10 px и вбок сильнее, чем вниз — палец по строке под │
+// │     наклоном под это не попадал;                                            │
+// │  2) никто не отбирал жест у прокрутки. Тело модалки прокручивается, React   │
+// │     вешает touchmove ПАССИВНО (preventDefault там игнорируется), поэтому    │
+// │     браузер уводил движение в скролл и слал touchcancel — выделение гибло.  │
+// │     Ровно эту беду уже чинили для панели субтитров (см. комментарий у       │
+// │     непассивного слушателя в AppInner) — тем же способом чиним и здесь.     │
+// │ Третья причина — не жест, а место объявления: компонент жил ВНУТРИ AppInner,│
+// │ то есть был новым типом на каждую перерисовку App. React в такой момент     │
+// │ размонтирует поддерево, узел под пальцем отрывается от документа, и события │
+// │ касания дальше никуда не приходят. Поэтому компонент теперь ЗДЕСЬ, на       │
+// │ уровне модуля, а всё, что ему нужно от App, приходит пропом `api`.          │
+// │ Перемерить: удержать слово в примере разбора → должна прийти вибрация и     │
+// │ подсветка, дальше протяжка растит фразу, модалка при этом НЕ прокручивается.│
+// └────────────────────────────────────────────────────────────────────────────┘
+const STRUCTURED_PHRASE_HOLD_MS = 340;      // столько же, сколько READER_PHRASE_HOLD_MS
+const STRUCTURED_PHRASE_HOLD_SLOP_PX = 10;  // уехал дальше до срабатывания — это прокрутка
+
+export function StructuredSelectableText({ text, langHint = '', keyPrefix = 'structured', api }) {
+  // api приходит из AppInner и пересобирается на каждую его перерисовку. Обработчики
+  // жеста живут дольше одной перерисовки, поэтому читают его через ref — иначе внутри
+  // жеста работали бы функции того рендера, в котором палец коснулся экрана.
+  const apiRef = useRef(api);
+  apiRef.current = api;
+
+  const rootRef = useRef(null);
+  const gestureRef = useRef({
+    armed: false,
+    active: false,
+    sentenceId: '',
+    anchorIndex: -1,
+    currentIndex: -1,
+    startX: 0,
+    startY: 0,
+  });
+  const holdTimerRef = useRef(null);
+  const windowHandlersRef = useRef(null);
+  const dragMetaRef = useRef(null);
+  const suppressStructuredClickRef = useRef(0);
+  const lastTapRef = useRef({ time: 0, sid: null });
+  const [dragSelectionMeta, setDragSelectionMeta] = useState(null);
+
+  const { text: sourceText, ranges: markupRanges } = api.parseInlineMarkup(String(text || ''));
+
+  const structuredSentencesModel = useMemo(
+    () => apiRef.current.segmentText(
+      sourceText,
+      apiRef.current.normalizeLangCode(langHint || '') || apiRef.current.getLookupLang() || 'de',
+    ),
+    [sourceText, langHint]
+  );
+  const structuredSentenceMap = useMemo(() => {
+    const map = new Map();
+    structuredSentencesModel.forEach((sentence) => {
+      map.set(sentence.sid, sentence);
+    });
+    return map;
+  }, [structuredSentencesModel]);
+  const structuredWordMap = useMemo(() => {
+    const map = new Map();
+    structuredSentencesModel.forEach((sentence) => {
+      sentence.tokens
+        .filter((token) => token.kind === 'word' && token.wid)
+        .forEach((token) => {
+          map.set(token.wid, { ...token, sid: sentence.sid });
+        });
+    });
+    return map;
+  }, [structuredSentencesModel]);
+
+  const selectedMeta = api.selectedMeta;
+  const selectedStructuredSentenceIds = useMemo(() => {
+    const ids = new Set(Array.isArray(selectedMeta?.sids) ? selectedMeta.sids : []);
+    if (Array.isArray(dragSelectionMeta?.sids)) {
+      dragSelectionMeta.sids.forEach((sid) => {
+        if (sid) ids.add(sid);
+      });
+    }
+    return ids;
+  }, [selectedMeta, dragSelectionMeta]);
+  const selectedStructuredWordIds = useMemo(() => {
+    const ids = new Set(Array.isArray(selectedMeta?.wids) ? selectedMeta.wids : []);
+    if (Array.isArray(dragSelectionMeta?.wids)) {
+      dragSelectionMeta.wids.forEach((wid) => {
+        if (wid) ids.add(wid);
+      });
+    }
+    return ids;
+  }, [selectedMeta, dragSelectionMeta]);
+
+  const getSentenceWords = (sentenceId) => {
+    const sentence = structuredSentenceMap.get(String(sentenceId || '').trim());
+    if (!sentence) return [];
+    return sentence.tokens.filter((token) => token.kind === 'word' && token.wid);
+  };
+
+  const getWordIndexInSentence = (sentenceId, wordId) => {
+    const words = getSentenceWords(sentenceId);
+    return words.findIndex((token) => String(token.wid || '') === String(wordId || ''));
+  };
+
+  const buildPhraseSelection = (sentenceId, firstIndex, lastIndex) => {
+    const sentence = structuredSentenceMap.get(String(sentenceId || '').trim());
+    if (!sentence) return null;
+    const words = getSentenceWords(sentenceId);
+    if (!words.length) return null;
+    const from = Math.max(0, Math.min(words.length - 1, Math.min(firstIndex, lastIndex)));
+    const to = Math.max(0, Math.min(words.length - 1, Math.max(firstIndex, lastIndex)));
+    const selectedWords = words.slice(from, to + 1);
+    if (!selectedWords.length) return null;
+    const start = Number(selectedWords[0]?.start || 0);
+    const end = Number(selectedWords[selectedWords.length - 1]?.end || start);
+    const relativeStart = Math.max(0, start - Number(sentence.start || 0));
+    const relativeEnd = Math.max(relativeStart, end - Number(sentence.start || 0));
+    const selectedText = apiRef.current.normalizeSelectionText(
+      String(sentence.text || '').slice(relativeStart, relativeEnd)
+    );
+    if (!selectedText) return null;
+    return {
+      text: selectedText,
+      sids: [sentence.sid],
+      wids: selectedWords.map((token) => String(token.wid || '')).filter(Boolean),
+      start,
+      end,
+    };
+  };
+
+  const getWordElementByPoint = (clientX, clientY) => {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY) || typeof document === 'undefined') return null;
+    const target = document.elementFromPoint(clientX, clientY);
+    if (!(target instanceof Element)) return null;
+    const wordEl = target.closest('[data-wid][data-sid]');
+    if (!wordEl) return null;
+    // Чужой текст рядом (соседняя карточка разбора) — не наш: палец, уехавший
+    // за пределы своего абзаца, не должен тянуть слова из другого предложения.
+    const root = rootRef.current;
+    if (root && !root.contains(wordEl)) return null;
+    return wordEl;
+  };
+
+  const openStructuredSelection = (event, value, selectionType, meta) => {
+    apiRef.current.handleSelection(event, value, {
+      compact: true,
+      inlineLookup: true,
+      lookupLang: apiRef.current.getLookupLang(),
+      selectionType,
+      selectedMeta: meta,
+    });
+  };
+
+  // ── Жест «придержал и повёл» ───────────────────────────────────────────────
+  const clearHoldTimer = () => {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+  };
+
+  const detachWindowHandlers = () => {
+    const handlers = windowHandlersRef.current;
+    if (!handlers || typeof window === 'undefined') return;
+    window.removeEventListener('touchmove', handlers.onMove);
+    window.removeEventListener('touchend', handlers.onEnd);
+    window.removeEventListener('touchcancel', handlers.onCancel);
+    windowHandlersRef.current = null;
+  };
+
+  const resetPhraseGesture = () => {
+    clearHoldTimer();
+    detachWindowHandlers();
+    gestureRef.current = {
+      armed: false,
+      active: false,
+      sentenceId: '',
+      anchorIndex: -1,
+      currentIndex: -1,
+      startX: 0,
+      startY: 0,
+    };
+    dragMetaRef.current = null;
+    setDragSelectionMeta(null);
+  };
+
+  const handleWindowTouchMove = (event) => {
+    const gesture = gestureRef.current;
+    if (!gesture.armed && !gesture.active) return;
+    const touch = event.touches?.[0];
+    if (!touch) return;
+    if (!gesture.active) {
+      // Палец уехал раньше, чем сработало удержание → это прокрутка, отдаём её странице.
+      const dx = touch.clientX - Number(gesture.startX || 0);
+      const dy = touch.clientY - Number(gesture.startY || 0);
+      if (Math.abs(dx) > STRUCTURED_PHRASE_HOLD_SLOP_PX || Math.abs(dy) > STRUCTURED_PHRASE_HOLD_SLOP_PX) {
+        clearHoldTimer();
+        gestureRef.current = { ...gesture, armed: false };
+      }
+      return;
+    }
+    // Жест наш. Разбор прокручивается, поэтому движение пальца нужно отобрать у
+    // прокрутки — а это только preventDefault на НЕпассивном слушателе (React
+    // вешает touchmove пассивно, там preventDefault браузер игнорирует).
+    if (event.cancelable) event.preventDefault();
+    const wordEl = getWordElementByPoint(touch.clientX, touch.clientY);
+    if (!wordEl) return;
+    const sid = String(wordEl.getAttribute('data-sid') || '').trim();
+    const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+    // Тянем внутри одного предложения — как в читалке: кусок из двух разных
+    // предложений переводить смысла нет, на границе выделение перестаёт расти.
+    if (!sid || sid !== gesture.sentenceId) return;
+    const currentIndex = getWordIndexInSentence(sid, wid);
+    if (currentIndex < 0 || currentIndex === gesture.currentIndex) return;
+    const nextMeta = buildPhraseSelection(sid, gesture.anchorIndex, currentIndex);
+    gestureRef.current = { ...gesture, currentIndex };
+    dragMetaRef.current = nextMeta;
+    setDragSelectionMeta(nextMeta);
+    if (nextMeta) trTextHaptic();
+  };
+
+  const handleWindowTouchEnd = (event) => {
+    const gesture = gestureRef.current;
+    const previewMeta = dragMetaRef.current;
+    const wasActive = Boolean(gesture.active);
+    if (!wasActive) {
+      resetPhraseGesture();
+      return;
+    }
+    const phraseText = String(previewMeta?.text || '').trim();
+    if (!phraseText) {
+      resetPhraseGesture();
+      return;
+    }
+    const touch = event.changedTouches?.[0];
+    const releaseX = Number(touch?.clientX || 0);
+    const releaseY = Number(touch?.clientY || 0);
+    const wids = Array.isArray(previewMeta.wids) ? previewMeta.wids : [];
+    openStructuredSelection(
+      // changedTouches — чтобы плашка встала НАД пальцем, а не под ним.
+      { clientX: releaseX, clientY: releaseY, changedTouches: [{ clientX: releaseX, clientY: releaseY }] },
+      phraseText,
+      wids.length > 1 ? 'translation_result_phrase' : 'translation_result_word',
+      {
+        sids: Array.isArray(previewMeta.sids) ? previewMeta.sids : [],
+        wids,
+        start: Number(previewMeta.start || 0),
+        end: Number(previewMeta.end || 0),
+      }
+    );
+    // Гасим тап/клик, который прилетает следом за отпусканием пальца.
+    suppressStructuredClickRef.current = Date.now();
+    resetPhraseGesture();
+  };
+
+  const attachWindowHandlers = () => {
+    if (windowHandlersRef.current || typeof window === 'undefined') return;
+    const onMove = (event) => handleWindowTouchMove(event);
+    const onEnd = (event) => handleWindowTouchEnd(event);
+    const onCancel = () => resetPhraseGesture();
+    // Слушатели живут на окне, а не на узлах текста: узел под пальцем может быть
+    // перерисован посреди жеста, и события с оторванного узла до React уже не дойдут.
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onEnd);
+    window.addEventListener('touchcancel', onCancel);
+    windowHandlersRef.current = { onMove, onEnd, onCancel };
+  };
+
+  const handleWordTouchStart = (event) => {
+    resetPhraseGesture();
+    const touch = event?.touches?.[0];
+    const target = event?.target;
+    if (!touch || !(target instanceof Element)) return;
+    const wordEl = target.closest('[data-wid][data-sid]');
+    if (!wordEl) return;
+    const sid = String(wordEl.getAttribute('data-sid') || '').trim();
+    const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+    const anchorIndex = getWordIndexInSentence(sid, wid);
+    if (!sid || anchorIndex < 0) return;
+    gestureRef.current = {
+      armed: true,
+      active: false,
+      sentenceId: sid,
+      anchorIndex,
+      currentIndex: anchorIndex,
+      startX: touch.clientX,
+      startY: touch.clientY,
+    };
+    attachWindowHandlers();
+    holdTimerRef.current = setTimeout(() => {
+      holdTimerRef.current = null;
+      const gesture = gestureRef.current;
+      if (!gesture.armed) return;
+      // Удержание сработало: подсвечиваем слово-якорь и даём вибрацию — видно и
+      // понятно без объяснений, что дальше палец ведёт выделение.
+      gestureRef.current = { ...gesture, armed: false, active: true };
+      const anchorMeta = buildPhraseSelection(gesture.sentenceId, gesture.anchorIndex, gesture.anchorIndex);
+      dragMetaRef.current = anchorMeta;
+      setDragSelectionMeta(anchorMeta);
+      trTextHaptic();
+    }, STRUCTURED_PHRASE_HOLD_MS);
+  };
+
+  useEffect(() => () => {
+    clearHoldTimer();
+    detachWindowHandlers();
+  }, []);
+
+  const handleStructuredClick = (event) => {
+    if (Date.now() - Number(suppressStructuredClickRef.current || 0) < 420) return;
+    const root = rootRef.current;
+    if (!root) return;
+    const target = event?.target;
+    if (!(target instanceof Element)) return;
+
+    const wordEl = target.closest('[data-wid]');
+    if (wordEl && root.contains(wordEl)) {
+      const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+      const sid = String(wordEl.getAttribute('data-sid') || '').trim();
+      const metaWord = structuredWordMap.get(wid);
+      if (!metaWord || !sid) return;
+
+      const now = Date.now();
+      const lastTap = lastTapRef.current;
+      const isDoubleTap = now - lastTap.time < 320 && lastTap.sid === sid;
+      lastTapRef.current = { time: now, sid };
+
+      if (isDoubleTap) {
+        const sentence = structuredSentenceMap.get(sid);
+        if (!sentence) return;
+        openStructuredSelection(event, String(sentence.text || ''), 'translation_result_sentence', {
+          sids: [sid],
+          start: Number(sentence.start || 0),
+          end: Number(sentence.end || 0),
+        });
+        return;
+      }
+
+      openStructuredSelection(event, metaWord.value, 'translation_result_word', {
+        sids: [sid],
+        wids: [wid],
+        start: Number(metaWord.start || 0),
+        end: Number(metaWord.end || 0),
+      });
+      return;
+    }
+
+    const sentenceEl = target.closest('[data-sid]');
+    if (sentenceEl && root.contains(sentenceEl)) {
+      const sid = String(sentenceEl.getAttribute('data-sid') || '').trim();
+      const sentence = structuredSentenceMap.get(sid);
+      if (!sentence) return;
+      lastTapRef.current = { time: 0, sid: null };
+      openStructuredSelection(event, String(sentence.text || ''), 'translation_result_sentence', {
+        sids: [sid],
+        start: Number(sentence.start || 0),
+        end: Number(sentence.end || 0),
+      });
+    }
+  };
+
+  // Мышь на компьютере: там выделение делает сам браузер, и мы только читаем,
+  // какие слова попали в диапазон. Пальцем этот путь не работает (текст помечен
+  // user-select: none), для пальца — жест удержания выше.
+  const handleStructuredSelectionEnd = (event) => {
+    const root = rootRef.current;
+    if (!root) return;
+    const selection = window.getSelection?.();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+    const range = selection.getRangeAt(0);
+    const commonNode = range.commonAncestorContainer;
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    if (commonNode && !root.contains(commonNode)) return;
+    if (anchorNode && !root.contains(anchorNode)) return;
+    if (focusNode && !root.contains(focusNode)) return;
+
+    const words = Array.from(root.querySelectorAll('[data-wid][data-sid]'));
+    const pickedWords = [];
+    for (const node of words) {
+      try {
+        if (range.intersectsNode(node)) {
+          pickedWords.push(node);
+        }
+      } catch (_rangeError) {
+        // ignore invalid nodes
+      }
+    }
+    if (pickedWords.length === 0) return;
+
+    const sentenceIds = [];
+    const sentenceIdSet = new Set();
+    const wordIds = [];
+    pickedWords.forEach((node) => {
+      const sid = String(node.getAttribute('data-sid') || '').trim();
+      const wid = String(node.getAttribute('data-wid') || '').trim();
+      if (sid && !sentenceIdSet.has(sid)) {
+        sentenceIdSet.add(sid);
+        sentenceIds.push(sid);
+      }
+      if (wid) wordIds.push(wid);
+    });
+    if (!sentenceIds.length) return;
+
+    if (sentenceIds.length === 1 && wordIds.length > 0) {
+      const sid = sentenceIds[0];
+      const sentenceWords = getSentenceWords(sid);
+      const firstWordIndex = getWordIndexInSentence(sid, wordIds[0]);
+      const lastWordIndex = getWordIndexInSentence(sid, wordIds[wordIds.length - 1]);
+      if (firstWordIndex >= 0 && lastWordIndex >= 0) {
+        if (wordIds.length === 1) {
+          const wordId = wordIds[0];
+          const metaWord = structuredWordMap.get(wordId);
+          if (metaWord) {
+            openStructuredSelection(event, metaWord.value, 'translation_result_word', {
+              sids: [sid],
+              wids: [wordId],
+              start: Number(metaWord.start || 0),
+              end: Number(metaWord.end || 0),
+            });
+            try {
+              selection.removeAllRanges();
+            } catch (_clearWordError) {
+              // ignore cleanup errors
+            }
+            return;
+          }
+        }
+
+        if (wordIds.length < sentenceWords.length) {
+          const phraseMeta = buildPhraseSelection(sid, firstWordIndex, lastWordIndex);
+          if (phraseMeta) {
+            openStructuredSelection(event, phraseMeta.text, 'translation_result_phrase', {
+              sids: phraseMeta.sids,
+              wids: phraseMeta.wids,
+              start: Number(phraseMeta.start || 0),
+              end: Number(phraseMeta.end || 0),
+            });
+            try {
+              selection.removeAllRanges();
+            } catch (_clearPhraseError) {
+              // ignore cleanup errors
+            }
+            return;
+          }
+        }
+      }
+    }
+
+    const selectedSentences = structuredSentencesModel.filter((sentence) => sentenceIdSet.has(sentence.sid));
+    if (!selectedSentences.length) return;
+    const selectedText = selectedSentences.map((sentence) => String(sentence.text || '')).join('');
+    if (!selectedText) return;
+
+    openStructuredSelection(
+      event,
+      selectedText,
+      selectedSentences.length > 1 ? 'translation_result_multi_sentence' : 'translation_result_sentence',
+      {
+        sids: sentenceIds,
+        wids: wordIds,
+        start: Number(selectedSentences[0]?.start || 0),
+        end: Number(selectedSentences[selectedSentences.length - 1]?.end || 0),
+      }
+    );
+    try {
+      selection.removeAllRanges();
+    } catch (_clearError) {
+      // ignore cleanup errors
+    }
+  };
+
+  if (!sourceText) return null;
+
+  // Разметка ложится на уже нарезанные токены: отрезок из parseInlineMarkup пересекается
+  // с диапазоном токена — значит этот кусок был *жирным* / _курсивом_ / `кодом`.
+  const markupClass = (start, end) => {
+    if (!markupRanges.length) return '';
+    const kinds = new Set();
+    markupRanges.forEach((range) => {
+      if (start < range.end && end > range.start) kinds.add(range.kind);
+    });
+    return kinds.size ? ` ${Array.from(kinds).map((kind) => `is-md-${kind}`).join(' ')}` : '';
+  };
+
+  return (
+    <span
+      ref={rootRef}
+      className="translation-structured-text"
+      onClick={handleStructuredClick}
+      onMouseUp={handleStructuredSelectionEnd}
+    >
+      {structuredSentencesModel.map((sentence) => (
+        <span
+          key={`${keyPrefix}-${sentence.sid}`}
+          className={`reader-sentence ${selectedStructuredSentenceIds.has(sentence.sid) ? 'is-selected' : ''}`}
+          data-sid={sentence.sid}
+          data-start={sentence.start}
+          data-end={sentence.end}
+        >
+          {sentence.tokens.map((token, tokenIndex) => {
+            if (token.kind === 'word') {
+              const wordId = String(token.wid || '');
+              return (
+                <span
+                  key={wordId || `${sentence.sid}-word-${tokenIndex}`}
+                  className={`reader-word ${selectedStructuredWordIds.has(wordId) ? 'is-selected' : ''}${markupClass(token.start, token.end)}`}
+                  data-wid={wordId}
+                  data-sid={sentence.sid}
+                  data-start={token.start}
+                  data-end={token.end}
+                  onTouchStart={handleWordTouchStart}
+                >
+                  {token.value}
+                </span>
+              );
+            }
+            return (
+              <span
+                key={`${sentence.sid}-${token.kind}-${token.start}-${token.end}-${tokenIndex}`}
+                className={`reader-token${markupClass(token.start, token.end)}`}
+                aria-hidden="true"
+              >
+                {token.value}
+              </span>
+            );
+          })}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+
 function AppInner() {
   const GERMAN_ONLY_MODE = true;
   const GERMAN_ONLY_PROFILE = { native_language: 'ru', learning_language: 'de' };
@@ -32068,444 +32611,19 @@ function AppInner() {
     });
   };
 
-  const StructuredSelectableText = ({
-    text,
-    langHint = '',
-    keyPrefix = 'structured',
-  }) => {
-    const { text: sourceText, ranges: markupRanges } = parseInlineMarkup(String(text || ''));
-    const rootRef = useRef(null);
-    const dragSelectionMetaRef = useRef(null);
-    const phraseGestureRef = useRef({
-      active: false,
-      sentenceId: '',
-      anchorIndex: -1,
-      currentIndex: -1,
-      moved: false,
-      startX: 0,
-      startY: 0,
-    });
-    const suppressStructuredClickRef = useRef(0);
-    const lastTapRef = useRef({ time: 0, sid: null });
-    const [dragSelectionMeta, setDragSelectionMeta] = useState(null);
-
-    const structuredSentencesModel = useMemo(
-      () => segmentText(sourceText, normalizeLangCode(langHint || '') || getNormalizeLookupLang() || 'de'),
-      [sourceText, langHint]
-    );
-    const structuredSentenceMap = useMemo(() => {
-      const map = new Map();
-      structuredSentencesModel.forEach((sentence) => {
-        map.set(sentence.sid, sentence);
-      });
-      return map;
-    }, [structuredSentencesModel]);
-    const structuredWordMap = useMemo(() => {
-      const map = new Map();
-      structuredSentencesModel.forEach((sentence) => {
-        sentence.tokens
-          .filter((token) => token.kind === 'word' && token.wid)
-          .forEach((token) => {
-            map.set(token.wid, { ...token, sid: sentence.sid });
-          });
-      });
-      return map;
-    }, [structuredSentencesModel]);
-    const selectedStructuredSentenceIds = useMemo(() => {
-      const ids = new Set(Array.isArray(selectedMeta?.sids) ? selectedMeta.sids : []);
-      if (Array.isArray(dragSelectionMeta?.sids)) {
-        dragSelectionMeta.sids.forEach((sid) => {
-          if (sid) ids.add(sid);
-        });
-      }
-      return ids;
-    }, [dragSelectionMeta]);
-    const selectedStructuredWordIds = useMemo(() => {
-      const ids = new Set(Array.isArray(selectedMeta?.wids) ? selectedMeta.wids : []);
-      if (Array.isArray(dragSelectionMeta?.wids)) {
-        dragSelectionMeta.wids.forEach((wid) => {
-          if (wid) ids.add(wid);
-        });
-      }
-      return ids;
-    }, [dragSelectionMeta]);
-
-    const resetPhraseGesture = () => {
-      phraseGestureRef.current = {
-        active: false,
-        sentenceId: '',
-        anchorIndex: -1,
-        currentIndex: -1,
-        moved: false,
-        startX: 0,
-        startY: 0,
-      };
-      dragSelectionMetaRef.current = null;
-      setDragSelectionMeta(null);
-    };
-
-    const getSentenceWords = (sentenceId) => {
-      const sentence = structuredSentenceMap.get(String(sentenceId || '').trim());
-      if (!sentence) return [];
-      return sentence.tokens.filter((token) => token.kind === 'word' && token.wid);
-    };
-
-    const getWordIndexInSentence = (sentenceId, wordId) => {
-      const words = getSentenceWords(sentenceId);
-      return words.findIndex((token) => String(token.wid || '') === String(wordId || ''));
-    };
-
-    const buildPhraseSelection = (sentenceId, firstIndex, lastIndex) => {
-      const sentence = structuredSentenceMap.get(String(sentenceId || '').trim());
-      if (!sentence) return null;
-      const words = getSentenceWords(sentenceId);
-      if (!words.length) return null;
-      const from = Math.max(0, Math.min(words.length - 1, Math.min(firstIndex, lastIndex)));
-      const to = Math.max(0, Math.min(words.length - 1, Math.max(firstIndex, lastIndex)));
-      const selectedWords = words.slice(from, to + 1);
-      if (!selectedWords.length) return null;
-      const start = Number(selectedWords[0]?.start || 0);
-      const end = Number(selectedWords[selectedWords.length - 1]?.end || start);
-      const relativeStart = Math.max(0, start - Number(sentence.start || 0));
-      const relativeEnd = Math.max(relativeStart, end - Number(sentence.start || 0));
-      const selectedText = normalizeSelectionText(String(sentence.text || '').slice(relativeStart, relativeEnd));
-      if (!selectedText) return null;
-      return {
-        text: selectedText,
-        sids: [sentence.sid],
-        wids: selectedWords.map((token) => String(token.wid || '')).filter(Boolean),
-        start,
-        end,
-      };
-    };
-
-    const getWordElementByPoint = (clientX, clientY) => {
-      if (!Number.isFinite(clientX) || !Number.isFinite(clientY) || typeof document === 'undefined') return null;
-      const target = document.elementFromPoint(clientX, clientY);
-      if (!(target instanceof Element)) return null;
-      return target.closest('[data-wid][data-sid]');
-    };
-
-    const openStructuredSelection = (event, value, selectionType, meta) => {
-      handleSelection(event, value, {
-        compact: true,
-        inlineLookup: true,
-        lookupLang: getNormalizeLookupLang(),
-        selectionType,
-        selectedMeta: meta,
-      });
-    };
-
-    const handleStructuredClick = (event) => {
-      if (Date.now() - Number(suppressStructuredClickRef.current || 0) < 420) return;
-      const root = rootRef.current;
-      if (!root) return;
-      const target = event?.target;
-      if (!(target instanceof Element)) return;
-
-      const wordEl = target.closest('[data-wid]');
-      if (wordEl && root.contains(wordEl)) {
-        const wid = String(wordEl.getAttribute('data-wid') || '').trim();
-        const sid = String(wordEl.getAttribute('data-sid') || '').trim();
-        const metaWord = structuredWordMap.get(wid);
-        if (!metaWord || !sid) return;
-
-        const now = Date.now();
-        const lastTap = lastTapRef.current;
-        const isDoubleTap = now - lastTap.time < 320 && lastTap.sid === sid;
-        lastTapRef.current = { time: now, sid };
-
-        if (isDoubleTap) {
-          const sentence = structuredSentenceMap.get(sid);
-          if (!sentence) return;
-          openStructuredSelection(event, String(sentence.text || ''), 'translation_result_sentence', {
-            sids: [sid],
-            start: Number(sentence.start || 0),
-            end: Number(sentence.end || 0),
-          });
-          return;
-        }
-
-        openStructuredSelection(event, metaWord.value, 'translation_result_word', {
-          sids: [sid],
-          wids: [wid],
-          start: Number(metaWord.start || 0),
-          end: Number(metaWord.end || 0),
-        });
-        return;
-      }
-
-      const sentenceEl = target.closest('[data-sid]');
-      if (sentenceEl && root.contains(sentenceEl)) {
-        const sid = String(sentenceEl.getAttribute('data-sid') || '').trim();
-        const sentence = structuredSentenceMap.get(sid);
-        if (!sentence) return;
-        lastTapRef.current = { time: 0, sid: null };
-        openStructuredSelection(event, String(sentence.text || ''), 'translation_result_sentence', {
-          sids: [sid],
-          start: Number(sentence.start || 0),
-          end: Number(sentence.end || 0),
-        });
-      }
-    };
-
-    const handleStructuredSelectionEnd = (event) => {
-      const root = rootRef.current;
-      if (!root) return;
-      const selection = window.getSelection?.();
-      if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
-      const range = selection.getRangeAt(0);
-      const commonNode = range.commonAncestorContainer;
-      const anchorNode = selection.anchorNode;
-      const focusNode = selection.focusNode;
-      if (commonNode && !root.contains(commonNode)) return;
-      if (anchorNode && !root.contains(anchorNode)) return;
-      if (focusNode && !root.contains(focusNode)) return;
-
-      const words = Array.from(root.querySelectorAll('[data-wid][data-sid]'));
-      const pickedWords = [];
-      for (const node of words) {
-        try {
-          if (range.intersectsNode(node)) {
-            pickedWords.push(node);
-          }
-        } catch (_rangeError) {
-          // ignore invalid nodes
-        }
-      }
-      if (pickedWords.length === 0) return;
-
-      const sentenceIds = [];
-      const sentenceIdSet = new Set();
-      const wordIds = [];
-      pickedWords.forEach((node) => {
-        const sid = String(node.getAttribute('data-sid') || '').trim();
-        const wid = String(node.getAttribute('data-wid') || '').trim();
-        if (sid && !sentenceIdSet.has(sid)) {
-          sentenceIdSet.add(sid);
-          sentenceIds.push(sid);
-        }
-        if (wid) wordIds.push(wid);
-      });
-      if (!sentenceIds.length) return;
-
-      if (sentenceIds.length === 1 && wordIds.length > 0) {
-        const sid = sentenceIds[0];
-        const sentenceWords = getSentenceWords(sid);
-        const firstWordIndex = getWordIndexInSentence(sid, wordIds[0]);
-        const lastWordIndex = getWordIndexInSentence(sid, wordIds[wordIds.length - 1]);
-        if (firstWordIndex >= 0 && lastWordIndex >= 0) {
-          if (wordIds.length === 1) {
-            const wordId = wordIds[0];
-            const metaWord = structuredWordMap.get(wordId);
-            if (metaWord) {
-              openStructuredSelection(event, metaWord.value, 'translation_result_word', {
-                sids: [sid],
-                wids: [wordId],
-                start: Number(metaWord.start || 0),
-                end: Number(metaWord.end || 0),
-              });
-              try {
-                selection.removeAllRanges();
-              } catch (_clearWordError) {
-                // ignore cleanup errors
-              }
-              return;
-            }
-          }
-
-          if (wordIds.length < sentenceWords.length) {
-            const phraseMeta = buildPhraseSelection(sid, firstWordIndex, lastWordIndex);
-            if (phraseMeta) {
-              openStructuredSelection(event, phraseMeta.text, 'translation_result_phrase', {
-                sids: phraseMeta.sids,
-                wids: phraseMeta.wids,
-                start: Number(phraseMeta.start || 0),
-                end: Number(phraseMeta.end || 0),
-              });
-              try {
-                selection.removeAllRanges();
-              } catch (_clearPhraseError) {
-                // ignore cleanup errors
-              }
-              return;
-            }
-          }
-        }
-      }
-
-      const selectedSentences = structuredSentencesModel.filter((sentence) => sentenceIdSet.has(sentence.sid));
-      if (!selectedSentences.length) return;
-      const selectedText = selectedSentences.map((sentence) => String(sentence.text || '')).join('');
-      if (!selectedText) return;
-
-      openStructuredSelection(
-        event,
-        selectedText,
-        selectedSentences.length > 1 ? 'translation_result_multi_sentence' : 'translation_result_sentence',
-        {
-          sids: sentenceIds,
-          wids: wordIds,
-          start: Number(selectedSentences[0]?.start || 0),
-          end: Number(selectedSentences[selectedSentences.length - 1]?.end || 0),
-        }
-      );
-      try {
-        selection.removeAllRanges();
-      } catch (_clearError) {
-        // ignore cleanup errors
-      }
-    };
-
-    const handleWordTouchStart = (event) => {
-      const touch = event?.touches?.[0];
-      const target = event?.target;
-      if (!touch || !(target instanceof Element)) {
-        resetPhraseGesture();
-        return;
-      }
-      const wordEl = target.closest('[data-wid][data-sid]');
-      if (!wordEl) {
-        resetPhraseGesture();
-        return;
-      }
-      const sid = String(wordEl.getAttribute('data-sid') || '').trim();
-      const wid = String(wordEl.getAttribute('data-wid') || '').trim();
-      const anchorIndex = getWordIndexInSentence(sid, wid);
-      if (!sid || anchorIndex < 0) {
-        resetPhraseGesture();
-        return;
-      }
-      phraseGestureRef.current = {
-        active: true,
-        sentenceId: sid,
-        anchorIndex,
-        currentIndex: anchorIndex,
-        moved: false,
-        startX: touch.clientX,
-        startY: touch.clientY,
-      };
-      dragSelectionMetaRef.current = null;
-      setDragSelectionMeta(null);
-    };
-
-    const handleRootTouchMove = (event) => {
-      const gesture = phraseGestureRef.current;
-      if (!gesture?.active) return;
-      const touch = event?.touches?.[0];
-      if (!touch) return;
-      const dx = touch.clientX - Number(gesture.startX || 0);
-      const dy = touch.clientY - Number(gesture.startY || 0);
-      // Before the first word is reached require a primarily-horizontal drag to
-      // distinguish word-selection intent from a plain vertical page scroll.
-      // Once the selection is in progress (gesture.moved) allow any direction
-      // so the user can drag down to words on the next wrapped line.
-      if (!gesture.moved && (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy))) return;
-      const wordEl = getWordElementByPoint(touch.clientX, touch.clientY);
-      if (!wordEl) return;
-      const sid = String(wordEl.getAttribute('data-sid') || '').trim();
-      const wid = String(wordEl.getAttribute('data-wid') || '').trim();
-      if (!sid || sid !== gesture.sentenceId) return;
-      const currentIndex = getWordIndexInSentence(sid, wid);
-      if (currentIndex < 0 || currentIndex === gesture.currentIndex) return;
-      const nextMeta = buildPhraseSelection(sid, gesture.anchorIndex, currentIndex);
-      phraseGestureRef.current = {
-        ...gesture,
-        currentIndex,
-        moved: Math.abs(currentIndex - gesture.anchorIndex) >= 1,
-      };
-      dragSelectionMetaRef.current = nextMeta;
-      setDragSelectionMeta(nextMeta);
-    };
-
-    const handleRootTouchEnd = (event) => {
-      const gesture = phraseGestureRef.current;
-      const previewMeta = dragSelectionMetaRef.current;
-      const touch = event?.changedTouches?.[0];
-      if (gesture?.active && gesture.moved && previewMeta?.wids?.length >= 2) {
-        const selectionEvent = touch
-          ? { clientX: touch.clientX, clientY: touch.clientY }
-          : event;
-        openStructuredSelection(selectionEvent, previewMeta.text, 'translation_result_phrase', {
-          sids: Array.isArray(previewMeta.sids) ? previewMeta.sids : [],
-          wids: Array.isArray(previewMeta.wids) ? previewMeta.wids : [],
-          start: Number(previewMeta.start || 0),
-          end: Number(previewMeta.end || 0),
-        });
-        suppressStructuredClickRef.current = Date.now();
-        resetPhraseGesture();
-        return;
-      }
-      resetPhraseGesture();
-      handleStructuredSelectionEnd(event);
-    };
-
-    const handleRootMouseUp = (event) => {
-      handleStructuredSelectionEnd(event);
-    };
-
-    if (!sourceText) return null;
-
-    // Разметка ложится на уже нарезанные токены: отрезок из parseInlineMarkup пересекается
-    // с диапазоном токена — значит этот кусок был *жирным* / _курсивом_ / `кодом`.
-    const markupClass = (start, end) => {
-      if (!markupRanges.length) return '';
-      const kinds = new Set();
-      markupRanges.forEach((range) => {
-        if (start < range.end && end > range.start) kinds.add(range.kind);
-      });
-      return kinds.size ? ` ${Array.from(kinds).map((kind) => `is-md-${kind}`).join(' ')}` : '';
-    };
-
-    return (
-      <span
-        ref={rootRef}
-        className="translation-structured-text"
-        onClick={handleStructuredClick}
-        onMouseUp={handleRootMouseUp}
-        onTouchMove={handleRootTouchMove}
-        onTouchEnd={handleRootTouchEnd}
-        onTouchCancel={resetPhraseGesture}
-      >
-        {structuredSentencesModel.map((sentence) => (
-          <span
-            key={`${keyPrefix}-${sentence.sid}`}
-            className={`reader-sentence ${selectedStructuredSentenceIds.has(sentence.sid) ? 'is-selected' : ''}`}
-            data-sid={sentence.sid}
-            data-start={sentence.start}
-            data-end={sentence.end}
-          >
-            {sentence.tokens.map((token, tokenIndex) => {
-              if (token.kind === 'word') {
-                const wordId = String(token.wid || '');
-                return (
-                  <span
-                    key={wordId || `${sentence.sid}-word-${tokenIndex}`}
-                    className={`reader-word ${selectedStructuredWordIds.has(wordId) ? 'is-selected' : ''}${markupClass(token.start, token.end)}`}
-                    data-wid={wordId}
-                    data-sid={sentence.sid}
-                    data-start={token.start}
-                    data-end={token.end}
-                    onTouchStart={handleWordTouchStart}
-                  >
-                    {token.value}
-                  </span>
-                );
-              }
-              return (
-                <span
-                  key={`${sentence.sid}-${token.kind}-${token.start}-${token.end}-${tokenIndex}`}
-                  className={`reader-token${markupClass(token.start, token.end)}`}
-                  aria-hidden="true"
-                >
-                  {token.value}
-                </span>
-              );
-            })}
-          </span>
-        ))}
-      </span>
-    );
+  // Всё, что нужно StructuredSelectableText. Сам компонент живёт на уровне модуля
+  // (см. большой комментарий у его объявления): объявленный внутри AppInner, он был
+  // новым типом на каждую перерисовку, React размонтировал текст прямо под пальцем и
+  // жест выделения обрывался. Объект здесь пересобирается каждую перерисовку — это
+  // дёшево и ничего не размонтирует.
+  const structuredSelectableApi = {
+    segmentText,
+    parseInlineMarkup,
+    normalizeSelectionText,
+    normalizeLangCode,
+    getLookupLang: getNormalizeLookupLang,
+    handleSelection,
+    selectedMeta,
   };
 
   // Текст в модалке «Разбор ошибок» работает как в читалке и в результате перевода:
@@ -32517,7 +32635,7 @@ function AppInner() {
   const renderExplainSelectableText = (text, keyPrefix = 'explain-text') => {
     const value = String(text || '').trim();
     if (!value) return null;
-    return <StructuredSelectableText text={value} keyPrefix={keyPrefix} />;
+    return <StructuredSelectableText api={structuredSelectableApi} text={value} keyPrefix={keyPrefix} />;
   };
 
   const renderExplanationContent = (text) => {
@@ -32537,6 +32655,7 @@ function AppInner() {
         {String(value || '').trim() ? (
           <span className="webapp-feedback-value">
             <StructuredSelectableText
+              api={structuredSelectableApi}
               text={String(value || '').trim()}
               keyPrefix={`${key}-value`}
             />
@@ -32601,6 +32720,7 @@ function AppInner() {
       return (
         <div key={`exp-${index}`} className="webapp-feedback-line webapp-explanation-line">
           <StructuredSelectableText
+            api={structuredSelectableApi}
             text={line}
             keyPrefix={`exp-${index}`}
           />
@@ -32647,6 +32767,7 @@ function AppInner() {
         {String(value || '').trim() ? (
           <span className="webapp-feedback-value">
             <StructuredSelectableText
+              api={structuredSelectableApi}
               text={String(value || '').trim()}
               keyPrefix={`${key}-value`}
             />
@@ -32717,6 +32838,7 @@ function AppInner() {
           {/* Разметку снимает сам StructuredSelectableText — и не выбрасывает её,
               а показывает жирным/курсивом/кодом (см. parseInlineMarkup). */}
           <StructuredSelectableText
+            api={structuredSelectableApi}
             text={line}
             keyPrefix={`fb-${index}`}
           />
