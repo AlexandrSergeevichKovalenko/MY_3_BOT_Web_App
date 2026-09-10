@@ -895,8 +895,15 @@ def _sentence_lookups_screen() -> str:
     return "\n".join(lines)
 
 
+# С какого момента строка пула ОБЯЗАНА быть подписана. Раньше этого времени колонки
+# `translator` в базе просто не было, и требовать подпись от старых строк бессмысленно:
+# накопленное подняла миграция там, где имя лежало в json, остальное так и осталось
+# неизвестным — честно, числом, а не задним числом придуманным автором.
+POOL_SIGNATURE_SINCE = "2026-09-11"
+
+
 def _pool_rows_without_translator() -> int:
-    """Строки общего пула ОТ ПЕРЕВОДЧИКА без следа «кто перевёл». Обещано: 0.
+    """Новые строки общего пула без подписи «кто дал этот перевод». Обещано: 0.
 
     09.09.2026 из быстрого перевода убрали MyMemory (замер: 6 ошибок на 20 живых фраз
     против одной у DeepL; именно он выдал владельцу «Я даю совет наугад» вместо «Я гадаю
@@ -920,20 +927,70 @@ def _pool_rows_without_translator() -> int:
     │ перевода), но следа переводчика нет. На 10.09.2026: 871 строка со следом,      │
     │ 0 без следа, 49 сохранений людей вне замера. Перемерить — запросом ниже.       │
     └───────────────────────────────────────────────────────────────────────────────┘
+
+    ┌─ ДОПОЛНЕНО 10.09.2026 ВЕЧЕРОМ, решение владельца «вариант А». ─────────────────┐
+    │ Разбор выше верен наполовину, и вторая половина важнее. Строки БЕЗ разбора —   │
+    │ это не только сохранения людей: НОВАЯ строка от машинного переводчика ложится  │
+    │ ровно такой же. Пул закрыт для разбора с 05.08.2026, и на дне записи payload   │
+    │ выбрасывается целиком (`database.py`, ветка INSERT): замер 10.09 — 01.07–04.08 │
+    │ пустых json 0 из 1966, 06.08–31.08 уже 2406 из 2484. Значит сужение замера     │
+    │ «только строки с json» делало обещание НЕПРОВЕРЯЕМЫМ: единственные строки с    │
+    │ json — те 871, что переписал скрипт 09.09, а всё новое замер не видел вовсе.   │
+    │                                                                               │
+    │ Поэтому подпись переехала в КОЛОНКУ `translator` (миграция там же, в           │
+    │ `ensure_*_schema`), и её ставит КАЖДЫЙ писатель, называя себя: имя машинного   │
+    │ переводчика (deepl_free / google_translate / azure_translator), «разбор        │
+    │ модели», «обогащение», «сохранение человека», «связывание карточки». Классы    │
+    │ теперь различаются в данных, а не рассуждением, и замер снова широкий.        │
+    │ Накопленное поднято из json миграцией: 871 имя переводчика, 5 793 вида записи.│
+    └───────────────────────────────────────────────────────────────────────────────┘
     """
     from backend.database import get_db_connection_context
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
                 SELECT COUNT(*) FROM bt_3_dictionary_entries
-                WHERE source_lang = 'de' AND target_lang = 'ru'
-                  AND created_at >= '2026-09-01'
-                  AND source_text LIKE '%% %%'
-                  AND response_json IS NOT NULL
-                  AND NOT (response_json ? 'meanings' OR response_json ? 'translations')
-                  AND NOT (response_json ? 'translator');
-            """)
+                WHERE created_at >= %s
+                  AND translator IS NULL;
+            """, (POOL_SIGNATURE_SINCE,))
             return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def _pool_signature_screen() -> str:
+    """Экран «после»: кто подписал строки пула за последние сутки и что легло последним.
+
+    Владелец видит ровно то, чего не хватало 09.09: у каждой строки назван автор — либо
+    машинный переводчик по имени, либо наш путь. Пустая подпись — тоже строка отчёта."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COALESCE(translator, '— БЕЗ ПОДПИСИ'), COUNT(*)
+                  FROM bt_3_dictionary_entries
+                 WHERE created_at >= NOW() - INTERVAL '24 hours'
+                 GROUP BY 1 ORDER BY 2 DESC;
+            """)
+            за_сутки = cursor.fetchall() or []
+            cursor.execute("""
+                SELECT COALESCE(translator, '— БЕЗ ПОДПИСИ'),
+                       COALESCE(entry_kind, '—'),
+                       left(source_text, 44)
+                  FROM bt_3_dictionary_entries
+                 ORDER BY created_at DESC LIMIT 6;
+            """)
+            последние = cursor.fetchall() or []
+    строки = ["🖋 Кто завёл строки общего словаря за сутки:"]
+    if за_сутки:
+        for автор, сколько in за_сутки:
+            строки.append(f"  {сколько:4d} · {автор}")
+    else:
+        строки.append("  (за сутки новых строк не было)")
+    строки.append("📌 Последние строки:")
+    for автор, вид, текст in последние:
+        строки.append(f"  {автор} · {вид} · {текст}")
+    строки.append(f"🤝 Строк без подписи с {POOL_SIGNATURE_SINCE}: "
+                  f"{_pool_rows_without_translator()}")
+    return "\n".join(строки)
 
 
 def _expression_reference_size() -> int:
@@ -968,7 +1025,7 @@ def _expression_reference_screen() -> str:
     строки.append(f"📚 В справочнике выражений: {ч.get('всего')} "
                   f"(идиом {ч.get('идиом')}, пословиц {ч.get('пословиц')}, "
                   f"без немецкого значения {ч.get('без_значения')})")
-    строки.append(f"🤝 Строк пула без следа переводчика: {_pool_rows_without_translator()}")
+    строки.append(f"🤝 Строк пула без подписи автора: {_pool_rows_without_translator()}")
     return "\n".join(строки)
 
 
@@ -1284,16 +1341,18 @@ PROMISES: tuple[Promise, ...] = (
     ),
     Promise(
         key="pool_rows_carry_their_translator",
-        title="Машинных строк пула без следа переводчика (кто перевёл) не осталось",
+        title="Новых строк общего словаря без подписи «кто дал перевод» не появляется",
         since="10.09.2026",
         expected=0,
         measure=_pool_rows_without_translator,
-        how="SELECT COUNT(*) FROM bt_3_dictionary_entries WHERE source_lang='de' AND target_lang='ru' "
-            "AND created_at >= '2026-09-01' AND source_text LIKE '%% %%' AND response_json IS NOT NULL "
-            "AND NOT (response_json ? 'meanings' OR response_json ? 'translations') AND NOT "
-            "(response_json ? 'translator'); сохранения людей (response_json IS NULL) сюда НЕ входят — "
-            "у них переводчика не было. Руками: перевести фразу в быстром словаре и посмотреть строку "
-            "пула — у неё должно быть поле translator",
+        how="SELECT COALESCE(translator,'— БЕЗ ПОДПИСИ'), count(*) FROM bt_3_dictionary_entries "
+            "WHERE created_at >= '2026-09-11' GROUP BY 1 ORDER BY 2 DESC; подпись — это КОЛОНКА "
+            "translator, а не поле внутри response_json: внутри json она терялась целиком, потому "
+            "что пул закрыт для разбора и payload на дне записи выбрасывается. Руками — перевести "
+            "фразу в быстром словаре и посмотреть строку пула: в translator должно стоять имя "
+            "переводчика (deepl_free / google_translate / azure_translator); у сохранения из "
+            "карточки там «сохранение человека», у разбора — «разбор модели»",
+        screen=_pool_signature_screen,
     ),
     Promise(
         key="expression_reference_alive",

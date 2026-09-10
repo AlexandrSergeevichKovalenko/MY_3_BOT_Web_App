@@ -6623,6 +6623,10 @@ def _save_webapp_dictionary_query_returning_id_with_conn(
                     word_de=word_de,
                     translation_ru=translation_ru,
                     response_json=normalized_response_json,
+                    # Строку завёл человек, сохранив карточку: машинного переводчика
+                    # здесь не было вовсе. Так эта строка и отличается в базе от строки
+                    # быстрого перевода — не рассуждением, а подписью (10.09.2026).
+                    translator="сохранение человека",
                 )
                 cursor.execute("RELEASE SAVEPOINT pool_entry;")
             except ValueError as exc:
@@ -6779,6 +6783,8 @@ def _run_dictionary_canonical_schema_migration(conn, *, batch_size: int = 250) -
                     word_de=row[4],
                     translation_ru=row[5],
                     response_json=response_payload,
+                    # Уже сохранённую карточку привязываем к общей строке задним числом.
+                    translator="связывание карточки",
                 )
                 cursor.execute(
                     """
