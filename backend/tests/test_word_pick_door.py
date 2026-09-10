@@ -62,7 +62,8 @@ class ДверьОтбора(unittest.TestCase):
         self.assertEqual(db.WORD_PICK_ORIGINS, frozenset({
             "trainer_save", "synonym_save", "artikel_sprint_save", "adjektiv_trainer",
             "interactive_save", "rebus_save", "anagram_save", "crossword_save",
-            "artikel_learn_save", "wofrage_learn_save"}))
+            "artikel_learn_save", "wofrage_learn_save",
+            "artikel_review_save", "wofrage_review_save"}))
 
     def test_каждый_источник_который_шлёт_фронт_разрешён_на_сервере(self):
         """Класс, а не список. 05.09.2026 нашлось восемь источников, которые фронт шлёт, а

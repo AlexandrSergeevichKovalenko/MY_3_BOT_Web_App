@@ -2,6 +2,7 @@ import useFitText from './useFitText.js';
 import useWideScreen from './useWideScreen.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { sendReviewAnswer, flushPendingReviewAnswers } from './reviewAnswerQueue';
+import SaveWordChip from './SaveWordChip.jsx';
 
 /**
  * Artikel section of «работа над ошибками», built on the SAME template as the Artikel
@@ -131,8 +132,20 @@ export default function ArtikelReviewGame({ api, haptic, onClose, onBack }) {
       {c?.image ? (
         <div className="al-img"><img src={c.image} alt="" loading="eager" /></div>
       ) : null}
-      <div className={`as-word ans-r-prompt ${chosen ? c.a : ''}`}>
+      <div className={`as-word ans-r-prompt save-host ${chosen ? c.a : ''}`}>
         <span className="al-word-text" lang="de" ref={wordRef}>{c ? c.w : '…'}</span>
+        {/* Дискетка — та же, что в тренажёре артиклей (ArtikelLearnGame). Здесь её не было
+            с самого рождения экрана (891ed4cf, 05.08.2026): экран собрали по шаблону
+            тренажёра ДО того, как в тренажёре появилась дискетка (de3ac55c), и она сюда
+            не доехала. Человек видит слово, на котором ошибся, — забрать его в словарь
+            он должен отсюда, а не искать тот же экран в тренажёре.
+            Появляется вместе с ответом: до ответа она сохранила бы слово ВМЕСТЕ
+            с артиклем и тем самым выдала бы правильный вариант. */}
+        {chosen && c ? (
+          <SaveWordChip api={api} className="save-chip--corner"
+            word={`${c.a ? `${c.a} ` : ''}${c.w}`.trim()} translation={c.ru || ''}
+            originProcess="artikel_review_save" />
+        ) : null}
       </div>
       {/* Двуродовые (der/die Flur): артикль решает смысл, поэтому перевод показываем
           ВМЕСТЕ с вопросом — и только у них. Иначе вопрос неотвечаем. */}
