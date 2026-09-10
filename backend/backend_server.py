@@ -10369,23 +10369,39 @@ def _resolve_input_kind(text: str | None, lang: str | None) -> str:
     │ и разбор всё равно найдёт выражение ВНУТРИ (поле embedded_expression).            │
     └──────────────────────────────────────────────────────────────────────────────────┘
     """
+    kind, _статья = _resolve_input_kind_with_expression(text, lang)
+    return kind
+
+
+def _resolve_input_kind_with_expression(text: str | None, lang: str | None) -> tuple[str, dict | None]:
+    """То же, что _resolve_input_kind, но отдаёт и САМУ статью справочника.
+
+    Статья нужна экрану. Владелец 10.09.2026: «на идиоме до нажатия „Подробный разбор“
+    человек секунду видит буквальный перевод» («Haare auf den Zähnen haben» → «иметь
+    волосы на зубах»). Объяснение у нас уже лежит — то самое, по которому мы и опознали
+    выражение, — и показать его можно сразу, без единого лишнего запроса к модели.
+
+    Справочник спрашиваем у ЛЮБОГО многословного немецкого ввода, а не только у длинного:
+    короткие идиомы («auf taube Ohren stoßen») правило формы называет фразой само, и до
+    10.09.2026 их объяснение оставалось непрочитанным. Это один поиск по уникальному
+    индексу, на горячем пути он дешевле, чем кажется."""
     kind = _lookup_input_kind(text, lang)
-    if kind != "sentence":
-        return kind
-    # Справочник спрашиваем ТОЛЬКО у длинного многословного ввода: одиночное слово и
-    # короткая фраза уже разобраны правилом формы, и лишний запрос им не нужен.
+    if kind == "word":
+        return kind, None
     normalized_lang = _normalize_short_lang_code(lang, fallback="")
     if normalized_lang and normalized_lang != "de":
-        return kind
+        return kind, None
     try:
         from backend.german_expressions import expression_of
-        if expression_of(text):
-            return "phrase"
+        статья = expression_of(text)
     except Exception:
         # Справочник не ответил — об этом говорим вслух и работаем по правилу формы.
         # Молча объявить «предложение» нельзя: это не ответ справочника, это его отказ.
         logging.warning("справочник выражений не ответил про %r", str(text or "")[:60], exc_info=True)
-    return kind
+        return kind, None
+    if статья:
+        return "phrase", статья
+    return kind, None
 
 
 def _stamp_input_kind(item, *, word: str = "", lang: str = ""):
@@ -41634,18 +41650,24 @@ def translate_quick():
     # │ одной (буквальная идиома). Именно MyMemory дал владельцу «Я даю совет наугад» │
     # │ вместо «Я гадаю наугад». Он убран отсюда СОВСЕМ, а не понижен в приоритете.   │
     # │                                                                              │
-    # │ Теперь строго по очереди: DeepL (две попытки) → Google → Azure. Никто не      │
-    # │ ответил — честная ошибка человеку, а НЕ ответ похуже. Порядок Google перед    │
-    # │ Azure — решение владельца 09.09.2026 по качеству; Azure F0 дешевле, и если    │
-    # │ счёт Google вырастет, они меняются местами одной строкой.                     │
+    # │ Теперь строго по очереди: DeepL (две попытки) → Azure → Google. Никто не      │
+    # │ ответил — честная ошибка человеку, а НЕ ответ похуже.                         │
+    # │                                                                              │
+    # │ ПОРЯДОК ЗАПАСНЫХ — решение владельца 10.09.2026, и он про ДЕНЬГИ НА МАСШТАБЕ. │
+    # │ 09.09 запасные стояли Google → Azure (по качеству). Считаем на завтра: у      │
+    # │ DeepL Free 500 000 знаков в месяц, у нас 19 000 — но при тысячах людей лимит  │
+    # │ кончается, и ВЕСЬ поток переливается в первый запасной. Azure F0 бесплатен до │
+    # │ 2 млн знаков в месяц; у Google бесплатные 500 000 действуют только первые 12  │
+    # │ месяцев жизни аккаунта, после чего он считает с первого знака (~$20 за млн).  │
+    # │ Поэтому первым запасным стоит Azure, Google — последним.                      │
     # └──────────────────────────────────────────────────────────────────────────────┘
     translate_chain: list[tuple[str, callable, int]] = []
     if DEEPL_AUTH_KEY:
         translate_chain.append(("deepl_free", _quick_translate_deepl, QUICK_TRANSLATE_DEEPL_ATTEMPTS))
-    if GOOGLE_TRANSLATE_API_KEY:
-        translate_chain.append(("google_translate", _quick_translate_google, 1))
     if AZURE_TRANSLATOR_KEY:
         translate_chain.append(("azure_translator", _quick_translate_azure, 1))
+    if GOOGLE_TRANSLATE_API_KEY:
+        translate_chain.append(("google_translate", _quick_translate_google, 1))
 
     def _has_translation(res) -> bool:
         return isinstance(res, dict) and bool(str(res.get("translation") or "").strip())
@@ -41698,7 +41720,18 @@ def translate_quick():
                 result["detected_source_lang"] = source_lang
             # Форма ввода — экрану с первого ответа: для предложения крупный заголовок
             # остаётся переводом предложения, что бы ни прислала потом модель (09.09.2026).
-            result["input_kind"] = _resolve_input_kind(text, result.get("detected_source_lang") or source_lang)
+            result["input_kind"], _выражение = _resolve_input_kind_with_expression(
+                text, result.get("detected_source_lang") or source_lang)
+            if _выражение:
+                # Объяснение из справочника — сразу, до «Подробного разбора». Оно на
+                # немецком, потому что таким его и написал источник; переводить его
+                # моделью значило бы платить за то, чего человек ещё не просил.
+                result["expression"] = {
+                    "kind": str(_выражение.get("kind") or ""),
+                    "meaning_de": str(_выражение.get("meaning_de") or ""),
+                    "lemma": str(_выражение.get("lemma") or ""),
+                    "source": str(_выражение.get("source") or ""),
+                }
             # Кто перевёл — едет вместе со строкой и ложится в общий пул. До 09.09.2026
             # этого следа не было, и на вопрос «сколько у нас строк от слабого
             # переводчика» ответить было нечем: логи живут один деплой.

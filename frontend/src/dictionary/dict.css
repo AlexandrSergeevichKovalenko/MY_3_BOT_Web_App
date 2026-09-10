@@ -2158,3 +2158,22 @@ html[data-scheme="light"] .dq-gt > summary,
   gap: 6px;
 }
 .dq-embedded-gloss { opacity: 0.85; }
+
+/* Устойчивое выражение: объяснение из справочника показывается СРАЗУ, до разбора.
+   Владелец 10.09.2026: на идиоме человек секунду видел буквальный машинный перевод,
+   хотя объяснение уже лежало у нас. Тон спокойный, не тревожный: это не ошибка, а
+   подсказка о том, что перед ним идиома. */
+.dq-expression {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(139, 92, 246, 0.10);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.dq-expression-head {
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+.dq-expression-label { opacity: 0.75; }
+.dq-expression-body span[lang="de"] { font-style: italic; }
