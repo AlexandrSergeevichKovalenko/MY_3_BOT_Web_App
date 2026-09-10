@@ -64,6 +64,8 @@ EXPLANATION_KEYS = frozenset({
     "register_note",
     "part_of_speech_note",
     "literal_meaning",
+    # Выражение, найденное внутри предложения (09.09.2026): немецкая форма + русский смысл.
+    "embedded_expression",
 })
 
 _CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")

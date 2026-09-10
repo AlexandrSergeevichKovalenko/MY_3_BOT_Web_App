@@ -32827,6 +32827,22 @@ function AppInner() {
 
   // Poll the enrichment tail after the breakdown lands (some deeper sections are
   // filled in asynchronously server-side). Extracted from the old blocking path.
+  // ПРЕДЛОЖЕНИЕ ПЕРЕВОДИТСЯ КАК ПРЕДЛОЖЕНИЕ (владелец, 09.09.2026). Разбор модели
+  // приходит про выражение внутри предложения, и его word_target раньше подменял
+  // заголовок целиком: «Ich weiß die Antwort nicht, ich rate ins Blaue hinein» →
+  // «угадывать без оснований, наугад». Заголовок предложения — перевод от
+  // переводчика, снятый быстрым переводом; разбор идёт под ним. Заголовок читает
+  // source_text / target_text (getDictionarySourceTarget); остальные поля модели
+  // остаются карточке. Применяется и к карточке разбора, и к хвосту дообогащения
+  // (опрос статуса), иначе хвост возвращал подмену через несколько секунд.
+  const keepSentenceHeadline = (next, cur) => {
+    if (!next) return next;
+    const kind = String(next.input_kind || cur?.input_kind || '').trim();
+    const curKeeps = !!cur && (cur.quick_mode || String(cur.input_kind || '') === 'sentence') && cur.target_text;
+    if (kind !== 'sentence' || !curKeeps) return next;
+    return { ...next, input_kind: 'sentence', source_text: cur.source_text, target_text: cur.target_text };
+  };
+
   const startDictionaryEnrichmentPoll = (lookupId) => {
     const id = String(lookupId || '').trim();
     if (!id) return;
@@ -32857,7 +32873,7 @@ function AppInner() {
           const statusValue = String(statusData.status || 'enriching').trim().toLowerCase() || 'enriching';
           transientErrorCount = 0;
           if (statusValue === 'ready') {
-            if (statusData.item) setDictionaryResult(statusData.item || null);
+            if (statusData.item) setDictionaryResult((cur) => keepSentenceHeadline(statusData.item, cur));
             if (statusData.direction) setDictionaryDirection(statusData.direction || resolveDictionaryDirection(statusData.item));
             if (statusData.language_pair) setDictionaryLanguagePair(resolveLanguagePairForUI(statusData.language_pair));
             return;
@@ -32877,18 +32893,7 @@ function AppInner() {
   const applyDictBreakdown = (data) => {
     let rich = data && data.item ? data.item : null;
     if (!rich) return null;
-    // ПРЕДЛОЖЕНИЕ ПЕРЕВОДИТСЯ КАК ПРЕДЛОЖЕНИЕ (владелец, 09.09.2026). Разбор модели
-    // приходит про выражение внутри предложения, и его word_target раньше подменял
-    // заголовок целиком: «Ich weiß die Antwort nicht, ich rate ins Blaue hinein» →
-    // «угадывать без оснований, наугад». Заголовок предложения — перевод от
-    // переводчика, снятый быстрым переводом; разбор идёт под ним.
-    const prev = dictionaryResult;
-    const kind = String(rich.input_kind || prev?.input_kind || '').trim();
-    if (kind === 'sentence' && prev?.quick_mode && prev.target_text) {
-      // Заголовок читает source_text / target_text (getDictionarySourceTarget);
-      // остальные поля модели остаются карточке под ним.
-      rich = { ...rich, input_kind: 'sentence', source_text: prev.source_text, target_text: prev.target_text };
-    }
+    rich = keepSentenceHeadline(rich, dictionaryResult);
     setDictionaryResult(rich);
     if (data.direction) setDictionaryDirection(data.direction || resolveDictionaryDirection(rich));
     if (data.language_pair) setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));

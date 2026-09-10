@@ -50,6 +50,15 @@ export function humanizeDictError(e) {
   // Expired / missing Telegram auth → actionable re-open hint.
   if (status === 401 || /initData|не прошёл проверку/i.test(code)) return AUTH_MESSAGE_RU;
 
+  // Переводчик не ответил. С 09.09.2026 переводчики опрашиваются по очереди
+  // (DeepL → Google → Azure), и подставлять вместо них заведомо слабый источник мы
+  // перестали: неверный немецкий дороже одной повторной попытки. Значит этот код
+  // теперь реально доходит до экрана — и человек обязан увидеть слова, а не
+  // «quick_translation_failed».
+  if (code === 'quick_translation_failed') {
+    return 'Переводчик сейчас не отвечает. Попробуй ещё раз через минуту — мы не показываем перевод, в котором не уверены.';
+  }
+
   // Anything else: keep the original text. Genuine user-facing messages we throw
   // ourselves (e.g. "Не удалось перевести слово") are already human and should show.
   return code;

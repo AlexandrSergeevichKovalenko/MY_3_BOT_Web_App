@@ -341,6 +341,69 @@ def _from_base_forward(cur, key: str) -> list[dict]:
     ]
 
 
+def _from_wikdict_forward(cur, key: str) -> list[dict]:
+    """Словарь WikDict (немецкий Викисловарь) по немецкому написанию.
+
+    Спрашиваем его РЯДОМ с базовым: у базового (FreeDict) 657 многословных статей, у
+    этого — 283, и они разные («sich die Rosinen herauspicken — снимать сливки» есть
+    только здесь). Замер 09.09.2026."""
+    cur.execute(
+        """
+        SELECT lemma, pos, translations_ru
+        FROM bt_wiktionary_dictionary
+        WHERE lemma_key = %s AND source_lang = 'de'
+        LIMIT 8;
+        """,
+        (key,),
+    )
+    return [
+        _entry(lemma, pos=pos or "", translations=translations or [], source="wikdict")
+        for lemma, pos, translations in cur.fetchall()
+    ]
+
+
+def _expression_entries(text: str, *, limit: int) -> list[dict]:
+    """Статьи для МНОГОСЛОВНОГО написания: только готовое выражение из словарей.
+
+    ┌─ Владелец, 09.09.2026: «словарь вместо счёта слов». ──────────────────────────────┐
+    │ До сегодня проверка ниже видела пробел и возвращала пустой список, не заглянув в  │
+    │ базу ни разу. При этом 940 немецких выражений с русским переводом уже лежали у    │
+    │ нас («jemanden an der Nase herumführen — водить за нос», «zwischen Baum und Borke │
+    │ stehen — между двух огней») и не показывались никому: экран получал машинный      │
+    │ перевод, часто буквальный.                                                       │
+    │                                                                                  │
+    │ Берём ТОЛЬКО точное совпадение написания и ТОЛЬКО из двух справочников (FreeDict, │
+    │ WikDict). Ни похожего, ни частичного: словарь обязан отвечать за то, что          │
+    │ показывает. Не нашли — пустой список, и дальше работает переводчик, подписанный   │
+    │ как машинный.                                                                    │
+    │                                                                                  │
+    │ Наши собственные единицы (bt_3_lex_units) сюда НЕ входят намеренно: многословных  │
+    │ там 11 420, из них 7 240 — сохранённые людьми предложения, и их «перевод» это     │
+    │ перевод конкретного предложения, а не словарная статья.                           │
+    └──────────────────────────────────────────────────────────────────────────────────┘
+    """
+    key = normalize_query(text)
+    if not key:
+        return []
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            raw = _from_base_forward(cur, key) + _from_wikdict_forward(cur, key)
+            raw = [item for item in raw if item["headword"] and item["translations"]]
+            if not raw:
+                return []
+            merged: dict[tuple, dict] = {}
+            for item in raw:
+                ключ = _key_of(item)
+                if ключ in merged:
+                    _merge(merged[ключ], item)
+                else:
+                    merged[ключ] = item
+            entries = list(merged.values())
+            _attach_examples(cur, entries)
+    return entries[:limit]
+
+
 def _from_base_reverse(cur, word_ru: str) -> list[dict]:
     """Базовый словарь по РУССКОМУ слову: «толстый» → dick, feist, blad — и все три
     честно помечены прилагательными.
@@ -494,9 +557,14 @@ def entries_for_query(query: str, *, source_lang: str, target_lang: str,
     if article_match:
         asked_article = article_match.group(1).lower()
         text = text[article_match.end():].strip()
-    if not text or " " in text:
-        # Фразы и предложения — работа переводчика, а не словаря статей.
+    if not text:
         return []
+    if " " in text:
+        # МНОГОСЛОВНОЕ НАПИСАНИЕ. Раньше здесь стоял безусловный возврат пустого списка
+        # («фразы — работа переводчика»), и 940 наших же словарных выражений никто не
+        # видел. Теперь спрашиваем справочники по точному совпадению; молчат — тогда да,
+        # это работа переводчика (владелец, 09.09.2026).
+        return _expression_entries(text, limit=limit)
     query_lang = _lang(source_lang) or ("de" if _is_german_query(text) else "ru")
     other_lang = _lang(target_lang) or ("ru" if query_lang == "de" else "de")
     if query_lang == other_lang:

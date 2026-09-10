@@ -768,8 +768,11 @@ def _sentence_lookups_without_input_kind() -> int:
     «Подробного разбора» показал крупно «угадывать без оснований, наугад» — модель сама
     решила, что перед ней выражение. Теперь форму ввода решает сервер
     (_lookup_input_kind) и сообщает модели фактом; след — metadata.input_kind у события
-    dictionary_lookup. Предложение без этой пометки — значит, к модели снова ушёл
-    вопрос, а не факт."""
+    dictionary_lookup (provider app_internal, одно на обращение; у строк расхода токенов
+    OpenAI своё поле input_kind = fresh|cached, их не считаем). Предложение без пометки
+    — значит, разбор прошёл через дверь, где сервер форму ввода не назвал (откат кода
+    или новая дверь без штампа). Что модель получила поле — проверяет тест
+    test_sentence_headline_stays_the_sentence.py, не этот замер."""
     from backend.backend_server import _looks_like_dictionary_sentence
     from backend.database import get_db_connection_context
     with get_db_connection_context() as conn:
@@ -777,9 +780,9 @@ def _sentence_lookups_without_input_kind() -> int:
             cursor.execute("""SELECT metadata->>'word', metadata->>'input_kind'
                               FROM bt_3_billing_events
                               WHERE action_type = 'dictionary_lookup'
+                                AND provider = 'app_internal' AND units_type = 'requests'
                                 AND created_at >= '2026-09-10'
-                                AND (metadata->>'lookup_status' = 'stream'
-                                     OR metadata->>'cache_scope' = 'gpt')""")
+                                AND metadata->>'lookup_status' IN ('stream', 'enriching')""")
             rows = cursor.fetchall() or []
     return sum(1 for word, kind in rows
                if _looks_like_dictionary_sentence(word) and (kind or "") != "sentence")
@@ -795,9 +798,9 @@ def _sentence_lookups_screen() -> str:
             cursor.execute("""SELECT created_at::date, metadata->>'word', metadata->>'input_kind'
                               FROM bt_3_billing_events
                               WHERE action_type = 'dictionary_lookup'
+                                AND provider = 'app_internal' AND units_type = 'requests'
                                 AND created_at >= '2026-09-10'
-                                AND (metadata->>'lookup_status' = 'stream'
-                                     OR metadata->>'cache_scope' = 'gpt')
+                                AND metadata->>'lookup_status' IN ('stream', 'enriching')
                                 AND metadata->>'word' LIKE '% %'
                               ORDER BY created_at DESC LIMIT 8""")
             recent = cursor.fetchall() or []
@@ -816,6 +819,83 @@ def _sentence_lookups_screen() -> str:
         lines.append(f"  {src[:60]} → {tgt[:60]} · {_lookup_input_kind(src, 'de')}")
     lines.append(f"🤝 Разборов предложений без пометки с 10.09: {_sentence_lookups_without_input_kind()}")
     return "\n".join(lines)
+
+
+def _pool_rows_without_translator() -> int:
+    """Строки общего пула ОТ ПЕРЕВОДЧИКА без следа «кто перевёл». Обещано: 0.
+
+    09.09.2026 из быстрого перевода убрали MyMemory (замер: 6 ошибок на 20 живых фраз
+    против одной у DeepL; именно он выдал владельцу «Я даю совет наугад» вместо «Я гадаю
+    наугад»). Накопленные строки перепроверены заново с судьёй, и каждая несёт поле
+    translator. Появилась строка без него — значит либо чистка не доехала, либо в пул
+    снова пишет путь, не называющий переводчика.
+
+    ┌─ ПРОВЕРЕНО 10.09.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────────┐
+    │ Первая версия замера считала ЛЮБУЮ строку без разбора и без следа, и наутро    │
+    │ показала 49 «нарушений». Разложение: 49 из 49 — СОХРАНЕНИЯ ЛЮДЕЙ (примеры и    │
+    │ синонимы, сохранённые из карточки: «unentschlossen», «Maria ist sehr           │
+    │ zielstrebig.»). У них response_json = NULL, потому что дверь сохранения кладёт │
+    │ тонкую запись, и переводчика у них не было вовсе — перевод дала модель или сам │
+    │ человек. Это устройство системы, а не дефект.                                  │
+    │                                                                               │
+    │ Заполнять им response_json ради пометки НЕЛЬЗЯ: на «response_json IS NULL»     │
+    │ завязаны 17 мест в коде (миграции, поиск карточек без разбора), и подмена NULL │
+    │ на объект меняет их поведение молча.                                           │
+    │                                                                               │
+    │ Поэтому замер сужен до строк, у которых разбор ЕСТЬ как объект (их кладёт путь │
+    │ перевода), но следа переводчика нет. На 10.09.2026: 871 строка со следом,      │
+    │ 0 без следа, 49 сохранений людей вне замера. Перемерить — запросом ниже.       │
+    └───────────────────────────────────────────────────────────────────────────────┘
+    """
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(*) FROM bt_3_dictionary_entries
+                WHERE source_lang = 'de' AND target_lang = 'ru'
+                  AND created_at >= '2026-09-01'
+                  AND source_text LIKE '%% %%'
+                  AND response_json IS NOT NULL
+                  AND NOT (response_json ? 'meanings' OR response_json ? 'translations')
+                  AND NOT (response_json ? 'translator');
+            """)
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def _expression_reference_size() -> int:
+    """Сколько устойчивых выражений в справочнике. Обещано: не меньше 2900.
+
+    Справочник (идиомы и пословицы немецкого Викисловаря) отвечает на вопрос «это
+    выражение или текст», и от его ответа зависит, будет ли у идиомы из пяти слов
+    крупным шрифтом буквальный машинный перевод. Пустой справочник = молчаливый возврат
+    к счёту слов."""
+    from backend.german_expressions import counters
+    return int(counters().get("всего") or 0)
+
+
+def _expression_reference_screen() -> str:
+    """Экран «после»: как система называет форму ввода на живых примерах владельца."""
+    from backend.backend_server import _resolve_input_kind
+    from backend.german_expressions import counters, expression_of
+    примеры = [
+        "Ich weiß die Antwort nicht, ich rate ins Blaue hinein",
+        "Haare auf den Zähnen haben",
+        "die Katze aus dem Sack lassen",
+        "jemanden an der Nase herumführen",
+        "raten",
+    ]
+    подписи = {"word": "слово", "phrase": "выражение", "sentence": "предложение"}
+    строки = ["📖 Как система называет форму ввода (словарь важнее счёта слов):"]
+    for текст in примеры:
+        вид = _resolve_input_kind(текст, "de")
+        из_справочника = "из справочника" if expression_of(текст) else "по форме"
+        строки.append(f"  {подписи.get(вид, вид)} · {из_справочника} · {текст[:52]}")
+    ч = counters()
+    строки.append(f"📚 В справочнике выражений: {ч.get('всего')} "
+                  f"(идиом {ч.get('идиом')}, пословиц {ч.get('пословиц')}, "
+                  f"без немецкого значения {ч.get('без_значения')})")
+    строки.append(f"🤝 Строк пула без следа переводчика: {_pool_rows_without_translator()}")
+    return "\n".join(строки)
 
 
 PROMISES: tuple[Promise, ...] = (
@@ -1108,11 +1188,36 @@ PROMISES: tuple[Promise, ...] = (
         expected=0,
         measure=_sentence_lookups_without_input_kind,
         how="SELECT metadata->>'word', metadata->>'input_kind' FROM bt_3_billing_events WHERE "
-            "action_type='dictionary_lookup' AND created_at >= '2026-09-10' AND (metadata->>'lookup_status'='stream' "
-            "OR metadata->>'cache_scope'='gpt'); предложения (5+ слов или 3+ со знаком конца) без input_kind='sentence'. "
+            "action_type='dictionary_lookup' AND provider='app_internal' AND units_type='requests' AND "
+            "created_at >= '2026-09-10' AND metadata->>'lookup_status' IN ('stream','enriching'); "
+            "предложения (5+ слов или 3+ со знаком конца) без input_kind='sentence'. "
             "Руками — быстрый словарь, «Ich weiß die Antwort nicht, ich rate ins Blaue hinein», «Подробный разбор»: "
             "крупно перевод предложения, ниже блок «Выражение в предложении»",
         screen=_sentence_lookups_screen,
+    ),
+    Promise(
+        key="pool_rows_carry_their_translator",
+        title="Машинных строк пула без следа переводчика (кто перевёл) не осталось",
+        since="10.09.2026",
+        expected=0,
+        measure=_pool_rows_without_translator,
+        how="SELECT COUNT(*) FROM bt_3_dictionary_entries WHERE source_lang='de' AND target_lang='ru' "
+            "AND created_at >= '2026-09-01' AND source_text LIKE '%% %%' AND response_json IS NOT NULL "
+            "AND NOT (response_json ? 'meanings' OR response_json ? 'translations') AND NOT "
+            "(response_json ? 'translator'); сохранения людей (response_json IS NULL) сюда НЕ входят — "
+            "у них переводчика не было. Руками: перевести фразу в быстром словаре и посмотреть строку "
+            "пула — у неё должно быть поле translator",
+    ),
+    Promise(
+        key="expression_reference_alive",
+        title="Справочник устойчивых выражений на месте (идиомы и пословицы, ≥2900)",
+        since="10.09.2026",
+        expected=2900,
+        measure=lambda: min(_expression_reference_size(), 2900),
+        how="SELECT count(*) FROM bt_3_german_expressions; руками — быстрый словарь, "
+            "«Haare auf den Zähnen haben»: заголовок не должен быть «иметь волосы на зубах», "
+            "а разбор должен прийти как про выражение, а не про предложение",
+        screen=_expression_reference_screen,
     ),
 )
 
