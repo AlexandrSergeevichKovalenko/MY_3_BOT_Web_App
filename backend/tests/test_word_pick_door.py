@@ -61,6 +61,10 @@ class ДверьОтбора(unittest.TestCase):
             self.assertEqual(db._normalize_dictionary_origin_process(источник), источник, источник)
         self.assertEqual(db.WORD_PICK_ORIGINS, frozenset({
             "trainer_save", "synonym_save", "artikel_sprint_save", "adjektiv_trainer",
+            # 10.09.2026: тап по слову прямо в немецком предложении интерактива —
+            # человек нашёл слово в тексте сам, повод для завтрашнего повторения
+            # не слабее, чем у чипа с готовым вариантом ответа.
+            "trainer_text_save",
             "interactive_save", "rebus_save", "anagram_save", "crossword_save",
             "artikel_learn_save", "wofrage_learn_save",
             "artikel_review_save", "wofrage_review_save"}))

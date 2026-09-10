@@ -308,6 +308,10 @@ DICTIONARY_ORIGIN_ALLOWED = {
     # had (the save UPDATEs that row). That is how trainer/artikel/adjektiv saves were
     # silently filed as "unknown" until 2026-07-30.
     "trainer_save",
+    # Тап по слову прямо в НЕМЕЦКОМ ПРЕДЛОЖЕНИИ интерактива (10.09.2026): в блоке
+    # разбора тренажёра синонимов текст стал живым, как в читалке. Поверхность своя —
+    # человек сохраняет не готовый вариант ответа, а слово, которое сам нашёл в тексте.
+    "trainer_text_save",
     "artikel_sprint_save",
     "adjektiv_trainer",
     # Дискетка в углу карточки интерактива (SaveWordChip.jsx) и её пять экранов. До
@@ -36961,7 +36965,7 @@ DICTIONARY_ORIGIN_GROUPS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "quick":   ("Быстрый словарь",  "⚡", ("webapp_quick_dictionary", "webapp_quick_dictionary_related",
                                            "webapp_quick_dictionary_example")),
     "artikel": ("Спринт артиклей",  "🔤", ("artikel_sprint_save",)),
-    "trainer": ("Тренажёры",        "🎯", ("trainer_save", "synonym_save", "adjektiv_trainer", "interactive_save",
+    "trainer": ("Тренажёры",        "🎯", ("trainer_save", "trainer_text_save", "synonym_save", "adjektiv_trainer", "interactive_save",
                                            "rebus_save", "anagram_save", "crossword_save",
                                            "artikel_learn_save", "wofrage_learn_save",
                                            "artikel_review_save", "wofrage_review_save")),
@@ -65014,6 +65018,9 @@ def get_sprint_dispatch_by_id(dispatch_id: int) -> dict | None:
 WORD_PICK_ORIGINS: frozenset[str] = frozenset({
     # чипы в конце тренировок
     "trainer_save", "synonym_save", "artikel_sprint_save", "adjektiv_trainer",
+    # слово, выбранное пальцем прямо в предложении разбора: человек его СAM нашёл в
+    # тексте — повод для завтрашнего повторения не слабее, чем у чипа
+    "trainer_text_save",
     # дискетка SaveWordChip: умолчание и пять экранов, которые его переопределяют
     "interactive_save", "rebus_save", "anagram_save", "crossword_save",
     "artikel_learn_save", "wofrage_learn_save",

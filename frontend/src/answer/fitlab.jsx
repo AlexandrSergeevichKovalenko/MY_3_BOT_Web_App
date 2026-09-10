@@ -196,7 +196,34 @@ const NUMDICT = {
   ],
 };
 
-const stub = (data) => () => new Promise((r) => setTimeout(() => r(data), 30));
+// Заглушка API стенда. Смотрит на ПУТЬ: игре нужен её payload, а плашке перевода
+// (SelectionSheet, тап по слову в предложении) — ответ переводчика. До 10.09.2026
+// заглушка отвечала одним и тем же на любой запрос, и проверить плашку было нечем.
+const DEMO_TRANSLATION = {
+  zustimmung: 'согласие', erlaubnis: 'разрешение', projekt: 'проект', gab: 'дал',
+  seine: 'своё', er: 'он', zu: 'к', dem: 'этому', ein: 'один', satz: 'предложение',
+  mit: 'с', als: 'как', beispiel: 'пример', möchte: 'хочет',
+};
+const stub = (data) => (path, body) => new Promise((resolve) => setTimeout(() => {
+  const url = String(path || '');
+  if (url.startsWith('/api/translate/quick')) {
+    const text = String(body?.text || '').trim();
+    const key = text.toLowerCase().replace(/[^a-zäöüß]/g, '');
+    const known = DEMO_TRANSLATION[key];
+    resolve({
+      translation: known || (text.includes(' ') ? `перевод: ${text}` : `перевод слова «${text}»`),
+      form_of: key === 'gab' ? 'geben' : '',
+      machine: !known,
+    });
+    return;
+  }
+  if (url.startsWith('/api/webapp/normalize')) {
+    resolve({ ok: true, normalized: String(body?.text || '') });
+    return;
+  }
+  if (url.startsWith('/api/webapp/dictionary/save')) { resolve({ inserted: true }); return; }
+  resolve(data);
+}, 30));
 
 function App() {
   useEffect(() => { installCardAutoFit(); }, []);

@@ -63,6 +63,11 @@ import {
   ensureOfflinePack,
 } from './offline/baseDictCache';
 
+import {
+  normalizeSelectionText,
+  splitNonWordToken,
+  segmentText,
+} from './utils/textSegments';
 import './styles/topbar-redesign.css';
 import './styles/home-browser-redesign.css';
 
@@ -23513,158 +23518,9 @@ function AppInner() {
     });
   }, [recordTranslationDraftAndroidDebugEvent, scheduleTranslationDraftPersistence]);
 
-  const normalizeSelectionText = (value) => {
-    if (!value) return '';
-    return value.replace(/\s+/g, ' ').trim();
-  };
-
-  function splitNonWordToken(value) {
-    const chunks = [];
-    if (!value) return chunks;
-    const regex = /(\s+|[^\s]+)/g;
-    let match = regex.exec(value);
-    while (match) {
-      const piece = String(match[0] || '');
-      if (piece) {
-        chunks.push({
-          kind: /^\s+$/u.test(piece) ? 'space' : 'punct',
-          value: piece,
-          relativeStart: Number(match.index || 0),
-          relativeEnd: Number(match.index || 0) + piece.length,
-        });
-      }
-      match = regex.exec(value);
-    }
-    return chunks;
-  }
-
-  function segmentText(rawText, langHint) {
-    const text = String(rawText || '');
-    if (!text) return [];
-    const safeLang = normalizeLangCode(langHint || '') || 'de';
-    const wordRegex = /[A-Za-z0-9À-ÿА-Яа-яЁё''-]/u;
-
-    const tokenizeSentence = (sentenceText, sentenceStart, sid) => {
-      const tokens = [];
-      let wordIndex = 0;
-      if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
-        try {
-          const wordSegmenter = new Intl.Segmenter(safeLang, { granularity: 'word' });
-          const segmented = wordSegmenter.segment(sentenceText);
-          for (const part of segmented) {
-            const value = String(part?.segment || '');
-            if (!value) continue;
-            const tokenStart = Number(sentenceStart) + Number(part?.index || 0);
-            const tokenEnd = tokenStart + value.length;
-            if (part?.isWordLike) {
-              const wid = `${sid}-w-${wordIndex}-${tokenStart}-${tokenEnd}`;
-              wordIndex += 1;
-              tokens.push({ kind: 'word', wid, value, start: tokenStart, end: tokenEnd });
-              continue;
-            }
-            const chunks = splitNonWordToken(value);
-            if (!chunks.length) {
-              tokens.push({
-                kind: /^\s+$/u.test(value) ? 'space' : 'punct',
-                value,
-                start: tokenStart,
-                end: tokenEnd,
-              });
-              continue;
-            }
-            chunks.forEach((chunk) => {
-              tokens.push({
-                kind: chunk.kind,
-                value: chunk.value,
-                start: tokenStart + chunk.relativeStart,
-                end: tokenStart + chunk.relativeEnd,
-              });
-            });
-          }
-          return tokens;
-        } catch (_intlWordError) {
-          // fallback below
-        }
-      }
-
-      const fallbackWordTokenRegex = /(\s+|[A-Za-z0-9À-ÿА-Яа-яЁё''-]+|[^A-Za-z0-9À-ÿА-Яа-яЁё''-\s]+)/g;
-      let match = fallbackWordTokenRegex.exec(sentenceText);
-      while (match) {
-        const value = String(match[0] || '');
-        const tokenStart = Number(sentenceStart) + Number(match.index || 0);
-        const tokenEnd = tokenStart + value.length;
-        const isWord = wordRegex.test(value);
-        if (isWord && !/^\s+$/u.test(value)) {
-          const wid = `${sid}-w-${wordIndex}-${tokenStart}-${tokenEnd}`;
-          wordIndex += 1;
-          tokens.push({ kind: 'word', wid, value, start: tokenStart, end: tokenEnd });
-        } else {
-          tokens.push({
-            kind: /^\s+$/u.test(value) ? 'space' : 'punct',
-            value,
-            start: tokenStart,
-            end: tokenEnd,
-          });
-        }
-        match = fallbackWordTokenRegex.exec(sentenceText);
-      }
-      return tokens;
-    };
-
-    const buildSentence = (sentenceText, startIndex, endIndex, sidIndex) => {
-      const sid = `s-${sidIndex}-${startIndex}-${endIndex}`;
-      return {
-        sid,
-        text: sentenceText,
-        start: startIndex,
-        end: endIndex,
-        tokens: tokenizeSentence(sentenceText, startIndex, sid),
-      };
-    };
-
-    const sentences = [];
-    if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
-      try {
-        const sentenceSegmenter = new Intl.Segmenter(safeLang, { granularity: 'sentence' });
-        const segmented = sentenceSegmenter.segment(text);
-        let sidIndex = 0;
-        for (const part of segmented) {
-          const sentenceText = String(part?.segment || '');
-          if (!sentenceText) continue;
-          const startIndex = Number(part?.index || 0);
-          const endIndex = startIndex + sentenceText.length;
-          sentences.push(buildSentence(sentenceText, startIndex, endIndex, sidIndex));
-          sidIndex += 1;
-        }
-        if (sentences.length > 0) return sentences;
-      } catch (_intlSentenceError) {
-        // fallback below
-      }
-    }
-
-    const fallbackRegex = /([.!?]+|\n+)/g;
-    let sidIndex = 0;
-    let cursor = 0;
-    let match = fallbackRegex.exec(text);
-    while (match) {
-      const end = Number(match.index || 0) + String(match[0] || '').length;
-      const segment = text.slice(cursor, end);
-      if (segment) {
-        sentences.push(buildSentence(segment, cursor, end, sidIndex));
-        sidIndex += 1;
-      }
-      cursor = end;
-      match = fallbackRegex.exec(text);
-    }
-    if (cursor < text.length) {
-      const segment = text.slice(cursor);
-      const end = text.length;
-      if (segment) {
-        sentences.push(buildSentence(segment, cursor, end, sidIndex));
-      }
-    }
-    return sentences;
-  }
+  // Резка текста и сборка выделения переехали в utils/textSegments.js (10.09.2026):
+  // ту же механику просит тренажёр синонимов, а он монтируется отдельным react-рутом,
+  // куда App.jsx не попадает. Здесь оставлены только вызовы — поведение не менялось.
 
 
   const showInlineToast = (text, durationMs = 3000, kind = '') => {

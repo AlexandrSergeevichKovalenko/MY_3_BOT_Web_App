@@ -2654,3 +2654,79 @@ html[data-scheme="light"] .frrev-w {
 }
 
 /* «Слова со вчерашних тренировок» (WordPickGame): стили экрана Space Rep лежат в wordPick.css. */
+
+/* ── Кликабельный немецкий текст в интерактивах ───────────────────────────────
+   Тап по слову — слово, двойной тап — предложение, удержание с протяжкой — фраза.
+   Механика та же, что в читалке (SelectableText.jsx), поэтому и вид сдержанный:
+   слово подчёркнуто едва заметно — понятно, что можно трогать, но текст читается
+   как текст, а не как список кнопок. */
+.sel-text { display: inline; }
+.sel-word {
+  border-bottom: 1px dotted rgba(148,163,184,.45);
+  padding-bottom: 1px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.sel-word.is-selected {
+  background: rgba(245,158,11,.28);
+  border-radius: 4px;
+  border-bottom-color: transparent;
+}
+html[data-scheme="light"] .sel-word { border-bottom-color: rgba(100,116,139,.45); }
+html[data-scheme="light"] .sel-word.is-selected { background: rgba(245,158,11,.32); }
+
+/* Плашка перевода — нижний лист. Прижата к низу и во всю ширину НАМЕРЕННО: она
+   перекрывает кнопку «Дальше», и это должно читаться как выехавший лист, а не как окно,
+   уроненное поверх кнопки. Закрыл крестиком — кнопка снова на месте.
+   Свои цвета, а не только переменные: плашка обязана выглядеть одинаково, куда бы её ни
+   вставили (в портале body переменные темы интерактива не наследуются вовсе). */
+.sel-sheet, .sel-sheet * { box-sizing: border-box; }
+.sel-sheet {
+  position: fixed; z-index: 9998;
+  left: 0; right: 0; bottom: 0;
+  display: flex; flex-direction: column; gap: 0.375rem;
+  padding: 0.75rem 0.875rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
+  background: #131c31;
+  border-top: 1px solid #334155;
+  border-radius: 1.125rem 1.125rem 0 0;
+  box-shadow: 0 -18px 50px rgba(2,8,22,0.55);
+  animation: ans-rise .18s ease-out;
+}
+html[data-scheme="light"] .sel-sheet {
+  background: #ffffff;
+  border-top-color: #d6dbe4;
+  box-shadow: 0 -18px 44px rgba(15,23,42,0.18);
+}
+.sel-sheet-head { display: flex; align-items: center; justify-content: space-between; }
+.sel-sheet-kind {
+  font-size: 0.75rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: #64748B;
+}
+.sel-sheet-x {
+  border: none; background: transparent; cursor: pointer; padding: 2px 0.375rem;
+  font-size: 1.0rem; color: #94A3B8;
+}
+.sel-sheet-src {
+  font-size: 1.0625rem; font-weight: 700; color: #E2E8F0;
+  word-break: break-word;
+}
+html[data-scheme="light"] .sel-sheet-src { color: #111827; }
+.sel-sheet-tra { font-size: 1.0rem; line-height: 1.45; color: #F8FAFC; }
+html[data-scheme="light"] .sel-sheet-tra { color: #0f172a; }
+.sel-sheet-form { font-size: 0.875rem; color: #94A3B8; }
+.sel-sheet-form b { color: #fbbf24; }
+html[data-scheme="light"] .sel-sheet-form b { color: #b45309; }
+.sel-sheet-wait { font-size: 0.9375rem; color: #94A3B8; }
+.sel-sheet-err { font-size: 0.9375rem; line-height: 1.4; color: #fca5a5; }
+html[data-scheme="light"] .sel-sheet-err { color: #b91c1c; }
+.sel-sheet-acts { display: flex; gap: 0.5rem; margin-top: 0.125rem; }
+.sel-sheet-act {
+  flex: 1; padding: 0.5rem 0.5rem; border-radius: 0.75rem; cursor: pointer;
+  font-size: 0.9375rem; font-weight: 700;
+  border: 1px solid #334155;
+  background: rgba(148,163,184,.10);
+  color: #F8FAFC;
+}
+html[data-scheme="light"] .sel-sheet-act { border-color: #d6dbe4; background: #f4f6fa; color: #0f172a; }
+.sel-sheet-act:disabled { opacity: .55; cursor: default; }
+.sel-sheet-act.is-done { border-color: rgba(34,197,94,.45); background: rgba(34,197,94,.14); }
