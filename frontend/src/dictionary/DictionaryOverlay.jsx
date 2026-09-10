@@ -535,6 +535,17 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
         // что стоит на двери сохранения. Для предложения крупный заголовок остаётся
         // переводом предложения, что бы ни прислала потом модель (владелец, 09.09.2026).
         inputKind: String(data?.input_kind || '').trim(),
+        // Статья справочника выражений: та самая, по которой мы опознали идиому.
+        // Владелец 10.09.2026: до нажатия «Подробный разбор» человек секунду видел
+        // буквальный машинный перевод («иметь волосы на зубах»), хотя объяснение уже
+        // лежало у нас. Показываем сразу, лишних запросов ноль.
+        expression: (data?.expression && typeof data.expression === 'object')
+          ? {
+            kind: String(data.expression.kind || '').trim(),
+            meaningDe: String(data.expression.meaning_de || '').trim(),
+            lemma: String(data.expression.lemma || '').trim(),
+          }
+          : null,
       };
       setChosen(0);
       setQuick(nextQuick);
@@ -1494,7 +1505,26 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
             {/* Ответ машинного переводчика, а не словарная статья: слова у нас нет,
                 грамматику мы про него не знаем и выдумывать не станем. Человек
                 должен видеть разницу — это ровно то, чего не хватало. */}
-            {headIsMachine && (
+            {/* УСТОЙЧИВОЕ ВЫРАЖЕНИЕ. Крупная строка выше — перевод машины, и на идиоме
+                он часто буквальный. Пока не приехал разбор, честно говорим об этом и
+                показываем объяснение из справочника (немецкий Викисловарь). Объяснение
+                немецкое: таким его написал источник, а переводить его моделью — платить
+                за то, чего человек не просил. */}
+            {quick.expression && !entries.length && (
+              <div className="dq-expression">
+                <div className="dq-expression-head">
+                  {quick.expression.kind === 'proverb' ? 'Пословица' : 'Устойчивое выражение'}
+                  {headIsMachine && ' — перевод выше буквальный'}
+                </div>
+                {quick.expression.meaningDe && (
+                  <div className="dq-expression-body">
+                    <span className="dq-expression-label">По-немецки объясняют так:</span>{' '}
+                    <span lang="de">{quick.expression.meaningDe}</span>
+                  </div>
+                )}
+              </div>
+            )}
+            {headIsMachine && !quick.expression && (
               <div className="dq-machine-note">
                 {isSentence
                   ? 'перевод предложения — машинный переводчик'
