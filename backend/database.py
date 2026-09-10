@@ -320,6 +320,11 @@ DICTIONARY_ORIGIN_ALLOWED = {
     "crossword_save",
     "artikel_learn_save",
     "wofrage_learn_save",
+    # «Работа над ошибками» — те же два экрана, только на своих ошибках (10.09.2026).
+    # Дискетки там не было с рождения экранов: их собрали по шаблону тренажёров ДО того,
+    # как дискетка появилась в самих тренажёрах.
+    "artikel_review_save",
+    "wofrage_review_save",
     # Поверхности словаря, которые фронт шлёт, а список не знал (нашлось тем же тестом).
     "webapp_corpus_example",
     "webapp_word_diff_word",
@@ -36873,7 +36878,8 @@ DICTIONARY_ORIGIN_GROUPS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "artikel": ("Спринт артиклей",  "🔤", ("artikel_sprint_save",)),
     "trainer": ("Тренажёры",        "🎯", ("trainer_save", "synonym_save", "adjektiv_trainer", "interactive_save",
                                            "rebus_save", "anagram_save", "crossword_save",
-                                           "artikel_learn_save", "wofrage_learn_save")),
+                                           "artikel_learn_save", "wofrage_learn_save",
+                                           "artikel_review_save", "wofrage_review_save")),
     "search":  ("Поиск в словаре",  "🔍", ("webapp_dictionary_save", "webapp_example", "webapp_related",
                                            "webapp_deep_analysis_option", "webapp_deep_analysis_example",
                                            "webapp_corpus_example", "webapp_word_diff_word",
@@ -64926,6 +64932,9 @@ WORD_PICK_ORIGINS: frozenset[str] = frozenset({
     # дискетка SaveWordChip: умолчание и пять экранов, которые его переопределяют
     "interactive_save", "rebus_save", "anagram_save", "crossword_save",
     "artikel_learn_save", "wofrage_learn_save",
+    # «Работа над ошибками»: слово, на котором человек уже ошибался, тем более просится
+    # на завтра — экран отбирает наравне с тренажёром (10.09.2026).
+    "artikel_review_save", "wofrage_review_save",
 })
 _WORD_PICK_TZ = "Europe/Vienna"   # та же граница суток, что у due_at и у рассылки
 _word_pick_schema_ready = False

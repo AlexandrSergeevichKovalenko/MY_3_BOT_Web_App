@@ -244,6 +244,80 @@ def _served_webapp_css() -> str:
     return css
 
 
+def _served_webapp_chunk(имя: str) -> str:
+    """Один собранный кусок ЖИВОГО фронта (Vite-чанк) по его имени, скачанный по сети.
+
+    Экраны интерактивов лежат не во входном скрипте, а в отдельном куске: его имя
+    записано строкой внутри входного скрипта — оттуда и берём. Тот же приём, что у
+    _served_webapp_css, и та же причина: у сервиса бота фронта на диске нет
+    (Dockerfile.bot), честный источник — сам сайт по WEB_APP_URL. Нет адреса, нет сети,
+    нет такого куска — исключение, и проверка получает «не измерено», а не «0»."""
+    import os
+    import re
+    from urllib.parse import urljoin
+    from urllib.request import Request, urlopen
+    base = str(os.getenv("WEB_APP_URL") or "").strip()
+    if not base:
+        raise LookupError("WEB_APP_URL не задан: где живёт веб-приложение, бот не знает")
+    if not base.endswith("/"):
+        base += "/"
+
+    def _get(url: str) -> str:
+        # Веб-сервис засыпает без трафика и просыпается ~35 с (замер 05.09.2026).
+        with urlopen(Request(url, headers={"User-Agent": "fix-promises/1"}), timeout=120) as r:
+            return r.read().decode("utf-8", errors="replace")
+
+    html = _get(base)
+    входные = re.findall(r'<script[^>]+src="(/[^"]+\.js)"', html)
+    if not входные:
+        raise LookupError(f"на странице {base} не нашлось ни одного скрипта")
+    образец = re.compile(r"assets/" + re.escape(имя) + r"-[A-Za-z0-9_-]+\.js")
+    for js in входные:
+        найдено = образец.findall(_get(urljoin(base, js)))
+        if найдено:
+            return _get(urljoin(base, "/" + найдено[0]))
+    raise LookupError(f"во входных скриптах {base} нет куска {имя}-*.js — это не собранный фронт")
+
+
+# Строки-источники, которые экраны «Работа над ошибками» передают дискетке сохранения.
+# В собранном коде имена переменных перемолоты, а строковые литералы — нет: именно они
+# и доказывают, что дискетка на экране стоит и подписана своим источником.
+_REVIEW_SAVE_ORIGINS = ("artikel_review_save", "wofrage_review_save")
+
+
+def _review_origins_missing_from(js: str) -> list[str]:
+    """Какие из источников дискетки НЕ дошли до телефона в этом куске фронта."""
+    return [o for o in _REVIEW_SAVE_ORIGINS
+            if f'"{o}"' not in js and f"'{o}'" not in js]
+
+
+def _review_screens_without_save_chip() -> int:
+    """Сколько экранов «Работа над ошибками» пришли на телефон БЕЗ дискетки. Обещано: 0.
+
+    Повод (владелец, 10.09.2026, экран «🔁 Работа над ошибками · der Auspuff»): «А где
+    пропала иконка сохранения тут в интерактиве с Артиклями?!» Она не пропадала — её там
+    не было никогда: экраны повторов собрали по шаблону тренажёров (05.08.2026) ДО того,
+    как дискетка появилась в самих тренажёрах, и копия за оригиналом не пошла.
+
+    Меряем не исходник, а то, что реально отдано телефону: в куске AnswerOverlay живого
+    сайта должны стоять оба источника сохранения. Нет куска или сеть молчит — «не
+    измерено», а не «держится»."""
+    return len(_review_origins_missing_from(_served_webapp_chunk("AnswerOverlay")))
+
+
+def _review_save_chip_screen() -> str:
+    """Экран «после»: что по этому поводу отдаёт сайт прямо сейчас."""
+    нет = _review_origins_missing_from(_served_webapp_chunk("AnswerOverlay"))
+    подпись = {"artikel_review_save": "Артикли", "wofrage_review_save": "Wo-Fragen"}
+    if not нет:
+        return ("💾 «Работа над ошибками» → Артикли и Wo-Fragen: дискетка в углу слова "
+                "стоит на обоих экранах. Ответил — и слово забирается в словарь одним "
+                "нажатием, как в тренажёре.")
+    return ("💾 «Работа над ошибками»: дискетки НЕТ на экранах — "
+            + ", ".join(подпись.get(o, o) for o in нет)
+            + ". Слово, на котором человек ошибся, забрать в словарь неоткуда.")
+
+
 def _worldnews_card_old_look_rules() -> int:
     """Читает CSS ЖИВОЙ страницы веб-приложения по сети. Обещано: 0.
 
@@ -1151,6 +1225,19 @@ PROMISES: tuple[Promise, ...] = (
             "в интерактиве «Слова со вчерашних тренировок», лампочка → кнопка «Понятно» "
             "целиком на экране",
         screen=_hint_modal_screen,
+    ),
+    Promise(
+        key="review_screens_carry_save_chip",
+        title="Экранов «Работа над ошибками» (Артикли, Wo-Fragen) без дискетки сохранения",
+        since="10.09.2026",
+        expected=0,
+        measure=_review_screens_without_save_chip,
+        how="python3 -c \"from backend.fix_promises import _review_screens_without_save_chip as f; print(f())\" "
+            "— скачивает кусок AnswerOverlay живого сайта и ищет в нём источники "
+            "artikel_review_save и wofrage_review_save. Руками — бот, «Работа над ошибками» → "
+            "Артикли: ответить на слово, в правом верхнем углу блока со словом появляется 💾; "
+            "нажать — плашка «в словаре · завтра повторим»",
+        screen=_review_save_chip_screen,
     ),
     Promise(
         key="reader_saves_without_source",

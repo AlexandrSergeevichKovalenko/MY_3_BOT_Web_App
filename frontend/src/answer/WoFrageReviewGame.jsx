@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import useFitText from './useFitText.js';
 import useWideScreen from './useWideScreen.js';
 import { sendReviewAnswer, flushPendingReviewAnswers } from './reviewAnswerQueue';
+import SaveWordChip from './SaveWordChip.jsx';
 
 /**
  * Wo-Fragen section of «работа над ошибками», built on the SAME template as the Wo-Frage
@@ -109,12 +110,21 @@ export default function WoFrageReviewGame({ api, haptic, onClose, onBack }) {
         <span className="al-progress">{idx + 1} / {total}</span>
         <span className="as-score">{stats.correct}✓</span>
       </div>
-      <div className={`as-word ans-r-prompt wo-word${answered ? (pick === correct ? ' ok' : ' bad') : ''}`}>
+      <div className={`as-word ans-r-prompt wo-word save-host${answered ? (pick === correct ? ' ok' : ' bad') : ''}`}>
         <span className="fit-line wo-line" lang="de" ref={phraseFit}>
           <span>{pre}</span>
           <span className="wo-slot">{answered ? correct : '?'}</span>
           <span>{post}</span>
         </span>
+        {/* Та же дискетка, что в тренажёре Wo-Fragen (WoFrageLearnGame): забирают отсюда
+            не всю фразу, а управление глагола (warten auf …) — ради него карточка и
+            существует. Экран собрали по шаблону тренажёра ДО появления дискетки, и она
+            сюда не доехала. Показываем после ответа, вместе с разбором. */}
+        {answered && card.lemma ? (
+          <SaveWordChip api={api} className="save-chip--corner"
+            word={card.lemma} translation={card.verb_ru || ''}
+            originProcess="wofrage_review_save" />
+        ) : null}
       </div>
       {card.clue ? <div className="wo-clue">{card.clue}</div> : null}
       <div className="as-buttons ans-r-work wo-buttons">
