@@ -8099,6 +8099,9 @@ def _store_dictionary_item_in_pool(
             word_de=str(item.get("word_de") or "").strip() or None,
             translation_ru=str(item.get("translation_ru") or "").strip() or None,
             response_json=item,
+            # Кто дал перевод в этой строке: не машинный переводчик, а разбор модели.
+            # Путь называет СЕБЯ — из данных строки это не выводится (10.09.2026).
+            translator="разбор модели",
         )
     except Exception as exc:
         logging.debug("dictionary pool upsert skipped: %s", exc)
@@ -8197,6 +8200,10 @@ def _store_quick_translate_in_pool(
             word_de=payload.get("word_de"),
             translation_ru=payload.get("translation_ru"),
             response_json=payload,
+            # Имя переводчика едет ОТДЕЛЬНЫМ аргументом, в свою колонку. Внутри
+            # response_json оно терялось целиком: пул закрыт для разбора, и payload
+            # на дне записи выбрасывается (замер 10.09.2026 — 49 строк без имени).
+            translator=translator or None,
         )
     except Exception as exc:
         logging.debug("quick translate → pool skipped: %s", exc)
@@ -11661,6 +11668,8 @@ def _publish_enriched_card_to_shared_stores(
             word_de=str(payload.get("word_de") or "").strip() or None,
             translation_ru=str(payload.get("translation_ru") or "").strip() or None,
             response_json=payload,
+            # Обогащённая карточка: перевод в ней пришёл от модели, а не от переводчика.
+            translator="обогащение",
         )
     except Exception as exc:
         logging.debug("enriched card → pool failed: %s", exc)
