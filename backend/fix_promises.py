@@ -1342,7 +1342,9 @@ PROMISES: tuple[Promise, ...] = (
     Promise(
         key="pool_rows_carry_their_translator",
         title="Новых строк общего словаря без подписи «кто дал перевод» не появляется",
-        since="10.09.2026",
+        # Дата та же, с которой замер спрашивает подпись (POOL_SIGNATURE_SINCE): колонка
+        # появилась вечером 10.09.2026, требовать её от строк того же дня нечестно.
+        since="11.09.2026",
         expected=0,
         measure=_pool_rows_without_translator,
         how="SELECT COALESCE(translator,'— БЕЗ ПОДПИСИ'), count(*) FROM bt_3_dictionary_entries "
