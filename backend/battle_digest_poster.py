@@ -15,6 +15,26 @@ try:
 except Exception:  # pragma: no cover
     Image = None
 
+
+def _из_игроков(total) -> str:
+    """«из 12 игроков» — знаменатель места назван словом.
+
+    10.09.2026, решение владельца: место без знаменателя нечитаемо, а голое
+    «из 12» рядом с «11 верных» человек принимает за число вопросов. Ноль
+    участников значит, что места нет вовсе, — тогда хвоста не будет.
+    Тот же текст на экране мини-аппа: frontend/src/answer/certLine.js.
+    """
+    n = int(total or 0)
+    if n <= 0:
+        return ""
+    if n % 10 == 1 and n % 100 != 11:
+        слово = "игрока"
+    elif 2 <= n % 10 <= 4 and not (12 <= n % 100 <= 14):
+        слово = "игроков"
+    else:
+        слово = "игроков"
+    return f"из {n} {слово}"
+
 W = 1080
 BG_TOP = (17, 26, 49)
 BG_BOT = (2, 6, 23)
@@ -168,7 +188,7 @@ def render_battle_digest(entries: list, *, hero_png: bytes | None = None,
         d.text((tx, cy - 40), _ltext_trunc(e.get("title", ""), _font(40), d, x1 - tx - 40),
                font=_font(40), fill=title_col)
         if place:
-            info = f"{place} место из {e.get('total', 0)} · {e.get('count', 0)} верных"
+            info = f"{place} место {_из_игроков(e.get('total', 0))} · {e.get('count', 0)} верных"
         else:
             wn = str(e.get("win_name") or "").strip()
             info = f"не сыграл · чемпион: {wn}" if wn and wn != "—" else "не сыграл"

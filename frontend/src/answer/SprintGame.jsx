@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { playersOf, wordsOf } from './certLine.js';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
 import { PICK_CAPTION, PICK_FAILED_TOAST, chipLabel } from './pickCopy.js';
 import Toast, { useToast } from './Toast.jsx';
@@ -33,7 +34,7 @@ function SprintRanking({ ranking }) {
   const { total, your_place, your_count, top3 } = ranking;
   return (
     <div className="sp-rank">
-      <div className="sp-rank-head">🏆 Место {your_place || '—'} из {total} · {your_count} слов</div>
+      <div className="sp-rank-head">🏆 Место {your_place || '—'} <span className="as-cert-of">{playersOf(total)}</span> · {wordsOf(your_count)}</div>
       {(top3 || []).map((r, i) => (
         <div className={`sp-rank-row${your_place === i + 1 ? ' me' : ''}`} key={r.user_id || i}>
           <span>{['🥇', '🥈', '🥉'][i] || '•'} {r.name || 'Игрок'}</span>

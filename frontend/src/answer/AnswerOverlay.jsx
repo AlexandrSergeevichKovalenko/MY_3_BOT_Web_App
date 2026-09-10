@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { playersOf } from './certLine.js';
+import { playersOf, rightAnswerersOf } from './certLine.js';
 import { openBotChat } from '../telegramNav.js';
 import './answer.css';
 import AnagramGame from './AnagramGame.jsx';
@@ -750,7 +750,11 @@ function RankingCard({ ranking }) {
   return (
     <div className="rank-card">
       <div className="rank-trophy">{your_place === 1 ? '🏆' : '⚡'}</div>
-      <div className="rank-head">Место {your_place} из {total_correct} · {fmt(your_time_ms)}</div>
+      {/* Знаменатель здесь НЕ «сколько всего играло»: в интерактиве дня по скорости
+          соревнуются только те, кто ответил верно (database.py:get_challenge_ranking).
+          Поэтому он назван словами — иначе читается как число всех игроков. */}
+      <div className="rank-head">Место {your_place} <span className="as-cert-of">из {rightAnswerersOf(total_correct)}</span></div>
+      <div className="rank-sub">⏱ Твоё время: {fmt(your_time_ms)}</div>
       {speedLine ? <div className="rank-sub">{speedLine}</div> : null}
       <div className="rank-list">
         {(top3 || []).map((r) => (

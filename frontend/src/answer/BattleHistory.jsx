@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { playersOf } from './certLine.js';
 
 // Unified battle history: a section per game type (Artikel / Adjektiv / future),
 // each battle showing the user's place + score; open ones are flagged "идёт".
@@ -77,7 +78,7 @@ export default function BattleHistory({ api, onClose, onOpenBattle }) {
                 ? `идёт · ты уже сыграл · до 23:59 · от ${b.creator_name || '—'}`
                 : `идёт · можно сыграть · до 23:59 · от ${b.creator_name || '—'}`)
               : (played
-                ? `закрыт · ты сыграл · место ${b.your_place} из ${b.total} · ${b.your_count} верных`
+                ? `закрыт · ты сыграл · место ${b.your_place} ${playersOf(b.total)} · ${b.your_count} верных`
                 : `закрыт без результата · 🏆 ${b.winner || '—'}`);
             const handleOpen = () => {
               if (typeof onOpenBattle !== 'function') return;
