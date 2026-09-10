@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { playersOf } from './certLine.js';
 import useFitText from './useFitText.js';
 import useWideScreen from './useWideScreen.js';
 
@@ -227,8 +228,8 @@ export default function WoFrageSprintGame({ api, haptic, onClose, battleId = nul
       {place ? (
         <div className="as-cert">
           <div className="as-cert-medal">{medal}</div>
-          <div className="as-cert-place">{place} место</div>
-          <div className="as-cert-sub">из {rank.total} · {r.correct || 0} верных ({r.pct || 0}%)</div>
+          <div className="as-cert-place">{place} место <span className="as-cert-of">{playersOf(rank.total)}</span></div>
+          <div className="as-cert-sub">{r.correct || 0} верных из {r.answered || 0} · {r.pct || 0}%</div>
           <div className="as-cert-foot">❓ Wo-Frage Sprint</div>
         </div>
       ) : (<>

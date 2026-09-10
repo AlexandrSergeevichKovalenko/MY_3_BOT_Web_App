@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { playersOf } from './certLine.js';
 import { openBotChat } from '../telegramNav.js';
 import './answer.css';
 import AnagramGame from './AnagramGame.jsx';
@@ -433,8 +434,8 @@ function BattleSummaryCard({ kind, battle, onClose, onOpenBattle }) {
         {played ? (
           <div className="as-cert" style={{ marginTop: 10 }}>
             <div className="as-cert-medal">{medal}</div>
-            <div className="as-cert-place">{place} место</div>
-            <div className="as-cert-sub">из {total} · {battle?.your_count || 0} верных</div>
+            <div className="as-cert-place">{place} место <span className="as-cert-of">{playersOf(total)}</span></div>
+            <div className="as-cert-sub">{battle?.your_count || 0} верных</div>
             <div className="as-cert-foot">🏆 Победитель: {winner}</div>
           </div>
         ) : (
