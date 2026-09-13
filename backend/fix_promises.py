@@ -1525,7 +1525,44 @@ def _dictionary_headword_case_against_source() -> int:
                if german_headword_case(слово, pos) != слово)
 
 
+def _pos_gender_conflicts_unattended() -> int:
+    """Статей «часть речи спорит с родом», о которых владельцу НЕ сказано. Обещано: 0.
+
+    Род в немецком бывает только у существительного, поэтому «прилагательное с родом
+    der» — запись, противоречащая себе: формула показа верит пометке и не поднимает
+    заглавную, а человек читает «ruhestände» вместо «der Ruhestand». Замер 13.09.2026:
+    21 статья, 36 личных карточек.
+
+    Считаем НЕ «сколько противоречий осталось»: часть из них — обрубки и опечатки,
+    решать их должен владелец, и пока он не решил, противоречие законно висит. Считаем
+    те, что ни починены, ни отправлены ему: вот это и есть незакрытая работа.
+    """
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM bt_3_lex_units u
+                WHERE u.lang = 'de' AND u.pos IN ('verb','adjective','adverb')
+                  AND u.gender IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM bt_3_card_complaints c
+                                   WHERE c.unit_id = u.id AND c.status <> 'решена');
+                """)
+            row = cur.fetchone()
+    return int((row or [0])[0] or 0)
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="pos_gender_conflicts_attended",
+        title="Статей, где часть речи спорит с родом и владельцу об этом не сказано",
+        since="13.09.2026",
+        expected=0,
+        measure=_pos_gender_conflicts_unattended,
+        how="python3 scripts/lex_units_fix_pos_gender_conflict.py — ждём 0. До 13.09.2026 "
+            "было 21: 2 оказались существительными (Zeitschrift, Festschreibung), у 10 "
+            "снят невозможный род, 9 ушли владельцу с кнопками. Ночью в 03:50 разбор "
+            "идёт сам. Число ВЫРОСЛО = ночная задача не работает или DWDS молчит неделями",
+    ),
     Promise(
         key="dictionary_headword_case_from_source",
         title="Слов словаря, записанных с заглавной вопреки источнику",

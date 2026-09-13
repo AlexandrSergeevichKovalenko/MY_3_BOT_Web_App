@@ -19644,6 +19644,27 @@ async def _nightly_pending_cleanup_job(context: CallbackContext) -> None:
         logging.exception("nightly_pending_cleanup failed")
 
 
+async def _nightly_pos_gender_conflict_job(context: CallbackContext) -> None:
+    """Ночью разбирает статьи, где часть речи спорит с родом.
+
+    Род в немецком бывает только у существительного, поэтому «прилагательное с родом
+    der» — запись, противоречащая себе: по ней нельзя ни поставить артикль, ни решить
+    регистр, и человек видит «ruhestände» вместо «der Ruhestand». Замер 13.09.2026: 21
+    статья, 36 личных карточек, и четыре записи из 21 появились за две недели до замера
+    — класс живой, разовым скриптом не закрывается.
+
+    Ничего не угадывает: часть речи спрашивается у DWDS, род существительного берётся
+    из справочника склонений, а слово, которого словарь не знает (обрубок, опечатка,
+    множественное число), уходит владельцу с кнопками через очередь жалоб.
+    """
+    try:
+        from backend.pos_gender_conflict import разобрать_противоречия
+        итог = await asyncio.to_thread(разобрать_противоречия)
+        logging.info("nightly_pos_gender_conflict done %s", итог)
+    except Exception:
+        logging.exception("nightly_pos_gender_conflict failed")
+
+
 async def _nightly_frequency_backfill_job(context: CallbackContext) -> None:
     """Fill frequency_rank for any rows still missing it (words that slipped past
     save-time ranking, or newly enriched response_json). Free — corpus + JSONB,
@@ -47342,6 +47363,15 @@ def main():
             logging.info("scheduled task_supply_watch at 04:25 Europe/Vienna")
         except Exception:
             logging.warning("failed to schedule task_supply_watch", exc_info=True)
+        try:
+            application.job_queue.run_daily(
+                _nightly_pos_gender_conflict_job,
+                time=time(hour=3, minute=50, tzinfo=ZoneInfo("Europe/Vienna")),
+                name="nightly_pos_gender_conflict",
+            )
+            logging.info("scheduled nightly_pos_gender_conflict at 03:50 Europe/Vienna")
+        except Exception:
+            logging.warning("failed to schedule nightly_pos_gender_conflict", exc_info=True)
         try:
             application.job_queue.run_daily(
                 _nightly_frequency_backfill_job,
