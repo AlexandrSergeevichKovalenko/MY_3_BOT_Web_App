@@ -32,9 +32,13 @@ const GAP = '___';
 
 // Подсказка: первая буква и длина (решение владельца 13.09.2026). Без неё среда
 // сливается со спринтом, с вариантами на выбор — с тренировкой.
-function hintMask(letter, len) {
-  const n = Math.max(0, Number(len || 0) - 1);
-  return `${letter || ''}${' _'.repeat(n)}`;
+//
+// Точки, а не прочерки «a _ _ _ _». Первый вид (13.09.2026) растягивал пропуск на всю
+// строку, рвал предложение пополам и читался как оборванная линейка — владелец назвал
+// это хаосом, и он прав. Точки в моноширинном шрифте занимают ровно ширину букв,
+// считаются глазом и не ломают строку.
+function hintDots(len) {
+  return '\u00b7'.repeat(Math.max(0, Number(len || 0) - 1));
 }
 
 export default function GapGame({ id, api, haptic, onClose, task = null }) {
@@ -188,19 +192,30 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
         <div className="gp-bar ans-r-bar"><div className="gp-bar-fill" style={{ width: `${((gi + (out === 'correct' ? 1 : 0)) / total) * 100}%` }} /></div>
 
         <div className="gp-anchor ans-r-prompt">
-          <span className="gp-anchor-label">{rel.ask} к слову</span>
-          <span className="gp-anchor-word" lang="de">{meta?.wort}</span>
-          {meta?.hint_ru ? <span className="gp-anchor-hint">· {meta.hint_ru}</span> : null}
+          <div className="gp-anchor-label">Впиши {rel.ask} к слову</div>
+          <div className="gp-anchor-word" lang="de">{meta?.wort}</div>
+          {meta?.hint_ru ? <div className="gp-anchor-hint">{meta.hint_ru}</div> : null}
         </div>
 
-        <div className="gp-sentence ans-r-work" lang="de">
-          <SelectableText text={parts.before} onSelect={setSelection} haptic={haptic} />
-          <span className={`gp-slot ${out === 'correct' ? 'ok' : out ? 'bad' : ''}`}>
-            {out === 'correct' ? item.filler : hintMask(item.hint_letter, item.hint_len)}
-          </span>
-          <SelectableText text={parts.after} onSelect={setSelection} haptic={haptic} />
+        {/* Предложение — предмет работы, поэтому у него своя подложка. Выключка по
+            ЛЕВОМУ краю: центрированный немецкий в три строки с дыркой посередине
+            владелец 13.09.2026 назвал хаосом, и он прав — так набирают заголовки,
+            а не предложения, которые читают. */}
+        <div className="gp-panel ans-r-work">
+          <div className="gp-sentence" lang="de">
+            <SelectableText text={parts.before} onSelect={setSelection} haptic={haptic} />
+            <span className={`gp-slot ${out === 'correct' ? 'ok' : out ? 'bad' : ''}`}>
+              {out === 'correct' ? item.filler : (
+                <>
+                  <b className="gp-slot-letter">{item.hint_letter}</b>
+                  <span className="gp-slot-dots">{hintDots(item.hint_len)}</span>
+                </>
+              )}
+            </span>
+            <SelectableText text={parts.after} onSelect={setSelection} haptic={haptic} />
+          </div>
+          {item.sentence_ru ? <div className="gp-sentence-ru">{item.sentence_ru}</div> : null}
         </div>
-        {item.sentence_ru ? <div className="gp-sentence-ru">{item.sentence_ru}</div> : null}
 
         {!verdict ? (
           <div className="gp-form">
@@ -211,7 +226,7 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
               value={value}
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') check(); }}
-              placeholder={attempt === 2 ? 'поправь форму…' : 'впиши слово…'}
+              placeholder={attempt === 2 ? 'Поправь форму' : 'Впиши слово'}
               autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
             />
             <button className="ans-btn gp-check" disabled={!value.trim()} onClick={check}>Проверить</button>
@@ -220,49 +235,46 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
           <div className={`gp-feedback ans-body ans-r-note ${out === 'correct' ? 'ok' : out === 'wrong' ? 'bad' : 'warn'}`}>
             {out === 'correct' ? (
               <>
-                <div className="gp-fb-head">✅ Верно — <b lang="de">{verdict.filler}</b>{verdict.synonym_ru ? ` · ${verdict.synonym_ru}` : ''}</div>
-                {verdict.nuance ? <div className="gp-fb-nuance">💡 {verdict.nuance}</div> : null}
+                <div className="gp-fb-head">Верно</div>
+                <div className="gp-fb-word" lang="de">{verdict.filler}
+                  {verdict.synonym_ru ? <span className="gp-fb-ru">{verdict.synonym_ru}</span> : null}
+                </div>
+                {verdict.nuance ? <div className="gp-fb-why">{verdict.nuance}</div> : null}
               </>
             ) : null}
 
             {out === 'wrong_form' ? (
               <>
-                <div className="gp-fb-head">❗ Слово верное, а форма нет.</div>
+                <div className="gp-fb-head">Слово верное, форма нет</div>
                 <div className="gp-fb-why">
-                  В этом предложении <b lang="de">{verdict.synonym}</b> стоит с другим окончанием.
-                  {attempt === 1 ? ' Допиши его — попытка ещё есть.' : ''}
+                  В этом предложении <b lang="de">{verdict.synonym}</b> стоит с другим
+                  окончанием.{attempt === 1 ? ' Допиши его.' : ''}
                 </div>
               </>
             ) : null}
 
             {out === 'other_synonym' ? (
               <>
-                <div className="gp-fb-head">🔁 Это тоже {rel.ask} к <b lang="de">{meta?.wort}</b>.</div>
+                <div className="gp-fb-head">Это тоже {rel.ask}</div>
                 <div className="gp-fb-why">
                   Но здесь ждём слово на «<b>{item.hint_letter}</b>», из {item.hint_len} букв.
-                  {attempt === 1 ? ' Попробуй ещё раз.' : ''}
                 </div>
               </>
             ) : null}
 
-            {out === 'wrong' ? (
-              <div className="gp-fb-head">✗ Не то слово.</div>
-            ) : null}
-
-            {out !== 'correct' && attempt === 1 ? (
-              <button className="ans-btn gp-retry" onClick={retry}>✍️ Попробовать ещё раз</button>
-            ) : null}
+            {out === 'wrong' ? <div className="gp-fb-head">Не то слово</div> : null}
 
             {out !== 'correct' && attempt === 2 ? (
-              <div className="gp-fb-right">
-                Верно было: <b lang="de">{item.filler}</b>{item.synonym_ru ? ` · ${item.synonym_ru}` : ''}
-                <div className="gp-fb-full" lang="de">„{item.sentence_de}“</div>
+              <div className="gp-fb-word" lang="de">{item.filler}
+                {item.synonym_ru ? <span className="gp-fb-ru">{item.synonym_ru}</span> : null}
               </div>
             ) : null}
 
-            {(out === 'correct' || attempt === 2) ? (
-              <button className="ans-btn gp-next" onClick={next}>{gi + 1 >= total ? 'Итог →' : 'Дальше →'}</button>
-            ) : null}
+            {out !== 'correct' && attempt === 1 ? (
+              <button className="ans-btn gp-retry" onClick={retry}>Попробовать ещё раз</button>
+            ) : (
+              <button className="ans-btn gp-next" onClick={next}>{gi + 1 >= total ? 'Итог' : 'Дальше'}</button>
+            )}
           </div>
         )}
 
