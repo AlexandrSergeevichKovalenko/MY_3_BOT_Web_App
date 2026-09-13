@@ -33,14 +33,9 @@ const GAP = '___';
 // Подсказка: первая буква и длина (решение владельца 13.09.2026). Без неё среда
 // сливается со спринтом, с вариантами на выбор — с тренировкой.
 //
-// Точки, а не прочерки «a _ _ _ _». Первый вид (13.09.2026) растягивал пропуск на всю
-// строку, рвал предложение пополам и читался как оборванная линейка — владелец назвал
-// это хаосом, и он прав. Точки в моноширинном шрифте занимают ровно ширину букв,
-// считаются глазом и не ломают строку.
-function hintDots(len) {
-  return '\u00b7'.repeat(Math.max(0, Number(len || 0) - 1));
-}
-
+// Выбор владельца 13.09.2026 из четырёх макетов: КЛЕТКИ. Сколько букв в слове —
+// столько клеток, и они заполняются по мере ввода. Считать точки глазом больше не надо,
+// длина видна сразу. Первая буква дана и стоит в первой клетке.
 export default function GapGame({ id, api, haptic, onClose, task = null }) {
   const [phase, setPhase] = useState(task ? 'intro' : 'loading'); // loading|intro|playing|done|error
   const [meta, setMeta] = useState(task);
@@ -87,6 +82,36 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
     if (i < 0) return { before: s, after: '' };
     return { before: s.slice(0, i), after: s.slice(i + GAP.length) };
   }, [item]);
+
+  // Из чего собран ряд клеток. Первая клетка показывает ДАННУЮ букву, пока человек не
+  // напечатал свою: подсказка не исчезает от первого касания клавиатуры.
+  const cells = useMemo(() => {
+    const len = Math.max(0, Number(item?.hint_len || 0));
+    const typed = String(value || '');
+    const n = Math.max(len, typed.length);
+    const out2 = [];
+    for (let i = 0; i < n; i += 1) {
+      const ch = typed[i] || (i === 0 ? (item?.hint_letter || '') : '');
+      const given = !typed[i] && i === 0 && ch;
+      let cls = '';
+      if (i >= len) cls = ' over';                       // перебрал длину — видно сразу
+      else if (typed[i]) cls = ' typed';
+      else if (given) cls = ' given';
+      if (i === typed.length && i < len) cls += ' next'; // куда встанет следующая буква
+      out2.push({ ch, cls });
+    }
+    return out2;
+  }, [item, value]);
+
+  // Сколько клеток в ряду. Больше одиннадцати в строку телефона не влезает: замер
+  // 13.09.2026 на 430 px — семнадцать клеток переносились сами и вставали «15 + 2»,
+  // что читается как поломка. Считаем ряды заранее и делаем их РОВНЫМИ: длинное слово
+  // ложится двумя одинаковыми строками, как перенос слова, а не как обрыв.
+  const cellCols = useMemo(() => {
+    const n = cells.length;
+    if (n <= 11) return Math.max(1, n);
+    return Math.ceil(n / Math.ceil(n / 11));
+  }, [cells.length]);
 
   const start = useCallback(() => {
     setPhase('playing'); setGi(0); setValue(''); setAttempt(1);
@@ -204,13 +229,12 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
         <div className="gp-panel ans-r-work">
           <div className="gp-sentence" lang="de">
             <SelectableText text={parts.before} onSelect={setSelection} haptic={haptic} />
+            {/* В предложении — только МЕТКА МЕСТА, а не сами клетки. Замер 13.09.2026:
+                половина слов от 9 букв, каждое пятое от 12, самое длинное 17
+                («unverhältnismäßig») — семнадцать клеток внутри строки разорвали бы
+                предложение. Клетки живут отдельной строкой ниже и там читаются. */}
             <span className={`gp-slot ${out === 'correct' ? 'ok' : out ? 'bad' : ''}`}>
-              {out === 'correct' ? item.filler : (
-                <>
-                  <b className="gp-slot-letter">{item.hint_letter}</b>
-                  <span className="gp-slot-dots">{hintDots(item.hint_len)}</span>
-                </>
-              )}
+              {out === 'correct' ? item.filler : <span className="gp-slot-mark" />}
             </span>
             <SelectableText text={parts.after} onSelect={setSelection} haptic={haptic} />
           </div>
@@ -219,16 +243,32 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
 
         {!verdict ? (
           <div className="gp-form">
-            <input
-              ref={inputRef}
-              className="gp-input"
-              lang="de"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') check(); }}
-              placeholder={attempt === 2 ? 'поправь сюда форму' : 'впиши сюда слово'}
-              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
-            />
+            {/* Клетки — ГЛАВНОЕ на экране (выбор владельца 13.09.2026). Поле ввода лежит
+                поверх ряда прозрачным: тап по любой клетке поднимает клавиатуру, а буквы
+                встают по местам. Длину НЕ ограничиваем: иначе нельзя было бы напечатать
+                форму длиннее нужной («ausführlichen» вместо «ausführliche»), и исход
+                «слово верное, форма нет» перестал бы срабатывать вовсе. Лишние буквы
+                показываются отдельными клетками — видно, что перебрал. */}
+            <label className="gp-cells" style={{ '--gp-cols': cellCols }}>
+              <input
+                ref={inputRef}
+                className="gp-cells-input"
+                lang="de"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') check(); }}
+                aria-label={attempt === 2 ? 'Поправь форму' : 'Впиши слово по буквам'}
+                autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+              />
+              {cells.map((c, i) => (
+                <span key={i} className={`gp-cell${c.cls}`} aria-hidden="true">{c.ch}</span>
+              ))}
+            </label>
+            <div className="gp-cells-hint">
+              {value.trim()
+                ? `${value.trim().length} из ${item.hint_len} букв`
+                : (attempt === 2 ? 'поправь сюда форму' : 'нажми на клетки и впиши слово')}
+            </div>
             <button className="ans-btn gp-check" disabled={!value.trim()} onClick={check}>Проверить</button>
           </div>
         ) : (
