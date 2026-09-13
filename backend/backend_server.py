@@ -33435,6 +33435,82 @@ def trainer_task():
     return jsonify({"ok": True, **meta})
 
 
+@app.route("/api/gap/task", methods=["GET", "POST"])
+def gap_task():
+    """Задание среды «Подставь синоним» (ans_lk_<dispatch_id>): опорное слово и все
+    пропуски, собранные из банка. Стратегия — docs/tasks/synonym_gap_wednesday_strategy.md."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    raw_id = request.args.get("id") or payload.get("id")
+    try:
+        dispatch_id = int(raw_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "id обязателен"}), 400
+    from backend.database import ensure_sprint_schema, ensure_relation_gap_schema
+    from backend.answer_eval import load_gap_task
+    ensure_sprint_schema()
+    ensure_relation_gap_schema()
+    meta = load_gap_task(dispatch_id=dispatch_id, user_id=user_id)
+    if meta is None:
+        return jsonify({"error": "Для этого слова пока нет предложений"}), 404
+    # В ведомость дня задание НЕ пишется и отсюда НЕ вычёркивается: оно идёт сверх
+    # дневного плана (make_bonus_gated), лимита не тратит — значит и строки, которую
+    # надо было бы закрыть, у него нет. Вызывать здесь _inbox_mark_kind_done значило бы
+    # делать вид, что мы что-то закрыли.
+    return jsonify({"ok": True, **meta})
+
+
+@app.route("/api/gap/answer", methods=["POST"])
+def gap_answer():
+    """Вердикт по одному пропуску + запись ответа. Четыре исхода, все из источника;
+    модель не зовётся (backend/relation_gap.grade_gap_answer)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        dispatch_id = int(payload.get("id"))
+        index = int(payload.get("index"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "id и index обязательны"}), 400
+    from backend.database import ensure_relation_gap_schema
+    from backend.answer_eval import evaluate_gap_answer
+    ensure_relation_gap_schema()
+    result = evaluate_gap_answer(
+        dispatch_id=dispatch_id, user_id=int(user_id), index=index,
+        answer=str(payload.get("answer") or ""),
+        attempt=int(payload.get("attempt") or 1),
+    )
+    if result is None:
+        return jsonify({"error": "Задание не найдено"}), 404
+    return jsonify({"ok": True, **result})
+
+
+@app.route("/api/trainer/answer", methods=["POST"])
+def trainer_answer():
+    """Итог раунда ТРЕНИРОВКИ. До 13.09.2026 ответы тренажёра не записывались нигде:
+    он играется целиком в браузере, и сервер видел только факт открытия. Без этого
+    нельзя сказать ни сколько людей играет, ни помогла ли среда."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        dispatch_id = int(payload.get("id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "id обязателен"}), 400
+    rounds = payload.get("rounds")
+    if not isinstance(rounds, list):
+        return jsonify({"error": "rounds обязателен"}), 400
+    from backend.database import ensure_relation_gap_schema
+    from backend.answer_eval import record_trainer_round
+    ensure_relation_gap_schema()
+    written = record_trainer_round(dispatch_id=dispatch_id, user_id=int(user_id), rounds=rounds)
+    return jsonify({"ok": True, "written": int(written)})
+
+
 @app.route("/api/sprint/check", methods=["POST"])
 def sprint_check():
     """Live per-word check during the sprint (fast list membership, no LLM)."""

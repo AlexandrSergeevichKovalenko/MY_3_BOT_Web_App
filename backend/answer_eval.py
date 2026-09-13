@@ -2630,6 +2630,134 @@ def load_trainer_task(*, dispatch_id: int, user_id: int) -> dict | None:
     }
 
 
+# ── «Подставь синоним»: среда рельса (kind lk) ───────────────────────────────
+# Средняя ступень между узнаванием (пн/вт) и припоминанием с нуля (чт).
+# Стратегия и решения владельца 13.09.2026:
+# docs/tasks/synonym_gap_wednesday_strategy.md
+def load_gap_task(*, dispatch_id: int, user_id: int) -> dict | None:
+    """Задание среды: опорное слово + все пропуски, собранные из банка.
+
+    Задания СТРОЯТСЯ, а не хранятся: источник — тот же trainer_json, что и у
+    тренировки. К модели не ходим. Ни одной заготовки не построилось → None,
+    и вызывающий честно отвечает «для этого слова пока нет предложений», а не
+    показывает пустой экран."""
+    from backend.database import get_relation_gap_dispatch_by_id, get_sprint_trainer_item
+    from backend.relation_gap import build_gap_items
+    dispatch = get_relation_gap_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    item = get_sprint_trainer_item(str(dispatch.get("sprint_id") or ""))
+    if not item or not item.get("trainer_ready"):
+        return None
+    items, skipped = build_gap_items(
+        wort=str(item.get("wort") or ""), accepted=item.get("accepted"),
+        trainer_json=item.get("trainer_json") or {},
+    )
+    if not items:
+        logging.info("gap: нет заготовок sprint=%s skipped=%s", dispatch.get("sprint_id"), skipped)
+        return None
+    if skipped:
+        # Счётчик «не знаю» (§6 стратегии): классы отказов видны в логах поштучно,
+        # а числом за сутки их собирает scripts/relation_gap_audit.py в утренний отчёт.
+        logging.info("gap: пропущено заготовок sprint=%s %s", dispatch.get("sprint_id"), skipped)
+    return {
+        "kind": "gap",
+        "relation": str(item.get("relation") or "synonym"),
+        "wort": str(item.get("wort") or ""),
+        "hint_ru": str(item.get("hint_ru") or ""),
+        # Верный ответ уезжает на клиент вместе с заданием — ровно как у тренировки,
+        # которая отдаёт весь список `correct`. Игра не соревнование и не экзамен:
+        # человек и так увидит ответ после второй попытки, а один запрос вместо двух
+        # держит экран мгновенным.
+        "items": items,
+        "accepted": accepted_pairs(item.get("accepted")),
+    }
+
+
+def evaluate_gap_answer(*, dispatch_id: int, user_id: int, index: int,
+                        answer: str, attempt: int = 1) -> dict | None:
+    """Вердикт по одному пропуску. Четыре исхода, все из источника — см.
+    backend/relation_gap.grade_gap_answer. Модель не зовётся.
+
+    Ответ ЗАПИСЫВАЕТСЯ всегда (дыра №1 из анализа 13.09.2026: до сих пор ни один
+    ответ в играх рельса не сохранялся, и нечем было сказать, помогла ли новая
+    ступень). Запись служебная: упала — человек всё равно получает свой вердикт."""
+    from backend.database import (
+        get_relation_gap_dispatch_by_id, get_sprint_trainer_item, record_relation_answer,
+    )
+    from backend.relation_gap import build_gap_items, grade_gap_answer
+    dispatch = get_relation_gap_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    item = get_sprint_trainer_item(str(dispatch.get("sprint_id") or ""))
+    if not item:
+        return None
+    items, _skipped = build_gap_items(
+        wort=str(item.get("wort") or ""), accepted=item.get("accepted"),
+        trainer_json=item.get("trainer_json") or {},
+    )
+    try:
+        gap = items[int(index)]
+    except (IndexError, ValueError, TypeError):
+        return None
+    verdict = grade_gap_answer(item=gap, answer=answer,
+                              all_synonyms=accepted_pairs(item.get("accepted")))
+    record_relation_answer(
+        user_id=int(user_id), kind="lk", dispatch_id=int(dispatch_id),
+        sprint_id=str(dispatch.get("sprint_id") or ""),
+        relation=str(item.get("relation") or "synonym"),
+        target_word=str(item.get("wort") or ""), expected=str(gap.get("filler") or ""),
+        answer=str(answer or ""), outcome=str(verdict.get("outcome") or "wrong"),
+        attempt=max(1, int(attempt or 1)),
+    )
+    return {
+        "outcome": verdict.get("outcome"),
+        "filler": gap.get("filler"),
+        "synonym": gap.get("synonym"),
+        "synonym_ru": gap.get("synonym_ru"),
+        "nuance": gap.get("nuance"),
+        "sentence_de": gap.get("sentence_de"),
+        "matched": verdict.get("matched"),
+    }
+
+
+def record_trainer_round(*, dispatch_id: int, user_id: int, rounds: list) -> int:
+    """Итог раунда ТРЕНИРОВКИ (kind tr) — закрывает дыру №1 из анализа 13.09.2026.
+
+    Тренажёр играется целиком в браузере, и до сих пор сервер узнавал о нём только в
+    момент открытия: ни одного ответа не сохранялось, таблицы для них не существовало.
+    Поэтому нельзя было ответить ни «сколько людей вообще играет», ни «стало ли лучше
+    после среды». Клиент присылает список {word, picked, correct} в конце раунда.
+
+    Возвращает число записанных строк. Запись служебная: ноль наружу не ломает игру,
+    но и НЕ выдаётся за успех — вызывающий кладёт это число в ответ."""
+    from backend.database import get_trainer_dispatch_by_id, get_sprint_trainer_item, record_relation_answer
+    dispatch = get_trainer_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return 0
+    item = get_sprint_trainer_item(str(dispatch.get("sprint_id") or ""))
+    if not item:
+        return 0
+    written = 0
+    for r in (rounds or []):
+        if not isinstance(r, dict):
+            continue
+        expected = str(r.get("word") or "").strip()
+        picked = str(r.get("picked") or "").strip()
+        if not expected or not picked:
+            continue
+        record_relation_answer(
+            user_id=int(user_id), kind="tr", dispatch_id=int(dispatch_id),
+            sprint_id=str(dispatch.get("sprint_id") or ""),
+            relation=str(item.get("relation") or "synonym"),
+            target_word=str(item.get("wort") or ""), expected=expected,
+            answer=picked, outcome="correct" if bool(r.get("correct")) else "wrong",
+            attempt=1,
+        )
+        written += 1
+    return written
+
+
 def check_sprint_word(*, dispatch_id: int, word: str) -> dict:
     """Fast live check: is `word` in the prepared accepted list? (no LLM)."""
     from backend.database import get_sprint_dispatch_by_id, get_sprint_item

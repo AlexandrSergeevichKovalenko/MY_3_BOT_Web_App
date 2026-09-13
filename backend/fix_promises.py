@@ -1123,7 +1123,134 @@ def _mywords_review_screen() -> str:
     return "\n".join(строки)
 
 
+def _relation_gap_builds_from_bank() -> int:
+    """Слов банка, у которых в среду не собралось бы НИ ОДНОГО пропуска. Обещано: 3.
+
+    Почему не 0. Три слова (verwirren, bemerken, versäumen) не дают заготовок потому,
+    что у них в примерах стоит не та форма слова — это брак ДВЕРИ ПРИЁМА, а не игры,
+    и чинить его будет дверь. Обещание держит другое: чтобы это число не РОСЛО. Если
+    завтра оно станет 10, значит сборка сломалась или дверь начала пускать мусор, и
+    владелец узнает об этом утром, а не через месяц по жалобе.
+
+    Считаем ТЕМ ЖЕ правилом, по которому строится живое задание (build_gap_items), а
+    не его пересказом: иначе обещание стережёт не то, что работает.
+    """
+    from backend.database import get_db_connection_context
+    from backend.relation_gap import build_gap_items
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT wort, accepted, trainer_json FROM bt_3_sprint_bank "
+                "WHERE NOT retired AND trainer_ready;"
+            )
+            rows = cur.fetchall() or []
+    empty = 0
+    for wort, accepted, trainer_json in rows:
+        items, _skipped = build_gap_items(
+            wort=str(wort or ""), accepted=accepted, trainer_json=trainer_json or {})
+        if not items:
+            empty += 1
+    return int(empty)
+
+
+def _relation_answers_not_recorded() -> int:
+    """Открытых заданий рельса, по которым НЕ осталось ни одного ответа, за 7 дней.
+    Обещано: 0.
+
+    Это сторож дыры №1 (анализ 13.09.2026): до неё ответы игр рельса не сохранялись
+    нигде вообще, и на вопрос «помогла ли среда» ответить было нечем. Считаем только
+    те отправки «Подставь синоним», по которым человек ТОЧНО открывал задание — то
+    есть у него есть хоть одна строка ответа по ЛЮБОЙ игре рельса в тот же день;
+    если при этом по самому заданию ответов ноль, запись сломалась.
+    """
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM bt_3_relation_gap_dispatches d
+                WHERE d.sent_at > NOW() - INTERVAL '7 days'
+                  AND EXISTS (SELECT 1 FROM bt_3_relation_answers a
+                              WHERE a.user_id = d.target_user_id
+                                AND a.answered_at::date = d.slot_date)
+                  AND NOT EXISTS (SELECT 1 FROM bt_3_relation_answers a
+                                  WHERE a.dispatch_id = d.id AND a.kind = 'lk');
+                """
+            )
+            row = cur.fetchone()
+    return int((row or [0])[0] or 0)
+
+
+def _relation_gap_screen() -> str:
+    """Экран «после» для владельца: что среда реально сделала за неделю.
+    Приходит САМ три утра подряд — команду вызывать не нужно."""
+    from backend.database import get_db_connection_context
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(DISTINCT slot_date), COUNT(*), COUNT(DISTINCT target_user_id)
+                    FROM bt_3_relation_gap_dispatches
+                    WHERE sent_at > NOW() - INTERVAL '7 days';
+                    """
+                )
+                days, sends, people = cur.fetchone() or (0, 0, 0)
+                cur.execute(
+                    """
+                    SELECT outcome, COUNT(*) FROM bt_3_relation_answers
+                    WHERE kind = 'lk' AND answered_at > NOW() - INTERVAL '7 days'
+                    GROUP BY outcome ORDER BY 2 DESC;
+                    """
+                )
+                by_outcome = cur.fetchall() or []
+                cur.execute(
+                    """
+                    SELECT COUNT(*), COUNT(DISTINCT user_id) FROM bt_3_relation_answers
+                    WHERE kind = 'tr' AND answered_at > NOW() - INTERVAL '7 days';
+                    """
+                )
+                tr_rows, tr_people = cur.fetchone() or (0, 0)
+    except Exception:
+        logging.warning("relation_gap screen failed", exc_info=True)
+        return "✏️ «Подставь синоним»: экран не собрался — смотри логи."
+    names = {"correct": "вписал верно", "wrong_form": "слово то, форма не та",
+             "other_synonym": "другой синоним", "wrong": "не то слово"}
+    lines = [f"✏️ <b>«Подставь синоним» за 7 дней</b>",
+             f"отправлено: {sends} в {days} дн., людям {people}"]
+    if by_outcome:
+        lines.append("ответы:")
+        lines += [f"  · {names.get(str(o), str(o))}: {n}" for o, n in by_outcome]
+    else:
+        lines.append("ответов пока нет — никто не открывал")
+    lines.append(f"тренировка (пн/вт): {tr_rows} ответов у {tr_people} чел.")
+    return "\n".join(lines)
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="relation_gap_builds_from_bank",
+        title="Слов банка, у которых «Подставь синоним» не собирает ни одного пропуска",
+        since="13.09.2026",
+        expected=3,
+        measure=_relation_gap_builds_from_bank,
+        screen=_relation_gap_screen,
+        how="/admin_promises — или python3 -c из backend.relation_gap import build_gap_items "
+            "по bt_3_sprint_bank WHERE NOT retired AND trainer_ready: слов с пустым "
+            "списком заготовок ждём 3 (verwirren, bemerken, versäumen — брак примеров "
+            "двери приёма). Число ВЫРОСЛО = сборка сломалась или дверь пустила мусор",
+    ),
+    Promise(
+        key="relation_answers_recorded",
+        title="Открытых заданий рельса без единой записи ответа (дыра №1 закрыта)",
+        since="13.09.2026",
+        expected=0,
+        measure=_relation_answers_not_recorded,
+        screen=_relation_gap_screen,
+        how="SELECT count(*) FROM bt_3_relation_gap_dispatches d WHERE d.sent_at > NOW() "
+            "- INTERVAL '7 days' AND EXISTS(ответ того же человека в тот день) AND NOT "
+            "EXISTS(SELECT 1 FROM bt_3_relation_answers WHERE dispatch_id = d.id AND "
+            "kind='lk') — ждём 0. До 13.09.2026 ответы игр рельса не писались вообще",
+    ),
     Promise(
         key="dictionary_echo_translations",
         title="Карточек, где русский перевод дословно повторяет немецкое слово",

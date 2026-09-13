@@ -81,6 +81,11 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
   // `picked` — оно здесь уже занято вариантом, который тапнули в раунде.
   const [pickedDay, setPickedDay] = useState(() => new Set());
   const toast = useToast();
+  // Ответы раунда копятся здесь и уходят на сервер ОДНИМ запросом в конце: до
+  // 13.09.2026 они не сохранялись нигде вообще, и нельзя было сказать ни сколько людей
+  // играет в тренировку, ни помогла ли новая ступень в среду. По одному запросу на тап
+  // мы не идём специально — игра обязана оставаться мгновенной.
+  const answers = useRef([]);
   // Что человек выделил в немецком предложении блока разбора: {text, kind, anchor}.
   // Живёт до закрытия плашки или до перехода к следующему раунду.
   const [selection, setSelection] = useState(null);
@@ -120,22 +125,36 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
   const round = rounds[ri];
   const total = rounds.length;
 
-  const start = useCallback(() => { setPhase('playing'); setRi(0); setPicked(null); setScore(0); }, []);
+  const start = useCallback(() => {
+    answers.current = [];
+    setPhase('playing'); setRi(0); setPicked(null); setScore(0);
+  }, []);
 
   const pick = useCallback((opt) => {
     if (picked) return;                     // one answer per round
     setPicked(opt);
     const ok = !!opt.__correct;
     if (ok) setScore((s) => s + 1);
+    answers.current.push({ word: deOf(round?.correct), picked: deOf(opt), correct: ok });
     try { haptic?.(ok ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
-  }, [picked, haptic]);
+  }, [picked, haptic, round]);
 
   const next = useCallback(() => {
     // Плашка перевода принадлежала предложению прошлого раунда — уносим её вместе с ним.
     setSelection(null);
-    if (ri + 1 >= total) { setPhase('done'); return; }
+    if (ri + 1 >= total) {
+      setPhase('done');
+      if (answers.current.length) {
+        const played = answers.current;
+        answers.current = [];
+        // Запись служебная: не получилось — человек всё равно видит свой итог.
+        api('/api/trainer/answer', { kind: 'tr', id, rounds: played })
+          .catch((e) => { try { console.warn('[trainer] answers not saved', e); } catch (_err) { /* noop */ } });
+      }
+      return;
+    }
     setRi((i) => i + 1); setPicked(null);
-  }, [ri, total]);
+  }, [ri, total, api, id]);
 
   const saveChip = useCallback((de, ru) => {
     if (!de || saved.has(de)) return;

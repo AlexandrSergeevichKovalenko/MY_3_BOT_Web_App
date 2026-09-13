@@ -314,6 +314,13 @@ DICTIONARY_ORIGIN_ALLOWED = {
     "trainer_text_save",
     "artikel_sprint_save",
     "adjektiv_trainer",
+    # «Подставь синоним» (среда рельса, 13.09.2026): чип в итоге захода и тап по слову
+    # прямо в немецком предложении с пропуском. Поверхности РАЗНЫЕ и обе свои: в первом
+    # случае человек берёт слово, которое сам вписал, во втором — которое сам нашёл в
+    # тексте задания. Обе обязаны стоять здесь, иначе сохранение уедет в «unknown» и
+    # затрёт источник у слова, которое у человека уже было.
+    "gap_chip",
+    "gap_text_save",
     # Дискетка в углу карточки интерактива (SaveWordChip.jsx) и её пять экранов. До
     # 05.09.2026 ни одного из них здесь НЕ было: сохранения писались как «unknown» и
     # затирали источник у старых слов. Класс закрыт тестом test_word_pick_door:
@@ -37193,7 +37200,7 @@ DICTIONARY_ORIGIN_GROUPS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "quick":   ("Быстрый словарь",  "⚡", ("webapp_quick_dictionary", "webapp_quick_dictionary_related",
                                            "webapp_quick_dictionary_example")),
     "artikel": ("Спринт артиклей",  "🔤", ("artikel_sprint_save",)),
-    "trainer": ("Тренажёры",        "🎯", ("trainer_save", "trainer_text_save", "synonym_save", "adjektiv_trainer", "interactive_save",
+    "trainer": ("Тренажёры",        "🎯", ("trainer_save", "trainer_text_save", "gap_chip", "gap_text_save", "synonym_save", "adjektiv_trainer", "interactive_save",
                                            "rebus_save", "anagram_save", "crossword_save",
                                            "artikel_learn_save", "wofrage_learn_save",
                                            "artikel_review_save", "wofrage_review_save")),
@@ -65249,6 +65256,10 @@ WORD_PICK_ORIGINS: frozenset[str] = frozenset({
     # слово, выбранное пальцем прямо в предложении разбора: человек его СAM нашёл в
     # тексте — повод для завтрашнего повторения не слабее, чем у чипа
     "trainer_text_save",
+    # «Подставь синоним» — среда рельса (13.09.2026). Вписанное своей рукой слово
+    # просится на завтрашнее повторение не слабее, чем тапнутое в тренажёре: человек
+    # его ВСПОМНИЛ, а не выбрал из готового.
+    "gap_chip", "gap_text_save",
     # дискетка SaveWordChip: умолчание и пять экранов, которые его переопределяют
     "interactive_save", "rebus_save", "anagram_save", "crossword_save",
     "artikel_learn_save", "wofrage_learn_save",
@@ -65668,6 +65679,171 @@ def pick_personal_rail_sprint(*, user_id: int, relation: str, since_days: int = 
     except Exception:
         logging.warning("pick_personal_rail_sprint failed user=%s", user_id, exc_info=True)
         return None
+
+
+# ── «Подставь синоним»: среда рельса ─────────────────────────────────────────
+# Четвёртое касание слова, между тренировкой (пн/вт) и спринтом (чт). Стратегия и
+# решения владельца 13.09.2026 — docs/tasks/synonym_gap_wednesday_strategy.md.
+# Своего банка у игры НЕТ: задания строятся из bt_3_sprint_bank.trainer_json
+# (backend/relation_gap.py), к модели не ходят ни разу.
+def ensure_relation_gap_schema() -> None:
+    """Строки отправок (по одной на человека за слот), чтобы номер в ссылке
+    ans_lk_<id> вёл к слову банка. Плюс общая таблица ответов на ОБЕ игры рельса.
+
+    Ответы тренировки до 13.09.2026 не записывались НИГДЕ: тренажёр играется целиком
+    в браузере, и сервер узнавал о нём только в момент открытия. Поэтому нельзя было
+    сказать ни сколько людей доходит до игры, ни стало ли лучше после новой ступени.
+    Одна таблица на обе игры — чтобы сравнение «прошёл среду / не прошёл» считалось
+    одним запросом, а не склейкой двух разных схем."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_relation_gap_dispatches (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    sprint_id           TEXT NOT NULL,
+                    relation            TEXT NOT NULL,
+                    slot_date           DATE NOT NULL,
+                    slot_hour           INTEGER NOT NULL,
+                    target_user_id      BIGINT NOT NULL,
+                    chat_id             BIGINT NOT NULL,
+                    telegram_message_id BIGINT,
+                    sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (target_user_id, slot_date, slot_hour)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_relation_answers (
+                    id            BIGSERIAL PRIMARY KEY,
+                    user_id       BIGINT NOT NULL,
+                    kind          TEXT NOT NULL,          -- 'tr' тренировка | 'lk' пропуск
+                    dispatch_id   BIGINT,
+                    sprint_id     TEXT NOT NULL,
+                    relation      TEXT NOT NULL,
+                    target_word   TEXT NOT NULL,
+                    expected      TEXT NOT NULL DEFAULT '',
+                    answer        TEXT NOT NULL DEFAULT '',
+                    outcome       TEXT NOT NULL,          -- correct|wrong_form|other_synonym|wrong
+                    attempt       INTEGER NOT NULL DEFAULT 1,
+                    answered_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_relation_answers_user "
+                "ON bt_3_relation_answers (user_id, kind, answered_at DESC);"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_relation_answers_word "
+                "ON bt_3_relation_answers (sprint_id, kind);"
+            )
+        conn.commit()
+
+
+def create_relation_gap_dispatch(*, sprint_id: str, relation: str, slot_date, slot_hour: int,
+                                 target_user_id: int, chat_id: int) -> int | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_relation_gap_dispatches
+                    (sprint_id, relation, slot_date, slot_hour, target_user_id, chat_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (target_user_id, slot_date, slot_hour) DO NOTHING
+                RETURNING id
+                """,
+                (str(sprint_id), str(relation), slot_date, int(slot_hour),
+                 int(target_user_id), int(chat_id)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else None
+
+
+def update_relation_gap_dispatch_message_id(dispatch_id: int, *, telegram_message_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_relation_gap_dispatches SET telegram_message_id = %s WHERE id = %s",
+                (int(telegram_message_id), int(dispatch_id)),
+            )
+        conn.commit()
+
+
+def get_relation_gap_dispatch_by_id(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, sprint_id, relation, target_user_id, chat_id "
+                "FROM bt_3_relation_gap_dispatches WHERE id = %s",
+                (int(dispatch_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"id": int(row[0]), "sprint_id": row[1], "relation": row[2],
+            "target_user_id": int(row[3]), "chat_id": int(row[4])}
+
+
+def pick_gap_word(*, relation: str, trained_on) -> dict | None:
+    """Слово, которое ушло ТРЕНИРОВКОЙ в день `trained_on` (для среды это позавчера).
+
+    Рельс не двигаем и не трогаем: спринт по-прежнему берёт слово по
+    `trainer_sent_date + 3`. Среда только читает ту же отметку. None — в тот день
+    тренировки не было, и тогда в среду не уходит НИЧЕГО (а не случайное слово)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT sprint_id, relation, wort, accepted, hint_ru, trainer_json
+                FROM bt_3_sprint_bank
+                WHERE relation = %s AND retired = FALSE AND trainer_ready = TRUE
+                  AND trainer_sent_date = %s
+                ORDER BY trainer_last_sent_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                (str(relation), trained_on),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"sprint_id": row[0], "relation": row[1], "wort": row[2],
+            "accepted": row[3] if isinstance(row[3], list) else [],
+            "hint_ru": row[4], "trainer_json": row[5] or {}}
+
+
+def record_relation_answer(*, user_id: int, kind: str, dispatch_id, sprint_id: str,
+                           relation: str, target_word: str, expected: str,
+                           answer: str, outcome: str, attempt: int = 1) -> None:
+    """Ответ человека в играх рельса. Память СЛУЖЕБНАЯ: если запись упала, ответ ему
+    всё равно должен прийти, поэтому наружу отсюда ничего не летит — но факт «не
+    записали» виден в логах, и пустой результат запроса не спутать с «не играли»:
+    сама строка либо есть, либо её нет, промежуточного значения не пишется."""
+    if _task_rotation_writes_disabled():
+        return
+    try:
+        ensure_relation_gap_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_relation_answers
+                        (user_id, kind, dispatch_id, sprint_id, relation, target_word,
+                         expected, answer, outcome, attempt)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (int(user_id), str(kind)[:8],
+                     int(dispatch_id) if dispatch_id is not None else None,
+                     str(sprint_id), str(relation), str(target_word)[:128],
+                     str(expected or "")[:128], str(answer or "")[:128],
+                     str(outcome)[:16], max(1, int(attempt or 1))),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("record_relation_answer failed user=%s kind=%s word=%s",
+                        user_id, kind, target_word, exc_info=True)
 
 
 def get_trainer_dispatch_by_id(dispatch_id: int) -> dict | None:
@@ -67496,6 +67672,7 @@ INTERACTIVE_DISPATCH_TABLES: dict[str, str] = {
     "mc": "bt_3_mc_dispatches",
     "sp": "bt_3_sprint_dispatches",
     "tr": "bt_3_trainer_dispatches",
+    "lk": "bt_3_relation_gap_dispatches",
     "nd": "bt_3_numdict_dispatches",
 }
 
