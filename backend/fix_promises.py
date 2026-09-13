@@ -1326,7 +1326,53 @@ def _form_headwords_unfixed() -> int:
     return unfixed_forms_count()
 
 
+def _anagram_people_running_out() -> int:
+    """Людей, у кого запас непоказанных анаграмм меньше недели. Обещано: 0.
+
+    Считает то же самое, что ночной добор (`backend.database.anagram_unseen_by_person`),
+    поэтому отчёт не может разойтись с работой: если добор перестанет просыпаться, это
+    число вырастет само. Замер 13.09.2026 до правки: самый бедный — 33 карточки, 16,5
+    дня; ночной добор при этом спал, потому что смотрел на размер банка (51 при цели 12).
+    """
+    from backend.anagram_pool_plan import runway_days
+    from backend.database import anagram_unseen_by_person
+    люди = anagram_unseen_by_person()
+    if not люди:
+        return 0
+    слотов = 2  # ANAGRAM_SLOT_TIMES: 12:15 и 19:15
+    return sum(1 for _uid, n in люди if (runway_days(n, слотов) or 0) < 7)
+
+
+def _anagram_runway_screen() -> str:
+    """Экран «после»: на сколько дней заданий хватит самому бедному человеку."""
+    from backend.anagram_pool_plan import MIN_RUNWAY_DAYS, runway_days
+    from backend.database import anagram_unseen_by_person
+    try:
+        люди = anagram_unseen_by_person()
+    except Exception:
+        logging.warning("anagram runway screen failed", exc_info=True)
+        return "🔤 Анаграммы: запас не посчитан — база не ответила"
+    if not люди:
+        return "🔤 Анаграммы: активных получателей нет, считать запас не для кого"
+    худший_id, худший = люди[0]
+    дней = runway_days(худший, 2)
+    return (f"🔤 Анаграммы: самый маленький запас {худший} карточек = {дней} дней "
+            f"(порог добора {MIN_RUNWAY_DAYS} дней, людей в счёте {len(люди)})")
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="anagram_nobody_runs_out_of_tasks",
+        title="Людей, у кого анаграммы кончатся меньше чем через неделю",
+        since="13.09.2026",
+        expected=0,
+        measure=_anagram_people_running_out,
+        screen=_anagram_runway_screen,
+        how="/admin_promises — или backend.database.anagram_unseen_by_person(): у "
+            "каждого активного получателя должно оставаться больше 14 непоказанных "
+            "карточек (2 в день). Ночной добор сам поднимает запас до 14 дней. Число "
+            "ВЫРОСЛО = добор не просыпается или дверь приёмки не пропускает слова",
+    ),
     Promise(
         key="anagram_cards_spelling_from_source",
         title="Живых карточек анаграмм, где написание противоречит источнику",

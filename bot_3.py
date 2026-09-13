@@ -37176,7 +37176,16 @@ def _build_anagram_card_payload(entry: dict) -> dict | None:
     return {"word": correct_word, "hint_ru": word_ru, "scrambled": scrambled}
 
 
-async def _generate_anagram_card_payload() -> dict | None:
+async def _generate_anagram_card_payload(deadline: float | None = None) -> dict | None:
+    """Подобрать слово для одной карточки. `deadline` — момент (time.monotonic),
+    после которого перебор прекращается.
+
+    Зачем срок: с 13.09.2026 дверь приёмки спрашивает у DWDS частоту слова, и молчащая
+    сеть стоит до 20 секунд на слово. Без срока сорок попыток подряд превращали бы
+    ночной прогон в тринадцать минут ожидания на КАЖДУЮ карточку. Срок ничего не
+    подставляет и ничем не заменяет: перебор просто прекращается, в журнале остаётся
+    честное «время вышло», а ночь повторится завтра.
+    """
     # One word = one card. Without this the bank drifts into repeats (Einwanderer
     # landed there three times), and the learner solves the same word again.
     try:
@@ -37187,6 +37196,9 @@ async def _generate_anagram_card_payload() -> dict | None:
         known_words = set()
 
     for _ in range(40):  # 8+ letter words are rarer, so try more dictionary entries
+        if deadline is not None and time.monotonic() > deadline:
+            logging.info("ag_gen: время на подбор вышло, карточка не сделана")
+            return None
         try:
             entry = await asyncio.to_thread(get_random_dictionary_entry, cooldown_days=0)
         except Exception:
@@ -37314,9 +37326,9 @@ async def send_anagram_to_chat(
     return True
 
 
-async def _ensure_anagram_card() -> dict | None:
+async def _ensure_anagram_card(deadline: float | None = None) -> dict | None:
     """Generate one anagram card into the pool and return it (card_id + payload)."""
-    payload = await _generate_anagram_card_payload()
+    payload = await _generate_anagram_card_payload(deadline)
     if not payload:
         return None
     card_id = str(__import__("uuid").uuid4())
@@ -37338,18 +37350,50 @@ async def _ensure_anagram_card() -> dict | None:
 async def prepare_anagram_pool_job(context: CallbackContext) -> None:
     """Startup + nightly: fill the anagram pool to target (off critical path), so a
     slot is never missed when generation hiccups (like the other games' pools)."""
+    # ЦЕЛЬ СЧИТАЕТСЯ ОТ САМОГО БЕДНОГО ЧЕЛОВЕКА, А НЕ ОТ РАЗМЕРА БАНКА.
+    #
+    # До 13.09.2026 здесь стояло «в банке 12 неснятых карточек — работы нет». Замер того
+    # дня: в банке 51 карточка, то есть добор не делал НИЧЕГО и не сделал бы ещё месяц,
+    # а у самого активного человека оставалось 33 непоказанных, то есть 16 дней. Выдача
+    # показывает только то, чего человек не видел, — общий счётчик этого не видит в
+    # принципе. Владелец: «Мне нужно, чтобы автоматически закрывался пробел в заданиях.
+    # Автоматически». Правило и числа — backend/anagram_pool_plan.py.
+    from backend.anagram_pool_plan import (
+        CAP_PER_RUN, MAX_SECONDS_PER_RUN, MIN_RUNWAY_DAYS, refill_target, runway_days,
+    )
+    from backend.database import anagram_unseen_by_person
     try:
         have = await asyncio.to_thread(count_available_anagram_cards)
+        unseen = await asyncio.to_thread(anagram_unseen_by_person)
     except Exception:
-        have = 0
+        # Раньше здесь стояло have = 0, и прогон шёл дальше, считая банк пустым: это
+        # догадка о состоянии базы, из которой рождались лишние карточки. Не знаем
+        # состояния — не добираем, ночь повторится завтра.
+        logging.warning("anagram_pool_job: состояние банка не прочитано, добор пропущен",
+                        exc_info=True)
+        return
+    slots_per_day = max(1, len(ANAGRAM_SLOT_TIMES))
+    weakest = min((n for _uid, n in unseen), default=None)
+    target = refill_target(have=have, weakest_unseen=weakest,
+                           slots_per_day=slots_per_day, pool_target=ANAGRAM_POOL_TARGET)
     made = 0
     attempts = 0
-    while have + made < ANAGRAM_POOL_TARGET and attempts < ANAGRAM_POOL_TARGET * 3:
+    deadline = time.monotonic() + MAX_SECONDS_PER_RUN
+    stopped_by_clock = False
+    while have + made < target and attempts < (target - have) * 3 + ANAGRAM_POOL_TARGET:
+        if time.monotonic() > deadline:
+            stopped_by_clock = True
+            break
         attempts += 1
-        entry = await _ensure_anagram_card()
+        entry = await _ensure_anagram_card(deadline)
         if entry:
             made += 1
-    logging.info("anagram_pool_job done: have=%s made=%s target=%s", have, made, ANAGRAM_POOL_TARGET)
+    logging.info(
+        "anagram_pool_job done: have=%s made=%s target=%s запас_слабейшего=%s дней=%s "
+        "порог=%s потолок_за_прогон=%s остановлен_по_времени=%s",
+        have, made, target, weakest, runway_days(weakest, slots_per_day),
+        MIN_RUNWAY_DAYS, CAP_PER_RUN, stopped_by_clock,
+    )
 
 
 async def _send_scheduled_anagram(context: CallbackContext) -> None:

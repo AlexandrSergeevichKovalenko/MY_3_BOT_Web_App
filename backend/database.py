@@ -66784,6 +66784,47 @@ def count_available_anagram_cards() -> int:
             return int((cursor.fetchone() or [0])[0])
 
 
+# Кого считаем активным получателем анаграмм: кому она уходила за последний месяц.
+# Число берётся отсюда, а не из головы вызывающего: иначе у добора и у отчёта окажутся
+# разные «активные», и они разойдутся в числах.
+ANAGRAM_ACTIVE_DAYS = 30
+
+
+def anagram_unseen_by_person(active_days: int = ANAGRAM_ACTIVE_DAYS) -> list[tuple[int, int]]:
+    """[(человек, сколько карточек он ЕЩЁ НЕ ВИДЕЛ)] — по активным получателям.
+
+    Зачем: выдача показывает человеку только то, чего он не видел, а ночной добор до
+    13.09.2026 смотрел на банк целиком. Замер того дня: в банке 51 карточка при цели
+    12 — добор спал, а у самого активного человека оставалось 33 штуки, то есть 16
+    дней. Общий счётчик не умеет этого увидеть В ПРИНЦИПЕ, потому что считает не то.
+
+    Пустой список — активных получателей нет. Это НЕ «запас нулевой»: вызывающий
+    обязан различать эти два случая (см. anagram_pool_plan.refill_target).
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH активные AS (
+                    SELECT DISTINCT target_user_id
+                    FROM bt_3_anagram_dispatches
+                    WHERE slot_date > CURRENT_DATE - %s
+                )
+                SELECT a.target_user_id,
+                       (SELECT COUNT(*) FROM bt_3_anagram_cards c
+                         WHERE c.retired = FALSE
+                           AND {_ANAGRAM_LETTERS_LEN} >= %s
+                           AND NOT EXISTS (SELECT 1 FROM bt_3_anagram_dispatches d
+                                            WHERE d.card_id = c.card_id
+                                              AND d.target_user_id = a.target_user_id))
+                FROM активные a
+                ORDER BY 2 ASC
+                """,
+                (int(active_days), int(ANAGRAM_MIN_LETTERS)),
+            )
+            return [(int(uid), int(n)) for uid, n in (cursor.fetchall() or [])]
+
+
 def pick_next_anagram(*, exclude_ids: list | None = None) -> dict | None:
     """Анаграмма для ЭТОГО человека: та, которую дольше всех никому не показывали.
 
