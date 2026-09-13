@@ -33482,6 +33482,7 @@ def gap_answer():
         dispatch_id=dispatch_id, user_id=int(user_id), index=index,
         answer=str(payload.get("answer") or ""),
         attempt=int(payload.get("attempt") or 1),
+        hints_used=int(payload.get("hints") or 0),
     )
     if result is None:
         return jsonify({"error": "Задание не найдено"}), 404

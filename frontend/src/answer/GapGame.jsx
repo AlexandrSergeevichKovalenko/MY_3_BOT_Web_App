@@ -46,6 +46,11 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
   const [verdict, setVerdict] = useState(null); // {outcome, filler, synonym, ...}
   const [score, setScore] = useState(0);
   const [solved, setSolved] = useState(() => []);   // что человек уже вписал верно
+  // Лампочка, как в кроссворде (решение владельца 13.09.2026): до ДВУХ букв сверх той,
+  // что дана изначально. Считаем их отдельно от набранного — и чтобы подсветить другим
+  // цветом (подсказка, а не твой ответ), и чтобы записать в ответ: помогла ли лампочка,
+  // видно будет только если знать, сколько раз её нажали.
+  const [hints, setHints] = useState(0);
   const [saved, setSaved] = useState(() => new Set());
   const [selection, setSelection] = useState(null);
   const inputRef = useRef(null);
@@ -93,15 +98,18 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
     for (let i = 0; i < n; i += 1) {
       const ch = typed[i] || (i === 0 ? (item?.hint_letter || '') : '');
       const given = !typed[i] && i === 0 && ch;
+      // Подсказано = первая буква (она дана всегда) плюс открытые лампочкой.
+      const revealed = i < 1 + hints && !!typed[i];
       let cls = '';
       if (i >= len) cls = ' over';                       // перебрал длину — видно сразу
+      else if (revealed) cls = ' given';                 // подсказка, а не твой ответ
       else if (typed[i]) cls = ' typed';
       else if (given) cls = ' given';
       if (i === typed.length && i < len) cls += ' next'; // куда встанет следующая буква
       out2.push({ ch, cls });
     }
     return out2;
-  }, [item, value]);
+  }, [item, value, hints]);
 
   // Сколько клеток в ряду. Больше одиннадцати в строку телефона не влезает: замер
   // 13.09.2026 на 430 px — семнадцать клеток переносились сами и вставали «15 + 2»,
@@ -115,8 +123,28 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
 
   const start = useCallback(() => {
     setPhase('playing'); setGi(0); setValue(''); setAttempt(1);
-    setVerdict(null); setScore(0); setSolved([]);
+    setVerdict(null); setScore(0); setSolved([]); setHints(0);
   }, []);
+
+  // Лампочка открывает СЛЕДУЮЩУЮ букву слова и ставит ввод на этот префикс. Не
+  // «показать где-то сбоку», а именно вписать: человек продолжает с той точки, до
+  // которой ему помогли, и не переписывает начало заново.
+  const HINTS_MAX = 2;
+  const hintsLeft = HINTS_MAX - hints;
+  const useHint = useCallback(() => {
+    if (hints >= HINTS_MAX || verdict) return;
+    const full = String(item?.filler || '');
+    const nextLen = Math.min(full.length, 2 + hints);   // 1-я буква дана, открываем 2-ю, затем 3-ю
+    setHints((h) => h + 1);
+    setValue(full.slice(0, nextLen));
+    try { haptic?.('ok'); } catch (_e) { /* noop */ }
+    setTimeout(() => {
+      try {
+        const el = inputRef.current;
+        if (el) { el.focus(); el.setSelectionRange(nextLen, nextLen); }
+      } catch (_e) { /* noop */ }
+    }, 30);
+  }, [hints, verdict, item, haptic]);
 
   const check = useCallback(async () => {
     const text = value.trim();
@@ -124,7 +152,7 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
     let res;
     try {
       res = await api('/api/gap/answer', {
-        kind: 'lk', id, index: item?.index ?? gi, answer: text, attempt,
+        kind: 'lk', id, index: item?.index ?? gi, answer: text, attempt, hints,
       });
     } catch (e) {
       try { console.warn('[gap] answer failed', e); } catch (_err) { /* noop */ }
@@ -138,7 +166,7 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
       setSolved((list) => [...list, { de: res.filler, ru: res.synonym_ru, synonym: res.synonym }]);
     }
     try { haptic?.(ok ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
-  }, [api, id, item, gi, value, attempt, verdict, haptic, toast]);
+  }, [api, id, item, gi, value, attempt, hints, verdict, haptic, toast]);
 
   // Вторая попытка — последняя (решение владельца 13.09.2026). Слово человек вспомнил,
   // не хватает окончания: показать ЧТО не так и дать дописать, а не хлопнуть дверью.
@@ -148,7 +176,7 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
   }, []);
 
   const next = useCallback(() => {
-    setSelection(null); setVerdict(null); setValue(''); setAttempt(1);
+    setSelection(null); setVerdict(null); setValue(''); setAttempt(1); setHints(0);
     if (gi + 1 >= total) { setPhase('done'); return; }
     setGi((i) => i + 1);
   }, [gi, total]);
@@ -208,6 +236,8 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
 
   if (phase === 'playing' && item) {
     const out = verdict?.outcome;
+    // Ответ открыт: либо угадал, либо вторая попытка израсходована.
+    const revealDone = !!out && out !== 'correct' && attempt === 2;
     return shell(
       <>
         <div className="gp-top ans-r-head">
@@ -233,8 +263,12 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
                 половина слов от 9 букв, каждое пятое от 12, самое длинное 17
                 («unverhältnismäßig») — семнадцать клеток внутри строки разорвали бы
                 предложение. Клетки живут отдельной строкой ниже и там читаются. */}
-            <span className={`gp-slot ${out === 'correct' ? 'ok' : out ? 'bad' : ''}`}>
-              {out === 'correct' ? item.filler : <span className="gp-slot-mark" />}
+            {/* Разбор окончен — слово ВСТАЁТ В ПРЕДЛОЖЕНИЕ, даже если человек его не
+                угадал (владелец 13.09.2026: «почему не отражается тут слово?»). Ради
+                этого задание и существует: увидеть готовую немецкую фразу целиком, а
+                не только правильный ответ отдельной строчкой внизу. */}
+            <span className={`gp-slot ${out === 'correct' ? 'ok' : (revealDone ? 'shown' : (out ? 'bad' : ''))}`}>
+              {(out === 'correct' || revealDone) ? item.filler : <span className="gp-slot-mark" />}
             </span>
             <SelectableText text={parts.after} onSelect={setSelection} haptic={haptic} />
           </div>
@@ -264,10 +298,22 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
                 <span key={i} className={`gp-cell${c.cls}`} aria-hidden="true">{c.ch}</span>
               ))}
             </label>
-            <div className="gp-cells-hint">
-              {value.trim()
-                ? `${value.trim().length} из ${item.hint_len} букв`
-                : (attempt === 2 ? 'поправь сюда форму' : 'нажми на клетки и впиши слово')}
+            <div className="gp-cells-row">
+              <span className="gp-cells-hint">
+                {value.trim()
+                  ? `${value.trim().length} из ${item.hint_len} букв`
+                  : (attempt === 2 ? 'поправь сюда форму' : 'нажми на клетки и впиши слово')}
+              </span>
+              {/* Лампочка как в кроссворде. Две буквы — потолок: дальше это уже не
+                  припоминание, а списывание, а среда для того и стоит между узнаванием
+                  и спринтом, чтобы человек доставал слово сам. */}
+              {hintsLeft > 0 ? (
+                <button type="button" className="gp-hint-btn" onClick={useHint}>
+                  💡 подсказка<span className="gp-hint-left">{hintsLeft}</span>
+                </button>
+              ) : (
+                <span className="gp-hint-btn is-spent">💡 подсказок больше нет</span>
+              )}
             </div>
             <button className="ans-btn gp-check" disabled={!value.trim()} onClick={check}>Проверить</button>
           </div>
