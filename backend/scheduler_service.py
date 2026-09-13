@@ -97,6 +97,7 @@ from backend.background_jobs import (  # noqa: E402
     run_word_audit_reminder_actor,
     run_reference_forms_warm_actor,
     run_retire_review_dm_actor,
+    run_form_headword_sweep_actor,
     run_synonym_review_dm_actor,
     run_fill_control_dm_actor,
     run_wiktionary_warm_actor,
@@ -484,6 +485,10 @@ def _dispatch_reference_forms_review_dm() -> None:
 
 def _dispatch_retire_review_dm() -> None:
     run_retire_review_dm_actor.send()
+
+
+def _dispatch_form_headword_sweep() -> None:
+    run_form_headword_sweep_actor.send()
 
 
 def _dispatch_synonym_review_dm() -> None:
@@ -1039,6 +1044,20 @@ def _build_scheduler():
     # │ модель ставит итоговую точку». Очередь решает судья (backend/synonym_judge.py) │
     # │ ночью и сразу после набора; числа — строкой в утреннем отчёте. Не возвращать.    │
     # └────────────────────────────────────────────────────────────────────────────────┘
+    # Заголовки-формы: спрашиваем справочник по новым написаниям и чиним подтверждённые
+    # (13.09.2026). 03:50 — после ночного добора словаря, чтобы чинить уже собранное.
+    if _enabled("FORM_HEADWORD_SWEEP_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_form_headword_sweep,
+            "cron",
+            hour=_int_env("FORM_HEADWORD_SWEEP_HOUR", 3),
+            minute=_int_env("FORM_HEADWORD_SWEEP_MINUTE", 50),
+            timezone=_tz(os.getenv("FORM_HEADWORD_SWEEP_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
     if _enabled("RETIRE_REVIEW_ENABLED", "1"):
         scheduler.add_job(
             _dispatch_retire_review_dm,

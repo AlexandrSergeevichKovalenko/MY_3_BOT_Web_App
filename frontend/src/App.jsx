@@ -25361,12 +25361,21 @@ function AppInner() {
   // «Примеры:» на экране, примеры дважды и «типичные сочетания», нарезанные окном
   // ±1 слово вокруг искомого («Das war», «für das Team»).
   const handleSelectionGptLookup = async () => {
-    const cleaned = normalizeSelectionText(selectionText);
-    if (!cleaned) return;
+    const raw = normalizeSelectionText(selectionText);
+    if (!raw) return;
     if (!initData) {
       setWebappError(initDataMissingMsg);
       return;
     }
+    // ⛔ РАЗБОР ОДИНОЧНОГО СЛОВА ИДЁТ ПО СЛОВАРНОЙ ФОРМЕ, А НЕ ПО ТОМУ, ЧТО В ТЕКСТЕ.
+    // 13.09.2026: эта кнопка отдавала модели ровно тапнутое написание, модель им же
+    // озаглавливала карточку, и в словарь ложились «beruhte», «wirbt», «angetrieben»,
+    // а оттуда уезжали в ОБЩИЙ словарь, отвечающий всем. Соседняя кнопка «Сохранить»
+    // этим не болела ровно потому, что зовёт normalizeForLookup (замер: 25 слов за 30
+    // дней, форм среди них ноль). Фразу не нормализуем: там лемматизируется каждое
+    // слово, и «Die Behörden haben entschieden» стало бы «der Behörde haben entscheiden».
+    const одноСлово = !/\s/.test(raw);
+    const cleaned = одноСлово ? (await normalizeForLookup(raw)) || raw : raw;
     const mySeq = (selectionGptSeqRef.current += 1);
     const isStale = () => mySeq !== selectionGptSeqRef.current;
     try { selectionGptAbortRef.current?.abort(); } catch (_e) { /* предыдущий запрос уже закрыт */ }
