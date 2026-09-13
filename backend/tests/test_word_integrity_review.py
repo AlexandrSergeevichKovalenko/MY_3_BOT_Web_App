@@ -322,3 +322,176 @@ def test_manual_lookup_button_is_gone():
     assert not hasattr(backend_server, "find_translation_for_my_word"), (
         "остался ручной поиск перевода по одной карточке"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Жалобы владельца 13.09.2026 по экрану «Мои слова». Оба дефекта — «система знает
+# ответ / обещает действие, а до человека это не доходит».
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_pos_only_fix_reaches_the_screen():
+    """Правка «только часть речи» обязана доезжать до экрана кнопкой.
+
+    Регрессия коммита 08576136 (27.08.2026): `optionsOf` признавал вариант существующим
+    только при наличии нового СЛОВА или нового ПЕРЕВОДА, и правка {to_pos: 'verb'}
+    выбрасывалась целиком. Наружу это выглядело как «НЕ ВОССТАНОВИЛИ» под словом
+    `begreifen`, про которое справочник отвечает «глагол» за доли секунды.
+
+    Замер живой базы 13.09.2026: 6 записей из 10 в очереди «помечено существительным»
+    имели готовый ответ справочника и НИ ОДНА не показывала кнопку.
+    """
+    from pathlib import Path
+    import io as _io
+
+    screen = (Path(backend_server.__file__).resolve().parents[1]
+              / "frontend" / "src" / "dictionary" / "WordIntegrityReview.jsx")
+    text = _io.open(screen, encoding="utf-8").read()
+    assert "!fix.to_translation && !fix.to_pos" in text, (
+        "optionsOf снова выбрасывает правку, где есть только часть речи"
+    )
+    assert "function optionLabel" in text, (
+        "кнопка снова называется «Исправить» вместо самой части речи"
+    )
+
+
+def test_own_answer_is_possible_on_personal_words():
+    """«Если знаете сами — впишите» обязано быть выполнимым, а не подписью.
+
+    Владелец 13.09.2026: «как я тут могу вписать это слово?! на хуя эта статистика
+    тупая?» Поле стояло под `scope === 'shared'`, а текст показывался всем; сервер
+    действия «своё» не знал вовсе.
+    """
+    from pathlib import Path
+    import io as _io
+
+    screen = (Path(backend_server.__file__).resolve().parents[1]
+              / "frontend" / "src" / "dictionary" / "WordIntegrityReview.jsx")
+    text = _io.open(screen, encoding="utf-8").read()
+    assert "scope === 'shared' && ownOpen" not in text, (
+        "поле «вписать своё» снова закрыто от экрана «Мои слова»"
+    )
+    assert "OWN_ASKS_TRANSLATION" in text, (
+        "поле снова спрашивает одно и то же у беды про перевод и у беды про написание"
+    )
+
+    apply_src = inspect.getsource(database.apply_user_word_decisions)
+    assert '"fix", "own", "keep", "delete"' in apply_src, (
+        "сервер снова не принимает вписанное человеком"
+    )
+    # Куда лечь вписанному, решает СЕРВЕР по своей записи о беде, а не присланное поле.
+    assert 'issue in ("no_translation", "translation_equals_word")' in apply_src, (
+        "сервер снова решает по присланному полю, а не по записанной им самим беде"
+    )
+    # Проверяем ВЫЗОВ, а не упоминание: про запрет написано тут же в docstring, и
+    # поиск по голому имени ловил бы собственное объяснение.
+    assert "confirm_word_by_owner(" not in apply_src, (
+        "правка ЛИЧНОЙ карточки снова подтверждает слово для всех остальных"
+    )
+
+
+def test_diagnosis_does_not_blame_the_letter():
+    """Диагноз не имеет права назначать виноватой одну из двух сторон.
+
+    Проверка ловит противоречие «сказано noun ↔ написано с маленькой», а какая сторона
+    врёт — не знает. Старый текст утверждал, что виновата БУКВА, и владелец пошёл искать,
+    где поставить заглавную у глагола `begreifen`.
+    """
+    assert "неверно что-то одно" in database.USER_WORD_ISSUES["pos_mismatch"], (
+        "диагноз снова утверждает, что виновата буква"
+    )
+    src = inspect.getsource(database.list_user_word_issues)
+    assert "USER_WORD_POS_RU" in src, (
+        "справочник назвал часть речи, а диагноз её человеку не показывает"
+    )
+
+
+def test_echoed_translation_never_lands_in_the_translation_field():
+    """Перевод, дословно повторяющий исходник, — отсутствие перевода, а не перевод.
+
+    Живой случай: `in Frage kommen` / `in Frage kommen`, 20.08.2026, читалка.
+    Замер 13.09.2026: 1 запись на 27 507. Дверь была открыта в трёх местах сразу.
+    """
+    from pathlib import Path
+    import io as _io
+
+    # 1. Сторож на сервере — и он один на ОБЕ двери сохранения, а не копия у каждой.
+    guard = inspect.getsource(backend_server._drop_echoed_dictionary_translation)
+    assert "entries_for_query" in guard, "дверь эха перестала спрашивать наш источник"
+    server_src = _io.open(backend_server.__file__, encoding="utf-8").read()
+    assert server_src.count("_drop_echoed_dictionary_translation(") >= 3, (
+        "сторож эха подключён не ко всем дверям сохранения"
+    )
+
+    # 2. Ночная работа забирает такие карточки САМА — иначе пусто станет вечным.
+    queue_src = inspect.getsource(database.queue_missing_translations)
+    assert "LOWER(TRIM(q.word_de)) = LOWER(TRIM(COALESCE(q.translation_ru, '')))" in queue_src, (
+        "ночной перевод снова не видит карточки, где перевод повторяет слово"
+    )
+
+    # 3. Экран не подставляет немецкое в русское поле «лишь бы что-то было».
+    save_utils = (Path(backend_server.__file__).resolve().parents[1]
+                  / "frontend" / "src" / "dictionary" / "saveUtils.js")
+    utils_text = _io.open(save_utils, encoding="utf-8").read()
+    # Ищем ПРАВИЛЬНУЮ строку, а не отсутствие неправильной: снятое правило разобрано
+    # в комментарии рядом, и поиск по его тексту ловил бы это объяснение.
+    assert "if (targetLang === 'ru') return list.find(hasCyrillic) || '';" in utils_text, (
+        "pickTargetTranslation снова подставляет немецкую строку в русское поле"
+    )
+    assert "if (targetLang === 'de') return list.find((s) => !hasCyrillic(s)) || '';" in utils_text, (
+        "pickTargetTranslation снова подставляет русскую строку в немецкое поле"
+    )
+
+
+def test_echo_guard_blanks_instead_of_inventing():
+    """Сторож эха на живых значениях: снимает эхо и НЕ выдумывает замену."""
+    word_ru, word_de, tr_ru, tr_de, target = backend_server._drop_echoed_dictionary_translation(
+        source_text="in Frage kommen",
+        word_ru="in Frage kommen",
+        word_de="in Frage kommen",
+        translation_ru="in Frage kommen",
+        translation_de="in Frage kommen",
+        target_text="in Frage kommen",
+        source_lang="de",
+        target_lang="ru",
+        origin_process="reader",
+    )
+    assert word_de == "in Frage kommen", "сторож тронул само немецкое слово"
+    assert tr_ru == "", "немецкое эхо осталось в русском поле"
+    assert target == "", "немецкое эхо осталось в target_text"
+
+    # Настоящий перевод сторож не трогает ни на шаг.
+    kept = backend_server._drop_echoed_dictionary_translation(
+        source_text="Haus",
+        word_ru="дом",
+        word_de="Haus",
+        translation_ru="дом",
+        translation_de="Haus",
+        target_text="дом",
+        source_lang="de",
+        target_lang="ru",
+        origin_process="reader",
+    )
+    assert kept == ("дом", "Haus", "дом", "Haus", "дом"), "сторож съел настоящий перевод"
+
+
+def test_unambiguous_pos_is_fixed_at_night_without_the_human():
+    """Однозначное чиним сами ночью; спорное остаётся человеку.
+
+    Владелец 13.09.2026: «Починить автоматически те, где справочник дал однозначный
+    ответ, а спорные оставить мне на экране с кнопками». Из 11 записей его экрана 6
+    имели готовый ответ справочника и просто ждали нажатия.
+    """
+    import io as _io
+    from pathlib import Path
+
+    src = inspect.getsource(database.autofix_user_word_pos_from_reference)
+    # Три условия однозначности сразу — иначе за человека решим мы.
+    assert "статус == CONFIRMED" in src, "чиним даже там, где справочник не подтвердил"
+    assert 'часть_речи != "noun"' in src, "чиним там, где справочник ничего не изменил"
+    assert "написание == слово" in src, "чиним пометку, споря с написанием"
+    assert "allow_model=False" in src, "ночная правка пошла к модели вместо справочника"
+
+    bot = Path(backend_server.__file__).resolve().parents[1] / "bot_3.py"
+    text = _io.open(bot, encoding="utf-8").read()
+    assert "_autofix_my_words_pos_nightly" in text, "ночная правка не поставлена на автомат"
+    assert 'MY_WORDS_AUTOFIX_HOUR' in text, "у ночной правки нет расписания"

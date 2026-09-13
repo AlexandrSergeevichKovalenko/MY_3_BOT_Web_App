@@ -18749,6 +18749,96 @@ def _looks_like_embedded_dictionary_source(candidate_text: str | None, source_te
     return overlap >= max(2, math.ceil(len(candidate_tokens) * 0.7))
 
 
+def _drop_echoed_dictionary_translation(
+    *,
+    source_text: str | None,
+    word_ru: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
+    translation_de: str | None,
+    target_text: str | None,
+    source_lang: str | None,
+    target_lang: str | None,
+    origin_process: str | None = None,
+) -> tuple:
+    """ЭХО — ЭТО ОТСУТСТВИЕ ПЕРЕВОДА. В поле перевода оно лечь не имеет права.
+
+    ┌─ ЖИВОЙ СЛУЧАЙ, ЗАКРЫТЫЙ 13.09.2026. СТОРОЖ НЕ СНИМАТЬ. ─────────────────────────┐
+    │ Владелец: «Откуда пришла запись, где ДВЕ НЕМЕЦКИЕ СТОРОНЫ? Если оттуда пришла   │
+    │ неправильная фраза-перевод, она может прийти ещё раз?»                          │
+    │                                                                                │
+    │ Запись: `in Frage kommen` / `in Frage kommen`, 20.08.2026, источник — читалка.  │
+    │ Замер живой базы 13.09.2026: таких строк **1 на 27 507** личных карточек. То    │
+    │ есть это не поток, а именно открытая дверь — и она была открыта настежь:        │
+    │                                                                                │
+    │  • `/api/webapp/dictionary` эхо ловит (две попытки: обратный запрос и           │
+    │    принудительный перевод), но если и они вернули эхо — отдаёт его НАРУЖУ как   │
+    │    нормальный ответ. Финального отказа там нет;                                 │
+    │  • обе двери сохранения (webapp и мобильная) проверки «перевод ≠ исходник» не   │
+    │    имели ни одной строки — прочитано целиком;                                   │
+    │  • на экране добивал `pickTargetTranslation` (saveUtils.js): «нет кандидата с   │
+    │    кириллицей → берём первый», а первый — немецкий.                             │
+    │                                                                                │
+    │ Ответ владельца на вопрос «что делать»: спросить наш источник, а не нашёлся —   │
+    │ отдать ночной работе. Молчаливой подстановки быть не должно.                    │
+    │                                                                                │
+    │ Перемерить: `SELECT count(*) FROM bt_3_webapp_dictionary_queries WHERE          │
+    │ LOWER(TRIM(word_de)) = LOWER(TRIM(translation_ru))` — при живом стороже число   │
+    │ не растёт. То же меряет обещание `dictionary_saves_without_echoed_translation`. │
+    └────────────────────────────────────────────────────────────────────────────────┘
+
+    Пустое поле перевода — НЕ заглушка и не молчание: `queue_missing_translations`
+    забирает такие карточки в ночной перевод сам, без человека. Слово человек не теряет.
+    """
+    native = _normalize_short_lang_code(target_lang, fallback="")
+    studied = _normalize_short_lang_code(source_lang, fallback="")
+    if not native or native == studied:
+        return (word_ru, word_de, translation_ru, translation_de, target_text)
+
+    def same(a, b) -> bool:
+        left = _normalize_space(a)
+        right = _normalize_space(b)
+        return bool(left) and bool(right) and left.casefold() == right.casefold()
+
+    # Сторона-источник: то, что человек выделил/набрал. Сторона-перевод: то, что должно
+    # быть на его языке. Эхо — когда вторая дословно повторяет первую.
+    origin_side = word_de if studied == "de" else (word_ru if studied == "ru" else "")
+    translated = translation_ru if native == "ru" else (translation_de if native == "de" else "")
+    echoed = same(translated, origin_side) or same(translated, source_text)
+    if not echoed:
+        return (word_ru, word_de, translation_ru, translation_de, target_text)
+
+    asked = _normalize_space(origin_side) or _normalize_space(source_text)
+
+    # 1. СПРАШИВАЕМ СВОЙ ИСТОЧНИК. Слой статей знает и многословные выражения — 940 наших
+    #    же выражений с русским переводом (FreeDict + WikDict). Только точное совпадение.
+    if native == "ru" and studied == "de" and asked:
+        try:
+            from backend.dictionary_entries import entries_for_query
+
+            found = entries_for_query(asked, source_lang="de", target_lang="ru") or []
+            picked = [t for e in found for t in (e.get("translations") or []) if str(t or "").strip()]
+            if picked:
+                gloss = ", ".join(str(t).strip() for t in picked[:2])
+                logging.info(
+                    "дверь эха: %r переведено статьёй словаря → %r (источник %s)",
+                    asked[:60], gloss[:60], origin_process or "?",
+                )
+                return (gloss, word_de, gloss, translation_de, gloss)
+        except Exception:
+            logging.exception("дверь эха: слой статей не ответил на %r", asked[:60])
+
+    # 2. Источник не знает — ЧЕСТНО ОСТАВЛЯЕМ ПУСТО. Ночная работа заберёт это сама.
+    logging.warning(
+        "дверь эха: перевод повторял исходник и снят — %r (пара %s→%s, источник %s). "
+        "Карточка уйдёт в ночной перевод.",
+        asked[:60], studied, native, origin_process or "?",
+    )
+    if native == "ru":
+        return ("", word_de, "", translation_de, "")
+    return (word_ru, "", translation_ru, "", "")
+
+
 def _sanitize_bilingual_dictionary_target(
     source_text: str | None,
     target_text: str | None,
@@ -53132,6 +53222,19 @@ def save_webapp_dictionary_entry():
         origin_process=origin_process,
     )
 
+    # Эхо переводчика в поле перевода не пускаем (см. _drop_echoed_dictionary_translation).
+    word_ru, word_de, translation_ru, translation_de, target_text = _drop_echoed_dictionary_translation(
+        source_text=source_text,
+        word_ru=word_ru,
+        word_de=word_de,
+        translation_ru=translation_ru,
+        translation_de=translation_de,
+        target_text=target_text,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        origin_process=origin_process,
+    )
+
     if folder_id is None:
         try:
             default_folder = get_or_create_dictionary_folder(
@@ -53467,6 +53570,20 @@ def save_mobile_dictionary_entry():
         translation_de=translation_de,
         source_lang=source_lang,
         user_id=int(user_id),
+        origin_process=mobile_origin,
+    )
+
+    # Тот же сторож, что и у веб-двери: тело ОДНО на обе. Копия правила у каждого входа
+    # расходится на следующей правке — в этом файле так уже ломалась дверь слова.
+    word_ru, word_de, translation_ru, translation_de, target_text = _drop_echoed_dictionary_translation(
+        source_text=source_text,
+        word_ru=word_ru,
+        word_de=word_de,
+        translation_ru=translation_ru,
+        translation_de=translation_de,
+        target_text=target_text,
+        source_lang=source_lang,
+        target_lang=target_lang,
         origin_process=mobile_origin,
     )
 

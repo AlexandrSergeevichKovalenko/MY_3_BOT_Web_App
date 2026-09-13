@@ -47,14 +47,25 @@ export function extractRichTranslation(item) {
 // Pick the translation that actually belongs to `targetLang` from a list of candidates.
 // For a Russian target we REQUIRE Cyrillic, so a German value leaking into the GPT
 // breakdown's translation column can never be saved as the "Russian" translation — the
-// recurring bug where a tapped synonym/antonym chip saved a German-only card. Falls back
-// to the first non-empty candidate only if none match the expected script.
+// recurring bug where a tapped synonym/antonym chip saved a German-only card.
+//
+// ⛔ «НИ ОДИН НЕ ПОДОШЁЛ → БЕРЁМ ПЕРВЫЙ» УБРАНО 13.09.2026. НЕ ВОЗВРАЩАТЬ.
+// Здесь стояло `list.find(hasCyrillic) || list[0]`, и последний шаг отменял всю
+// проверку: ровно в том случае, ради которого она написана (ни один кандидат не на
+// языке человека), функция брала первый кандидат — то есть НЕМЕЦКИЙ — и он уезжал в
+// русское поле. Так в словаре владельца появилась карточка «in Frage kommen» с
+// «переводом» «in Frage kommen» (замер живой базы: 1 запись на 27 507).
+//
+// Пусто здесь — не потеря. Слово сохранится без перевода, и ночная работа
+// (`queue_missing_translations` → `_fill_missing_translations_nightly`) подберёт его
+// сама, пачкой и без человека. Немецкий в русском поле уже не исправит никто:
+// он выглядит как готовая карточка и в ночную очередь не попадает.
 export function pickTargetTranslation(targetLang, candidates) {
   const list = candidates.map((c) => String(c || '').trim()).filter(Boolean);
   if (!list.length) return '';
   const hasCyrillic = (s) => /[А-Яа-яЁё]/.test(s);
-  if (targetLang === 'ru') return list.find(hasCyrillic) || list[0];
-  if (targetLang === 'de') return list.find((s) => !hasCyrillic(s)) || list[0];
+  if (targetLang === 'ru') return list.find(hasCyrillic) || '';
+  if (targetLang === 'de') return list.find((s) => !hasCyrillic(s)) || '';
   return list[0];
 }
 

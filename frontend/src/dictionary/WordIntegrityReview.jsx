@@ -59,12 +59,31 @@ const TITLES = {
 
 // Личный разбор своих слов присылает ОДНУ правку старым полем `suggestion`. Приводим её
 // к тому же виду, что и прочтения общего словаря, чтобы экран был один, а не два.
+//
+// ⛔ ПРАВКУ «ТОЛЬКО ЧАСТЬ РЕЧИ» ЗДЕСЬ ТЕРЯЛИ. НЕ ВОЗВРАЩАТЬ УСЛОВИЕ БЕЗ `to_pos`.
+// Отбор стоял `if (!word && !fix.to_translation) return []`, то есть вариант признавался
+// существующим только когда в нём есть новое СЛОВО или новый ПЕРЕВОД. Правка вида
+// «слово написано верно, а помечено не тем» ({to_pos: 'verb'}) не несёт ни того ни
+// другого — и молча выбрасывалась ВСЯ.
+//
+// Наружу это выглядело так, будто система не знает ответа: под записью стояло
+// «НЕ ВОССТАНОВИЛИ. Ни справочник, ни модель это написание не подтвердили», а кнопок
+// было две — «Оставить» и «Удалить». На самом деле ответ был: справочник отвечает про
+// `begreifen` → verb за доли секунды, и сервер эту правку исправно присылал.
+//
+// Замер живой базы 13.09.2026: из 10 записей в очереди «помечено существительным» у 6
+// (begreifen, jahrelang, vordringen, hart, jucken, erschießen) справочник дал
+// однозначный ответ — и ни одна из шести не показывала кнопки.
+//
+// Это РЕГРЕССИЯ коммита 08576136 (27.08.2026): до него экран рисовал такую правку
+// отдельной строкой «существительное → глагол» и давал кнопку. Переписывание на общий
+// `optionsOf` эту ветку не перенесло.
 function optionsOf(row) {
   if (Array.isArray(row.options) && row.options.length) return row.options;
   const fix = row.suggestion;
   if (!fix) return [];
   const word = fix.to_display || fix.to_lemma || fix.to_word;
-  if (!word && !fix.to_translation) return [];
+  if (!word && !fix.to_translation && !fix.to_pos) return [];
   return [{
     word: word || '',
     pos: fix.to_pos || '',
@@ -74,6 +93,22 @@ function optionsOf(row) {
     legacy: fix,
   }];
 }
+
+// Что написать НА КНОПКЕ. Кнопка называется тем, что случится по нажатию, а не словом
+// «Исправить»: прочтений бывает несколько, и человек выбирает между ними глазами.
+// У правки про часть речи на кнопке стоит сама часть речи — «глагол».
+function optionLabel(opt) {
+  if (opt.word) return opt.word;
+  if (opt.translation) return opt.translation;
+  if (opt.pos) return POS_RU[opt.pos] || opt.pos;
+  return 'Исправить';
+}
+
+// Беды, где «вписать своё» означает ПЕРЕВОД. У остальных — написание самого слова.
+// Список общий с сервером (database.py, apply_user_word_decisions): там он решает, в
+// какую колонку лечь вписанному, здесь — о чём спросить человека. Решение принимает
+// сервер; здесь только текст, чтобы вопрос и ответ были про одно и то же.
+const OWN_ASKS_TRANSLATION = new Set(['no_translation', 'translation_equals_word']);
 
 export default function WordIntegrityReview({ scope = 'shared' }) {
   const urls = ENDPOINTS[scope] || ENDPOINTS.shared;
@@ -241,8 +276,8 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
                     {opt.source === 'модель' ? 'Модель' : 'Справочник'}
                   </span>
                   <span>
-                    <b>{opt.word}</b>
-                    {opt.pos ? ` — ${POS_RU[opt.pos] || opt.pos}` : ''}
+                    <b>{optionLabel(opt)}</b>
+                    {opt.word && opt.pos ? ` — ${POS_RU[opt.pos] || opt.pos}` : ''}
                     {opt.why ? `. ${opt.why}` : ''}
                   </span>
                 </div>
@@ -250,17 +285,32 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
               {options.length > 1 && (
                 <div className="wi-what">Справочник знает оба. Какое имелось в виду?</div>
               )}
+              {/* Текст «не восстановили» обязан говорить про ТУ САМУЮ беду, что в записи.
+                  До 13.09.2026 у записи «перевод повторяет само слово» стояло «ни
+                  справочник, ни модель это НАПИСАНИЕ не подтвердили» — про написание,
+                  которое никто не оспаривал. И про модель: её здесь не спрашивают вовсе
+                  (check_word зовётся с allow_model=False), так что ссылаться на неё
+                  значило приписывать себе проверку, которой не было. */}
               {!options.length && (
                 <div className="wi-src">
                   <span className="wi-tag none">Не восстановили</span>
                   <span>
-                    {row.issue === 'no_translation'
-                      ? 'Перевод придумывать не станем — впишите его или удалите карточку.'
-                      : 'Ни справочник, ни модель это написание не подтвердили. Если знаете сами — впишите.'}
+                    {OWN_ASKS_TRANSLATION.has(row.issue)
+                      ? 'Перевод придумывать не станем. Впишите свой или удалите карточку.'
+                      : 'Справочник это слово не подтвердил. Если знаете сами — впишите.'}
                   </span>
                 </div>
               )}
-              {row.issue === 'no_translation' && !options.length && (
+              {row.expression_hint && (
+                <div className="wi-src">
+                  <span className="wi-tag book">Справочник</span>
+                  <span>
+                    Устойчивое выражение. По-немецки объясняют так: <b>{row.expression_hint}</b>
+                  </span>
+                </div>
+              )}
+              {(row.issue === 'no_translation' || row.issue === 'translation_equals_word')
+                && !options.length && (
                 <div className="wi-src">Перевод подберёт ночная работа — обычно к утру.</div>
               )}
 
@@ -272,7 +322,7 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
                     className={`wi-act fix${pick?.action === 'fix' && pick.option === index ? ' is-on' : ''}`}
                     onClick={() => choose(row.id, 'fix', index)}
                   >
-                    {opt.word || 'Исправить'}
+                    {optionLabel(opt)}
                   </button>
                 ))}
                 <button
@@ -289,28 +339,38 @@ export default function WordIntegrityReview({ scope = 'shared' }) {
                 >
                   Удалить
                 </button>
-                {scope === 'shared' && (
-                  <button
-                    type="button"
-                    className="wi-act own"
-                    onClick={() => setOwnOpen((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
-                  >
-                    ✎ Своя
-                  </button>
-                )}
+                {/* ⛔ КНОПКА И ПОЛЕ СТОЯЛИ ПОД `scope === 'shared'`, А ПОДПИСЬ «ЕСЛИ
+                    ЗНАЕТЕ САМИ — ВПИШИТЕ» ПОКАЗЫВАЛАСЬ ВСЕМ. На экране «Мои слова»
+                    вписать было некуда: две кнопки, «Оставить» и «Удалить», и текст,
+                    зовущий сделать третье. Владелец 13.09.2026: «как я тут могу вписать
+                    это слово?! на хуя эта статистика тупая?»
+                    Замок снят с обоих экранов, и сервер научен действию «своё»
+                    (database.py, apply_user_word_decisions) — без него кнопка была бы
+                    такой же пустой подписью, только нажимаемой. */}
+                <button
+                  type="button"
+                  className="wi-act own"
+                  onClick={() => setOwnOpen((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
+                >
+                  ✎ Своё
+                </button>
               </div>
 
-              {scope === 'shared' && ownOpen[row.id] && (
+              {ownOpen[row.id] && (
                 <div className="wi-own">
                   <input
                     className="wi-input"
                     type="text"
-                    placeholder="Напишите верную форму"
+                    placeholder={OWN_ASKS_TRANSLATION.has(row.issue)
+                      ? 'Напишите перевод'
+                      : 'Напишите верную форму'}
                     value={ownText[row.id] || ''}
                     onChange={(e) => typeOwn(row.id, e.target.value)}
                   />
                   <div className="wi-src">
-                    Запишем ровно то, что вы написали: ваше слово главнее нашего справочника.
+                    {OWN_ASKS_TRANSLATION.has(row.issue)
+                      ? 'Запишем ровно то, что вы написали: ваш перевод встанет в карточку.'
+                      : 'Запишем ровно то, что вы написали: ваше слово главнее нашего справочника.'}
                   </div>
                 </div>
               )}
