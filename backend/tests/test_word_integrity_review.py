@@ -495,3 +495,48 @@ def test_unambiguous_pos_is_fixed_at_night_without_the_human():
     text = _io.open(bot, encoding="utf-8").read()
     assert "_autofix_my_words_pos_nightly" in text, "ночная правка не поставлена на автомат"
     assert 'MY_WORDS_AUTOFIX_HOUR' in text, "у ночной правки нет расписания"
+
+
+def test_autofix_runs_right_after_every_find_not_only_at_night():
+    """Найденное чинится СРАЗУ, а не «когда-нибудь ночью».
+
+    Владелец 13.09.2026: «такие слова будут сами чиниться под капотом без моего участия
+    и участия пользователя?» Починка была ночной (03:20), а находка — воскресной (10:00)
+    и при открытии экрана. Значит свежий дефект успевал попасть в приглашение человеку
+    раньше, чем ночь до него добиралась: человека звали решать то, что мы знаем сами.
+
+    Правка обязана стоять за КАЖДОЙ находкой, иначе зазор открывается заново.
+    """
+    import io as _io
+    from pathlib import Path
+
+    корень = Path(backend_server.__file__).resolve().parents[1]
+
+    # 1. Воскресный обход: правка ДО подсчёта «кому слать», а не после.
+    bot = _io.open(корень / "bot_3.py", encoding="utf-8").read()
+    рассылка = bot[bot.index("def _send_my_words_review"):]
+    рассылка = рассылка[:рассылка.index("\ndef ", 10)]
+    assert "autofix_user_word_pos_from_reference" in рассылка, (
+        "воскресный обход снова зовёт человека на то, что чинится само"
+    )
+    assert рассылка.index("autofix_user_word_pos_from_reference(") < рассылка.index("users_with_word_issues("), (
+        "правка идёт ПОСЛЕ подсчёта получателей — письмо уйдёт с лишними записями"
+    )
+    assert "_autofix_my_words_pos_nightly" in bot, "ночная страховка пропала"
+
+    # 2. Открытие экрана: правка сразу за пересмотром, и только по ЭТОМУ человеку.
+    server = _io.open(корень / "backend" / "backend_server.py", encoding="utf-8").read()
+    экран = server[server.index("def list_webapp_my_word_issues"):]
+    экран = экран[:экран.index("\n@app.route")]
+    assert "autofix_user_word_pos_from_reference(limit=200, user_id=int(user_id))" in экран, (
+        "экран снова показывает то, что система умеет починить сама"
+    )
+    assert экран.index("scan_user_word_issues(") < экран.index("autofix_user_word_pos_from_reference("), (
+        "правка идёт до пересмотра — свежая находка её не застанет"
+    )
+
+    # 3. Чужие карточки правкой по user_id не задеваются.
+    src = inspect.getsource(database.autofix_user_word_pos_from_reference)
+    assert "%s::bigint IS NULL OR r.user_id = %s::bigint" in src, (
+        "правка по одному человеку разъехалась с общим прогоном"
+    )

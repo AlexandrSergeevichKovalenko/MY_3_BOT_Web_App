@@ -45727,6 +45727,7 @@ def list_webapp_my_word_issues():
     """
     from backend.database import (
         list_user_word_issues, count_user_word_issues, scan_user_word_issues,
+        autofix_user_word_pos_from_reference,
     )
 
     payload = request.get_json(silent=True) or {}
@@ -45736,6 +45737,12 @@ def list_webapp_my_word_issues():
 
     if payload.get("rescan"):
         scan_user_word_issues(limit=2000)
+        # Найденное СРАЗУ прогоняем через справочник: всё однозначное чиним сами и на
+        # экран не выносим. Человеку остаётся только то, что вправду требует его
+        # решения (владелец 13.09.2026: «а спорные оставить мне»). Лишних обращений к
+        # справочнику это не стоит — список ниже и так спрашивает его про каждую
+        # запись, а вердикты кешируются.
+        autofix_user_word_pos_from_reference(limit=200, user_id=int(user_id))
 
     return jsonify({
         "ok": True,

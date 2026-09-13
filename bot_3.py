@@ -14322,8 +14322,21 @@ def _send_my_words_review() -> None:
     карточкам: чужие человек не видит и тронуть не может.
     """
     try:
-        from backend.database import scan_user_word_issues, users_with_word_issues
+        from backend.database import (
+            scan_user_word_issues, users_with_word_issues,
+            autofix_user_word_pos_from_reference,
+        )
         scan_user_word_issues(limit=3000)
+        # ⛔ ПРАВКА ИДЁТ ДО РАССЫЛКИ, НЕ ПОСЛЕ. Иначе в письме человеку окажется то, что
+        # мы починим сами ближайшей ночью: обход находит дефекты в 10:00, а ночная
+        # правка приходит только в 03:20 следующих суток. Владелец 13.09.2026 решил
+        # чинить однозначное самим и звать человека ТОЛЬКО на спорное — значит и
+        # считать «кому есть что разобрать» надо уже после правки.
+        итог = autofix_user_word_pos_from_reference(limit=1000)
+        logging.info(
+            "мои слова: перед рассылкой починено по справочнику %s, осталось людям %s",
+            итог.get("fixed"), итог.get("left_to_human"),
+        )
         rows = users_with_word_issues(limit=500)
         if not rows:
             logging.info("мои слова: разбирать некому")
