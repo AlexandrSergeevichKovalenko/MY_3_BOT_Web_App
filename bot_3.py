@@ -10334,6 +10334,7 @@ def _send_pool_enrich_morning_report() -> None:
             )
         text += _access_state_line()
         text += _word_pick_report_line()
+        text += _form_headword_report_line()
         text += _sprint_intake_report_line()
         text += _fix_promises_block(обещания)
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
@@ -11447,6 +11448,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     # Вторник и пятница: между запусками максимум 4 суток, поэтому порог 120 часов.
     ("panel_cards_reminder", "Карточки словаря на разбор (вт и пт, 10:00 Вена)", 120, True, "guard"),
     ("translation_links", "Подъём переводов в общий словарь (03:20 Вена)", 30, True, "guard"),
+    ("form_headword_sweep", "Заголовки-формы: справочник и починка (03:50 Вена)", 30, True, "guard"),
     ("sprint_bank_hygiene_job", "Дверь приёма синонимов по накопленному (03:10 Вена)", 30, True, "guard"),
     ("private_analytics_auto", "Личная аналитика в личку (19:30)", 30, True, "guard"),
     ("daily_group_summary_auto", "Итоги дня в группе (22:30)", 30, True, "guard"),
@@ -17123,6 +17125,30 @@ def _access_state_line() -> str:
         line += f" · без начала отсчёта <b>{c['unknown']}</b> ⚠️"
     line += f"\nОплат за сутки: Лайт {p.get('light', 0)} / Полный {p.get('pro', 0)}\n"
     return line
+
+def _form_headword_report_line() -> str:
+    """Строка о заголовках-формах: сколько написаний ещё не спрашивали у справочника и
+    сколько спорных ждут владельца. Ночная работа 03:50 — backend/form_headword_sweep.py."""
+    try:
+        from backend.database import get_db_connection_context
+        from backend.form_headword_sweep import pending_count
+        осталось = pending_count()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT verdict, COUNT(*), COALESCE(SUM(fixed_cards),0) "
+                            "FROM bt_3_form_headword_checked GROUP BY verdict")
+                по_классам = {str(r[0]): (int(r[1]), int(r[2])) for r in cur.fetchall() or []}
+    except Exception:
+        logging.exception("строка о заголовках-формах не собралась")
+        return "\n📗 Заголовки: ❓ не посчитались, подробности в логах.\n"
+    форм, починено = по_классам.get("форма", (0, 0))
+    спорных = по_классам.get("спорно", (0, 0))[0]
+    return (f"\n📗 <b>Заголовки словаря</b>: проверено написаний "
+            f"<b>{sum(v[0] for v in по_классам.values())}</b> · форм найдено <b>{форм}</b> "
+            f"(починено карточек {починено})"
+            + (f" · спорных ждут вас: <b>{спорных}</b>" if спорных else "")
+            + (f" · ещё не спрашивали: {осталось}" if осталось else " · очередь пуста") + "\n")
+
 
 def _word_pick_report_line() -> str:
     """Строка утреннего отчёта о «Словах со вчерашних тренировок» за вчера: кто получал,
@@ -37127,6 +37153,19 @@ def _build_anagram_card_payload(entry: dict) -> dict | None:
     if not correct_word or not _is_valid_anagram_target(correct_word):
         return None
     correct_word = _to_letters_only_word(correct_word)
+    if not _is_valid_anagram_target(correct_word):
+        return None
+    # ДВЕРЬ ПРИЁМКИ, решение владельца 13.09.2026. До неё здесь проверялась только ФОРМА
+    # строки (одно слово, только буквы, 8+), и в банк проходило всё, что человек когда-то
+    # искал в словаре: обрубок «Inkelgasse» (0 вхождений на миллиард) ушёл трём людям, а
+    # 16 карточек учили писать глагол с большой буквы. Правило и оговорки —
+    # backend/anagram_word_gate.py. Регистр берётся из части речи ЗАПИСИ, а не из вида
+    # слова: у «das Aufstoßen» заглавная верна.
+    from backend.anagram_word_gate import judge_anagram_word
+    correct_word, gate_reason = judge_anagram_word(correct_word, entry)
+    if not correct_word:
+        logging.info("ag_gate: слово не взято — %s", gate_reason)
+        return None
     if not _is_valid_anagram_target(correct_word):
         return None
     scrambled = _scramble_word_preserve_ends(correct_word)

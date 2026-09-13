@@ -2829,6 +2829,14 @@ def run_reference_forms_review_dm_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_form_headword_sweep_actor() -> None:
+    """Ночью: заголовок карточки — словарное слово, а не форма («beruhte» → «beruhen»)."""
+    from backend.form_headword_sweep import sweep
+    итог = sweep()
+    logging.info("форма-заголовок: %s", итог)
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_retire_review_dm_actor() -> None:
     """Личка со снятыми словами, которые по частотности выглядят ходовыми."""
     from backend.article_retire_review import send_retire_review_dm

@@ -1226,7 +1226,133 @@ def _relation_gap_screen() -> str:
     lines.append(f"тренировка (пн/вт): {tr_rows} ответов у {tr_people} чел.")
     return "\n".join(lines)
 
+# ── анаграммы: слово существует, ходовое и написано верно (13.09.2026) ───────────────
+# Условие «противоречит источнику» держится в ОДНОМ месте — в SQL ниже, и оно повторяет
+# правило двери (`backend/anagram_word_gate.spelling_by_source`): слово пишется строчными,
+# только если ВСЕ записи журнала о нём говорят «глагол/прилагательное/наречие» и ни в
+# одной нет артикля. Артикль важнее части речи: у `das Aufstoßen` заглавная верна.
+_СЛОВО_ЖУРНАЛА = ("REGEXP_REPLACE(COALESCE(q.response_json->>'word_de',''),"
+                  "'^(der|die|das)\\s+','')")
+
+
+def _anagram_cards_against_source() -> int:
+    """Живых карточек анаграмм, где написание противоречит источнику. Обещано: 0.
+
+    Замер 13.09.2026 до починки: 6 живых карточек (Benachteiligen, Hervorrufen,
+    Nachstehen, Peinlich, Unsachlich, Vorzeitig) и ещё 28 снятых. Человек видел эту
+    заглавную на экране: буквы отдаются как записаны, и слово предлагается сохранить
+    в личный словарь.
+    """
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*) FROM bt_3_anagram_cards c
+                WHERE NOT c.retired AND c.word ~ '^[A-ZÄÖÜ]'
+                  AND EXISTS (SELECT 1 FROM bt_3_webapp_dictionary_queries q
+                              WHERE LOWER({_СЛОВО_ЖУРНАЛА}) = LOWER(c.word)
+                                AND q.response_json->>'part_of_speech'
+                                    IN ('verb','adjective','adverb','participle'))
+                  AND NOT EXISTS (SELECT 1 FROM bt_3_webapp_dictionary_queries q
+                                  WHERE LOWER({_СЛОВО_ЖУРНАЛА}) = LOWER(c.word)
+                                    AND (COALESCE(q.response_json->>'word_de','')
+                                             ~* '^(der|die|das)\\s+'
+                                         OR q.response_json->>'part_of_speech' = 'noun'));
+                """
+            )
+            row = cur.fetchone()
+    return int((row or [0])[0] or 0)
+
+
+def _anagram_new_cards_below_threshold() -> int:
+    """Карточек, добранных ПОСЛЕ постановки двери, чья частота ниже порога. Обещано: 0.
+
+    Это сторож самой двери: если правило перестанет вызываться, в банк снова пойдут
+    слова вроде `Inkelgasse` (0 вхождений на миллиард, ушло трём людям). Считаем только
+    те слова, про которые частота у нас ЕСТЬ: «не знаем» — это не «нарушено».
+    """
+    from backend.database import get_db_connection_context
+    from backend.rebus_word_gate import MIN_PER_BILLION
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM bt_3_anagram_cards c
+                JOIN bt_3_dwds_frequency f ON f.word = c.word AND f.hits IS NOT NULL
+                WHERE c.created_at > TIMESTAMPTZ '2026-09-13 20:00+00'
+                  AND f.per_billion < %s;
+                """,
+                (float(MIN_PER_BILLION),),
+            )
+            row = cur.fetchone()
+    return int((row or [0])[0] or 0)
+
+
+def _anagram_bank_screen() -> str:
+    """Экран «после»: то же, что владелец видит в банке анаграмм. Приходит САМ."""
+    from backend.database import get_db_connection_context
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) FILTER (WHERE NOT retired),
+                           COUNT(*) FILTER (WHERE NOT retired AND word ~ '^[A-ZÄÖÜ]'),
+                           COUNT(*) FILTER (WHERE NOT retired
+                                            AND created_at > TIMESTAMPTZ '2026-09-13 20:00+00')
+                    FROM bt_3_anagram_cards;
+                    """
+                )
+                выдаются, с_заглавной, новых = cur.fetchone() or (0, 0, 0)
+    except Exception:
+        logging.warning("anagram bank screen failed", exc_info=True)
+        return "🔤 Анаграммы: экран не снялся — база не ответила"
+    return (f"🔤 Анаграммы: выдаются {выдаются}, из них с заглавной буквы {с_заглавной}, "
+            f"добрано после двери {новых}")
+
+
+def _form_headwords_unfixed() -> int:
+    """Карточек, где заголовком стоит написание, которое СПРАВОЧНИК признал формой другого
+    слова. Обещано: 0 (13.09.2026).
+
+    До разовой чистки таких было 118 («Blähungen» вместо «die Blähung», «wirbt» вместо
+    «werben»), и они уезжали в общий словарь, отвечающий всем. Дверь закрыта в двух
+    местах: кнопка «Разбор» в читалке спрашивает словарную форму (frontend App.jsx), а
+    ночная проверка 03:50 (`backend/form_headword_sweep.py`) спрашивает справочник по
+    новым написаниям и чинит подтверждённые. Спорные (написание с заглавной, чей строчный
+    вариант — законное слово) сюда НЕ входят: их чинить нельзя, они ждут владельца."""
+    from backend.form_headword_sweep import unfixed_forms_count
+    return unfixed_forms_count()
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="anagram_cards_spelling_from_source",
+        title="Живых карточек анаграмм, где написание противоречит источнику",
+        since="13.09.2026",
+        expected=0,
+        measure=_anagram_cards_against_source,
+        screen=_anagram_bank_screen,
+        how="python3 scripts/anagram_bank_liveness_audit.py — или SELECT по "
+            "bt_3_anagram_cards WHERE NOT retired AND слово с заглавной, а все записи "
+            "журнала о нём говорят «глагол/прилагательное/наречие» без артикля: ждём 0. "
+            "До 13.09.2026 таких было 6 живых и 28 снятых (Behaupten, Peinlich, "
+            "Nachstehen). Число ВЫРОСЛО = дверь приёмки перестала звать "
+            "anagram_word_gate.spelling_by_source",
+    ),
+    Promise(
+        key="anagram_new_cards_pass_frequency_gate",
+        title="Новых карточек анаграмм с частотой ниже порога 300 на миллиард",
+        since="13.09.2026",
+        expected=0,
+        measure=_anagram_new_cards_below_threshold,
+        screen=_anagram_bank_screen,
+        how="SELECT count(*) FROM bt_3_anagram_cards c JOIN bt_3_dwds_frequency f "
+            "ON f.word=c.word WHERE c.created_at > 13.09.2026 AND f.per_billion < 300 — "
+            "ждём 0. Повод: Inkelgasse 0,0 на миллиард ушло трём людям 22.08, 04.09 и "
+            "13.09. Число ВЫРОСЛО = judge_anagram_word не вызывается при доборе банка",
+    ),
     Promise(
         key="relation_gap_builds_from_bank",
         title="Слов банка, у которых «Подставь синоним» не собирает ни одного пропуска",
@@ -1608,6 +1734,14 @@ PROMISES: tuple[Promise, ...] = (
             "«Haare auf den Zähnen haben»: заголовок не должен быть «иметь волосы на зубах», "
             "а разбор должен прийти как про выражение, а не про предложение",
         screen=_expression_reference_screen,
+    ),
+    Promise(
+        key="form_headwords_unfixed",
+        title="Карточек, где заголовок — форма слова, а не словарное слово",
+        since="13.09.2026",
+        expected=0,
+        measure=_form_headwords_unfixed,
+        how="python3 -c \"from backend.form_headword_sweep import unfixed_forms_count as f; print(f())\"",
     ),
 )
 
