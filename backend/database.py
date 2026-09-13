@@ -27341,7 +27341,8 @@ def spread_correction_everywhere(cursor, *, unit_id: int, old_text: str, new_tex
     from backend.dictionary_intake import clean_text
     new_text = clean_text(new_text)
 
-    report = {"cards": 0, "places": 0, "pool": 0, "tasks_dropped": 0}
+    report = {"cards": 0, "places": 0, "pool": 0, "tasks_dropped": 0,
+              "anagram_cards_retired": 0}
     if not old_text or not new_text or _phrase_unchanged(old_text, new_text):
         return report
     # Развозить порчу — худшее, что может сделать эта функция: она размножит её сразу
@@ -27421,9 +27422,27 @@ def spread_correction_everywhere(cursor, *, unit_id: int, old_text: str, new_tex
         )
         report["pool"] += 1
 
+    # КОПИИ В БАНКАХ ИГР. Развоз доезжал до карточек, пула и разбора — и останавливался
+    # там. Банк анаграмм хранит СВОЮ строку со своим написанием, и правка статьи до неё
+    # не доходила: владелец починил «die inkelgasse» → «Winkelgasse» 02.09.2026, а
+    # карточка `Inkelgasse` продолжала уходить людям и ушла ему самому 13.09.2026.
+    #
+    # Карточку не переписываем, а снимаем — по той же причине, по которой выше сносятся
+    # заготовки с пропуском: рядом со словом лежит перемешанная строка букв, и замена
+    # текста разошлась бы с самим заданием.
+    cursor.execute(
+        "UPDATE bt_3_anagram_cards SET retired = TRUE "
+        "WHERE NOT retired AND LOWER(word) = LOWER(REGEXP_REPLACE(%s, '^(der|die|das)\\s+', '')) "
+        "RETURNING card_id;",
+        (old_text,),
+    )
+    report["anagram_cards_retired"] = len(cursor.fetchall() or [])
+
     logging.info(
-        "исправление развезено: слово=%s карточек=%d мест=%d пул=%d заданий снесено=%d",
+        "исправление развезено: слово=%s карточек=%d мест=%d пул=%d заданий снесено=%d "
+        "анаграмм снято=%d",
         unit_id, report["cards"], report["places"], report["pool"], report["tasks_dropped"],
+        report["anagram_cards_retired"],
     )
     return report
 
@@ -59744,6 +59763,19 @@ def record_crossword_hint(
 
 # ─── Anagram (assemble-the-word) DB functions ─────────────────────────────────
 
+# ┌─ ПРОВЕРЕНО 13.09.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────────────┐
+# │ Мерили: слова, лежащие в bt_3_anagram_cards больше одного раза.                    │
+# │ Сырое число: 7 слов в 15 строках (Einwanderer ×3, Verleumden, Massenhaft,          │
+# │ Gegensprechanlage, Robustheit, Zugehörigkeit, Verhaltensweise).                    │
+# │ Разложение: ВСЕ 15 строк созданы 11–29 июня 2026. Правило «одно слово = одна       │
+# │ карточка» (WHERE NOT EXISTS ниже) появилось 30.07.2026 коммитом 595bca16. После    │
+# │ него в банк не попал ни один дубль. Все 15 строк сняты (retired = TRUE), людям не  │
+# │ выдаются.                                                                          │
+# │ Вердикт: ДЕФЕКТА НЕТ — дыра закрыта, накопленное уже снято. Чинить нечего.         │
+# │ Перемерить: SELECT word, count(*) FROM bt_3_anagram_cards GROUP BY LOWER(word)     │
+# │ HAVING count(*) > 1 — и посмотреть created_at: даты ПОСЛЕ 30.07.2026 означали бы,  │
+# │ что правило перестало работать. Только это и есть находка.                         │
+# └────────────────────────────────────────────────────────────────────────────────────┘
 def create_anagram_card(*, card_id: str, word: str, hint_ru: str,
                         scrambled: str, explanation: str = "") -> bool:
     """Add one anagram card. One word = one card: the same word twice in the bank

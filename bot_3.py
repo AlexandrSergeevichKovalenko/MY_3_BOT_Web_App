@@ -37129,6 +37129,19 @@ def _build_anagram_card_payload(entry: dict) -> dict | None:
     correct_word = _to_letters_only_word(correct_word)
     if not _is_valid_anagram_target(correct_word):
         return None
+    # ДВЕРЬ ПРИЁМКИ, решение владельца 13.09.2026. До неё здесь проверялась только ФОРМА
+    # строки (одно слово, только буквы, 8+), и в банк проходило всё, что человек когда-то
+    # искал в словаре: обрубок «Inkelgasse» (0 вхождений на миллиард) ушёл трём людям, а
+    # 16 карточек учили писать глагол с большой буквы. Правило и оговорки —
+    # backend/anagram_word_gate.py. Регистр берётся из части речи ЗАПИСИ, а не из вида
+    # слова: у «das Aufstoßen» заглавная верна.
+    from backend.anagram_word_gate import judge_anagram_word
+    correct_word, gate_reason = judge_anagram_word(correct_word, entry)
+    if not correct_word:
+        logging.info("ag_gate: слово не взято — %s", gate_reason)
+        return None
+    if not _is_valid_anagram_target(correct_word):
+        return None
     scrambled = _scramble_word_preserve_ends(correct_word)
     if not scrambled:
         return None
