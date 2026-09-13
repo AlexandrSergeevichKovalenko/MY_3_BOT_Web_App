@@ -4,6 +4,8 @@ import { PICK_CAPTION, PICK_FAILED_TOAST, chipLabel } from './pickCopy.js';
 import useFitText from './useFitText.js';
 import Toast, { useToast } from './Toast.jsx';
 import { saveErrorToast } from './saveNotice.js';
+import SelectableText from './SelectableText.jsx';
+import SelectionSheet from './SelectionSheet.jsx';
 
 // Recognition TRAINER: for a fixed anchor word, each round shows one CORRECT answer
 // plus up to four verified DISTRACTORS; tap the right one. It prepares the learner for
@@ -79,6 +81,9 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
   // `picked` — оно здесь уже занято вариантом, который тапнули в раунде.
   const [pickedDay, setPickedDay] = useState(() => new Set());
   const toast = useToast();
+  // Что человек выделил в немецком предложении блока разбора: {text, kind, anchor}.
+  // Живёт до закрытия плашки или до перехода к следующему раунду.
+  const [selection, setSelection] = useState(null);
   // Длинное немецкое слово («die Geschwindigkeitsbegrenzung») вылезало за край карточки.
   // Тот же хук, что у карточек артиклей: кегль берём из CSS и уменьшаем ТОЛЬКО если не влезло.
   // Пересчитывать надо и при СМЕНЕ ЭКРАНА: слово появляется в разметке позже, чем
@@ -126,6 +131,8 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
   }, [picked, haptic]);
 
   const next = useCallback(() => {
+    // Плашка перевода принадлежала предложению прошлого раунда — уносим её вместе с ним.
+    setSelection(null);
     if (ri + 1 >= total) { setPhase('done'); return; }
     setRi((i) => i + 1); setPicked(null);
   }, [ri, total]);
@@ -157,6 +164,9 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
     // отдельно и само встаёт над ней.
     <div className="ans-root ans-root--keepkbd">
       <div className={`ans-card ${cls}`} data-wide={wide || undefined}>{body}</div>
+      {selection ? (
+        <SelectionSheet api={api} selection={selection} onClose={() => setSelection(null)} />
+      ) : null}
       <Toast state={toast.state} onClose={toast.hide} />
     </div>
   );
@@ -232,8 +242,12 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
                 {ex?.nuance ? <div className="tr-fb-nuance">💡 {ex.nuance}</div> : null}
                 {ex?.sentence_de ? (
                   <div className="tr-fb-ex">
-                    <div className="tr-fb-base">„{meta?.target_example?.de}“</div>
-                    <div className="tr-fb-swap">„{ex.sentence_de}“</div>
+                    <div className="tr-fb-base">
+                      „<SelectableText text={meta?.target_example?.de} onSelect={setSelection} haptic={haptic} />“
+                    </div>
+                    <div className="tr-fb-swap">
+                      „<SelectableText text={ex.sentence_de} onSelect={setSelection} haptic={haptic} />“
+                    </div>
                     {ex.sentence_ru ? <div className="tr-fb-ru">{ex.sentence_ru}</div> : null}
                   </div>
                 ) : null}
@@ -242,7 +256,11 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
               <>
                 <div className="tr-fb-head">✗ <b>{deOf(picked)}</b>{picked?.ru_gloss ? ` — ${picked.ru_gloss}` : ''}</div>
                 {picked?.why_not ? <div className="tr-fb-why">{picked.why_not}</div> : null}
-                {picked?.example_de ? <div className="tr-fb-base">„{picked.example_de}“</div> : null}
+                {picked?.example_de ? (
+                  <div className="tr-fb-base">
+                    „<SelectableText text={picked.example_de} onSelect={setSelection} haptic={haptic} />“
+                  </div>
+                ) : null}
                 <div className="tr-fb-right">Верно было: <b>{correctDe}</b>{round.correct?.ru ? ` · ${round.correct.ru}` : ''}</div>
               </>
             )}
