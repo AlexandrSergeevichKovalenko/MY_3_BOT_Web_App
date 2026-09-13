@@ -2690,7 +2690,7 @@ def load_gap_task(*, dispatch_id: int, user_id: int) -> dict | None:
 
 
 def evaluate_gap_answer(*, dispatch_id: int, user_id: int, index: int,
-                        answer: str, attempt: int = 1) -> dict | None:
+                        answer: str, attempt: int = 1, hints_used: int = 0) -> dict | None:
     """Вердикт по одному пропуску. Четыре исхода, все из источника — см.
     backend/relation_gap.grade_gap_answer. Модель не зовётся.
 
@@ -2723,7 +2723,7 @@ def evaluate_gap_answer(*, dispatch_id: int, user_id: int, index: int,
         relation=str(item.get("relation") or "synonym"),
         target_word=str(item.get("wort") or ""), expected=str(gap.get("filler") or ""),
         answer=str(answer or ""), outcome=str(verdict.get("outcome") or "wrong"),
-        attempt=max(1, int(attempt or 1)),
+        attempt=max(1, int(attempt or 1)), hints_used=max(0, int(hints_used or 0)),
     )
     return {
         "outcome": verdict.get("outcome"),

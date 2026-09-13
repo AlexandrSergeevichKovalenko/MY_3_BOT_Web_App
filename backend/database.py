@@ -65731,6 +65731,12 @@ def ensure_relation_gap_schema() -> None:
                 );
                 """
             )
+            # Лампочка появилась 13.09.2026, позже самой таблицы — поэтому ALTER, а не
+            # правка CREATE выше: в живой базе таблица уже создана без этой колонки.
+            cursor.execute(
+                "ALTER TABLE bt_3_relation_answers "
+                "ADD COLUMN IF NOT EXISTS hints_used INTEGER NOT NULL DEFAULT 0;"
+            )
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_bt_3_relation_answers_user "
                 "ON bt_3_relation_answers (user_id, kind, answered_at DESC);"
@@ -65816,7 +65822,8 @@ def pick_gap_word(*, relation: str, trained_on) -> dict | None:
 
 def record_relation_answer(*, user_id: int, kind: str, dispatch_id, sprint_id: str,
                            relation: str, target_word: str, expected: str,
-                           answer: str, outcome: str, attempt: int = 1) -> None:
+                           answer: str, outcome: str, attempt: int = 1,
+                           hints_used: int = 0) -> None:
     """Ответ человека в играх рельса. Память СЛУЖЕБНАЯ: если запись упала, ответ ему
     всё равно должен прийти, поэтому наружу отсюда ничего не летит — но факт «не
     записали» виден в логах, и пустой результат запроса не спутать с «не играли»:
@@ -65831,14 +65838,15 @@ def record_relation_answer(*, user_id: int, kind: str, dispatch_id, sprint_id: s
                     """
                     INSERT INTO bt_3_relation_answers
                         (user_id, kind, dispatch_id, sprint_id, relation, target_word,
-                         expected, answer, outcome, attempt)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                         expected, answer, outcome, attempt, hints_used)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (int(user_id), str(kind)[:8],
                      int(dispatch_id) if dispatch_id is not None else None,
                      str(sprint_id), str(relation), str(target_word)[:128],
                      str(expected or "")[:128], str(answer or "")[:128],
-                     str(outcome)[:16], max(1, int(attempt or 1))),
+                     str(outcome)[:16], max(1, int(attempt or 1)),
+                     max(0, min(9, int(hints_used or 0)))),
                 )
             conn.commit()
     except Exception:
