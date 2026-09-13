@@ -35338,11 +35338,34 @@ def apply_word_integrity_decisions(decisions: list) -> dict:
 
 _USER_WORD_REVIEW_SCHEMA_READY = False
 
+# Часть речи по-русски — для ТЕКСТА ЧЕЛОВЕКУ. Копия того же списка есть на экране
+# (WordIntegrityReview.jsx, POS_RU): там она нужна кнопке, здесь — диагнозу.
+USER_WORD_POS_RU = {
+    "noun": "существительное", "verb": "глагол", "adjective": "прилагательное",
+    "adverb": "наречие", "preposition": "предлог", "conjunction": "союз",
+    "participle": "причастие", "particle": "частица", "pronoun": "местоимение",
+    "numeral": "числительное", "interjection": "междометие",
+}
+
+# ┌─ ТЕКСТ ДИАГНОЗА НЕ ИМЕЕТ ПРАВА НАЗЫВАТЬ ВИНОВАТОЙ ОДНУ ИЗ ДВУХ СТОРОН. ───────────┐
+# │ Владелец 13.09.2026, на экране «Мои слова»: «вот если я хочу поменять и применить  │
+# │ написание с большой буквы — то что мне нужно сделать?! Где эта опция?!»            │
+# │                                                                                   │
+# │ Он прочитал старый текст «Помечено существительным, но НАПИСАНО СО СТРОЧНОЙ        │
+# │ БУКВОЙ» буквально — как утверждение, что неверна БУКВА, — и пошёл искать, где      │
+# │ поставить заглавную. А запись была `begreifen`: это глагол, строчная у него        │
+# │ единственно верная, неверна ПОМЕТКА «существительное».                             │
+# │                                                                                   │
+# │ Проверка `scan_user_word_issues` ловит ПРОТИВОРЕЧИЕ («сказано noun» ↔ «написано с  │
+# │ маленькой»), а какая из двух сторон врёт — она не знает и знать не может. Значит и │
+# │ текст обязан описывать противоречие, а не назначать виноватого. Когда справочник   │
+# │ ответил, виноватого называем ИМ (см. issue_text в list_user_word_issues).          │
+# └───────────────────────────────────────────────────────────────────────────────────┘
 USER_WORD_ISSUES = {
     "no_translation": "Нет перевода — учить нечем",
     "garbage": "В слове символы, которых в слове не бывает",
     "translation_equals_word": "Перевод повторяет само слово",
-    "pos_mismatch": "Помечено существительным, но написано со строчной буквы",
+    "pos_mismatch": "Записано существительным, но с маленькой буквы — неверно что-то одно",
 }
 
 
@@ -35416,7 +35439,19 @@ def scan_user_word_issues(limit: int = 2000) -> dict:
 
 
 def queue_missing_translations(limit: int = 500) -> int:
-    """Карточки без перевода ставим в очередь на ночной перевод. Без участия человека."""
+    """Карточки без перевода ставим в очередь на ночной перевод. Без участия человека.
+
+    «Без перевода» — это ДВА состояния, и второе выглядело как первое:
+
+    1. поле пустое;
+    2. в русском поле лежит та же немецкая строка, что и в немецком («in Frage kommen»
+       → «in Frage kommen»). Перевода тут ровно столько же — ноль, — но условие
+       `TRIM(translation_ru) = ''` его не видело, и такая карточка не попадала в ночь
+       НИКОГДА: она оставалась ждать человека навсегда.
+
+    Владелец 13.09.2026 решил: не нашли перевод — карточка идёт в ночную очередь, а не
+    остаётся с немецким в русском поле. Оба состояния забираем одинаково.
+    """
     ensure_translation_requests_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -35426,7 +35461,10 @@ def queue_missing_translations(limit: int = 500) -> int:
                 SELECT q.user_id, q.id, q.word_de
                 FROM bt_3_webapp_dictionary_queries q
                 WHERE COALESCE(q.word_de, '') <> ''
-                  AND COALESCE(TRIM(q.translation_ru), '') = ''
+                  AND (
+                        COALESCE(TRIM(q.translation_ru), '') = ''
+                     OR LOWER(TRIM(q.word_de)) = LOWER(TRIM(COALESCE(q.translation_ru, '')))
+                  )
                 ORDER BY q.id
                 LIMIT %s
                 ON CONFLICT (entry_id) DO NOTHING;
@@ -35462,6 +35500,10 @@ def list_user_word_issues(user_id: int, limit: int = 30) -> list[dict]:
         issue = row[2]
         word = str(row[3] or "")
         suggestion = None
+        issue_text = USER_WORD_ISSUES.get(issue, issue)
+        # Немецкое толкование устойчивого выражения — ПОДСКАЗКА человеку, а не перевод.
+        # Кладём отдельным полем, чтобы экран не мог по ошибке выдать его за русское.
+        expression_hint = ""
         # Нет перевода — не повод оставлять карточку мёртвой. Если слово есть в нашем
         # словаре, перевод оттуда и предлагаем: это наш источник, а не выдумка.
         # Владелец 26.08.2026: «А если глюк и перевод не записался? Чего ж их не исправить?»
@@ -35488,6 +35530,7 @@ def list_user_word_issues(user_id: int, limit: int = 30) -> list[dict]:
                 true_pos = str(verdict.get("pos") or "").strip().lower()
                 if status in {CONFIRMED, REPAIRED} and fixed and fixed != word:
                     suggestion = {"to_word": fixed, "why": "Написание подтверждено справочником"}
+                    issue_text = f"Написано «{word}», а в справочнике — «{fixed}»"
                 elif status == CONFIRMED and true_pos and true_pos != "noun":
                     # Слово написано верно, а помечено не тем: справочник знает, чем оно
                     # является на самом деле («begreifen» — глагол, «jahrelang» —
@@ -35496,19 +35539,146 @@ def list_user_word_issues(user_id: int, limit: int = 30) -> list[dict]:
                         "to_pos": true_pos,
                         "why": "Часть речи — из справочника",
                     }
+                    # Виноватого назвал СПРАВОЧНИК, и теперь его можно назвать вслух:
+                    # неверна пометка, а не буква. До 13.09.2026 здесь стоял общий текст
+                    # про строчную букву, и он уводил человека чинить не то.
+                    issue_text = (
+                        "В карточке записано «существительное», а справочник говорит — «"
+                        + (USER_WORD_POS_RU.get(true_pos) or true_pos) + "»"
+                    )
             except Exception:
                 logging.exception("user_word_review: дверь слова недоступна для %r", word)
+
+        # ⛔ ПЕРЕВОД, ПОВТОРЯЮЩИЙ САМО СЛОВО, — ЭТО ОТСУТСТВИЕ ПЕРЕВОДА, А НЕ ПЕРЕВОД.
+        # Живой случай владельца 13.09.2026: «in Frage kommen» с «переводом» «in Frage
+        # kommen». Ночная работа такие строки теперь забирает сама (см.
+        # queue_missing_translations), а человеку здесь показываем то, что у нас УЖЕ
+        # есть про это выражение: его немецкое толкование из справочника идиом. Это
+        # подсказка для его собственного ответа, а не подставленный нами перевод —
+        # немецкое толкование в русское поле не уйдёт ни при каком нажатии.
+        if issue == "translation_equals_word" and word:
+            try:
+                from backend.german_expressions import expression_of
+                known = expression_of(word)
+                meaning = str((known or {}).get("meaning_de") or "").strip()
+                if meaning:
+                    expression_hint = meaning
+                    issue_text = "Перевода нет: в русском поле лежит та же немецкая строка"
+            except Exception:
+                logging.exception("user_word_review: справочник выражений молчит про %r", word)
+
         out.append({
             "id": int(row[0]),
             "entry_id": int(row[1]),
             "issue": issue,
-            "issue_text": USER_WORD_ISSUES.get(issue, issue),
+            "issue_text": issue_text,
             "word": word,
             "translation": str(row[4] or ""),
             "pos": str(row[5] or ""),
             "suggestion": suggestion,
+            "expression_hint": expression_hint,
         })
     return out
+
+
+def autofix_user_word_pos_from_reference(limit: int = 200) -> dict:
+    """Ночью чиним САМИ ту часть очереди, где ответ однозначен. Без человека.
+
+    ┌─ РЕШЕНИЕ ВЛАДЕЛЬЦА 13.09.2026. ────────────────────────────────────────────────┐
+    │ «Починить автоматически те, где справочник дал однозначный ответ, а спорные     │
+    │ оставить мне на экране с кнопками.»                                            │
+    │                                                                                │
+    │ Повод: на экране «Мои слова» висели 11 записей, и 6 из них (begreifen,          │
+    │ jahrelang, vordringen, hart, jucken, erschießen) ждали человека при том, что    │
+    │ справочник отвечает про них мгновенно и однозначно. Спрашивать человека о том,  │
+    │ что мы знаем сами, — воровство его времени.                                    │
+    └────────────────────────────────────────────────────────────────────────────────┘
+
+    ЧИНИМ ТОЛЬКО ОДНОЗНАЧНОЕ, и «однозначно» означает ровно три условия сразу:
+      1. справочник ответил ПОДТВЕРЖДЕНО (не «молчал», не «не подтверждено»);
+      2. он назвал часть речи — и она НЕ существительное;
+      3. написание слова он не оспаривает.
+    Всё, что под это не подходит, остаётся человеку с кнопками:
+      • `hammer` — справочник подтвердил слово, но части речи не назвал: у него два
+        законных прочтения («круто» и «der Hammer»), и выбирать за человека нельзя;
+      • `behest`, `killjoy`, `buzzkill` — английские слова, немецкий справочник про них
+        честно молчит, и молчание приговором не становится.
+
+    Само НАПИСАНИЕ здесь не трогаем: это отдельное решение (слово может оказаться чужим),
+    и оно остаётся за человеком. Правим только пометку части речи — ту самую, что врала.
+    """
+    ensure_user_word_review_schema()
+    from backend.german_word_gate import check_word, CONFIRMED
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT r.id, r.entry_id, q.word_de
+                FROM bt_3_user_word_review r
+                JOIN bt_3_webapp_dictionary_queries q ON q.id = r.entry_id
+                WHERE r.status = 'pending' AND r.issue = 'pos_mismatch'
+                  AND COALESCE(q.word_de, '') <> '' AND q.word_de !~ ' '
+                ORDER BY r.id
+                LIMIT %s;
+                """,
+                (max(1, min(int(limit or 200), 1000)),),
+            )
+            rows = cursor.fetchall() or []
+
+    исправлено = 0
+    оставлено_человеку = 0
+    for review_id, entry_id, word in rows:
+        слово = str(word or "")
+        try:
+            вердикт = check_word(слово, allow_network=True, allow_model=False)
+        except Exception:
+            logging.exception("ночная правка части речи: справочник недоступен для %r", слово)
+            оставлено_человеку += 1
+            continue
+        статус = str(вердикт.get("status") or "")
+        написание = str(вердикт.get("text") or "").strip()
+        часть_речи = str(вердикт.get("pos") or "").strip().lower()
+        однозначно = (
+            статус == CONFIRMED
+            and часть_речи
+            and часть_речи != "noun"
+            and написание == слово
+        )
+        if not однозначно:
+            оставлено_человеку += 1
+            continue
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_webapp_dictionary_queries
+                    SET response_json = jsonb_set(
+                            COALESCE(response_json, '{}'::jsonb),
+                            '{part_of_speech}', to_jsonb(%s::text), true),
+                        updated_at = NOW()
+                    WHERE id = %s;
+                    """,
+                    (часть_речи, int(entry_id)),
+                )
+                cursor.execute(
+                    "UPDATE bt_3_user_word_review SET status = 'fixed', decided_at = NOW() "
+                    "WHERE id = %s AND status = 'pending';",
+                    (int(review_id),),
+                )
+            conn.commit()
+        исправлено += 1
+
+    logging.info(
+        "ночная правка части речи: посмотрено %s, исправлено по справочнику %s, "
+        "оставлено человеку %s",
+        len(rows), исправлено, оставлено_человеку,
+    )
+    return {
+        "looked": len(rows),
+        "fixed": исправлено,
+        "left_to_human": оставлено_человеку,
+    }
 
 
 def count_user_word_issues(user_id: int) -> int:
@@ -35542,8 +35712,23 @@ def users_with_word_issues(limit: int = 500) -> list[tuple]:
 def apply_user_word_decisions(user_id: int, decisions: list) -> dict:
     """Решения человека по СВОИМ карточкам. Чужую карточку тронуть нельзя.
 
-    Три действия, по одному на карточку: исправить написание (только подтверждённое),
+    Четыре действия, по одному на карточку: исправить по справочнику, ВПИСАТЬ СВОЁ,
     оставить как есть, удалить из своего словаря.
+
+    ⛔ «ВПИСАТЬ СВОЁ» ДОБАВЛЕНО 13.09.2026, И БЕЗ НЕГО ЭКРАН ВРАЛ. Подпись под записью
+    гласила «Если знаете сами — впишите», а вписать было некуда и нечем: поле на экране
+    стояло под условием `scope === 'shared'`, а сервер принимал только fix/keep/delete.
+    Владелец: «как я тут могу вписать это слово с большой буквы?! на хуя вот это
+    сообщение, если на него нельзя отреагировать?»
+
+    КУДА ЛЯЖЕТ ВПИСАННОЕ, РЕШАЕТ СЕРВЕР ПО СВОЕЙ ЗАПИСИ О БЕДЕ, а не по полю из запроса:
+    беду мы поставили сами при разборе, а присланному клиентом тут веры нет. Беда про
+    перевод — текст идёт в перевод; беда про написание — в немецкое слово.
+
+    ⛔ И НЕ ПОДТВЕРЖДАЕМ ЭТИМ СЛОВО В ОБЩЕЙ ДВЕРИ. У разбора общего словаря вписанное
+    владельцем уходит в `confirm_word_by_owner` — там это владелец и общий словарь.
+    Здесь человек правит СВОЮ карточку, и его написание не имеет права становиться
+    истиной для всех остальных.
     """
     ensure_user_word_review_schema()
     fixed = kept = deleted = 0
@@ -35557,12 +35742,12 @@ def apply_user_word_decisions(user_id: int, decisions: list) -> dict:
                 except (TypeError, ValueError):
                     continue
                 action = str(item.get("action") or "").strip().lower()
-                if not review_id or action not in {"fix", "keep", "delete"}:
+                if not review_id or action not in {"fix", "own", "keep", "delete"}:
                     continue
                 new_word = " ".join(str(item.get("to_word") or "").split())
 
                 cursor.execute(
-                    "SELECT entry_id FROM bt_3_user_word_review "
+                    "SELECT entry_id, issue FROM bt_3_user_word_review "
                     "WHERE id = %s AND user_id = %s AND status = 'pending';",
                     (review_id, int(user_id)),
                 )
@@ -35570,6 +35755,7 @@ def apply_user_word_decisions(user_id: int, decisions: list) -> dict:
                 if not row:
                     continue
                 entry_id = int(row[0])
+                issue = str(row[1] or "")
 
                 new_pos = str(item.get("to_pos") or "").strip().lower()
                 new_translation = " ".join(str(item.get("to_translation") or "").split())
@@ -35601,6 +35787,26 @@ def apply_user_word_decisions(user_id: int, decisions: list) -> dict:
                         )
                     else:
                         continue
+                    fixed += 1
+                    status = "fixed"
+                elif action == "own":
+                    typed_text = " ".join(str(item.get("word") or "").split())
+                    if not typed_text:
+                        continue
+                    if issue in ("no_translation", "translation_equals_word"):
+                        cursor.execute(
+                            "UPDATE bt_3_webapp_dictionary_queries "
+                            "SET translation_ru = %s, updated_at = NOW() "
+                            "WHERE id = %s AND user_id = %s;",
+                            (typed_text, entry_id, int(user_id)),
+                        )
+                    else:
+                        cursor.execute(
+                            "UPDATE bt_3_webapp_dictionary_queries "
+                            "SET word_de = %s, updated_at = NOW() "
+                            "WHERE id = %s AND user_id = %s;",
+                            (typed_text, entry_id, int(user_id)),
+                        )
                     fixed += 1
                     status = "fixed"
                 elif action == "delete":

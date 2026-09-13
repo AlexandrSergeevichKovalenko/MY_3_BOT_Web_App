@@ -14290,6 +14290,29 @@ def _fill_missing_translations_nightly() -> None:
         logging.exception("ночной перевод: прогон не удался")
 
 
+def _autofix_my_words_pos_nightly() -> None:
+    """Ночью — правим часть речи там, где справочник отвечает однозначно. Без человека.
+
+    Владелец 13.09.2026: «Починить автоматически те, где справочник дал однозначный
+    ответ, а спорные оставить мне на экране с кнопками». Спрашивать человека о том, что
+    мы знаем сами, — воровство его времени: из 11 записей на его экране 6 имели готовый
+    ответ справочника и просто ждали нажатия.
+
+    Идёт ПЕРЕД воскресной рассылкой (03:20 против 10:00), чтобы в приглашение попадало
+    только то, что вправду требует решения человека.
+    """
+    try:
+        from backend.database import autofix_user_word_pos_from_reference
+
+        итог = autofix_user_word_pos_from_reference(limit=200)
+        logging.info(
+            "ночная правка своих слов: посмотрено %s, исправлено %s, осталось человеку %s",
+            итог.get("looked"), итог.get("fixed"), итог.get("left_to_human"),
+        )
+    except Exception:
+        logging.exception("ночная правка своих слов: прогон не удался")
+
+
 def _send_my_words_review() -> None:
     """Каждому человеку — приглашение проверить СВОИ слова. Раз в неделю, если есть что.
 
@@ -47604,6 +47627,20 @@ def main():
             "cron",
             hour=int((os.getenv("MISSING_TRANSLATIONS_HOUR") or "3").strip() or "3"),
             minute=int((os.getenv("MISSING_TRANSLATIONS_MINUTE") or "40").strip() or "40"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Каждую ночь 03:20: часть речи там, где справочник однозначен --
+        # Раньше ночного перевода (03:40) и много раньше воскресной рассылки (10:00):
+        # в приглашение человеку должно попадать только то, что вправду требует ЕГО
+        # решения, а не то, что мы знаем сами (решение владельца 13.09.2026).
+        scheduler.add_job(
+            _autofix_my_words_pos_nightly,
+            "cron",
+            hour=int((os.getenv("MY_WORDS_AUTOFIX_HOUR") or "3").strip() or "3"),
+            minute=int((os.getenv("MY_WORDS_AUTOFIX_MINUTE") or "20").strip() or "20"),
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,

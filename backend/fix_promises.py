@@ -1029,7 +1029,122 @@ def _expression_reference_screen() -> str:
     return "\n".join(строки)
 
 
+def _echo_translation_cards() -> int:
+    """Карточек, где русский «перевод» дословно повторяет немецкое слово. Обещано: 0.
+
+    Живой случай владельца 13.09.2026: `in Frage kommen` с «переводом» `in Frage kommen`,
+    сохранено из читалки 20.08.2026. Замер той же даты: 1 запись на 27 507 — то есть не
+    поток, а открытая дверь, и она была открыта в трёх местах сразу (сторожа на обеих
+    дверях сохранения не было вовсе, а на экране `pickTargetTranslation` подставлял
+    немецкое «лишь бы что-то было»).
+
+    Ноль держится с двух сторон: дверь такое больше не принимает
+    (`_drop_echoed_dictionary_translation`), а накопленное забирает ночной перевод
+    (`queue_missing_translations` теперь видит эхо наравне с пустым полем).
+    Нарушение означает либо откат деплоя, либо новую дверь мимо сторожа."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries "
+                "WHERE COALESCE(word_de, '') <> '' "
+                "  AND LOWER(TRIM(word_de)) = LOWER(TRIM(COALESCE(translation_ru, '')))"
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+# Поля правки, которые ЭКРАН умеет показать кнопкой. Список обязан совпадать с
+# `optionsOf` в frontend/src/dictionary/WordIntegrityReview.jsx: ровно на их расхождении
+# и сломалось — сервер слал правку, экран её молча выбрасывал.
+_SCREEN_RENDERABLE_FIX_KEYS = ("to_display", "to_lemma", "to_word", "to_translation", "to_pos")
+
+
+def _mywords_answers_not_shown() -> int:
+    """Записей в разборе «Мои слова», где ответ у нас ЕСТЬ, а экран его не покажет. Обещано: 0.
+
+    ┌─ ПОВОД 13.09.2026. Владелец: «вот begreifen — где эта опция?! как я могу вписать?! ─┐
+    │ на хуя эта статистика тупая?!» Под словом стояло «НЕ ВОССТАНОВИЛИ», а справочник    │
+    │ отвечает про `begreifen` → глагол за доли секунды, и сервер эту правку исправно     │
+    │ присылал. Терял её ЭКРАН: `optionsOf` признавал вариант существующим только при     │
+    │ новом СЛОВЕ или новом ПЕРЕВОДЕ, а правка «неверна пометка части речи» не несёт ни   │
+    │ того ни другого. Регрессия коммита 08576136 (27.08.2026).                           │
+    │                                                                                     │
+    │ Замер живой базы 13.09.2026: 6 записей из 10 имели готовый ответ и НИ ОДНА не       │
+    │ показывала кнопку. Тест ловит форму кода, это обещание ловит ЖИВОЙ ОСТАТОК.         │
+    └─────────────────────────────────────────────────────────────────────────────────────┘
+
+    Считаем не «сколько мы не знаем» (behest, killjoy, buzzkill — английские слова, и
+    молчание немецкого справочника про них честно), а «сколько знаем и прячем». Очереди
+    нет вовсе — считать нечего, это 0, а не «не измерено»."""
+    from backend.database import users_with_word_issues, list_user_word_issues
+    скрыто = 0
+    просмотрено = 0
+    for user_id, _сколько in users_with_word_issues(limit=50):
+        if просмотрено >= 200:
+            break
+        for строка in list_user_word_issues(int(user_id), limit=30):
+            просмотрено += 1
+            if просмотрено > 200:
+                break
+            правка = строка.get("suggestion")
+            if not isinstance(правка, dict) or not правка:
+                continue
+            if not any(str(правка.get(k) or "").strip() for k in _SCREEN_RENDERABLE_FIX_KEYS):
+                скрыто += 1
+    return скрыто
+
+
+def _mywords_review_screen() -> str:
+    """Экран владельца «после»: что он увидит на «Мои слова», строка за строкой.
+
+    Не «тест зелёный» и не «скрипт посчитал», а ровно тот список, с которого пришла
+    жалоба — с тем, что теперь стоит на кнопке у каждой записи."""
+    from backend.database import users_with_word_issues, list_user_word_issues, USER_WORD_POS_RU
+    строки: list[str] = ["📚 «Мои слова» — что сейчас на экране:"]
+    всего = 0
+    for user_id, _сколько in users_with_word_issues(limit=5):
+        for строка in list_user_word_issues(int(user_id), limit=30):
+            всего += 1
+            правка = строка.get("suggestion") or {}
+            кнопка = (
+                str(правка.get("to_display") or правка.get("to_lemma")
+                    or правка.get("to_word") or "").strip()
+                or str(правка.get("to_translation") or "").strip()
+                or (USER_WORD_POS_RU.get(str(правка.get("to_pos") or ""))
+                    or str(правка.get("to_pos") or "")).strip()
+            )
+            строки.append(
+                f"• {строка.get('word')} — {строка.get('issue_text')} → "
+                + (f"кнопка «{кнопка}»" if кнопка else "кнопок правки нет, только своё/оставить/удалить")
+            )
+    if всего == 0:
+        строки.append("• очередь пуста")
+    строки.append(f"🔁 Карточек «перевод повторяет само слово»: {_echo_translation_cards()}")
+    return "\n".join(строки)
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="dictionary_echo_translations",
+        title="Карточек, где русский перевод дословно повторяет немецкое слово",
+        since="13.09.2026",
+        expected=0,
+        measure=_echo_translation_cards,
+        screen=_mywords_review_screen,
+        how="SELECT count(*) FROM bt_3_webapp_dictionary_queries "
+            "WHERE LOWER(TRIM(word_de)) = LOWER(TRIM(translation_ru)) — ждём 0",
+    ),
+    Promise(
+        key="mywords_answers_not_shown",
+        title="Записей «Мои слова», где ответ у нас есть, а экран его не показывает",
+        since="13.09.2026",
+        expected=0,
+        measure=_mywords_answers_not_shown,
+        screen=_mywords_review_screen,
+        how="/admin_promises — или открыть «Мои слова» и сверить: у записи, под которой "
+            "справочник назвал часть речи, обязана стоять кнопка с этой частью речи "
+            "(«begreifen» → «глагол»), а не одни «Оставить»/«Удалить»",
+    ),
     Promise(
         key="db_guardrails_alive",
         title="Защиты Postgres от зависшей транзакции на месте (таймаут 60 с + лог медленных запросов)",
