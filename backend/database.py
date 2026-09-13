@@ -35581,7 +35581,7 @@ def list_user_word_issues(user_id: int, limit: int = 30) -> list[dict]:
     return out
 
 
-def autofix_user_word_pos_from_reference(limit: int = 200) -> dict:
+def autofix_user_word_pos_from_reference(limit: int = 200, user_id: int | None = None) -> dict:
     """Ночью чиним САМИ ту часть очереди, где ответ однозначен. Без человека.
 
     ┌─ РЕШЕНИЕ ВЛАДЕЛЬЦА 13.09.2026. ────────────────────────────────────────────────┐
@@ -35606,6 +35606,23 @@ def autofix_user_word_pos_from_reference(limit: int = 200) -> dict:
 
     Само НАПИСАНИЕ здесь не трогаем: это отдельное решение (слово может оказаться чужим),
     и оно остаётся за человеком. Правим только пометку части речи — ту самую, что врала.
+
+    ⛔ ЗОВЁТСЯ ИЗ ТРЁХ МЕСТ, И ВСЕ ТРИ ОБЯЗАТЕЛЬНЫ. Владелец 13.09.2026 спросил прямо:
+    «такие слова будут сами чиниться под капотом без моего участия и участия
+    пользователя?» Первая версия отвечала «почти»: починка шла ночью, а НАХОДКА —
+    в воскресном обходе и при открытии экрана. Свежий дефект успевал попасть в
+    приглашение человеку раньше, чем ночь до него добиралась, — то есть мы звали
+    человека решать то, что знаем сами. Теперь правка идёт СРАЗУ ЗА КАЖДОЙ находкой:
+
+      1. ночью 03:20 — подбирает всё, что накопилось (страховка);
+      2. сразу после воскресного обхода, ДО рассылки приглашений — иначе в письме
+         человеку окажется то, что мы починим сами;
+      3. сразу после пересмотра при открытии экрана, по ЭТОМУ человеку (`user_id`) —
+         иначе он увидит на экране то же самое.
+
+    В пунктах 2 и 3 лишних обращений к справочнику нет: `list_user_word_issues` и так
+    спрашивает его про каждую запись `pos_mismatch`, а вердикты кешируются
+    (`german_word_gate._remember`). Меняется порядок, а не цена.
     """
     ensure_user_word_review_schema()
     from backend.german_word_gate import check_word, CONFIRMED
@@ -35619,10 +35636,15 @@ def autofix_user_word_pos_from_reference(limit: int = 200) -> dict:
                 JOIN bt_3_webapp_dictionary_queries q ON q.id = r.entry_id
                 WHERE r.status = 'pending' AND r.issue = 'pos_mismatch'
                   AND COALESCE(q.word_de, '') <> '' AND q.word_de !~ ' '
+                  AND (%s::bigint IS NULL OR r.user_id = %s::bigint)
                 ORDER BY r.id
                 LIMIT %s;
                 """,
-                (max(1, min(int(limit or 200), 1000)),),
+                (
+                    int(user_id) if user_id is not None else None,
+                    int(user_id) if user_id is not None else None,
+                    max(1, min(int(limit or 200), 1000)),
+                ),
             )
             rows = cursor.fetchall() or []
 
