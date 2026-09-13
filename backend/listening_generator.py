@@ -291,6 +291,20 @@ def generate_listening_entry(topic_id: Optional[str] = None) -> str:
     ]
 
     # 2. Save to DB — audio is generated at send time by the bot's TTS engine
+    #
+    # ┌─ ПОЧИНЕНО 13.09.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ──────────────┐
+    # │ С 05.06.2026 (коммит 7060fa07) в журнале ниже стояло имя audio_status,  │
+    # │ которого в функции НЕ БЫЛО: тот коммит убрал присвоение, а упоминание   │
+    # │ оставил. Запись в банк проходила, а сразу после неё функция падала с    │
+    # │ NameError. Заказчик (prepare_listening_pool) считал это провалом,       │
+    # │ succeeded не рос никогда и цикл крутился до упора max_attempts: каждая  │
+    # │ ночь добора — 10 запросов к GPT вместо нужных двух-трёх, и отчёт        │
+    # │ владельцу писал «сделано 0, провалено 10» при легших в базу записях.    │
+    # │ Проверено AST-разбором 13.09.2026: имени не было ни локально, ни на     │
+    # │ уровне модуля. Теперь состояние озвучки — ОДНА переменная: что ушло в   │
+    # │ базу, то и в журнале, разъехаться им больше нечем.                      │
+    # └─────────────────────────────────────────────────────────────────────────┘
+    audio_status = "ready"   # text+questions ready; TTS done at send time
     listening_id = str(uuid.uuid4())
     upsert_listening_bank_entry(
         listening_id=listening_id,
@@ -299,7 +313,7 @@ def generate_listening_entry(topic_id: Optional[str] = None) -> str:
         german_text=german_text,
         questions_json=questions,
         audio_object_key=None,
-        audio_status="ready",   # text+questions ready; TTS done at send time
+        audio_status=audio_status,
     )
 
     logging.info(
