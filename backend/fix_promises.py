@@ -1411,6 +1411,101 @@ def _anagram_runway_screen() -> str:
     дней = runway_days(худший, 2)
     return (f"🔤 Анаграммы: самый маленький запас {худший} карточек = {дней} дней "
             f"(порог добора {MIN_RUNWAY_DAYS} дней, людей в счёте {len(люди)})")
+def _listening_repeats_within_30_days() -> int:
+    """Сколько раз за последние 30 дней человеку повторили текст аудирования, который он
+    уже слышал меньше 30 дней назад. Обещано: 0.
+
+    Повод 13.09.2026: владелец увидел в ленте «📞 Telefonisches Gespräch» и спросил,
+    ротируется ли аудирование вообще. Померено: ротация работает, но она держится не на
+    отборе, а на РАЗМЕРЕ БАНКА. Пока в банке было 7–23 текста (июнь-июль), тот же отбор
+    давал 100 повторов с интервалом 2–19 дней. После добора до 75 текстов (21.08.2026)
+    повторов быстрее 30 дней — ноль. Поэтому обещание меряет не «правильно ли выбирает
+    запрос» (он не менялся и не сломается сам), а то единственное, что может вернуть
+    тесноту: расход обогнал банк. Число поползло вверх — значит пора добирать банк.
+    """
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH s AS (
+                    SELECT slot_date AS d,
+                           LAG(slot_date) OVER (PARTITION BY target_user_id, listening_id
+                                                ORDER BY slot_date) AS prev
+                    FROM bt_3_listening_dispatches
+                )
+                SELECT COUNT(*) FROM s
+                WHERE d > CURRENT_DATE - 30 AND prev IS NOT NULL AND (d - prev) < 30
+                """
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def _listening_rotation_screen() -> str:
+    """Экран «после»: ротируется ли аудирование — то же, что владелец спросил словами."""
+    from backend.database import get_db_connection_context
+    строки = ["🎧 Аудирование: ротация"]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*),
+                       COUNT(*) FILTER (WHERE NOT retired AND audio_status = 'ready'
+                                        AND COALESCE(audio_object_key, '') <> ''),
+                       COUNT(*) FILTER (WHERE NOT retired AND audio_status = 'ready'
+                                        AND (last_sent_at IS NULL
+                                             OR last_sent_at < NOW() - INTERVAL '7 days')),
+                       COUNT(DISTINCT topic)
+                FROM bt_3_listening_bank
+                """
+            )
+            всего, готовых, свободных, тем = cursor.fetchone()
+            строки.append(f"  банк: {всего} текстов, {готовых} готовых с озвучкой, "
+                          f"{тем} тем; свободных к выдаче сейчас — {свободных}")
+
+            cursor.execute(
+                """
+                SELECT COUNT(DISTINCT listening_id) FROM bt_3_listening_dispatches
+                WHERE slot_date > CURRENT_DATE - 30
+                """
+            )
+            разных_всего = int((cursor.fetchone() or [0])[0] or 0)
+
+            # Считаем только тех, кто за месяц получил хотя бы 10 заданий: у человека,
+            # пришедшего вчера, «мало разных текстов» значит «он тут недавно», а не повтор.
+            cursor.execute(
+                """
+                SELECT MIN(разных), MAX(разных) FROM (
+                    SELECT COUNT(DISTINCT listening_id) AS разных
+                    FROM bt_3_listening_dispatches
+                    WHERE slot_date > CURRENT_DATE - 30
+                    GROUP BY target_user_id
+                    HAVING COUNT(*) >= 10
+                ) c
+                """
+            )
+            мин_у_человека, макс_у_человека = cursor.fetchone()
+            строки.append(f"  за 30 дней в выдачу ушло разных текстов: {разных_всего}; "
+                          f"у активного человека разных текстов: "
+                          f"{мин_у_человека}–{макс_у_человека}")
+
+            cursor.execute(
+                """
+                WITH s AS (
+                    SELECT slot_date AS d,
+                           LAG(slot_date) OVER (PARTITION BY target_user_id, listening_id
+                                                ORDER BY slot_date) AS prev
+                    FROM bt_3_listening_dispatches
+                )
+                SELECT COUNT(*) FILTER (WHERE prev IS NOT NULL), MIN(d - prev)
+                FROM s WHERE d > CURRENT_DATE - 30
+                """
+            )
+            повторов, мин_интервал = cursor.fetchone()
+    строки.append(f"  повторов за 30 дней: {повторов}; самый короткий интервал возврата: "
+                  f"{мин_интервал if мин_интервал is not None else '—'} дн. "
+                  f"(ниже 30 — банк пора добирать)")
+    return "\n".join(строки)
 
 
 PROMISES: tuple[Promise, ...] = (
@@ -1845,6 +1940,21 @@ PROMISES: tuple[Promise, ...] = (
             "«Haare auf den Zähnen haben»: заголовок не должен быть «иметь волосы на зубах», "
             "а разбор должен прийти как про выражение, а не про предложение",
         screen=_expression_reference_screen,
+    ),
+    Promise(
+        key="listening_no_repeat_within_30_days",
+        title="Один и тот же текст аудирования не возвращается человеку быстрее чем через 30 дней",
+        since="13.09.2026",
+        expected=0,
+        measure=_listening_repeats_within_30_days,
+        how="railway run -s Postgres bash -c 'DATABASE_URL=\"$DATABASE_PUBLIC_URL\" psql -c \""
+            "WITH s AS (SELECT target_user_id u, listening_id l, slot_date d, "
+            "LAG(slot_date) OVER (PARTITION BY target_user_id, listening_id ORDER BY slot_date) prev "
+            "FROM bt_3_listening_dispatches) SELECT COUNT(*) FILTER (WHERE prev IS NOT NULL), "
+            "MIN(d-prev) FROM s WHERE d > CURRENT_DATE - 30\"'; лечится это ДОБОРОМ БАНКА "
+            "(/admin_ls_pool), а не правкой отбора: отбор берёт самый давно не показанный текст, "
+            "и повтор значит, что показывать больше нечего",
+        screen=_listening_rotation_screen,
     ),
     Promise(
         key="form_headwords_unfixed",
