@@ -1312,6 +1312,20 @@ def _anagram_bank_screen() -> str:
             f"добрано после двери {новых}")
 
 
+def _form_headwords_unfixed() -> int:
+    """Карточек, где заголовком стоит написание, которое СПРАВОЧНИК признал формой другого
+    слова. Обещано: 0 (13.09.2026).
+
+    До разовой чистки таких было 118 («Blähungen» вместо «die Blähung», «wirbt» вместо
+    «werben»), и они уезжали в общий словарь, отвечающий всем. Дверь закрыта в двух
+    местах: кнопка «Разбор» в читалке спрашивает словарную форму (frontend App.jsx), а
+    ночная проверка 03:50 (`backend/form_headword_sweep.py`) спрашивает справочник по
+    новым написаниям и чинит подтверждённые. Спорные (написание с заглавной, чей строчный
+    вариант — законное слово) сюда НЕ входят: их чинить нельзя, они ждут владельца."""
+    from backend.form_headword_sweep import unfixed_forms_count
+    return unfixed_forms_count()
+
+
 PROMISES: tuple[Promise, ...] = (
     Promise(
         key="anagram_cards_spelling_from_source",
@@ -1720,6 +1734,14 @@ PROMISES: tuple[Promise, ...] = (
             "«Haare auf den Zähnen haben»: заголовок не должен быть «иметь волосы на зубах», "
             "а разбор должен прийти как про выражение, а не про предложение",
         screen=_expression_reference_screen,
+    ),
+    Promise(
+        key="form_headwords_unfixed",
+        title="Карточек, где заголовок — форма слова, а не словарное слово",
+        since="13.09.2026",
+        expected=0,
+        measure=_form_headwords_unfixed,
+        how="python3 -c \"from backend.form_headword_sweep import unfixed_forms_count as f; print(f())\"",
     ),
 )
 
