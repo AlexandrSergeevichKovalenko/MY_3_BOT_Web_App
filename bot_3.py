@@ -476,6 +476,11 @@ from backend.database import (
     ensure_trainer_schema,
     create_trainer_dispatch,
     update_trainer_dispatch_message_id,
+    ensure_relation_gap_schema,
+    create_relation_gap_dispatch,
+    update_relation_gap_dispatch_message_id,
+    pick_gap_word,
+    get_sprint_trainer_item,
     pick_next_trainer,
     pick_repeat_trainer,
     mark_trainer_sent,
@@ -42608,6 +42613,25 @@ WORD_PICK_SLOT_TIMES = {(7, 25): "am", (19, 35): "pm"}
 # the daily N. The rail is untouched: the sprint still comes trainer_sent_date + 3 days,
 # and it only requires the FIRST training, never this one.
 TRAINER_REPEAT_SLOT_TIMES = {(13, 0): "synonym", (18, 0): "antonym"}
+# «Подставь синоним» — ЧЕТВЁРТОЕ касание слова, среда рельса (владелец, 13.09.2026).
+# Лестница: пн узнавание → вт узнавание → СР ПРИПОМИНАНИЕ С ПОДСКАЗКОЙ → чт спринт.
+# Раньше между «выбери из пяти» и «вспомни с нуля» ступеньки не было вовсе.
+# Стратегия: docs/tasks/synonym_gap_wednesday_strategy.md
+#
+# Время выбрано по ПУСТЫМ минутам дня, а не «красиво»: 12:00 занято заданием Aufgabe
+# «Synonym», и два синонимических задания в одну минуту читались бы как сбой.
+# 14:45 — между спринтом (14:15) и Zahlen-Diktat (15:10); 17:00 — между wofrage (16:30)
+# и артикль-квизом (17:15), ровно посередине антонимической дорожки дня.
+RELATION_GAP_SLOT_TIMES = {(14, 45): "synonym", (17, 0): "antonym"}
+# Слово берём то, что ушло тренировкой ПОЗАВЧЕРА: пн → ср. Рельс при этом не двигаем,
+# спринт по-прежнему считает от trainer_sent_date + 3.
+RELATION_GAP_LAG_DAYS = 2
+
+
+def _relation_gap_enabled() -> bool:
+    # ВЫКЛЮЧЕНО по умолчанию: пока владелец не поставит RELATION_GAP_ENABLED=1, рассылка
+    # в среду не уходит НИКОМУ. Посмотреть вживую до включения — /gap_test (только админ).
+    return (os.getenv("RELATION_GAP_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
 TRAINER_COOLDOWN_DAYS = max(7, int((os.getenv("TRAINER_COOLDOWN_DAYS") or "21").strip() or "21"))
 
 
@@ -42776,6 +42800,168 @@ async def _admin_send_trainer_command(update: Update, context: CallbackContext) 
     await message.reply_text(
         f"{'✅ Отправил превью' if ok else '❌ Не отправил'}: <b>{_html_escape(str(entry.get('wort')))}</b> "
         f"({'повтор' if repeat else 'первый заход'}, без рассылки и без отметки рельса).",
+        parse_mode="HTML")
+
+
+async def send_gap_to_chat(context: CallbackContext, *, entry: dict, relation: str,
+                          slot_date, slot_hour: int, chat_id: int, target_user_id: int) -> bool:
+    """Карточка «Подставь синоним» одному человеку: постер + призыв + кнопка в мини-апп.
+    Ровно та же форма, что у соседей по рельсу, — три дня должны выглядеть одной игрой."""
+    try:
+        dispatch_id = await asyncio.to_thread(
+            create_relation_gap_dispatch, sprint_id=str(entry["sprint_id"]), relation=str(relation),
+            slot_date=slot_date, slot_hour=int(slot_hour),
+            target_user_id=int(target_user_id), chat_id=int(chat_id),
+        )
+    except Exception:
+        logging.warning("gap_send: dispatch insert failed chat=%s", chat_id, exc_info=True)
+        return False
+    if dispatch_id is None:
+        return False  # тот же слот уже уходил сегодня
+    rel_ru = "синоним" if relation == "synonym" else "антоним"
+    emoji = "🟢" if relation == "synonym" else "🔴"
+    hint = f" _{entry.get('hint_ru')}_" if entry.get("hint_ru") else ""
+    caption = (
+        f"✏️ *Подставь {rel_ru}*\n\n"
+        f"Слово: *{entry.get('wort')}*{hint}\n\n"
+        f"В понедельник ты выбирал его из карточек — теперь впиши сам. "
+        f"Первая буква и длина подсказаны.\n"
+        f"Это подарок сверх дневного плана: хочешь — играй, не хочешь — пропусти. "
+        f"Завтра слово вернётся в спринте, и там подсказок уже не будет 🔥"
+    )
+    caption = _append_free_pro_teaser(caption, chat_id)
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "✍️ Вписать слово", url=get_webapp_deeplink(f"ans_lk_{dispatch_id}"))]])
+    poster = None
+    try:
+        from backend.interactive_card import render_gap_relation_card
+        poster = await asyncio.to_thread(render_gap_relation_card, relation)
+    except Exception:
+        logging.warning("gap_send: card render failed chat=%s", chat_id, exc_info=True)
+    try:
+        if poster:
+            msg = await context.bot.send_photo(
+                chat_id=int(chat_id), photo=io.BytesIO(poster),
+                caption=caption, parse_mode="Markdown", reply_markup=keyboard)
+        else:
+            msg = await context.bot.send_message(
+                chat_id=int(chat_id), text=caption, parse_mode="Markdown", reply_markup=keyboard)
+    except Exception as exc:
+        logging.warning("gap_send failed chat=%s: %s", chat_id, exc)
+        return False
+    try:
+        await asyncio.to_thread(update_relation_gap_dispatch_message_id, dispatch_id,
+                                telegram_message_id=int(msg.message_id))
+    except Exception:
+        pass
+    # В ведомость дня НЕ пишем: задание идёт сверх дневного плана (make_bonus_gated),
+    # лимит не тратит — ровно как повтор тренировки во вторник и спринт в четверг.
+    return True
+
+
+async def _send_scheduled_relation_gap(context: CallbackContext, relation: str) -> None:
+    """Среда рельса. Слово — то, что ушло тренировкой позавчера; получатели — те, кто
+    ПЕРВЫЙ заход тренировки по нему получил. Кто не тренировал слово, тот в среду не
+    получает ничего: подставлять ему чужое слово незачем — это не самостоятельная
+    игра, а ступенька конкретной лестницы."""
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip gap")
+        return
+    if not _relation_gap_enabled():
+        return
+    slot_now = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    slot_hour = int(slot_now.hour) * 100 + int(slot_now.minute)
+    trained_on = slot_date - timedelta(days=RELATION_GAP_LAG_DAYS)
+    entry = await asyncio.to_thread(pick_gap_word, relation=relation, trained_on=trained_on)
+    if not entry:
+        logging.info("gap_sched: позавчера (%s) тренировки не было relation=%s", trained_on, relation)
+        return
+    # Заготовки строятся из банка ЗДЕСЬ ЖЕ, до рассылки: если ни одна не собралась,
+    # человеку уходит карточка, за которой пустой экран. Лучше не слать и посчитать.
+    try:
+        from backend.relation_gap import build_gap_items
+        items, skipped = await asyncio.to_thread(
+            build_gap_items, wort=str(entry.get("wort") or ""),
+            accepted=entry.get("accepted"), trainer_json=entry.get("trainer_json") or {})
+    except Exception:
+        logging.warning("gap_sched: сборка заготовок упала relation=%s", relation, exc_info=True)
+        return
+    if not items:
+        logging.info("gap_sched: у слова %s нет заготовок, пропущено %s",
+                     entry.get("wort"), skipped)
+        await _alert_admin_interactive(
+            context, f"⚠️ «Подставь {relation}»: у слова «{entry.get('wort')}» "
+                     f"не собралось ни одной заготовки ({skipped}). Задание не ушло.",
+            throttle_key=f"gap_empty_{relation}")
+        return
+    targets = await _collect_quiz_delivery_user_targets(context)
+    if not targets:
+        return
+    recipients = await asyncio.to_thread(
+        get_trainer_recipient_ids, str(entry["sprint_id"]), since_days=RELATION_GAP_LAG_DAYS + 1)
+    sent = 0
+    skipped_users = 0
+    for t in targets:
+        cid = int(t.get("chat_id") or 0)
+        if cid == 0:
+            continue
+        if cid > 0 and cid not in recipients:
+            skipped_users += 1
+            continue
+        if await send_gap_to_chat(context, entry=entry, relation=relation, slot_date=slot_date,
+                                  slot_hour=slot_hour, chat_id=cid, target_user_id=cid):
+            sent += 1
+    logging.info("gap_sent relation=%s word=%s items=%s sent=%s skipped=%s dropped_items=%s",
+                 relation, entry.get("wort"), len(items), sent, skipped_users, skipped)
+
+
+async def _admin_gap_test_command(update: Update, context: CallbackContext) -> None:
+    """/gap_test [synonym|antonym] — прислать «Подставь синоним» ЛИЧНО СЕБЕ, один раз.
+
+    Ни рассылки, ни отметок рельса, ни расхода дневного лимита. Слово берётся последнее
+    тренированное этого вида (а не «позавчерашнее»), чтобы команда работала в любой день,
+    а не только в среду. Нужна, чтобы владелец посмотрел настоящий экран ДО того, как
+    RELATION_GAP_ENABLED=1 откроет рассылку людям."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a.strip().lower() for a in (context.args or [])]
+    relation = args[0] if args else "synonym"
+    if relation not in ("synonym", "antonym"):
+        await message.reply_text("Использование: /gap_test [synonym|antonym]")
+        return
+    await asyncio.to_thread(ensure_sprint_schema)
+    await asyncio.to_thread(ensure_relation_gap_schema)
+    entry = await asyncio.to_thread(pick_next_trainer, relation=relation, cooldown_days=0)
+    if not entry:
+        await message.reply_text(f"Нет готовых слов ({relation}). Собери: /admin_build_trainers.")
+        return
+    full = await asyncio.to_thread(get_sprint_trainer_item, str(entry["sprint_id"]))
+    from backend.relation_gap import build_gap_items
+    items, skipped = await asyncio.to_thread(
+        build_gap_items, wort=str((full or {}).get("wort") or entry.get("wort") or ""),
+        accepted=(full or {}).get("accepted"), trainer_json=(full or {}).get("trainer_json") or {})
+    if not items:
+        await message.reply_text(
+            f"У слова <b>{_html_escape(str(entry.get('wort')))}</b> не собралось ни одной "
+            f"заготовки. Отказы: {_html_escape(str(skipped))}", parse_mode="HTML")
+        return
+    now = _get_quiz_schedule_now()
+    slot_hour = int(now.hour) * 10000 + int(now.minute) * 100 + int(now.second)  # уникальный для превью
+    ok = await send_gap_to_chat(context, entry=entry, relation=relation, slot_date=now.date(),
+                                slot_hour=slot_hour, chat_id=int(message.chat_id),
+                                target_user_id=int(user.id))
+    await message.reply_text(
+        f"{'✅ Отправил' if ok else '❌ Не отправил'}: <b>{_html_escape(str(entry.get('wort')))}</b>, "
+        f"{len(items)} пропусков"
+        + (f", не собралось {sum(skipped.values())}" if skipped else "")
+        + ".\nРассылка людям закрыта: RELATION_GAP_ENABLED"
+        + (" = включено." if _relation_gap_enabled() else " не выставлен — в среду никому не уйдёт."),
         parse_mode="HTML")
 
 
@@ -46775,6 +46961,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_retire_review_callback, pattern=r"^artret:"))
     application.add_handler(CallbackQueryHandler(handle_synonym_review_callback, pattern=r"^sacc:"))
     application.add_handler(CommandHandler("admin_synonym_review", admin_synonym_review_command))
+    application.add_handler(CommandHandler("gap_test", _admin_gap_test_command))
     application.add_handler(CallbackQueryHandler(handle_word_review_callback, pattern=r"^wrev:"))
     application.add_handler(CallbackQueryHandler(handle_reference_forms_review_callback, pattern=r"^reffrm:"))
     application.add_handler(CallbackQueryHandler(handle_fill_control_callback, pattern=r"^artfill:"))
@@ -48139,6 +48326,21 @@ def main():
                 minute=_trr_minute,
                 timezone=QUIZ_SCHEDULE_TZ_NAME,
             )
+        # -- «Подставь синоним»: СРЕДА рельса. Бонус (make_bonus_gated) — дневной лимит
+        #    не тратит, как повтор тренировки и спринт. ВЫКЛЮЧЕНО по умолчанию: пока
+        #    владелец не поставит RELATION_GAP_ENABLED=1, никому ничего не уходит.
+        #    Посмотреть вживую до включения: /gap_test --
+        for (_gp_hour, _gp_minute), _gp_rel in sorted(RELATION_GAP_SLOT_TIMES.items()):
+            scheduler.add_job(
+                make_bonus_gated("relation_gap", _gp_hour, _gp_minute,
+                                 _send_scheduled_relation_gap, _gp_rel),
+                "cron",
+                hour=_gp_hour,
+                minute=_gp_minute,
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        logging.info("relation_gap_slots_registered slots=%s enabled=%s",
+                     sorted(RELATION_GAP_SLOT_TIMES.items()), _relation_gap_enabled())
         # -- Вечерний отчёт владельцу: получили ли бесплатные свои шесть заданий --
         if _free_delivery_report_enabled():
             scheduler.add_job(

@@ -1,0 +1,310 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
+import { PICK_CAPTION, PICK_FAILED_TOAST, chipLabel } from './pickCopy.js';
+import useFitText from './useFitText.js';
+import Toast, { useToast } from './Toast.jsx';
+import { saveErrorToast } from './saveNotice.js';
+import SelectableText from './SelectableText.jsx';
+import SelectionSheet from './SelectionSheet.jsx';
+
+// «ПОДСТАВЬ СИНОНИМ» — средняя ступень между узнаванием и припоминанием.
+//
+// Стратегия: docs/tasks/synonym_gap_wednesday_strategy.md (владелец, 13.09.2026).
+// Понедельник и вторник человек ВЫБИРАЛ слово из пяти карточек, в четверг ему в спринте
+// придётся достать его из головы без всякой опоры. Здесь опора есть, но готового ответа
+// нет: предложение с пропуском плюс первая буква и длина слова.
+//
+// Одно предложение — несколько слов. Дверь приёма синонимов строит подстановочный ряд:
+// в ОДНО и то же предложение подходят все синонимы слова, меняя оттенок. Поэтому
+// предложение висит наверху неподвижно, а меняется то, какое слово в него сейчас ищут,
+// и русский перевод именно этого варианта.
+//
+// Считать ответы и строить пропуски — дело сервера (backend/relation_gap.py): немецкую
+// форму нельзя вывести арифметикой, её берут из готового предложения. Клиент только
+// показывает и отправляет.
+
+const REL = {
+  synonym: { title: 'Подставь синоним', ask: 'синоним', emoji: '🟢' },
+  antonym: { title: 'Подставь антоним', ask: 'антоним', emoji: '🔴' },
+};
+
+const GAP = '___';
+
+// Подсказка: первая буква и длина (решение владельца 13.09.2026). Без неё среда
+// сливается со спринтом, с вариантами на выбор — с тренировкой.
+function hintMask(letter, len) {
+  const n = Math.max(0, Number(len || 0) - 1);
+  return `${letter || ''}${' _'.repeat(n)}`;
+}
+
+export default function GapGame({ id, api, haptic, onClose, task = null }) {
+  const [phase, setPhase] = useState(task ? 'intro' : 'loading'); // loading|intro|playing|done|error
+  const [meta, setMeta] = useState(task);
+  const [error, setError] = useState('');
+  const [gi, setGi] = useState(0);              // какой пропуск сейчас
+  const [value, setValue] = useState('');
+  const [attempt, setAttempt] = useState(1);    // 1 или 2; вторая попытка — последняя
+  const [verdict, setVerdict] = useState(null); // {outcome, filler, synonym, ...}
+  const [score, setScore] = useState(0);
+  const [solved, setSolved] = useState(() => []);   // что человек уже вписал верно
+  const [saved, setSaved] = useState(() => new Set());
+  const [selection, setSelection] = useState(null);
+  const inputRef = useRef(null);
+  const toast = useToast();
+
+  const heroRef = useFitText(`${phase}|${meta?.wort || ''}`, { max: 'css', min: 15, padding: 10, fitBy: 'word' });
+
+  useEffect(() => {
+    if (task) return;                            // предпросмотр: задание пришло пропсом
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await api('/api/gap/task', { kind: 'lk', id });
+        if (cancelled) return;
+        if (!(data.items || []).length) { setError('Для этого слова пока нет предложений.'); setPhase('error'); return; }
+        setMeta(data); setPhase('intro');
+      } catch (e) {
+        try { console.warn('[gap] load failed', e); } catch (_err) { /* noop */ }
+        if (!cancelled) { setError('Не удалось загрузить. Попробуйте позже.'); setPhase('error'); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [id, api, task]);
+
+  const rel = REL[meta?.relation] || REL.synonym;
+  const items = meta?.items || [];
+  const total = items.length;
+  const item = items[gi];
+
+  // Предложение с пропуском, разрезанное для разметки: до / подсказка / после.
+  const parts = useMemo(() => {
+    const s = String(item?.sentence_gapped || '');
+    const i = s.indexOf(GAP);
+    if (i < 0) return { before: s, after: '' };
+    return { before: s.slice(0, i), after: s.slice(i + GAP.length) };
+  }, [item]);
+
+  const start = useCallback(() => {
+    setPhase('playing'); setGi(0); setValue(''); setAttempt(1);
+    setVerdict(null); setScore(0); setSolved([]);
+  }, []);
+
+  const check = useCallback(async () => {
+    const text = value.trim();
+    if (!text || verdict) return;
+    let res;
+    try {
+      res = await api('/api/gap/answer', {
+        kind: 'lk', id, index: item?.index ?? gi, answer: text, attempt,
+      });
+    } catch (e) {
+      try { console.warn('[gap] answer failed', e); } catch (_err) { /* noop */ }
+      toast.show('Не получилось отправить ответ. Попробуйте ещё раз.');
+      return;
+    }
+    setVerdict(res);
+    const ok = res.outcome === 'correct';
+    if (ok) {
+      if (attempt === 1) setScore((s) => s + 1);
+      setSolved((list) => [...list, { de: res.filler, ru: res.synonym_ru, synonym: res.synonym }]);
+    }
+    try { haptic?.(ok ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
+  }, [api, id, item, gi, value, attempt, verdict, haptic, toast]);
+
+  // Вторая попытка — последняя (решение владельца 13.09.2026). Слово человек вспомнил,
+  // не хватает окончания: показать ЧТО не так и дать дописать, а не хлопнуть дверью.
+  const retry = useCallback(() => {
+    setVerdict(null); setAttempt(2);
+    setTimeout(() => { try { inputRef.current?.focus(); } catch (_e) { /* noop */ } }, 30);
+  }, []);
+
+  const next = useCallback(() => {
+    setSelection(null); setVerdict(null); setValue(''); setAttempt(1);
+    if (gi + 1 >= total) { setPhase('done'); return; }
+    setGi((i) => i + 1);
+  }, [gi, total]);
+
+  const saveChip = useCallback((de, ru) => {
+    if (!de || saved.has(de)) return;
+    setSaved((s) => new Set(s).add(de));
+    saveGermanWordViaLookup({ api, word: de, translation: ru, origin: 'gap_chip' })
+      .then((ok) => { if (ok) toast.show(chipLabel(de)); else toast.show(PICK_FAILED_TOAST); })
+      .catch((err) => {
+        setSaved((s) => { const n = new Set(s); n.delete(de); return n; });
+        toast.show(saveErrorToast(err));
+        try { haptic?.('bad'); } catch (_e2) { /* noop */ }
+      });
+  }, [api, saved, haptic, toast]);
+
+  const shell = (body, cls = '', wide = null) => (
+    // Здесь человек ПЕЧАТАЕТ, поэтому `--keepkbd` не ставим: карточка должна
+    // перестроиться под клавиатуру, иначе поле ввода уезжает под неё.
+    <div className="ans-root">
+      <div className={`ans-card ${cls}`} data-wide={wide || undefined}>{body}</div>
+      {selection ? (
+        <SelectionSheet api={api} selection={selection} onClose={() => setSelection(null)} origin="gap_text_save" />
+      ) : null}
+      <Toast state={toast.state} onClose={toast.hide} />
+    </div>
+  );
+
+  if (phase === 'loading') return shell(<><div className="ans-skel" /><div className="ans-skel sm" /></>);
+
+  if (phase === 'error') return shell(
+    <>
+      <div className="ans-head"><span className="ans-eyebrow">⚠️ Hoppla</span></div>
+      <p className="ans-sub">{error}</p>
+      <button className="ans-btn" onClick={onClose}>Schließen</button>
+    </>
+  );
+
+  if (phase === 'intro') return shell(
+    <>
+      <div className="ans-head"><span className="ans-eyebrow">{rel.emoji} {rel.title}</span></div>
+      <div className="gp-hero">
+        <div className="gp-hero-word"><span className="fit-word" lang="de" ref={heroRef}>{meta?.wort}</span></div>
+        {meta?.hint_ru ? <div className="gp-hero-hint">{meta.hint_ru}</div> : null}
+      </div>
+      <div className="gp-intro">
+        <p>В это предложение подходит <b>{total}</b> {total === 1 ? rel.ask : total < 5 ? `${rel.ask}а` : `${rel.ask}ов`} —
+          впиши их по одному.</p>
+        <p className="gp-intro-dim">
+          Первая буква и длина слова подсказаны. Завтра это слово вернётся в спринте —
+          там подсказок уже не будет 🔥
+        </p>
+      </div>
+      <button className="ans-btn gp-go" onClick={start}>▶️ Начать</button>
+    </>
+  );
+
+  if (phase === 'playing' && item) {
+    const out = verdict?.outcome;
+    return shell(
+      <>
+        <div className="gp-top ans-r-head">
+          <span className="gp-top-rel">{rel.emoji} {rel.ask}</span>
+          <span className="gp-top-prog">{gi + 1} / {total}</span>
+        </div>
+        <div className="gp-bar ans-r-bar"><div className="gp-bar-fill" style={{ width: `${((gi + (out === 'correct' ? 1 : 0)) / total) * 100}%` }} /></div>
+
+        <div className="gp-anchor ans-r-prompt">
+          <span className="gp-anchor-label">{rel.ask} к слову</span>
+          <span className="gp-anchor-word" lang="de">{meta?.wort}</span>
+          {meta?.hint_ru ? <span className="gp-anchor-hint">· {meta.hint_ru}</span> : null}
+        </div>
+
+        <div className="gp-sentence ans-r-work" lang="de">
+          <SelectableText text={parts.before} onSelect={setSelection} haptic={haptic} />
+          <span className={`gp-slot ${out === 'correct' ? 'ok' : out ? 'bad' : ''}`}>
+            {out === 'correct' ? item.filler : hintMask(item.hint_letter, item.hint_len)}
+          </span>
+          <SelectableText text={parts.after} onSelect={setSelection} haptic={haptic} />
+        </div>
+        {item.sentence_ru ? <div className="gp-sentence-ru">{item.sentence_ru}</div> : null}
+
+        {!verdict ? (
+          <div className="gp-form">
+            <input
+              ref={inputRef}
+              className="gp-input"
+              lang="de"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') check(); }}
+              placeholder={attempt === 2 ? 'поправь форму…' : 'впиши слово…'}
+              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            />
+            <button className="ans-btn gp-check" disabled={!value.trim()} onClick={check}>Проверить</button>
+          </div>
+        ) : (
+          <div className={`gp-feedback ans-body ans-r-note ${out === 'correct' ? 'ok' : out === 'wrong' ? 'bad' : 'warn'}`}>
+            {out === 'correct' ? (
+              <>
+                <div className="gp-fb-head">✅ Верно — <b lang="de">{verdict.filler}</b>{verdict.synonym_ru ? ` · ${verdict.synonym_ru}` : ''}</div>
+                {verdict.nuance ? <div className="gp-fb-nuance">💡 {verdict.nuance}</div> : null}
+              </>
+            ) : null}
+
+            {out === 'wrong_form' ? (
+              <>
+                <div className="gp-fb-head">❗ Слово верное, а форма нет.</div>
+                <div className="gp-fb-why">
+                  В этом предложении <b lang="de">{verdict.synonym}</b> стоит с другим окончанием.
+                  {attempt === 1 ? ' Допиши его — попытка ещё есть.' : ''}
+                </div>
+              </>
+            ) : null}
+
+            {out === 'other_synonym' ? (
+              <>
+                <div className="gp-fb-head">🔁 Это тоже {rel.ask} к <b lang="de">{meta?.wort}</b>.</div>
+                <div className="gp-fb-why">
+                  Но здесь ждём слово на «<b>{item.hint_letter}</b>», из {item.hint_len} букв.
+                  {attempt === 1 ? ' Попробуй ещё раз.' : ''}
+                </div>
+              </>
+            ) : null}
+
+            {out === 'wrong' ? (
+              <div className="gp-fb-head">✗ Не то слово.</div>
+            ) : null}
+
+            {out !== 'correct' && attempt === 1 ? (
+              <button className="ans-btn gp-retry" onClick={retry}>✍️ Попробовать ещё раз</button>
+            ) : null}
+
+            {out !== 'correct' && attempt === 2 ? (
+              <div className="gp-fb-right">
+                Верно было: <b lang="de">{item.filler}</b>{item.synonym_ru ? ` · ${item.synonym_ru}` : ''}
+                <div className="gp-fb-full" lang="de">„{item.sentence_de}“</div>
+              </div>
+            ) : null}
+
+            {(out === 'correct' || attempt === 2) ? (
+              <button className="ans-btn gp-next" onClick={next}>{gi + 1 >= total ? 'Итог →' : 'Дальше →'}</button>
+            ) : null}
+          </div>
+        )}
+
+        {solved.length ? (
+          <div className="gp-solved">
+            {solved.map((s, i) => <span key={i} className="gp-solved-chip" lang="de">{s.de}</span>)}
+          </div>
+        ) : null}
+      </>,
+      '',
+      'split',
+    );
+  }
+
+  // done
+  const all = items.map((it) => ({ de: it.filler, ru: it.synonym_ru, base: it.synonym }));
+  return shell(
+    <>
+      <div className="ans-head"><span className="ans-eyebrow">{rel.emoji} {rel.title}</span></div>
+      <div className="gp-score">
+        <div className="gp-score-num">{score}<span className="gp-score-of"> / {total}</span></div>
+        <div className="gp-score-sub">с первой попытки</div>
+      </div>
+      <div className="gp-done-note">
+        Завтра <b lang="de">{meta?.wort}</b> вернётся в спринте — там {rel.ask}ы придётся вспомнить
+        совсем без подсказок 🔥
+      </div>
+      {all.length ? (
+        <div className="gp-all ans-body">
+          <div className="gp-all-head">Все {rel.ask}ы <span className="gp-all-dim">· 👆 {PICK_CAPTION}</span>:</div>
+          <div className="gp-chips">
+            {all.map((c, i) => (
+              <button key={i} type="button"
+                className={`gp-chip${saved.has(c.base) ? ' saved' : ''}`}
+                onClick={() => saveChip(c.base, c.ru)}>
+                <span lang="de">{c.base}</span>{c.ru ? <span className="gp-chip-ru">{c.ru}</span> : null}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <button className="ans-btn" onClick={onClose}>Закрыть</button>
+    </>
+  );
+}

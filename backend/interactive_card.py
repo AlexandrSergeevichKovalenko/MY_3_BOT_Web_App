@@ -861,6 +861,45 @@ def render_sprint_relation_card(relation: str) -> bytes | None:
     )
 
 
+def _motif_gap(base, d, cx, cy, accent, letter="a"):
+    """Предложение с дыркой: три «слова» подряд, посередине пустое место, в котором
+    видна только первая буква и прочерки. Это и есть суть среды — опора есть,
+    готового ответа нет (docs/tasks/synonym_gap_wednesday_strategy.md)."""
+    tw, th, gap = 236, 128, 26
+    slot_w = 392
+    total = tw * 2 + slot_w + gap * 2
+    x = cx - total / 2
+    _tile(d, x + tw / 2, cy, tw, th, "Wort", accent, fs=44, radius=30)
+    x += tw + gap
+    # Пустое место: контур, а не заливка, — сюда человек ещё впишет.
+    x0, y0 = x, cy - th / 2
+    d.rounded_rectangle([x0, y0, x0 + slot_w, y0 + th], radius=30,
+                        outline=GOLD, width=7)
+    f = _font(56)
+    mask = f"{letter} _ _ _ _"
+    mw = f.getlength(mask)
+    mh, off = _text_h(d, mask, f)
+    d.text((x0 + slot_w / 2 - mw / 2, cy - mh / 2 - off), mask, font=f, fill=GOLD)
+    x += slot_w + gap
+    _tile(d, x + tw / 2, cy, tw, th, "Wort",
+          tuple(min(255, c + 26) for c in accent), fs=44, radius=30)
+
+
+def render_gap_relation_card(relation: str) -> bytes | None:
+    """Карточка «Подставь синоним» — средняя ступень рельса (среда). Янтарь тот же,
+    что у тренировки: понедельник, вторник и среда должны читаться одной семьёй,
+    а спринт четверга остаётся зелёно-розовым."""
+    is_syn = relation == "synonym"
+    return _card(
+        badge="LÜCKENSATZ",
+        title="Synonym einsetzen" if is_syn else "Antonym einsetzen",
+        subtitle="Selbst schreiben  ·  erster Buchstabe hilft",
+        accent=(245, 158, 11) if is_syn else (217, 119, 6),
+        motif=(lambda b, dd, ccx, ccy, a: _motif_gap(b, dd, ccx, ccy, a, "a" if is_syn else "u")),
+        cta="Welches Wort passt in die Lücke?",
+    )
+
+
 def render_trainer_relation_card(relation: str) -> bytes | None:
     """Card for the synonym/antonym recognition TRAINER (pick the right word). Fuchs
     amber to set it apart from the green/pink sprint. relation = 'synonym' | 'antonym'."""

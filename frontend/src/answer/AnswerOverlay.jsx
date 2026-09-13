@@ -13,6 +13,7 @@ import PhraseReviewScreen from './PhraseReviewScreen.jsx';
 import AufgabeGame from './AufgabeGame.jsx';
 import SprintGame from './SprintGame.jsx';
 import TrainerGame from './TrainerGame.jsx';
+import GapGame from './GapGame.jsx';
 import ArtikelSprintGame from './ArtikelSprintGame.jsx';
 import ArtikelLearnGame from './ArtikelLearnGame.jsx';
 import ReviewSession from './ReviewSession.jsx';
@@ -78,7 +79,7 @@ function parseStartParam(startParam) {
   // │ впереди — kind=rbv. Порядок здесь дело вкуса; ЕДИНСТВЕННОЕ, что важно, —      │
   // │ чтобы код вообще был в списке. Перемерить: node -e с этой же регуляркой.      │
   // └──────────────────────────────────────────────────────────────────────────────┘
-  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|tr|au|mc|asbl|asb|asp|as|alf|al|rv|wp|adbl|adb|adl|ad|wfbl|wfb|wfl|wf|bh|nd|np|pv|rbv|frvp|frv)_(\d+)$/.exec(raw);
+  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|tr|lk|au|mc|asbl|asb|asp|as|alf|al|rv|wp|adbl|adb|adl|ad|wfbl|wfb|wfl|wf|bh|nd|np|pv|rbv|frvp|frv)_(\d+)$/.exec(raw);
   if (!m) return null;
   // qfp's id is a big Telegram poll_id → keep it a string (Number() loses precision).
   return { kind: m[1], id: m[1] === 'qfp' ? m[2] : Number(m[2]) };
@@ -825,7 +826,7 @@ export default function AnswerOverlay({ startParam }) {
 
   useEffect(() => {
     if (!parsed) { setFatal('Ungültiger Link.'); setMetaLoading(false); return; }
-    if (['sp', 'tr', 'as', 'asp', 'asb', 'asbl', 'al', 'alf', 'rv', 'wp', 'ad', 'adb', 'adbl', 'adl', 'wf', 'wfl', 'wfb', 'wfbl', 'bh', 'nd', 'np', 'gv'].includes(parsed.kind)) { setMetaLoading(false); return; }  // these games load themselves
+    if (['sp', 'tr', 'lk', 'as', 'asp', 'asb', 'asbl', 'al', 'alf', 'rv', 'wp', 'ad', 'adb', 'adbl', 'adl', 'wf', 'wfl', 'wfb', 'wfbl', 'bh', 'nd', 'np', 'gv'].includes(parsed.kind)) { setMetaLoading(false); return; }  // these games load themselves
     let cancelled = false;
     (async () => {
       try {
@@ -985,6 +986,10 @@ export default function AnswerOverlay({ startParam }) {
   // Synonym/Antonym recognition trainer (feeds the sprint 3 days later).
   if (kind === 'tr' && parsed?.id != null) {
     return <TrainerGame id={parsed.id} api={api} haptic={haptic} onClose={close} />;
+  }
+  // «Подставь синоним» — среда рельса: средняя ступень между узнаванием и спринтом.
+  if (kind === 'lk' && parsed?.id != null) {
+    return <GapGame id={parsed.id} api={api} haptic={haptic} onClose={close} />;
   }
   // Admin acceptance for «Finde im Bild»: draw the answer region by hand.
   if (kind === 'pv') {
