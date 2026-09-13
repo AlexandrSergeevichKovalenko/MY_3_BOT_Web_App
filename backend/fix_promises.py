@@ -1153,33 +1153,86 @@ def _relation_gap_builds_from_bank() -> int:
     return int(empty)
 
 
-def _relation_answers_not_recorded() -> int:
-    """Открытых заданий рельса, по которым НЕ осталось ни одного ответа, за 7 дней.
-    Обещано: 0.
+def _relation_answers_broken_rows() -> int:
+    """Записей ответов с исходом, которого в продукте нет. Обещано: 0.
 
-    Это сторож дыры №1 (анализ 13.09.2026): до неё ответы игр рельса не сохранялись
-    нигде вообще, и на вопрос «помогла ли среда» ответить было нечем. Считаем только
-    те отправки «Подставь синоним», по которым человек ТОЧНО открывал задание — то
-    есть у него есть хоть одна строка ответа по ЛЮБОЙ игре рельса в тот же день;
-    если при этом по самому заданию ответов ноль, запись сломалась.
+    ┌─ ПРОВЕРЕНО 13.09.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────────┐
+    │ Первый измеритель этого обещания считал «отправки, по которым нет ни одного    │
+    │ ответа», и вечером 13.09 выдал 1 — казалось, что запись сломалась. Разложил:   │
+    │ из семи отправок шесть имеют ответы (2, 12, 2, 5, 6, 7 строк), а нулевая —     │
+    │ ровно та, что упала с NameError и НЕ ОТКРЫЛАСЬ. То есть измеритель мерил не то:│
+    │ он не отличал «ответы не записались» от «человек не ответил или не смог войти».│
+    │ Отличить это с сервера нельзя вообще: закрыть задание, не ответив, — законное  │
+    │ поведение, и такое обещание краснело бы от нормальной жизни.                   │
+    │                                                                               │
+    │ Работу самой записи держит тест (backend/tests/test_relation_answers_record).  │
+    │ Здесь остаётся то, что живая база вправду доказывает: исход в каждой строке —  │
+    │ один из четырёх, которые продукт умеет ставить. Чужое значение означает, что   │
+    │ пишет не тот код или сломался проброс, и это настоящий дефект.                 │
+    │ Доходимость до людей меряет отдельное обещание relation_gap_reaches_learners.  │
+    └───────────────────────────────────────────────────────────────────────────────┘
+    """
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM bt_3_relation_answers "
+                "WHERE outcome NOT IN ('correct','wrong_form','other_synonym','wrong') "
+                "   OR kind NOT IN ('lk','tr') OR target_word = '' OR expected = '';"
+            )
+            row = cur.fetchone()
+    return int((row or [0])[0] or 0)
+
+
+# Дата, с которой рассылка «Подставь синоним» открыта людям: владелец включил
+# RELATION_GAP_ENABLED=1 вечером 13.09.2026. До неё слоты молчали намеренно, и считать
+# их пропусками нельзя — иначе обещание нарушено с рождения и перестаёт что-то значить.
+_RELATION_GAP_LIVE_SINCE = "2026-09-14"
+
+
+def _relation_gap_silent_days() -> int:
+    """Дней, когда задание МОГЛО уйти людям, но не ушло ни одному. Обещано: 0.
+
+    «Могло» — значит выполнены оба условия разом: позавчера тренировка отправила слово
+    этого вида И его получил хоть один человек. Если при этом за день нет ни одной
+    строки в bt_3_relation_gap_dispatches для не-админа, слот промолчал, и это дефект:
+    либо упала сборка заготовок, либо рассылка не добралась до людей.
+
+    Дни, когда тренировки позавчера не было, НЕ считаются: там молчание правильное —
+    брать нечего, и подставлять человеку чужое слово мы отказались осознанно.
     """
     from backend.database import get_db_connection_context
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT COUNT(*) FROM bt_3_relation_gap_dispatches d
-                WHERE d.sent_at > NOW() - INTERVAL '7 days'
-                  AND EXISTS (SELECT 1 FROM bt_3_relation_answers a
-                              WHERE a.user_id = d.target_user_id
-                                AND a.answered_at::date = d.slot_date)
-                  AND NOT EXISTS (SELECT 1 FROM bt_3_relation_answers a
-                                  WHERE a.dispatch_id = d.id AND a.kind = 'lk');
-                """
+                WITH dni AS (
+                    SELECT g::date AS d
+                    FROM generate_series(GREATEST(%s::date, CURRENT_DATE - 14),
+                                         CURRENT_DATE - 1, '1 day') g
+                ),
+                moglo AS (
+                    SELECT d.d, b.relation
+                    FROM dni d
+                    JOIN bt_3_sprint_bank b
+                      ON b.trainer_sent_date = d.d - 2
+                     AND NOT b.retired AND b.trainer_ready
+                    WHERE EXISTS (
+                        SELECT 1 FROM bt_3_trainer_dispatches t
+                        WHERE t.sprint_id = b.sprint_id AND t.target_user_id > 0
+                    )
+                )
+                SELECT COUNT(*) FROM moglo m
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM bt_3_relation_gap_dispatches gd
+                    WHERE gd.slot_date = m.d AND gd.relation = m.relation
+                      AND gd.target_user_id > 0
+                );
+                """,
+                (_RELATION_GAP_LIVE_SINCE,),
             )
             row = cur.fetchone()
     return int((row or [0])[0] or 0)
-
 
 def _relation_gap_screen() -> str:
     """Экран «после» для владельца: что среда реально сделала за неделю.
@@ -1400,6 +1453,17 @@ PROMISES: tuple[Promise, ...] = (
             "13.09. Число ВЫРОСЛО = judge_anagram_word не вызывается при доборе банка",
     ),
     Promise(
+        key="relation_gap_reaches_learners",
+        title="Дней, когда «Подставь синоним» могло уйти людям, но не ушло ни одному",
+        since="13.09.2026",
+        expected=0,
+        measure=_relation_gap_silent_days,
+        screen=_relation_gap_screen,
+        how="/admin_promises — считаются только дни с 14.09.2026 и только те, где "
+            "позавчера тренировка отправила слово и его получил хоть один человек. "
+            "Ждём 0. Не ноль = сборка заготовок упала или рассылка не дошла",
+    ),
+    Promise(
         key="relation_gap_builds_from_bank",
         title="Слов банка, у которых «Подставь синоним» не собирает ни одного пропуска",
         since="13.09.2026",
@@ -1412,16 +1476,17 @@ PROMISES: tuple[Promise, ...] = (
             "двери приёма). Число ВЫРОСЛО = сборка сломалась или дверь пустила мусор",
     ),
     Promise(
-        key="relation_answers_recorded",
-        title="Открытых заданий рельса без единой записи ответа (дыра №1 закрыта)",
+        key="relation_answers_sane",
+        title="Записей ответов рельса с исходом, которого в продукте нет",
         since="13.09.2026",
         expected=0,
-        measure=_relation_answers_not_recorded,
+        measure=_relation_answers_broken_rows,
         screen=_relation_gap_screen,
-        how="SELECT count(*) FROM bt_3_relation_gap_dispatches d WHERE d.sent_at > NOW() "
-            "- INTERVAL '7 days' AND EXISTS(ответ того же человека в тот день) AND NOT "
-            "EXISTS(SELECT 1 FROM bt_3_relation_answers WHERE dispatch_id = d.id AND "
-            "kind='lk') — ждём 0. До 13.09.2026 ответы игр рельса не писались вообще",
+        how="SELECT count(*) FROM bt_3_relation_answers WHERE outcome NOT IN "
+            "('correct','wrong_form','other_synonym','wrong') OR kind NOT IN ('lk','tr') "
+            "OR target_word='' OR expected='' — ждём 0. Сколько ответов пришло вообще "
+            "видно в экране «после»; «отправок без ответа» НЕ считаем — закрыть задание, "
+            "не ответив, это законное поведение (разбор 13.09.2026 в коде измерителя)",
     ),
     Promise(
         key="dictionary_echo_translations",
