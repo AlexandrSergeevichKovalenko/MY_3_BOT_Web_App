@@ -1360,7 +1360,37 @@ def _anagram_runway_screen() -> str:
             f"(порог добора {MIN_RUNWAY_DAYS} дней, людей в счёте {len(люди)})")
 
 
+def _dictionary_headword_case_against_source() -> int:
+    """Слов словаря, записанных с заглавной вопреки источнику. Обещано: 0.
+
+    Правило отбора НЕ своё: берётся из продукта — `database.list_headword_case_offenders`,
+    тем же вызовом, которым пользуется уборка. Пока правил было два, они разошлись на
+    первом прогоне (226 против 230), и разница оказалась содержательной: под ней лежали
+    обрубки и неверные пометки части речи (Wehr, Verdeck, Gelass, Umgekehr).
+
+    Замер 13.09.2026 до уборки: 226 слов. Через общую формулу показа на экран с заглавной
+    не доходило ни одно, но сырое поле читают игры — так «Behaupten» попало в анаграмму.
+    """
+    from backend.database import list_headword_case_offenders
+    from backend.german_grammar_tables import german_headword_case
+    return sum(1 for слово, pos in list_headword_case_offenders()
+               if german_headword_case(слово, pos) != слово)
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="dictionary_headword_case_from_source",
+        title="Слов словаря, записанных с заглавной вопреки источнику",
+        since="13.09.2026",
+        expected=0,
+        measure=_dictionary_headword_case_against_source,
+        screen=_mywords_review_screen,
+        how="python3 scripts/dict_fix_headword_case_from_source.py (сухой прогон) — "
+            "ждём 0. До 13.09.2026 было 226 слов, из них 6 легли ПОСЛЕ постановки "
+            "правила 19.08, потому что оно стояло у одной двери записи из нескольких. "
+            "Число ВЫРОСЛО = появился ещё один вход мимо "
+            "_create_or_attach_user_dictionary_entry_with_cursor",
+    ),
     Promise(
         key="anagram_nobody_runs_out_of_tasks",
         title="Людей, у кого анаграммы кончатся меньше чем через неделю",

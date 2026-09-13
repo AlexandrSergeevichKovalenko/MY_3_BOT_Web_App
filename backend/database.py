@@ -6299,6 +6299,68 @@ def _upsert_dictionary_canonical_entry_with_cursor(
     return int(row[0]) if row and row[0] is not None else 0
 
 
+# Слова словаря, записанные с заглавной вопреки источнику. ОДНО правило отбора на всё
+# приложение: им пользуются и уборка (scripts/dict_fix_headword_case_from_source.py), и
+# утренняя проверка обещания (backend/fix_promises.py). Пока их было два, они разошлись
+# на первом же прогоне — 226 против 230, — и разница оказалась содержательной.
+#
+# ЕДИНОГЛАСИЕ ОБЯЗАТЕЛЬНО. Слово не в счёте, если хоть один источник называет его
+# существительным или ставит артикль. Замер 13.09.2026 показал, ЧТО именно прячется в
+# этой разнице, и это не мелочь:
+#     Angeben   разбор «verb», статья «noun» — есть и «das Angeben» (хвастовство)
+#     Ehrgeiz   разбор «adjective», а это «der Ehrgeiz» (амбиция) — часть речи неверна
+#     Gelass    разбор «adjective» от «gelassen», а «das Gelass» — помещение: обрубок
+#     Umgekehr  обрубок «umgekehrt», статья считает существительным
+#     Verdeck   разбор «verb», а «das Verdeck» — верх кабриолета
+#     Wehr      разбор «verb» от «sich wehren», а «die Wehr» — существительное
+# Опустить им заглавную значило бы поверить заведомо спорной пометке части речи.
+_HEADWORD_CASE_WORD_SQL = ("REGEXP_REPLACE(COALESCE(q.response_json->>'word_de',''),"
+                           "'^(der|die|das)\\s+','')")
+
+
+def list_headword_case_offenders() -> list[tuple[str, str]]:
+    """[(слово_как_лежит, часть_речи)] — заглавная вопреки единогласному источнику."""
+    w = _HEADWORD_CASE_WORD_SQL
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT DISTINCT {w}, q.response_json->>'part_of_speech'
+                FROM bt_3_webapp_dictionary_queries q
+                WHERE q.response_json->>'part_of_speech' IN ('verb','adjective','adverb')
+                  AND {w} ~ '^[A-ZÄÖÜ][a-zäöüß]+$'
+                  AND COALESCE(q.response_json->>'word_de','') !~ '^(der|die|das)\\s+'
+                  AND NOT EXISTS (
+                        SELECT 1 FROM bt_3_webapp_dictionary_queries q2
+                        WHERE LOWER(REGEXP_REPLACE(COALESCE(q2.response_json->>'word_de',''),
+                                                   '^(der|die|das)\\s+','')) = LOWER({w})
+                          AND (q2.response_json->>'part_of_speech' = 'noun'
+                               OR COALESCE(q2.response_json->>'word_de','') ~* '^(der|die|das)\\s+'))
+                  AND NOT EXISTS (
+                        SELECT 1 FROM bt_3_lex_units u
+                        WHERE u.lang = 'de' AND LOWER(u.display) = LOWER({w})
+                          AND u.pos = 'noun')
+                ORDER BY 1;
+            """)
+            return [(str(word), str(pos)) for word, pos in (cursor.fetchall() or [])]
+
+
+def _headword_case_if_single_word(value: str | None, pos: str) -> str | None:
+    """Регистр немецкого заголовка по части речи — только для ОДНОГО слова.
+
+    Отдельная функция, потому что правило зовут из двух мест одной двери (колонки и
+    разбор), и повторять условия было бы двумя копиями одного правила.
+
+    Фразу и предложение не трогаем: там заглавная законна («Guten Tag», начало
+    предложения). Артикль внутри строки разбирает само правило.
+    """
+    text = str(value or "").strip()
+    if not text or " " in text:
+        return value
+    from backend.german_grammar_tables import german_headword_case
+    fixed = german_headword_case(text, pos)
+    return fixed if fixed != text else value
+
+
 def _create_or_attach_user_dictionary_entry_with_cursor(
     cursor,
     *,
@@ -6329,6 +6391,25 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
     word_ru, translation_de, word_de, translation_ru = intake.clean_all(
         word_ru, translation_de, word_de, translation_ru
     )
+    # РЕГИСТР ЗАГОЛОВКА ПРАВИТСЯ ЗДЕСЬ ЖЕ, а не у вызывающего. Правило `german_headword_case`
+    # стояло в обработчике окна словаря (backend_server.py) — то есть у ОДНОЙ двери из
+    # нескольких. Замер 13.09.2026: после его постановки 19.08 в журнал всё равно легли
+    # шесть записей с заглавной — «Genau», «Wieso», «Echt», «Wehr»: человек набрал слово
+    # с большой буквы в другом входе, и там правила не было. Это ровно та дырка, о
+    # которой предупреждает комментарий выше: проверка у каждого входа открывается заново.
+    #
+    # Правило чужое и не переписано: оно работает ТОЛЬКО когда часть речи названа явно и
+    # это не существительное, и только для одного слова — у фразы заглавная законна.
+    _pos_for_case = str(normalized_response_json.get("part_of_speech") or "").strip()
+    if _pos_for_case:
+        word_de = _headword_case_if_single_word(word_de, _pos_for_case)
+        translation_de = _headword_case_if_single_word(translation_de, _pos_for_case)
+        for _key in ("word_de", "translation_de"):
+            _value = normalized_response_json.get(_key)
+            if isinstance(_value, str):
+                _fixed = _headword_case_if_single_word(_value, _pos_for_case)
+                if _fixed != _value:
+                    normalized_response_json[_key] = _fixed
     normalized_semantic_tag = normalize_dictionary_semantic_tag(semantic_tag)
     freq_rank = compute_frequency_rank(word_de, normalized_response_json)
     # Фраза — это всё, что не сводится к одному немецкому слову (артикль не в счёт).
