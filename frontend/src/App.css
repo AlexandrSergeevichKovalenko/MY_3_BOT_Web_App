@@ -3643,6 +3643,15 @@ body:has(.webapp-page.is-theme-light),
   font-weight: 600;
 }
 
+/* Знаменатель места стоит в той же строке, но мельче: «#3» остаётся главным,
+   «из 12 занимавшихся» его поясняет (решение владельца 10–13.09.2026). */
+.analytics-rank-of {
+  font-size: 0.8125em;
+  font-weight: 500;
+  opacity: 0.72;
+  white-space: nowrap;
+}
+
 .analytics-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));

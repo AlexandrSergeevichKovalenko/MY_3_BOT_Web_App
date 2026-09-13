@@ -1164,6 +1164,50 @@ def fetch_scope_summary(
     return _post_process_row(data)
 
 
+
+def compare_row_studied(row: dict[str, Any]) -> bool:
+    """Занимался ли человек в этом периоде хоть чем-то.
+
+    ┌─ РЕШЕНИЕ ВЛАДЕЛЬЦА 13.09.2026. Знаменатель места — ТЕ, КТО ЗАНИМАЛСЯ. ────────────┐
+    │ До этого экран аналитики писал «Ваше место: #3» вообще без знаменателя, потому   │
+    │ что честного числа людей не было: сервер отдавал только верхушку таблицы         │
+    │ (ANALYTICS_LEADERBOARD_SNAPSHOT_LIMIT = 8), и «из 8» при группе в тридцать       │
+    │ человек было бы неправдой. Полный список у нас есть ДО обрезки, в этой самой     │
+    │ функции, поэтому число считается здесь и едет вместе со строками.                │
+    │                                                                                  │
+    │ Правило «занимался» то же, что владелец принял 06.09.2026 для недельного         │
+    │ рейтинга (_weekly_global_ranking_row_was_active): место не даётся за ноль.       │
+    │ Показанные, но не сделанные предложения (assigned_sentences) — НЕ занятие:       │
+    │ их человеку выдали, а не он их сделал. Пропущенные дни (missed_days) — тем       │
+    │ более не занятие, это его противоположность.                                    │
+    └──────────────────────────────────────────────────────────────────────────────────┘
+    """
+    return (
+        int(row.get("translation_attempts") or 0) > 0
+        or int(row.get("covered_sentences") or 0) > 0
+        or float(row.get("total_time_min") or 0.0) > 0
+        or int(row.get("learned_words") or 0) > 0
+    )
+
+
+def _mark_studied_and_count(processed: list[dict[str, Any]]) -> int:
+    """Проставить каждой строке «занимался / нет» и вернуть число занимавшихся.
+
+    Число кладётся В КАЖДУЮ строку (`cohort_studied_total`), потому что наружу уходит
+    обрезанная верхушка таблицы, а снимки в базе хранят именно строки. Так честное
+    число доживает и до снимка, и до экрана, не требуя второго запроса.
+    """
+    studied_total = 0
+    for row in processed:
+        studied = compare_row_studied(row)
+        row["studied"] = studied
+        if studied:
+            studied_total += 1
+    for row in processed:
+        row["cohort_studied_total"] = studied_total
+    return studied_total
+
+
 def fetch_comparison_leaderboard(
     start_date: date,
     end_date: date,
@@ -1218,7 +1262,10 @@ def fetch_comparison_leaderboard(
             source_lang=source_lang,
             target_lang=target_lang,
         )
-        processed.sort(key=lambda item: item.get("final_score", 0), reverse=True)
+        _mark_studied_and_count(processed)
+        # Занимавшиеся стоят выше: место считается только среди них (решение владельца
+        # 06.09.2026 «место не даётся за ноль», распространено на аналитику 13.09.2026).
+        processed.sort(key=lambda item: (not item.get("studied"), -float(item.get("final_score", 0) or 0)))
         return processed[: max(1, limit)]
     base_user_filter = " AND t.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
     pair_sessions_user_filter = " AND t.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
@@ -1542,5 +1589,9 @@ def fetch_comparison_leaderboard(
         source_lang=source_lang,
         target_lang=target_lang,
     )
-    processed.sort(key=lambda item: item.get("final_score", 0), reverse=True)
+    _mark_studied_and_count(processed)
+    # Занимавшиеся стоят выше, а внутри них порядок по баллу. Место у тех, кто не
+    # занимался, не считается вовсе — иначе знаменатель «из N занимавшихся» и сам
+    # номер места говорили бы о разных множествах людей.
+    processed.sort(key=lambda item: (not item.get("studied"), -float(item.get("final_score", 0) or 0)))
     return processed[: max(1, limit)]

@@ -18,6 +18,7 @@ import WordDiff from './dictionary/WordDiff';
 import { loadSearchHistory, recordSearch, readLocalHistory } from './dictionary/searchHistory';
 import WordHintModal, { collectHintExamples, hasHintBreakdown } from './components/WordHintModal';
 import FsrsHeadword from './answer/FsrsHeadword';
+import { studiedOf } from './answer/certLine.js';
 import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
 import ReaderAudioUnlockModal from './components/ReaderAudioUnlockModal';
 import ProTrialModal from './components/ProTrialModal';
@@ -8220,6 +8221,11 @@ function AppInner() {
   const [analyticsPoints, setAnalyticsPoints] = useState([]);
   const [analyticsCompare, setAnalyticsCompare] = useState([]);
   const [analyticsRank, setAnalyticsRank] = useState(null);
+  // Знаменатель места: сколько человек в группе ЗАНИМАЛОСЬ за период (решение
+  // владельца 13.09.2026). null значит «сервер честного числа не прислал» —
+  // так отвечают снимки таблицы, снятые до 13.09. Тогда место показывается без
+  // знаменателя, как раньше, и ничего не выдумывается.
+  const [analyticsCohortStudied, setAnalyticsCohortStudied] = useState(null);
   const [analyticsScopeData, setAnalyticsScopeData] = useState(null);
   const [analyticsScopeKey, setAnalyticsScopeKey] = useState('personal');
   const [analyticsBootstrapReady, setAnalyticsBootstrapReady] = useState(false);
@@ -9001,6 +9007,7 @@ function AppInner() {
         { label: 'Group', final_score: 76 },
       ]);
       setAnalyticsRank(2);
+      setAnalyticsCohortStudied(7);
       setWeeklySummaryHeroFacts({
         hasPlan: true,
         hasActivity: true,
@@ -35751,11 +35758,20 @@ function AppInner() {
         setWeeklySummarySocialSignal(null);
         return;
       }
-      const total = items.length;
+      // Знаменатель берём У СЕРВЕРА: он считает занимавшихся до обрезки списка.
+      // items.length здесь не годится — сервер отдаёт только верхушку таблицы
+      // (снимок обрезан до восьми строк), и процент «выше X% участников» считался
+      // бы по восьми людям при группе любого размера. Решение владельца 13.09.2026:
+      // знаменатель — те, кто занимался за период.
+      const total = Number(data?.cohort?.studied_total) || 0;
       const percentile = total > 1 ? Math.round(((total - selfRank) / (total - 1)) * 100) : 0;
-      let text = tr(`Твоё место в группе: #${selfRank}`, `Dein Platz in der Gruppe: #${selfRank}`);
+      const tail = total > 0 ? ` ${studiedOf(total)}` : '';
+      let text = tr(
+        `Твоё место в группе: #${selfRank}${tail}`,
+        `Dein Platz in der Gruppe: #${selfRank}${total > 0 ? ` von ${total}` : ''}`,
+      );
       if (selfRank > 3 && percentile > 0) {
-        text = tr(`Ты выше ${percentile}% участников`, `Du liegst vor ${percentile}% der Teilnehmenden`);
+        text = tr(`Ты выше ${percentile}% тех, кто занимался`, `Du liegst vor ${percentile}% der Aktiven`);
       }
       setWeeklySummarySocialSignal({ text });
     } catch (_error) {
@@ -36043,6 +36059,7 @@ function AppInner() {
     if (isKnownFreePaidSurfaceMode) {
       setAnalyticsCompare([]);
       setAnalyticsRank(null);
+      setAnalyticsCohortStudied(null);
       return null;
     }
     if (!initData) {
@@ -36062,6 +36079,9 @@ function AppInner() {
       }
       setAnalyticsCompare(data.items || []);
       setAnalyticsRank(scope.scope_kind === 'group' ? (data.self?.rank ?? null) : null);
+      setAnalyticsCohortStudied(
+        scope.scope_kind === 'group' ? (data.cohort?.studied_total ?? null) : null,
+      );
       setAnalyticsError('');
       return data;
     } catch (error) {
@@ -44840,7 +44860,14 @@ function AppInner() {
                     {analyticsLoading ? tr('Считаем...', 'Berechnen...') : tr('Обновить', 'Aktualisieren')}
                   </button>
                   {analyticsRank && (
-                    <div className="analytics-rank">{tr('Ваше место', 'Dein Rang')}: #{analyticsRank}</div>
+                    <div className="analytics-rank">
+                      {tr('Ваше место', 'Dein Rang')}: #{analyticsRank}
+                      {analyticsCohortStudied ? (
+                        <span className="analytics-rank-of">
+                          {tr(` ${studiedOf(analyticsCohortStudied)}`, ` von ${analyticsCohortStudied}`)}
+                        </span>
+                      ) : null}
+                    </div>
                   )}
                 </div>
                 <div className={`webapp-muted analytics-scope-hint ${analyticsScopeSelectorRequired ? 'is-warning' : ''}`}>

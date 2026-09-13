@@ -39340,6 +39340,56 @@ def get_webapp_analytics_timeseries():
         return jsonify(response_payload)
 
 
+
+def _compare_cohort_payload(leaderboard: list[dict[str, Any]]) -> dict[str, Any]:
+    """Сколько человек в этой группе ЗАНИМАЛОСЬ за период. Знаменатель места.
+
+    ┌─ РЕШЕНИЕ ВЛАДЕЛЬЦА 13.09.2026. ─────────────────────────────────────────────────┐
+    │ Считает analytics.fetch_comparison_leaderboard ДО обрезки списка и кладёт число  │
+    │ в каждую строку (`cohort_studied_total`). Здесь мы его только достаём.           │
+    │                                                                                  │
+    │ None — это НЕ «ноль» и не заглушка. Так отвечают старые снимки таблицы, снятые   │
+    │ до 13.09: в них этого поля нет, честного числа взять неоткуда, и экран тогда     │
+    │ показывает место без знаменателя, как раньше. Снимок пересчитывается сам, и      │
+    │ число появляется. Выдумывать его из длины обрезанного списка (там 8 строк при    │
+    │ группе любого размера) запрещено: это была бы неправда на экране человека.       │
+    └──────────────────────────────────────────────────────────────────────────────────┘
+    """
+    for item in leaderboard or []:
+        if isinstance(item, dict) and item.get("cohort_studied_total") is not None:
+            return {"studied_total": int(item["cohort_studied_total"])}
+    return {"studied_total": None}
+
+
+def _compare_rank_among_those_who_studied(
+    leaderboard: list[dict[str, Any]], user_id: int
+) -> int | None:
+    """Место человека среди ТЕХ, КТО ЗАНИМАЛСЯ. Не занимался — места нет (None).
+
+    Правило владельца от 06.09.2026 («место не даётся за ноль»), 13.09.2026
+    распространено с недельного рейтинга на экран аналитики: иначе номер места и
+    знаменатель «из N занимавшихся» считались бы по разным множествам людей.
+    Строки без пометки `studied` приходят из старых снимков — для них считаем
+    по-старому, по позиции в списке, чтобы место не пропало у тех, у кого оно было.
+    """
+    rows = list(leaderboard or [])
+    if not rows:
+        return None
+    if not any(isinstance(item, dict) and "studied" in item for item in rows):
+        for index, item in enumerate(rows, start=1):
+            if int(item.get("user_id") or 0) == int(user_id):
+                return index
+        return None
+    place = 0
+    for item in rows:
+        if not item.get("studied"):
+            continue
+        place += 1
+        if int(item.get("user_id") or 0) == int(user_id):
+            return place
+    return None
+
+
 @app.route("/api/webapp/analytics/compare", methods=["POST"])
 def get_webapp_analytics_compare():
     started_perf = time.perf_counter()
@@ -39438,6 +39488,8 @@ def get_webapp_analytics_compare():
             response_payload = dict(cached_compare.get("payload") or {})
             leaderboard = list(response_payload.get("items") or [])
             user_rank = _safe_int(((response_payload.get("self") or {}).get("rank")))
+            if "cohort" not in response_payload:
+                response_payload["cohort"] = _compare_cohort_payload(leaderboard)
             fetch_duration_ms = 0
             compare_build_mode = "front_cache"
         else:
@@ -39520,11 +39572,7 @@ def get_webapp_analytics_compare():
                         target_lang=target_lang,
                         cohort_user_ids=scope_user_ids,
                     )
-                user_rank = None
-                for index, item in enumerate(leaderboard, start=1):
-                    if int(item.get("user_id")) == int(user_id_int):
-                        user_rank = index
-                        break
+                user_rank = _compare_rank_among_those_who_studied(leaderboard, user_id_int)
                 response_payload = {
                     "ok": True,
                     "period": {
@@ -39534,6 +39582,7 @@ def get_webapp_analytics_compare():
                     },
                     "items": leaderboard,
                     "self": {"user_id": user_id_int, "rank": user_rank},
+                    "cohort": _compare_cohort_payload(leaderboard),
                     "scope": scope.get("effective_scope"),
                     "language_pair": _build_language_pair_payload(source_lang, target_lang),
                 }
