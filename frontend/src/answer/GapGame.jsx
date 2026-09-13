@@ -226,7 +226,7 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
               value={value}
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') check(); }}
-              placeholder={attempt === 2 ? 'Поправь форму' : 'Впиши слово'}
+              placeholder={attempt === 2 ? 'поправь сюда форму' : 'впиши сюда слово'}
               autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
             />
             <button className="ans-btn gp-check" disabled={!value.trim()} onClick={check}>Проверить</button>
