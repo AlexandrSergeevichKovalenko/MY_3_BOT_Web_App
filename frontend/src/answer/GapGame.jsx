@@ -51,19 +51,50 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
   // цветом (подсказка, а не твой ответ), и чтобы записать в ответ: помогла ли лампочка,
   // видно будет только если знать, сколько раз её нажали.
   const [hints, setHints] = useState(0);
+  // ГДЕ СЕЙЧАС КАРЕТКА — номер клетки, в которую встанет следующая буква.
+  // Владелец 14.09.2026: «не подсвечивается буква, не понимаю какую сейчас писать» и
+  // «не могу тапнуть на букву в середине и исправить — приходится стирать всё».
+  // Обе жалобы про одно: экран не показывал позицию ввода и не давал её менять.
+  const [caret, setCaret] = useState(0);
+  // Куда поставить каретку ПОСЛЕ того, как значение доедет до поля (подсказка вписывает
+  // сразу несколько букв, и в момент клика значение ещё старое).
+  const pendingCaret = useRef(null);
   const [saved, setSaved] = useState(() => new Set());
   const [selection, setSelection] = useState(null);
   const inputRef = useRef(null);
   const toast = useToast();
 
-  // Каретка — после того, как значение уже в поле. Делать это в обработчике нельзя:
-  // на момент клика значение ещё старое.
+  // Каретка из самого поля: браузер двигает её при вводе, стрелках и тапе.
+  const syncCaret = useCallback(() => {
+    const el = inputRef.current;
+    if (el) setCaret(Math.max(0, Number(el.selectionStart || 0)));
+  }, []);
+
+  // Отложенная каретка — только там, где значение поставили мы сами (подсказка).
+  // В обработчике клика делать это нельзя: значение ещё старое.
   useEffect(() => {
     const el = inputRef.current;
     if (!el || verdict) return;
-    if (document.activeElement !== el) return;
-    try { el.setSelectionRange(value.length, value.length); } catch (_e) { /* noop */ }
+    if (pendingCaret.current == null) return;
+    const pos = pendingCaret.current;
+    pendingCaret.current = null;
+    try { el.setSelectionRange(pos, pos); } catch (_e) { /* noop */ }
+    setCaret(pos);
   }, [value, verdict]);
+
+  // Тап по клетке ставит каретку ИМЕННО В НЕЁ — можно поправить букву в середине, а не
+  // стирать слово целиком. preventDefault держит фокус на поле: без него нажатие уводит
+  // его на сам span, и на айфоне клавиатура прячется.
+  const tapCell = useCallback((i) => (e) => {
+    if (verdict) return;
+    e.preventDefault();
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    const pos = Math.min(i, String(value || '').length);
+    try { el.setSelectionRange(pos, pos); } catch (_e) { /* noop */ }
+    setCaret(pos);
+  }, [verdict, value]);
 
   const heroRef = useFitText(`${phase}|${meta?.wort || ''}`, { max: 'css', min: 15, padding: 10, fitBy: 'word' });
 
@@ -114,7 +145,6 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
       else if (revealed) cls = ' given';                 // подсказка, а не твой ответ
       else if (typed[i]) cls = ' typed';
       else if (given) cls = ' given';
-      if (i === typed.length && i < len) cls += ' next'; // куда встанет следующая буква
       out2.push({ ch, cls });
     }
     return out2;
@@ -132,7 +162,7 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
 
   const start = useCallback(() => {
     setPhase('playing'); setGi(0); setValue(''); setAttempt(1);
-    setVerdict(null); setScore(0); setSolved([]); setHints(0);
+    setVerdict(null); setScore(0); setSolved([]); setHints(0); setCaret(0);
   }, []);
 
   // Лампочка открывает СЛЕДУЮЩУЮ букву слова и ставит ввод на этот префикс. Не
@@ -149,6 +179,7 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
     // моменту уже кончался, клавиатура не выезжала, и человек оставался с одними
     // подсказанными буквами и кнопкой «Проверить» (поймано на живом проходе 14.09.2026).
     try { inputRef.current?.focus(); } catch (_e) { /* noop */ }
+    pendingCaret.current = nextLen;
     setHints((h) => h + 1);
     setValue(full.slice(0, nextLen));
     try { haptic?.('ok'); } catch (_e) { /* noop */ }
@@ -182,11 +213,12 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
     // Тот же закон, что у лампочки: фокус синхронно, внутри касания. Поле теперь не
     // размонтируется на время разбора, поэтому фокусировать есть что.
     try { inputRef.current?.focus(); } catch (_e) { /* noop */ }
+    pendingCaret.current = String(value || '').length;   // дописывать — с конца
     setVerdict(null); setAttempt(2);
-  }, []);
+  }, [value]);
 
   const next = useCallback(() => {
-    setSelection(null); setVerdict(null); setValue(''); setAttempt(1); setHints(0);
+    setSelection(null); setVerdict(null); setValue(''); setAttempt(1); setHints(0); setCaret(0);
     if (gi + 1 >= total) { setPhase('done'); return; }
     setGi((i) => i + 1);
   }, [gi, total]);
@@ -298,13 +330,20 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
               lang="de"
               value={value}
               readOnly={!!verdict}
-              onChange={(e) => setValue(e.target.value)}
+              onChange={(e) => { setValue(e.target.value); syncCaret(); }}
+              onSelect={syncCaret}
+              onKeyUp={syncCaret}
+              onClick={syncCaret}
               onKeyDown={(e) => { if (e.key === 'Enter' && !verdict) check(); }}
               aria-label={attempt === 2 ? 'Поправь форму' : 'Впиши слово по буквам'}
               autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
             />
             {cells.map((c, i) => (
-              <span key={i} className={`gp-cell${c.cls}`} aria-hidden="true">{c.ch}</span>
+              <span key={i}
+                className={`gp-cell${c.cls}${!verdict && i === caret ? ' next' : ''}`}
+                onPointerDown={tapCell(i)}
+                onMouseDown={tapCell(i)}
+                aria-hidden="true">{c.ch}</span>
             ))}
           </label>
           {!verdict ? (

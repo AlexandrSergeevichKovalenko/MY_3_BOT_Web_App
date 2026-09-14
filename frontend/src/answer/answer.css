@@ -2876,8 +2876,27 @@ html[data-scheme="light"] .sel-sheet-act { border-color: #d6dbe4; background: #f
 /* Данная буква: она подсказка, а не ответ, — поэтому акцентом, а не чернилами. */
 .gp-cell.given { background: var(--gp-slot-bg, rgba(217,119,6,.16)); color: var(--gp-accent-ink, #fbbf24); }
 .gp-cell.typed { background: var(--gp-cell-typed, rgba(148,163,184,.22)); }
-/* Клетка, в которую встанет следующая буква. */
-.gp-cells-input:focus ~ .gp-cell.next { box-shadow: inset 0 0 0 2px var(--gp-accent, #d97706); }
+/* КЛЕТКА, КУДА ПИШЕМ. Раньше это был тонкий контур, заметный только если знать, что
+   искать, и показывался он лишь пока поле в фокусе. Владелец 14.09.2026: «не
+   подсвечивается буква, не понимаю какую сейчас писать». Теперь активная клетка
+   выделена цветом и кольцом ВСЕГДА, а в пустой стоит мигающая черта — как каретка. */
+.gp-cell.next {
+  background: var(--gp-slot-bg, rgba(217,119,6,.16));
+  box-shadow: inset 0 0 0 2px var(--gp-accent, #d97706);
+  position: relative;
+}
+/* Черта видна только в ПУСТОЙ активной клетке: там, где буква уже стоит, она бы
+   налезала на неё. */
+.gp-cell.next:empty::after {
+  content: ""; position: absolute; left: 50%; top: 22%; bottom: 22%;
+  width: 2px; margin-left: -1px; border-radius: 2px;
+  background: var(--gp-accent, #d97706);
+  animation: gp-caret 1.05s steps(1, end) infinite;
+}
+@keyframes gp-caret { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .gp-cell.next:empty::after { animation: none; } }
+/* Клетки нажимаются пальцем — курсор и подавление системной подсветки. */
+.gp-cell { cursor: text; -webkit-tap-highlight-color: transparent; user-select: none; }
 /* Перебрал длину — видно сразу, а не после «Проверить». */
 .gp-cell.over { background: var(--gp-bad-bg, rgba(239,68,68,.14)); color: var(--gp-bad, #ef4444); }
 /* Строка под клетками: слева счётчик букв, справа лампочка. */
