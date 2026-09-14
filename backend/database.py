@@ -17677,16 +17677,38 @@ def auto_grant_telegram_user(
 # прогонов, нижний — выдуманные короткие id (11.08.2026 прогон записал 5555, 987654,
 # 776655, и верхний порог их пропустил). По username фильтровать НЕЛЬЗЯ: живой человек,
 # зашедший с иконки на домашнем экране, приходит без имени.
-REAL_ALLOWED_USER_SQL = """
-        user_id < %s
-        AND user_id >= %s
-        AND COALESCE(note, '') NOT LIKE 'load_test%%'
-        AND COALESCE(note, '') NOT LIKE '%%smoke%%'
-        AND COALESCE(note, '') NOT LIKE '%%synthetic%%'
-        AND COALESCE(note, '') NOT LIKE '%%runtime validation%%'
-        AND COALESCE(note, '') NOT LIKE 'phase_c_worker%%'
-        AND COALESCE(note, '') NOT LIKE 'postclaim_timeout%%'
+#
+# ┌─ НАЙДЕНО 14.09.2026 ПРОБОЙ НА ЖИВОЙ БАЗЕ, ИСПРАВЛЕНО ТОГДА ЖЕ. ──────────────────┐
+# │ Правило написано без имени таблицы, и это работало, пока его брали запросы к    │
+# │ ОДНОЙ таблице. Первый же запрос с JOIN (кому уходит приглашение на батл: список │
+# │ доступа + реестр блокировок + реестр готовности) упал с                         │
+# │ `AmbiguousColumn: column reference "user_id" is ambiguous`: колонка user_id есть │
+# │ во всех трёх. Поэтому правило живёт ШАБЛОНОМ, а рядом стоит real_allowed_user_sql│
+# │ (алиас) — чтобы второго текста правила в проекте не появилось никогда.           │
+# │ Как перемерить: любой запрос с JOIN через real_allowed_user_sql("a") на проде.   │
+# └─────────────────────────────────────────────────────────────────────────────────┘
+_REAL_ALLOWED_USER_SQL_TEMPLATE = """
+        {a}user_id < %s
+        AND {a}user_id >= %s
+        AND COALESCE({a}note, '') NOT LIKE 'load_test%%'
+        AND COALESCE({a}note, '') NOT LIKE '%%smoke%%'
+        AND COALESCE({a}note, '') NOT LIKE '%%synthetic%%'
+        AND COALESCE({a}note, '') NOT LIKE '%%runtime validation%%'
+        AND COALESCE({a}note, '') NOT LIKE 'phase_c_worker%%'
+        AND COALESCE({a}note, '') NOT LIKE 'postclaim_timeout%%'
     """
+
+REAL_ALLOWED_USER_SQL = _REAL_ALLOWED_USER_SQL_TEMPLATE.format(a="")
+
+
+def real_allowed_user_sql(alias: str = "") -> str:
+    """То же правило «кто настоящий человек», но с именем таблицы — для запросов с JOIN.
+
+    Текст правила один: и константа, и эта функция собираются из одного шаблона.
+    Второй текст того же правила — это два экрана с двумя ответами на один вопрос,
+    ровно то, из-за чего правило и появилось 27.08.2026."""
+    имя = str(alias or "").strip()
+    return _REAL_ALLOWED_USER_SQL_TEMPLATE.format(a=(f"{имя}." if имя else ""))
 
 
 def get_access_growth_snapshot(hours: int = 24) -> dict:
@@ -63381,7 +63403,7 @@ def list_bot_blocked_allowed_people(*, only_unacked: bool = False) -> list[dict]
                 FROM bt_3_allowed_users a
                 JOIN bt_3_bot_blocked_users b ON b.user_id = a.user_id
                 WHERE b.is_blocked = TRUE
-                  AND {REAL_ALLOWED_USER_SQL}
+                  AND {real_allowed_user_sql('a')}
                   {условие}
                 ORDER BY b.blocked_at DESC NULLS LAST;
                 """,
@@ -63439,7 +63461,7 @@ def list_battle_optout_people_to_nudge(*, days: int = 30) -> list[dict]:
                   AND COALESCE(b.is_blocked, FALSE) = FALSE
                   AND (o.nudged_at IS NULL
                        OR o.nudged_at < NOW() - (%s * INTERVAL '1 day'))
-                  AND {REAL_ALLOWED_USER_SQL}
+                  AND {real_allowed_user_sql('a')}
                 ORDER BY o.updated_at;
                 """,
                 (max(1, int(days or 30)), SYNTHETIC_TELEGRAM_USER_ID_MIN,
@@ -65268,7 +65290,7 @@ def list_battle_invite_targets(*, exclude_user_id: int | None = None) -> dict:
                 FROM bt_3_allowed_users a
                 LEFT JOIN bt_3_bot_blocked_users b        ON b.user_id = a.user_id
                 LEFT JOIN bt_3_article_battle_available o ON o.user_id = a.user_id
-                WHERE {REAL_ALLOWED_USER_SQL};
+                WHERE {real_allowed_user_sql('a')};
                 """,
                 (SYNTHETIC_TELEGRAM_USER_ID_MIN, _MIN_REAL_TELEGRAM_USER_ID),
             )

@@ -153,6 +153,38 @@ class КнопкаГотовностиПоУмолчанию(unittest.TestCase):
         self.assertEqual(ярлык, bot_3.ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT)
 
 
+class ПравилоНастоящегоЧеловекаГодитсяДляJOIN(unittest.TestCase):
+    """14.09.2026 первый же запрос с JOIN упал на проде:
+    `AmbiguousColumn: column reference "user_id" is ambiguous` — колонка user_id есть и в
+    списке доступа, и в реестре блокировок, и в реестре готовности. Правило теперь умеет
+    называть таблицу, и текст правила по-прежнему ОДИН."""
+
+    def test_с_псевдонимом_каждая_колонка_названа_по_таблице(self):
+        правило = db.real_allowed_user_sql("a")
+        # не осталось ни одной колонки без имени таблицы
+        self.assertNotIn(" user_id", правило.replace("a.user_id", "@"))
+        self.assertNotIn("(note", правило.replace("a.note", "@"))
+        self.assertEqual(правило.count("a.user_id"), 2)
+        self.assertEqual(правило.count("a.note"), 6)
+
+    def test_без_псевдонима_это_ровно_прежнее_правило(self):
+        """Однотабличные запросы не должны поменяться ни на символ."""
+        self.assertEqual(db.real_allowed_user_sql(), db.REAL_ALLOWED_USER_SQL)
+        self.assertEqual(db.real_allowed_user_sql("").count("user_id"), 2)
+
+    def test_договор_о_параметрах_один_и_тот_же(self):
+        """Порядок и количество подстановок — часть договора с вызывающим кодом:
+        (SYNTHETIC_TELEGRAM_USER_ID_MIN, _MIN_REAL_TELEGRAM_USER_ID). Считать «%s»
+        по всему тексту нельзя: в шаблонах LIKE есть «%%smoke%%», внутри которого тоже
+        стоит «%s» — на этом тест и споткнулся при написании."""
+        с_алиасом = db.real_allowed_user_sql("a")
+        без = db.REAL_ALLOWED_USER_SQL
+        self.assertEqual(с_алиасом.count("%s"), без.count("%s"))
+        параметры = [ln for ln in с_алиасом.splitlines() if "a.user_id" in ln]
+        self.assertEqual(len(параметры), 2)
+        self.assertTrue(all("%s" in ln for ln in параметры))
+
+
 class ОбещанияЗарегистрированы(unittest.TestCase):
 
     def test_оба_обещания_в_реестре(self):
