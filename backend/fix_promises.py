@@ -362,6 +362,55 @@ def _hint_modal_box_sizing_missing() -> int:
     return 0 if _count_hint_modal_own_box_sizing(_served_webapp_css()) >= 1 else 1
 
 
+# ── Итоги спринта: шапка поджата, слова получают экран (14.09.2026) ──────────────────
+# Жалоба владельца (скриншот Artikel Sprint · Battle): «окошко со словами очень низкое,
+# мало слов помещается, постоянно приходится прокручивать». Замер на стенде с настоящим
+# answer.css и настоящей подгонкой fitCard (390×780): грамота 213 + Топ-3 158 + подсказка
+# 60 = 431 px шапки, списку оставалось 132 px — 3,2 строки. После правки: 89 + 113 + 32,
+# списку 352 px — 9,4 строки. На маленьком телефоне (360×600) 2,8 → 8,4.
+#
+# Обещание меряет не исходник, а CSS, который получает телефон: правила ниже должны быть
+# в нём. Пропадёт хоть одно — список снова сожмётся в две строки, и это придёт владельцу
+# письмом, а не всплывёт через месяц на его экране.
+_SPRINT_RESULT_COMPACT_RULES = (
+    ".ans-card:has(> .as-result-list) .as-cert{display:grid",
+    ".ans-card:has(> .as-result-list) .as-cert-medal{",
+    ".ans-card:has(> .as-result-list) .sp-rank{",
+    ".ans-card:has(> .as-result-list) .as-save-hint{",
+)
+
+
+def _sprint_compact_rules_missing_from(css: str) -> list[str]:
+    """Какие из правил компактной шапки НЕ дошли до телефона.
+
+    Сравнение без пробелов: vite их срезает («:has(>.as-result-list)»), и посимвольное
+    сравнение с исходником дало бы «нарушено» на ровном месте. Нет самого списка слов в
+    CSS — это не собранный фронт, считать нечего: «не измерено», а не «0»."""
+    import re
+    if not re.search(r"\.as-result-list\s*[{,]", css):
+        raise LookupError("в CSS нет .as-result-list — это не собранный фронт")
+    сжатый = re.sub(r"\s+", "", css)
+    return [r for r in _SPRINT_RESULT_COMPACT_RULES if re.sub(r"\s+", "", r) not in сжатый]
+
+
+def _sprint_result_header_not_compact() -> int:
+    """Сколько правил компактной шапки итогов пропало из живого CSS. Обещано: 0."""
+    return len(_sprint_compact_rules_missing_from(_served_webapp_css()))
+
+
+def _sprint_result_header_screen() -> str:
+    """Экран «после»: что по этому поводу отдаёт сайт прямо сейчас."""
+    нет = _sprint_compact_rules_missing_from(_served_webapp_css())
+    if not нет:
+        return ("🏁 Итоги спринта (Artikel · Adjektiv · Wo-Frage): шапка компактная — "
+                "медаль стоит в строке с местом, Топ-3 поджат. Список слов получает "
+                "9 строк вместо 3 на обычном телефоне и 8 вместо 3 на маленьком: "
+                "ошибки видно сразу, без прокрутки.")
+    return ("🏁 Итоги спринта: из живого CSS пропало правил компактной шапки — "
+            + str(len(нет)) + " из " + str(len(_SPRINT_RESULT_COMPACT_RULES))
+            + ". Список слов снова сжат в две-три строки.")
+
+
 def _hint_modal_screen() -> str:
     """Экран «после» для окна подсказки в интерактиве: что реально отдаёт сайт."""
     n = _count_hint_modal_own_box_sizing(_served_webapp_css())
@@ -1797,6 +1846,17 @@ PROMISES: tuple[Promise, ...] = (
         measure=_night_enrichment_runs_in_units_mode,
         how="SELECT metadata->>'mode' FROM bt_3_scheduler_run_guards "
             "WHERE job_key='pool_night_enrichment' — ждём units",
+    ),
+    Promise(
+        key="sprint_result_words_get_the_screen",
+        title="Итоги спринта: список слов занимает экран, а не две строки под шапкой",
+        since="14.09.2026",
+        expected=0,
+        measure=_sprint_result_header_not_compact,
+        screen=_sprint_result_header_screen,
+        how="открыть $WEB_APP_URL, скачать подключённые .css; в них должны стоять все "
+            "четыре правила '.ans-card:has(>.as-result-list) …' (as-cert / as-cert-medal / "
+            "sp-rank / as-save-hint) — ждём 0 пропавших",
     ),
     Promise(
         key="worldnews_card_old_look",
