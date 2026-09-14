@@ -7,6 +7,23 @@ correct AND unambiguous (rejects der/die-See type words), dedups, and inserts
 verified rows. Mirrors our other two-model quality gates. Sync (call via thread);
 each LLM call runs through asyncio.run, the proven pattern in this codebase.
 """
+# ┌─────────────────────────────────────────────────────────────────────────────────────┐
+# │ ПРОВЕРЕНО 14.09.2026. ЛИЧНЫЕ КАРТОЧКИ ЭТОТ ФАЙЛ НЕ ЧИТАЕТ ВОВСЕ.                    │
+# │                                                                                     │
+# │ Бриф «Английский язык в словаре» (docs/tasks/english_language_brief.md, 10.08.2026) │
+# │ называл главным риском включения английского вот что: «английское слово без рода    │
+# │ попадёт в спринт артиклей». ЭТОТ РИСК СНЯТ, и вот доказательство.                   │
+# │                                                                                     │
+# │ Банк слов спринта — собственный (bt_3_article_sprint_*): слова рождает модель по    │
+# │ темам, второй моделью проверяется артикль, род валидируется таблицей _HEAD_GENDER   │
+# │ ниже. Ни bt_3_webapp_dictionary_queries, ни bt_3_card_srs_state в этом файле не     │
+# │ упоминаются ни разу (перепись 13–14.09.2026, счёт по обоим именам = 0).             │
+# │ Английской карточке человека сюда попасть неоткуда: игра в личный словарь не        │
+# │ заглядывает.                                                                        │
+# │ Перемерить одной командой:                                                          │
+# │   grep -c 'bt_3_webapp_dictionary_queries\|bt_3_card_srs_state' \                   │
+# │        backend/article_sprint_generator.py   # ожидается 0                          │
+# └─────────────────────────────────────────────────────────────────────────────────────┘
 from __future__ import annotations
 
 import asyncio
