@@ -152,3 +152,59 @@ def test_ne_to_slovo_i_ono_posschitano(item):
 
 def test_pustoy_otvet_ne_verno(item):
     assert grade_gap_answer(item=item, answer="   ", all_synonyms=ALL)["outcome"] == WRONG
+
+
+# ── Третий заход: справочник спряжений ───────────────────────────────────────
+def test_glagol_v_preterite_naydyotsya_po_spravochniku():
+    """Повод, 14.09.2026: /gap_test встал на слове «bemerken» — ни одной заготовки.
+
+    Примеры там ПРАВИЛЬНЫЕ («Plötzlich registrierte sie einen Fehler im Text»), а не
+    находил их поиск: он приписывал окончание к полному слову, тогда как немецкий
+    глагол спрягается ЗАМЕНОЙ «-en». Форму не выводим — берём из справочника."""
+    sent = "Plötzlich registrierte sie einen Fehler im Text."
+    assert find_form_in_sentence("registrieren", sent) is None, "без справочника — не находим"
+    assert find_form_in_sentence("registrieren", sent, {"registrierte", "registriert"}) == "registrierte"
+    item, why = build_gap_item(synonym="registrieren", synonym_ru="", sentence_de=sent,
+                               forms={"registrierte"})
+    assert item is not None, why
+    assert item["filler"] == "registrierte"
+    assert item["sentence_gapped"] == "Plötzlich ___ sie einen Fehler im Text."
+
+
+def test_otdelyaemyy_glagol_ne_rezhetsya_po_obrubku():
+    """У «wahrnehmen» в справочнике напечатано «nahm wahr», а в живом предложении эта
+    форма РАЗОРВАНА: «nahm sie einen Fehler wahr». Голое «nahm» брать нельзя — пропуск
+    встанет на обрубок, страж соберёт предложение обратно (вырезали же ровно его) и
+    пропустит задание, где правильный ответ «nahm» вместо слова.
+    Такое слово требует ДВУХ пропусков, а это отдельная задача."""
+    sent = "Plötzlich nahm sie einen Fehler wahr."
+    assert find_form_in_sentence("wahrnehmen", sent, {"nahm", "nahm wahr"}) is None
+    item, why = build_gap_item(synonym="wahrnehmen", synonym_ru="", sentence_de=sent,
+                               forms={"nahm", "nahm wahr"})
+    assert item is None and why == "слова в предложении нет"
+
+
+def test_slitnaya_mnogoslovnaya_forma_beryotsya_tselikom():
+    """А если форма стоит в предложении ЦЕЛИКОМ — её и берём, а не первое слово."""
+    sent = "Gestern nahm wahr niemand etwas."     # искусственно слитно
+    assert find_form_in_sentence("wahrnehmen", sent, {"nahm", "nahm wahr"}) == "nahm wahr"
+
+
+def test_bez_spravochnika_povedenie_prezhnee():
+    """Справочник не ответил — заготовка просто не строится и считается. Не догадываемся."""
+    tj = {"correct_examples": [
+        {"word": "registrieren", "sentence_de": "Plötzlich registrierte sie es.", "sentence_ru": ""},
+    ]}
+    items, skipped = build_gap_items(wort="bemerken", accepted=[], trainer_json=tj)
+    assert items == [] and skipped == {"слова в предложении нет": 1}
+
+
+def test_spravochnik_podayotsya_vyzyvayushchim_i_padenie_ne_roniaet_sborku():
+    def broken(_word):
+        raise RuntimeError("справочник недоступен")
+    tj = {"correct_examples": [
+        {"word": "gründlich", "sentence_de": "Eine gründliche Prüfung.", "sentence_ru": ""},
+    ]}
+    items, skipped = build_gap_items(wort="detailliert", accepted=[], trainer_json=tj,
+                                     forms_of=broken)
+    assert len(items) == 1 and not skipped, "падение источника не должно ронять сборку"

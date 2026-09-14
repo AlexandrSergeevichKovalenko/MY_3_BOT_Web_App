@@ -68,7 +68,7 @@ def _core(word: str) -> str:
     return toks[-1] if toks else ""
 
 
-def find_form_span(word: str, sentence: str) -> tuple[int, int] | None:
+def find_form_span(word: str, sentence: str, forms: set | None = None) -> tuple[int, int] | None:
     """ГДЕ в `sentence` стоит форма слова `word`: (начало, конец). None — её там нет.
 
     Сначала точное вхождение, затем вхождение с немецким окончанием. Ничего не
@@ -94,13 +94,44 @@ def find_form_span(word: str, sentence: str) -> tuple[int, int] | None:
         return exact.span()
     tail = "|".join(_FORM_ENDINGS)
     inflected = re.search(rf"(?<![{_LETTER}]){re.escape(core)}(?:{tail})(?![{_LETTER}])", sent)
-    return inflected.span() if inflected else None
+    if inflected:
+        return inflected.span()
+    # ┌─ ТРЕТИЙ ЗАХОД: СПРАВОЧНИК ФОРМ. Разбор 14.09.2026. ───────────────────────────┐
+    # │ Два первых правила приписывают окончание к ПОЛНОМУ слову, а немецкий глагол   │
+    # │ спрягается ЗАМЕНОЙ «-en»: registrieren → registrierte, entdecken → entdeckte, │
+    # │ erkennen → erkannte, sehen → sah. Поэтому любой пример в претерите пролетал   │
+    # │ мимо, и три слова банка (bemerken, verwirren, versäumen) не давали НИ ОДНОЙ   │
+    # │ заготовки — у них все синонимы глаголы. Владелец упёрся в это первым же       │
+    # │ /gap_test 14.09.2026: «У слова bemerken не собралось ни одной заготовки».     │
+    # │                                                                              │
+    # │ Форму мы по-прежнему НЕ ВЫВОДИМ. `forms` — то, что НАПЕЧАТАНО в справочнике   │
+    # │ спряжений (bt_3_german_verb_paradigms, страницы Flexion: de.wiktionary,       │
+    # │ 1808 глаголов на 14.09.2026), и подаётся вызывающим. Нет справочника — нет    │
+    # │ третьего захода, заготовка просто не строится и считается.                    │
+    # │ Формы перебираем от ДЛИННОЙ к короткой: у «wahrnehmen» напечатаны и «nahm»,   │
+    # │ и «nahm wahr» — вырезать надо целое, а не его кусок.                          │
+    # └──────────────────────────────────────────────────────────────────────────────┘
+    known = {str(f or "").strip() for f in (forms or ()) if str(f or "").strip()}
+    # ОТДЕЛЯЕМЫЙ ГЛАГОЛ: в справочнике у него напечатана форма из двух слов («nahm wahr»
+    # у wahrnehmen), а в живом предложении она РАЗОРВАНА — «nahm sie einen Fehler wahr».
+    # Голое «nahm» искать нельзя: пропуск встанет на обрубок, страж соберёт предложение
+    # обратно (мы же вырезали ровно его) и пропустит задание с ответом «nahm» вместо
+    # слова. Поэтому первые слова многословных форм из поиска ИСКЛЮЧАЮТСЯ: такое слово
+    # требует двух пропусков, а это отдельная задача (см. §10 стратегии).
+    fragments = {f.split()[0] for f in known if " " in f}
+    for form in sorted(known, key=len, reverse=True):
+        if " " not in form and form in fragments:
+            continue
+        hit = re.search(rf"(?<![{_LETTER}]){re.escape(form)}(?![{_LETTER}])", sent)
+        if hit:
+            return hit.span()
+    return None
 
 
-def find_form_in_sentence(word: str, sentence: str) -> str | None:
+def find_form_in_sentence(word: str, sentence: str, forms: set | None = None) -> str | None:
     """Сама форма (для тестов и отчётов). Резать предложение по НЕЙ нельзя — см.
     коробку в `find_form_span`; для резки берут span."""
-    span = find_form_span(word, sentence)
+    span = find_form_span(word, sentence, forms)
     return str(sentence or "")[span[0]:span[1]] if span else None
 
 
@@ -114,7 +145,8 @@ def _reconstructs(gapped: str, filler: str, full: str) -> bool:
 
 
 def build_gap_item(*, synonym: str, synonym_ru: str, sentence_de: str,
-                   sentence_ru: str = "", nuance: str = "") -> tuple[dict | None, str]:
+                   sentence_ru: str = "", nuance: str = "",
+                   forms: set | None = None) -> tuple[dict | None, str]:
     """Одна заготовка. Возвращает (заготовка, причина-отказа).
 
     Заготовка строится, только если форма слова НАЙДЕНА в его собственном предложении
@@ -123,7 +155,7 @@ def build_gap_item(*, synonym: str, synonym_ru: str, sentence_de: str,
     sent = str(sentence_de or "").strip()
     if not sent:
         return None, "нет предложения"
-    span = find_form_span(synonym, sent)
+    span = find_form_span(synonym, sent, forms)
     if not span:
         # Отделяемый глагол («aufklären» → «klärten … auf») стоит в предложении в ДВУХ
         # местах — одним пропуском его не вырезать. Такие сюда и попадают.
@@ -146,7 +178,7 @@ def build_gap_item(*, synonym: str, synonym_ru: str, sentence_de: str,
 
 
 def build_gap_items(*, wort: str, accepted: list | None,
-                    trainer_json: dict | None) -> tuple[list, dict]:
+                    trainer_json: dict | None, forms_of=None) -> tuple[list, dict]:
     """Все заготовки одного слова банка + счётчики отказов по классам.
 
     Сколько у слова примеров — столько и заготовок (решение владельца 13.09.2026:
@@ -172,11 +204,20 @@ def build_gap_items(*, wort: str, accepted: list | None,
         if _core(syn).lower() == anchor_core:
             skipped["слово само себе синоним"] = skipped.get("слово само себе синоним", 0) + 1
             continue
+        # Формы даёт вызывающий (в проде — справочник спряжений). Модуль остаётся
+        # чистым: без справочника работает как раньше, просто строит меньше.
+        forms = None
+        if callable(forms_of):
+            try:
+                forms = forms_of(syn)
+            except Exception:                      # источник недоступен — не догадываемся
+                forms = None
         item, why = build_gap_item(
             synonym=syn, synonym_ru=ru_by_de.get(syn.lower(), ""),
             sentence_de=str(ex.get("sentence_de") or ""),
             sentence_ru=str(ex.get("sentence_ru") or ""),
             nuance=str(ex.get("nuance") or ""),
+            forms=forms,
         )
         if item is None:
             skipped[why] = skipped.get(why, 0) + 1

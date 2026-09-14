@@ -1124,19 +1124,29 @@ def _mywords_review_screen() -> str:
 
 
 def _relation_gap_builds_from_bank() -> int:
-    """Слов банка, у которых в среду не собралось бы НИ ОДНОГО пропуска. Обещано: 3.
+    """Слов банка, у которых в среду не собралось бы НИ ОДНОГО пропуска. Обещано: 0.
 
-    Почему не 0. Три слова (verwirren, bemerken, versäumen) не дают заготовок потому,
-    что у них в примерах стоит не та форма слова — это брак ДВЕРИ ПРИЁМА, а не игры,
-    и чинить его будет дверь. Обещание держит другое: чтобы это число не РОСЛО. Если
-    завтра оно станет 10, значит сборка сломалась или дверь начала пускать мусор, и
-    владелец узнает об этом утром, а не через месяц по жалобе.
+    ┌─ ПРОВЕРЕНО 14.09.2026. НЕ ПОДНИМАТЬ ЭТО КАК НОВУЮ НАХОДКУ. ────────────────────┐
+    │ Обещано было 3 — verwirren, bemerken, versäumen. Я считал это браком двери     │
+    │ приёма: «в примерах стоит не та форма слова». Это оказалось НЕВЕРНО. Примеры   │
+    │ там правильные («Plötzlich registrierte sie einen Fehler im Text»), а не       │
+    │ находил их МОЙ поиск: он приписывал окончание к полному слову, тогда как       │
+    │ немецкий глагол спрягается заменой «-en» (registrieren → registrierte). У всех │
+    │ трёх слов синонимы — глаголы, поэтому они и давали ноль.                       │
+    │ Поиск получил третий заход по справочнику спряжений, и теперь таких слов НЕТ:  │
+    │ заготовок 425 → 435, «слова в предложении нет» 28 → 18, слов с нулём 3 → 0.    │
+    │ Перемерить: scripts-прогон build_gap_items по всему банку, с forms_of и без.   │
+    └───────────────────────────────────────────────────────────────────────────────┘
 
     Считаем ТЕМ ЖЕ правилом, по которому строится живое задание (build_gap_items), а
     не его пересказом: иначе обещание стережёт не то, что работает.
     """
     from backend.database import get_db_connection_context
     from backend.relation_gap import build_gap_items
+    # Справочник форм подаём ТОТ ЖЕ, что и живая сборка (backend/answer_eval.
+    # _gap_forms_lookup): измеритель обязан считать тем же правилом, что работает у
+    # человека. Без него 14.09.2026 он показал 3 при живом 0 — мерил другое правило.
+    from backend.answer_eval import _gap_forms_lookup
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1146,8 +1156,10 @@ def _relation_gap_builds_from_bank() -> int:
             rows = cur.fetchall() or []
     empty = 0
     for wort, accepted, trainer_json in rows:
+        full = {"wort": wort, "accepted": accepted, "trainer_json": trainer_json or {}}
         items, _skipped = build_gap_items(
-            wort=str(wort or ""), accepted=accepted, trainer_json=trainer_json or {})
+            wort=str(wort or ""), accepted=accepted, trainer_json=trainer_json or {},
+            forms_of=_gap_forms_lookup(full))
         if not items:
             empty += 1
     return int(empty)
@@ -1676,13 +1688,13 @@ PROMISES: tuple[Promise, ...] = (
         key="relation_gap_builds_from_bank",
         title="Слов банка, у которых «Подставь синоним» не собирает ни одного пропуска",
         since="13.09.2026",
-        expected=3,
+        expected=0,
         measure=_relation_gap_builds_from_bank,
         screen=_relation_gap_screen,
         how="/admin_promises — или python3 -c из backend.relation_gap import build_gap_items "
             "по bt_3_sprint_bank WHERE NOT retired AND trainer_ready: слов с пустым "
-            "списком заготовок ждём 3 (verwirren, bemerken, versäumen — брак примеров "
-            "двери приёма). Число ВЫРОСЛО = сборка сломалась или дверь пустила мусор",
+            "списком заготовок ждём 0. До 14.09.2026 их было 3 — не из-за двери, а "
+            "из-за поиска формы; поиск теперь ходит в справочник спряжений",
     ),
     Promise(
         key="relation_answers_sane",

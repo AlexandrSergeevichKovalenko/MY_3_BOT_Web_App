@@ -65074,6 +65074,65 @@ def count_available_sprint_items(*, relation: str, cooldown_days: int = 0) -> in
             return int((cursor.fetchone() or [0])[0])
 
 
+def list_trainer_ready_words(*, relation: str, limit: int = 12) -> list[dict]:
+    """Готовые слова этого вида, давно не тренированные вперёд. Для админской команды
+    /gap_test: она обязана найти ГОДНОЕ слово, а не встать на первом попавшемся."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT sprint_id, wort, accepted, hint_ru
+                FROM bt_3_sprint_bank
+                WHERE relation = %s AND retired = FALSE AND trainer_ready = TRUE
+                ORDER BY trainer_last_sent_at NULLS FIRST, trainer_send_count ASC
+                LIMIT %s
+                """,
+                (str(relation), max(1, int(limit))),
+            )
+            rows = cursor.fetchall() or []
+    return [{"sprint_id": r[0], "wort": r[1],
+             "accepted": r[2] if isinstance(r[2], list) else [], "hint_ru": r[3]}
+            for r in rows]
+
+
+def verb_forms_lookup(words) -> dict:
+    """Слово → множество его форм, КАК ОНИ НАПЕЧАТАНЫ в справочнике спряжений.
+
+    Источник называется вслух: `bt_3_german_verb_paradigms` — таблицы со страниц
+    Flexion:<глагол> de.wiktionary.org (1808 глаголов на 14.09.2026). Ничего не
+    выводим: отдаём ровно то, что там напечатано целой ячейкой.
+
+    Нужно «Подставь синоним»: немецкий глагол спрягается ЗАМЕНОЙ «-en»
+    (registrieren → registrierte), и приписыванием окончания его форму в предложении
+    не найти. Слова, которых справочник не знает, в ответе просто отсутствуют — и это
+    честное «не знаю», а не пустое множество как признак «форм нет».
+    """
+    keys = [str(w or "").strip() for w in (words or []) if str(w or "").strip()]
+    if not keys:
+        return {}
+    try:
+        from backend.german_verb_paradigms import whole_cell_forms
+    except Exception:
+        logging.warning("verb_forms_lookup: справочник форм недоступен", exc_info=True)
+        return {}
+    out: dict = {}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT verb, tables FROM bt_3_german_verb_paradigms "
+                    "WHERE documented AND lower(verb) = ANY(%s);",
+                    ([k.lower() for k in keys],),
+                )
+                for verb, tables in cursor.fetchall() or []:
+                    if isinstance(tables, dict):
+                        out[str(verb).lower()] = whole_cell_forms(tables)
+    except Exception:
+        logging.warning("verb_forms_lookup failed", exc_info=True)
+        return {}
+    return out
+
+
 def count_available_trainer_items(*, relation: str, cooldown_days: int = 0) -> int:
     """Сколько слов может взять ТРЕНИРОВКА прямо сейчас — по ЕЁ СОБСТВЕННЫМ часам.
 

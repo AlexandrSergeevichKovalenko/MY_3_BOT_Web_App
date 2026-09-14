@@ -482,6 +482,7 @@ from backend.database import (
     update_relation_gap_dispatch_message_id,
     pick_gap_word,
     get_sprint_trainer_item,
+    list_trainer_ready_words,
     pick_next_trainer,
     pick_repeat_trainer,
     mark_trainer_sent,
@@ -43041,6 +43042,13 @@ async def _send_scheduled_relation_gap(context: CallbackContext, relation: str) 
                  relation, entry.get("wort"), len(items), sent, skipped_users, skipped)
 
 
+def _gap_forms_for(full: dict):
+    """Поиск форм по справочнику спряжений для одного слова банка (см.
+    backend/answer_eval._gap_forms_lookup — то же правило, тот же источник)."""
+    from backend.answer_eval import _gap_forms_lookup
+    return _gap_forms_lookup(full or {})
+
+
 async def _admin_gap_test_command(update: Update, context: CallbackContext) -> None:
     """/gap_test [synonym|antonym] — прислать «Подставь синоним» ЛИЧНО СЕБЕ, один раз.
 
@@ -43062,19 +43070,33 @@ async def _admin_gap_test_command(update: Update, context: CallbackContext) -> N
         return
     await asyncio.to_thread(ensure_sprint_schema)
     await asyncio.to_thread(ensure_relation_gap_schema)
-    entry = await asyncio.to_thread(pick_next_trainer, relation=relation, cooldown_days=0)
-    if not entry:
-        await message.reply_text(f"Нет готовых слов ({relation}). Собери: /admin_build_trainers.")
-        return
-    full = await asyncio.to_thread(get_sprint_trainer_item, str(entry["sprint_id"]))
+    # Слово, у которого не собралось ни одной заготовки, команду ОСТАНАВЛИВАТЬ не должно:
+    # 14.09.2026 она встала намертво на «bemerken» (владелец нажал дважды и дважды
+    # получил отказ), потому что pick_next_trainer с кулдауном 0 отдаёт одно и то же
+    # слово. Перебираем дальше по банку и берём первое годное; если годных нет вовсе —
+    # говорим это прямо, с разбором отказов.
     from backend.relation_gap import build_gap_items
-    items, skipped = await asyncio.to_thread(
-        build_gap_items, wort=str((full or {}).get("wort") or entry.get("wort") or ""),
-        accepted=(full or {}).get("accepted"), trainer_json=(full or {}).get("trainer_json") or {})
-    if not items:
+    tried: list[str] = []
+    entry = full = None
+    items: list = []
+    skipped: dict = {}
+    for cand in await asyncio.to_thread(list_trainer_ready_words, relation=relation, limit=12):
+        cand_full = await asyncio.to_thread(get_sprint_trainer_item, str(cand["sprint_id"]))
+        if not cand_full:
+            continue
+        cand_items, cand_skipped = await asyncio.to_thread(
+            build_gap_items, wort=str(cand_full.get("wort") or ""),
+            accepted=cand_full.get("accepted"),
+            trainer_json=cand_full.get("trainer_json") or {},
+            forms_of=_gap_forms_for(cand_full))
+        if cand_items:
+            entry, full, items, skipped = cand, cand_full, cand_items, cand_skipped
+            break
+        tried.append(f"{cand_full.get('wort')}: {cand_skipped}")
+    if not entry:
         await message.reply_text(
-            f"У слова <b>{_html_escape(str(entry.get('wort')))}</b> не собралось ни одной "
-            f"заготовки. Отказы: {_html_escape(str(skipped))}", parse_mode="HTML")
+            f"Ни у одного из {len(tried)} проверенных слов ({relation}) не собралось "
+            f"заготовок.\n" + _html_escape("\n".join(tried[:6])), parse_mode="HTML")
         return
     now = _get_quiz_schedule_now()
     slot_hour = int(now.hour) * 10000 + int(now.minute) * 100 + int(now.second)  # уникальный для превью

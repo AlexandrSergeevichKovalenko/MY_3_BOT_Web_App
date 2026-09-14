@@ -2649,6 +2649,32 @@ def load_trainer_task(*, dispatch_id: int, user_id: int) -> dict | None:
 # Средняя ступень между узнаванием (пн/вт) и припоминанием с нуля (чт).
 # Стратегия и решения владельца 13.09.2026:
 # docs/tasks/synonym_gap_wednesday_strategy.md
+def _gap_forms_lookup(item: dict):
+    """Готовит поиск форм по справочнику спряжений для одного слова банка.
+
+    Один запрос на всё слово, а не на каждый синоним: кандидатов у слова до
+    пятнадцати. Справочник не ответил — возвращаем None, и сборка работает как
+    раньше (строит меньше и честно это считает).
+    """
+    from backend.database import verb_forms_lookup
+    names = []
+    for ex in ((item.get("trainer_json") or {}).get("correct_examples") or []):
+        if isinstance(ex, dict):
+            w = str(ex.get("word") or "").strip()
+            if w:
+                names.append(w.split()[-1] if " " in w else w)
+    if not names:
+        return None
+    table = verb_forms_lookup(names)
+    if not table:
+        return None
+    def forms_of(word: str):
+        core = str(word or "").strip()
+        core = core.split()[-1] if " " in core else core
+        return table.get(core.lower())
+    return forms_of
+
+
 def load_gap_task(*, dispatch_id: int, user_id: int) -> dict | None:
     """Задание среды: опорное слово + все пропуски, собранные из банка.
 
@@ -2666,7 +2692,7 @@ def load_gap_task(*, dispatch_id: int, user_id: int) -> dict | None:
         return None
     items, skipped = build_gap_items(
         wort=str(item.get("wort") or ""), accepted=item.get("accepted"),
-        trainer_json=item.get("trainer_json") or {},
+        trainer_json=item.get("trainer_json") or {}, forms_of=_gap_forms_lookup(item),
     )
     if not items:
         logging.info("gap: нет заготовок sprint=%s skipped=%s", dispatch.get("sprint_id"), skipped)
@@ -2709,7 +2735,7 @@ def evaluate_gap_answer(*, dispatch_id: int, user_id: int, index: int,
         return None
     items, _skipped = build_gap_items(
         wort=str(item.get("wort") or ""), accepted=item.get("accepted"),
-        trainer_json=item.get("trainer_json") or {},
+        trainer_json=item.get("trainer_json") or {}, forms_of=_gap_forms_lookup(item),
     )
     try:
         gap = items[int(index)]
