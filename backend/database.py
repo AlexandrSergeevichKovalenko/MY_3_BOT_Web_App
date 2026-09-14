@@ -24955,6 +24955,237 @@ def count_star_payments_last_day(purposes: tuple[str, ...] = ("light", "pro")) -
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════════════════
+# ЛИЧНОЕ ПИСЬМО НОВИЧКУ ОТ ВЛАДЕЛЬЦА
+#
+# Решение владельца 14.09.2026: человек, подключивший бота, получает НА СЛЕДУЮЩЕЕ УТРО
+# письмо от Александра — кто он, сколько дней открыто, зачем пройти онбординг, почему
+# доступ потом платный и куда писать с вопросами.
+#
+# Письмо уходит РОВНО ОДИН РАЗ на человека, и память об этом живёт здесь, в базе, а не
+# в процессе бота: перезапуск не имеет права прислать второе «спасибо, что подключился».
+#
+# Не доставленное (человек закрыл личку, удалил аккаунт) пробуется WELCOME_LETTER_MAX_ATTEMPTS
+# раз и закрывается статусом 'undeliverable'. «Не смогли» — отдельное состояние, а не
+# тишина: оно видно числом в утреннем отчёте и не притворяется доставленным.
+# ══════════════════════════════════════════════════════════════════════════════════════
+
+# Сколько утр подряд пробуем достучаться, прежде чем признать, что личка закрыта.
+WELCOME_LETTER_MAX_ATTEMPTS = 3
+
+# Письмо адресовано НОВИЧКАМ, поэтому отсчёт идёт от дня включения механизма: человеку,
+# подключившемуся в июле, «спасибо, что подключил бота» в сентябре — не приветствие, а
+# недоразумение. Дату поставил владелец при запуске (14.09.2026).
+WELCOME_LETTER_SINCE = "2026-09-14"
+
+_welcome_letter_schema_ready = False
+
+
+def _ensure_welcome_letter_schema() -> None:
+    global _welcome_letter_schema_ready
+    if _welcome_letter_schema_ready:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_welcome_letters (
+                    user_id       BIGINT PRIMARY KEY,
+                    status        TEXT NOT NULL DEFAULT 'pending',
+                    attempts      INT  NOT NULL DEFAULT 0,
+                    last_error    TEXT,
+                    sent_at       TIMESTAMPTZ,
+                    first_try_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_welcome_letters_status "
+                        "ON bt_3_welcome_letters (status);")
+        conn.commit()
+    _welcome_letter_schema_ready = True
+
+
+def _welcome_letter_admin_ids() -> list[int]:
+    """Владелец и администраторы себе «спасибо, что подключился» не получают."""
+    try:
+        return sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
+    except Exception:
+        logging.exception("письмо новичку: список администраторов не прочитался")
+        return []
+
+
+def list_welcome_letter_candidates(limit: int = 200) -> list[int]:
+    """Кому этим утром уходит личное письмо владельца.
+
+    Условия, все обязательные:
+      • начало отсчёта доступа стоит ПОСЛЕ дня включения механизма (WELCOME_LETTER_SINCE);
+      • человек подключился ДО начала сегодняшнего дня по Вене — письмо приходит утром
+        следующего дня, а не через минуту после Start;
+      • письмо ещё не уходило и не закрыто как недоставляемое;
+      • это живой человек из аллоулиста (общее правило проекта REAL_ALLOWED_USER_SQL,
+        оно же отсекает синтетику нагрузочных прогонов), и он не администратор.
+    """
+    _ensure_welcome_letter_schema()
+    _ensure_access_period_schema()
+    admins = _welcome_letter_admin_ids()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT p.user_id
+                FROM bt_3_access_period p
+                JOIN (SELECT user_id FROM bt_3_allowed_users WHERE {REAL_ALLOWED_USER_SQL}) a
+                  ON a.user_id = p.user_id
+                LEFT JOIN bt_3_welcome_letters w ON w.user_id = p.user_id
+                WHERE p.started_at >= %s::date
+                  AND p.started_at < (date_trunc('day', NOW() AT TIME ZONE 'Europe/Vienna')
+                                      AT TIME ZONE 'Europe/Vienna')
+                  AND COALESCE(w.status, 'pending') = 'pending'
+                  AND COALESCE(w.attempts, 0) < %s
+                  AND NOT (p.user_id = ANY(%s::bigint[]))
+                ORDER BY p.started_at
+                LIMIT %s;
+                """,
+                (SYNTHETIC_TELEGRAM_USER_ID_MIN, _MIN_REAL_TELEGRAM_USER_ID,
+                 WELCOME_LETTER_SINCE, WELCOME_LETTER_MAX_ATTEMPTS, admins, int(limit)),
+            )
+            return [int(r[0]) for r in (cur.fetchall() or [])]
+
+
+def record_welcome_letter_sent(user_id: int) -> None:
+    """Письмо ушло. Второй раз этому человеку оно не уйдёт никогда."""
+    _ensure_welcome_letter_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bt_3_welcome_letters (user_id, status, attempts, sent_at, updated_at)
+                VALUES (%s, 'sent', 1, NOW(), NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                   SET status = 'sent',
+                       attempts = bt_3_welcome_letters.attempts + 1,
+                       sent_at = NOW(),
+                       updated_at = NOW();
+                """,
+                (int(user_id),),
+            )
+        conn.commit()
+
+
+def record_welcome_letter_failure(user_id: int, error: str) -> str:
+    """Письмо не ушло. Возвращает новое состояние: 'pending' (попробуем завтра утром)
+    или 'undeliverable' (попытки кончились — личка закрыта).
+
+    Причина сохраняется дословно: «не смогли» без причины неотличимо от «не пробовали»."""
+    _ensure_welcome_letter_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bt_3_welcome_letters (user_id, status, attempts, last_error, updated_at)
+                VALUES (%s, CASE WHEN 1 >= %s THEN 'undeliverable' ELSE 'pending' END, 1, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                   SET attempts = bt_3_welcome_letters.attempts + 1,
+                       last_error = EXCLUDED.last_error,
+                       updated_at = NOW(),
+                       status = CASE
+                           WHEN bt_3_welcome_letters.attempts + 1 >= %s THEN 'undeliverable'
+                           ELSE 'pending' END
+                RETURNING status;
+                """,
+                (int(user_id), WELCOME_LETTER_MAX_ATTEMPTS, str(error or "")[:500],
+                 WELCOME_LETTER_MAX_ATTEMPTS),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    # Первая же неудача при MAX_ATTEMPTS=1 закрыла бы человека сразу — потому и
+    # проверяем по возвращённому состоянию, а не считаем в голове.
+    return str((row or ["pending"])[0])
+
+
+def welcome_letter_stats() -> dict[str, int]:
+    """Числа для утреннего отчёта: сколько ушло за сутки и всего, сколько ждёт своего
+    утра, сколько не удалось доставить."""
+    _ensure_welcome_letter_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FILTER (WHERE status = 'sent'),
+                       COUNT(*) FILTER (WHERE status = 'sent' AND sent_at > NOW() - interval '1 day'),
+                       COUNT(*) FILTER (WHERE status = 'undeliverable')
+                FROM bt_3_welcome_letters;
+            """)
+            sent_total, sent_day, undeliverable = (cur.fetchone() or (0, 0, 0))
+    return {
+        "sent_total": int(sent_total or 0),
+        "sent_day": int(sent_day or 0),
+        "undeliverable": int(undeliverable or 0),
+        "waiting": len(list_welcome_letter_candidates(limit=1000)),
+    }
+
+
+def count_welcome_letter_holes(days: int = 3) -> int:
+    """Сколько новичков старше `days` суток так и остались без письма и без закрытой
+    попытки. Обещано: 0.
+
+    Это сторож самой утренней работы: если задача перестанет запускаться, число вырастет
+    само и придёт владельцу утром — а не всплывёт через месяц жалобой «мне никто не
+    написал». Человек с закрытой личкой сюда НЕ попадает: он закрыт статусом
+    'undeliverable' и виден отдельной строкой отчёта."""
+    _ensure_welcome_letter_schema()
+    _ensure_access_period_schema()
+    admins = _welcome_letter_admin_ids()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM bt_3_access_period p
+                JOIN (SELECT user_id FROM bt_3_allowed_users WHERE {REAL_ALLOWED_USER_SQL}) a
+                  ON a.user_id = p.user_id
+                LEFT JOIN bt_3_welcome_letters w ON w.user_id = p.user_id
+                WHERE p.started_at >= %s::date
+                  AND p.started_at < NOW() - (%s * interval '1 day')
+                  AND COALESCE(w.status, 'pending') = 'pending'
+                  AND NOT (p.user_id = ANY(%s::bigint[]));
+                """,
+                (SYNTHETIC_TELEGRAM_USER_ID_MIN, _MIN_REAL_TELEGRAM_USER_ID,
+                 WELCOME_LETTER_SINCE, int(days), admins),
+            )
+            return int((cur.fetchone() or [0])[0] or 0)
+
+
+def list_recent_welcome_letters(limit: int = 10) -> list[dict]:
+    """Последние письма новичкам — экран «после» для владельца: кому, когда, чем кончилось."""
+    _ensure_welcome_letter_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT w.user_id, w.status, w.attempts, w.sent_at, w.updated_at, w.last_error,
+                       COALESCE(NULLIF(i.first_name, ''), NULLIF(i.display_name, ''), '')
+                FROM bt_3_welcome_letters w
+                LEFT JOIN bt_3_user_identity i ON i.user_id = w.user_id
+                ORDER BY w.updated_at DESC
+                LIMIT %s;
+            """, (int(limit),))
+            rows = cur.fetchall() or []
+    return [{"user_id": int(r[0]), "status": str(r[1]), "attempts": int(r[2] or 0),
+             "sent_at": r[3], "updated_at": r[4], "last_error": r[5], "name": str(r[6] or "")}
+            for r in rows]
+
+
+def welcome_letter_first_name(user_id: int) -> str:
+    """Имя новичка для обращения в письме. Источник — bt_3_user_identity, куда имя
+    кладёт сам Telegram. Нет имени — возвращаем пустую строку, и письмо здоровается без
+    имени: выдумывать обращение человеку мы не будем."""
+    ensure_user_identity_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(NULLIF(first_name, ''), '') "
+                        "FROM bt_3_user_identity WHERE user_id = %s;", (int(user_id),))
+            row = cur.fetchone()
+    return str((row or [""])[0] or "").strip()
+
+
 def admin_set_access_period_started(user_id: int, started_at: datetime) -> None:
     """ЕДИНСТВЕННОЕ место, где started_at меняется, — ручная команда администратора
     /admin_access для проверки замка на тестовом аккаунте, не дожидаясь 30 дней.

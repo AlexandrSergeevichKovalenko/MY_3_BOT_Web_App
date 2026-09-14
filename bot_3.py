@@ -454,6 +454,11 @@ from backend.database import (
     record_access_reminder,
     access_state_counts,
     count_star_payments_last_day,
+    list_welcome_letter_candidates,
+    record_welcome_letter_sent,
+    record_welcome_letter_failure,
+    welcome_letter_stats,
+    welcome_letter_first_name,
     get_access_period,
     admin_set_access_period_started,
     list_allowed_telegram_user_ids,
@@ -10335,6 +10340,7 @@ def _send_pool_enrich_morning_report() -> None:
                 + _dictionary_integrity_line()
             )
         text += _access_state_line()
+        text += _welcome_letter_report_line()
         text += _word_pick_report_line()
         text += _form_headword_report_line()
         text += _sprint_intake_report_line()
@@ -17110,6 +17116,210 @@ async def _access_reminder_job(context: CallbackContext) -> None:
             logging.warning("access reminder: не ушло user=%s", uid, exc_info=True)
     logging.info("access reminder: sent=%s not_locked=%s cadence_wait=%s failed=%s candidates=%s",
                  sent, skipped_paid, skipped_cadence, failed, len(candidates))
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+# ЛИЧНОЕ ПИСЬМО НОВИЧКУ ОТ ВЛАДЕЛЬЦА (утро следующего дня)
+#
+# Владелец 14.09.2026: «когда ко мне подключается пользователь — отправлять ему короткое
+# сообщение: привет, спасибо, что подключил бота; если будут вопросы или идеи — всегда
+# можешь обращаться ко мне, меня зовут Александр, я разработчик».
+#
+# Почему пишет БОТ, а не аккаунт владельца. Бот физически не может отправить сообщение
+# от чужого имени, а настоящая рассылка с личного аккаунта (юзербот на MTProto) не
+# доходит до людей без @username и грозит блокировкой аккаунта за автоматические письма
+# незнакомым. Решение владельца 14.09.2026: письмо идёт от бота, написано от первого
+# лица и подписано именем, а личный адрес стоит кнопкой под письмом.
+#
+# Почему НЕ сразу после Start: там уже идёт карточка настройки, и два сообщения подряд
+# накладываются друг на друга. Решение владельца 14.09.2026 — следующее утро.
+#
+# Учёт («кому ушло, кому не смогли») — в базе, `bt_3_welcome_letters`, см. database.py.
+# ══════════════════════════════════════════════════════════════════════════════════════
+
+# Автор письма. Id назвал владелец 14.09.2026 («с моего аккаунта Telegram 117649764»);
+# env позволяет подменить его, не трогая код. Сам адрес (@username) в коде НЕ вшит —
+# бот спрашивает его у Telegram по этому id, иначе смена username увела бы человека
+# в никуда.
+WELCOME_LETTER_AUTHOR_ID = int((os.getenv("OWNER_TELEGRAM_ID") or "117649764").strip())
+WELCOME_LETTER_AUTHOR_NAME = (os.getenv("OWNER_DISPLAY_NAME") or "Александр").strip()
+# Во сколько утра уходит письмо (Вена). После суточного отчёта о доступе в 09:05.
+WELCOME_LETTER_HOUR, WELCOME_LETTER_MINUTE = 9, 30
+# За один прогон — не больше этого числа писем: рассылка идёт в личку, и Telegram
+# ограничивает темп. Остальные уйдут следующим утром, они не теряются (статус pending).
+WELCOME_LETTER_BATCH = 60
+_WELCOME_CONTACT_CACHE: dict[str, tuple[float, str]] = {}
+
+
+async def _welcome_letter_contact_url(context: CallbackContext) -> str:
+    """Личный адрес владельца для кнопки «Написать». Спрашивается у Telegram по id.
+
+    Пустая строка означает «у аккаунта нет @username» — тогда кнопки не будет, и письмо
+    скажет про «Поддержку» в приложении. Оба текста написаны заранее (см.
+    _welcome_letter_text), так что письмо не обещает кнопку, которой нет."""
+    now = pytime.time()
+    cached = _WELCOME_CONTACT_CACHE.get("url")
+    if cached and (now - cached[0]) < 6 * 3600:
+        return cached[1]
+    try:
+        chat = await context.bot.get_chat(WELCOME_LETTER_AUTHOR_ID)
+        uname = str(getattr(chat, "username", "") or "").lstrip("@").strip()
+    except Exception:
+        # Не подставляем «примерный» адрес: письмо уйдёт с путём через «Поддержку».
+        logging.warning("письмо новичку: адрес владельца не спросился у Telegram", exc_info=True)
+        return ""
+    url = f"https://t.me/{uname}" if uname else ""
+    if not url:
+        logging.warning("письмо новичку: у аккаунта %s нет @username — кнопки «Написать» не будет",
+                        WELCOME_LETTER_AUTHOR_ID)
+    _WELCOME_CONTACT_CACHE["url"] = (now, url)
+    return url
+
+
+def _welcome_letter_text(first_name: str, *, has_contact: bool) -> str:
+    """Текст письма. Имя — из Telegram; нет имени — здороваемся без имени, а не
+    придумываем обращение.
+
+    Сроки названы теми же, что стоят в замке доступа: 7 дней полного, дальше «Лайт»
+    до 30-го дня (docs/tasks/light_tier_strategy.md, решение владельца 04.09.2026).
+    Цены в письме НЕ называются — решение владельца 14.09.2026: первое письмо не
+    продаёт, цена ждёт человека в разделе «Подписка»."""
+    имя = html.escape(str(first_name or "").strip())
+    привет = f"👋 Привет, {имя}!" if имя else "👋 Привет!"
+    куда_писать = (
+        "Если появятся вопросы, идеи или что-то не понравится — пиши прямо мне: "
+        "кнопка под этим письмом, или раздел «Поддержка» в приложении. Читаю всё сам."
+        if has_contact else
+        "Если появятся вопросы, идеи или что-то не понравится — напиши мне в разделе "
+        "«Поддержка» в приложении. Это личная переписка со мной, читаю всё сам."
+    )
+    return (
+        f"{привет}\n\n"
+        f"Меня зовут {html.escape(WELCOME_LETTER_AUTHOR_NAME)}, я разработчик этого бота. "
+        "Спасибо, что подключил его — рад тебя видеть.\n\n"
+        "Первые <b>7 дней</b> у тебя полный доступ: открыто всё. Потом ещё <b>23 дня</b> — "
+        "уровень «Лайт»: заниматься можно так же, просто заданий в день поменьше. "
+        "Посмотри, позанимайся — столько, сколько будет интересно.\n\n"
+        "И одна просьба: <b>не поленись пройти онбординг</b>. Информации там много, но она "
+        "правда нужная — из неё ты поймёшь, что вообще есть внутри: словарь, читалка, "
+        "карточки, тренажёры, видео по слабым темам, разговорная практика. Функций много, "
+        "и жалко, если половину ты просто не найдёшь.\n\n"
+        "Пару слов о том, почему потом доступ платный. Приложение стоит на большом "
+        "количестве внешних платных источников — словари, справочники, модели, озвучка. "
+        "Подключать их поодиночке пришлось бы самому: за каждый платить и всем этим "
+        "управлять. Здесь за счёт того, что нас много, это выходит заметно дешевле, а "
+        "главное — всё уже собрано и разложено в готовые задания, которые просто приходят "
+        "тебе.\n\n"
+        "Так что за этот месяц ты спокойно посмотришь, насколько тебе подходят задания и "
+        "интересно ли заниматься, — и сам выберешь, какой доступ оставить: «Лайт» или "
+        "«Полный».\n\n"
+        f"{куда_писать}"
+    )
+
+
+def _welcome_letter_keyboard(contact_url: str) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton("🚀 Пройти онбординг", url=get_webapp_deeplink("onboarding"))]]
+    if contact_url:
+        rows.append([InlineKeyboardButton(f"✍️ Написать {WELCOME_LETTER_AUTHOR_NAME}у",
+                                          url=contact_url)])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _send_welcome_letter(context: CallbackContext, user_id: int, contact_url: str) -> None:
+    """Одно письмо одному человеку. Ошибка НЕ глушится — её ловит вызывающий и
+    записывает причину в учёт, иначе «не дошло» стало бы неотличимо от «не пробовали»."""
+    имя = await asyncio.to_thread(welcome_letter_first_name, int(user_id))
+    await context.bot.send_message(
+        chat_id=int(user_id),
+        text=_welcome_letter_text(имя, has_contact=bool(contact_url)),
+        parse_mode="HTML",
+        reply_markup=_welcome_letter_keyboard(contact_url),
+        disable_web_page_preview=True,
+    )
+
+
+async def _welcome_letter_job(context: CallbackContext) -> dict:
+    """09:30 Вена: личное письмо владельца тем, кто подключился вчера.
+
+    Возвращает числа прогона — их же печатает команда /welcome_letter send и видит
+    владелец. Молчащий механизм неотличим от сломанного, поэтому итог идёт и в лог, и
+    строкой в утренний отчёт (_welcome_letter_report_line)."""
+    try:
+        candidates = await asyncio.to_thread(list_welcome_letter_candidates, WELCOME_LETTER_BATCH)
+    except Exception:
+        logging.exception("письмо новичку: кандидаты не прочитались")
+        return {"candidates": 0, "sent": 0, "failed": 0, "closed": 0, "error": "кандидаты не прочитались"}
+    if not candidates:
+        logging.info("welcome letter: некому писать")
+        return {"candidates": 0, "sent": 0, "failed": 0, "closed": 0}
+    contact_url = await _welcome_letter_contact_url(context)
+    sent = failed = closed = 0
+    for idx, uid in enumerate(candidates, start=1):
+        try:
+            await _send_welcome_letter(context, int(uid), contact_url)
+        except Exception as exc:
+            failed += 1
+            try:
+                status = await asyncio.to_thread(
+                    record_welcome_letter_failure, int(uid), f"{type(exc).__name__}: {exc}")
+            except Exception:
+                logging.exception("письмо новичку: неудачу не удалось записать user=%s", uid)
+                status = "pending"
+            if status == "undeliverable":
+                closed += 1
+            logging.warning("письмо новичку не ушло user=%s: %s", uid, exc)
+            continue
+        await asyncio.to_thread(record_welcome_letter_sent, int(uid))
+        sent += 1
+        if idx % 20 == 0:
+            await asyncio.sleep(1.0)
+    logging.info("welcome letter: candidates=%s sent=%s failed=%s closed=%s contact=%s",
+                 len(candidates), sent, failed, closed, bool(contact_url))
+    return {"candidates": len(candidates), "sent": sent, "failed": failed, "closed": closed}
+
+
+def _welcome_letter_report_line() -> str:
+    """Строка утреннего отчёта: дошло ли личное письмо до вчерашних новичков."""
+    try:
+        s = welcome_letter_stats()
+    except Exception:
+        logging.exception("строка о письме новичкам не собралась")
+        return "\n💌 Письмо новичкам: ❓ не посчиталось, подробности в логах.\n"
+    line = (f"\n💌 <b>Письмо новичкам</b>: за сутки <b>{s['sent_day']}</b> · "
+            f"всего <b>{s['sent_total']}</b> · ждут завтрашнего утра <b>{s['waiting']}</b>")
+    if s.get("undeliverable"):
+        line += f" · не доставлено <b>{s['undeliverable']}</b> ⚠️"
+    return line + "\n"
+
+
+async def _welcome_letter_command(update: Update, context: CallbackContext) -> None:
+    """/welcome_letter — показать письмо себе ровно таким, каким его увидит новичок.
+    `/welcome_letter send` — не ждать 09:30 и разослать причитающимся прямо сейчас."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if int(user.id) not in {int(a) for a in (get_admin_telegram_ids() or [])}:
+        await message.reply_text("Команда только для администратора.")
+        return
+    args = context.args or []
+    if (args[0].strip().lower() if args else "") != "send":
+        contact_url = await _welcome_letter_contact_url(context)
+        await _send_welcome_letter(context, int(user.id), contact_url)
+        адрес = contact_url or "нет @username → кнопки «Написать» не будет, письмо ведёт в «Поддержку»"
+        await message.reply_text(
+            "👆 Так письмо видит новичок на следующее утро после подключения.\n"
+            f"Кнопка «Написать»: {адрес}\n"
+            "Разослать причитающимся прямо сейчас: /welcome_letter send")
+        return
+    итог = await _welcome_letter_job(context)
+    await message.reply_text(
+        "💌 <b>Письма новичкам</b>\n"
+        f"Кандидатов: <b>{итог['candidates']}</b>\n"
+        f"📨 Отправлено: <b>{итог['sent']}</b>\n"
+        f"⚠️ Не ушло: <b>{итог['failed']}</b> (из них закрыто как недоставляемые: {итог['closed']})\n"
+        f"{_welcome_letter_report_line()}",
+        parse_mode="HTML")
 
 
 def _access_state_line() -> str:
@@ -46963,6 +47173,7 @@ def main():
     application.add_handler(InlineQueryHandler(_handle_share_inline_query))
     application.add_handler(CommandHandler("announce_schedule", _announce_schedule_command))
     application.add_handler(CommandHandler("onboarding_announce", _onboarding_announce_command))
+    application.add_handler(CommandHandler("welcome_letter", _welcome_letter_command))
     application.add_handler(CommandHandler("admin_reset_onboarding", _admin_reset_onboarding_command))
     application.add_handler(CommandHandler("admin_run_streaks", _admin_run_streaks_command))
     application.add_handler(CommandHandler("admin_group_daily", _admin_group_daily_command))
@@ -47371,6 +47582,19 @@ def main():
             logging.info("scheduled daily_access_digest at 09:05 Europe/Vienna")
         except Exception:
             logging.warning("failed to schedule daily_access_digest", exc_info=True)
+        try:
+            # Личное письмо владельца тем, кто подключился ВЧЕРА. Ставится после
+            # суточного отчёта о доступе: к этому часу владелец уже знает, кто пришёл.
+            application.job_queue.run_daily(
+                _welcome_letter_job,
+                time=time(hour=WELCOME_LETTER_HOUR, minute=WELCOME_LETTER_MINUTE,
+                          tzinfo=ZoneInfo("Europe/Vienna")),
+                name="welcome_letter",
+            )
+            logging.info("scheduled welcome_letter at %02d:%02d Europe/Vienna",
+                         WELCOME_LETTER_HOUR, WELCOME_LETTER_MINUTE)
+        except Exception:
+            logging.warning("failed to schedule welcome_letter", exc_info=True)
         # Сводка по очереди — четыре раза за световой день. Человек, вставший в очередь
         # утром, не должен ждать впуска до следующего утра только потому, что владелец
         # смотрит отчёт раз в сутки. Молчит, когда дверь открыта или очередь пуста.

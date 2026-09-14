@@ -1598,6 +1598,38 @@ def _pos_gender_conflicts_unattended() -> int:
     return int((row or [0])[0] or 0)
 
 
+def _newcomers_without_a_letter() -> int:
+    """Новичков старше трёх суток, оставшихся без личного письма владельца. Обещано: 0.
+
+    Сторож самой утренней работы (bot_3._welcome_letter_job, 09:30 Вена). Перестанет
+    запускаться — число вырастет само и придёт владельцу утром, а не всплывёт через
+    месяц жалобой «мне никто не написал». Человек с закрытой личкой сюда НЕ попадает:
+    он закрыт статусом 'undeliverable' и виден отдельной строкой отчёта."""
+    from backend.database import count_welcome_letter_holes
+    return count_welcome_letter_holes()
+
+
+def _welcome_letter_screen() -> str:
+    """Экран «после»: последние личные письма новичкам — кому, когда, чем кончилось."""
+    from backend.database import list_recent_welcome_letters, welcome_letter_stats
+    строки = ["💌 Последние письма новичкам:"]
+    записи = list_recent_welcome_letters(limit=8)
+    if not записи:
+        строки.append("  (ни одного — с 14.09.2026 новичков ещё не было)")
+    for з in записи:
+        когда = з["sent_at"] or з["updated_at"]
+        подпись = {"sent": "ушло", "undeliverable": "личка закрыта",
+                   "pending": "попробуем завтра утром"}.get(з["status"], з["status"])
+        хвост = f" · {str(з['last_error'])[:60]}" if з.get("last_error") and з["status"] != "sent" else ""
+        имя = з["name"] or f"user_{з['user_id']}"
+        строки.append(f"  {когда:%d.%m %H:%M} · {имя} · {подпись} (попыток {з['attempts']}){хвост}")
+    s = welcome_letter_stats()
+    строки.append(f"Итого: ушло {s['sent_total']} · ждут своего утра {s['waiting']} · "
+                  f"не доставлено {s['undeliverable']}")
+    return "\n".join(строки)
+
+
+
 PROMISES: tuple[Promise, ...] = (
     Promise(
         key="pos_gender_conflicts_attended",
@@ -2089,6 +2121,19 @@ PROMISES: tuple[Promise, ...] = (
         expected=0,
         measure=_form_headwords_unfixed,
         how="python3 -c \"from backend.form_headword_sweep import unfixed_forms_count as f; print(f())\"",
+    ),
+    Promise(
+        key="welcome_letter_reaches_newcomers",
+        title="Новичков без личного письма владельца (старше трёх суток) не осталось",
+        since="14.09.2026",
+        expected=0,
+        measure=_newcomers_without_a_letter,
+        how="SELECT p.user_id FROM bt_3_access_period p LEFT JOIN bt_3_welcome_letters w "
+            "ON w.user_id = p.user_id WHERE p.started_at >= '2026-09-14' "
+            "AND p.started_at < NOW() - interval '3 days' "
+            "AND COALESCE(w.status,'pending') = 'pending'; руками — команда /welcome_letter: "
+            "письмо придёт тебе ровно таким, каким его видит новичок",
+        screen=_welcome_letter_screen,
     ),
 )
 
