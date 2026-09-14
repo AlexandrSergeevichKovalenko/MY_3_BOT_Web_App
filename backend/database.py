@@ -17677,16 +17677,38 @@ def auto_grant_telegram_user(
 # прогонов, нижний — выдуманные короткие id (11.08.2026 прогон записал 5555, 987654,
 # 776655, и верхний порог их пропустил). По username фильтровать НЕЛЬЗЯ: живой человек,
 # зашедший с иконки на домашнем экране, приходит без имени.
-REAL_ALLOWED_USER_SQL = """
-        user_id < %s
-        AND user_id >= %s
-        AND COALESCE(note, '') NOT LIKE 'load_test%%'
-        AND COALESCE(note, '') NOT LIKE '%%smoke%%'
-        AND COALESCE(note, '') NOT LIKE '%%synthetic%%'
-        AND COALESCE(note, '') NOT LIKE '%%runtime validation%%'
-        AND COALESCE(note, '') NOT LIKE 'phase_c_worker%%'
-        AND COALESCE(note, '') NOT LIKE 'postclaim_timeout%%'
+#
+# ┌─ НАЙДЕНО 14.09.2026 ПРОБОЙ НА ЖИВОЙ БАЗЕ, ИСПРАВЛЕНО ТОГДА ЖЕ. ──────────────────┐
+# │ Правило написано без имени таблицы, и это работало, пока его брали запросы к    │
+# │ ОДНОЙ таблице. Первый же запрос с JOIN (кому уходит приглашение на батл: список │
+# │ доступа + реестр блокировок + реестр готовности) упал с                         │
+# │ `AmbiguousColumn: column reference "user_id" is ambiguous`: колонка user_id есть │
+# │ во всех трёх. Поэтому правило живёт ШАБЛОНОМ, а рядом стоит real_allowed_user_sql│
+# │ (алиас) — чтобы второго текста правила в проекте не появилось никогда.           │
+# │ Как перемерить: любой запрос с JOIN через real_allowed_user_sql("a") на проде.   │
+# └─────────────────────────────────────────────────────────────────────────────────┘
+_REAL_ALLOWED_USER_SQL_TEMPLATE = """
+        {a}user_id < %s
+        AND {a}user_id >= %s
+        AND COALESCE({a}note, '') NOT LIKE 'load_test%%'
+        AND COALESCE({a}note, '') NOT LIKE '%%smoke%%'
+        AND COALESCE({a}note, '') NOT LIKE '%%synthetic%%'
+        AND COALESCE({a}note, '') NOT LIKE '%%runtime validation%%'
+        AND COALESCE({a}note, '') NOT LIKE 'phase_c_worker%%'
+        AND COALESCE({a}note, '') NOT LIKE 'postclaim_timeout%%'
     """
+
+REAL_ALLOWED_USER_SQL = _REAL_ALLOWED_USER_SQL_TEMPLATE.format(a="")
+
+
+def real_allowed_user_sql(alias: str = "") -> str:
+    """То же правило «кто настоящий человек», но с именем таблицы — для запросов с JOIN.
+
+    Текст правила один: и константа, и эта функция собираются из одного шаблона.
+    Второй текст того же правила — это два экрана с двумя ответами на один вопрос,
+    ровно то, из-за чего правило и появилось 27.08.2026."""
+    имя = str(alias or "").strip()
+    return _REAL_ALLOWED_USER_SQL_TEMPLATE.format(a=(f"{имя}." if имя else ""))
 
 
 def get_access_growth_snapshot(hours: int = 24) -> dict:
@@ -30896,6 +30918,14 @@ def ensure_bot_blocked_table() -> None:
                         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     );
                     """
+                )
+                # Владелец посмотрел на этого человека в недельном отчёте и решил
+                # оставить его в списке доступа. Отметка нужна, чтобы то же имя не
+                # приходило каждое воскресенье: молчание — не согласие, но и
+                # повторять решённое каждую неделю значит приучить не читать отчёт.
+                cursor.execute(
+                    "ALTER TABLE bt_3_bot_blocked_users "
+                    "ADD COLUMN IF NOT EXISTS admin_ack_at TIMESTAMPTZ;"
                 )
                 conn.commit()
         _BOT_BLOCKED_SCHEMA_READY = True
@@ -63185,18 +63215,29 @@ def ensure_article_battle_available_schema() -> None:
                 "ALTER TABLE bt_3_article_battle_available "
                 "ADD COLUMN IF NOT EXISTS user_name TEXT NOT NULL DEFAULT '';"
             )
+            # Когда мы в последний раз предлагали человеку снова включить батлы.
+            # Раз в месяц, не чаще (решение владельца 14.09.2026) — без этой отметки
+            # ежемесячная задача написала бы повторно при каждом лишнем запуске.
+            cursor.execute(
+                "ALTER TABLE bt_3_article_battle_available "
+                "ADD COLUMN IF NOT EXISTS nudged_at TIMESTAMPTZ;"
+            )
         conn.commit()
 
 
 def toggle_article_battle_available(user_id: int, user_name: str = "") -> bool:
-    """Flip the user's opt-in for battle invites. Returns the NEW state."""
+    """Переключить готовность к батлам. Возвращает НОВОЕ состояние.
+
+    Решение владельца 14.09.2026: по умолчанию человек ГОТОВ. Значит у того, про кого
+    строки ещё нет, кнопка показывает «включено», и первое нажатие обязано ВЫКЛючить —
+    иначе нажатие не меняло бы ничего видимого. Отсюда `VALUES (…, FALSE, …)`."""
     ensure_article_battle_available_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO bt_3_article_battle_available (user_id, opted_in, user_name, updated_at)
-                VALUES (%s, TRUE, %s, NOW())
+                VALUES (%s, FALSE, %s, NOW())
                 ON CONFLICT (user_id) DO UPDATE
                 SET opted_in = NOT bt_3_article_battle_available.opted_in,
                     user_name = CASE WHEN EXCLUDED.user_name <> '' THEN EXCLUDED.user_name
@@ -63236,6 +63277,9 @@ def set_article_battle_available(user_id: int, opted_in: bool, user_name: str = 
 
 
 def is_article_battle_available(user_id: int) -> bool:
+    """Готов ли человек к батлам. НЕТ СТРОКИ = ГОТОВ (решение владельца 14.09.2026:
+    «по умолчанию кнопка включена»). Выключено только то, что человек выключил сам —
+    молчание согласием на отказ не считается."""
     ensure_article_battle_available_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -63244,19 +63288,17 @@ def is_article_battle_available(user_id: int) -> bool:
                 (int(user_id),),
             )
             row = cursor.fetchone()
-    return bool(row[0]) if row else False
+    return bool(row[0]) if row else True
 
 
 def list_article_battle_available_user_ids() -> list[int]:
-    """User ids who opted in to be invited to battles (for the broadcast)."""
-    ensure_article_battle_available_schema()
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                "SELECT user_id FROM bt_3_article_battle_available WHERE opted_in = TRUE;"
-            )
-            rows = cursor.fetchall() or []
-    return [int(r[0]) for r in rows if r and r[0]]
+    """Кто готов к батлам: настоящие впущенные люди МИНУС выключившие кнопку сами.
+
+    Раньше здесь стоял `WHERE opted_in = TRUE` по одной таблице — то есть в список
+    попадали ТОЛЬКО нажавшие кнопку (9 человек из 28 на 14.09.2026), а все остальные
+    считались отказавшимися, хотя ничего не выключали. С default-ON (решение владельца
+    14.09.2026) правильный ответ — «все, кто не отказался»."""
+    return list(list_battle_invite_targets().get("targets") or [])
 
 
 def ensure_article_battle_reminder_schema() -> None:
@@ -63331,16 +63373,146 @@ def mark_article_battle_reminder_sent(reminder_id: int) -> None:
 
 
 def list_article_battle_available() -> list[dict]:
-    """Opted-in users with names, for the individual invite picker. [{user_id, name}]."""
+    """Готовые к батлам, с именами — для экрана «кого пригласить». [{user_id, name}].
+
+    Состав тот же, что у рассылки (list_battle_invite_targets): иначе экран показывал бы
+    одних людей, а приглашение уходило другим. Имя берётся из таблицы личности; кого мы
+    не знаем по имени, показываем как «ID …» — придумывать имя нельзя, а скрывать
+    человека из списка тем более."""
+    ids = list(list_battle_invite_targets().get("targets") or [])
+    if not ids:
+        return []
+    names = get_user_display_names(ids)
+    return [{"user_id": int(uid), "name": names.get(int(uid)) or f"ID {uid}"} for uid in ids]
+
+
+def list_bot_blocked_allowed_people(*, only_unacked: bool = False) -> list[dict]:
+    """Впущенные люди, у которых бот закрыт: имя, когда закрыли, решал ли владелец.
+
+    Нужно недельному блоку утреннего отчёта. Почему это вообще отчёт, а не «и так
+    видно»: 14.09.2026 таких было 7 из 28 впущенных, и владелец узнал об этом только
+    потому, что случайно посмотрел на подпись своего батла. Место в потолке впуска они
+    при этом занимают, а очередь стоит."""
+    ensure_bot_blocked_table()
+    условие = "AND b.admin_ack_at IS NULL" if only_unacked else ""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT a.user_id, b.blocked_at, b.admin_ack_at
+                FROM bt_3_allowed_users a
+                JOIN bt_3_bot_blocked_users b ON b.user_id = a.user_id
+                WHERE b.is_blocked = TRUE
+                  AND {real_allowed_user_sql('a')}
+                  {условие}
+                ORDER BY b.blocked_at DESC NULLS LAST;
+                """,
+                (SYNTHETIC_TELEGRAM_USER_ID_MIN, _MIN_REAL_TELEGRAM_USER_ID),
+            )
+            rows = cursor.fetchall() or []
+    ids = [int(r[0]) for r in rows]
+    names = get_user_display_names(ids) if ids else {}
+    return [{"user_id": int(uid), "name": names.get(int(uid)) or f"ID {uid}",
+             "blocked_at": blocked_at, "acked_at": acked_at}
+            for uid, blocked_at, acked_at in rows]
+
+
+def ack_bot_blocked_users(user_ids: list[int] | None = None) -> int:
+    """«Оставить как есть» — владелец посмотрел и решил не трогать этих людей.
+
+    Ничего НЕ удаляет: снимает только повтор имени в следующем воскресном блоке.
+    Пустой список = отметить всех незакрытых (кнопка «Оставить всех»)."""
+    ensure_bot_blocked_table()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if user_ids:
+                cursor.execute(
+                    "UPDATE bt_3_bot_blocked_users SET admin_ack_at = NOW() "
+                    "WHERE is_blocked = TRUE AND user_id = ANY(%s) AND admin_ack_at IS NULL;",
+                    ([int(u) for u in user_ids],),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE bt_3_bot_blocked_users SET admin_ack_at = NOW() "
+                    "WHERE is_blocked = TRUE AND admin_ack_at IS NULL;"
+                )
+            затронуто = int(cursor.rowcount or 0)
+        conn.commit()
+    return затронуто
+
+
+def list_battle_optout_people_to_nudge(*, days: int = 30) -> list[dict]:
+    """Кому предложить снова включить батлы: выключил кнопку сам, бота не блокировал,
+    и мы его об этом ещё не спрашивали (или спрашивали больше `days` дней назад).
+
+    Решение владельца 14.09.2026: «раз в месяц писать ТОЛЬКО тем, у кого эта кнопка
+    выключена». Заблокировавшие бота исключены не из вежливости: им нельзя написать."""
+    ensure_article_battle_available_schema()
+    ensure_bot_blocked_table()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT a.user_id, o.nudged_at
+                FROM bt_3_allowed_users a
+                JOIN bt_3_article_battle_available o ON o.user_id = a.user_id
+                LEFT JOIN bt_3_bot_blocked_users b   ON b.user_id = a.user_id
+                WHERE o.opted_in = FALSE
+                  AND COALESCE(b.is_blocked, FALSE) = FALSE
+                  AND (o.nudged_at IS NULL
+                       OR o.nudged_at < NOW() - (%s * INTERVAL '1 day'))
+                  AND {real_allowed_user_sql('a')}
+                ORDER BY o.updated_at;
+                """,
+                (max(1, int(days or 30)), SYNTHETIC_TELEGRAM_USER_ID_MIN,
+                 _MIN_REAL_TELEGRAM_USER_ID),
+            )
+            rows = cursor.fetchall() or []
+    ids = [int(r[0]) for r in rows]
+    names = get_user_display_names(ids) if ids else {}
+    return [{"user_id": int(uid), "name": names.get(int(uid)) or f"ID {uid}",
+             "nudged_at": nudged_at} for uid, nudged_at in rows]
+
+
+def mark_battle_optout_nudged(user_id: int) -> None:
+    """Отметить, что приглашение «включи батлы» этому человеку УЖЕ ушло."""
     ensure_article_battle_available_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT user_id, user_name FROM bt_3_article_battle_available "
-                "WHERE opted_in = TRUE ORDER BY updated_at DESC;"
+                "UPDATE bt_3_article_battle_available SET nudged_at = NOW() "
+                "WHERE user_id = %s;",
+                (int(user_id),),
             )
-            rows = cursor.fetchall() or []
-    return [{"user_id": int(r[0]), "name": str(r[1] or "").strip() or f"ID {r[0]}"} for r in rows]
+        conn.commit()
+
+
+def count_battle_targets_ignoring_choice() -> int:
+    """Сколько адресатов рассылки батлов НЕ имеют права там быть. Обещано: 0.
+
+    Право не иметь: человек сам выключил «Готов к батлам» либо у него закрыт бот.
+    Считается пересечением того же списка, который уходит в рассылку, с этими двумя
+    признаками, — то есть меряет не намерение кода, а его результат."""
+    ensure_article_battle_available_schema()
+    ensure_bot_blocked_table()
+    targets = set(list_battle_invite_targets().get("targets") or [])
+    if not targets:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT user_id FROM bt_3_article_battle_available
+                     WHERE opted_in = FALSE AND user_id = ANY(%s)
+                    UNION
+                    SELECT user_id FROM bt_3_bot_blocked_users
+                     WHERE is_blocked = TRUE AND user_id = ANY(%s)
+                ) AS q;
+                """,
+                (sorted(targets), sorted(targets)),
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
 
 
 def record_article_learn_answer(*, user_id: int, word: str, article: str,
@@ -65049,12 +65221,103 @@ def is_user_pro(user_id: int) -> bool:
 
 
 def list_allowed_telegram_user_ids() -> list[int]:
-    """All allow-listed user ids (for battle-invite broadcast)."""
+    """Впущенные ЖИВЫЕ ЛЮДИ — адресаты любой рассылки бота.
+
+    ┌─ НАЙДЕНО 14.09.2026, ИСПРАВЛЕНО ТОГДА ЖЕ. НЕ ВОЗВРАЩАТЬ СЫРОЙ СЧЁТ. ────────┐
+    │ Здесь стоял сырой `SELECT user_id FROM bt_3_allowed_users`. В батле #13 это  │
+    │ показало владельцу «🚫 Не дошло: 10», и три из десяти были тестовые строки   │
+    │ 77, 777, 987654321 — за ними нет человека, Telegram отвечал «Chat not found».│
+    │ Правило «кто настоящий человек» в проекте УЖЕ было (REAL_ALLOWED_USER_SQL),  │
+    │ и в комментарии к нему написано «появится третье место — возьмёт то же       │
+    │ самое». Это место и есть третье; теперь берёт. Через функцию идут все        │
+    │ рассылки бота, поэтому правило чинит класс, а не один батл.                  │
+    │ Как перемерить: len(list_allowed_telegram_user_ids()) == count_allowed_users()│
+    └──────────────────────────────────────────────────────────────────────────────┘
+    """
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT user_id FROM bt_3_allowed_users;")
+            cursor.execute(
+                f"SELECT user_id FROM bt_3_allowed_users WHERE {REAL_ALLOWED_USER_SQL};",
+                (SYNTHETIC_TELEGRAM_USER_ID_MIN, _MIN_REAL_TELEGRAM_USER_ID),
+            )
             rows = cursor.fetchall() or []
     return [int(r[0]) for r in rows if r and r[0] is not None]
+
+
+def count_allowed_rows_not_real_people() -> int:
+    """Строк в списке доступа, которые НЕ настоящие люди. Обещано: 0.
+
+    Мерится тем же правилом, которым живёт рассылка: разница сырого счёта и правила.
+    Вырастет — значит в список доступа опять записался прогон кода по боевой базе."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM bt_3_allowed_users;")
+            всего = int((cursor.fetchone() or [0])[0] or 0)
+            cursor.execute(
+                f"SELECT COUNT(*) FROM bt_3_allowed_users WHERE {REAL_ALLOWED_USER_SQL};",
+                (SYNTHETIC_TELEGRAM_USER_ID_MIN, _MIN_REAL_TELEGRAM_USER_ID),
+            )
+            настоящих = int((cursor.fetchone() or [0])[0] or 0)
+    return всего - настоящих
+
+
+def list_battle_invite_targets(*, exclude_user_id: int | None = None) -> dict:
+    """Кому ЗАКОННО отправить приглашение на батл — и почему остальные не получат.
+
+    Решение владельца 14.09.2026: «если человек нажал „не готов“ — мы не должны его
+    беспокоить». До этого дня рассылка «всем» кнопку не смотрела вообще: включивших было
+    9, приглашение получили 30, причём двое выключили её явно.
+
+    Отсеиваются ровно три причины, и каждая ВОЗВРАЩАЕТСЯ ЧИСЛОМ — подпись создателю
+    обязана назвать причину, а не показать голое «не дошло»:
+      · not_real     — строки списка доступа, за которыми нет человека (тестовые прогоны);
+      · blocked      — бот у них заблокирован или чат удалён: Telegram физически не даст
+                       написать, и стучаться туда каждую рассылку бессмысленно;
+      · opted_out    — человек сам выключил «🛡 Готов к батлам».
+    Молчание за человека НЕ считается отказом: нет строки в реестре = он готов.
+    """
+    ensure_article_battle_available_schema()
+    ensure_bot_blocked_table()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM bt_3_allowed_users;")
+            всего_строк = int((cursor.fetchone() or [0])[0] or 0)
+            cursor.execute(
+                f"""
+                SELECT a.user_id,
+                       COALESCE(b.is_blocked, FALSE) AS blocked,
+                       COALESCE(o.opted_in, TRUE)    AS ready
+                FROM bt_3_allowed_users a
+                LEFT JOIN bt_3_bot_blocked_users b        ON b.user_id = a.user_id
+                LEFT JOIN bt_3_article_battle_available o ON o.user_id = a.user_id
+                WHERE {real_allowed_user_sql('a')};
+                """,
+                (SYNTHETIC_TELEGRAM_USER_ID_MIN, _MIN_REAL_TELEGRAM_USER_ID),
+            )
+            rows = cursor.fetchall() or []
+    skip = int(exclude_user_id or 0)
+    targets: list[int] = []
+    blocked_ids: list[int] = []
+    opted_out_ids: list[int] = []
+    for uid, is_blocked, ready in rows:
+        uid = int(uid)
+        if skip and uid == skip:
+            continue
+        if bool(is_blocked):
+            blocked_ids.append(uid)
+            continue
+        if not bool(ready):
+            opted_out_ids.append(uid)
+            continue
+        targets.append(uid)
+    return {
+        "targets": sorted(targets),
+        "blocked_ids": sorted(blocked_ids),
+        "opted_out_ids": sorted(opted_out_ids),
+        "blocked": len(blocked_ids),
+        "opted_out": len(opted_out_ids),
+        "not_real": всего_строк - len(rows),
+    }
 
 
 def create_article_sprint_battle(*, creator_user_id: int, creator_name: str,

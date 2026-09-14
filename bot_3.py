@@ -437,6 +437,7 @@ from backend.database import (
     get_article_nouns_for_image,
     mark_article_noun_image,
     toggle_article_battle_available,
+    set_article_battle_available,
     is_article_battle_available,
     list_article_battle_available_user_ids,
     list_article_battle_available,
@@ -462,6 +463,11 @@ from backend.database import (
     get_access_period,
     admin_set_access_period_started,
     list_allowed_telegram_user_ids,
+    list_battle_invite_targets,
+    list_bot_blocked_allowed_people,
+    ack_bot_blocked_users,
+    list_battle_optout_people_to_nudge,
+    mark_battle_optout_nudged,
     create_article_sprint_battle,
     get_article_sprint_battle,
     add_article_sprint_battle_member,
@@ -1645,15 +1651,23 @@ def _autosave_button_text(user_id: int | None) -> str:
 
 
 def _battle_available_button_text(user_id: int | None) -> str:
-    """Dynamic label so the user sees their battle-invite opt-in state at a glance.
-    ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT is the routing prefix; '✅' = opted in."""
+    """Ярлык кнопки показывает состояние: ✅ готов · ⚪ не готов.
+
+    С 14.09.2026 по умолчанию человек ГОТОВ, поэтому «нет метки» больше не может значить
+    «выключено»: обе стороны подписаны своим знаком. Метки нет ровно в одном случае —
+    состояние не прочиталось; соврать про него, подставив ⚪, нельзя: человек решит, что
+    его выключили за него. ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT — стабильный префикс
+    маршрутизации, суффикс на него не влияет."""
     if user_id is None:
         return ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT
     try:
         on = bool(is_article_battle_available(int(user_id)))
     except Exception:
-        on = False
-    return f"{ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT} ✅" if on else ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT
+        logging.warning("состояние «Готов к батлам» не прочиталось user_id=%s", user_id,
+                        exc_info=True)
+        return ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT
+    return (f"{ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT} ✅" if on
+            else f"{ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT} ⚪")
 
 
 def _schedule_button_text(user_id: int | None) -> str:
@@ -10141,6 +10155,121 @@ def _send_fix_promise_screens(admin_ids: list[int], token: str) -> None:
                 logging.error("экран «после» %s не дошёл до %s: %s", scr.get("key"), uid, reason)
 
 
+# День недели, в который владельцу приходит блок «кто закрыл бота». Воскресенье:
+# в этот же день уже идут недельные отчёты, и лишнего письма не появляется.
+BOT_BLOCKED_REVIEW_WEEKDAY = int((os.getenv("BOT_BLOCKED_REVIEW_WEEKDAY") or "6").strip() or "6")
+
+
+def _bot_blocked_weekly_block() -> str:
+    """Раз в неделю: кто из впущенных закрыл бота. Поимённо, с датой.
+
+    ┌─ ЗАЧЕМ ЭТО ВООБЩЕ ОТЧЁТ. ───────────────────────────────────────────────────┐
+    │ 14.09.2026 таких было 7 человек из 28 впущенных, и владелец узнал об этом    │
+    │ случайно — по подписи собственного батла. Место в потолке впуска они         │
+    │ занимают, а в очереди стоят люди. Молчащий механизм неотличим от сломанного. │
+    └─────────────────────────────────────────────────────────────────────────────┘
+
+    Приходит только в свой день недели. Пусто — не приходит вовсе: отчёт о том, что
+    ничего не случилось, приучает не читать отчёты."""
+    try:
+        сегодня = datetime.now(ZoneInfo("Europe/Vienna")).weekday()
+        if сегодня != BOT_BLOCKED_REVIEW_WEEKDAY:
+            return ""
+        люди = list_bot_blocked_allowed_people()
+    except Exception:
+        logging.exception("недельный блок «закрыли бота» не собрался")
+        return "\n🚫 Закрыли бота: ❓ не посчиталось, подробности в логах.\n"
+    if not люди:
+        return ""
+    from html import escape as _esc
+    новые = [p for p in люди if not p.get("acked_at")]
+    строки = []
+    for p in люди[:15]:
+        дата = p["blocked_at"].astimezone(ZoneInfo("Europe/Vienna")).strftime("%d.%m") \
+            if p.get("blocked_at") else "—"
+        знак = "" if p.get("acked_at") else " •"
+        строки.append(f"   • {_esc(str(p['name']))} — {дата}{знак}")
+    ещё = f"\n   …и ещё {len(люди) - 15}" if len(люди) > 15 else ""
+    хвост = (f"\n<i>Точкой помечены те, по кому ты ещё не решал. "
+             f"Кнопки — в следующем сообщении.</i>" if новые else "")
+    return (f"\n🚫 <b>Закрыли бота</b>: {len(люди)} из впущенных"
+            f"{f' · новых для тебя: {len(новые)}' if новые else ''}\n"
+            + "\n".join(строки) + ещё + хвост + "\n")
+
+
+def _send_bot_blocked_review(admin_ids: list[int], token: str) -> None:
+    """Письмо с кнопками по тем, кто закрыл бота и по кому владелец ещё не решал.
+
+    Кнопка на человека одна — «убрать доступ»: это освобождает место в потолке впуска
+    для очереди. Общая «оставить всех» ничего не удаляет, а только снимает повтор этих
+    имён в следующее воскресенье. Ничего не нажать — имена придут снова: молчание не
+    согласие ни на удаление, ни на «всё в порядке»."""
+    try:
+        сегодня = datetime.now(ZoneInfo("Europe/Vienna")).weekday()
+        if сегодня != BOT_BLOCKED_REVIEW_WEEKDAY:
+            return
+        люди = list_bot_blocked_allowed_people(only_unacked=True)
+    except Exception:
+        logging.exception("письмо «закрыли бота» не собралось")
+        return
+    if not люди:
+        return
+    from html import escape as _esc
+    rows = [[{"text": f"✋ Убрать доступ · {str(p['name'])[:24]}",
+              "callback_data": f"botblk:rm:{int(p['user_id'])}"}]
+            for p in люди[:10]]
+    rows.append([{"text": "👌 Оставить всех", "callback_data": "botblk:keep"}])
+    имена = ", ".join(_esc(str(p["name"])) for p in люди[:10])
+    text = (f"🚫 <b>Закрыли бота: {len(люди)}</b>\n\n"
+            f"{имена}\n\n"
+            f"Писать им бот не может — Telegram не даёт. Место в потолке впуска они "
+            f"при этом занимают. Убрать доступ или оставить как есть — решаешь ты.\n\n"
+            f"<i>Ничего не нажать — тоже ответ: имена придут снова в воскресенье.</i>")
+    for uid in admin_ids:
+        ok, reason = send_telegram_message(chat_id=uid, text=text, token=token,
+                                          reply_markup={"inline_keyboard": rows},
+                                          what="кто закрыл бота")
+        if not ok:
+            logging.error("письмо «закрыли бота» не дошло до %s: %s", uid, reason)
+
+
+async def handle_bot_blocked_review_callback(update: Update, context: CallbackContext) -> None:
+    """Кнопки письма «закрыли бота»: убрать доступ одному / оставить всех."""
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    if not _is_admin_user(user.id):
+        await query.answer("Только для администратора.", show_alert=True)
+        return
+    parts = str(query.data or "").split(":")   # botblk:<rm|keep>[:<uid>]
+    action = parts[1] if len(parts) > 1 else ""
+    try:
+        if action == "rm":
+            uid = int(parts[2])
+            имя = await asyncio.to_thread(get_user_display_name, uid) or f"ID {uid}"
+            убран = await asyncio.to_thread(revoke_telegram_user, uid)
+            await asyncio.to_thread(ack_bot_blocked_users, [uid])
+            await query.answer("Доступ убран." if убран else "Строки уже нет.")
+            from html import escape as _esc
+            await query.edit_message_text(
+                f"✋ Доступ убран: <b>{_esc(имя)}</b> (id {uid}).\n"
+                f"Место в потолке впуска освободилось. Остальные имена — в воскресном "
+                f"письме, если ты по ним ещё не решал.", parse_mode="HTML")
+        elif action == "keep":
+            сколько = await asyncio.to_thread(ack_bot_blocked_users, None)
+            await query.answer("Оставляем.")
+            await query.edit_message_text(
+                f"👌 Оставляем как есть: {сколько}. Доступ ни у кого не тронут, "
+                f"эти имена в воскресном письме больше не повторятся — придут только новые.",
+                parse_mode="HTML")
+        else:
+            await query.answer()
+    except Exception:
+        logging.exception("bot-blocked review callback failed data=%s", query.data)
+        await query.answer("Не получилось — подробности в логах.", show_alert=True)
+
+
 def _dictionary_integrity_line() -> str:
     """Вердикт о состоянии словаря одной строкой. Пусто, если проверка недоступна.
 
@@ -10341,6 +10470,7 @@ def _send_pool_enrich_morning_report() -> None:
             )
         text += _access_state_line()
         text += _welcome_letter_report_line()
+        text += _bot_blocked_weekly_block()
         text += _word_pick_report_line()
         text += _form_headword_report_line()
         text += _sprint_intake_report_line()
@@ -10355,6 +10485,7 @@ def _send_pool_enrich_morning_report() -> None:
             logging.error("отчёт о доборе пула не дошёл: %s", failures)
         _send_fix_promise_alerts(admin_ids, token, обещания)
         _send_fix_promise_screens(admin_ids, token)
+        _send_bot_blocked_review(admin_ids, token)
     except Exception:
         logging.exception("pool enrich morning report failed")
 
@@ -16583,9 +16714,10 @@ async def handle_button_click(update: Update, context: CallbackContext):
         uid = int(update.effective_user.id) if update.effective_user else 0
         uname = _display_user_name(update.effective_user)
         new_state = await asyncio.to_thread(toggle_article_battle_available, uid, uname)
-        msg = ("🛡 Готово — теперь тебя могут <b>лично пригласить</b> на батл. "
-               "Нажми кнопку ещё раз, чтобы выйти из списка." if new_state
-               else "⚪ Ты вышел из списка приглашаемых на батлы.")
+        msg = ("🛡 Готово — тебя снова будут звать на батлы. "
+               "Нажми кнопку ещё раз, если звать не надо." if new_state
+               else "⚪ Больше не позовём тебя на батлы. Нажми кнопку ещё раз, "
+                    "когда захочешь играть с другими.")
         # Re-render the keyboard so the button label reflects the new state (✅).
         await update.message.reply_text(
             msg, parse_mode="HTML",
@@ -17062,6 +17194,76 @@ async def _onboarding_nudge_job(context: CallbackContext) -> None:
             logging.warning("onboarding nudge failed uid=%s", uid, exc_info=True)
         if idx % 20 == 0:
             await asyncio.sleep(1.0)
+
+
+async def _battle_optout_monthly_nudge(context: CallbackContext) -> None:
+    """Раз в месяц: предложить снова включить батлы ТЕМ, У КОГО КНОПКА ВЫКЛЮЧЕНА.
+
+    Решение владельца 14.09.2026: «иногда, раз в месяц, писать тем, у кого эта кнопка
+    выключена: можете включить „Готов к батлам“, чтобы играть с другими. Только тем, у
+    кого выключено».
+
+    Чего здесь НЕТ намеренно: никого не включаем за человека. Письмо — приглашение с
+    кнопкой, а состояние меняет только его собственное нажатие. Отметка `nudged_at`
+    держит обещание «раз в месяц»: лишний запуск планировщика не превратится во второе
+    письмо. Заблокировавшие бота отсеяны на уровне запроса — им нельзя написать."""
+    try:
+        люди = await asyncio.to_thread(list_battle_optout_people_to_nudge, days=30)
+    except Exception:
+        logging.exception("ежемесячное приглашение в батлы: список не собрался")
+        return
+    if not люди:
+        logging.info("ежемесячное приглашение в батлы: некому — выключивших нет")
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🛡 Включить", callback_data="battle_ready:on")]])
+    text = (
+        "⚔️ <b>Батлы</b> — это быстрая игра с другим человеком: вы проходите один и тот "
+        "же спринт и сравниваете счёт. Играть можно когда удобно, до конца дня.\n\n"
+        "Сейчас у тебя выключено «🛡 Готов к батлам», поэтому мы тебя не зовём.\n"
+        "Хочешь играть с другими — включи одной кнопкой. Выключить можно в любой момент."
+    )
+    отправлено = не_дошло = 0
+    for p in люди:
+        uid = int(p["user_id"])
+        try:
+            await context.bot.send_message(chat_id=uid, text=text, parse_mode="HTML",
+                                           reply_markup=kb)
+            отправлено += 1
+        except Forbidden:
+            # Закрыл бота между запросом и отправкой — запомним, чтобы больше не звать.
+            await asyncio.to_thread(_mark_user_bot_blocked, uid, True)
+            не_дошло += 1
+        except Exception:
+            logging.warning("приглашение в батлы не ушло uid=%s", uid, exc_info=True)
+            не_дошло += 1
+        else:
+            await asyncio.to_thread(mark_battle_optout_nudged, uid)
+        await asyncio.sleep(0.2)
+    logging.info("ежемесячное приглашение в батлы: отправлено=%s не дошло=%s",
+                 отправлено, не_дошло)
+
+
+async def handle_battle_ready_on_callback(update: Update, context: CallbackContext) -> None:
+    """Кнопка «🛡 Включить» под ежемесячным приглашением. Включает ровно тот человек,
+    который её нажал, — за него это не делает никто."""
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    try:
+        uid = int(user.id)
+        uname = _display_user_name(user)
+        await asyncio.to_thread(set_article_battle_available, uid, True, uname)
+        await query.answer("Готово!")
+        await query.edit_message_text(
+            "🛡 <b>Готово — теперь тебя будут звать на батлы.</b>\n"
+            "Выключить можно той же кнопкой «🛡 Готов к батлам» в меню внизу.",
+            parse_mode="HTML")
+    except Exception:
+        logging.exception("включение батлов по кнопке не сработало")
+        await query.answer("Не получилось, попробуй кнопку «🛡 Готов к батлам» в меню.",
+                           show_alert=True)
 
 
 async def _access_reminder_job(context: CallbackContext) -> None:
@@ -35070,7 +35272,13 @@ async def _dm_one_battle_invite(context: CallbackContext, *, uid: int, img_url: 
                                        parse_mode="HTML", reply_markup=kb)
         return "ok"
     except Forbidden:
-        logging.info("battle invite not delivered: user %s hasn't started or blocked the bot", uid)
+        # Telegram отказал наглухо: у человека бот заблокирован или чат удалён. Раньше
+        # это только писалось в лог уровня INFO, и знание умирало вместе с логом —
+        # следующая рассылка снова стучалась туда же и снова считала это своей
+        # неудачей. Теперь отказ записывается в тот же реестр, который ведут события
+        # my_chat_member, и рассылка перестаёт его беспокоить (14.09.2026).
+        logging.info("battle invite not delivered: user %s blocked the bot or deleted the chat", uid)
+        await asyncio.to_thread(_mark_user_bot_blocked, int(uid), True)
         return "blocked"
     except Exception:
         logging.warning("battle invite send failed uid=%s", uid, exc_info=True)
@@ -35104,18 +35312,63 @@ async def _deliver_battle_invites(context: CallbackContext, *, creator_id: int,
     return sent, blocked, error
 
 
-def _battle_delivery_caption_line(sent: int, blocked: int, error: int) -> str:
-    """The «Вызов получили / не дошло» lines for the creator's status card. Undelivered
-    invites are SURFACED (not hidden), so the creator knows the invite silently failed
-    and who to nudge to open the bot — instead of thinking everyone got it."""
+def _battle_delivery_caption_line(sent: int, blocked: int, error: int,
+                                  *, skipped_blocked: int = 0,
+                                  skipped_optout: int = 0) -> str:
+    """Строки «кто получил вызов и почему остальные нет» на карточке создателя.
+
+    ┌─ ПОЧЕМУ ЗДЕСЬ ЧЕТЫРЕ СТРОКИ, А НЕ ОДНО «не дошло». ─────────────────────────┐
+    │ 14.09.2026 владелец увидел на батле #13 «📨 20 · 🚫 Не дошло: 10» и не смог  │
+    │ понять, ошибка это или люди отказались. Прежняя подпись давала пояснение     │
+    │ «— не запускали бота» ТОЛЬКО когда все неудачи одного типа, а в каждой       │
+    │ рассылке была хотя бы одна тестовая строка списка доступа, ломавшая условие. │
+    │ Разбор показал три РАЗНЫЕ причины, и владельцу нужна каждая своими словами.  │
+    └─────────────────────────────────────────────────────────────────────────────┘
+
+    `skipped_*` — те, кому не отправляли осознанно (закрыт бот, выключена кнопка).
+    `blocked`/`error` — то, что выяснилось уже при отправке. «Не отправилось» — это
+    НАСТОЯЩАЯ ошибка, её видно отдельной строкой, а не в общей куче."""
     line = f"📨 Вызов получили: {sent}\n"
-    missed = int(blocked) + int(error)
-    if missed:
-        if blocked and not error:
-            line += f"🚫 Не дошло: {missed} — не запускали бота\n"
-        else:
-            line += f"🚫 Не дошло: {missed}\n"
+    закрыли = int(blocked) + int(skipped_blocked)
+    if закрыли:
+        line += f"🚫 Закрыли бота: {закрыли}\n"
+    if int(skipped_optout):
+        line += f"🔕 Не готовы к батлам: {int(skipped_optout)}\n"
+    if int(error):
+        line += f"⚠️ Не отправилось: {int(error)} — ошибка, разбираем\n"
     return line
+
+
+def _battle_invites_failed_line() -> str:
+    """Рассылка не состоялась целиком: список адресатов не собрался или отправка упала.
+
+    Раньше на этом месте стояло `except Exception: targets = []`, и карточка спокойно
+    писала «📨 Вызов получили: 0» — то есть неудача базы была НЕОТЛИЧИМА от «никого не
+    оказалось». Создатель при этом ждал соперников, которых никто не позвал."""
+    return "⚠️ Не удалось разослать приглашения — разбираем. Батл открыт, играть можно.\n"
+
+
+async def _battle_invite_targets(*, creator_id: int, ind_targets) -> tuple[list[int], int, int]:
+    """Кому законно уходит приглашение на батл — и сколько людей отсеяно по каким причинам.
+
+    Возвращает (кому_отправлять, закрыли_бота, не_готовы_к_батлам).
+
+    Решение владельца 14.09.2026: выключенную кнопку «🛡 Готов к батлам» уважаем; по
+    умолчанию человек готов. Заблокировавшим бота не стучимся — Telegram всё равно
+    откажет, а прежняя рассылка делала это каждый раз и считала отказ своей неудачей.
+
+    Выбор конкретных людей (ind_targets) проходит ЧЕРЕЗ ТУ ЖЕ проверку: экран пикера
+    показывает готовых, но между показом и отправкой человек мог закрыть бота."""
+    info = await asyncio.to_thread(list_battle_invite_targets, exclude_user_id=int(creator_id))
+    законные = set(int(u) for u in (info.get("targets") or []))
+    if ind_targets is None:
+        return (sorted(законные), int(info.get("blocked") or 0), int(info.get("opted_out") or 0))
+    закрыли = set(int(u) for u in (info.get("blocked_ids") or []))
+    не_готовы = set(int(u) for u in (info.get("opted_out_ids") or []))
+    выбраны = [int(u) for u in (ind_targets or []) if int(u) != int(creator_id)]
+    return (sorted(u for u in выбраны if u in законные),
+            sum(1 for u in выбраны if u in закрыли),
+            sum(1 for u in выбраны if u in не_готовы))
 
 
 async def _send_battle_invites(context: CallbackContext, *, battle_id: int,
@@ -35396,21 +35649,24 @@ async def _create_and_broadcast_artikel_wizard(context: CallbackContext, *, crea
         return
     await asyncio.to_thread(add_article_sprint_battle_member,
                             battle_id=battle_id, user_id=int(creator_id), user_name=creator_name)
-    targets = ind_targets if ind_targets is not None else await asyncio.to_thread(list_allowed_telegram_user_ids)
     try:
+        targets, skip_blocked, skip_optout = await _battle_invite_targets(
+            creator_id=int(creator_id), ind_targets=ind_targets)
         sent, blocked, error = await _send_battle_invites(
             context, battle_id=battle_id, creator_name=creator_name,
             target_ids=list(targets), exclude=int(creator_id))
+        delivery_line = _battle_delivery_caption_line(
+            sent, blocked, error, skipped_blocked=skip_blocked, skipped_optout=skip_optout)
     except Exception:
         logging.warning("artikel wizard invites broadcast failed bid=%s", battle_id, exc_info=True)
-        sent, blocked, error = 0, 0, 0
+        delivery_line = _battle_invites_failed_line()
     play_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
     final_cap = (f"⚔️ <b>Artikel-батл #{battle_id} в бою!</b>\n"
                  f"{html.escape(themes_txt)} · дедлайн 23:59\n"
-                 f"{_battle_delivery_caption_line(sent, blocked, error)}"
+                 f"{delivery_line}"
                  f"Сыграй первым — задай темп! 👇")
     eff_msg_id = await _present_battle_status(context, chat_id=int(status_chat_id),
                                               old_msg_id=int(status_msg_id),
@@ -35504,19 +35760,23 @@ async def _broadcast_artikel_cmd_invites(context: CallbackContext, *, battle_id:
         InlineKeyboardButton("❌ Отклонить", callback_data=f"asb_dec:{battle_id}"),
     ]])
     try:
-        targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
+        targets, skip_blocked, skip_optout = await _battle_invite_targets(
+            creator_id=int(creator_id), ind_targets=None)
+        sent, blocked, error = await _deliver_battle_invites(
+            context, creator_id=int(creator_id), targets=list(targets),
+            caption=invite_text, kb=join_kb, kind="artikel")
+        delivery_line = _battle_delivery_caption_line(
+            sent, blocked, error, skipped_blocked=skip_blocked, skipped_optout=skip_optout)
     except Exception:
-        targets = []
-    sent, blocked, error = await _deliver_battle_invites(
-        context, creator_id=int(creator_id), targets=list(targets),
-        caption=invite_text, kb=join_kb, kind="artikel")
+        logging.warning("artikel /battle invites broadcast failed bid=%s", battle_id, exc_info=True)
+        delivery_line = _battle_invites_failed_line()
     play_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
     final_cap = (f"⚔️ <b>Artikel-батл #{battle_id} в бою!</b>\n"
                  f"2 минуты на der/die/das · дедлайн 23:59\n"
-                 f"{_battle_delivery_caption_line(sent, blocked, error)}"
+                 f"{delivery_line}"
                  f"Сыграй первым — задай темп! 👇")
     await _present_battle_status(context, chat_id=status_chat_id, old_msg_id=status_msg_id,
                                  caption=final_cap, kb=play_kb)
@@ -41169,23 +41429,24 @@ async def _broadcast_adjektiv_battle_invites(context: CallbackContext, *, battle
     )
     join_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         "✅ Принять вызов", callback_data=f"adb_join:{battle_id}")]])
-    if target_ids is not None:
-        targets = list(target_ids)
-    else:
-        try:
-            targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
-        except Exception:
-            targets = []
-    sent, blocked, error = await _deliver_battle_invites(
-        context, creator_id=int(creator_id), targets=list(targets),
-        caption=invite_text, kb=join_kb, kind="adjektiv")
+    try:
+        targets, skip_blocked, skip_optout = await _battle_invite_targets(
+            creator_id=int(creator_id), ind_targets=target_ids)
+        sent, blocked, error = await _deliver_battle_invites(
+            context, creator_id=int(creator_id), targets=list(targets),
+            caption=invite_text, kb=join_kb, kind="adjektiv")
+        delivery_line = _battle_delivery_caption_line(
+            sent, blocked, error, skipped_blocked=skip_blocked, skipped_optout=skip_optout)
+    except Exception:
+        logging.warning("adjektiv invites broadcast failed bid=%s", battle_id, exc_info=True)
+        delivery_line = _battle_invites_failed_line()
     play_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
     ])
     final_cap = (f"⚔️ <b>Adjektiv-батл #{battle_id} в бою!</b>\n"
                  f"15 ситуаций на окончания прилагательных · дедлайн 23:59\n"
-                 f"{_battle_delivery_caption_line(sent, blocked, error)}"
+                 f"{delivery_line}"
                  f"Сыграй первым — задай темп! 👇")
     return await _present_battle_status(context, chat_id=int(status_chat_id),
                                         old_msg_id=int(status_msg_id),
@@ -41803,23 +42064,24 @@ async def _broadcast_wofrage_battle_invites(context: CallbackContext, *, battle_
     )
     join_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         "✅ Принять вызов", callback_data=f"wfb_join:{battle_id}")]])
-    if target_ids is not None:
-        targets = list(target_ids)
-    else:
-        try:
-            targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
-        except Exception:
-            targets = []
-    sent, blocked, error = await _deliver_battle_invites(
-        context, creator_id=int(creator_id), targets=list(targets),
-        caption=invite_text, kb=join_kb, kind="wofrage")
+    try:
+        targets, skip_blocked, skip_optout = await _battle_invite_targets(
+            creator_id=int(creator_id), ind_targets=target_ids)
+        sent, blocked, error = await _deliver_battle_invites(
+            context, creator_id=int(creator_id), targets=list(targets),
+            caption=invite_text, kb=join_kb, kind="wofrage")
+        delivery_line = _battle_delivery_caption_line(
+            sent, blocked, error, skipped_blocked=skip_blocked, skipped_optout=skip_optout)
+    except Exception:
+        logging.warning("wofrage invites broadcast failed bid=%s", battle_id, exc_info=True)
+        delivery_line = _battle_invites_failed_line()
     play_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_wfb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_wfbl_0"))],
     ])
     final_cap = (f"⚔️ <b>Wo-Frage-батл #{battle_id} в бою!</b>\n"
                  f"12 вопросов на Wo-Fragen · дедлайн 23:59\n"
-                 f"{_battle_delivery_caption_line(sent, blocked, error)}"
+                 f"{delivery_line}"
                  f"Сыграй первым — задай темп! 👇")
     return await _present_battle_status(context, chat_id=int(status_chat_id),
                                         old_msg_id=int(status_msg_id),
@@ -47217,6 +47479,8 @@ def main():
     application.add_handler(CommandHandler("admin_promises", admin_promises_command))
     application.add_handler(CommandHandler("admin_access", admin_access_command))
     application.add_handler(CallbackQueryHandler(handle_fix_promise_callback, pattern=r"^fp:"))
+    application.add_handler(CallbackQueryHandler(handle_bot_blocked_review_callback, pattern=r"^botblk:"))
+    application.add_handler(CallbackQueryHandler(handle_battle_ready_on_callback, pattern=r"^battle_ready:on$"))
     application.add_handler(CallbackQueryHandler(handle_unit_decision_callback,
                                                 pattern=r"^uw:"))
     application.add_handler(CommandHandler("admin_dict_integrity", admin_dict_integrity_command))
@@ -47885,6 +48149,10 @@ def main():
         scheduler.add_job(lambda: submit_async(_access_period_sweep_job,CallbackContext(application=application)),"cron", hour=3, minute=50, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Бесплатный месяц: напоминание запертым — суббота 11:00 (решение владельца 04.09.2026).
         scheduler.add_job(lambda: submit_async(_access_reminder_job,CallbackContext(application=application)),"cron", day_of_week="sat", hour=11, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        # -- Раз в месяц: «можешь включить батлы» тем, у кого кнопка ВЫКЛЮЧЕНА --
+        # Решение владельца 14.09.2026. Только выключившим сами, только раз в месяц
+        # (отметку держит nudged_at), никого не включаем за человека.
+        scheduler.add_job(lambda: submit_async(_battle_optout_monthly_nudge,CallbackContext(application=application)),"cron", day=1, hour=11, minute=30, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=7200)
         scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Drain Mini-App «⚔️ Battles» create requests every few seconds (bot runs the
         # existing broadcast logic, so invites/images/nudges/digest are unchanged).
