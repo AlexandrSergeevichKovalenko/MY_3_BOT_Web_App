@@ -25005,12 +25005,12 @@ def _ensure_welcome_letter_schema() -> None:
 
 
 def _welcome_letter_admin_ids() -> list[int]:
-    """Владелец и администраторы себе «спасибо, что подключился» не получают."""
-    try:
-        return sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
-    except Exception:
-        logging.exception("письмо новичку: список администраторов не прочитался")
-        return []
+    """Владелец и администраторы себе «спасибо, что подключился» не получают.
+
+    Ошибка здесь НЕ гасится в пустой список: пустой список значит «администраторов
+    нет», и письмо ушло бы самому владельцу, а строка 'sent' закрыла бы его навсегда.
+    Пусть прогон честно упадёт и никому не напишет — это видно в логе и в числах."""
+    return sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
 
 
 def list_welcome_letter_candidates(limit: int = 200) -> list[int]:
