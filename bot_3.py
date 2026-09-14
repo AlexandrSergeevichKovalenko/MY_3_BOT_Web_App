@@ -17378,7 +17378,32 @@ async def _welcome_letter_contact_url(context: CallbackContext) -> str:
     return url
 
 
-def _welcome_letter_text(first_name: str, *, has_contact: bool) -> str:
+async def _welcome_letter_contact(context: CallbackContext) -> tuple[str, str]:
+    """Куда ведёт кнопка «Написать». Два НАСТОЯЩИХ адреса, оба доходят до владельца:
+
+      dm      — личка владельца, если у его аккаунта есть публичный @username;
+      support — раздел «Поддержка» в приложении. Он не «замена личке», а такой же живой
+                канал: человек пишет там, владельцу приходит уведомление в Telegram, и
+                ответ реплаем возвращается человеку на тот же экран
+                (backend_server.py: _notify_admins_about_support_message).
+
+    Проба 14.09.2026: у аккаунта 117649764 публичного @username НЕТ, Telegram отдаёт
+    пустое поле, и письмо ушло вовсе без кнопки. Кнопка «свяжись со мной» в письме,
+    которое зовёт связаться, — не украшение, поэтому адрес теперь есть всегда.
+
+    Возвращает (адрес, вид). Вид меняет формулировку в письме: текст не имеет права
+    расходиться с тем, что делает кнопка."""
+    личка = await _welcome_letter_contact_url(context)
+    if личка:
+        return личка, "dm"
+    поддержка = get_webapp_deeplink("support")
+    if поддержка:
+        return поддержка, "support"
+    logging.warning("письмо новичку: адреса для кнопки «Написать» нет вовсе")
+    return "", "none"
+
+
+def _welcome_letter_text(first_name: str, *, contact: str) -> str:
     """Текст письма. Имя — из Telegram; нет имени — здороваемся без имени, а не
     придумываем обращение.
 
@@ -17388,13 +17413,15 @@ def _welcome_letter_text(first_name: str, *, has_contact: bool) -> str:
     продаёт, цена ждёт человека в разделе «Подписка»."""
     имя = html.escape(str(first_name or "").strip())
     привет = f"👋 Привет, {имя}!" if имя else "👋 Привет!"
-    куда_писать = (
-        "Если появятся вопросы, идеи или что-то не понравится — пиши прямо мне: "
-        "кнопка под этим письмом, или раздел «Поддержка» в приложении. Читаю всё сам."
-        if has_contact else
-        "Если появятся вопросы, идеи или что-то не понравится — напиши мне в разделе "
-        "«Поддержка» в приложении. Это личная переписка со мной, читаю всё сам."
-    )
+    куда_писать = {
+        "dm": "Если появятся вопросы, идеи или что-то не понравится — пиши прямо мне: "
+              "кнопка под этим письмом, или раздел «Поддержка» в приложении. Читаю всё сам.",
+        "support": "Если появятся вопросы, идеи или что-то не понравится — пиши прямо мне: "
+                   "кнопка под этим письмом откроет раздел «Поддержка» в приложении. "
+                   "Это личная переписка со мной, читаю всё сам и отвечаю.",
+        "none": "Если появятся вопросы, идеи или что-то не понравится — напиши мне в разделе "
+                "«Поддержка» в приложении. Это личная переписка со мной, читаю всё сам.",
+    }[contact if contact in ("dm", "support", "none") else "none"]
     return (
         f"{привет}\n\n"
         f"Меня зовут {html.escape(WELCOME_LETTER_AUTHOR_NAME)}, я разработчик этого бота. "
@@ -17427,13 +17454,14 @@ def _welcome_letter_keyboard(contact_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-async def _send_welcome_letter(context: CallbackContext, user_id: int, contact_url: str) -> None:
+async def _send_welcome_letter(context: CallbackContext, user_id: int,
+                               contact_url: str, contact_kind: str = "none") -> None:
     """Одно письмо одному человеку. Ошибка НЕ глушится — её ловит вызывающий и
     записывает причину в учёт, иначе «не дошло» стало бы неотличимо от «не пробовали»."""
     имя = await asyncio.to_thread(welcome_letter_first_name, int(user_id))
     await context.bot.send_message(
         chat_id=int(user_id),
-        text=_welcome_letter_text(имя, has_contact=bool(contact_url)),
+        text=_welcome_letter_text(имя, contact=contact_kind),
         parse_mode="HTML",
         reply_markup=_welcome_letter_keyboard(contact_url),
         disable_web_page_preview=True,
@@ -17454,11 +17482,11 @@ async def _welcome_letter_job(context: CallbackContext) -> dict:
     if not candidates:
         logging.info("welcome letter: некому писать")
         return {"candidates": 0, "sent": 0, "failed": 0, "closed": 0}
-    contact_url = await _welcome_letter_contact_url(context)
+    contact_url, contact_kind = await _welcome_letter_contact(context)
     sent = failed = closed = 0
     for idx, uid in enumerate(candidates, start=1):
         try:
-            await _send_welcome_letter(context, int(uid), contact_url)
+            await _send_welcome_letter(context, int(uid), contact_url, contact_kind)
         except Exception as exc:
             failed += 1
             try:
@@ -17476,7 +17504,7 @@ async def _welcome_letter_job(context: CallbackContext) -> dict:
         if idx % 20 == 0:
             await asyncio.sleep(1.0)
     logging.info("welcome letter: candidates=%s sent=%s failed=%s closed=%s contact=%s",
-                 len(candidates), sent, failed, closed, bool(contact_url))
+                 len(candidates), sent, failed, closed, contact_kind)
     return {"candidates": len(candidates), "sent": sent, "failed": failed, "closed": closed}
 
 
@@ -17506,9 +17534,16 @@ async def _welcome_letter_command(update: Update, context: CallbackContext) -> N
         return
     args = context.args or []
     if (args[0].strip().lower() if args else "") != "send":
-        contact_url = await _welcome_letter_contact_url(context)
-        await _send_welcome_letter(context, int(user.id), contact_url)
-        адрес = contact_url or "нет @username → кнопки «Написать» не будет, письмо ведёт в «Поддержку»"
+        contact_url, contact_kind = await _welcome_letter_contact(context)
+        await _send_welcome_letter(context, int(user.id), contact_url, contact_kind)
+        адрес = {
+            "dm": f"ведёт в твою личку — {contact_url}",
+            "support": f"ведёт в раздел «Поддержка» в приложении ({contact_url}). "
+                       "У аккаунта нет публичного @username, поэтому ссылку в личку "
+                       "строить не из чего: поставишь username — кнопка сама начнёт "
+                       "вести в личку, править код не нужно.",
+            "none": "адреса нет вовсе — письмо ушло без кнопки, смотри лог",
+        }[contact_kind]
         await message.reply_text(
             "👆 Так письмо видит новичок на следующее утро после подключения.\n"
             f"Кнопка «Написать»: {адрес}\n"
