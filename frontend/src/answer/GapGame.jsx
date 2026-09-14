@@ -56,6 +56,15 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
   const inputRef = useRef(null);
   const toast = useToast();
 
+  // Каретка — после того, как значение уже в поле. Делать это в обработчике нельзя:
+  // на момент клика значение ещё старое.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el || verdict) return;
+    if (document.activeElement !== el) return;
+    try { el.setSelectionRange(value.length, value.length); } catch (_e) { /* noop */ }
+  }, [value, verdict]);
+
   const heroRef = useFitText(`${phase}|${meta?.wort || ''}`, { max: 'css', min: 15, padding: 10, fitBy: 'word' });
 
   useEffect(() => {
@@ -135,15 +144,14 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
     if (hints >= HINTS_MAX || verdict) return;
     const full = String(item?.filler || '');
     const nextLen = Math.min(full.length, 2 + hints);   // 1-я буква дана, открываем 2-ю, затем 3-ю
+    // ФОКУС СИНХРОННО, до любых setState: айфон поднимает клавиатуру ТОЛЬКО внутри
+    // самого касания. Прежняя версия звала focus() из setTimeout(30) — жест к тому
+    // моменту уже кончался, клавиатура не выезжала, и человек оставался с одними
+    // подсказанными буквами и кнопкой «Проверить» (поймано на живом проходе 14.09.2026).
+    try { inputRef.current?.focus(); } catch (_e) { /* noop */ }
     setHints((h) => h + 1);
     setValue(full.slice(0, nextLen));
     try { haptic?.('ok'); } catch (_e) { /* noop */ }
-    setTimeout(() => {
-      try {
-        const el = inputRef.current;
-        if (el) { el.focus(); el.setSelectionRange(nextLen, nextLen); }
-      } catch (_e) { /* noop */ }
-    }, 30);
   }, [hints, verdict, item, haptic]);
 
   const check = useCallback(async () => {
@@ -171,8 +179,10 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
   // Вторая попытка — последняя (решение владельца 13.09.2026). Слово человек вспомнил,
   // не хватает окончания: показать ЧТО не так и дать дописать, а не хлопнуть дверью.
   const retry = useCallback(() => {
+    // Тот же закон, что у лампочки: фокус синхронно, внутри касания. Поле теперь не
+    // размонтируется на время разбора, поэтому фокусировать есть что.
+    try { inputRef.current?.focus(); } catch (_e) { /* noop */ }
     setVerdict(null); setAttempt(2);
-    setTimeout(() => { try { inputRef.current?.focus(); } catch (_e) { /* noop */ } }, 30);
   }, []);
 
   const next = useCallback(() => {
@@ -275,48 +285,57 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
           {item.sentence_ru ? <div className="gp-sentence-ru">{item.sentence_ru}</div> : null}
         </div>
 
-        {!verdict ? (
-          <div className="gp-form">
-            {/* Клетки — ГЛАВНОЕ на экране (выбор владельца 13.09.2026). Поле ввода лежит
-                поверх ряда прозрачным: тап по любой клетке поднимает клавиатуру, а буквы
-                встают по местам. Длину НЕ ограничиваем: иначе нельзя было бы напечатать
-                форму длиннее нужной («ausführlichen» вместо «ausführliche»), и исход
-                «слово верное, форма нет» перестал бы срабатывать вовсе. Лишние буквы
-                показываются отдельными клетками — видно, что перебрал. */}
-            <label className="gp-cells" style={{ '--gp-cols': cellCols }}>
-              <input
-                ref={inputRef}
-                className="gp-cells-input"
-                lang="de"
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') check(); }}
-                aria-label={attempt === 2 ? 'Поправь форму' : 'Впиши слово по буквам'}
-                autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
-              />
-              {cells.map((c, i) => (
-                <span key={i} className={`gp-cell${c.cls}`} aria-hidden="true">{c.ch}</span>
-              ))}
-            </label>
-            <div className="gp-cells-row">
-              <span className="gp-cells-hint">
-                {value.trim()
-                  ? `${value.trim().length} из ${item.hint_len} букв`
-                  : (attempt === 2 ? 'поправь сюда форму' : 'нажми на клетки и впиши слово')}
-              </span>
-              {/* Лампочка как в кроссворде. Две буквы — потолок: дальше это уже не
-                  припоминание, а списывание, а среда для того и стоит между узнаванием
-                  и спринтом, чтобы человек доставал слово сам. */}
-              {hintsLeft > 0 ? (
-                <button type="button" className="gp-hint-btn" onClick={useHint}>
-                  💡 подсказка<span className="gp-hint-left">{hintsLeft}</span>
-                </button>
-              ) : (
-                <span className="gp-hint-btn is-spent">💡 подсказок больше нет</span>
-              )}
-            </div>
-            <button className="ans-btn gp-check" disabled={!value.trim()} onClick={check}>Проверить</button>
-          </div>
+        {/* Клетки и поле НЕ ИСЧЕЗАЮТ на время разбора. Раньше здесь стояла развилка
+            «либо ввод, либо вердикт», и поле размонтировалось вместе с фокусом: после
+            «Попробовать ещё раз» айфон клавиатуру уже не поднимал. Владелец поймал это
+            первым же живым проходом 14.09.2026 — десять пропусков подряд ушли на
+            проверку с одними подсказанными буквами, потому что дописать было нечем. */}
+        <div className="gp-form">
+          <label className="gp-cells" style={{ '--gp-cols': cellCols }}>
+            <input
+              ref={inputRef}
+              className="gp-cells-input"
+              lang="de"
+              value={value}
+              readOnly={!!verdict}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !verdict) check(); }}
+              aria-label={attempt === 2 ? 'Поправь форму' : 'Впиши слово по буквам'}
+              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            />
+            {cells.map((c, i) => (
+              <span key={i} className={`gp-cell${c.cls}`} aria-hidden="true">{c.ch}</span>
+            ))}
+          </label>
+          {!verdict ? (
+            <>
+              <div className="gp-cells-row">
+                <span className="gp-cells-hint">
+                  {value.trim()
+                    ? `${value.trim().length} из ${item.hint_len} букв`
+                    : (attempt === 2 ? 'поправь сюда форму' : 'нажми на клетки и впиши слово')}
+                </span>
+                {/* Лампочка как в кроссворде. Две буквы — потолок: дальше это уже не
+                    припоминание, а списывание.
+                    onPointerDown + preventDefault — чтобы нажатие НЕ уводило фокус с
+                    поля: на айфоне ушедший фокус убирает клавиатуру, и вернуть её
+                    отложенным вызовом нельзя, только внутри самого касания. */}
+                {hintsLeft > 0 ? (
+                  <button type="button" className="gp-hint-btn"
+                    onPointerDown={(e) => e.preventDefault()}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={useHint}>
+                    💡 подсказка<span className="gp-hint-left">{hintsLeft}</span>
+                  </button>
+                ) : (
+                  <span className="gp-hint-btn is-spent">💡 подсказок больше нет</span>
+                )}
+              </div>
+              <button className="ans-btn gp-check" disabled={!value.trim()} onClick={check}>Проверить</button>
+            </>
+          ) : null}
+        </div>
+
         ) : (
           <div className={`gp-feedback ans-body ans-r-note ${out === 'correct' ? 'ok' : out === 'wrong' ? 'bad' : 'warn'}`}>
             {out === 'correct' ? (
