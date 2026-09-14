@@ -1679,7 +1679,73 @@ def _welcome_letter_screen() -> str:
 
 
 
+def _allowed_rows_not_real_people() -> int:
+    """Строк в списке доступа, за которыми нет человека. Обещано: 0.
+
+    14.09.2026 их было три (77, 777, 987654321), и каждая рассылка бота стучалась в них,
+    а владелец видел это как «🚫 Не дошло». Строки убраны
+    (scripts/allowed_users_drop_test_rows.py), правило «кто настоящий человек» поставлено
+    в сам источник адресатов. Число ВЫРОСЛО = снова прогон кода по боевой базе записал
+    себя в список доступа, и рассылки опять стучатся в пустоту."""
+    from backend.database import count_allowed_rows_not_real_people
+    return count_allowed_rows_not_real_people()
+
+
+def _battle_targets_ignoring_choice() -> int:
+    """Адресатов батла, которые выключили «Готов к батлам» или закрыли бота. Обещано: 0.
+
+    До 14.09.2026 рассылка «всем» не смотрела кнопку вообще: включивших было 9 из 28, а
+    приглашение получали все 30, причём двое выключили её явно. Считается пересечением
+    ТОГО ЖЕ списка, который уходит в рассылку, с двумя признаками — то есть меряется
+    результат кода, а не его намерение. Число ВЫРОСЛО = появился ещё один путь сборки
+    адресатов мимо list_battle_invite_targets."""
+    from backend.database import count_battle_targets_ignoring_choice
+    return count_battle_targets_ignoring_choice()
+
+
+def _battle_invite_targets_screen() -> str:
+    """Экран владельца «после»: кому уйдёт следующее приглашение на батл и кому нет.
+
+    Это ровно те числа, которые он увидит на подписи своей карточки, — не «тест
+    зелёный», а состав рассылки на живой базе."""
+    from backend.database import list_battle_invite_targets, list_bot_blocked_allowed_people
+    info = list_battle_invite_targets()
+    закрыли = list_bot_blocked_allowed_people()
+    строки = ["⚔️ Следующий батл — состав рассылки:",
+              f"📨 Получат вызов: {len(info.get('targets') or [])}",
+              f"🚫 Закрыли бота: {int(info.get('blocked') or 0)}",
+              f"🔕 Не готовы к батлам: {int(info.get('opted_out') or 0)}",
+              f"🧪 Строк не-людей в списке доступа: {int(info.get('not_real') or 0)}"]
+    if закрыли:
+        имена = ", ".join(str(p["name"]) for p in закрыли[:10])
+        строки.append(f"Закрыли бота: {имена}")
+    return "\n".join(строки)
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="allowed_rows_are_real_people",
+        title="Строк в списке доступа, за которыми нет человека",
+        since="14.09.2026",
+        expected=0,
+        measure=_allowed_rows_not_real_people,
+        how="python3 scripts/allowed_users_drop_test_rows.py --dry-run — ждём 0. До "
+            "14.09.2026 было 3 (77, 777, 987654321): у всех трёх getChat отвечает «Chat "
+            "not found», в список они попали прогонами по боевой базе 28–30.08. Число "
+            "ВЫРОСЛО = дверь мини-аппа опять впустила выдуманный id",
+    ),
+    Promise(
+        key="battle_invites_respect_the_button",
+        title="Адресатов батла, которые выключили «Готов к батлам» или закрыли бота",
+        since="14.09.2026",
+        expected=0,
+        measure=_battle_targets_ignoring_choice,
+        screen=_battle_invite_targets_screen,
+        how="/admin_promises — или backend.database.count_battle_targets_ignoring_choice(). "
+            "До 14.09.2026 рассылка «всем» кнопку не смотрела: включивших 9 из 28, "
+            "приглашение получили 30, двое выключили её явно. Число ВЫРОСЛО = адресаты "
+            "собираются мимо list_battle_invite_targets",
+    ),
     Promise(
         key="pos_gender_conflicts_attended",
         title="Статей, где часть речи спорит с родом и владельцу об этом не сказано",
