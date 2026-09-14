@@ -19,25 +19,32 @@ import bot_3
 class WelcomeLetterTextTests(unittest.TestCase):
     def test_letter_names_the_real_trial_terms(self):
         """7 дней и 23 дня «Лайт» — то же, что стоит в замке доступа."""
-        текст = bot_3._welcome_letter_text("Мария", has_contact=True)
+        текст = bot_3._welcome_letter_text("Мария", contact="dm")
         self.assertIn("Мария", текст)
         self.assertIn("7 дней", текст)
         self.assertIn("23 дня", текст)
         self.assertIn("Лайт", текст)
         self.assertIn("онбординг", текст)
 
-    def test_letter_without_a_button_does_not_promise_one(self):
-        """Нет @username → нет кнопки. Письмо обязано звать в «Поддержку», а не врать
-        про «кнопку ниже»: обещание кнопки, которой нет, — та же выдумка."""
-        без_кнопки = bot_3._welcome_letter_text("Иван", has_contact=False)
+    def test_wording_matches_what_the_button_actually_does(self):
+        """Текст не имеет права расходиться с кнопкой.
+
+        14.09.2026 у аккаунта владельца не оказалось публичного @username, письмо ушло
+        вовсе без кнопки — «свяжись со мной» без адреса. Теперь адрес есть всегда, и под
+        каждый вид кнопки написан свой текст."""
+        личка = bot_3._welcome_letter_text("Иван", contact="dm")
+        self.assertIn("кнопка под этим письмом", личка)
+
+        поддержка = bot_3._welcome_letter_text("Иван", contact="support")
+        self.assertIn("кнопка под этим письмом откроет раздел «Поддержка»", поддержка)
+
+        без_кнопки = bot_3._welcome_letter_text("Иван", contact="none")
         self.assertNotIn("кнопка под этим письмом", без_кнопки)
-        self.assertIn("Поддержка", без_кнопки)
-        с_кнопкой = bot_3._welcome_letter_text("Иван", has_contact=True)
-        self.assertIn("кнопка под этим письмом", с_кнопкой)
+        self.assertIn("«Поддержка»", без_кнопки)
 
     def test_no_name_means_no_invented_greeting(self):
         """Имени нет — здороваемся без имени, а не подставляем «друг» или id."""
-        текст = bot_3._welcome_letter_text("", has_contact=True)
+        текст = bot_3._welcome_letter_text("", contact="dm")
         self.assertTrue(текст.startswith("👋 Привет!"), текст[:40])
 
     def test_keyboard_drops_the_contact_button_when_there_is_no_address(self):
@@ -52,7 +59,7 @@ class WelcomeLetterJobTests(unittest.IsolatedAsyncioTestCase):
         self.ctx = MagicMock()
         self.ctx.bot.send_message = AsyncMock()
 
-    async def _run(self, candidates, *, send_effect=None, contact="https://t.me/dev"):
+    async def _run(self, candidates, *, send_effect=None, contact=("https://t.me/dev", "dm")):
         if send_effect is not None:
             self.ctx.bot.send_message.side_effect = send_effect
         with patch.object(bot_3, "list_welcome_letter_candidates", return_value=candidates), \
@@ -60,7 +67,7 @@ class WelcomeLetterJobTests(unittest.IsolatedAsyncioTestCase):
              patch.object(bot_3, "record_welcome_letter_sent") as ушло, \
              patch.object(bot_3, "record_welcome_letter_failure",
                           return_value="undeliverable") as не_ушло, \
-             patch.object(bot_3, "_welcome_letter_contact_url", new=AsyncMock(return_value=contact)):
+             patch.object(bot_3, "_welcome_letter_contact", new=AsyncMock(return_value=contact)):
             итог = await bot_3._welcome_letter_job(self.ctx)
         return итог, ушло, не_ушло
 
@@ -98,12 +105,16 @@ class WelcomeLetterJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"candidates": 0, "sent": 0, "failed": 0, "closed": 0}, итог)
         self.ctx.bot.send_message.assert_not_awaited()
 
-    async def test_missing_username_sends_the_support_wording(self):
-        """У аккаунта владельца нет @username → письмо уходит в варианте «через Поддержку»."""
-        await self._run([444444], contact="")
-        текст = self.ctx.bot.send_message.await_args.kwargs["text"]
-        self.assertIn("Поддержка", текст)
-        self.assertNotIn("кнопка под этим письмом", текст)
+    async def test_missing_username_still_leaves_a_working_button(self):
+        """Нет @username — кнопка ведёт в «Поддержку», и текст говорит именно про неё.
+
+        Это и есть жалоба владельца 14.09.2026: «а где кнопка связаться со мной?»"""
+        await self._run([444444], contact=("https://t.me/bot?startapp=support", "support"))
+        отправка = self.ctx.bot.send_message.await_args.kwargs
+        self.assertIn("откроет раздел «Поддержка»", отправка["text"])
+        кнопки = [b.text for row in отправка["reply_markup"].inline_keyboard for b in row]
+        self.assertEqual(2, len(кнопки), кнопки)
+        self.assertTrue(any("Написать" in т for т in кнопки), кнопки)
 
 
 if __name__ == "__main__":

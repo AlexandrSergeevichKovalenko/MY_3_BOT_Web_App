@@ -21220,6 +21220,16 @@ function AppInner() {
       setSelectedSections(new Set(['guide']));
       const t = setTimeout(() => { scrollToRef(guideRef, { block: 'start' }); }, 120);
       return () => clearTimeout(t);
+    } else if (startParam === 'support') {
+      // Deep-link into «Поддержка» — сюда ведёт кнопка «Написать Александру» из личного
+      // письма новичку (bot_3: _welcome_letter_contact). Раздел уже двусторонний: человек
+      // пишет здесь, владельцу приходит уведомление в Telegram, ответ реплаем возвращается
+      // на этот же экран.
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set(['support']));
+      const t = setTimeout(() => { scrollToRef(supportRef, { block: 'start' }); }, 120);
+      return () => clearTimeout(t);
     } else if (startParam === 'subscription' || startParam === 'billing') {
       // Deep-link into the «Подписка» section (e.g. the DM «Оформить Pro» button).
       setFlashcardsOnly(false);
