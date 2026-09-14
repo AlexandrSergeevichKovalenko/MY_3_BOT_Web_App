@@ -1459,7 +1459,10 @@ export default function OnboardingWizard() {
   // день») как будто это твой выбор — то есть врал, и изменить одну настройку было нельзя:
   // можно было только переназначить всё заново.
   useEffect(() => {
-    if (!HAS_ACCOUNT) { setSettingsReady(true); return; }
+    // Гость без аккаунта: серверного состояния ещё нет, а по умолчанию готовность
+    // ВКЛючена (решение владельца 14.09.2026) — шаг обязан показывать то, что
+    // человек получит на самом деле, а не пустой выбор.
+    if (!HAS_ACCOUNT) { setSelBattle('yes'); setSettingsReady(true); return; }
     let off = false;
     (async () => {
       try {
@@ -1865,22 +1868,17 @@ export default function OnboardingWizard() {
     return () => { off = true; };
   }, [step.id, loading, dictOffer]);
 
-  // Battle readiness defaults ON — но ТОЛЬКО при первом прохождении. Раньше этот эффект
-  // срабатывал на каждом заходе и молча возвращал «да, зовите на дуэли» человеку, который
-  // однажды выбрал «нет»: открыл тур как шпаргалку — и незаметно снова подписался.
-  const battlesDefaultedRef = useRef(false);
-  useEffect(() => {
-    if (loading || review || !settingsReady || step.id !== 'battles') return;
-    if (battlesDefaultedRef.current || savedRef.current.battleReady) return;
-    battlesDefaultedRef.current = true;
-    setSelBattle('yes');
-    if (HAS_ACCOUNT) {
-      savedRef.current.battleReady = true;
-      api('/api/webapp/onboarding/battles', { opt_in: true }).catch(() => {});
-    } else {
-      rememberChoice('battles', true);
-    }
-  }, [step.id, loading, review, settingsReady]);
+  // ┌─ УБРАНО 14.09.2026. НЕ ВОЗВРАЩАТЬ ЭТОТ ЭФФЕКТ. ──────────────────────────────┐
+  // │ Здесь стоял «battle readiness defaults ON»: шаг тура сам отправлял           │
+  // │ opt_in: true. Защита от повтора жила в useRef, то есть только внутри одного  │
+  // │ сеанса — на следующем заходе эффект снова видел battleReady === false и      │
+  // │ молча возвращал «да, зовите на батлы» человеку, который выбрал «нет».        │
+  // │                                                                              │
+  // │ С 14.09.2026 готовность по умолчанию ВКЛючена на сервере                     │
+  // │ (database.is_article_battle_available: нет строки = готов), поэтому включать  │
+  // │ её из тура больше не нужно вообще. Шаг только ПОКАЗЫВАЕТ состояние и         │
+  // │ записывает то, что человек нажал сам (pickBattle).                           │
+  // └──────────────────────────────────────────────────────────────────────────────┘
 
   // Intensity/window are [R] (optional, default-accept): pick = optimistic + save.
   // Тап по УЖЕ выбранному значению ничего не меняет — значит и запрос слать не за что.

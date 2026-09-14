@@ -362,6 +362,55 @@ def _hint_modal_box_sizing_missing() -> int:
     return 0 if _count_hint_modal_own_box_sizing(_served_webapp_css()) >= 1 else 1
 
 
+# ── Итоги спринта: шапка поджата, слова получают экран (14.09.2026) ──────────────────
+# Жалоба владельца (скриншот Artikel Sprint · Battle): «окошко со словами очень низкое,
+# мало слов помещается, постоянно приходится прокручивать». Замер на стенде с настоящим
+# answer.css и настоящей подгонкой fitCard (390×780): грамота 213 + Топ-3 158 + подсказка
+# 60 = 431 px шапки, списку оставалось 132 px — 3,2 строки. После правки: 89 + 113 + 32,
+# списку 352 px — 9,4 строки. На маленьком телефоне (360×600) 2,8 → 8,4.
+#
+# Обещание меряет не исходник, а CSS, который получает телефон: правила ниже должны быть
+# в нём. Пропадёт хоть одно — список снова сожмётся в две строки, и это придёт владельцу
+# письмом, а не всплывёт через месяц на его экране.
+_SPRINT_RESULT_COMPACT_RULES = (
+    ".ans-card:has(> .as-result-list) .as-cert{display:grid",
+    ".ans-card:has(> .as-result-list) .as-cert-medal{",
+    ".ans-card:has(> .as-result-list) .sp-rank{",
+    ".ans-card:has(> .as-result-list) .as-save-hint{",
+)
+
+
+def _sprint_compact_rules_missing_from(css: str) -> list[str]:
+    """Какие из правил компактной шапки НЕ дошли до телефона.
+
+    Сравнение без пробелов: vite их срезает («:has(>.as-result-list)»), и посимвольное
+    сравнение с исходником дало бы «нарушено» на ровном месте. Нет самого списка слов в
+    CSS — это не собранный фронт, считать нечего: «не измерено», а не «0»."""
+    import re
+    if not re.search(r"\.as-result-list\s*[{,]", css):
+        raise LookupError("в CSS нет .as-result-list — это не собранный фронт")
+    сжатый = re.sub(r"\s+", "", css)
+    return [r for r in _SPRINT_RESULT_COMPACT_RULES if re.sub(r"\s+", "", r) not in сжатый]
+
+
+def _sprint_result_header_not_compact() -> int:
+    """Сколько правил компактной шапки итогов пропало из живого CSS. Обещано: 0."""
+    return len(_sprint_compact_rules_missing_from(_served_webapp_css()))
+
+
+def _sprint_result_header_screen() -> str:
+    """Экран «после»: что по этому поводу отдаёт сайт прямо сейчас."""
+    нет = _sprint_compact_rules_missing_from(_served_webapp_css())
+    if not нет:
+        return ("🏁 Итоги спринта (Artikel · Adjektiv · Wo-Frage): шапка компактная — "
+                "медаль стоит в строке с местом, Топ-3 поджат. Список слов получает "
+                "9 строк вместо 3 на обычном телефоне и 8 вместо 3 на маленьком: "
+                "ошибки видно сразу, без прокрутки.")
+    return ("🏁 Итоги спринта: из живого CSS пропало правил компактной шапки — "
+            + str(len(нет)) + " из " + str(len(_SPRINT_RESULT_COMPACT_RULES))
+            + ". Список слов снова сжат в две-три строки.")
+
+
 def _hint_modal_screen() -> str:
     """Экран «после» для окна подсказки в интерактиве: что реально отдаёт сайт."""
     n = _count_hint_modal_own_box_sizing(_served_webapp_css())
@@ -1633,7 +1682,105 @@ def _pos_gender_conflicts_unattended() -> int:
     return int((row or [0])[0] or 0)
 
 
+def _newcomers_without_a_letter() -> int:
+    """Новичков старше трёх суток, оставшихся без личного письма владельца. Обещано: 0.
+
+    Сторож самой утренней работы (bot_3._welcome_letter_job, 09:30 Вена). Перестанет
+    запускаться — число вырастет само и придёт владельцу утром, а не всплывёт через
+    месяц жалобой «мне никто не написал». Человек с закрытой личкой сюда НЕ попадает:
+    он закрыт статусом 'undeliverable' и виден отдельной строкой отчёта."""
+    from backend.database import count_welcome_letter_holes
+    return count_welcome_letter_holes()
+
+
+def _welcome_letter_screen() -> str:
+    """Экран «после»: последние личные письма новичкам — кому, когда, чем кончилось."""
+    from backend.database import list_recent_welcome_letters, welcome_letter_stats
+    строки = ["💌 Последние письма новичкам:"]
+    записи = list_recent_welcome_letters(limit=8)
+    if not записи:
+        строки.append("  (ни одного — с 14.09.2026 новичков ещё не было)")
+    for з in записи:
+        когда = з["sent_at"] or з["updated_at"]
+        подпись = {"sent": "ушло", "undeliverable": "личка закрыта",
+                   "pending": "попробуем завтра утром"}.get(з["status"], з["status"])
+        хвост = f" · {str(з['last_error'])[:60]}" if з.get("last_error") and з["status"] != "sent" else ""
+        имя = з["name"] or f"user_{з['user_id']}"
+        строки.append(f"  {когда:%d.%m %H:%M} · {имя} · {подпись} (попыток {з['attempts']}){хвост}")
+    s = welcome_letter_stats()
+    строки.append(f"Итого: ушло {s['sent_total']} · ждут своего утра {s['waiting']} · "
+                  f"не доставлено {s['undeliverable']}")
+    return "\n".join(строки)
+
+
+
+def _allowed_rows_not_real_people() -> int:
+    """Строк в списке доступа, за которыми нет человека. Обещано: 0.
+
+    14.09.2026 их было три (77, 777, 987654321), и каждая рассылка бота стучалась в них,
+    а владелец видел это как «🚫 Не дошло». Строки убраны
+    (scripts/allowed_users_drop_test_rows.py), правило «кто настоящий человек» поставлено
+    в сам источник адресатов. Число ВЫРОСЛО = снова прогон кода по боевой базе записал
+    себя в список доступа, и рассылки опять стучатся в пустоту."""
+    from backend.database import count_allowed_rows_not_real_people
+    return count_allowed_rows_not_real_people()
+
+
+def _battle_targets_ignoring_choice() -> int:
+    """Адресатов батла, которые выключили «Готов к батлам» или закрыли бота. Обещано: 0.
+
+    До 14.09.2026 рассылка «всем» не смотрела кнопку вообще: включивших было 9 из 28, а
+    приглашение получали все 30, причём двое выключили её явно. Считается пересечением
+    ТОГО ЖЕ списка, который уходит в рассылку, с двумя признаками — то есть меряется
+    результат кода, а не его намерение. Число ВЫРОСЛО = появился ещё один путь сборки
+    адресатов мимо list_battle_invite_targets."""
+    from backend.database import count_battle_targets_ignoring_choice
+    return count_battle_targets_ignoring_choice()
+
+
+def _battle_invite_targets_screen() -> str:
+    """Экран владельца «после»: кому уйдёт следующее приглашение на батл и кому нет.
+
+    Это ровно те числа, которые он увидит на подписи своей карточки, — не «тест
+    зелёный», а состав рассылки на живой базе."""
+    from backend.database import list_battle_invite_targets, list_bot_blocked_allowed_people
+    info = list_battle_invite_targets()
+    закрыли = list_bot_blocked_allowed_people()
+    строки = ["⚔️ Следующий батл — состав рассылки:",
+              f"📨 Получат вызов: {len(info.get('targets') or [])}",
+              f"🚫 Закрыли бота: {int(info.get('blocked') or 0)}",
+              f"🔕 Не готовы к батлам: {int(info.get('opted_out') or 0)}",
+              f"🧪 Строк не-людей в списке доступа: {int(info.get('not_real') or 0)}"]
+    if закрыли:
+        имена = ", ".join(str(p["name"]) for p in закрыли[:10])
+        строки.append(f"Закрыли бота: {имена}")
+    return "\n".join(строки)
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="allowed_rows_are_real_people",
+        title="Строк в списке доступа, за которыми нет человека",
+        since="14.09.2026",
+        expected=0,
+        measure=_allowed_rows_not_real_people,
+        how="python3 scripts/allowed_users_drop_test_rows.py --dry-run — ждём 0. До "
+            "14.09.2026 было 3 (77, 777, 987654321): у всех трёх getChat отвечает «Chat "
+            "not found», в список они попали прогонами по боевой базе 28–30.08. Число "
+            "ВЫРОСЛО = дверь мини-аппа опять впустила выдуманный id",
+    ),
+    Promise(
+        key="battle_invites_respect_the_button",
+        title="Адресатов батла, которые выключили «Готов к батлам» или закрыли бота",
+        since="14.09.2026",
+        expected=0,
+        measure=_battle_targets_ignoring_choice,
+        screen=_battle_invite_targets_screen,
+        how="/admin_promises — или backend.database.count_battle_targets_ignoring_choice(). "
+            "До 14.09.2026 рассылка «всем» кнопку не смотрела: включивших 9 из 28, "
+            "приглашение получили 30, двое выключили её явно. Число ВЫРОСЛО = адресаты "
+            "собираются мимо list_battle_invite_targets",
+    ),
     Promise(
         key="pos_gender_conflicts_attended",
         title="Статей, где часть речи спорит с родом и владельцу об этом не сказано",
@@ -1811,6 +1958,17 @@ PROMISES: tuple[Promise, ...] = (
         measure=_night_enrichment_runs_in_units_mode,
         how="SELECT metadata->>'mode' FROM bt_3_scheduler_run_guards "
             "WHERE job_key='pool_night_enrichment' — ждём units",
+    ),
+    Promise(
+        key="sprint_result_words_get_the_screen",
+        title="Итоги спринта: список слов занимает экран, а не две строки под шапкой",
+        since="14.09.2026",
+        expected=0,
+        measure=_sprint_result_header_not_compact,
+        screen=_sprint_result_header_screen,
+        how="открыть $WEB_APP_URL, скачать подключённые .css; в них должны стоять все "
+            "четыре правила '.ans-card:has(>.as-result-list) …' (as-cert / as-cert-medal / "
+            "sp-rank / as-save-hint) — ждём 0 пропавших",
     ),
     Promise(
         key="worldnews_card_old_look",
@@ -2135,6 +2293,19 @@ PROMISES: tuple[Promise, ...] = (
         expected=0,
         measure=_form_headwords_unfixed,
         how="python3 -c \"from backend.form_headword_sweep import unfixed_forms_count as f; print(f())\"",
+    ),
+    Promise(
+        key="welcome_letter_reaches_newcomers",
+        title="Новичков без личного письма владельца (старше трёх суток) не осталось",
+        since="14.09.2026",
+        expected=0,
+        measure=_newcomers_without_a_letter,
+        how="SELECT p.user_id FROM bt_3_access_period p LEFT JOIN bt_3_welcome_letters w "
+            "ON w.user_id = p.user_id WHERE p.started_at >= '2026-09-14' "
+            "AND p.started_at < NOW() - interval '3 days' "
+            "AND COALESCE(w.status,'pending') = 'pending'; руками — команда /welcome_letter: "
+            "письмо придёт тебе ровно таким, каким его видит новичок",
+        screen=_welcome_letter_screen,
     ),
 )
 
