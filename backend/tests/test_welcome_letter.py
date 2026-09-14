@@ -119,3 +119,40 @@ class WelcomeLetterJobTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContactAddressCacheTests(unittest.IsolatedAsyncioTestCase):
+    """14.09.2026: владелец завёл @username и увидел ту же кнопку в приложение.
+
+    Причина — пустой ответ Telegram лежал в кеше шесть часов наравне с настоящим
+    адресом. «Не знаю» не ответ и запоминаться не должно."""
+
+    def setUp(self):
+        bot_3._WELCOME_CONTACT_CACHE.clear()
+
+    def _ctx(self, usernames):
+        ctx = MagicMock()
+        ctx.bot.get_chat = AsyncMock(side_effect=[MagicMock(username=u) for u in usernames])
+        return ctx
+
+    async def test_empty_answer_is_asked_again_next_time(self):
+        """Имени не было, потом появилось — второй запрос обязан это увидеть."""
+        ctx = self._ctx(["", "alexandr_kovalenk"])
+        self.assertEqual("", await bot_3._welcome_letter_contact_url(ctx))
+        self.assertEqual("https://t.me/alexandr_kovalenk",
+                         await bot_3._welcome_letter_contact_url(ctx))
+        self.assertEqual(2, ctx.bot.get_chat.await_count)
+
+    async def test_real_address_is_remembered(self):
+        """Настоящий адрес запоминается: getChat на каждое письмо ни к чему."""
+        ctx = self._ctx(["alexandr_kovalenk"])
+        for _ in range(3):
+            self.assertEqual("https://t.me/alexandr_kovalenk",
+                             await bot_3._welcome_letter_contact_url(ctx))
+        self.assertEqual(1, ctx.bot.get_chat.await_count)
+
+    async def test_address_found_means_the_button_leads_to_the_dm(self):
+        ctx = self._ctx(["alexandr_kovalenk"])
+        url, вид = await bot_3._welcome_letter_contact(ctx)
+        self.assertEqual("dm", вид)
+        self.assertEqual("https://t.me/alexandr_kovalenk", url)
