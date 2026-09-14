@@ -1234,6 +1234,41 @@ def _relation_gap_silent_days() -> int:
             row = cur.fetchone()
     return int((row or [0])[0] or 0)
 
+def _trainer_bank_thin() -> int:
+    """Видов (синонимы/антонимы), у которых СВОБОДНОГО запаса меньше длины рельса.
+    Обещано: 0.
+
+    Считаем по ХУДШЕМУ из двух часов: спринт держит отдых на `last_sent_at`, тренировка
+    на `trainer_last_sent_at` и берёт только собранные слова. Замер 14.09.2026: у
+    синонимов свободно 12 против 1, у антонимов 35 против 6 — ночной добор смотрел
+    только на левое число, видел «всё хорошо» и не заказывал ничего, пока капля каждый
+    день уходила в запасной ход с кулдауном ноль.
+
+    Порог — расход × 3 дня (длина рельса: тренировка → спринт), тем же правилом, что и
+    сам добор (backend/sprint_pool_need.decide_topup), а не его пересказом.
+
+    ВНИМАНИЕ: в первое утро после починки это обещание ЗАКОНОМЕРНО красное — у синонимов
+    свободным было одно слово при пороге четыре. Добор берёт не больше шести карточек за
+    ночь, поэтому запас закрывается за ночь-две, и обещание обязано позеленеть. Если оно
+    красное третье утро подряд — починка не сработала, и это ровно то, что надо увидеть.
+    """
+    from backend.database import (measure_sprint_bank_pressure, count_available_sprint_items,
+                                  count_available_trainer_items)
+    from backend.sprint_pool_need import decide_topup
+    thin = 0
+    for relation in ("synonym", "antonym"):
+        pressure = measure_sprint_bank_pressure(relation=relation, window_days=21)
+        d = decide_topup(
+            bank=int(pressure["bank"]), target=int(pressure["bank"]),  # банк тут не судим
+            per_day=float(pressure["per_day"]),
+            free_sprint=count_available_sprint_items(relation=relation, cooldown_days=21),
+            free_trainer=count_available_trainer_items(relation=relation, cooldown_days=21),
+            rail_span_days=3, cap_per_night=6,
+        )
+        if d.gap_free > 0:
+            thin += 1
+    return thin
+
 def _relation_gap_screen() -> str:
     """Экран «после» для владельца: что среда реально сделала за неделю.
     Приходит САМ три утра подряд — команду вызывать не нужно."""
@@ -1613,6 +1648,18 @@ PROMISES: tuple[Promise, ...] = (
             "ON f.word=c.word WHERE c.created_at > 13.09.2026 AND f.per_billion < 300 — "
             "ждём 0. Повод: Inkelgasse 0,0 на миллиард ушло трём людям 22.08, 04.09 и "
             "13.09. Число ВЫРОСЛО = judge_anagram_word не вызывается при доборе банка",
+    ),
+    Promise(
+        key="trainer_bank_has_slack",
+        title="Видов, где свободного запаса слов меньше, чем на длину рельса",
+        since="14.09.2026",
+        expected=0,
+        measure=_trainer_bank_thin,
+        screen=_relation_gap_screen,
+        how="/admin_promises — или сравнить count_available_sprint_items и "
+            "count_available_trainer_items по обоим видам: худшее из двух должно быть "
+            "не меньше расход×3. 14.09 до починки было синонимы 12 против 1 при пороге 4. "
+            "Первое утро после деплоя красное законно — добор берёт 6 карточек за ночь",
     ),
     Promise(
         key="relation_gap_reaches_learners",

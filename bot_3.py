@@ -467,6 +467,7 @@ from backend.database import (
     upsert_sprint_item,
     delete_sprint_bank,
     count_available_sprint_items,
+    count_available_trainer_items,
     pick_next_sprint,
     pick_personal_rail_sprint,
     get_sprint_item_by_word,
@@ -42452,6 +42453,10 @@ SPRINT_COOLDOWN_DAYS = max(7, int((os.getenv("SPRINT_COOLDOWN_DAYS") or "21").st
 # Запас сверх закона: расход скачет ото дня ко дню, и банк ровно «в притык» всё равно
 # упирался бы в запасной ход.
 SPRINT_POOL_HEADROOM = 1.25
+# Сколько дней запаса обязано лежать СВОБОДНЫМ у каждого потребителя. Число не выдумано:
+# это длина рельса — тренировка в день 0, «Подставь синоним» на второй, спринт на третий.
+# Если свободного меньше, чем на эти дни, цепочка рвётся у ближайшего же слова.
+RAIL_SPAN_DAYS = 3
 # Потолок дозаказа за одну ночь. Каждая карточка — обращения к модели за деньги,
 # поэтому отставание добирается за несколько ночей, а не одним рывком.
 SPRINT_TOPUP_MAX_PER_NIGHT = max(1, int((os.getenv("SPRINT_TOPUP_MAX_PER_NIGHT") or "6").strip() or "6"))
@@ -42593,18 +42598,34 @@ async def prepare_sprint_pool_job(context: CallbackContext) -> None:
             # а решать нужно было «сколько можно выдать».
             have = await asyncio.to_thread(count_available_sprint_items, relation=relation,
                                            cooldown_days=SPRINT_COOLDOWN_DAYS)
-            logging.info(
-                "sprint_pool relation=%s банк=%s отдохнули=%s цель=%s расход/день=%.2f "
-                "(спринт %.2f, тренажёр %.2f) отдых=%s",
-                relation, pressure["bank"], have, target, pressure["per_day"],
-                pressure["sprint_per_day"], pressure["trainer_per_day"], SPRINT_COOLDOWN_DAYS,
+            # У ТРЕНИРОВКИ СВОИ ЧАСЫ (trainer_last_sent_at) и свой отбор (trainer_ready).
+            # До 14.09.2026 добор смотрел только на часы спринта: у синонимов там было
+            # свободно 12, а у тренировки — ОДНО слово, и капля каждый день уходила в
+            # запасной ход с кулдауном ноль. Теперь считаем оба и решаем по худшему.
+            have_trainer = await asyncio.to_thread(count_available_trainer_items,
+                                                   relation=relation,
+                                                   cooldown_days=TRAINER_COOLDOWN_DAYS)
+            # Порог запаса — длина рельса, а не круглое число: три дня от тренировки до
+            # спринта. Меньше — цепочка рвётся у ближайшего же слова.
+            from backend.sprint_pool_need import decide_topup
+            d = decide_topup(
+                bank=pressure["bank"], target=target, per_day=pressure["per_day"],
+                free_sprint=have, free_trainer=have_trainer,
+                rail_span_days=RAIL_SPAN_DAYS, cap_per_night=SPRINT_TOPUP_MAX_PER_NIGHT,
             )
-            if pressure["bank"] < target:
-                want = min(SPRINT_TOPUP_MAX_PER_NIGHT, target - pressure["bank"])
-                made = await _sprint_topup(relation, want)
+            logging.info(
+                "sprint_pool relation=%s банк=%s отдохнули(спринт)=%s отдохнули(тренажёр)=%s "
+                "порог=%s цель=%s расход/день=%.2f (спринт %.2f, тренажёр %.2f) отдых=%s — %s",
+                relation, pressure["bank"], have, have_trainer, d.floor_free, target,
+                pressure["per_day"], pressure["sprint_per_day"], pressure["trainer_per_day"],
+                SPRINT_COOLDOWN_DAYS, d.reason,
+            )
+            if d.need:
+                made = await _sprint_topup(relation, d.want)
                 logging.info("sprint_pool topup relation=%s заказано=%s добавлено=%s "
-                             "останется добрать=%s", relation, want, made,
-                             max(0, target - pressure["bank"] - made))
+                             "(отставание банка=%s нехватка запаса=%s) останется добрать=%s",
+                             relation, d.want, made, d.gap_bank, d.gap_free,
+                             max(0, max(d.gap_bank, d.gap_free) - made))
         logging.info("sprint_pool_job done")
     except Exception:
         logging.warning("sprint_pool_job failed", exc_info=True)

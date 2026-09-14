@@ -64968,6 +64968,38 @@ def count_available_sprint_items(*, relation: str, cooldown_days: int = 0) -> in
             return int((cursor.fetchone() or [0])[0])
 
 
+def count_available_trainer_items(*, relation: str, cooldown_days: int = 0) -> int:
+    """Сколько слов может взять ТРЕНИРОВКА прямо сейчас — по ЕЁ СОБСТВЕННЫМ часам.
+
+    ┌─ ПОЧЕМУ ОТДЕЛЬНАЯ ФУНКЦИЯ, а не параметр к count_available_sprint_items. ────┐
+    │ У спринта и у тренировки РАЗНЫЕ часы отдыха: спринт смотрит last_sent_at,   │
+    │ тренировка — trainer_last_sent_at, и двигаются они независимо. Плюс          │
+    │ тренировке годится не всякое слово банка, а только собранное (trainer_ready).│
+    │                                                                             │
+    │ Замер 14.09.2026 показал, чем это кончается, если считать по одним часам:    │
+    │     синонимы: свободно для спринта 12, для тренировки 1                      │
+    │     антонимы: свободно для спринта 35, для тренировки 6                      │
+    │ Ночной добор смотрел на левую колонку, видел «запас есть» и ничего не        │
+    │ заказывал, а капельная выдача тренировки каждый раз не находила отдохнувшего │
+    │ слова и уходила в запасной ход с кулдауном НОЛЬ. Из-за этого правило «21     │
+    │ день» по факту не соблюдалось: у синонимов 28 повторов из 34 пришли раньше   │
+    │ срока, средний промежуток 13,9 дня вместо 21.                                │
+    │ Перемерить: сравнить эту функцию и count_available_sprint_items по обоим     │
+    │ видам — числа обязаны считаться ОТДЕЛЬНО, а не одним.                        │
+    └─────────────────────────────────────────────────────────────────────────────┘
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_sprint_bank "
+                "WHERE relation = %s AND retired = FALSE AND trainer_ready = TRUE "
+                "AND (trainer_last_sent_at IS NULL "
+                "     OR trainer_last_sent_at < NOW() - (%s || ' days')::INTERVAL)",
+                (str(relation), int(cooldown_days)),
+            )
+            return int((cursor.fetchone() or [0])[0])
+
+
 def measure_sprint_bank_pressure(*, relation: str, window_days: int = 21) -> dict:
     """Сколько карточек этого вида РАСХОДУЕТСЯ в день — по факту, из базы.
 
