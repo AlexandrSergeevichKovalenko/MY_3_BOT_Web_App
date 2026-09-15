@@ -235,6 +235,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "tts_chunk_de",
     "translate_subtitles_ru",
     "translate_subtitles_multilang",
+    "translate_subtitle_rows",
     "language_learning_private_question",
     "language_learning_private_question_detailed",
 }
@@ -4085,6 +4086,28 @@ Rules:
 - Keep translations concise and natural for subtitles.
 Respond ONLY with JSON.
 """,
+"translate_subtitle_rows": """
+You translate subtitles SENTENCE BY SENTENCE, from source language to target language.
+Each row is one complete sentence assembled from several subtitle cues, and it carries a
+label. The label is how the translation gets back to the right moment of the video.
+
+Input JSON:
+{
+  "source_language": "de|en|es|it|ru",
+  "target_language": "de|en|es|it|ru",
+  "rows": [ { "id": "12-15", "text": "..." }, ... ]
+}
+Return STRICT JSON: { "rows": [ { "id": "12-15", "translation": "..." }, ... ] }
+
+Rules:
+- Return EVERY id you were given, exactly once, with the SAME label. Never invent a label,
+  never merge two rows into one, never split one row into two.
+- Translate the row as a whole sentence, natural in the target language. Word order may
+  differ from the source — that is expected and correct.
+- Speech is spontaneous: keep false starts and repetitions if they carry meaning, but do
+  not add anything that was not said.
+- Output ONLY JSON.
+""",
 "translate_subtitles_multilang": """
 You translate short subtitle lines from source language to target language.
 Input JSON:
@@ -6315,6 +6338,7 @@ _SYSTEM_ATTRIBUTION_TASKS: frozenset[str] = frozenset({
     "worldnews_image", "review_reminder_image", "lazy_day_image",
     # World-news / subtitles / batch pools (shared across all viewers)
     "pool_world_news", "translate_subtitles_ru", "translate_subtitles_multilang",
+    "translate_subtitle_rows",
     "auto_categorize_batch", "autosave_cards",
 })
 
@@ -8124,6 +8148,93 @@ async def _run_subtitle_translation(
 
     record_batch(mismatched=True, refused=True)
     raise last_error if last_error is not None else RuntimeError(f"{task_name}: ответа нет")
+
+
+class SubtitleRowLabelsMismatch(RuntimeError):
+    """Модель вернула не те ярлыки строк, которые ей дали.
+
+    Перевод предложений раскладывается ПО ЯРЛЫКУ, а не по позиции в списке — так
+    делают все, кто переводит субтитры. Ярлык («12-15») — это номера первой и
+    последней реплики, то есть место в ролике. Потерялся ярлык, появился лишний,
+    пришёл дважды — соответствие «строка ↔ момент ролика» разрушено, и разложить
+    ответ можно только наугад. Наугад мы не раскладываем.
+    """
+
+    def __init__(self, missing: set, extra: set):
+        parts = []
+        if missing:
+            parts.append(f"не вернулись: {sorted(missing)[:5]}")
+        if extra:
+            parts.append(f"лишние: {sorted(extra)[:5]}")
+        super().__init__("; ".join(parts) or "ярлыки не совпали")
+        self.missing = set(missing)
+        self.extra = set(extra)
+
+
+def _parse_subtitle_rows(content: str, expected_ids: list[str]) -> dict[str, str]:
+    """Разобрать ответ и убедиться, что вернулись РОВНО те ярлыки, что просили."""
+    parsed = json.loads(str(content or "").strip())
+    rows = parsed.get("rows") if isinstance(parsed, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError("в ответе нет списка rows")
+    got: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("id") or "").strip()
+        if not label:
+            continue
+        got[label] = str(row.get("translation") or "").strip()
+    wanted = set(expected_ids)
+    missing = wanted - set(got)
+    extra = set(got) - wanted
+    if missing or extra:
+        raise SubtitleRowLabelsMismatch(missing=missing, extra=extra)
+    return got
+
+
+async def run_translate_subtitle_rows(
+    rows: list[dict],
+    source_lang: str,
+    target_lang: str,
+) -> dict[str, str]:
+    """Перевести пачку ПРЕДЛОЖЕНИЙ. Возвращает {ярлык: перевод}.
+
+    Переспрашиваем один раз — как и при покадровом переводе. Не совпало снова: пачка
+    не сохраняется, счётчик растёт, человеку говорим словами. Ничего не додумываем:
+    разложить перевод по ярлыкам, которых модель не вернула, нечем.
+    """
+    from backend.subtitle_translate_counter import record_batch
+
+    _LAST_LLM_USAGE.set(None)
+    payload_rows = [{"id": str(r.get("id") or ""), "text": str(r.get("text") or "")}
+                    for r in (rows or [])]
+    expected_ids = [r["id"] for r in payload_rows]
+    payload = {
+        "source_language": (source_lang or "de").strip().lower(),
+        "target_language": (target_lang or "ru").strip().lower(),
+        "rows": payload_rows,
+    }
+    last_error: Exception | None = None
+    for attempt in (1, 2):
+        attempt_payload = payload if attempt == 1 else {**payload, "must_return_ids": expected_ids}
+        content = await llm_execute(
+            task_name="translate_subtitle_rows",
+            system_instruction_key="translate_subtitle_rows",
+            user_message=json.dumps(attempt_payload, ensure_ascii=False),
+            poll_interval_seconds=2.0,
+        )
+        try:
+            got = _parse_subtitle_rows(content, expected_ids)
+        except Exception as exc:
+            last_error = exc
+            logging.warning("translate_subtitle_rows: попытка %s — %s", attempt, exc)
+            continue
+        record_batch(mismatched=(attempt == 2), refused=False)
+        return got
+
+    record_batch(mismatched=True, refused=True)
+    raise last_error if last_error is not None else RuntimeError("translate_subtitle_rows: ответа нет")
 
 
 async def run_translate_subtitles_ru(lines: list[str]) -> list[str]:

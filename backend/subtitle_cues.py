@@ -179,3 +179,138 @@ def split_translation_key(key: str) -> tuple[str, int] | None:
     if not lang or not idx.isdigit():
         return None
     return lang, int(idx)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Предложения: единица перевода — не кадр, а фраза
+#
+#  Зачем (решение владельца 15.09.2026, «делаем как у лидеров»). Кадр субтитра —
+#  это обрывок: «dich mal so am Beckenrand festhalten». Перевести его отдельно
+#  нельзя, потому что немецкий ставит глагол в конец и русский порядок слов не
+#  совпадает с границей кадра. Модель отвечает на это единственным разумным
+#  способом — склеивает соседние строки, и тогда число строк в ответе не сходится
+#  с числом в запросе. То есть покадровый перевод ЗАСТАВЛЯЕТ модель ошибаться.
+#
+#  Единица перевода — предложение: те же реплики, собранные по немецкой пунктуации
+#  и паузам в звуке. Ничего не выдумывается: и знаки, и паузы приходят из самих
+#  субтитров.
+#
+#  Правила перенесены из браузера (App.jsx, shouldFlush) ОДНО В ОДНО, кроме одного:
+#  оттуда убрана длина РУССКОГО текста. Из-за неё граница абзаца зависела от того,
+#  доехал ли перевод, и абзацы перескакивали прямо во время просмотра, когда
+#  подгружалась очередная пачка. Группировка обязана зависеть только от немецкого.
+# ═════════════════════════════════════════════════════════════════════════════
+
+import re
+
+# Конец фразы: точка, восклицательный, вопросительный, многоточие — возможно, под
+# закрывающей кавычкой.
+_HARD_STOP = re.compile(r"[.!?…][\"»”']?$")
+# Мягкая пауза: запятая, точка с запятой, двоеточие, закрывающая скобка.
+_SOFT_STOP = re.compile(r"[,;:)][\"»”']?$")
+# Строчная буква в начале следующего кадра = фраза продолжается, резать нельзя.
+_LOWERCASE_START = re.compile(r"^[a-zäöüßà-ÿ]")
+
+
+def row_id(first: int, last: int) -> str:
+    """Ярлык строки — номера первой и последней её реплики: «12-15».
+
+    Ярлык, а не позиция в списке. Перевод раскладывается ПО ЯРЛЫКУ: так делают все,
+    кто переводит субтитры, и ровно этого нам не хватало — раскладка по позиции
+    сдвигала весь остаток пачки, стоило модели склеить две строки в одну.
+    """
+    return f"{int(first)}-{int(last)}"
+
+
+def group_cues_into_sentences(cues: list) -> list[dict]:
+    """Собрать реплики в предложения.
+
+    Возвращает список строк: {"id", "first", "last", "text", "start", "end"}.
+    `start`/`end` — настоящее время первой и последней реплики, а не вычисленная
+    доля: по ним подсвечивается строка на экране.
+
+    Реплики должны быть УЖЕ склеены (deroll_transcript_cues). Группировка их не
+    склеивает и номеров не меняет — она только расставляет границы.
+    """
+    rows: list[dict] = []
+    current: dict | None = None
+
+    def flush():
+        nonlocal current
+        if not current:
+            return
+        text = " ".join(current["text"].split()).strip()
+        if text:
+            rows.append({
+                "id": row_id(current["first"], current["last"]),
+                "first": current["first"],
+                "last": current["last"],
+                "text": text,
+                "start": current["start"],
+                "end": current["end"],
+            })
+        current = None
+
+    items = cues or []
+    for index, item in enumerate(items):
+        text = _cue_text(item) or ""
+        if not text:
+            continue
+        start = _as_float(item.get("start")) if isinstance(item, dict) else 0.0
+        duration = _as_float(item.get("duration")) if isinstance(item, dict) else 0.0
+        end = start + max(0.0, duration)
+
+        if current is None:
+            current = {"first": index, "last": index, "text": text,
+                       "start": start, "end": end, "chunks": 1}
+        else:
+            current["last"] = index
+            current["text"] = f"{current['text']} {text}"
+            current["end"] = end
+            # Считаем именно кадры, а не разницу номеров: пустые кадры между ними
+            # своей строки не заводят и в счёт идти не должны.
+            current["chunks"] += 1
+
+        next_item = items[index + 1] if index + 1 < len(items) else None
+        next_text = (_cue_text(next_item) or "") if next_item is not None else ""
+        next_start = _as_float(next_item.get("start")) if isinstance(next_item, dict) else None
+        continues = bool(_LOWERCASE_START.match(next_text.strip()))
+        gap = (next_start - end) if next_start is not None else 0.0
+        chunks = current["chunks"]
+        length = len(current["text"])
+
+        should_flush = (
+            bool(_HARD_STOP.search(text))
+            or length >= 105
+            or (not continues and chunks >= 2 and bool(_SOFT_STOP.search(text)) and length >= 70)
+            or (not continues and chunks >= 3 and length >= 90)
+            or gap > 2.5
+            or (gap > 0.9 and not continues)
+        )
+        if should_flush:
+            flush()
+
+    flush()
+    return rows
+
+
+def split_row_translation_key(key: str) -> tuple[str, str] | None:
+    """Ключ перевода строки → (язык, ярлык). Вид ключа: «ru#12-15».
+
+    Отдельный разделитель «#» выбран нарочно: покадровые ключи («ru:17») остаются
+    жить рядом, ими пользуется наложение субтитров на видео. Не разобрался —
+    возвращаем None, а не «нулевую строку».
+    """
+    raw = str(key or "").strip()
+    if "#" not in raw:
+        return None
+    lang, _, label = raw.partition("#")
+    lang = lang.strip().lower()
+    label = label.strip()
+    if not lang or not re.fullmatch(r"\d+-\d+", label):
+        return None
+    return lang, label
+
+
+def row_translation_key(lang: str, label: str) -> str:
+    return f"{str(lang or 'ru').strip().lower()}#{label}"

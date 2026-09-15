@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import logging
 
-from backend.subtitle_cues import split_translation_key
+from backend.subtitle_cues import split_row_translation_key, split_translation_key
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,22 @@ def audit_one_video(row: dict) -> dict:
         pending_roll = True
     rolled_count = len(effective)
 
-    languages = _by_language(row.get("translations") or {})
+    raw_translations = row.get("translations") or {}
+    languages = _by_language(raw_translations)
+    # Перевод предложениями (ключ «ru#12-15») лежит в той же колонке рядом с покадровым.
+    # Считается отдельно: у него нет ни дырок, ни номеров кадров — только ярлык строки,
+    # который либо попадает в нынешний список реплик, либо указывает за его конец.
+    row_lines = 0
+    row_orphan = 0
+    for key in raw_translations:
+        parsed_row = split_row_translation_key(key)
+        if parsed_row is None:
+            continue
+        row_lines += 1
+        _lang, label = parsed_row
+        last = int(label.split("-")[1])
+        if last >= rolled_count:
+            row_orphan += 1
     total_lines = 0
     orphan = 0            # номер за концом немецкого списка
     empty_from_model = 0  # ключ есть, текст пустой
@@ -122,8 +137,9 @@ def audit_one_video(row: dict) -> dict:
         "cues_effective": rolled_count,
         "pending_roll": pending_roll,
         "languages": sorted(languages.keys()),
-        "lines": total_lines,
-        "orphan": orphan,
+        "lines": total_lines + row_lines,
+        "row_lines": row_lines,
+        "orphan": orphan + row_orphan,
         "empty_from_model": empty_from_model,
         "gaps": gaps,
     }

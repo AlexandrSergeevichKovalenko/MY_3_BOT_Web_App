@@ -136,18 +136,19 @@ class ЗамкиНаМесте(unittest.TestCase):
 
     def test_обрыв_перевода_в_браузере_не_молчит(self):
         text = APP_JSX.read_text(encoding="utf-8")
-        i = text.index("'/api/webapp/youtube/translate'")
+        i = text.index("'/api/webapp/youtube/translate_rows'")
         block = text[i:i + 3000]
         self.assertNotIn(".catch(() => {})", block,
                          "пустой catch оставлял человека с многоточиями навсегда")
         self.assertIn("setYoutubeTranslationNotice", block)
 
-    def test_пустой_ответ_запоминается_и_не_вызывает_бесконечный_перезаказ(self):
+    def test_непереведённое_и_переведённое_пустым_это_разные_состояния(self):
+        # Иначе плеер бесконечно перезаказывает одно и то же место, а человек так
+        # ничего и не видит.
         text = APP_JSX.read_text(encoding="utf-8")
-        i = text.index("const aheadLimit = 30;")
-        block = text[i - 400:i + 1200]
-        self.assertIn("=== undefined", block,
-                      "«ещё не заказывали» и «ответ пришёл пустым» — разные состояния")
+        i = text.index("'/api/webapp/youtube/translate_rows'")
+        block = text[i - 1600:i]
+        self.assertIn("=== undefined", block)
 
 
 if __name__ == "__main__":

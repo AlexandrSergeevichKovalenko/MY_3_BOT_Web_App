@@ -157,6 +157,17 @@ def _subtitle_tracks_pending_roll() -> int:
             return int((cursor.fetchone() or [0])[0] or 0)
 
 
+def _subtitle_translations_pointing_nowhere() -> int:
+    """Строк перевода субтитров, привязанных к несуществующим репликам. Обещано: 0.
+
+    Появлялись, когда немецкие субтитры перезаливали из другого источника: он режет
+    ролик иначе, реплики заменялись целиком, а перевод оставался старый. Вход закрыт
+    15.09.2026, накопленное убирает ночной проход в 3:50. Число выше нуля через сутки
+    значит, что либо вход снова открыли, либо проход не отработал."""
+    from backend.subtitle_sync_report import subtitle_sync_state
+    return int(subtitle_sync_state().get("lines_orphan") or 0)
+
+
 def _subtitle_sync_screen() -> str:
     """Тот же текст, что показывает /subtitry, — экран владельца на месте жалобы."""
     from backend.subtitle_sync_report import format_subtitle_sync_report, subtitle_sync_state
@@ -2356,6 +2367,15 @@ PROMISES: tuple[Promise, ...] = (
         measure=_subtitle_tracks_pending_roll,
         how="/subtitry в боте, строка «Ждут склейки»; в базе — SELECT COUNT(*) FROM "
             "bt_3_youtube_transcripts WHERE cues_rolled = FALSE",
+        screen=_subtitle_sync_screen,
+    ),
+    Promise(
+        key="subtitle_translations_pointing_nowhere",
+        title="Строк перевода субтитров, привязанных к репликам, которых в ролике уже нет",
+        since="15.09.2026",
+        expected=0,
+        measure=_subtitle_translations_pointing_nowhere,
+        how="/subtitry в боте, класс 2 «Номера за концом немецкого списка»",
         screen=_subtitle_sync_screen,
     ),
     Promise(
