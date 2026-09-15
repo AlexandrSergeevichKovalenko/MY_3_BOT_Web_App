@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<!-- interactive-widget: слушает Android/Chrome. iOS его игнорирует — там всё решает visualViewport ниже. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="robots" content="noindex, nofollow">
+<title>Лаборатория ввода</title>
+<style>
+/* ───────────────────────── общие токены ───────────────────────── */
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0;height:100%}
+body{
+  background:var(--ground);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+  font-size:16px;line-height:1.45;
+  overscroll-behavior:none;
+}
+
+/* Бланк — светлый документ, засечный немецкий, волосяные линии */
+body[data-skin="blank"]{
+  --ground:#ffffff; --surface:#ffffff; --ink:#14161a; --muted:#6b7079;
+  --line:#e4e2dd; --line-strong:#c9c6bf; --accent:#1f3a5f; --accent-soft:#eef2f7;
+  --ok:#186a4b; --bad:#9d2a2a; --radius:0px;
+}
+/* Панель — тёмный приборный корпус, латунный акцент */
+body[data-skin="panel"]{
+  --ground:#0f1216; --surface:#171b21; --ink:#e9ebee; --muted:#8a929e;
+  --line:#262c34; --line-strong:#39414c; --accent:#c8a15a; --accent-soft:#1d2129;
+  --ok:#5fbf92; --bad:#e0736b; --radius:10px;
+}
+/* Фокус — светлый, без единой коробки, всё по левому краю */
+body[data-skin="focus"]{
+  --ground:#fafaf8; --surface:#fafaf8; --ink:#16181b; --muted:#70757c;
+  --line:#e6e6e2; --line-strong:#cfcfc9; --accent:#0f6e5c; --accent-soft:#e7f1ee;
+  --ok:#0f6e5c; --bad:#a33227; --radius:0px;
+}
+
+/* ───────────────────────── каркас ───────────────────────── */
+#strip{
+  position:sticky;top:0;z-index:40;
+  display:flex;align-items:center;gap:10px;
+  padding:9px 14px;padding-top:calc(9px + env(safe-area-inset-top));
+  background:var(--surface);border-bottom:1px solid var(--line);
+  font-size:12px;color:var(--muted);
+}
+#striptext{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#strip b{color:var(--ink);font-weight:600}
+#strip .spacer{flex:1;min-width:6px}
+#gear{flex:none}
+#gear{
+  appearance:none;border:1px solid var(--line-strong);background:transparent;color:var(--ink);
+  border-radius:99px;padding:5px 12px;font-size:12px;font-weight:600;
+}
+#meter{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;color:var(--muted);
+  padding:4px 14px;border-bottom:1px solid var(--line);background:var(--surface);
+  position:sticky;top:var(--strip-h,44px);z-index:39;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+#stage{display:flex;flex-direction:column;padding:0 18px}
+.lab-scroll{display:flex;flex-direction:column}
+body[data-kb="B"] .lab-scroll,body[data-kb="C"] .lab-scroll{flex:1}
+body[data-skin="focus"] .lab-entry{margin-top:auto;padding-top:24px}
+/* --chrome — высота служебной полосы лаборатории (строка режима + приборы).
+   В настоящем интерактиве её нет; здесь её приходится вычитать, иначе низ
+   задания уезжает за нижнюю кромку экрана. Проверено 15.09.2026. */
+body[data-kb="A"] #stage{min-height:calc(100dvh - var(--chrome,72px));justify-content:center}
+body[data-kb="B"] #stage{
+  min-height:calc(100svh - var(--chrome,72px));justify-content:flex-start;
+  padding-top:22px;padding-bottom:calc(18px + env(safe-area-inset-bottom));
+}
+body[data-kb="C"] #stage{
+  min-height:calc(100svh - var(--chrome,72px));justify-content:flex-start;
+  padding-top:22px;padding-bottom:calc(150px + env(safe-area-inset-bottom));
+}
+
+#kbbar{
+  position:fixed;left:0;right:0;bottom:0;z-index:35;
+  background:var(--surface);border-top:1px solid var(--line);
+  padding:12px 18px;padding-bottom:calc(12px + env(safe-area-inset-bottom));
+  transition:transform .12s ease-out;
+}
+#kbbar[hidden]{display:none}
+
+/* ───────────────────────── содержимое задания ───────────────────────── */
+.io-head{display:flex;align-items:baseline;gap:10px;margin-bottom:14px}
+.io-kicker{
+  font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:600;
+}
+.io-count{margin-left:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--muted)}
+
+.io-task{font-size:14px;color:var(--muted);margin:0 0 16px}
+.io-task b{color:var(--ink);font-weight:600}
+
+.satz{margin:0 0 20px}
+body[data-skin="blank"] .satz{
+  font-family:Georgia,"Times New Roman",serif;font-size:21px;line-height:1.62;color:var(--ink);
+  border-left:2px solid var(--accent);padding-left:14px;
+}
+body[data-skin="panel"] .satz{font-size:19px;line-height:1.55;color:var(--ink)}
+body[data-skin="focus"] .satz{font-size:25px;line-height:1.38;letter-spacing:-.015em;font-weight:500}
+
+.satz .luecke{
+  color:var(--accent);
+  border-bottom:2px solid var(--accent);
+  padding:0 .5em;
+}
+body[data-skin="panel"] .satz .luecke{border-bottom-color:var(--accent);opacity:.8}
+
+.satz-ru{font-size:13.5px;color:var(--muted);margin:-10px 0 20px}
+body[data-skin="blank"] .satz-ru{padding-left:16px}
+
+/* клетки */
+.cells{display:grid;grid-template-columns:repeat(var(--cols,9),1fr);gap:6px;margin:0 0 4px}
+/* inline-клетки живут ВНУТРИ строки текста, поэтому ширина задаётся в долях
+   кегля (em), а не 1fr: с 1fr inline-grid распирает себя на всю ширину абзаца
+   и выбрасывает предложение на отдельные строки. Проверено 15.09.2026. */
+.cells.inline{
+  display:inline-grid;grid-template-columns:repeat(var(--cols,9),.72em);
+  vertical-align:-.30em;margin:0 .2em;gap:3px;
+}
+.cells.inline .cell{aspect-ratio:auto;height:1.25em;font-size:inherit}
+.cell{
+  appearance:none;-webkit-appearance:none;
+  width:100%;aspect-ratio:1/1.12;min-width:0;
+  text-align:center;padding:0;margin:0;
+  font-size:max(1.0625rem,16px);   /* <16px => iOS зумит страницу при фокусе */
+  font-weight:600;color:var(--ink);
+  background:transparent;outline:none;
+  font-family:inherit;
+}
+body[data-skin="blank"] .cell{
+  border:none;border-bottom:1.5px solid var(--line-strong);border-radius:0;
+  font-family:Georgia,"Times New Roman",serif;font-weight:400;
+}
+body[data-skin="blank"] .cell:focus{border-bottom-color:var(--accent);background:var(--accent-soft)}
+body[data-skin="panel"] .cell{
+  border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--accent-soft);
+}
+body[data-skin="panel"] .cell:focus{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+body[data-skin="focus"] .cell{
+  border:none;border-bottom:2px solid var(--line-strong);border-radius:0;
+  font-size:max(1.375rem,16px);font-weight:600;aspect-ratio:1/1.05;
+}
+body[data-skin="focus"] .cell:focus{border-bottom-color:var(--accent);color:var(--accent)}
+.cells.done .cell{color:var(--ok);border-bottom-color:var(--ok)}
+.cells.miss .cell{color:var(--bad);border-bottom-color:var(--bad)}
+
+/* обычное поле ввода */
+.feld{
+  appearance:none;-webkit-appearance:none;width:100%;
+  font-size:max(1.0625rem,16px);font-family:inherit;color:var(--ink);
+  background:var(--surface);outline:none;padding:13px 14px;
+  border:1px solid var(--line-strong);border-radius:var(--radius);
+}
+body[data-skin="blank"] .feld,body[data-skin="focus"] .feld{
+  border:none;border-bottom:1.5px solid var(--line-strong);padding-left:0;padding-right:0;background:transparent;
+}
+.feld:focus{border-color:var(--accent);border-bottom-color:var(--accent)}
+.feld::placeholder{color:var(--muted);opacity:.7}
+
+.feld-inline{
+  display:inline-block;width:6.5em;text-align:center;
+  font-size:inherit;font-family:inherit;color:var(--accent);font-weight:600;
+  background:transparent;border:none;border-bottom:2px solid var(--accent);
+  outline:none;padding:0 .2em;appearance:none;-webkit-appearance:none;
+}
+
+/* кнопки */
+.row{display:flex;gap:9px;align-items:center;margin-top:14px;flex-wrap:wrap}
+.btn{
+  appearance:none;font-family:inherit;font-size:14.5px;font-weight:600;
+  padding:12px 20px;border-radius:var(--radius);cursor:pointer;
+  border:1px solid var(--accent);background:var(--accent);color:var(--ground);
+}
+body[data-skin="blank"] .btn,body[data-skin="focus"] .btn{border-radius:2px}
+.btn.ghost{background:transparent;color:var(--ink);border-color:var(--line-strong)}
+.btn.tip{background:transparent;color:var(--accent);border-color:var(--accent)}
+.btn:disabled{opacity:.4}
+
+.verdict{margin-top:16px;font-size:14.5px;line-height:1.5}
+.verdict.ok{color:var(--ok)}
+.verdict.bad{color:var(--bad)}
+.verdict .erk{display:block;margin-top:6px;color:var(--muted);font-size:13px}
+
+/* спринт: копилка найденных */
+.fund{display:flex;flex-direction:column;gap:1px;margin:0 0 18px}
+.fund-item{
+  display:flex;gap:10px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--line);
+}
+.fund-de{font-weight:600;font-size:16px}
+.fund-ru{color:var(--muted);font-size:13.5px;margin-left:auto}
+.fund-empty{color:var(--muted);font-size:13.5px;padding:9px 0;border-bottom:1px solid var(--line)}
+
+/* слова-фишки для «найди ошибку» и Satzbau */
+.woerter{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 18px}
+.wort{
+  font-size:17px;padding:9px 12px;border-radius:var(--radius);
+  border:1px solid var(--line);background:var(--surface);color:var(--ink);
+  font-family:inherit;cursor:pointer;
+}
+body[data-skin="blank"] .wort,body[data-skin="focus"] .wort{border-radius:3px}
+.wort.picked{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.wort.ok{border-color:var(--ok);color:var(--ok)}
+.wort.bad{border-color:var(--bad);color:var(--bad)}
+
+/* ───────────────────────── лист настроек ───────────────────────── */
+#sheet{
+  position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.45);
+  display:flex;align-items:flex-end;
+}
+#sheet[hidden]{display:none}
+#sheet .inner{
+  width:100%;background:var(--surface);border-top:1px solid var(--line);
+  padding:18px 18px calc(24px + env(safe-area-inset-bottom));
+  max-height:86svh;overflow:auto;
+}
+#sheet h3{margin:20px 0 4px;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+#sheet h3:first-of-type{margin-top:4px}
+#sheet .hint{margin:0 0 10px;font-size:12.5px;color:var(--muted);line-height:1.45}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{
+  font-family:inherit;font-size:14px;padding:10px 14px;border-radius:99px;cursor:pointer;
+  border:1px solid var(--line-strong);background:transparent;color:var(--ink);
+}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--ground)}
+#close{width:100%;margin-top:22px}
+</style>
+</head>
+<body data-skin="panel" data-kb="B">
+
+<div id="strip">
+  <span id="striptext"></span>
+  <span class="spacer"></span>
+  <button id="gear" type="button">настройки</button>
+</div>
+<div id="meter">—</div>
+
+<main id="stage"></main>
+<div id="kbbar" hidden></div>
+
+<div id="sheet" hidden>
+  <div class="inner">
+    <h3>Задание</h3>
+    <p class="hint">Четыре интерактива, где человек печатает. Смотри, где перекрытие клавиатурой мешает, а где нет.</p>
+    <div class="chips" id="pick-io"></div>
+
+    <h3>Поведение клавиатуры</h3>
+    <p class="hint" id="kb-hint"></p>
+    <div class="chips" id="pick-kb"></div>
+
+    <h3>Оформление</h3>
+    <p class="hint" id="skin-hint"></p>
+    <div class="chips" id="pick-skin"></div>
+
+    <button class="btn" id="close" type="button">Закрыть и пробовать</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ═══════════ живые данные из банка (снято 15.09.2026) ═══════════ */
+var GAP = [
+  {kopf:"die Fähigkeit", kopf_ru:"способность", rel:"синоним",
+   wort:"Kompetenz", wort_ru:"компетенция",
+   vor:"Die ", nach:", komplexe Probleme zu lösen, ist in diesem Beruf besonders wichtig.",
+   ru:"Компетентность в решении сложных задач особенно важна в этой профессии."},
+  {kopf:"entscheiden", kopf_ru:"решать", rel:"синоним",
+   wort:"beschließen", wort_ru:"решать, постановить",
+   vor:"Er musste schnell ", nach:", welcher Weg der beste ist.",
+   ru:"Ему нужно было быстро решить, какой путь лучший."},
+  {kopf:"die Fähigkeit", kopf_ru:"способность", rel:"синоним",
+   wort:"Können", wort_ru:"умение",
+   vor:"Das ", nach:", komplexe Probleme zu lösen, ist in diesem Beruf besonders wichtig.",
+   ru:"Умение решать сложные задачи особенно важно в этой профессии."}
+];
+var SPRINT = {
+  kopf:"freimütig", kopf_ru:"откровенный", rel:"антоним",
+  accepted:[
+    {de:"verschlossen", ru:"замкнутый"}, {de:"reserviert", ru:"сдержанный"},
+    {de:"zurückhaltend", ru:"скрытный"}, {de:"schweigsam", ru:"молчаливый"},
+    {de:"verheimlichend", ru:"утаивающий"}
+  ]
+};
+var CLOZE = {
+  vor:"Wir müssen den Vertrag unterschreiben, ", nach:" er gültig wird.",
+  correct:"damit", hint_ru:"союз цели",
+  tip:"Цель? Всегда «damit», когда хочется получить результат.",
+  erk:"Здесь выражается цель союзом «damit» — он указывает, зачем совершается действие."
+};
+var FEHLER = {
+  woerter:["Sie","erinnert","sich","auf","ihre","Kindheit","gern."],
+  index:3, correct:"an", hint_ru:"правильный предлог после «sich erinnern»",
+  erk:"Глагол «sich erinnern» требует предлог «an», а не «auf»: sich an etwas erinnern."
+};
+
+/* ═══════════ состояние ═══════════ */
+var IOS  = [["gap","Пропуск (клетки)"],["sprint","Спринт (антонимы)"],["cloze","Дополни предложение"],["fehler","Найди ошибку"]];
+var KBS  = [["A","Как сейчас"],["B","Стабильный кадр"],["C","Панель у клавиатуры"]];
+var SKINS= [["blank","Бланк"],["panel","Панель"],["focus","Фокус"]];
+
+var KB_HINT = {
+  A:"Кадр сжимается вместе с клавиатурой, карточка стоит по центру — поэтому при каждом открытии и закрытии клавиатуры всё содержимое подпрыгивает. Это то, что сейчас во всех интерактивах.",
+  B:"Кадр замирает на высоте экрана без клавиатуры и больше не меняется. Ничего не прыгает, но клавиатура накрывает низ: поле ввода один раз само подкручивается в видимую часть.",
+  C:"Кадр тоже замирает, а строка ввода приклеена к верхней кромке клавиатуры и едет вместе с ней. Так сделано в мессенджерах: текст выше не шевелится, поле всегда на виду."
+};
+var SKIN_HINT = {
+  blank:"Белый лист, немецкое предложение засечным шрифтом, клетки — подчёркивания прямо внутри строки, как в бумажном бланке. Одна тонкая линия слева вместо рамок.",
+  panel:"Тёмный корпус, приглушённое предложение, клетки — отдельный ряд контуров, счётчик моноширинным. Один латунный акцент на весь экран.",
+  focus:"Светлый, ни одной рамки и ни одной тени. Предложение крупно сверху, клетки внизу у большого пальца. Иерархия только размером шрифта."
+};
+
+var S = {io:"gap", kb:"B", skin:"panel"};
+try{ var raw = localStorage.getItem("labkbd"); if(raw) S = Object.assign(S, JSON.parse(raw)); }catch(e){}
+
+var stage=document.getElementById("stage"), kbbar=document.getElementById("kbbar"),
+    sheet=document.getElementById("sheet"), meter=document.getElementById("meter"),
+    striptext=document.getElementById("striptext");
+
+function el(tag,cls,txt){ var n=document.createElement(tag); if(cls)n.className=cls; if(txt!=null)n.textContent=txt; return n; }
+function label(list,key){ for(var i=0;i<list.length;i++) if(list[i][0]===key) return list[i][1]; return key; }
+
+/* ═══════════ измеритель + режим C ═══════════ */
+var vv = window.visualViewport;
+function track(){
+  var strip=document.getElementById("strip");
+  document.documentElement.style.setProperty("--strip-h", strip.offsetHeight+"px");
+  document.documentElement.style.setProperty("--chrome", (strip.offsetHeight + meter.offsetHeight) + "px");
+  if(!vv){ meter.textContent="visualViewport не поддерживается"; return; }
+  var kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+  kbbar.style.transform = "translateY(" + (-kb) + "px)";
+  meter.textContent = "окно " + window.innerHeight
+    + " · видно " + Math.round(vv.height)
+    + " · сдвиг " + Math.round(vv.offsetTop)
+    + " · клавиатура " + Math.round(kb) + "px";
+}
+if(vv){ vv.addEventListener("resize",track); vv.addEventListener("scroll",track); }
+window.addEventListener("resize",track);
+
+/* ═══════════ клетки: один <input> на букву ═══════════ */
+/* ┌─ ПРОВЕРЕНО 15.09.2026. НЕ ПЕРЕДЕЛЫВАТЬ В ОДНО ПОЛЕ С МАСКОЙ. ──────────────┐
+   │ Одно поле + накладка ломает две вещи сразу: pointer-events:none убивает    │
+   │ клавиатуру на iOS, а без него по координатам нельзя попасть в букву —      │
+   │ iOS ставит каретку по своей раскладке текста. Один input на клетку решает  │
+   │ и тап в середину слова, и клавиатуру, без единого трюка.                   │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+function makeCells(len, opts){
+  opts = opts || {};
+  var wrap = el("div","cells" + (opts.inline ? " inline" : ""));
+  var rows = Math.ceil(len/11), cols = Math.ceil(len/rows);
+  wrap.style.setProperty("--cols", cols);
+  var inputs=[];
+  function focusAt(i){
+    if(i<0) i=0; if(i>len-1) i=len-1;
+    var t=inputs[i]; if(!t) return;
+    t.focus(); try{ t.setSelectionRange(0,t.value.length); }catch(e){}
+  }
+  function read(){ return inputs.map(function(x){return x.value||"";}).join(""); }
+  for(var i=0;i<len;i++){
+    (function(i){
+      var inp=document.createElement("input");
+      inp.className="cell"; inp.type="text"; inp.maxLength=1;
+      inp.autocapitalize="off"; inp.autocorrect="off"; inp.spellcheck=false;
+      inp.setAttribute("autocomplete","off"); inp.setAttribute("inputmode","text");
+      inp.addEventListener("input",function(e){
+        var v=e.target.value||"";
+        if(v.length>1) e.target.value=v.slice(-1);
+        if(e.target.value) focusAt(i+1);
+        if(opts.onChange) opts.onChange(read());
+      });
+      inp.addEventListener("keydown",function(e){
+        if(e.key==="Enter"){ e.preventDefault(); if(opts.onEnter) opts.onEnter(read()); return; }
+        if(e.key==="Backspace" && !e.target.value){
+          e.preventDefault();
+          var p=inputs[i-1]; if(p){ p.value=""; focusAt(i-1); if(opts.onChange) opts.onChange(read()); }
+          return;
+        }
+        if(e.key==="ArrowLeft"){ e.preventDefault(); focusAt(i-1); }
+        if(e.key==="ArrowRight"){ e.preventDefault(); focusAt(i+1); }
+      });
+      inp.addEventListener("focus",function(){ try{ inp.setSelectionRange(0,inp.value.length); }catch(e){} });
+      inputs.push(inp); wrap.append(inp);
+    })(i);
+  }
+  return {
+    node:wrap, read:read, focusAt:focusAt,
+    set:function(str){ for(var i=0;i<len;i++) inputs[i].value = str[i] || ""; },
+    lock:function(){ inputs.forEach(function(x){ x.readOnly=true; }); },
+    mark:function(cls){ wrap.classList.remove("done","miss"); if(cls) wrap.classList.add(cls); }
+  };
+}
+
+/* ═══════════ сборка экрана ═══════════ */
+/* Каждый интерактив отдаёт три куска. Режим C поднимает «ввод» к клавиатуре,
+   режимы A и B оставляют его в общем потоке — раскладка одна, меняется только место. */
+function mount(io){
+  stage.innerHTML=""; kbbar.innerHTML="";
+  var scroll=el("div","lab-scroll");
+  if(io.head) scroll.append(io.head);
+  if(io.body) scroll.append(io.body);
+  stage.append(scroll);
+  if(S.kb==="C" && io.entry){ kbbar.append(io.entry); kbbar.hidden=false; }
+  else { if(io.entry) scroll.append(io.entry); kbbar.hidden=true; }
+  track();
+}
+
+function head(kicker, title, sub, counter){
+  var h=el("div","io-head");
+  var l=el("div");
+  l.append(el("div","io-kicker",kicker));
+  var t=el("div","io-task");
+  t.innerHTML = title;
+  l.append(t);
+  h.append(l);
+  if(counter) h.append(el("div","io-count",counter));
+  return h;
+}
+
+/* ─── 1. Пропуск (клетки) ─── */
+var gapIdx=0;
+function buildGap(){
+  var d=GAP[gapIdx%GAP.length];
+  var tries=0, hints=0, cells=null;
+
+  var h=head(d.rel + " · " + d.kopf,
+             "Впиши <b>" + d.rel + "</b> к слову <b>" + d.kopf + "</b> (" + d.kopf_ru + ") так, чтобы предложение осталось верным.",
+             null, (gapIdx%GAP.length+1) + "/" + GAP.length);
+
+  var body=el("div");
+  var p=el("p","satz");
+  cells = makeCells(d.wort.length, {inline:(S.skin==="blank"), onEnter:check});
+
+  if(S.skin==="blank"){
+    p.append(document.createTextNode(d.vor));
+    p.append(cells.node);
+    p.append(document.createTextNode(d.nach));
+  }else{
+    p.append(document.createTextNode(d.vor));
+    var g=el("span","luecke","    ");
+    p.append(g);
+    p.append(document.createTextNode(d.nach));
+  }
+  body.append(p);
+  body.append(el("p","satz-ru",d.ru));
+
+  var entry=el("div","lab-entry");
+  if(S.skin!=="blank") entry.append(cells.node);
+  var row=el("div","row");
+  var bCheck=el("button","btn","Проверить");
+  var bTip=el("button","btn tip","Подсказка · буква");
+  row.append(bCheck,bTip);
+  entry.append(row);
+  var vd=el("div","verdict"); entry.append(vd);
+
+  bCheck.addEventListener("click",function(){ check(cells.read()); });
+  /* Фокус ставится синхронно внутри касания — иначе iOS клавиатуру не откроет. */
+  bTip.addEventListener("pointerdown",function(e){ e.preventDefault(); });
+  bTip.addEventListener("click",function(){
+    if(hints>=2) return;
+    hints++;
+    cells.set(d.wort.slice(0,hints));
+    cells.focusAt(hints);
+    if(hints>=2){ bTip.disabled=true; bTip.textContent="Подсказки кончились"; }
+    else bTip.textContent="Подсказка · ещё букву";
+  });
+
+  function check(val){
+    val=(val||"").trim();
+    if(!val) return;
+    tries++;
+    if(val.toLowerCase()===d.wort.toLowerCase()){
+      cells.mark("done"); cells.lock();
+      vd.className="verdict ok";
+      vd.innerHTML="Верно — <b>"+d.wort+"</b> ("+d.wort_ru+")";
+      bCheck.textContent="Следующее"; bTip.disabled=true;
+      bCheck.onclick=function(){ gapIdx++; mount(buildGap()); };
+      return;
+    }
+    cells.mark("miss");
+    if(tries>=2){
+      cells.set(d.wort); cells.lock();
+      vd.className="verdict bad";
+      vd.innerHTML="Не угадал. Верный ответ — <b>"+d.wort+"</b> ("+d.wort_ru+")";
+      bCheck.textContent="Следующее"; bTip.disabled=true;
+      bCheck.onclick=function(){ gapIdx++; mount(buildGap()); };
+    }else{
+      vd.className="verdict bad";
+      vd.textContent="Пока не то. Осталась одна попытка.";
+      setTimeout(function(){ cells.mark(null); },600);
+    }
+  }
+  return {head:h, body:body, entry:entry};
+}
+
+/* ─── 2. Спринт синонимов ─── */
+function buildSprint(){
+  var d=SPRINT, found=[];
+  var h=head(d.rel + "ы · спринт",
+             "Сколько <b>" + d.rel + "ов</b> к слову <b>" + d.kopf + "</b> (" + d.kopf_ru + ") вспомнишь? Вводи по одному.",
+             null, "0/" + d.accepted.length);
+  var counter=h.querySelector(".io-count");
+
+  var body=el("div");
+  var list=el("div","fund");
+  function redraw(){
+    list.innerHTML="";
+    if(!found.length){ list.append(el("div","fund-empty","Пока пусто — первое слово впиши внизу.")); }
+    found.forEach(function(f){
+      var r=el("div","fund-item");
+      r.append(el("span","fund-de",f.de));
+      r.append(el("span","fund-ru",f.ru));
+      list.append(r);
+    });
+    counter.textContent = found.length + "/" + d.accepted.length;
+  }
+  redraw();
+  body.append(list);
+
+  var entry=el("div","lab-entry");
+  var inp=el("input","feld");
+  inp.type="text"; inp.placeholder="впиши слово и нажми ввод";
+  inp.autocapitalize="off"; inp.autocorrect="off"; inp.spellcheck=false;
+  inp.setAttribute("autocomplete","off");
+  var vd=el("div","verdict");
+  function submit(){
+    var v=inp.value.trim(); if(!v) return;
+    var hit=null;
+    d.accepted.forEach(function(a){ if(a.de.toLowerCase()===v.toLowerCase()) hit=a; });
+    if(!hit){ vd.className="verdict bad"; vd.textContent="«"+v+"» в списке не значится."; }
+    else if(found.indexOf(hit)>=0){ vd.className="verdict"; vd.textContent="Это уже есть."; }
+    else { found.push(hit); vd.className="verdict ok"; vd.textContent="Засчитано."; redraw(); }
+    inp.value=""; inp.focus();
+  }
+  inp.addEventListener("keydown",function(e){ if(e.key==="Enter"){ e.preventDefault(); submit(); } });
+  entry.append(inp);
+  var row=el("div","row");
+  var b=el("button","btn","Добавить");
+  b.addEventListener("pointerdown",function(e){ e.preventDefault(); });
+  b.addEventListener("click",function(){ inp.focus(); submit(); });
+  var b2=el("button","btn ghost","Сдаюсь");
+  b2.addEventListener("click",function(){
+    found=d.accepted.slice(); redraw();
+    vd.className="verdict"; vd.textContent="Весь список открыт.";
+  });
+  row.append(b,b2); entry.append(row); entry.append(vd);
+  return {head:h, body:body, entry:entry};
+}
+
+/* ─── 3. Дополни предложение (одно поле внутри текста) ─── */
+function buildCloze(){
+  var d=CLOZE, tries=0;
+  var h=head("грамматика · дополни", "Вставь пропущенное слово. Подсказка: <b>"+d.hint_ru+"</b>.");
+  var body=el("div");
+  var p=el("p","satz");
+  var inp=el("input","feld-inline");
+  inp.type="text"; inp.placeholder="…";
+  inp.autocapitalize="off"; inp.autocorrect="off"; inp.spellcheck=false;
+  inp.setAttribute("autocomplete","off");
+  p.append(document.createTextNode(d.vor)); p.append(inp); p.append(document.createTextNode(d.nach));
+  body.append(p);
+
+  var entry=el("div","lab-entry");
+  var row=el("div","row");
+  var bCheck=el("button","btn","Проверить");
+  var bTip=el("button","btn tip","Подсказка");
+  row.append(bCheck,bTip); entry.append(row);
+  var vd=el("div","verdict"); entry.append(vd);
+
+  inp.addEventListener("keydown",function(e){ if(e.key==="Enter"){ e.preventDefault(); check(); } });
+  bTip.addEventListener("pointerdown",function(e){ e.preventDefault(); });
+  bTip.addEventListener("click",function(){ vd.className="verdict"; vd.textContent=d.tip; inp.focus(); });
+  bCheck.addEventListener("click",check);
+
+  function check(){
+    var v=inp.value.trim(); if(!v) return;
+    tries++;
+    if(v.toLowerCase()===d.correct.toLowerCase()){
+      vd.className="verdict ok";
+      vd.innerHTML="Верно.<span class='erk'>"+d.erk+"</span>";
+      inp.readOnly=true; bTip.disabled=true; bCheck.disabled=true;
+    }else if(tries>=2){
+      inp.value=d.correct; inp.readOnly=true;
+      vd.className="verdict bad";
+      vd.innerHTML="Верный ответ — <b>"+d.correct+"</b>.<span class='erk'>"+d.erk+"</span>";
+      bTip.disabled=true; bCheck.disabled=true;
+    }else{
+      vd.className="verdict bad"; vd.textContent="Не то. Осталась одна попытка.";
+      inp.focus();
+    }
+  }
+  return {head:h, body:body, entry:entry};
+}
+
+/* ─── 4. Найди ошибку (тап по слову + ввод исправления) ─── */
+function buildFehler(){
+  var d=FEHLER, picked=-1, done=false;
+  var h=head("грамматика · ошибка", "Одно слово стоит неверно. Нажми на него, потом впиши правильное.");
+  var body=el("div");
+  var box=el("div","woerter");
+  var chips=[];
+  d.woerter.forEach(function(w,i){
+    var c=el("button","wort",w); c.type="button";
+    c.addEventListener("click",function(){
+      if(done) return;
+      picked=i;
+      chips.forEach(function(x,j){ x.classList.toggle("picked", j===i); });
+      inp.value=""; inp.focus();      /* синхронно внутри касания — клавиатура откроется */
+      vd.textContent="";
+    });
+    chips.push(c); box.append(c);
+  });
+  body.append(box);
+
+  var entry=el("div","lab-entry");
+  var inp=el("input","feld");
+  inp.type="text"; inp.placeholder="как должно быть";
+  inp.autocapitalize="off"; inp.autocorrect="off"; inp.spellcheck=false;
+  inp.setAttribute("autocomplete","off");
+  inp.addEventListener("keydown",function(e){ if(e.key==="Enter"){ e.preventDefault(); check(); } });
+  entry.append(inp);
+  var row=el("div","row");
+  var bCheck=el("button","btn","Проверить");
+  row.append(bCheck); entry.append(row);
+  var vd=el("div","verdict"); entry.append(vd);
+  bCheck.addEventListener("click",check);
+
+  function check(){
+    if(done) return;
+    if(picked<0){ vd.className="verdict bad"; vd.textContent="Сначала выбери слово."; return; }
+    var v=inp.value.trim();
+    if(picked!==d.index){
+      chips[picked].classList.add("bad");
+      vd.className="verdict bad"; vd.textContent="Здесь ошибки нет — посмотри ещё раз.";
+      return;
+    }
+    if(v.toLowerCase()!==d.correct.toLowerCase()){
+      vd.className="verdict bad"; vd.textContent="Слово выбрано верно, но замена не та.";
+      return;
+    }
+    done=true;
+    chips[d.index].textContent=d.correct;
+    chips[d.index].classList.remove("picked","bad");
+    chips[d.index].classList.add("ok");
+    inp.readOnly=true; bCheck.disabled=true;
+    vd.className="verdict ok";
+    vd.innerHTML="Верно.<span class='erk'>"+d.erk+"</span>";
+  }
+  return {head:h, body:body, entry:entry};
+}
+
+var BUILD = {gap:buildGap, sprint:buildSprint, cloze:buildCloze, fehler:buildFehler};
+
+/* ═══════════ настройки ═══════════ */
+function chips(hostId, list, key, onPick){
+  var host=document.getElementById(hostId);
+  host.innerHTML="";
+  list.forEach(function(pair){
+    var b=el("button","chip",pair[1]); b.type="button";
+    b.setAttribute("aria-pressed", String(S[key]===pair[0]));
+    b.addEventListener("click",function(){ S[key]=pair[0]; onPick(); });
+    host.append(b);
+  });
+}
+function apply(){
+  document.body.dataset.skin=S.skin;
+  document.body.dataset.kb=S.kb;
+  striptext.innerHTML = "<b>"+label(IOS,S.io)+"</b> · "+label(KBS,S.kb)+" · "+label(SKINS,S.skin);
+  document.getElementById("kb-hint").textContent   = KB_HINT[S.kb];
+  document.getElementById("skin-hint").textContent = SKIN_HINT[S.skin];
+  chips("pick-io",   IOS,   "io",   refresh);
+  chips("pick-kb",   KBS,   "kb",   refresh);
+  chips("pick-skin", SKINS, "skin", refresh);
+  try{ localStorage.setItem("labkbd", JSON.stringify(S)); }catch(e){}
+}
+function refresh(){ apply(); gapIdx=0; mount(BUILD[S.io]()); }
+
+document.getElementById("gear").addEventListener("click",function(){ sheet.hidden=false; });
+document.getElementById("close").addEventListener("click",function(){ sheet.hidden=true; });
+sheet.addEventListener("click",function(e){ if(e.target===sheet) sheet.hidden=true; });
+
+refresh();
+track();
+</script>
+</body>
+</html>
