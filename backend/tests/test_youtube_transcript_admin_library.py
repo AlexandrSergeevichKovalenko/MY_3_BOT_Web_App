@@ -290,7 +290,15 @@ class YoutubeTranscriptAdminLibraryTests(unittest.TestCase):
             response = self._post_manual_transcript(117649764, [])
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), {"ok": True})
+        # С 15.09.2026 ответ несёт ещё и реплики со строками-предложениями: браузер
+        # предложения больше не собирает (правило живёт только на сервере), и ответ
+        # без rows означал бы ПУСТУЮ панель субтитров сразу после ручной вставки.
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual([item["text"] for item in payload["items"]], ["Hallo", "Welt"])
+        # Два кадра без точки между ними — это одна фраза, и строкой она приходит одной.
+        self.assertEqual([row["text"] for row in payload["rows"]], ["Hallo Welt"])
+        self.assertEqual(payload["rows"][0]["id"], "0-1")
         upsert_mock.assert_called_once()
         memory_cache_mock.assert_called_once()
 

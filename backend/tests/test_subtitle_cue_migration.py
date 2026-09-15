@@ -120,10 +120,36 @@ class ПереносНакопленного(unittest.TestCase):
         from backend.subtitle_cue_migration import format_roll_sweep_report
 
         text = format_roll_sweep_report({"rolled": 3, "cues_removed": 40,
-                                         "translations_dropped": 2, "failed": 1})
+                                         "translations_dropped": 2, "failed": 1,
+                                         "orphans_removed": 7, "orphan_videos": 2})
         self.assertIn("склеено дорожек за ночь — 3", text)
         self.assertIn("Строк перевода удалено: 2", text)
-        self.assertIn("Не смогли склеить: 1", text)
+        self.assertIn("убрано: 7 строк у 2 роликов", text)
+        self.assertIn("Не смогли починить: 1", text)
+
+    def test_осиротевший_перевод_убирается_только_у_склеенных(self):
+        from backend.subtitle_cue_migration import drop_orphan_translation_keys
+
+        rows = [
+            # Склеенная дорожка: номер 9 указывает за конец трёх реплик — убрать.
+            {"video_id": "rolled1", "cues_rolled": True,
+             "items": [{"text": "a"}, {"text": "b"}, {"text": "c"}],
+             "translations": {"ru:0": "а", "ru:9": "в пустоту", "ru#1-9": "тоже в пустоту"}},
+            # Несклеенная: её приведёт в порядок сама склейка, трогать нельзя.
+            {"video_id": "raw1", "cues_rolled": False,
+             "items": [{"text": "a"}, {"text": "b"}],
+             "translations": {"ru:7": "пока не наше дело"}},
+        ]
+        deleted = []
+        with mock.patch("backend.database.iter_youtube_transcripts_for_audit",
+                        return_value=iter(rows)), \
+             mock.patch("backend.database.delete_youtube_translation_keys",
+                        side_effect=lambda vid, keys: (deleted.append((vid, sorted(keys))),
+                                                       len(keys))[1]):
+            report = drop_orphan_translation_keys(limit_videos=50)
+        self.assertEqual(report["videos_cleaned"], 1)
+        self.assertEqual(report["keys_removed"], 2)
+        self.assertEqual(deleted, [("rolled1", ["ru#1-9", "ru:9"])])
 
 
 if __name__ == "__main__":

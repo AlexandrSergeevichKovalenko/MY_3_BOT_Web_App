@@ -7097,7 +7097,12 @@ function AppInner() {
   // Куда человек перемотал и ждём, пока плеер туда доедет: { value, ticks } либо null.
   // Пока ждём — опрос позиции НЕ трогает показанное число (см. startTimePolling).
   const youtubeSeekTargetRef = useRef(null);
-  const [youtubeTranslations, setYoutubeTranslations] = useState({});
+  // Предложения приходят с сервера: {id, first, last, text, start, end}. Правила «где
+  // кончается фраза» живут ТОЛЬКО там — второй экземпляр правила уже однажды развёл
+  // номера и сдвинул русские субтитры (15.09.2026).
+  const [youtubeSubtitleRows, setYoutubeSubtitleRows] = useState([]);
+  // Перевод по ярлыку строки: {"12-15": "…"}. Не по позиции в списке.
+  const [youtubeRowTranslations, setYoutubeRowTranslations] = useState({});
   const [youtubeTranslationEnabled, setYoutubeTranslationEnabled] = useState(false);
   // Честная строка человеку, когда перевод куска не доехал. Пустая — всё в порядке.
   const [youtubeTranslationNotice, setYoutubeTranslationNotice] = useState('');
@@ -8910,9 +8915,13 @@ function AppInner() {
         { start: 0, text: 'Guten Morgen zusammen.' },
         { start: 2, text: 'Heute sprechen wir über Frontend-Performance.' },
       ]);
-      setYoutubeTranslations({
-        0: 'Доброе утро всем.',
-        1: 'Сегодня мы говорим о производительности фронтенда.',
+      setYoutubeSubtitleRows([
+        { id: '0-0', first: 0, last: 0, text: 'Guten Morgen zusammen.', start: 0, end: 2 },
+        { id: '1-1', first: 1, last: 1, text: 'Heute sprechen wir über Frontend-Performance.', start: 2, end: 4 },
+      ]);
+      setYoutubeRowTranslations({
+        '0-0': 'Доброе утро всем.',
+        '1-1': 'Сегодня мы говорим о производительности фронтенда.',
       });
       setYoutubeTranslationEnabled(true);
       setReaderDocuments([
@@ -30561,6 +30570,16 @@ function AppInner() {
     showNoticeModal({ emoji: 'ℹ️', title, message });
   };
 
+  const getRowTranslationForCue = (cueIndex) => {
+    // Строка, в которую входит реплика. Строк немного (предложения, не кадры), поэтому
+    // ищем перебором — и не заводим второй карты, которая может разойтись с первой.
+    const row = (youtubeSubtitleRows || []).find(
+      (item) => Number(item?.first ?? -1) <= cueIndex && cueIndex <= Number(item?.last ?? -1)
+    );
+    if (!row || !row.id) return '';
+    return String(youtubeRowTranslations[String(row.id)] || '').trim();
+  };
+
   const getActiveSubtitleIndex = () => {
     const hasTiming = youtubeTranscriptHasTiming || youtubeTranscript.some((item) => Number(item?.start) > 0);
     if (!hasTiming) return -1;
@@ -30578,114 +30597,54 @@ function AppInner() {
     return activeIndex;
   };
 
+  // ┌─ ПРОВЕРЕНО 15.09.2026. ГРУППИРОВКУ В ПРЕДЛОЖЕНИЯ СЮДА НЕ ВОЗВРАЩАТЬ. ───────────┐
+  // │ Здесь жили правила «где кончается фраза»: пунктуация, длина, паузы — и ДЛИНА    │
+  // │ РУССКОГО ТЕКСТА. Из-за последней граница абзаца зависела от того, доехал ли     │
+  // │ перевод, и абзацы перескакивали прямо во время просмотра, когда подгружалась    │
+  // │ очередная пачка. А главное — правило существовало в двух экземплярах, как до    │
+  // │ этого склейка кадров, и ровно это разводит номера и сдвигает субтитры.          │
+  // │ Теперь предложения собирает сервер (backend/subtitle_cues.py), а браузер их     │
+  // │ рисует. Здесь остаётся только подсветка: какая строка звучит сейчас.            │
+  // └─────────────────────────────────────────────────────────────────────────────────┘
   const youtubeSubtitleDisplayRows = useMemo(() => {
-    const items = Array.isArray(youtubeTranscript) ? youtubeTranscript : [];
-    if (!items.length) return [];
+    const rows = Array.isArray(youtubeSubtitleRows) ? youtubeSubtitleRows : [];
+    if (!rows.length) return [];
     const activeIndex = getActiveSubtitleIndex();
-    const hardStopPattern = /[.!?…]["»”']?$/u;
-    const softStopPattern = /[,;:)]["»”']?$/u;
-    const lowercaseStartPattern = /^[a-zäöüßà-ÿ]/u;
-    const rows = [];
-    let current = null;
-
-    const flushCurrent = () => {
-      if (!current) return;
-      const targetText = String(current.targetText || '').trim();
-      const translationText = String(current.translationText || '').trim();
-      if (!targetText && !translationText) {
-        current = null;
-        return;
-      }
-      const isActive = current.indices.includes(activeIndex);
+    return rows.map((row) => {
+      const first = Number(row?.first ?? 0);
+      const last = Number(row?.last ?? first);
+      const targetText = String(row?.text || '').trim();
+      const isActive = activeIndex >= first && activeIndex <= last;
+      // Подсветка слов текущей реплики внутри строки: считаем, сколько символов
+      // занимают реплики до неё. Текст строки — это те же реплики через пробел,
+      // поэтому счёт идёт по ним, а не по доле от длины.
       let activeCueCharStart = -1;
       let activeCueCharEnd = -1;
-      if (isActive && current.cueCharEnds) {
-        const localIdx = current.indices.indexOf(activeIndex);
-        if (localIdx >= 0) {
-          activeCueCharStart = localIdx === 0 ? 0 : (current.cueCharEnds[localIdx - 1] + 1);
-          activeCueCharEnd = current.cueCharEnds[localIdx] ?? targetText.length;
+      if (isActive) {
+        let offset = 0;
+        for (let i = first; i <= last; i += 1) {
+          const piece = normalizeSubtitleText(youtubeTranscript[i]?.text || '');
+          if (!piece) continue;
+          if (i === activeIndex) {
+            activeCueCharStart = offset;
+            activeCueCharEnd = offset + piece.length;
+            break;
+          }
+          offset += piece.length + 1;
         }
       }
-      rows.push({
-        key: `yt-row-${current.indices[0]}-${current.indices[current.indices.length - 1]}`,
-        indices: current.indices,
+      return {
+        key: `yt-row-${row?.id || `${first}-${last}`}`,
+        id: String(row?.id || `${first}-${last}`),
+        indices: Array.from({ length: Math.max(0, last - first + 1) }, (_v, k) => first + k),
         targetText,
-        translationText,
+        translationText: String(youtubeRowTranslations[String(row?.id || '')] || '').trim(),
         isActive,
         activeCueCharStart,
         activeCueCharEnd,
-      });
-      current = null;
-    };
-
-    items.forEach((item, index) => {
-      const targetText = normalizeSubtitleText(item?.text || '');
-      const translationText = String(youtubeTranslations[String(index)] || '').trim();
-      if (!targetText && !translationText) {
-        return;
-      }
-
-      if (!current) {
-        current = {
-          indices: [index],
-          targetText,
-          translationText,
-          cueCharEnds: [targetText.length],
-        };
-      } else {
-        current.indices.push(index);
-        current.targetText = [current.targetText, targetText].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
-        current.translationText = [current.translationText, translationText].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
-        current.cueCharEnds.push(current.targetText.length);
-      }
-
-      const currentTarget = String(current.targetText || '').trim();
-      const currentTranslation = String(current.translationText || '').trim();
-      const targetLength = currentTarget.length;
-      const translationLength = currentTranslation.length;
-      const chunkCount = current.indices.length;
-      const targetEndsHard = hardStopPattern.test(targetText);
-      const targetEndsSoft = softStopPattern.test(targetText);
-      const nextItem = items[index + 1] || null;
-      const nextStart = Number(nextItem?.start ?? Number.POSITIVE_INFINITY);
-      const currentStart = Number(item?.start ?? 0);
-      const currentDuration = Number(item?.duration ?? 0);
-      const currentEnd = Number.isFinite(currentStart) && Number.isFinite(currentDuration)
-        ? currentStart + Math.max(0, currentDuration)
-        : currentStart;
-      const nextTargetText = normalizeSubtitleText(nextItem?.text || '');
-      const nextStartsContinuation = lowercaseStartPattern.test(String(nextTargetText || '').trim());
-      const nextGapSeconds = Number.isFinite(nextStart) && Number.isFinite(currentEnd)
-        ? nextStart - currentEnd
-        : 0;
-      const nextGapHard = nextGapSeconds > 2.5;
-      const nextGapSentence = nextGapSeconds > 0.9 && !nextStartsContinuation;
-
-      const shouldFlush = targetEndsHard
-        || targetLength >= 105
-        || translationLength >= 130
-        || (
-          !nextStartsContinuation
-          && chunkCount >= 2
-          && targetEndsSoft
-          && (targetLength >= 70 || translationLength >= 88)
-        )
-        || (
-          !nextStartsContinuation
-          && chunkCount >= 3
-          && (targetLength >= 90 || translationLength >= 115)
-        )
-        || nextGapHard
-        || nextGapSentence;
-
-      if (shouldFlush) {
-        flushCurrent();
-      }
+      };
     });
-
-    flushCurrent();
-    return rows;
-  }, [youtubeTranscript, youtubeTranslations, youtubeTranscriptHasTiming, youtubeCurrentTime]);
+  }, [youtubeSubtitleRows, youtubeRowTranslations, youtubeTranscript, youtubeTranscriptHasTiming, youtubeCurrentTime]);
 
   const buildYoutubePhraseSelection = useCallback((lineIndex, anchorIndex, currentIndex) => {
     const numericLineIndex = Number(lineIndex);
@@ -31592,6 +31551,14 @@ function AppInner() {
       });
       if (!response.ok) {
         throw new Error(await response.text());
+      }
+      // Предложения собирает сервер — берём их из ответа. Без этого панель субтитров
+      // после ручной вставки осталась бы пустой: в браузере группировки больше нет.
+      const saved = await response.json().catch(() => null);
+      if (saved && Array.isArray(saved.rows)) {
+        if (Array.isArray(saved.items) && saved.items.length) setYoutubeTranscript(saved.items);
+        setYoutubeSubtitleRows(saved.rows);
+        setYoutubeRowTranslations({});
       }
       setMovies([]);
     } catch (error) {
@@ -34121,8 +34088,16 @@ function AppInner() {
     // │ она обязана выполняться ровно один раз и в одном месте — на сервере.           │
     // └───────────────────────────────────────────────────────────────────────────────┘
     setYoutubeTranscript(items);
-    const srcTranslations = (data && typeof data.translations === 'object' && data.translations) || {};
-    setYoutubeTranslations(srcTranslations);
+    const srcRows = Array.isArray(data?.rows) ? data.rows : [];
+    setYoutubeSubtitleRows(srcRows);
+    const rowTranslations = {};
+    srcRows.forEach((row) => {
+      // `null`/отсутствие — строку ещё не переводили. Пустая строка — переводили, и
+      // ответ пришёл пустым. Это разные состояния, и смешивать их нельзя: из-за
+      // такого смешения плеер раньше бесконечно перезаказывал одно и то же место.
+      if (row && row.id && row.translation != null) rowTranslations[String(row.id)] = String(row.translation);
+    });
+    setYoutubeRowTranslations(rowTranslations);
     const hasTiming = items.some((item) => Number(item?.start) > 0);
     setYoutubeTranscriptHasTiming(hasTiming);
     setManualTranscript('');
@@ -34245,7 +34220,6 @@ function AppInner() {
       youtubeTranscriptVideoIdRef.current = currentVideoId;
       setYoutubeTranscript([]);
       setYoutubeTranscriptError('');
-      setYoutubeTranslations({});
       setYoutubeTranslationEnabled(false);
       setYoutubeManualOverride(false);
       setYoutubeTranscriptHasTiming(true);
@@ -34255,13 +34229,14 @@ function AppInner() {
       youtubeTranslateFailedRef.current = {};
       youtubeTranslateAttemptsRef.current = {};
       setYoutubeTranslationNotice('');
+      setYoutubeSubtitleRows([]);
+      setYoutubeRowTranslations({});
       return;
     }
     if (youtubeTranscriptVideoIdRef.current !== currentVideoId) {
       youtubeTranscriptVideoIdRef.current = currentVideoId;
       setYoutubeTranscript([]);
       setYoutubeTranscriptError('');
-      setYoutubeTranslations({});
       setYoutubeTranslationEnabled(false);
       setYoutubeManualOverride(false);
       setYoutubeTranscriptHasTiming(true);
@@ -34271,6 +34246,8 @@ function AppInner() {
       youtubeTranslateFailedRef.current = {};
       youtubeTranslateAttemptsRef.current = {};
       setYoutubeTranslationNotice('');
+      setYoutubeSubtitleRows([]);
+      setYoutubeRowTranslations({});
     }
   }, [youtubeId, initData]);
 
@@ -35133,73 +35110,74 @@ function AppInner() {
     }
   }, [youtubeCurrentTime, youtubeTranscript.length, youtubeTranslationEnabled]);
 
+  // Подкачка русского: единица — ПРЕДЛОЖЕНИЕ, и возвращается оно под своим ярлыком.
+  // Раньше здесь заказывались кадры пачкой по 30, а ответ раскладывался по позиции в
+  // списке: стоило модели склеить два обрывка в одну русскую фразу — и весь остаток
+  // пачки съезжал на реплику (жалоба владельца 15.09.2026).
   useEffect(() => {
     if (!youtubeTranslationEnabled) return;
-    if (!youtubeTranscript.length || !youtubeId || !initData) return;
+    if (!youtubeSubtitleRows.length || !youtubeId || !initData) return;
     const activeIndex = getActiveSubtitleIndex();
     if (activeIndex < 0) return;
     if (youtubeTranslateInFlightRef.current) return;
-    const aheadLimit = 30;
-    const minBuffer = 15;
-    let available = 0;
-    for (let i = activeIndex; i < youtubeTranscript.length; i += 1) {
-      // `undefined` — строку ещё не заказывали. Пустая строка — заказывали, и ответ
-      // пришёл пустым: это отдельный случай, он считается на сервере и не должен
-      // заставлять плеер бесконечно перезаказывать одно и то же место.
-      if (youtubeTranslations[String(i)] === undefined) break;
-      available += 1;
+
+    // Держим запас переведённых предложений впереди говорящего.
+    const minBuffer = 4;
+    let ready = 0;
+    let firstMissingCue = -1;
+    for (const row of youtubeSubtitleRows) {
+      if (Number(row?.last ?? 0) < activeIndex) continue;
+      if (youtubeRowTranslations[String(row?.id || '')] === undefined) {
+        if (firstMissingCue < 0) firstMissingCue = Number(row?.first ?? 0);
+        break;
+      }
+      ready += 1;
+      if (ready >= minBuffer) break;
     }
-    if (available >= minBuffer) return;
-    const startIndex = activeIndex + available;
-    if (youtubeTranslateIndexRef.current === startIndex) return;
-    // Кусок, который уже не дался: ждём паузу, прежде чем просить снова. Без этого при
-    // обрыве связи плеер долбил сервер каждые 400 мс и молчал об этом.
-    const failedAt = youtubeTranslateFailedRef.current[startIndex];
+    if (ready >= minBuffer || firstMissingCue < 0) return;
+    if (youtubeTranslateIndexRef.current === firstMissingCue) return;
+    const failedAt = youtubeTranslateFailedRef.current[firstMissingCue];
     if (failedAt && Date.now() - failedAt < 8000) return;
 
-    const batch = youtubeTranscript.slice(startIndex, startIndex + aheadLimit);
-    const lines = batch.map((item) => normalizeSubtitleText(item.text || ''));
-    const hasText = lines.some((line) => line);
-    if (!hasText) return;
-
     youtubeTranslateInFlightRef.current = true;
-    youtubeTranslateIndexRef.current = startIndex;
+    youtubeTranslateIndexRef.current = firstMissingCue;
 
-    fetch('/api/webapp/youtube/translate', {
+    fetch('/api/webapp/youtube/translate_rows', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         initData,
         videoId: youtubeId,
-        start_index: startIndex,
-        lines,
+        from_cue: firstMissingCue,
+        limit_rows: 10,
         language_pair: getWebappLanguagePairHint() || undefined,
       }),
     })
       .then((res) => res.ok ? res.json() : Promise.reject(res))
       .then((data) => {
-        const translations = data.translations || [];
-        if (!translations.length) return;
-        delete youtubeTranslateFailedRef.current[startIndex];
+        const rows = Array.isArray(data?.rows) ? data.rows : [];
+        if (!rows.length) return;
+        delete youtubeTranslateFailedRef.current[firstMissingCue];
+        youtubeTranslateAttemptsRef.current[firstMissingCue] = 0;
+        // Замок позиции снимаем: он нужен против повторного запроса того же места
+        // подряд, а не против возврата к нему после перемотки назад.
+        youtubeTranslateIndexRef.current = -1;
         setYoutubeTranslationNotice('');
-        setYoutubeTranslations((prev) => {
+        setYoutubeRowTranslations((prev) => {
           const next = { ...prev };
-          translations.forEach((text, offset) => {
-            // Пустой ответ ТОЖЕ запоминаем. Раньше он не записывался, и место
-            // оставалось «незаказанным» — плеер просил его снова и снова, а человек
-            // так ничего и не видел.
-            next[String(startIndex + offset)] = text;
+          rows.forEach((row) => {
+            if (row && row.id && row.translation != null) {
+              next[String(row.id)] = String(row.translation);
+            }
           });
           return next;
         });
       })
       .catch(() => {
-        // Молчать нельзя: раньше здесь стоял пустой catch, и человек навсегда оставался
-        // с многоточиями, не понимая, почему. Теперь место помечено, повтор будет через
-        // паузу, а если не вышло и со второго раза — говорим словами.
-        const attempts = (youtubeTranslateAttemptsRef.current[startIndex] || 0) + 1;
-        youtubeTranslateAttemptsRef.current[startIndex] = attempts;
-        youtubeTranslateFailedRef.current[startIndex] = Date.now();
+        // Молчать нельзя: пустой catch оставлял человека с многоточиями навсегда.
+        const attempts = (youtubeTranslateAttemptsRef.current[firstMissingCue] || 0) + 1;
+        youtubeTranslateAttemptsRef.current[firstMissingCue] = attempts;
+        youtubeTranslateFailedRef.current[firstMissingCue] = Date.now();
         if (attempts >= 2) {
           setYoutubeTranslationNotice(tr(
             'Перевод этого куска пока не получен — проверьте связь. Немецкие субтитры идут как обычно.',
@@ -35210,7 +35188,7 @@ function AppInner() {
       .finally(() => {
         youtubeTranslateInFlightRef.current = false;
       });
-  }, [youtubeCurrentTime, youtubeTranscript.length, youtubeId, initData, youtubeTranslations, youtubeTranslationEnabled]);
+  }, [youtubeCurrentTime, youtubeSubtitleRows, youtubeId, initData, youtubeRowTranslations, youtubeTranslationEnabled]);
 
   const handleLoadDailyHistory = async () => {
     if (historyVisible) {
@@ -39656,7 +39634,10 @@ function AppInner() {
                                 {overlayIndexes.map((idx) => {
                                   const item = youtubeTranscript[idx];
                                   const overlayDeText = normalizeSubtitleText(item?.text || '');
-                                  const overlayTranslationText = (youtubeTranslations[String(idx)] || '').trim();
+                                  // Перевод берём у ПРЕДЛОЖЕНИЯ, в которое входит эта
+                                  // реплика: покадрового русского у нас больше нет —
+                                  // обрывок кадра в принципе не переводится отдельно.
+                                  const overlayTranslationText = getRowTranslationForCue(idx);
                                   if (!(overlayDeVisible && overlayDeText) && !(overlayRuVisible && overlayTranslationText)) {
                                     return null;
                                   }

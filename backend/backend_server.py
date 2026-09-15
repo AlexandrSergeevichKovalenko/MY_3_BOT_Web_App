@@ -126,7 +126,8 @@ from backend.database import (
     SHORTCUT_PAIRING_CODE_TTL_SECONDS,
 )
 from backend.hotpath_cache import HotPathCacheManager
-from backend.subtitle_cues import deroll_transcript_cues
+from backend.subtitle_cues import (deroll_transcript_cues, group_cues_into_sentences,
+                                   row_translation_key, split_row_translation_key)
 from backend.job_queue import (
     can_enqueue_background_jobs,
     claim_translation_check_resume_cooldown,
@@ -392,7 +393,9 @@ from backend.openai_manager import (
     run_dictionary_collocations,
     run_dictionary_collocations_multilang,
     run_translate_subtitles_ru,
+    run_translate_subtitle_rows,
     SubtitleTranslationCountMismatch,
+    SubtitleRowLabelsMismatch,
     run_translate_subtitles_multilang,
     run_translation_explanation,
     run_translation_explanation_multilang,
@@ -3243,6 +3246,8 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/webapp/youtube/transcript": {"cap": True, "feature_code": "youtube_fetch_daily"},
     # Paid: Russian translated subtitles (the Pro «синхронные русские субтитры» feature).
     "/api/webapp/youtube/translate": {"cap": True, "paid_feature": "youtube_subtitles", "paid_feature_title": "YouTube: русские субтитры"},
+    # То же самое, но единица перевода — ПРЕДЛОЖЕНИЕ, а не кадр субтитра.
+    "/api/webapp/youtube/translate_rows": {"cap": True, "paid_feature": "youtube_subtitles", "paid_feature_title": "YouTube: русские субтитры"},
     "/api/webapp/submit-group": {"cap": True},
     # feature MUST match the in-endpoint gate on /api/webapp/story/start ("story_mode") —
     # the app keys the paywall on this code, and one feature answering under two names
@@ -23063,6 +23068,31 @@ def _extract_youtube_translations_for_target(
             if key_str.isdigit() and key_str not in result:
                 result[key_str] = str(value or "")
     return result
+
+
+def _youtube_sentence_rows(data: dict, target_lang: str, *, include_translations: bool) -> list[dict]:
+    """Реплики, собранные в ПРЕДЛОЖЕНИЯ, вместе с их переводом.
+
+    Группировка живёт на сервере в одном экземпляре (backend/subtitle_cues.py) — это
+    то же решение, что и со склейкой: две реализации одного правила уже однажды
+    развели номера и сдвинули русские субтитры (15.09.2026). Браузер больше ничего не
+    группирует, он рисует то, что пришло.
+
+    Перевод лежит под ярлыком строки («ru#12-15»), а не под номером кадра: единица
+    перевода — предложение целиком.
+    """
+    rows = group_cues_into_sentences(data.get("items") or [])
+    if not include_translations:
+        return rows
+    stored = data.get("translations") or {}
+    lang = _normalize_short_lang_code(target_lang, fallback="ru")
+    for row in rows:
+        value = stored.get(row_translation_key(lang, row["id"]))
+        # Пустая строка — это ответ «перевода нет», а не отсутствие ключа. Оба случая
+        # честно доезжают до экрана как есть: браузер ничего не досочиняет.
+        if value is not None:
+            row["translation"] = str(value)
+    return rows
 
 
 def _decorate_dictionary_item(
@@ -60847,6 +60877,9 @@ def _build_youtube_transcript_response_payload(
         "ok": True,
         "status": "ready",
         "items": data.get("items", []),
+        # Предложения собирает сервер — в браузере правила группировки больше нет.
+        "rows": _youtube_sentence_rows(data, subtitle_target_lang,
+                                       include_translations=include_translations),
         "language": data.get("language"),
         "is_generated": data.get("is_generated"),
         "translations": visible_translations,
@@ -61234,6 +61267,10 @@ def get_youtube_transcript():
         response_payload = {
             "ok": True,
             "items": data.get("items", []),
+            "rows": _youtube_sentence_rows(
+                data, subtitle_target_lang,
+                include_translations=_can_access_youtube_subtitle_translation(int(user_id)),
+            ),
             "language": data.get("language"),
             "is_generated": data.get("is_generated"),
             "translations": (
@@ -62225,7 +62262,184 @@ def save_manual_youtube_transcript():
         "source": "manual",
     }}, _YT_TRANSCRIPT_CACHE_MAX)
 
-    return jsonify({"ok": True})
+    # Возвращаем реплики и собранные из них ПРЕДЛОЖЕНИЯ: браузер сам их больше не
+    # собирает, и без этого ответа панель субтитров после ручной вставки осталась бы
+    # пустой. Склейка «катящихся» кадров уже применена выше, поэтому номера здесь
+    # окончательные.
+    return jsonify({
+        "ok": True,
+        "items": normalized,
+        "rows": _youtube_sentence_rows(
+            {"items": normalized, "translations": {}}, "ru", include_translations=False,
+        ),
+    })
+
+
+@app.route("/api/webapp/youtube/translate_rows", methods=["POST"])
+def translate_youtube_subtitle_rows():
+    """Перевод субтитров ПРЕДЛОЖЕНИЯМИ, с раскладкой по ярлыкам.
+
+    Зачем отдельно от покадрового перевода (решение владельца 15.09.2026, «как у
+    лидеров»). Кадр субтитра — обрывок: «dich mal so am Beckenrand festhalten». Немецкий
+    ставит глагол в конец, русский порядок слов другой, и перевести обрывок отдельно
+    нельзя. Модель на это отвечает склейкой соседних строк — и покадровая раскладка
+    съезжает. Предложение переводится целиком, а возвращается под своим ярлыком
+    («12-15» — номера первой и последней реплики), поэтому позиция в списке больше не
+    значит ничего.
+
+    Ярлыки вернулись не те — пачка НЕ сохраняется, человеку говорится словами.
+    """
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="youtube_translate_rows")
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    video_id = (payload.get("videoId") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not video_id:
+        return jsonify({"error": "videoId обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile, _mode = _get_user_language_pair_for_webapp_request(
+        int(user_id), payload=payload,
+    )
+    subtitle_target_lang = _normalize_short_lang_code(source_lang, fallback="ru")
+
+    if not _can_access_youtube_subtitle_translation(int(user_id)):
+        return jsonify({
+            "error": "youtube_translation_pro_required",
+            "error_code": "youtube_translation_pro_required",
+            "message": "Перевод субтитров доступен в «Полном доступе».",
+            "video_id": video_id,
+        }), 403
+
+    try:
+        from_cue = max(0, int(payload.get("from_cue") or 0))
+    except (TypeError, ValueError):
+        from_cue = 0
+    try:
+        limit_rows = int(payload.get("limit_rows") or 10)
+    except (TypeError, ValueError):
+        limit_rows = 10
+    limit_rows = max(1, min(limit_rows, 20))
+
+    data, _tier, _ms = _load_cached_youtube_transcript_data(video_id)
+    if not data or not data.get("items"):
+        # Честный ответ, а не пустой список: «субтитров ещё нет» и «перевода нет» —
+        # разные вещи, и человеку о них говорят по-разному.
+        return jsonify({
+            "error": "transcript_not_ready",
+            "error_code": "transcript_not_ready",
+            "message": "Субтитры к этому ролику ещё не загружены.",
+        }), 409
+
+    all_rows = _youtube_sentence_rows(data, subtitle_target_lang, include_translations=True)
+    window = [row for row in all_rows if row["last"] >= from_cue]
+    pending = [row for row in window if row.get("translation") is None][:limit_rows]
+
+    detected_source_lang = _normalize_short_lang_code(data.get("language"), fallback="de")
+    llm_started_perf = time.perf_counter()
+    if pending:
+        try:
+            translated = asyncio.run(
+                run_translate_subtitle_rows(
+                    rows=[{"id": row["id"], "text": row["text"]} for row in pending],
+                    source_lang=detected_source_lang,
+                    target_lang=subtitle_target_lang,
+                )
+            )
+        except Exception as exc:
+            labels_mismatch = isinstance(exc, SubtitleRowLabelsMismatch)
+            logging.warning(
+                "перевод предложений не получен video_id=%s rows=%s: %s",
+                video_id, len(pending), exc,
+            )
+            _log_flow_observation(
+                "youtube_translate_rows",
+                "youtube_translate_rows_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                video_id=video_id,
+                requested_rows_count=len(pending),
+                target_subtitle_lang=subtitle_target_lang,
+                source_subtitle_lang=detected_source_lang,
+                llm_translate_duration_ms=_elapsed_ms_since(llm_started_perf),
+                final_status="error",
+                error_code=("subtitle_row_labels_mismatch" if labels_mismatch
+                            else exc.__class__.__name__),
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=502,
+            )
+            return jsonify({
+                "error": "subtitle_translation_unavailable",
+                "error_code": ("subtitle_row_labels_mismatch" if labels_mismatch
+                               else "subtitle_translation_failed"),
+                "message": "Перевод этого куска не получен. Попробуйте ещё раз через минуту.",
+            }), 502
+
+        usage_rows = get_last_llm_usage(reset=True)
+        _billing_log_openai_usage(
+            user_id=int(user_id),
+            action_type="youtube_subtitles_translate",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            usage=usage_rows,
+            seed=f"yt_rows:{user_id}:{video_id}:{pending[0]['id']}:{len(pending)}:{time.time_ns()}",
+            metadata={
+                "video_id": video_id,
+                "source_subtitle_lang": detected_source_lang,
+                "target_subtitle_lang": subtitle_target_lang,
+                "rows_count": len(pending),
+            },
+        )
+        update_map = {row_translation_key(subtitle_target_lang, label): text
+                      for label, text in translated.items()}
+        try:
+            upsert_youtube_translations(video_id, update_map)
+        except Exception:
+            # Перевод человеку уже уходит — он в ответе. Не сохранился только кеш:
+            # следующий зритель закажет заново. Молчать об этом нельзя.
+            logging.exception("не сохранился перевод предложений video_id=%s", video_id)
+        cached = _yt_transcript_cache.get(video_id)
+        if cached and cached.get("data"):
+            stored = dict(cached["data"].get("translations") or {})
+            stored.update(update_map)
+            cached["data"]["translations"] = stored
+        for row in window:
+            if row["id"] in translated:
+                row["translation"] = translated[row["id"]]
+
+    response_rows = [
+        {"id": row["id"], "first": row["first"], "last": row["last"],
+         "translation": row.get("translation")}
+        for row in window if row.get("translation") is not None
+    ]
+    _log_flow_observation(
+        "youtube_translate_rows",
+        "youtube_translate_rows_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        video_id=video_id,
+        requested_rows_count=len(pending),
+        returned_rows_count=len(response_rows),
+        target_subtitle_lang=subtitle_target_lang,
+        final_status="success",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
+    )
+    return jsonify({"ok": True, "rows": response_rows,
+                    "translation_lang": subtitle_target_lang,
+                    "pending_left": max(0, len([r for r in window
+                                                if r.get("translation") is None]))})
 
 
 @app.route("/api/webapp/youtube/translate", methods=["POST"])
