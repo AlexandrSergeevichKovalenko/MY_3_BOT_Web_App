@@ -24944,8 +24944,38 @@ function AppInner() {
   };
 
   // Слово для сохранения берём из зафиксированного при открытии шита, а не из живого
-  // выделения: выделение снимается, как только палец касается шита.
+  // выделения. С 15.09.2026 касание шита выделение уже НЕ снимает (см. сторож
+  // `if (selectionGptOpen) return;` в слушателе pointerdown — он же не давал видео
+  // запускаться под окном), но опираться на живое выделение всё равно нельзя: его
+  // снимает закрытие окна, а сохранение может идти уже после него.
   const getSelectionGptWordText = () => normalizeSelectionText(selectionGptWord || selectionText);
+
+  // ┌─ ИСПРАВЛЕНО 15.09.2026. ШАПКА «ПЕРЕВОД» ЧИТАЕТ ПРИШЕДШУЮ СТАТЬЮ. ─────────────────┐
+  // │ Владелец тапнул «Schleäuserkorridore» (в субтитрах ролика опечатка, лишняя ä).    │
+  // │ Наверху крупно стояло «Коридоры Шлейера» с подписью «этого слова нет в словаре»,  │
+  // │ а НИЖЕ, в том же окне, уже лежала верная статья «коридор для нелегальной          │
+  // │ миграции» — и она же верно легла в словарь.                                       │
+  // │                                                                                   │
+  // │ Почему так было: окно наполняют ДВА запроса. ЭТАП 1 (машинный переводчик) писал   │
+  // │ translation/machine, ЭТАП 2 (словарная статья) клал только dictionaryItem и шапку │
+  // │ не трогал. Шапка была ЗАПОМНЕННЫМ значением, а не выводом из статьи, поэтому      │
+  // │ догадка машины по опечатанной форме оставалась на экране навсегда.                │
+  // │                                                                                   │
+  // │ Источник истины — та же статья, из которой рисуются «ЗНАЧЕНИЯ» и по которой       │
+  // │ слово ложится в словарь; достаём её общим помощником getDictionarySourceTarget.   │
+  // │ Ровно так уже устроен быстрый словарь (DictionaryOverlay.jsx, corrDe/bestRu +     │
+  // │ headIsMachine) — здесь этих строк просто не было.                                 │
+  // │                                                                                   │
+  // │ Пусто = статья перевода не назвала. Тогда в шапке честно остаётся машинный ответ  │
+  // │ С ПОДПИСЬЮ. Немецкое слово вместо перевода сюда не подставляем (потому взят       │
+  // │ targetText, а не getDictionaryDisplayedTranslation с его `|| sourceText`).        │
+  // └───────────────────────────────────────────────────────────────────────────────────┘
+  const getSelectionGptCardTranslation = () => {
+    const item = selectionGptData?.dictionaryItem;
+    if (!item || typeof item !== 'object') return '';
+    const direction = String(selectionGptData?.direction || '').trim().toLowerCase() || dictionaryDirection;
+    return String(getDictionarySourceTarget(item, direction).targetText || '').trim();
+  };
 
   const resetSelectionGptSaveState = () => {
     setSelectionGptSaveOriginalChecked(true);
@@ -25499,6 +25529,9 @@ function AppInner() {
     setSelectionGptCardLimit('');
     setSelectionGptData({ translation: '', dictionaryItem: null, direction: '', languagePair: null, formOf: '', machine: false });
     resetSelectionGptSaveState();
+    // Окно закрыли — теперь и только теперь выделение снимается, а видео, которое мы
+    // сами поставили на паузу ради разбора, возвращается к игре (см. clearSelection).
+    clearSelection();
   };
 
   function formatReaderTimer(seconds) {
@@ -35018,6 +35051,21 @@ function AppInner() {
       return undefined;
     }
     const onPointerDown = (event) => {
+      // ┌─ ИСПРАВЛЕНО 15.09.2026. ВИДЕО НЕ ЗАПУСКАЕТСЯ ПОД ОТКРЫТЫМ ОКНОМ РАЗБОРА. ────┐
+      // │ Владелец: «провожу пальцем по этому экрану — и видео запускается само».      │
+      // │ Цепочка: тап по слову субтитров ставит видео на паузу и помечает             │
+      // │ youtubePausedBySelectionRef («паузу поставили МЫ»); clearSelection трактует   │
+      // │ снятие выделения как «карточку закрыли» и возвращает playVideo (:24418).     │
+      // │ А этот слушатель висит на документе в ФАЗЕ ЗАХВАТА и считает «касанием мимо  │
+      // │ карточки» любую точку экрана, кроме самой карточки выделения. Окно «Разбор   │
+      // │ слова» (zIndex 180) в исключение не входило — и палец, которым человек       │
+      // │ прокручивал разбор, запускал видео под окном.                                │
+      // │ Механизм старый (март 2026), а вылезло после 841cf4d7 от 30.08.2026: до него │
+      // │ в окне стояли две строки и прокручивать там было нечего.                     │
+      // │ Правило: окно открыто — выделение живо и видео не трогаем. Снимает выделение │
+      // │ (и возвращает видео) ЗАКРЫТИЕ окна — см. closeSelectionGptSheet.             │
+      // └──────────────────────────────────────────────────────────────────────────────┘
+      if (selectionGptOpen) return;
       const target = event.target;
       if (!(target instanceof Element)) {
         clearSelection();
@@ -35037,7 +35085,7 @@ function AppInner() {
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [selectionText, selectionPos]);
+  }, [selectionText, selectionPos, selectionGptOpen]);
 
   useEffect(() => {
     if (!selectionGptOpen) return undefined;
@@ -46162,7 +46210,7 @@ function AppInner() {
                     <>
                       <div className="webapp-selection-translation">
                         <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Перевод', 'Übersetzung')}</div>
-                        <div style={{ fontSize: 16, fontWeight: 600 }}>{selectionGptData.translation || '—'}</div>
+                        <div style={{ fontSize: 16, fontWeight: 600 }}>{getSelectionGptCardTranslation() || selectionGptData.translation || '—'}</div>
                         {/* Две подписи, и обе про честность ответа.
 
                             «форма от …» — человек нажал «wühlt», а видит статью
@@ -46179,7 +46227,10 @@ function AppInner() {
                             {tr(`форма от ${selectionGptData.formOf}`, `Form von ${selectionGptData.formOf}`)}
                           </div>
                         )}
-                        {selectionGptData.machine && !selectionGptData.formOf && (
+                        {/* Подпись обязана говорить про то, что человек видит КРУПНО.
+                            Приехала статья — крупно стоит она, и «этого слова нет в
+                            словаре» становится ложью: слово есть, мы его показываем. */}
+                        {selectionGptData.machine && !selectionGptData.formOf && !getSelectionGptCardTranslation() && (
                           <div className="webapp-muted" style={{ fontSize: 12.5, marginTop: 4 }}>
                             {tr('машинный перевод — этого слова нет в словаре',
                                 'maschinelle Übersetzung — dieses Wort steht nicht im Wörterbuch')}
