@@ -17,6 +17,117 @@
     <body>
         <div id="root"></div>
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
+        <!-- ┌─ СТРАЖ ЗАГРУЗКИ. Добавлен 15.09.2026. НЕ ПЕРЕНОСИТЬ В main.jsx. ──────────────┐
+             │ 15.09.2026 человек нажал «🚀 Пройти настройку», мини-апп открылся ПУСТЫМ и    │
+             │ таким остался: ни строчки текста, ни кнопки, ни объяснения. Через восемь      │
+             │ секунд он его закрыл. Это было внутри окна деплоя (выкатка началась в 06:56   │
+             │ UTC, видео в 07:04), и через четыре минуты всё работало.                      │
+             │                                                                               │
+             │ Важное из разбора: наш собственный кружок загрузки НЕ ПОЯВИЛСЯ (он светлый,    │
+             │ main.jsx → showBootSpinner, а экран был тёмный и голый). Значит не упал тур,   │
+             │ а не выполнился НИ ОДИН наш байт: бандл не доехал. Поэтому страж стоит        │
+             │ здесь, в разметке, до модульного скрипта — внутри main.jsx он бы и сам не     │
+             │ запустился, как не запустился ensureFreshBundle (он живёт там же и лечит      │
+             │ ровно этот случай, но только когда бандл УЖЕ загрузился).                     │
+             │                                                                               │
+             │ Две разные беды лечатся по-разному, и путать их нельзя:                       │
+             │  • скрипт ответил ошибкой (404 после деплоя, протухший кеш service worker)    │
+             │    — это ТОЧНЫЙ признак: чистим кеш, снимаем worker и перезагружаемся ОДИН    │
+             │    раз. Повторную попытку метим в sessionStorage, чтобы не зациклиться;       │
+             │  • просто не успел за 20 секунд — это может быть медленный интернет, и        │
+             │    сносить кеш тут вредно: станет только медленнее. Показываем человеческую   │
+             │    строчку с кнопкой «Обновить» и НИЧЕГО не трогаем. Текст лежит внутри       │
+             │    #root, поэтому, если бандл всё же доедет, React затрёт его сам.            │
+             └───────────────────────────────────────────────────────────────────────────────┘ -->
+        <script>
+        (function () {
+            var RETRY_KEY = 'boot-recovery-at';
+            var GRACE_MS = 20000;
+            var settled = false;
+
+            function rendered() {
+                var r = document.getElementById('root');
+                return !!(r && r.childElementCount > 0 && !r.getAttribute('data-boot-failed'));
+            }
+            function isGerman() {
+                try { return String(navigator.language || '').toLowerCase().indexOf('de') === 0; }
+                catch (e) { return false; }
+            }
+            function triedRecently() {
+                try {
+                    var t = Number(window.sessionStorage.getItem(RETRY_KEY) || 0);
+                    return t > 0 && (Date.now() - t) < 120000;
+                } catch (e) { return true; }
+            }
+            function purgeAndReload() {
+                try { window.sessionStorage.setItem(RETRY_KEY, String(Date.now())); } catch (e) {}
+                var done = false;
+                function go() { if (done) return; done = true; try { window.location.reload(); } catch (e) {} }
+                setTimeout(go, 2500);
+                try {
+                    var jobs = [];
+                    if (window.caches && caches.keys) {
+                        jobs.push(caches.keys().then(function (ks) {
+                            return Promise.all(ks.map(function (k) { return caches.delete(k); }));
+                        }));
+                    }
+                    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+                        jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+                            return Promise.all(rs.map(function (r) { return r.unregister(); }));
+                        }));
+                    }
+                    Promise.all(jobs).then(go, go);
+                } catch (e) { go(); }
+            }
+            function showFailure() {
+                var root = document.getElementById('root');
+                if (!root || rendered()) return;
+                var de = isGerman();
+                root.setAttribute('data-boot-failed', '1');
+                root.innerHTML =
+                    '<div style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;'
+                    + 'justify-content:center;gap:14px;padding:28px;text-align:center;'
+                    + 'font:500 16px/1.45 -apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;'
+                    + 'background:linear-gradient(180deg,#f6f9ff 0%,#eef3fb 100%);color:#22314a">'
+                    + '<div style="font-size:34px">🦊</div>'
+                    + '<div style="font-weight:700;font-size:18px">'
+                    + (de ? 'Die App ist nicht geladen' : 'Приложение не загрузилось') + '</div>'
+                    + '<div style="max-width:320px;color:#4b5b76">'
+                    + (de ? 'Wahrscheinlich war die Verbindung kurz weg. Tippe auf «Aktualisieren» — normalerweise reicht das.'
+                          : 'Скорее всего, на секунду пропала связь. Нажми «Обновить» — обычно этого хватает.')
+                    + '</div>'
+                    + '<button id="boot-retry" type="button" style="margin-top:6px;padding:13px 26px;border:0;'
+                    + 'border-radius:14px;background:#3a7bd5;color:#fff;font:700 16px/1 inherit">'
+                    + (de ? 'Aktualisieren' : 'Обновить') + '</button></div>';
+                var btn = document.getElementById('boot-retry');
+                if (btn) btn.addEventListener('click', purgeAndReload);
+            }
+            function fail(certain) {
+                if (settled || rendered()) { settled = true; return; }
+                settled = true;
+                if (certain && !triedRecently()) { purgeAndReload(); return; }
+                showFailure();
+            }
+
+            window.addEventListener('error', function (event) {
+                var el = event && event.target;
+                if (!el || el === window || !el.tagName) return;
+                if (el.tagName !== 'SCRIPT' && el.tagName !== 'LINK') return;
+                var src = String(el.src || el.href || '');
+                // SDK телеграма и шрифты грузятся со стороны — их отказ приложение переживает.
+                if (src.indexOf('telegram.org') !== -1 || src.indexOf('fonts.googleapis') !== -1
+                    || src.indexOf('fonts.gstatic') !== -1) return;
+                setTimeout(function () { fail(true); }, 300);
+            }, true);
+
+            setTimeout(function () { fail(false); }, GRACE_MS);
+
+            // Тот же экран и то же лечение нужны main.jsx, когда под ногами исчезает
+            // ОТДЕЛЬНЫЙ кусок бандла (человек уже в приложении, вышел деплой, он открывает
+            // раздел — а чанка по старому имени больше нет). Текст держим в одном месте.
+            window.__bootFailure = { show: showFailure, recover: purgeAndReload, tried: triedRecently };
+        })();
+        </script>
         <script type="module" src="/src/main.jsx"></script>
     </body>
 </html>
