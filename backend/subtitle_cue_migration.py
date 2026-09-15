@@ -96,6 +96,57 @@ def roll_pending_cues(limit: int = 500) -> dict:
     return report
 
 
+def drop_orphan_translation_keys(limit_videos: int = 200) -> dict:
+    """Убрать перевод, привязанный к несуществующим репликам.
+
+    Откуда он берётся: немецкие субтитры умеют приезжать из четырёх источников, и режут
+    они ролик по-разному. При перезаливке реплики заменялись целиком, а перевод по
+    прямому указанию в запросе к базе сохранялся старый — и указывал уже не туда.
+    Вход это закрыт (backend/database.py, upsert_youtube_transcript_cache), здесь
+    убирается накопленное: система чинится с двух сторон, иначе работа не сделана.
+
+    Смотрим только СКЛЕЕННЫЕ дорожки: у несклеенных «номер за концом» значит другое —
+    их приведёт в порядок сама склейка.
+
+    Эти ролики переведутся заново при следующем просмотре: это стоит денег, и владелец
+    видит их число в /subtitry (класс 2) до и после.
+    """
+    from backend.database import (delete_youtube_translation_keys,
+                                  iter_youtube_transcripts_for_audit)
+    from backend.subtitle_cues import split_row_translation_key, split_translation_key
+
+    report = {"looked_at": 0, "videos_cleaned": 0, "keys_removed": 0, "failed": 0}
+    for row in iter_youtube_transcripts_for_audit():
+        if report["videos_cleaned"] >= limit_videos:
+            break
+        report["looked_at"] += 1
+        if not row.get("cues_rolled"):
+            continue
+        cue_count = len(row.get("items") or [])
+        orphan = []
+        for key in (row.get("translations") or {}):
+            parsed_row = split_row_translation_key(key)
+            if parsed_row is not None:
+                if int(parsed_row[1].split("-")[1]) >= cue_count:
+                    orphan.append(key)
+                continue
+            parsed = split_translation_key(key)
+            if parsed is not None and parsed[1] >= cue_count:
+                orphan.append(key)
+        if not orphan:
+            continue
+        try:
+            removed = delete_youtube_translation_keys(row.get("video_id") or "", orphan)
+        except Exception:
+            logger.exception("не удалось убрать осиротевший перевод video_id=%s",
+                             row.get("video_id"))
+            report["failed"] += 1
+            continue
+        report["videos_cleaned"] += 1
+        report["keys_removed"] += removed
+    return report
+
+
 def format_roll_sweep_report(report: dict) -> str:
     """Короткий человеческий текст для владельца. Пишем ТОЛЬКО когда что-то произошло."""
     rolled = int(report.get("rolled") or 0)
@@ -109,7 +160,14 @@ def format_roll_sweep_report(report: dict) -> str:
             f"Строк перевода удалено: {dropped} — это записи до 12.07.2026, их номера "
             f"указывали в пустоту. Заново переведутся при просмотре."
         )
+    if report.get("orphans_removed"):
+        lines.append(
+            f"Перевода, привязанного к несуществующим репликам, убрано: "
+            f"{report['orphans_removed']} строк у {report.get('orphan_videos', 0)} роликов. "
+            f"Это следы перезалитых немецких субтитров; такие куски переведутся заново "
+            f"при просмотре."
+        )
     if failed:
-        lines.append(f"⚠️ Не смогли склеить: {failed}. Останутся в `/subtitry` до починки.")
+        lines.append(f"⚠️ Не смогли починить: {failed}. Останутся в `/subtitry` до починки.")
     lines.append("<i>Обращений к модели и к YouTube: ноль.</i>")
     return "\n".join(lines)

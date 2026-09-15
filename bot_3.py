@@ -12726,8 +12726,17 @@ async def run_subtitle_cue_roll_sweep(context: CallbackContext):
     """
     from backend.database import get_admin_telegram_ids
     try:
-        from backend.subtitle_cue_migration import format_roll_sweep_report, roll_pending_cues
+        from backend.subtitle_cue_migration import (drop_orphan_translation_keys,
+                                                     format_roll_sweep_report,
+                                                     roll_pending_cues)
         report = await asyncio.to_thread(roll_pending_cues, 500)
+        # Вторая половина работы: починить систему мало, надо ещё убрать накопленное.
+        # Перевод, привязанный к репликам, которых больше нет (немецкие субтитры
+        # перезалили из другого источника), указывает в пустоту — его убираем здесь.
+        orphans = await asyncio.to_thread(drop_orphan_translation_keys, 200)
+        report["orphans_removed"] = orphans["keys_removed"]
+        report["orphan_videos"] = orphans["videos_cleaned"]
+        report["failed"] = int(report.get("failed") or 0) + int(orphans.get("failed") or 0)
     except Exception as exc:
         logging.exception("subtitle cue roll sweep failed")
         _record_sched_heartbeat("subtitle_cue_roll_sweep", "failed", {"error": str(exc)[:200]})
@@ -12743,7 +12752,7 @@ async def run_subtitle_cue_roll_sweep(context: CallbackContext):
                 logging.warning("не смог сообщить админу о сбое склейки субтитров", exc_info=True)
         return
     _record_sched_heartbeat("subtitle_cue_roll_sweep", "ok", report)
-    if not report.get("rolled") and not report.get("failed"):
+    if not report.get("rolled") and not report.get("orphans_removed") and not report.get("failed"):
         return
     text = format_roll_sweep_report(report)
     admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]

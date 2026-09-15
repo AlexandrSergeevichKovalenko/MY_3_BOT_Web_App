@@ -31647,6 +31647,29 @@ def subtitle_translate_stats() -> dict:
     }
 
 
+def delete_youtube_translation_keys(video_id: str, keys: list[str]) -> int:
+    """Удалить из дорожки перечисленные ключи перевода. Возвращает, сколько удалено.
+
+    Зовётся только на осиротевшие ключи — те, чей номер (или ярлык) указывает за конец
+    нынешнего списка реплик. Такие появляются, когда немецкие субтитры перезалили из
+    другого источника: он режет ролик иначе. Оставлять их нельзя — они указывают в
+    пустоту; перенести некуда — соответствия между нарезками нет.
+    """
+    vid = str(video_id or "").strip()
+    clean = [str(k) for k in (keys or []) if str(k)]
+    if not vid or not clean:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE bt_3_youtube_transcripts
+                SET translations = COALESCE(translations, '{}'::jsonb) - %s::text[],
+                    updated_at = NOW()
+                WHERE video_id = %s;
+            """, (clean, vid))
+    return len(clean)
+
+
 def fetch_unrolled_youtube_transcripts(limit: int = 500) -> list[dict]:
     """Дорожки, у которых «катящиеся» кадры ещё не склеены (backend/subtitle_cues.py).
 
