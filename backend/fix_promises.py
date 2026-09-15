@@ -1888,7 +1888,49 @@ def _onboarding_dictionary_screen() -> str:
     return "\n".join(строки)
 
 
+def _starter_size_chosen_without_offering_both() -> int:
+    """Подписок «Быстрый старт», оформленных дверью, которая не показывала полный. Обещано: 0.
+
+    До 15.09.2026 базовый словарь подключался из ТРЁХ мест, и полный размер предлагала
+    только одна из них — шаг 4 тура. Окно первого входа и настройки слали быстрый старт
+    всегда, поэтому встретивший их раньше тура тихо садился на 1000 слов и узнать о
+    17 539 ему было негде. Признак этого: подписка с потолком у человека, который тур
+    НЕ ОТКРЫВАЛ ни разу (строки прогресса нет вовсе).
+
+    Замер 15.09.2026: 2 (uid 362151600, 5126120959) из 6 «быстрых стартов». С 15.09 все
+    три двери берут состав кнопок из frontend/src/shared/starterDictionary.js, поэтому
+    новых таких быть не может. Число ВЫРОСЛО = какая-то дверь снова рисует кнопки сама."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(*)
+                  FROM bt_3_starter_dictionary_state s
+                  LEFT JOIN bt_3_user_onboarding o ON o.user_id = s.user_id
+                 WHERE s.live_subscription = TRUE
+                   AND s.subscription_limit IS NOT NULL
+                   AND o.user_id IS NULL
+                   AND s.decided_at >= %s::timestamptz
+            """, (_ONBOARDING_DICTIONARY_FIX_AT,))
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="starter_dictionary_doors_offer_both_sizes",
+        title="Людей на «быстром старте», которым полный словарь не предлагала ни одна дверь",
+        since="15.09.2026",
+        expected=0,
+        measure=_starter_size_chosen_without_offering_both,
+        screen=_onboarding_dictionary_screen,
+        how="/admin_promises — или backend.fix_promises._starter_size_chosen_without_offering_both(). "
+            "До 15.09.2026 было 2 из 6 «быстрых стартов» (uid 362151600, 5126120959): они "
+            "тур не открывали, а окно первого входа и настройки предлагали ТОЛЬКО быстрый "
+            "старт. Теперь состав кнопок у всех трёх дверей один — "
+            "frontend/src/shared/starterDictionary.js. Число ВЫРОСЛО = дверь снова рисует "
+            "кнопки сама, мимо общего модуля",
+    ),
+
     Promise(
         key="onboarding_dictionary_step_not_a_dead_end",
         title="Людей, запертых на шаге онбординга «Базовый словарь»",
