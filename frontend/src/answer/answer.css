@@ -2886,33 +2886,27 @@ html[data-scheme="light"] .sel-sheet-act { border-color: #d6dbe4; background: #f
   grid-template-columns: repeat(var(--gp-cols, 8), minmax(0, 2.375rem));
   gap: 0.25rem; padding: 0.125rem 0; cursor: text; width: 100%;
 }
-.gp-cells-input {
-  position: absolute; inset: 0; width: 100%; height: 100%;
-  opacity: 0; border: 0; padding: 0; margin: 0; background: transparent;
-  /* 16px — порог, ниже которого Safari на iOS сам зумит страницу при фокусе. */
-  font-size: 16px; caret-color: transparent; cursor: text;
-  /* ┌─ ПРОВЕРЕНО 15.09.2026. НЕ СТАВИТЬ СЮДА pointer-events: none. ──────────────┐
-     │ Поле лежит поверх ряда и ловит касания — из-за этого тап по клетке сначала │
-     │ до неё не доходил. Я «починил» это, пропустив касания насквозь, и сломал    │
-     │ главное: айфон перестал считать поле тем, на что нажали, и КЛАВИАТУРА       │
-     │ БОЛЬШЕ НЕ ВЫЕЗЖАЛА. Курсор в клетку вставал, а писать было нечем.           │
-     │ Правильный путь — поле остаётся нажимаемым, а нужная клетка вычисляется по  │
-     │ точке касания (GapGame.jsx, cellAtPoint). Тогда тап настоящий, клавиатура   │
-     │ поднимается сама, и буква всё равно выбирается та, по которой ткнули.       │
-     └────────────────────────────────────────────────────────────────────────────┘ */
-}
-.gp-cells-input:focus { outline: none; }
+/* .gp-cells-input удалён 15.09.2026: одного поля поверх ряда больше нет. */
 .gp-cell {
+  /* Каждая клетка — ОТДЕЛЬНОЕ ПОЛЕ на одну букву (переделано 15.09.2026): только так
+     тап попадает именно в неё средствами браузера, а не нашим вычислением, которое
+     айфон всё равно перебивал. Отсюда сбросы, которых у <span> не требовалось. */
+  -webkit-appearance: none; appearance: none;
+  border: 0; outline: none; padding: 0; margin: 0;
+  font-family: inherit; text-align: center;
+  /* 16px — порог, ниже которого Safari на iOS зумит страницу при фокусе. */
+  min-width: 0; font-size: max(1.0625rem, 16px);
   /* Ширину задаёт колонка сетки; потолок 2.375rem держит короткое слово от расползания. */
   width: 100%; height: 2.75rem; border-radius: 0.5rem;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 1.0625rem; font-weight: 800; text-transform: none;
+  font-weight: 800; text-transform: none;
   background: var(--gp-cell-bg, rgba(148,163,184,.12));
   color: var(--dmps-text-title, #E2E8F0);
   transition: background .12s ease, box-shadow .12s ease;
 }
 /* Данная буква: она подсказка, а не ответ, — поэтому акцентом, а не чернилами. */
 .gp-cell.given { background: var(--gp-slot-bg, rgba(217,119,6,.16)); color: var(--gp-accent-ink, #fbbf24); }
+.gp-cell::placeholder { color: var(--gp-accent-ink, #fbbf24); opacity: .85; font-weight: 800; }
 .gp-cell.typed { background: var(--gp-cell-typed, rgba(148,163,184,.22)); }
 /* КЛЕТКА, КУДА ПИШЕМ. Раньше это был тонкий контур, заметный только если знать, что
    искать, и показывался он лишь пока поле в фокусе. Владелец 14.09.2026: «не

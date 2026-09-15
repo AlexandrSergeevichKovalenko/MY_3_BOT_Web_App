@@ -56,79 +56,66 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
   // «не могу тапнуть на букву в середине и исправить — приходится стирать всё».
   // Обе жалобы про одно: экран не показывал позицию ввода и не давал её менять.
   const [caret, setCaret] = useState(0);
-  // Выделена ли буква В КЛЕТКЕ (тап по уже написанной): печать её заменит.
-  const [picked, setPicked] = useState(false);
-  // Куда поставить каретку ПОСЛЕ того, как значение доедет до поля (подсказка вписывает
-  // сразу несколько букв, и в момент клика значение ещё старое).
-  const pendingCaret = useRef(null);
   const [saved, setSaved] = useState(() => new Set());
   const [selection, setSelection] = useState(null);
-  const inputRef = useRef(null);
   const cellsRef = useRef(null);
   const toast = useToast();
 
-  // Каретка из самого поля: браузер двигает её при вводе, стрелках и тапе.
-  const syncCaret = useCallback(() => {
-    const el = inputRef.current;
+  // ┌─ ПО ПОЛЮ НА КАЖДУЮ КЛЕТКУ. Переделано 15.09.2026, третья попытка. ───────────┐
+  // │ Две прежние конструкции держали ОДНО невидимое поле поверх всего ряда, и обе │
+  // │ провалились по одной причине: айфон ставит курсор по СВОЕЙ раскладке текста  │
+  // │ внутри поля, а не по нашим клеткам, и перебивает любое наше вычисление.      │
+  // │   • обработчик на клетке не вызывался — поле перекрывало ряд;                │
+  // │   • pointer-events: none на поле — тап заработал, но КЛАВИАТУРА ПРОПАЛА;     │
+  // │   • вычисление клетки по точке касания — клавиатура вернулась, а курсор всё  │
+  // │     равно ставил айфон по-своему.                                            │
+  // │ Владелец ловил каждую. Здесь конструкция другая и без этого класса проблем:  │
+  // │ каждая клетка — отдельное поле на одну букву. Тап попадает ИМЕННО в неё      │
+  // │ средствами браузера, клавиатура открывается сама, печать заменяет букву.     │
+  // └─────────────────────────────────────────────────────────────────────────────┘
+  const cellRefs = useRef([]);
+
+  const focusCell = useCallback((i) => {
+    const el = cellRefs.current[i];
     if (!el) return;
-    const a = Math.max(0, Number(el.selectionStart || 0));
-    const b = Math.max(0, Number(el.selectionEnd || 0));
-    setCaret(a);
-    setPicked(b === a + 1);
+    el.focus();
+    try { el.setSelectionRange(0, el.value.length); } catch (_e) { /* noop */ }
+    setCaret(i);
   }, []);
 
-  // Отложенная каретка — только там, где значение поставили мы сами (подсказка).
-  // В обработчике клика делать это нельзя: значение ещё старое.
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el || verdict) return;
-    if (pendingCaret.current == null) return;
-    const pos = pendingCaret.current;
-    pendingCaret.current = null;
-    try { el.setSelectionRange(pos, pos); } catch (_e) { /* noop */ }
-    setCaret(pos);
-  }, [value, verdict]);
+  const setCharAt = useCallback((i, ch) => {
+    setValue((prev) => {
+      const arr = String(prev || '').split('');
+      while (arr.length < i) arr.push(' ');      // дырок не оставляем
+      if (ch) arr[i] = ch; else arr.splice(i, 1);
+      return arr.join('').replace(/\s+$/, '');
+    });
+  }, []);
 
-  // Тап по клетке ставит каретку ИМЕННО В НЕЁ — можно поправить букву в середине, а не
-  // стирать слово целиком. preventDefault держит фокус на поле: без него нажатие уводит
-  // его на сам span, и на айфоне клавиатура прячется.
-  // КЛЕТКА ПО ТОЧКЕ КАСАНИЯ. Поле ввода лежит поверх ряда и обязано ловить касания
-  // само: только тогда айфон считает тап настоящим и поднимает клавиатуру. Поэтому
-  // нужную клетку ищем не обработчиком на ней, а по координатам нажатия.
-  //
-  // ┌─ ПРОВЕРЕНО 15.09.2026. НЕ ВЕШАТЬ onClick НА САМУ КЛЕТКУ. ────────────────────┐
-  // │ Сначала обработчик висел на клетке — он не вызывался ни разу, потому что     │
-  // │ поле перекрывало ряд. Потом я пропустил касания сквозь поле (pointer-events:  │
-  // │ none) — тап заработал, но КЛАВИАТУРА ПЕРЕСТАЛА ВЫЕЗЖАТЬ. Владелец поймал оба  │
-  // │ раза. Рабочий путь один: касание достаётся полю, клетка считается по точке.   │
-  // └──────────────────────────────────────────────────────────────────────────────┘
-  const tapAt = useCallback((e) => {
-    if (verdict) return;
-    const el = inputRef.current;
-    const row = cellsRef.current;
-    if (!el || !row) return;
-    const x = Number(e.clientX), y = Number(e.clientY);
-    let index = null;
-    if (Number.isFinite(x) && Number.isFinite(y)) {
-      const boxes = row.querySelectorAll('.gp-cell');
-      for (let i = 0; i < boxes.length; i += 1) {
-        const r = boxes[i].getBoundingClientRect();
-        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) { index = i; break; }
+  const onCellInput = useCallback((i) => (e) => {
+    const raw = String(e.target.value || '');
+    if (!raw) { setCharAt(i, ''); return; }
+    // Берём ПОСЛЕДНИЙ символ: при замене в поле на миг оказывается два.
+    const ch = raw.slice(-1);
+    setCharAt(i, ch);
+    setCaret(i + 1);
+    setTimeout(() => focusCell(i + 1), 0);      // переход к следующей — уже после отрисовки
+  }, [setCharAt, focusCell]);
+
+  const onCellKey = useCallback((i) => (e) => {
+    if (e.key === 'Enter') { check(); return; }
+    if (e.key === 'Backspace') {
+      const cur = String(cellRefs.current[i]?.value || '');
+      if (!cur && i > 0) {                       // пустая — стираем предыдущую и идём назад
+        e.preventDefault();
+        setCharAt(i - 1, '');
+        setTimeout(() => focusCell(i - 1), 0);
       }
+      return;
     }
-    const len = String(value || '').length;
-    // Мимо клеток (в зазор или в край ряда) — не трогаем каретку, пусть ведёт себя
-    // как обычное поле: человек просто вызвал клавиатуру.
-    if (index == null) { syncCaret(); return; }
-    const pos = Math.min(index, len);
-    try {
-      // Тап по написанной букве ВЫДЕЛЯЕТ её: следующая встанет на её место.
-      if (pos < len) el.setSelectionRange(pos, pos + 1);
-      else el.setSelectionRange(pos, pos);
-    } catch (_err) { /* noop */ }
-    setCaret(pos);
-    setPicked(pos < len);
-  }, [verdict, value, syncCaret]);
+    if (e.key === 'ArrowLeft' && i > 0) { e.preventDefault(); focusCell(i - 1); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); focusCell(i + 1); }
+  }, [check, setCharAt, focusCell]);
 
   const heroRef = useFitText(`${phase}|${meta?.wort || ''}`, { max: 'css', min: 15, padding: 10, fitBy: 'word' });
 
@@ -167,19 +154,20 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
   const cells = useMemo(() => {
     const len = Math.max(0, Number(item?.hint_len || 0));
     const typed = String(value || '');
-    const n = Math.max(len, typed.length);
+    // Одна запасная клетка, когда слово уже набрано целиком: без неё нельзя напечатать
+    // форму ДЛИННЕЕ нужной («ausführlichen» вместо «ausführliche»), а на этом держится
+    // исход «слово верное, форма нет».
+    const n = typed.length >= len ? typed.length + 1 : len;
     const out2 = [];
     for (let i = 0; i < n; i += 1) {
-      const ch = typed[i] || (i === 0 ? (item?.hint_letter || '') : '');
-      const given = !typed[i] && i === 0 && ch;
+      const ch = typed[i] || '';
       // Подсказано = первая буква (она дана всегда) плюс открытые лампочкой.
       const revealed = i < 1 + hints && !!typed[i];
       let cls = '';
       if (i >= len) cls = ' over';                       // перебрал длину — видно сразу
       else if (revealed) cls = ' given';                 // подсказка, а не твой ответ
       else if (typed[i]) cls = ' typed';
-      else if (given) cls = ' given';
-      out2.push({ ch, cls });
+      out2.push({ ch, cls, hint: i === 0 && !typed[0] ? (item?.hint_letter || '') : '' });
     }
     return out2;
   }, [item, value, hints]);
@@ -196,7 +184,7 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
 
   const start = useCallback(() => {
     setPhase('playing'); setGi(0); setValue(''); setAttempt(1);
-    setVerdict(null); setScore(0); setSolved([]); setHints(0); setCaret(0); setPicked(false);
+    setVerdict(null); setScore(0); setSolved([]); setHints(0); setCaret(0);
   }, []);
 
   // Лампочка открывает СЛЕДУЮЩУЮ букву слова и ставит ввод на этот префикс. Не
@@ -212,11 +200,11 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
     // самого касания. Прежняя версия звала focus() из setTimeout(30) — жест к тому
     // моменту уже кончался, клавиатура не выезжала, и человек оставался с одними
     // подсказанными буквами и кнопкой «Проверить» (поймано на живом проходе 14.09.2026).
-    try { inputRef.current?.focus(); } catch (_e) { /* noop */ }
-    pendingCaret.current = nextLen;
     setHints((h) => h + 1);
     setValue(full.slice(0, nextLen));
     try { haptic?.('ok'); } catch (_e) { /* noop */ }
+    // Фокус переносим на клетку ЗА открытой буквой — печатать дальше сразу оттуда.
+    setTimeout(() => focusCell(nextLen), 0);
   }, [hints, verdict, item, haptic]);
 
   const check = useCallback(async () => {
@@ -246,13 +234,12 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
   const retry = useCallback(() => {
     // Тот же закон, что у лампочки: фокус синхронно, внутри касания. Поле теперь не
     // размонтируется на время разбора, поэтому фокусировать есть что.
-    try { inputRef.current?.focus(); } catch (_e) { /* noop */ }
-    pendingCaret.current = String(value || '').length;   // дописывать — с конца
     setVerdict(null); setAttempt(2);
+    setTimeout(() => focusCell(String(value || '').length), 0);   // дописывать — с конца
   }, [value]);
 
   const next = useCallback(() => {
-    setSelection(null); setVerdict(null); setValue(''); setAttempt(1); setHints(0); setCaret(0); setPicked(false);
+    setSelection(null); setVerdict(null); setValue(''); setAttempt(1); setHints(0); setCaret(0);
     if (gi + 1 >= total) { setPhase('done'); return; }
     setGi((i) => i + 1);
   }, [gi, total]);
@@ -357,27 +344,27 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
             первым же живым проходом 14.09.2026 — десять пропусков подряд ушли на
             проверку с одними подсказанными буквами, потому что дописать было нечем. */}
         <div className="gp-form">
-          <label className="gp-cells" style={{ '--gp-cols': cellCols }}>
-            <input
-              ref={inputRef}
-              className="gp-cells-input"
-              lang="de"
-              value={value}
-              readOnly={!!verdict}
-              onChange={(e) => { setValue(e.target.value); syncCaret(); }}
-              onSelect={syncCaret}
-              onKeyUp={syncCaret}
-              onClick={tapAt}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !verdict) check(); }}
-              aria-label={attempt === 2 ? 'Поправь форму' : 'Впиши слово по буквам'}
-              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
-            />
+          <div className="gp-cells" ref={cellsRef} style={{ '--gp-cols': cellCols }}>
             {cells.map((c, i) => (
-              <span key={i}
-                className={`gp-cell${c.cls}${!verdict && i === caret ? (picked ? ' picked' : ' next') : ''}`}
-                aria-hidden="true">{c.ch}</span>
+              <input
+                key={i}
+                ref={(el) => { cellRefs.current[i] = el; }}
+                className={`gp-cell${c.cls}${!verdict && i === caret ? ' next' : ''}`}
+                lang="de"
+                type="text"
+                inputMode="text"
+                maxLength={1}
+                value={c.ch}
+                placeholder={c.hint}
+                readOnly={!!verdict}
+                onChange={onCellInput(i)}
+                onKeyDown={onCellKey(i)}
+                onFocus={() => { setCaret(i); try { cellRefs.current[i]?.select(); } catch (_e) { /* noop */ } }}
+                aria-label={`Буква ${i + 1}`}
+                autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+              />
             ))}
-          </label>
+          </div>
           {!verdict ? (
             <>
               <div className="gp-cells-row">
