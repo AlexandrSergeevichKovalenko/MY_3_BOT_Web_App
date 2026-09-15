@@ -487,80 +487,14 @@ const PAID_FEATURE_ERROR_PREFIX = '__paid_feature_required__:';
 const TRANSLATION_LIMIT_NOTICE_PREFIX = '__translation_limit_notice__:';
 const YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX = '__youtube_transcript_library_notice__:';
 
-// De-roll YouTube auto-caption cues. Rolling ASR captions repeat the previous line (or its
-// tail) in each following cue as the text scrolls up, so the same words arrive 2+ times. For
-// each cue we find the largest word-overlap it shares with the previous kept cue and keep only
-// the new remainder; a cue whose words are wholly contained in the previous one is a duplicate
-// frame and is dropped (its timing folded into the previous cue). Comparison is case- and
-// punctuation-insensitive. Returns { items, indexMap } where indexMap[originalIndex] = new
-// position, so translations keyed by the original cue index can be re-aligned.
-const _derollNormWord = (w) => String(w || '')
-  .toLowerCase()
-  .replace(/^[^\p{L}\p{N}]+/u, '')
-  .replace(/[^\p{L}\p{N}]+$/u, '');
-
-function derollTranscriptCues(list) {
-  const out = [];
-  const indexMap = {};
-  const source = Array.isArray(list) ? list : [];
-  source.forEach((item, oldIdx) => {
-    if (!item || typeof item !== 'object' || item.text == null) {
-      indexMap[oldIdx] = out.length;
-      out.push(item);
-      return;
-    }
-    const text = String(item.text).replace(/\s+/g, ' ').trim();
-    if (!text) {
-      if (out.length) indexMap[oldIdx] = out.length - 1;
-      return;
-    }
-    if (!out.length) {
-      indexMap[oldIdx] = out.length;
-      out.push({ ...item, text });
-      return;
-    }
-    const prev = out[out.length - 1];
-    const prevWords = String(prev.text || '').split(/\s+/).filter(Boolean);
-    const curWords = text.split(/\s+/).filter(Boolean);
-    const prevNorm = prevWords.map(_derollNormWord);
-    const curNorm = curWords.map(_derollNormWord);
-    let overlap = 0;
-    const maxK = Math.min(prevWords.length, curWords.length);
-    for (let k = maxK; k >= 1; k -= 1) {
-      let match = true;
-      for (let j = 0; j < k; j += 1) {
-        if (prevNorm[prevNorm.length - k + j] !== curNorm[j]) { match = false; break; }
-      }
-      if (match) { overlap = k; break; }
-    }
-    // Whole cue already present as the previous cue's suffix → duplicate frame, drop it and
-    // stretch the previous cue's duration so seeking still lands on the right moment.
-    if (overlap === curWords.length) {
-      const prevStart = Number(prev.start ?? 0);
-      const curEnd = Number(item.start ?? 0) + Number(item.duration ?? 0);
-      if (Number.isFinite(prevStart) && Number.isFinite(curEnd) && curEnd > prevStart) {
-        prev.duration = Math.max(Number(prev.duration ?? 0), curEnd - prevStart);
-      }
-      indexMap[oldIdx] = out.length - 1;
-      return;
-    }
-    // Partial rolling overlap (2+ shared words) → keep only the new tail. A 1-word coincidence
-    // is left untouched to avoid corrupting genuinely distinct cues.
-    if (overlap >= 2) {
-      const remainder = curWords.slice(overlap).join(' ').trim();
-      if (remainder) {
-        indexMap[oldIdx] = out.length;
-        out.push({ ...item, text: remainder });
-      } else {
-        indexMap[oldIdx] = out.length - 1;
-      }
-      return;
-    }
-    indexMap[oldIdx] = out.length;
-    out.push({ ...item, text });
-  });
-  return { items: out, indexMap };
-}
+// ┌─ ПРОВЕРЕНО 15.09.2026. СКЛЕЙКА «КАТЯЩИХСЯ» СУБТИТРОВ УЕХАЛА НА СЕРВЕР. ──────────┐
+// │ Здесь жила derollTranscriptCues. Из-за неё у одной реплики было ДВА номера:      │
+// │ сырой (в базе) и склеенный (на экране) — русский перевод сохранялся под вторым,  │
+// │ а при повторном открытии ролика перекладывался через карту ЕЩЁ РАЗ и уезжал      │
+// │ вперёд (жалоба владельца 15.09.2026). Теперь склейка выполняется РОВНО ОДИН РАЗ  │
+// │ и только на сервере: backend/subtitle_cues.py. Обратно сюда её возвращать        │
+// │ нельзя — она не идемпотентна, и второй прогон снова сдвинет номера.              │
+// └──────────────────────────────────────────────────────────────────────────────────┘
 const EPUB_RUNTIME_CDN_URLS = [
   'https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js',
   'https://unpkg.com/epubjs/dist/epub.min.js',
@@ -7165,6 +7099,8 @@ function AppInner() {
   const youtubeSeekTargetRef = useRef(null);
   const [youtubeTranslations, setYoutubeTranslations] = useState({});
   const [youtubeTranslationEnabled, setYoutubeTranslationEnabled] = useState(false);
+  // Честная строка человеку, когда перевод куска не доехал. Пустая — всё в порядке.
+  const [youtubeTranslationNotice, setYoutubeTranslationNotice] = useState('');
   // DE (оригинальные субтитры) — реальный вкл/выкл, как RU. По умолчанию показаны.
   const [youtubeOriginalEnabled, setYoutubeOriginalEnabled] = useState(true);
   const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
@@ -8520,6 +8456,11 @@ function AppInner() {
   const translationDictKbCleanupRef = useRef(null);
   const youtubeTranslateInFlightRef = useRef(false);
   const youtubeTranslateIndexRef = useRef(-1);
+  // Куски, за которыми сходили неудачно: когда это случилось и сколько раз подряд.
+  // Нужны, чтобы при обрыве связи не долбить сервер каждые 400 мс и чтобы после
+  // второй неудачи сказать человеку словами, а не оставить его с многоточиями.
+  const youtubeTranslateFailedRef = useRef({});
+  const youtubeTranslateAttemptsRef = useRef({});
   const autoAdvanceTimeoutRef = useRef(null);
   const revealTimeoutRef = useRef(null);
   const flashcardIndexRef = useRef(0);
@@ -34167,27 +34108,22 @@ function AppInner() {
         ? { ...item, text: decodeEntities(item.text) }
         : item
     ));
-    // YouTube auto-generated captions are "rolling": each cue repeats the tail (often the
-    // whole line) of the previous cue as it scrolls up, so the same sentence arrives 2+ times.
-    // That is native to YouTube's ASR track, not a bug in the video — but if we render it raw
-    // every line shows up doubled. De-roll here (single choke point feeding the panel) by
-    // dropping the word-overlap each cue shares with the previous one. Returns an index map so
-    // any server-provided translations (keyed by original cue index) stay aligned.
-    const { items: dedupedItems, indexMap } = derollTranscriptCues(items);
-    setYoutubeTranscript(dedupedItems);
+    // «Катящиеся» субтитры YouTube (одна фраза приезжает 2-3 кадрами подряд, пока ползёт
+    // вверх по экрану) склеивает СЕРВЕР — backend/subtitle_cues.py. Здесь их больше не
+    // трогают, и номера реплик не перекладывают.
+    //
+    // ┌─ ПРОВЕРЕНО 15.09.2026. НЕ ВОЗВРАЩАТЬ СЮДА СКЛЕЙКУ. ───────────────────────────┐
+    // │ Раньше склейка жила здесь, и у одной реплики было ДВА номера: сырой (в базе) и │
+    // │ склеенный (на экране). Перевод сохранялся под склеенным, а при следующем       │
+    // │ открытии ролика прогонялся через карту ЕЩЁ РАЗ — русские субтитры уезжали      │
+    // │ вперёд и обрывались (жалоба владельца 15.09.2026). Склейка не идемпотентна:    │
+    // │ на 4000 случайных катящихся дорожек второй прогон менял текст у 31. Поэтому    │
+    // │ она обязана выполняться ровно один раз и в одном месте — на сервере.           │
+    // └───────────────────────────────────────────────────────────────────────────────┘
+    setYoutubeTranscript(items);
     const srcTranslations = (data && typeof data.translations === 'object' && data.translations) || {};
-    let mappedTranslations = srcTranslations;
-    if (Object.keys(srcTranslations).length) {
-      mappedTranslations = {};
-      Object.entries(srcTranslations).forEach(([k, v]) => {
-        const ni = indexMap[Number(k)];
-        if (ni != null && mappedTranslations[String(ni)] == null) {
-          mappedTranslations[String(ni)] = v;
-        }
-      });
-    }
-    setYoutubeTranslations(mappedTranslations);
-    const hasTiming = dedupedItems.some((item) => Number(item?.start) > 0);
+    setYoutubeTranslations(srcTranslations);
+    const hasTiming = items.some((item) => Number(item?.start) > 0);
     setYoutubeTranscriptHasTiming(hasTiming);
     setManualTranscript('');
   };
@@ -34316,6 +34252,9 @@ function AppInner() {
       setYoutubeIsPaused(false);
       youtubeTranslateInFlightRef.current = false;
       youtubeTranslateIndexRef.current = -1;
+      youtubeTranslateFailedRef.current = {};
+      youtubeTranslateAttemptsRef.current = {};
+      setYoutubeTranslationNotice('');
       return;
     }
     if (youtubeTranscriptVideoIdRef.current !== currentVideoId) {
@@ -34329,6 +34268,9 @@ function AppInner() {
       setYoutubeIsPaused(false);
       youtubeTranslateInFlightRef.current = false;
       youtubeTranslateIndexRef.current = -1;
+      youtubeTranslateFailedRef.current = {};
+      youtubeTranslateAttemptsRef.current = {};
+      setYoutubeTranslationNotice('');
     }
   }, [youtubeId, initData]);
 
@@ -35201,13 +35143,19 @@ function AppInner() {
     const minBuffer = 15;
     let available = 0;
     for (let i = activeIndex; i < youtubeTranscript.length; i += 1) {
-      const idx = String(i);
-      if (!youtubeTranslations[idx]) break;
+      // `undefined` — строку ещё не заказывали. Пустая строка — заказывали, и ответ
+      // пришёл пустым: это отдельный случай, он считается на сервере и не должен
+      // заставлять плеер бесконечно перезаказывать одно и то же место.
+      if (youtubeTranslations[String(i)] === undefined) break;
       available += 1;
     }
     if (available >= minBuffer) return;
     const startIndex = activeIndex + available;
     if (youtubeTranslateIndexRef.current === startIndex) return;
+    // Кусок, который уже не дался: ждём паузу, прежде чем просить снова. Без этого при
+    // обрыве связи плеер долбил сервер каждые 400 мс и молчал об этом.
+    const failedAt = youtubeTranslateFailedRef.current[startIndex];
+    if (failedAt && Date.now() - failedAt < 8000) return;
 
     const batch = youtubeTranscript.slice(startIndex, startIndex + aheadLimit);
     const lines = batch.map((item) => normalizeSubtitleText(item.text || ''));
@@ -35232,18 +35180,33 @@ function AppInner() {
       .then((data) => {
         const translations = data.translations || [];
         if (!translations.length) return;
+        delete youtubeTranslateFailedRef.current[startIndex];
+        setYoutubeTranslationNotice('');
         setYoutubeTranslations((prev) => {
           const next = { ...prev };
           translations.forEach((text, offset) => {
-            const idx = String(startIndex + offset);
-            if (text) {
-              next[idx] = text;
-            }
+            // Пустой ответ ТОЖЕ запоминаем. Раньше он не записывался, и место
+            // оставалось «незаказанным» — плеер просил его снова и снова, а человек
+            // так ничего и не видел.
+            next[String(startIndex + offset)] = text;
           });
           return next;
         });
       })
-      .catch(() => {})
+      .catch(() => {
+        // Молчать нельзя: раньше здесь стоял пустой catch, и человек навсегда оставался
+        // с многоточиями, не понимая, почему. Теперь место помечено, повтор будет через
+        // паузу, а если не вышло и со второго раза — говорим словами.
+        const attempts = (youtubeTranslateAttemptsRef.current[startIndex] || 0) + 1;
+        youtubeTranslateAttemptsRef.current[startIndex] = attempts;
+        youtubeTranslateFailedRef.current[startIndex] = Date.now();
+        if (attempts >= 2) {
+          setYoutubeTranslationNotice(tr(
+            'Перевод этого куска пока не получен — проверьте связь. Немецкие субтитры идут как обычно.',
+            'Die Übersetzung dieses Abschnitts kam nicht an — prüfe die Verbindung. Die deutschen Untertitel laufen weiter.',
+          ));
+        }
+      })
       .finally(() => {
         youtubeTranslateInFlightRef.current = false;
       });
@@ -40345,6 +40308,9 @@ function AppInner() {
                               <div className="youtube-subtitles-card-head">
                                 <span>{getNativeSubtitleCode()}</span>
                               </div>
+                              {youtubeTranslationNotice && (
+                                <p className="youtube-subtitles-notice">{youtubeTranslationNotice}</p>
+                              )}
                               <div className="webapp-subtitles is-translation">
                                 <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
                                   {(() => {

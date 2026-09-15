@@ -222,6 +222,8 @@ def refill_standup_shelf(*, target: int | None = None, max_add: int | None = Non
                 transcript=data.get("items") or [],
                 transcript_lang=data.get("language") or "de",
                 transcript_is_generated=data.get("is_generated"),
+                # Реплики уже склеены в _build_youtube_transcript_result — флаг едет с ними.
+                transcript_cues_rolled=bool(data.get("cues_rolled")),
             )
         except Exception:
             logger.warning("standup shelf: не удалось положить %s", item["video_id"], exc_info=True)

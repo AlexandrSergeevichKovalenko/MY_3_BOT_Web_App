@@ -155,3 +155,27 @@ def cues_are_rolling(items: list) -> bool:
     """Есть ли в дорожке «катящиеся» повторы, то есть схлопывает ли её склейка."""
     rolled, _ = deroll_transcript_cues(items)
     return len(rolled) < len(items or [])
+
+
+def split_translation_key(key: str) -> tuple[str, int] | None:
+    """Ключ перевода → (язык, номер реплики).
+
+    Ключи двух видов: новый «ru:17» и старый «17» (только русский — так писали до
+    появления других языков, и читатель в backend_server.py до сих пор так и читает).
+    Не разобрался — возвращаем None: непонятный ключ не притворяется нулевым номером.
+
+    Живёт рядом со склейкой, потому что отвечает на тот же вопрос — «какой номер у этой
+    строки», — и второй реализации у него быть не должно.
+    """
+    raw = str(key or "").strip()
+    if not raw:
+        return None
+    if ":" in raw:
+        lang, _, idx = raw.partition(":")
+        lang = lang.strip().lower()
+        idx = idx.strip()
+    else:
+        lang, idx = "ru", raw
+    if not lang or not idx.isdigit():
+        return None
+    return lang, int(idx)

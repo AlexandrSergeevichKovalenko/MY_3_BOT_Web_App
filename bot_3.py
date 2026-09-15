@@ -12713,6 +12713,47 @@ async def admin_daily_video_recheck_command(update: Update, context: CallbackCon
     await status.edit_text("\n".join(lines), parse_mode="HTML")
 
 
+async def run_subtitle_cue_roll_sweep(context: CallbackContext):
+    """Ночная склейка «катящихся» субтитров у дорожек, которые никто не открывал.
+
+    Склейка переехала из браузера на сервер (15.09.2026), и дорожка чинится сама при
+    первом открытии ролика. Но у роликов, которых никто не смотрит, этот момент не
+    наступит никогда — а сдвинутые номера русских субтитров ждут там своего зрителя.
+    Поэтому остаток добирается ночью, без участия человека.
+
+    Владельцу пишем только когда что-то вправду сделано или не смогли: «сегодня ничего
+    не понадобилось» каждую ночь — это шум, а молчание при поломке — обман.
+    """
+    from backend.database import get_admin_telegram_ids
+    try:
+        from backend.subtitle_cue_migration import format_roll_sweep_report, roll_pending_cues
+        report = await asyncio.to_thread(roll_pending_cues, 500)
+    except Exception as exc:
+        logging.exception("subtitle cue roll sweep failed")
+        _record_sched_heartbeat("subtitle_cue_roll_sweep", "failed", {"error": str(exc)[:200]})
+        admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(
+                    admin_id,
+                    "⚠️ Ночная склейка субтитров не отработала. Сдвинутые номера русских "
+                    f"строк остаются. Причина: {str(exc)[:200]}",
+                )
+            except Exception:
+                logging.warning("не смог сообщить админу о сбое склейки субтитров", exc_info=True)
+        return
+    _record_sched_heartbeat("subtitle_cue_roll_sweep", "ok", report)
+    if not report.get("rolled") and not report.get("failed"):
+        return
+    text = format_roll_sweep_report(report)
+    admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(admin_id, text, parse_mode="HTML")
+        except Exception:
+            logging.warning("не смог отправить отчёт о склейке субтитров", exc_info=True)
+
+
 async def run_standup_shelf_refill(context: CallbackContext):
     """Ночное пополнение полки стендапов.
 
@@ -48253,6 +48294,10 @@ def main():
         # Ночной перепроверки карточек (03:20) больше нет — решение владельца 05.09.2026,
         # разбор у бывшей run_daily_video_recheck. Одна проверка на входе.
         scheduler.add_job(lambda: submit_async(run_standup_shelf_refill,CallbackContext(application=application)),"cron", hour=3, minute=40, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        # Склейка «катящихся» субтитров у дорожек, которых никто не открывал. Тех, кого
+        # смотрят, чинит само открытие ролика; эта работа добирает остальных, чтобы
+        # сдвинутые номера не ждали зрителя годами. К модели и к YouTube не ходит.
+        scheduler.add_job(lambda: submit_async(run_subtitle_cue_roll_sweep,CallbackContext(application=application)),"cron", hour=3, minute=50, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Бесплатный месяц: ночная страховка начала отсчёта (кого двери пропустили).
         scheduler.add_job(lambda: submit_async(_access_period_sweep_job,CallbackContext(application=application)),"cron", hour=3, minute=50, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         # Бесплатный месяц: напоминание запертым — суббота 11:00 (решение владельца 04.09.2026).

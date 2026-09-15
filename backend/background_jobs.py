@@ -993,6 +993,8 @@ def fetch_youtube_transcript_job(video_id: str, lang: str = "", allow_proxy: boo
                 data.get("language"),
                 data.get("is_generated"),
                 data.get("translations"),
+                # Реплики уже склеены в _build_youtube_transcript_result.
+                cues_rolled=bool(data.get("cues_rolled")),
             )
         except Exception:
             logging.exception(

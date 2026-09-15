@@ -13,10 +13,11 @@
 ── Три класса, которые этот отчёт считает раздельно ───────────────────────────
 Числа НЕ складываются в одно: у них разные причины и разная цена починки.
 
-1. «Уедет на повторном просмотре» — дорожка «катящаяся» (см. backend/subtitle_cues.py),
-   в базе лежат СЫРЫЕ кадры, а перевод сохранён под номерами СКЛЕЕННЫХ строк. Браузер
-   при открытии перекладывает номера ещё раз — и русский уезжает вперёд. Прямой признак
-   в данных: номер перевода, который склейка переносит на другую строку.
+1. «Ждут склейки» — дорожка ещё лежит сырыми кадрами (`cues_rolled = FALSE`). До
+   15.09.2026 склейка «катящихся» кадров жила в браузере, из-за чего у реплики было два
+   номера и русский уезжал вперёд при повторном открытии ролика. Теперь склейка на
+   сервере и выполняется один раз: дорожка чинится сама при первом открытии, остальные
+   добирает ночь. Число — это остаток работы, а не поломка на экране.
 
 2. «Номера за концом списка» — немецкие реплики заменили (их умеют забирать из четырёх
    источников, и режут они по-разному), а перевод остался старый: запрос к базе так и
@@ -42,28 +43,9 @@ from __future__ import annotations
 
 import logging
 
+from backend.subtitle_cues import split_translation_key
+
 logger = logging.getLogger(__name__)
-
-
-def _split_translation_key(key: str) -> tuple[str, int] | None:
-    """Ключ перевода → (язык, номер реплики).
-
-    Ключи двух видов: новый «ru:17» и старый «17» (только русский — так писали до
-    появления других языков, и читатель в backend_server.py до сих пор так и читает).
-    Не разобрался — возвращаем None: непонятный ключ не притворяется нулевым номером.
-    """
-    raw = str(key or "").strip()
-    if not raw:
-        return None
-    if ":" in raw:
-        lang, _, idx = raw.partition(":")
-        lang = lang.strip().lower()
-        idx = idx.strip()
-    else:
-        lang, idx = "ru", raw
-    if not lang or not idx.isdigit():
-        return None
-    return lang, int(idx)
 
 
 def _by_language(translations: dict) -> dict[str, dict[int, str]]:
@@ -71,7 +53,7 @@ def _by_language(translations: dict) -> dict[str, dict[int, str]]:
     «17») — это одна и та же строка, и считать её надо один раз."""
     out: dict[str, dict[int, str]] = {}
     for key, value in (translations or {}).items():
-        parsed = _split_translation_key(key)
+        parsed = split_translation_key(key)
         if parsed is None:
             continue
         lang, idx = parsed
@@ -80,21 +62,32 @@ def _by_language(translations: dict) -> dict[str, dict[int, str]]:
 
 
 def audit_one_video(row: dict) -> dict:
-    """Разбор одной дорожки по трём классам. Чистая функция — её же гоняет тест."""
+    """Разбор одной дорожки по классам. Чистая функция — её же гоняет тест.
+
+    Ключевой вопрос для каждой строки: в каком пространстве номеров она лежит. Ответ даёт
+    флаг `cues_rolled`, а не догадка по содержимому: склейка не идемпотентна, и «склеить
+    ещё раз, чтобы проверить» — это ровно тот сдвиг, который мы чиним.
+    """
     from backend.subtitle_cues import deroll_transcript_cues
 
     items = row.get("items") or []
-    rolled, index_map = deroll_transcript_cues(items)
-    rolled_count = len(rolled)
-    rolling = rolled_count < len(items)
+    already_rolled = bool(row.get("cues_rolled"))
+    if already_rolled:
+        # Номера окончательные: сравниваем перевод с тем, что лежит.
+        effective = items
+        pending_roll = False
+    else:
+        # Дорожка ещё сырая. Склейка случится при первом открытии ролика или ночью;
+        # считаем то, чем она станет.
+        effective, _index_map = deroll_transcript_cues(items)
+        pending_roll = True
+    rolled_count = len(effective)
 
     languages = _by_language(row.get("translations") or {})
     total_lines = 0
-    will_shift = 0        # класс 1: склейка перенесёт строку на другую реплику
-    will_vanish = 0       # класс 1: строка пропадёт вовсе (номера нет в карте)
-    orphan = 0            # класс 2: номер за концом немецкого списка
-    empty_from_model = 0  # класс 3а: ключ есть, текст пустой
-    gaps = 0              # класс 3б: номера нет внутри переведённого куска
+    orphan = 0            # номер за концом немецкого списка
+    empty_from_model = 0  # ключ есть, текст пустой
+    gaps = 0              # номера нет внутри переведённого куска
 
     for _lang, by_index in languages.items():
         if not by_index:
@@ -113,31 +106,23 @@ def audit_one_video(row: dict) -> dict:
                 continue
             if not str(text).strip():
                 empty_from_model += 1
-            if rolling:
-                target = index_map.get(idx)
-                if target is None:
-                    will_vanish += 1
-                elif target != idx:
-                    will_shift += 1
         # Дырка — только ВНУТРИ уже переведённого куска: то, что дальше по ролику ещё не
         # заказывали, дыркой не является и в число не идёт.
         for idx in range(min(highest + 1, rolled_count)):
             if idx in by_index:
                 continue
-            cue = rolled[idx]
+            cue = effective[idx]
             if isinstance(cue, dict) and str(cue.get("text") or "").strip():
                 gaps += 1
 
     return {
         "video_id": row.get("video_id") or "",
         "is_generated": bool(row.get("is_generated")),
-        "cues_raw": len(items),
-        "cues_rolled": rolled_count,
-        "rolling": rolling,
+        "cues_stored": len(items),
+        "cues_effective": rolled_count,
+        "pending_roll": pending_roll,
         "languages": sorted(languages.keys()),
         "lines": total_lines,
-        "will_shift": will_shift,
-        "will_vanish": will_vanish,
         "orphan": orphan,
         "empty_from_model": empty_from_model,
         "gaps": gaps,
@@ -154,57 +139,55 @@ def subtitle_sync_state() -> dict:
 
     videos = 0
     videos_with_translation = 0
-    videos_rolling = 0
-    videos_shift = 0
+    videos_pending_roll = 0
     videos_orphan = 0
     videos_gaps = 0
     lines_total = 0
-    lines_shift = 0
-    lines_vanish = 0
     lines_orphan = 0
     lines_empty = 0
     lines_gaps = 0
+    lines_lost_on_roll = 0
     worst: list[dict] = []
 
     for row in iter_youtube_transcripts_for_audit():
         videos += 1
         report = audit_one_video(row)
-        if report["rolling"]:
-            videos_rolling += 1
+        if report["pending_roll"]:
+            videos_pending_roll += 1
         if report["lines"] <= 0:
             continue
         videos_with_translation += 1
         lines_total += report["lines"]
-        lines_shift += report["will_shift"]
-        lines_vanish += report["will_vanish"]
-        lines_orphan += report["orphan"]
         lines_empty += report["empty_from_model"]
         lines_gaps += report["gaps"]
-        if report["will_shift"] or report["will_vanish"]:
-            videos_shift += 1
-        if report["orphan"]:
-            videos_orphan += 1
         if report["gaps"]:
             videos_gaps += 1
-        damage = report["will_shift"] + report["will_vanish"] + report["orphan"]
-        if damage:
-            worst.append({"video_id": report["video_id"], "damage": damage,
+        # Номер за концом списка значит РАЗНОЕ у склеенной и у ещё не склеенной дорожки,
+        # поэтому и считается в разные классы. У склеенной — немецкие реплики заменили
+        # (класс 2). У несклеенной — перевод писался до 12.07.2026, под сырыми номерами;
+        # перенести его некуда, и при склейке он потеряется (класс 1).
+        if report["pending_roll"]:
+            lines_lost_on_roll += report["orphan"]
+        else:
+            lines_orphan += report["orphan"]
+            if report["orphan"]:
+                videos_orphan += 1
+        if report["orphan"]:
+            worst.append({"video_id": report["video_id"], "damage": report["orphan"],
                           "lines": report["lines"]})
 
     worst.sort(key=lambda item: item["damage"], reverse=True)
     return {
         "videos": videos,
         "videos_with_translation": videos_with_translation,
-        "videos_rolling": videos_rolling,
-        "videos_shift": videos_shift,
+        "videos_pending_roll": videos_pending_roll,
         "videos_orphan": videos_orphan,
         "videos_gaps": videos_gaps,
         "lines_total": lines_total,
-        "lines_shift": lines_shift,
-        "lines_vanish": lines_vanish,
         "lines_orphan": lines_orphan,
         "lines_empty": lines_empty,
         "lines_gaps": lines_gaps,
+        "lines_lost_on_roll": lines_lost_on_roll,
         "worst": worst[:5],
         "count_mismatch": _count_mismatch_snapshot(),
     }
@@ -261,25 +244,24 @@ def format_subtitle_sync_report(state: dict) -> str:
         ]
         return "\n".join(lines)
 
-    shift = int(state.get("lines_shift") or 0)
-    vanish = int(state.get("lines_vanish") or 0)
+    pending = int(state.get("videos_pending_roll") or 0)
+    lost = int(state.get("lines_lost_on_roll") or 0)
     orphan = int(state.get("lines_orphan") or 0)
     gaps = int(state.get("lines_gaps") or 0)
     empty = int(state.get("lines_empty") or 0)
-    broken_videos = int(state.get("videos_shift") or 0) + int(state.get("videos_orphan") or 0)
 
-    if shift + vanish + orphan == 0:
-        lines.append("✅ Съехавших номеров не нашлось.")
+    if pending == 0 and orphan == 0:
+        lines.append("✅ Номера сходятся у всех переведённых дорожек.")
     else:
-        lines.append(
-            f"⚠️ Номера съехали у <b>{_videos(broken_videos)}</b> из {with_tr} переведённых."
-        )
+        lines.append("⚠️ Есть дорожки, где номера ещё не в порядке. Подробности ниже.")
+
     lines += [
         "",
-        f"<b>1. Уедет на повторном просмотре:</b> {_lines(shift + vanish)} "
-        f"у {_videos(int(state.get('videos_shift') or 0))}",
-        "<i>дорожка «катящаяся», перевод сохранён под склеенными номерами, а браузер "
-        "перекладывает их ещё раз</i>",
+        f"<b>1. Ждут склейки:</b> {_videos(pending)} из {videos}"
+        + (f", при склейке потеряется {_lines(lost)} перевода" if lost else ""),
+        "<i>склейка «катящихся» кадров переехала на сервер; дорожка чинится сама при первом "
+        "открытии ролика, остальные добирает ночь. Строки теряются только у записей до "
+        "12.07.2026 — их перевод писался под другими номерами, и переносить его некуда</i>",
         "",
         f"<b>2. Номера за концом немецкого списка:</b> {_lines(orphan)} "
         f"у {_videos(int(state.get('videos_orphan') or 0))}",
@@ -317,7 +299,6 @@ def format_subtitle_sync_report(state: dict) -> str:
     lines += [
         "",
         f"<i>Всего дорожек: {videos}, с переводом: {with_tr} ({lines_total} строк). "
-        f"«Катящихся» дорожек: {state.get('videos_rolling', 0)}. "
         f"К YouTube и к модели отчёт не обращается.</i>",
     ]
     return "\n".join(lines)
