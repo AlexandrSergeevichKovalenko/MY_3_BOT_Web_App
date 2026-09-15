@@ -4544,6 +4544,11 @@ _DRIP_WF_HOUR = 1   # wofrage_sprint (separate table)
 _DRIP_TR_HOUR = 3   # тренировка синонимов/антонимов (счётная, первый заход)
 _DRIP_TRR_HOUR = 4  # повтор той же тренировки на следующий день (сверх плана)
 _DRIP_SP_HOUR = 5   # спринт по рельсу (сверх плана)
+# «Подставь синоним/антоним» — третья ступенька рельса (сверх плана). Два РАЗНЫХ часа на
+# два вида: ключ защиты от повтора у этой таблицы — (человек, дата, час), и на одном часе
+# второй вид дня тихо не записался бы. Решение владельца 15.09.2026.
+_DRIP_LK_SYN_HOUR = 6
+_DRIP_LK_ANT_HOUR = 7
 _DRIP_AUFGABE_FORMATS = ["cloze", "satzbau", "synonym", "antonym", "transform",
                          "error", "wortbildung", "wortgruppe"]
 # Сверхплановое (спринт, повтор тренировки) стабильно на весь день: слово выбирается
@@ -5089,6 +5094,45 @@ async def _drip_bonus_pass(context: CallbackContext, uid: int, now) -> int:
                     context, entry=repeat_entry, relation=relation, slot_date=slot_date,
                     slot_hour=_DRIP_TRR_HOUR, chat_id=uid, target_user_id=uid, repeat=True):
                 sent += 1
+        # ── Третья ступенька рельса: «Подставь синоним» (решение владельца 15.09.2026) ──
+        # ┌─ НАЙДЕНО 15.09.2026 НА ЖИВОЙ БАЗЕ, ИСПРАВЛЕНО ТОГДА ЖЕ. ───────────────────┐
+        # │ Ступеньку сделали 13.09 и повесили ТОЛЬКО на слотовую рассылку (14:45 и    │
+        # │ 17:00). Человека со «своими часами» слотовая рассылка не берёт вовсе — его │
+        # │ ведёт эта капля, — и значит четвёртого касания у него не было ни одного.   │
+        # │ Замер: 14.09 слот антонимов промолчал целиком, потому что единственный,    │
+        # │ кто тренировал «ehrlich», сидит в окне 06–09 и 18–22:30, а слот стоит в    │
+        # │ 17:00. За всё время задание получил один человек — владелец.               │
+        # │ Тот же случай, что со спринтом и повтором выше: «рельс для него просто не  │
+        # │ существовал». Правило доставки берём их же — слово то, что ушло            │
+        # │ тренировкой позавчера, и только тому, кто ПЕРВЫЙ заход по нему получил.    │
+        # │ Перемерить: обещание relation_gap_reaches_learners (ждём 0 молчащих слотов)│
+        # └────────────────────────────────────────────────────────────────────────────┘
+        if _relation_gap_enabled():
+            gap_entry = await asyncio.to_thread(
+                pick_gap_word, relation=relation,
+                trained_on=slot_date - timedelta(days=RELATION_GAP_LAG_DAYS))
+            if gap_entry:
+                prepped_gap = await asyncio.to_thread(
+                    get_trainer_recipient_ids, str(gap_entry["sprint_id"]),
+                    since_days=RELATION_GAP_LAG_DAYS + 1)
+                if int(uid) in (prepped_gap or set()):
+                    # Заготовки строим ДО отправки — ровно как слотовая рассылка: карточка
+                    # с пустым экраном за ней хуже, чем не отправленная карточка.
+                    from backend.relation_gap import build_gap_items
+                    try:
+                        gap_items, _ = await asyncio.to_thread(
+                            build_gap_items, wort=str(gap_entry.get("wort") or ""),
+                            accepted=gap_entry.get("accepted"),
+                            trainer_json=gap_entry.get("trainer_json") or {})
+                    except Exception:
+                        logging.warning("drip gap: сборка заготовок упала relation=%s uid=%s",
+                                        relation, uid, exc_info=True)
+                        gap_items = []
+                    gap_hour = _DRIP_LK_SYN_HOUR if relation == "synonym" else _DRIP_LK_ANT_HOUR
+                    if gap_items and await send_gap_to_chat(
+                            context, entry=gap_entry, relation=relation, slot_date=slot_date,
+                            slot_hour=gap_hour, chat_id=uid, target_user_id=uid):
+                        sent += 1
     return sent
 
 
@@ -43622,8 +43666,12 @@ async def _admin_gap_test_command(update: Update, context: CallbackContext) -> N
         f"{'✅ Отправил' if ok else '❌ Не отправил'}: <b>{_html_escape(str(entry.get('wort')))}</b>, "
         f"{len(items)} пропусков"
         + (f", не собралось {sum(skipped.values())}" if skipped else "")
-        + ".\nРассылка людям закрыта: RELATION_GAP_ENABLED"
-        + (" = включено." if _relation_gap_enabled() else " не выставлен — в среду никому не уйдёт."),
+        + ".\n"
+        + ("Рассылка людям ОТКРЫТА: задание уходит по расписанию (синонимы 14:45, "
+           "антонимы 17:00) тем, кто тренировал это слово позавчера."
+           if _relation_gap_enabled()
+           else "Рассылка людям ЗАКРЫТА: RELATION_GAP_ENABLED не выставлен — "
+                "никому, кроме тебя сейчас, задание не уйдёт."),
         parse_mode="HTML")
 
 

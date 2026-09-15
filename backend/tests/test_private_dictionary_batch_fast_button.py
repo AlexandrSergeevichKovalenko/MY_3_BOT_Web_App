@@ -319,7 +319,8 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
         with patch.object(bot_3, "_run_dictionary_lookup_for_pair", new=AsyncMock(return_value=lookup)), \
              patch.object(bot_3, "_reserve_dictionary_lookup_execution", return_value=True), \
              patch.object(bot_3, "_generate_dictionary_save_options", new=AsyncMock(side_effect=AssertionError("slow path"))), \
-             patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}):
+             patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}), \
+             patch.object(bot_3, "_put_dictionary_pending_state"):  # иначе пишет в БОЕВУЮ базу
             prepared = bot_3.asyncio.run(
                 bot_3._prepare_dictionary_lookup_response(
                     user_id=11,
@@ -363,6 +364,7 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
              patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}), \
              patch.object(bot_3, "add_service_msg_id"), \
              patch.object(bot_3, "_remove_pending_from_redis"), \
+             patch.object(bot_3, "_put_dictionary_pending_state"), \
              patch.object(bot_3, "_sync_pending_to_redis"):
             bot_3.asyncio.run(
                 bot_3._run_dictionary_batch_fast_for_user(
@@ -402,6 +404,7 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
              patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}), \
              patch.object(bot_3, "add_service_msg_id"), \
              patch.object(bot_3, "_remove_pending_from_redis"), \
+             patch.object(bot_3, "_put_dictionary_pending_state"), \
              patch.object(bot_3, "_sync_pending_to_redis"):
             bot_3.asyncio.run(
                 bot_3._run_dictionary_batch_fast_for_user(

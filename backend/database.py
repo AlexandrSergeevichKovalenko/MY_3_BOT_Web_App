@@ -26404,8 +26404,17 @@ _PHRASE_CHECK_SCHEMA_LOCK = threading.Lock()
 
 
 def _ensure_phrase_check_tables(cursor) -> None:
+    """Ленивое заведение таблиц вопросов о фразах.
+
+    ⛔ В ПРОГОНЕ ТЕСТОВ НЕ ВЫПОЛНЯЕТСЯ: это CREATE TABLE по базе, адрес которой в
+    окружении разработчика боевой. Ровно для этого conftest ставит
+    SKIP_STARTUP_SCHEMA_BOOTSTRAP; здесь переменную не спрашивали, и 15.09.2026 замок
+    «из тестов только чтение» поймал это на test_phrase_panel_night. В проде переменной
+    нет, таблицы заводятся как заводились."""
     global _PHRASE_CHECK_SCHEMA_READY
     if _PHRASE_CHECK_SCHEMA_READY:
+        return
+    if os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP"):
         return
     with _PHRASE_CHECK_SCHEMA_LOCK:
         if _PHRASE_CHECK_SCHEMA_READY:

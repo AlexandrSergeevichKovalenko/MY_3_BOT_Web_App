@@ -596,7 +596,17 @@ def ensure_judged_ru_column() -> None:
     │ карточка сама вернётся на пересуд ночными порциями.                           │
     │ Засыпаются только строки с NULL, поэтому повторный вызов ничего не портит.    │
     └──────────────────────────────────────────────────────────────────────────────┘
+
+    ⛔ В ПРОГОНЕ ТЕСТОВ НЕ ВЫПОЛНЯЕТСЯ. Это DDL (ALTER TABLE) по живой таблице, а в
+    окружении разработчика адрес базы боевой. Ровно для этого conftest ставит
+    SKIP_STARTUP_SCHEMA_BOOTSTRAP — «схему по живой базе из тестов не трогаем», — но
+    вызов сидит внутри run_batch и переменную не спрашивал. Найдено 15.09.2026 замком
+    «тесты пишут в прод только для чтения»: два теста panel_night падали здесь на
+    ALTER TABLE. В проде переменной нет, графа заводится как заводилась.
     """
+    import os
+    if os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP"):
+        return
     from backend.database import get_db_connection_context
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
