@@ -2891,6 +2891,12 @@ html[data-scheme="light"] .sel-sheet-act { border-color: #d6dbe4; background: #f
   opacity: 0; border: 0; padding: 0; margin: 0; background: transparent;
   /* 16px — порог, ниже которого Safari на iOS сам зумит страницу при фокусе. */
   font-size: 16px; caret-color: transparent; cursor: text;
+  /* КАСАНИЯ ПРОПУСКАЕМ НАСКВОЗЬ. Поле лежит поверх всего ряда, и пока оно ловило
+     касания, тап по конкретной клетке до неё НЕ ДОХОДИЛ: обработчик существовал, но
+     не вызывался никогда, и поправить букву в середине было нельзя — только стереть
+     всё (владелец, 15.09.2026, вторая жалоба подряд про одно и то же).
+     Фокус при этом не теряется: ряд обёрнут в <label>, а клетка сама зовёт focus(). */
+  pointer-events: none;
 }
 .gp-cells-input:focus { outline: none; }
 .gp-cell {
@@ -2926,6 +2932,13 @@ html[data-scheme="light"] .sel-sheet-act { border-color: #d6dbe4; background: #f
 @media (prefers-reduced-motion: reduce) { .gp-cell.next:empty::after { animation: none; } }
 /* Клетки нажимаются пальцем — курсор и подавление системной подсветки. */
 .gp-cell { cursor: text; -webkit-tap-highlight-color: transparent; user-select: none; }
+/* Выбранная тапом буква: она выделена в самом поле, и следующая напечатанная встанет
+   на её место. Показываем это заливкой — иначе непонятно, что именно заменится. */
+.gp-cell.picked {
+  background: var(--gp-accent, #d97706);
+  color: var(--gp-on-accent, #fff);
+  box-shadow: none;
+}
 /* Перебрал длину — видно сразу, а не после «Проверить». */
 .gp-cell.over { background: var(--gp-bad-bg, rgba(239,68,68,.14)); color: var(--gp-bad, #ef4444); }
 /* Строка под клетками: слева счётчик букв, справа лампочка. */
