@@ -43764,7 +43764,16 @@ async def _admin_lab_command(update: Update, context: CallbackContext) -> None:
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    base = (get_webapp_url() or "").rstrip("/")
+    # ┌─ ПРОВЕРЕНО 15.09.2026. НЕ БРАТЬ ЗДЕСЬ get_webapp_url(). ──────────────────┐
+    # │ get_webapp_url() возвращает НЕ корень сайта, а «<хост>/webapp» — точку     │
+    # │ входа мини-аппа. Всё, что начинается на /webapp/, backend_server считает   │
+    # │ устаревшим адресом API (_LEGACY_API_PREFIXES) и перенаправляет 307-м на    │
+    # │ /api/webapp/…, где стоит страж initData. Владелец нажал кнопку и получил   │
+    # │ голый JSON {"error":"initData обязателен"} вместо страницы.                │
+    # │ Корень сайта даёт ТОЛЬКО get_public_web_url(). Сторож — тест               │
+    # │ backend/tests/test_lab_url_is_not_under_webapp.py.                         │
+    # └───────────────────────────────────────────────────────────────────────────┘
+    base = (get_public_web_url() or "").rstrip("/")
     if not base.startswith("https://"):
         await message.reply_text(
             "WEB_APP_URL не задан или не https — Telegram откроет мини-апп только по https. "
