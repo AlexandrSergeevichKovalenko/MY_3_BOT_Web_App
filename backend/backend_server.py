@@ -4860,7 +4860,22 @@ def webapp_starter_dictionary_apply():
         both_directions=True,
     )
     already_accepted = str(current_state.get("decision_status") or "").strip().lower() == "accepted"
-    if already_accepted and user_pair_total > 0 and not force_reimport:
+    # ┌─ НАЙДЕНО И ПОЧИНЕНО 15.09.2026. НЕ УБИРАТЬ ПРОВЕРКУ РАЗМЕРА. ──────────────────┐
+    # │ Короткий ответ «уже подключено» глотал ЛЮБОЙ повторный запрос, включая тот,    │
+    # │ который просит ДРУГОЙ размер: человек на быстром старте жмёт «расширить до     │
+    # │ всего словаря», получает ok:true, потолок остаётся 1000 — кнопка выглядит      │
+    # │ сломанной, и понять это по ответу нельзя. Срабатывало не сразу: условие ждёт   │
+    # │ user_pair_total > 0, а подписка отдаёт слова постепенно, поэтому у новичка     │
+    # │ кнопка работала, а через неделю переставала.                                   │
+    # │ Теперь «уже подключено» — только когда просят РОВНО ТО ЖЕ, что уже стоит.      │
+    # └───────────────────────────────────────────────────────────────────────────────┘
+    _want_full = bool(payload.get("full"))
+    _current_limit = current_state.get("subscription_limit")
+    _same_size = (
+        bool(current_state.get("live_subscription"))
+        and ((_current_limit is None) == _want_full)
+    )
+    if already_accepted and user_pair_total > 0 and not force_reimport and _same_size:
         offer = _build_starter_dictionary_offer(
             user_id=int(user_id),
             source_lang=source_lang,
@@ -4904,7 +4919,6 @@ def webapp_starter_dictionary_apply():
             target_lang=target_lang,
             profile=profile,
         )
-        _want_full = bool(payload.get("full"))
         if True:
             # ОБА варианта — подписка, копирования больше нет. Разница только в потолке:
             # «весь словарь» без потолка, «быстрый старт» — не больше STARTER_DICTIONARY_IMPORT_LIMIT
