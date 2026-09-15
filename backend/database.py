@@ -50688,6 +50688,7 @@ DAILY_COST_CAP_EXCLUDED_ACTION_TYPES = (
     "sprint_distractor_prosecutor",
     "sprint_distractor_judge",
     "sprint_correct_examples",
+    "sprint_example_consistency",
     # Book narration (Reader). Two separate reasons, same conclusion — never on the
     # subscription's daily AI budget:
     #   • OWN books: the user already paid for that book's audio (per-book Stars unlock).
@@ -66276,6 +66277,71 @@ def list_sprint_words_needing_trainer(*, limit: int = 6) -> list[dict]:
         out.append({"sprint_id": r[0], "relation": r[1], "wort": r[2],
                     "accepted": acc, "hint_ru": r[4]})
     return out
+
+
+def list_sprint_words_with_unchecked_examples(*, limit: int = 8) -> list[dict]:
+    """Слова банка, чьи примеры ещё НЕ проходили судью на внутреннюю непротиворечивость.
+
+    Заведено 15.09.2026. Примеры строятся подстановкой партнёра в предложение головного
+    слова; у антонимов остаток фразы продолжает нести прежний смысл, и выходит
+    «Экзамен оценён как безупречный, потому что было сделано много ошибок». Замер по
+    живому банку: 6 противоречий из 14 прочитанных антонимов, у синонимов 0 из 14.
+
+    Отбираются две группы, и обе — не «список на память», а наряд ночному автомату:
+      • построенные ДО 15.09.2026 — у них ключа examples_checked нет вовсе;
+      • построенные после, но у которых судья в тот раз не ответил (examples_checked=false).
+    Слово с examples_checked=true больше не берётся. Антонимы идут первыми: дефект
+    доказан именно на них.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT sprint_id, relation, wort, trainer_json "
+                "FROM bt_3_sprint_bank "
+                "WHERE retired = FALSE "
+                "  AND jsonb_array_length(COALESCE(trainer_json->'correct_examples', '[]'::jsonb)) > 0 "
+                "  AND COALESCE((trainer_json->>'examples_checked')::boolean, FALSE) = FALSE "
+                "ORDER BY (relation = 'antonym') DESC, created_at ASC LIMIT %s",
+                (int(limit),),
+            )
+            rows = cursor.fetchall() or []
+    return [{"sprint_id": r[0], "relation": r[1], "wort": r[2],
+             "trainer_json": r[3] if isinstance(r[3], dict) else {}} for r in rows]
+
+
+def count_sprint_words_with_unchecked_examples() -> int:
+    """Сколько слов банка ещё ждут проверки примеров. Число для обещания и отчёта:
+    молчащий механизм неотличим от сломанного, поэтому остаток обязан быть видимым."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM bt_3_sprint_bank "
+                "WHERE retired = FALSE "
+                "  AND jsonb_array_length(COALESCE(trainer_json->'correct_examples', '[]'::jsonb)) > 0 "
+                "  AND COALESCE((trainer_json->>'examples_checked')::boolean, FALSE) = FALSE"
+            )
+            return int((cursor.fetchone() or [0])[0])
+
+
+def save_sprint_checked_examples(sprint_id: str, *, correct_examples: list) -> None:
+    """Записать проверенные (при нужде — исправленные) примеры одного слова.
+
+    Правится ТОЛЬКО ветка correct_examples и флаг examples_checked: дистракторы,
+    счётчики и target_example остаются как были. Слияние делает сама база
+    (jsonb || jsonb), чтобы параллельная ночная сборка того же слова не потеряла
+    соседние ключи из-за чтения-изменения-записи целиком.
+    """
+    import json as _json
+    patch = {"correct_examples": list(correct_examples or []), "examples_checked": True}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_sprint_bank "
+                "SET trainer_json = COALESCE(trainer_json, '{}'::jsonb) || %s::jsonb "
+                "WHERE sprint_id = %s",
+                (_json.dumps(patch, ensure_ascii=False), str(sprint_id)),
+            )
+        conn.commit()
 
 
 def update_sprint_trainer_data(sprint_id: str, *, trainer_json: dict, trainer_ready: bool) -> None:

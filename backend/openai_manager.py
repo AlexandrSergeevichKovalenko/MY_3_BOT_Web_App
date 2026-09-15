@@ -4904,10 +4904,25 @@ No markdown.
 "sprint_correct_examples": """
 ROLE: You are a German lexicographer. You get a base sentence that uses `target` and a
 list of CORRECT answers (each a valid {relation} of `target`). For EACH answer:
-1. Rewrite the base sentence, replacing `target` with that answer and adjusting grammar
-   so it stays NATURAL and correct (inflection, article, agreement, word order as needed
-   — change ONLY what the swap requires). For a SYNONYM the meaning stays roughly the
-   same; for an ANTONYM the meaning flips to the natural OPPOSITE. Translate it to Russian.
+1. Rewrite the base sentence so that it uses THAT answer instead of `target` AND stays a
+   sentence a native speaker would accept as TRUE, natural and free of self-contradiction.
+   • SYNONYM: the meaning stays roughly the same, so normally only the swap itself plus
+     grammar (inflection, article, agreement, word order) has to change.
+   • ANTONYM: the meaning FLIPS — and the rest of the base sentence still carries the OLD
+     meaning. A reason clause (weil/denn), a purpose clause (um…zu/damit), a concession
+     (trotz/obwohl), a condition (wenn), a following clause, a negation or a frequency
+     word (immer/nie, oft/selten) will contradict the new word unless you flip it too.
+     You MUST rewrite those parts as well. Keep the same scene, topic, register and
+     roughly the same length: flip the POLARITY, not the subject matter.
+       WRONG: "Die Prüfung wurde als einwandfrei bewertet, weil viele Fehler gemacht wurden."
+       RIGHT: "Die Prüfung wurde als einwandfrei bewertet, weil keine Fehler gefunden wurden."
+       WRONG: "Wir müssen die Besucherzahl aus Sicherheitsgründen ausweiten."
+       RIGHT: "Wir müssen die Besucherzahl wegen der großen Nachfrage ausweiten."
+       WRONG: "Die Tür ist locker geschlossen und lässt sich nicht öffnen."
+       RIGHT: "Die Tür ist nur locker geschlossen und springt von selbst auf."
+     If the scene cannot be made true with that word at all, write a NEW short natural
+     sentence that uses it. Never return a sentence that contradicts itself.
+   Then translate it to Russian.
 2. Give the NUANCE ("оттенок") in RUSSIAN — ONE short sentence (max ~15 words) on what
    distinguishes THIS word from `target`: its shade, register, or typical use. Concrete,
    not generic ("книжное/формальное", "сильнее по степени", "чаще о людях", …). This is
@@ -4918,6 +4933,40 @@ INPUT JSON: {"target":"...","relation":"synonym"|"antonym","base_de":"...","answ
 Return STRICT JSON ONLY:
 {"items":[{"word":"<the answer, exactly as given>","sentence_de":"<rewritten sentence>","sentence_ru":"<RU translation>","nuance":"<RU shade, one short sentence>"}, ...]}
 Same length and order as `answers`. No markdown.
+""",
+# Страж предложений тренажёра. Заведён 15.09.2026: инструкция выше велела «менять
+# только то, чего требует подстановка», и при антониме остаток фразы продолжал нести
+# смысл ИСХОДНОГО слова — «Экзамен оценён как безупречный, потому что было сделано
+# много ошибок». Замер по живому банку: 6 противоречий из 14 прочитанных антонимов,
+# у синонимов 0 из 14. Судья обязан вернуть ИСПРАВЛЕННЫЙ текст, а не только вердикт:
+# диагноз без готового варианта здесь бесполезен — предложение всё равно надо кому-то
+# переписать, и это не работа владельца.
+"sprint_example_consistency": """
+ROLE: You are a strict German proofreader checking example sentences for a vocabulary
+trainer. Each item is a German sentence built around `word`, plus its Russian translation.
+
+For EACH item decide ONE thing: is the German sentence internally CONSISTENT — i.e. would
+a native speaker accept it as a true, sensible statement? The typical defect: the sentence
+was made by swapping an opposite word into a sentence written for the original word, so the
+rest of it (a weil/denn reason, an um…zu/damit purpose, a trotz/obwohl concession, a wenn
+condition, a following clause, a negation, or a frequency word like immer/nie, oft/selten)
+still argues for the OPPOSITE meaning and the sentence contradicts itself.
+
+Judge ONLY internal logic and naturalness. Do NOT judge whether the word is a good synonym
+or antonym of anything — that is decided elsewhere. A short, plain, perfectly ordinary
+sentence is GOOD; do not demand style.
+
+When an item is NOT consistent you MUST REPAIR it: rewrite the sentence so that it is true
+with `word` kept in it, changing as little as possible — flip the clause that contradicts,
+keep the same scene, topic, register and roughly the same length. Only if the scene cannot
+be saved at all, write a new short natural sentence using `word`. Then give the matching
+Russian translation. Never return a broken sentence, and never drop an item.
+
+INPUT JSON: {"items":[{"index":0,"word":"...","sentence_de":"...","sentence_ru":"..."}, ...]}
+
+Return STRICT JSON ONLY — exactly one result per input item, copying that item's "index":
+{"results":[{"index":0,"ok":true,"sentence_de":"<original or repaired>","sentence_ru":"<matching RU>","why":"<short RU reason, only when ok=false>"}, ...]}
+Set "ok" to false ONLY when you actually changed the sentence. No markdown.
 """,
 "check_synonym_batch": """
 You judge German vocabulary. Input JSON: {"target":"...","relation":"synonym"|"antonym","candidates":["...","..."]}.
@@ -6308,6 +6357,8 @@ _SYSTEM_ATTRIBUTION_TASKS: frozenset[str] = frozenset({
     # Synonym/antonym sprint distractor bank (admin/nightly build)
     "sprint_distractor_setter", "sprint_distractor_prosecutor",
     "sprint_distractor_judge", "sprint_correct_examples",
+    # Страж примеров тренажёра (15.09.2026): общая работа над банком, не запрос человека.
+    "sprint_example_consistency",
     # Artikel-Trainer content pool
     "article_noun_gen", "article_verify", "article_mnemonic", "article_image_meta",
     # Aufgabe / pin / rebus puzzle content pool
@@ -8870,6 +8921,87 @@ async def run_substitute_correct_examples(
         except Exception:
             logging.warning("run_substitute_correct_examples failed target=%s attempt=%d",
                             target_word, attempt, exc_info=True)
+    return []
+
+
+async def run_check_example_consistency(*, items: list[dict]) -> list[dict]:
+    """Проверить и ПОЧИНИТЬ примеры тренажёра, которые противоречат сами себе.
+
+    Вход: [{"word","sentence_de","sentence_ru"}]. Выход — список той же длины и порядка:
+    [{"word","sentence_de","sentence_ru","repaired": bool, "why": str}].
+
+    Ответ модели сопоставляется по «index», который она обязана вернуть, а не по позиции
+    в списке: если элемент из середины потеряется, позиционная сборка приедет чужим
+    вердиктом на чужое слово (тот же урок, что записан у run_article_verify).
+
+    Пустой список НАРУЖУ НЕ ОТДАЁТСЯ как «всё хорошо»: при отказе модели возвращается
+    пустой список, и вызывающий ОБЯЗАН отличить его от «проверено, чисто» — он ставит
+    examples_checked=False, и ночь берёт это слово на перепроверку. Молчаливо выдать
+    непроверенные предложения за проверенные здесь запрещено.
+    """
+    src = [i for i in (items or []) if isinstance(i, dict) and str(i.get("sentence_de") or "").strip()]
+    if not src:
+        return []
+    payload = {"items": [{
+        "index": n,
+        "word": str(i.get("word") or ""),
+        "sentence_de": str(i.get("sentence_de") or ""),
+        "sentence_ru": str(i.get("sentence_ru") or ""),
+    } for n, i in enumerate(src)]}
+    for attempt in range(1, 3):
+        try:
+            content = await llm_execute(
+                task_name="sprint_example_consistency",
+                system_instruction_key="sprint_example_consistency",
+                user_message=json.dumps(payload, ensure_ascii=False),
+                poll_interval_seconds=1.5,
+                responses_timeout_seconds=60.0,
+            )
+            raw = str(content or "").strip()
+            if raw.startswith("```"):
+                raw = raw.strip("`")
+                if raw[:4].lower() == "json":
+                    raw = raw[4:]
+                raw = raw.strip()
+            data = json.loads(raw)
+            res = data.get("results") if isinstance(data, dict) else (data if isinstance(data, list) else None)
+            if not isinstance(res, list):
+                raise ValueError("нет массива results")
+            by_index: dict[int, dict] = {}
+            for r in res:
+                if not isinstance(r, dict):
+                    continue
+                try:
+                    idx = int(r.get("index"))
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= idx < len(src):
+                    by_index[idx] = r
+            # Неполный ответ — НЕ повод отдать половину: часть слов осталась бы
+            # непроверенной, но выглядела бы проверенной. Идём на повтор.
+            if len(by_index) != len(src):
+                logging.warning("run_check_example_consistency: пришло %d из %d (попытка %d)",
+                                len(by_index), len(src), attempt)
+                continue
+            out: list[dict] = []
+            for n, i in enumerate(src):
+                r = by_index[n]
+                de = str(r.get("sentence_de") or "").strip()
+                ru = str(r.get("sentence_ru") or "").strip()
+                ok = bool(r.get("ok", True))
+                if not de:        # починка без текста — не починка
+                    de, ru, ok = str(i.get("sentence_de") or ""), str(i.get("sentence_ru") or ""), True
+                out.append({
+                    "word": str(i.get("word") or ""),
+                    "sentence_de": de,
+                    "sentence_ru": ru or str(i.get("sentence_ru") or ""),
+                    "repaired": (not ok) or de != str(i.get("sentence_de") or "").strip(),
+                    "why": str(r.get("why") or "").strip(),
+                })
+            return out
+        except Exception:
+            logging.warning("run_check_example_consistency failed n=%d attempt=%d",
+                            len(src), attempt, exc_info=True)
     return []
 
 
