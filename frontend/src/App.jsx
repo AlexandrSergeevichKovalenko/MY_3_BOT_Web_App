@@ -34,6 +34,13 @@ import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictio
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
+// Базовый словарь: варианты и подписи — из ОДНОГО места на все три двери (это окно,
+// шаг тура, настройки). Правите текст или состав кнопок — правьте там, а не здесь.
+import {
+  starterDictionaryBadge,
+  starterDictionaryOptions,
+  starterDictionaryBusyLabel,
+} from './shared/starterDictionary.js';
 import { ReaderAudioGaplessEngine, isWebAudioEngineEnabled, getReaderAudioEnginePreference, isWebAudioSupported, READER_AUDIO_ENGINE_STORAGE_KEY } from './utils/readerAudioGaplessEngine';
 import {
   isOfflineCacheAvailable,
@@ -8356,6 +8363,9 @@ function AppInner() {
   const [starterDictionaryOffer, setStarterDictionaryOffer] = useState(null);
   const [starterDictionaryPromptOpen, setStarterDictionaryPromptOpen] = useState(false);
   const [starterDictionaryActionLoading, setStarterDictionaryActionLoading] = useState(false);
+  // Какая именно кнопка сейчас в работе ('quick' | 'full' | 'decline' | 'disconnect').
+  // Общий флаг loading гасил все кнопки разом и не говорил, что подключается.
+  const [starterDictionaryBusyKey, setStarterDictionaryBusyKey] = useState('');
   const [starterDictionaryActionError, setStarterDictionaryActionError] = useState('');
   const [starterDictionaryActionMessage, setStarterDictionaryActionMessage] = useState('');
   const [supportMessages, setSupportMessages] = useState([]);
@@ -14912,6 +14922,11 @@ function AppInner() {
       // Без этого поля строка «весь словарь подключён» ниже не могла отрисоваться никогда:
       // сервер его отдаёт, а нормализация выбрасывала.
       live_subscription: Boolean(stateRaw.live_subscription),
+      // Потолок подписки. Его тут НЕ БЫЛО, и это тот же класс, что строкой выше с
+      // live_subscription: сервер поле отдаёт, нормализация выбрасывала — и любой, кто
+      // смотрел state.subscription_limit, видел «потолка нет», то есть «весь словарь».
+      // Проверено 15.09.2026: из 19 подписок 6 были «быстрым стартом».
+      subscription_limit: Number(stateRaw.subscription_limit || 0) || null,
       active_job_id: String(stateRaw.active_job_id || '').trim() || null,
       last_error: String(stateRaw.last_error || '').trim() || null,
       import_started_at: String(stateRaw.import_started_at || '').trim() || null,
@@ -15037,7 +15052,9 @@ function AppInner() {
     }
   }, [initData, normalizeStarterDictionaryOffer, pollStarterDictionaryStatus, readApiError, tr]);
 
-  const applyStarterDictionaryDecision = useCallback(async (actionOrAccept, { forceReimport = false, closePromptOnSuccess = true } = {}) => {
+  // `full` добавлен 15.09.2026: без него это окно всегда слало быстрый старт (потолок
+  // 1000), и о полном словаре человек не узнавал ниоткуда — двое так и остались на 1000.
+  const applyStarterDictionaryDecision = useCallback(async (actionOrAccept, { forceReimport = false, closePromptOnSuccess = true, full = false, busyKey = '' } = {}) => {
     if (!initData) {
       setStarterDictionaryActionError(initDataMissingMsg);
       return;
@@ -15047,6 +15064,7 @@ function AppInner() {
       : (actionOrAccept ? 'accept' : 'decline');
     try {
       setStarterDictionaryActionLoading(true);
+      setStarterDictionaryBusyKey(String(busyKey || ''));
       setStarterDictionaryActionError('');
       setStarterDictionaryActionMessage('');
       const response = await fetch('/api/webapp/starter-dictionary/apply', {
@@ -15055,6 +15073,7 @@ function AppInner() {
         body: JSON.stringify({
           initData,
           action: resolvedAction,
+          full: Boolean(full),
           force_reimport: Boolean(forceReimport),
         }),
       });
@@ -15098,6 +15117,7 @@ function AppInner() {
       setStarterDictionaryActionError(normalizeNetworkErrorMessage(error, 'Не удалось применить действие по базовому словарю.', 'Aktion für Basiswörterbuch fehlgeschlagen.'));
     } finally {
       setStarterDictionaryActionLoading(false);
+      setStarterDictionaryBusyKey('');
     }
   }, [initData, initDataMissingMsg, normalizeStarterDictionaryOffer, pollStarterDictionaryStatus, readApiError, tr]);
 
@@ -19955,6 +19975,7 @@ function AppInner() {
     setStarterDictionaryOffer(null);
     setStarterDictionaryPromptOpen(false);
     setStarterDictionaryActionLoading(false);
+    setStarterDictionaryBusyKey('');
     setStarterDictionaryActionError('');
     setStarterDictionaryActionMessage('');
   }, [isWebAppMode, initData]);
@@ -37968,39 +37989,40 @@ function AppInner() {
                       {languageProfileSaving ? tr('Сохраняем...', 'Speichern...') : tr('Сохранить и продолжить', 'Speichern und fortsetzen')}
                     </button>
                     {languageProfile?.has_profile && starterDictionaryOffer?.enabled && (
+                      // Дверь №3 базового словаря. До 15.09.2026 здесь была одна кнопка
+                      // «Переподключить», и она тоже всегда давала быстрый старт: расширить
+                      // до полного словаря из приложения было НЕГДЕ. Теперь состав кнопок
+                      // берётся из общего модуля — тот же, что в окне первого входа и в туре.
                       <div className="language-profile-starter-actions">
-                        <button
-                          type="button"
-                          className="secondary-button language-profile-starter-btn"
-                          onClick={() => void applyStarterDictionaryDecision('accept', { forceReimport: true, closePromptOnSuccess: false })}
-                          disabled={
-                            languageProfileSaving
-                            || starterDictionaryActionLoading
-                            || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
-                            || !starterDictionaryOffer?.can_reconnect
-                          }
-                        >
-                          {starterDictionaryActionLoading || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
-                            ? tr('Подключаем...', 'Wird verbunden...')
-                            : !starterDictionaryOffer?.can_reconnect
-                              ? tr('Базовый словарь пока пуст', 'Basiswörterbuch ist noch leer')
-                              : starterDictionaryOffer?.state?.decision_status === 'accepted'
-                                ? tr('Переподключить базовый словарь', 'Basiswörterbuch neu verbinden')
-                                : tr('Подключить базовый словарь', 'Basiswörterbuch verbinden')}
-                        </button>
-                        <button
-                          type="button"
-                          className="secondary-button language-profile-starter-btn language-profile-starter-btn-danger"
-                          onClick={() => void applyStarterDictionaryDecision('disconnect', { closePromptOnSuccess: false })}
-                          disabled={
-                            languageProfileSaving
-                            || starterDictionaryActionLoading
-                            || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
-                            || !starterDictionaryOffer?.can_disconnect
-                          }
-                        >
-                          {tr('Отключить базовый словарь', 'Basiswörterbuch trennen')}
-                        </button>
+                        {!starterDictionaryOffer?.can_reconnect ? (
+                          <span className="webapp-muted">{tr('Базовый словарь пока пуст', 'Basiswörterbuch ist noch leer')}</span>
+                        ) : (
+                          <>
+                            {starterDictionaryBadge(starterDictionaryOffer, uiLang) ? (
+                              <span className="webapp-muted">{starterDictionaryBadge(starterDictionaryOffer, uiLang)}</span>
+                            ) : null}
+                            {starterDictionaryOptions(starterDictionaryOffer, uiLang, { allowSkip: false, allowDisconnect: starterDictionaryOffer?.can_disconnect }).map((opt) => (
+                              <button
+                                key={opt.key}
+                                type="button"
+                                className={`secondary-button language-profile-starter-btn${opt.kind === 'danger' ? ' language-profile-starter-btn-danger' : ''}`}
+                                onClick={() => void applyStarterDictionaryDecision(opt.action, {
+                                  full: opt.full,
+                                  busyKey: opt.key,
+                                  forceReimport: opt.action === 'accept',
+                                  closePromptOnSuccess: false,
+                                })}
+                                disabled={
+                                  languageProfileSaving
+                                  || starterDictionaryActionLoading
+                                  || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
+                                }
+                              >
+                                {starterDictionaryBusyKey === opt.key ? starterDictionaryBusyLabel(uiLang) : opt.label}
+                              </button>
+                            ))}
+                          </>
+                        )}
                       </div>
                     )}
                     {!needsLanguageProfileChoice && (
@@ -38023,43 +38045,55 @@ function AppInner() {
             {starterDictionaryPromptOpen && !languageProfileGateOpen && starterDictionaryOffer?.enabled && (
               <div className="language-profile-gate starter-dictionary-gate" role="dialog" aria-modal="true">
                 <div className="language-profile-card starter-dictionary-card">
-                  <h3>{tr('Быстрый старт словаря', 'Schnellstart Wörterbuch')}</h3>
+                  <h3>{tr('Базовый словарь', 'Basis-Wörterbuch')}</h3>
                   <p className="webapp-muted">
                     {tr(
-                      `Подключить базовый словарь (${Math.max(0, Number(starterDictionaryOffer?.suggested_count || starterDictionaryOffer?.import_limit || 0))} слов/фраз) для быстрого старта карточек, quiz и выражений?`,
-                      `Basiswörterbuch (${Math.max(0, Number(starterDictionaryOffer?.suggested_count || starterDictionaryOffer?.import_limit || 0))} Wörter/Phrasen) für schnellen Start mit Karten, Quiz und Ausdrücken verbinden?`
+                      'Чтобы не начинать с пустого приложения, подключим готовый набор слов для тренировок и повторений. Выбери размер:',
+                      'Damit du nicht mit einer leeren App startest, verbinden wir ein fertiges Wörter-Set für Training und Wiederholung. Wähle die Größe:'
                     )}
                   </p>
+                  {/* ┌─ ИСПРАВЛЕНО 15.09.2026. НЕ ВОЗВРАЩАТЬ «одноразовый импорт копии». ──┐
+                      │ Здесь стояло «Это одноразовый импорт копии стартового набора».      │
+                      │ Копирования нет с перехода на подписку: слова не сваливаются пачкой,│
+                      │ а открываются по мере занятий (см. backend_server, ветка _want_full,│
+                      │ «Копирования здесь больше нет»). Текст описывал механизм, которого   │
+                      │ уже не существует.                                                  │
+                      └─────────────────────────────────────────────────────────────────────┘ */}
                   <p className="webapp-muted">
                     {tr(
-                      'Это одноразовый импорт копии стартового набора. Он полезен как база на старте, а дальше словарь можно расширять уже своими словами из YouTube, Reader, переводов, словаря и лички с ботом.',
-                      'Das ist ein einmaliger Import einer Starter-Kopie. Sie hilft beim Einstieg, danach kannst du dein Wörterbuch mit eigenen Wörtern aus YouTube, Reader, Übersetzungen, Wörterbuch und Bot-Chat erweitern.'
+                      'Слова не сваливаются пачкой: они открываются по мере занятий. Это только старт — дальше словарь растёт твоими словами из YouTube, читалки, переводов и лички с ботом. Набор можно отключить в любой момент в настройках.',
+                      'Die Wörter kommen nicht auf einen Schlag: Sie werden nach und nach beim Lernen freigeschaltet. Das ist nur der Start — danach wächst dein Wörterbuch mit eigenen Wörtern aus YouTube, Reader, Übersetzungen und dem Bot-Chat. Das Set lässt sich jederzeit in den Einstellungen abschalten.'
                     )}
                   </p>
                   {starterDictionaryActionError && <div className="webapp-error">{starterDictionaryActionError}</div>}
                   {starterDictionaryActionMessage && <div className="webapp-success">{starterDictionaryActionMessage}</div>}
+                  {/* Кнопки — из общего модуля: ровно тот же выбор, что на шаге тура и в
+                      настройках. До 15.09.2026 здесь была одна кнопка «Да, подключить», и
+                      она всегда давала быстрый старт: кто встретил это окно раньше тура,
+                      о полном словаре не узнавал вообще. */}
                   <div className="language-profile-actions starter-dictionary-actions">
-                    <button
-                      type="button"
-                      className="primary-button language-profile-save-btn"
-                      onClick={() => void applyStarterDictionaryDecision(true)}
-                      disabled={
-                        starterDictionaryActionLoading
-                        || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
-                      }
-                    >
-                      {starterDictionaryActionLoading || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
-                        ? tr('Подключаем...', 'Wird verbunden...')
-                        : tr('Да, подключить', 'Ja, verbinden')}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button language-profile-close-btn"
-                      onClick={() => void applyStarterDictionaryDecision(false)}
-                      disabled={starterDictionaryActionLoading}
-                    >
-                      {tr('Нет, начать с нуля', 'Nein, leer starten')}
-                    </button>
+                    {starterDictionaryOptions(starterDictionaryOffer, uiLang)
+                      // 'keep' — «оставить как есть», это состояние ТУРА и запроса не шлёт.
+                      // Сюда оно попасть не может (окно открывается только пока решение
+                      // pending, то есть не подключено ничего), но если условие показа
+                      // когда-нибудь ослабят, сервер получил бы неизвестное действие.
+                      .filter((opt) => opt.action !== 'keep')
+                      .map((opt) => (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        className={opt.kind === 'primary' ? 'primary-button language-profile-save-btn' : 'secondary-button language-profile-close-btn'}
+                        onClick={() => void applyStarterDictionaryDecision(opt.action, { full: opt.full, busyKey: opt.key })}
+                        disabled={
+                          starterDictionaryActionLoading
+                          || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
+                        }
+                      >
+                        {starterDictionaryBusyKey === opt.key
+                          ? starterDictionaryBusyLabel(uiLang)
+                          : opt.label}
+                      </button>
+                      ))}
                   </div>
                 </div>
               </div>

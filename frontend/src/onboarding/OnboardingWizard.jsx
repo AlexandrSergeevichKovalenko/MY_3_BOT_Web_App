@@ -1,6 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './onboarding.css';
 import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
+// Базовый словарь: состав вариантов, подписи и «что уже подключено» берутся из ОДНОГО
+// места на все три двери — окно первого входа, этот шаг тура, настройки. См. шапку модуля.
+import {
+  starterDictionaryDecided,
+  starterDictionaryBadge,
+  starterDictionaryOptions,
+  starterDictionaryBusyLabel,
+} from '../shared/starterDictionary.js';
 
 // Standalone Mini-App first-run onboarding. Opened from Telegram via
 // startapp=onboarding (and later reused as the «🎬 Как пользоваться» hub).
@@ -430,58 +438,6 @@ const GUEST_NOTE = (
 const REAL_STEPS = new Set(['install_app', 'language', 'dictionary', 'intensity', 'windows',
   'battles', 'groups', 'shortcut', 'howto_words', 'howto_interactives', 'howto_translations',
   'skill_map', 'howto_tools', 'howto_youtube', 'keyboard', 'howto_morning', 'howto_learn', 'plans']);
-// ⟦TEST-EXTRACT-START⟧ dictionary-step-state
-// Состояние шага «Базовый словарь» и решение человека — ДВЕ чистые функции, вынесенные
-// из разметки, чтобы их можно было проверить тестом без рендера:
-// frontend/tests/onboarding_dictionary_step.test.mjs.
-//
-// ┌─ ПРОВЕРЕНО 15.09.2026. Подписка включается на ОБА размера. ─────────────────────┐
-// │ /starter-dictionary/apply ставит live_subscription=TRUE и для «Быстрого старта»  │
-// │ тоже — разница ТОЛЬКО в потолке: subscription_limit=null → весь словарь,         │
-// │ 1000 → быстрый старт (backend_server.py, ветка _want_full). Шаг смотрел на один  │
-// │ флаг и писал «✅ Весь словарь подключён» тому, кто выбрал быстрый старт: замер   │
-// │ на живой базе 15.09.2026 — 6 таких записей из 19 подписок. Потолок сервер        │
-// │ присылает в state.subscription_limit (database.get_starter_dictionary_state      │
-// │ кладёт его всегда), поэтому читаем ЕГО, а не флаг в одиночку.                    │
-// └─────────────────────────────────────────────────────────────────────────────────┘
-function dictionaryStepState(dictOffer, confirmedHere) {
-  const have = Number(dictOffer?.starter_pair_total || 0);
-  const suggested = Number(dictOffer?.suggested_count || dictOffer?.import_limit || 0);
-  const total = Number(dictOffer?.template_total || 0);
-  const state = dictOffer?.state || {};
-  const subscribed = !!state.live_subscription;
-  const subLimit = state.subscription_limit == null ? null : Number(state.subscription_limit);
-  const subscribedCapped = subscribed && subLimit != null;   // подписка «Быстрый старт»
-  const hasFull = (subscribed && subLimit == null) || (total > 0 && have >= total);
-  // Базовый набор есть, весь словарь ещё можно добрать: либо старые скопированные
-  // строки (have > 0), либо подписка с потолком (копий нет, have всегда 0).
-  const partial = (have > 0 || subscribedCapped) && !hasFull;
-  const done = (!!confirmedHere && !partial) || hasFull;
-  return { have, suggested, total, subscribed, subLimit, subscribedCapped, hasFull, partial, done };
-}
-
-// Размер набора, который человек УЖЕ подключил и сервер записал. null = не подключал.
-// Это не догадка: decision_status пишется ровно тем запросом, которым он нажал кнопку.
-//
-// Отметку «шаг пройден» ставим ТОЛЬКО когда набор ПРАВДА подключён — ровно тогда шаг и
-// прячет кнопки под плашку, то есть только тогда и возникает тупик. Два соседних случая
-// намеренно оставлены как были, потому что тупика в них нет и подтверждать там нечего:
-//   • «отказался» — на экране все три кнопки, человек может передумать прямо сейчас;
-//   • «согласился, но не подключилось» (сорванный импорт) — кнопки тоже на месте.
-// Иначе отметка сделала бы шаг «пройденным» и плашка сказала бы «подключён» тому, у
-// кого не подключено ничего, — это ровно то враньё, из-за которого чинится второй дефект.
-function dictionaryDecisionFromOffer(dictOffer) {
-  const state = dictOffer?.state || {};
-  if (String(state.decision_status || '').trim().toLowerCase() !== 'accepted') return null;
-  const subscribed = !!state.live_subscription;
-  const have = Number(dictOffer?.starter_pair_total || 0);
-  if (!subscribed && have <= 0) return null;
-  // Весь словарь — только подписка БЕЗ потолка. Старые записи (копирование до перехода
-  // на подписку) — это «быстрый старт»: полный ещё можно добрать.
-  return (subscribed && state.subscription_limit == null) ? 'full' : 'quick';
-}
-// ⟦TEST-EXTRACT-END⟧
-
 function StepBody(props) {
   const { step, isPro, confirmed, busy, dictBusy, dictChoice, stepErr, onConfirm, dictOffer, onDictAction,
     selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle,
@@ -582,16 +538,22 @@ function StepBody(props) {
         </div>
       );
     case 'dictionary': {
-      const { suggested: n, total, subLimit, subscribedCapped, hasFull, partial, done } =
-        dictionaryStepState(dictOffer, confirmed);
+      // Состав кнопок, их подписи и плашка «что подключено» приходят из общего модуля —
+      // ровно те же, что человек увидит в окне первого входа и в настройках. Здесь только
+      // скин тура (ob-*) и его особые состояния: гость без бота и явный отказ.
+      const badge = starterDictionaryBadge(dictOffer, LANG);
+      // «Оставить как есть» — выбор, сделанный прямо здесь: после него добирать уже не
+      // предлагаем, иначе кнопка выглядит так, будто нажатие ничего не сделало.
+      const options = dictChoice === 'keep' ? [] : starterDictionaryOptions(dictOffer, LANG);
+      const KIND_CLASS = { primary: 'ob-confirm', alt: 'ob-confirm ob-alt', skip: 'ob-skip', danger: 'ob-skip' };
       return (
         <div className="ob-stub">
           <p className="ob-lead">
             {t('Чтобы не начинать с пустого приложения, подключим готовый набор слов для тренировок и повторений. Дальше ты добавляешь свои слова — а этот стартовый набор можно отключить когда угодно. Выбери размер:',
                'Damit du nicht mit einer leeren App startest, verbinden wir ein fertiges Wörter-Set für Training und Wiederholung. Später fügst du deine eigenen Wörter hinzu — dieses Starter-Set kannst du jederzeit abschalten. Wähle die Größe:')}
           </p>
-          {done && !HAS_ACCOUNT ? (
-            // Guest tour: nothing was connected yet — the pick is parked until the bot is installed.
+          {confirmed && !HAS_ACCOUNT ? (
+            // Гостевой тур: подключать пока не к чему — выбор ждёт установки бота.
             <span className="ob-lock ob-ok">
               {dictChoice === 'decline'
                 ? t('⏭ Понятно — базовый словарь не подключаем.', '⏭ Alles klar — kein Basis-Wörterbuch.')
@@ -599,75 +561,28 @@ function StepBody(props) {
                   ? t('✅ Запомнили твой выбор — подключим сразу, как установишь бота.', '✅ Deine Wahl ist gemerkt — wir verbinden sie, sobald du den Bot installierst.')
                   : t('✅ Запомнили твой выбор — подключим при следующем входе.', '✅ Deine Wahl ist gemerkt — wir verbinden sie beim nächsten Start.')}
             </span>
-          ) : done ? (
-            dictChoice === 'decline' && !have ? (
-              <span className="ob-lock">{t('⏭ Пропущено — базовый словарь можно подключить позже в ⚙️ Настройках.', '⏭ Übersprungen — das Basis-Wörterbuch kannst du später in ⚙️ Einstellungen verbinden.')}</span>
-            ) : (
-              <span className="ob-lock ob-ok">{hasFull ? t('✅ Весь словарь подключён', '✅ Ganzes Wörterbuch verbunden') : t('✅ Словарь подключён', '✅ Wörterbuch verbunden')}</span>
-            )
-          ) : partial ? (
-            <div className="ob-actions ob-actions-col">
-              <span className="ob-lock ob-ok">
-                {subscribedCapped
-                  ? `${t('✅ Быстрый старт подключён', '✅ Schnellstart verbunden')}${subLimit ? ` — ${subLimit} ${t('слов', 'Wörter')}` : ''}`
-                  : t('✅ Базовый словарь подключён', '✅ Basis-Wörterbuch verbunden')}
-              </span>
-              {dictChoice === 'full' ? (
-                <span className="ob-lock ob-ok">{t('✅ Весь словарь подключён — слова будут открываться по мере занятий', '✅ Volles Wörterbuch verbunden — die Wörter werden nach und nach freigeschaltet')}</span>
-              ) : (
-                <>
-                  {total > have ? (
+          ) : (
+            <>
+              {badge ? <span className="ob-lock ob-ok">{badge}</span> : null}
+              {!badge && dictChoice === 'decline' ? (
+                <span className="ob-lock">{t('⏭ Пропущено — базовый словарь можно подключить позже в ⚙️ Настройках.', '⏭ Übersprungen — das Basis-Wörterbuch kannst du später in ⚙️ Einstellungen verbinden.')}</span>
+              ) : null}
+              {options.length ? (
+                <div className="ob-actions ob-actions-col">
+                  {options.map((opt) => (
                     <button
+                      key={opt.key}
                       type="button"
-                      className="ob-confirm ob-alt"
-                      onClick={() => onDictAction('accept', true)}
+                      className={KIND_CLASS[opt.kind] || 'ob-confirm'}
+                      onClick={() => onDictAction(opt.action, opt.full)}
                       disabled={busy}
                     >
-                      {dictBusy === 'full' ? t('⏳ Подключаю…', '⏳ Verbinde…') : `${t('🔓 Подключить весь словарь', '🔓 Ganzes Wörterbuch verbinden')} — ${total} ${t('слов', 'Wörter')}`}
+                      {dictBusy === opt.key ? starterDictionaryBusyLabel(LANG) : opt.label}
                     </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="ob-skip"
-                    onClick={() => onDictAction('keep')}
-                    disabled={busy}
-                  >
-                    {confirmed ? t('✅ Оставляю базовый — дальше', '✅ Basis behalten — weiter') : t('Пропустить (оставить базовый)', 'Überspringen (Basis behalten)')}
-                  </button>
-                </>
-              )}
-            </div>
-          ) : (
-            <div className="ob-actions ob-actions-col">
-              <button
-                type="button"
-                className="ob-confirm"
-                onClick={() => onDictAction('accept', false)}
-                disabled={busy}
-              >
-                {dictBusy === 'quick' ? t('Подключаю…', 'Verbinde…') : `${t('📚 Быстрый старт', '📚 Schnellstart')}${n ? ` — ~${n} ${t('слов', 'Wörter')}` : ''}`}
-              </button>
-              {/* Guest: the offer endpoint needs an account, so there are no counts — still show
-                  BOTH sizes (unlabelled) so the choice itself isn't lost. */}
-              {total > n || !HAS_ACCOUNT ? (
-                <button
-                  type="button"
-                  className="ob-confirm ob-alt"
-                  onClick={() => onDictAction('accept', true)}
-                  disabled={busy}
-                >
-                  {dictBusy === 'full' ? t('Подключаю…', 'Verbinde…') : `${t('🔓 Весь словарь', '🔓 Ganzes Wörterbuch')}${total ? ` — ~${total} ${t('слов', 'Wörter')}` : ''}`}
-                </button>
+                  ))}
+                </div>
               ) : null}
-              <button
-                type="button"
-                className="ob-skip"
-                onClick={() => onDictAction('decline')}
-                disabled={busy}
-              >
-                {t('Пропустить', 'Überspringen')}
-              </button>
-            </div>
+            </>
           )}
           <p className="ob-muted-note">{t('📚 Быстрый старт — первая тысяча слов и выражений, чтобы не потеряться в начале. 🔓 Весь словарь — без ограничения. В обоих случаях слова не сваливаются пачкой, а открываются по мере занятий. Оба — это только СТАРТ. Главное в приложении — слова, которые ты сам добавишь из видео, текстов и переводов: именно их бот будет давать тебе в повторениях. Стартовый набор можно в любой момент отключить в ⚙️ Настройках и учить только свои слова.', '📚 Schnellstart — die ersten tausend Wörter und Ausdrücke, um am Anfang nicht den Überblick zu verlieren. 🔓 Ganzes Wörterbuch — ohne Begrenzung. In beiden Fällen kommen die Wörter nach und nach beim Lernen, nicht auf einen Schlag. Beides ist nur der START. Das Wichtigste sind die Wörter, die du selbst aus Videos, Texten und Übersetzungen hinzufügst — die gibt dir der Bot in den Wiederholungen. Das Starter-Set kannst du jederzeit in ⚙️ Einstellungen abschalten und nur deine eigenen Wörter lernen.')}</p>
           {!HAS_ACCOUNT ? (
@@ -1943,7 +1858,7 @@ export default function OnboardingWizard() {
   // └─────────────────────────────────────────────────────────────────────────────────┘
   useEffect(() => {
     if (!dictOffer || !HAS_ACCOUNT) return;
-    const decided = dictionaryDecisionFromOffer(dictOffer);
+    const decided = starterDictionaryDecided(dictOffer);
     if (!decided) return;
     setConfirmed((c) => (c.dictionary ? c : { ...c, dictionary: true }));
     // Выбор, сделанный ПРЯМО СЕЙЧАС, важнее записанного раньше — не перетираем его.
