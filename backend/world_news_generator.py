@@ -833,6 +833,8 @@ def _pick_video_with_transcript(*, profile=None, manual_url: str | None = None,
             "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
             "items": data.get("items") or [],
             "is_generated": data.get("is_generated"),
+            # Реплики пришли из _build_youtube_transcript_result — уже склеены.
+            "cues_rolled": bool(data.get("cues_rolled")),
             "has_manual_captions": bool(details.get("has_manual_captions")),
         }, diag
 
@@ -1725,6 +1727,7 @@ def prepare_world_news(
                 "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
                 "items": shelf_item["transcript"],
                 "is_generated": shelf_item["transcript_is_generated"],
+                "cues_rolled": bool(shelf_item.get("transcript_cues_rolled")),
                 "has_manual_captions": shelf_item["has_manual_captions"],
             }
             diag = {"rubric": profile.key, "source": "shelf", "why": "поиск с колёс пуст"}
@@ -1879,6 +1882,7 @@ def prepare_world_news(
             picked["items"],
             picked["lang"],
             picked.get("is_generated"),
+            cues_rolled=bool(picked.get("cues_rolled")),
         )
     except Exception:
         logger.warning(

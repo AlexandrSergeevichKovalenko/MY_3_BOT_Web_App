@@ -141,6 +141,28 @@ def _control_extra_calls() -> int:
     return count_daily_video_issues_with_extra_calls("2026-09-07")
 
 
+def _subtitle_tracks_pending_roll() -> int:
+    """Сколько дорожек субтитров ещё лежат сырыми кадрами. Обещано: 0.
+
+    Склейка «катящихся» кадров переехала из браузера на сервер 15.09.2026; пока дорожка
+    не склеена, у её реплик старые номера. Тех, кого смотрят, чинит открытие ролика,
+    остальных — ночной проход в 3:50. Число больше нуля назавтра означает, что проход
+    не отработал или деплой откатился."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_youtube_transcripts WHERE cues_rolled = FALSE"
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def _subtitle_sync_screen() -> str:
+    """Тот же текст, что показывает /subtitry, — экран владельца на месте жалобы."""
+    from backend.subtitle_sync_report import format_subtitle_sync_report, subtitle_sync_state
+    return format_subtitle_sync_report(subtitle_sync_state())
+
+
 def _standup_pool_screen() -> str:
     """Тот же текст, что приходит в воскресенье и по /standup_pool, — экран владельца."""
     from backend.standup_pool_report import format_standup_pool_report, standup_pool_state
@@ -2328,6 +2350,16 @@ PROMISES: tuple[Promise, ...] = (
         measure=_word_pick_door_misses,
         how="python3 -c \"from backend.database import count_word_pick_door_misses as f; print(f())\" "
             "— тапы bt_3_word_pick_taps за вчера без строки bt_3_word_picks на сегодня",
+    ),
+    Promise(
+        key="subtitle_tracks_pending_roll",
+        title="Дорожек субтитров, где «катящиеся» кадры ещё не склеены (из-за них русский уезжал вперёд)",
+        since="15.09.2026",
+        expected=0,
+        measure=_subtitle_tracks_pending_roll,
+        how="/subtitry в боте, строка «Ждут склейки»; в базе — SELECT COUNT(*) FROM "
+            "bt_3_youtube_transcripts WHERE cues_rolled = FALSE",
+        screen=_subtitle_sync_screen,
     ),
     Promise(
         key="standup_pool_snapshot_fresh",

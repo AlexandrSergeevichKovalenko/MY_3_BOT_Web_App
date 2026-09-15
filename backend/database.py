@@ -11809,9 +11809,31 @@ def ensure_webapp_tables() -> None:
                 ALTER TABLE bt_3_youtube_transcripts
                 ADD COLUMN IF NOT EXISTS translations JSONB;
             """)
+            # Склеены ли уже «катящиеся» кадры в этой дорожке (backend/subtitle_cues.py).
+            # Флаг обязателен, а не вычисляется на лету: склейка НЕ идемпотентна —
+            # на 4000 случайных катящихся дорожек второй прогон менял текст у 31.
+            # То есть «склеить ещё раз на всякий случай» — это ровно тот сдвиг номеров,
+            # который мы чиним. Флаг отвечает на единственный важный вопрос: в каком
+            # пространстве номеров лежат items и translations этой строки.
+            # FALSE у старых строк честен: их ещё не склеивали.
+            cursor.execute("""
+                ALTER TABLE bt_3_youtube_transcripts
+                ADD COLUMN IF NOT EXISTS cues_rolled BOOLEAN NOT NULL DEFAULT FALSE;
+            """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_youtube_transcripts_updated
                 ON bt_3_youtube_transcripts (updated_at);
+            """)
+            # Счётчик пачек перевода субтитров. Сдвиг «модель вернула не столько строк»
+            # в самих данных следа не оставляет (строки на месте, просто не те), поэтому
+            # его ловят на входе и копят здесь по дням. Видно в /subtitry строкой 4.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_subtitle_translate_stats (
+                    day DATE PRIMARY KEY,
+                    batches INTEGER NOT NULL DEFAULT 0,
+                    mismatched INTEGER NOT NULL DEFAULT 0,
+                    refused INTEGER NOT NULL DEFAULT 0
+                );
             """)
             # ── «Пересказ» ролика в читалку — ОДИН текст на ролик, общий для всех.
             # Собирается один раз тем, кто нажал первым; всем следующим он достаётся
@@ -11940,6 +11962,15 @@ def ensure_webapp_tables() -> None:
                     added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     used_on DATE
                 );
+            """)
+            # Склеены ли «катящиеся» кадры в субтитрах, лежащих на полке. Ролики,
+            # положенные до 15.09.2026, лежат сырыми: тогда склейка жила в браузере.
+            # Флаг едет вместе с субтитрами, потому что с полки они попадают в общий
+            # кеш дорожек, а склеить дважды — значит сдвинуть номера (см.
+            # backend/subtitle_cues.py).
+            cursor.execute("""
+                ALTER TABLE bt_3_standup_shelf
+                ADD COLUMN IF NOT EXISTS transcript_cues_rolled BOOLEAN NOT NULL DEFAULT FALSE;
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_standup_shelf_unused
@@ -31221,30 +31252,30 @@ def get_youtube_transcript_cache(video_id: str) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT items, language, is_generated, translations, updated_at
+                SELECT items, language, is_generated, translations, updated_at, cues_rolled
                 FROM bt_3_youtube_transcripts
                 WHERE video_id = %s;
             """, (video_id,))
             row = cursor.fetchone()
             if not row:
                 return None
-            items, language, is_generated, translations, updated_at = row
+            items, language, is_generated, translations, updated_at, cues_rolled = row
+            # Разбор НЕ глушим: битый JSON, превращённый в пустой список, неотличим от
+            # честного «субтитров нет», а это два разных мира — в одном чинят базу,
+            # в другом спокойно показывают человеку ролик без субтитров.
             if isinstance(items, str):
-                try:
-                    items = json.loads(items)
-                except Exception:
-                    items = []
+                items = json.loads(items)
             if isinstance(translations, str):
-                try:
-                    translations = json.loads(translations)
-                except Exception:
-                    translations = {}
+                translations = json.loads(translations)
             return {
                 "items": items or [],
                 "language": language,
                 "is_generated": is_generated,
                 "translations": translations or {},
                 "updated_at": updated_at,
+                # В каком пространстве номеров лежит эта строка: FALSE — кадры сырые,
+                # их ещё предстоит склеить (см. backend/subtitle_cues.py).
+                "cues_rolled": bool(cues_rolled),
             }
 
 
@@ -31254,19 +31285,46 @@ def upsert_youtube_transcript_cache(
     language: str | None,
     is_generated: bool | None,
     translations: dict | None = None,
+    cues_rolled: bool = False,
 ) -> None:
+    """Записать дорожку субтитров.
+
+    `cues_rolled=True` означает «кадры уже склеены, номера окончательные». Писать так
+    обязан КАЖДЫЙ, кто прогнал items через backend/subtitle_cues.py, и только он: флаг —
+    единственный ответ на вопрос «в каком пространстве номеров эта строка», а склейка
+    не идемпотентна, второй прогон сдвинет номера заново.
+    """
     if not video_id:
         return
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO bt_3_youtube_transcripts (video_id, items, language, is_generated, translations, updated_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
+                INSERT INTO bt_3_youtube_transcripts (video_id, items, language, is_generated, translations, cues_rolled, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (video_id) DO UPDATE
                 SET items = EXCLUDED.items,
                     language = EXCLUDED.language,
                     is_generated = EXCLUDED.is_generated,
-                    translations = COALESCE(EXCLUDED.translations, bt_3_youtube_transcripts.translations),
+                    -- Немецкие реплики заменились — перевод к ним больше не относится.
+                    -- Субтитры умеют приезжать из четырёх источников (yta, yt-dlp,
+                    -- webshare, webshare+yt-dlp), и режут они ролик ПО-РАЗНОМУ. Прежняя
+                    -- строка тут была `COALESCE(EXCLUDED.translations, старое)`: реплики
+                    -- заменялись целиком, а русские оставались от прошлой нарезки — и
+                    -- весь ролик ехал со сдвигом, который сам никогда не выправлялся
+                    -- (разобрано 15.09.2026 по жалобе владельца).
+                    --
+                    -- Оговорка про cues_rolled. Пока дорожка не склеена, «другие items»
+                    -- ещё не значат «другая нарезка»: склейка сама меняет список. Стирать
+                    -- на этом основании — потерять годный перевод и заплатить за него
+                    -- заново. Поэтому у несклеенных дорожек перевод сохраняется, а
+                    -- осиротевшие номера у них считает /subtitry.
+                    translations = CASE
+                        WHEN bt_3_youtube_transcripts.cues_rolled
+                             AND bt_3_youtube_transcripts.items IS DISTINCT FROM EXCLUDED.items
+                        THEN '{}'::jsonb
+                        ELSE COALESCE(EXCLUDED.translations, bt_3_youtube_transcripts.translations)
+                    END,
+                    cues_rolled = EXCLUDED.cues_rolled,
                     updated_at = NOW();
             """, (
                 video_id,
@@ -31274,7 +31332,45 @@ def upsert_youtube_transcript_cache(
                 language,
                 is_generated,
                 json.dumps(translations, ensure_ascii=False) if translations is not None else None,
+                bool(cues_rolled),
             ))
+
+
+def store_rolled_youtube_cues(video_id: str, items: list, *, drop_translation_keys: list[str]) -> None:
+    """Разовый перенос одной дорожки в склеенное пространство номеров.
+
+    Заменяет items на склеенные и ставит флаг. Перевод НЕ трогаем и не перекладываем:
+    он и так писался под склеенными номерами (браузер склеивал у себя), поэтому после
+    замены items сходится сам. Это и есть причина, по которой чистка накопленного не
+    стоит ни одного обращения к модели.
+
+    `drop_translation_keys` — ключи, которые после склейки указывают ЗА КОНЕЦ списка.
+    Такие могли остаться только от записей до 12.07.2026, когда склейки не было вовсе и
+    перевод писался под сырыми номерами. Перенести их некуда (сырой номер не переводится
+    в склеенный однозначно — несколько кадров схлопываются в одну строку), и оставлять
+    нельзя: они указывают в пустоту. Удаляются и считаются.
+    """
+    if not video_id:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if drop_translation_keys:
+                cursor.execute("""
+                    UPDATE bt_3_youtube_transcripts
+                    SET items = %s,
+                        cues_rolled = TRUE,
+                        translations = COALESCE(translations, '{}'::jsonb) - %s::text[],
+                        updated_at = NOW()
+                    WHERE video_id = %s;
+                """, (json.dumps(items, ensure_ascii=False), list(drop_translation_keys), video_id))
+            else:
+                cursor.execute("""
+                    UPDATE bt_3_youtube_transcripts
+                    SET items = %s,
+                        cues_rolled = TRUE,
+                        updated_at = NOW()
+                    WHERE video_id = %s;
+                """, (json.dumps(items, ensure_ascii=False), video_id))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -31488,7 +31584,8 @@ def iter_youtube_transcripts_for_audit(page_size: int = 200):
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT video_id, items, translations, language, is_generated, updated_at
+                    SELECT video_id, items, translations, language, is_generated, updated_at,
+                           cues_rolled
                     FROM bt_3_youtube_transcripts
                     WHERE video_id > %s
                     ORDER BY video_id ASC
@@ -31497,7 +31594,7 @@ def iter_youtube_transcripts_for_audit(page_size: int = 200):
                 rows = cursor.fetchall()
         if not rows:
             return
-        for video_id, items, translations, language, is_generated, updated_at in rows:
+        for video_id, items, translations, language, is_generated, updated_at, cues_rolled in rows:
             if isinstance(items, str):
                 items = json.loads(items)
             if isinstance(translations, str):
@@ -31509,8 +31606,76 @@ def iter_youtube_transcripts_for_audit(page_size: int = 200):
                 "language": str(language or ""),
                 "is_generated": bool(is_generated),
                 "updated_at": updated_at,
+                "cues_rolled": bool(cues_rolled),
             }
         last_id = str(rows[-1][0] or "")
+
+
+def bump_subtitle_translate_stats(*, mismatched: bool, refused: bool) -> None:
+    """Отметить одну отправленную пачку перевода субтитров за сегодня."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO bt_3_subtitle_translate_stats (day, batches, mismatched, refused)
+                VALUES (CURRENT_DATE, 1, %s, %s)
+                ON CONFLICT (day) DO UPDATE
+                SET batches = bt_3_subtitle_translate_stats.batches + 1,
+                    mismatched = bt_3_subtitle_translate_stats.mismatched + EXCLUDED.mismatched,
+                    refused = bt_3_subtitle_translate_stats.refused + EXCLUDED.refused;
+            """, (1 if mismatched else 0, 1 if refused else 0))
+
+
+def subtitle_translate_stats() -> dict:
+    """Сколько пачек перевода субтитров ушло и в скольких модель сбилась со счёта.
+
+    Ошибку чтения не глушим: ноль вместо «не смогли посчитать» — это ложь в том самом
+    месте, ради которого счётчик заведён.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COALESCE(SUM(batches), 0), COALESCE(SUM(mismatched), 0),
+                       COALESCE(SUM(refused), 0), MIN(day)
+                FROM bt_3_subtitle_translate_stats;
+            """)
+            total, mismatched, refused, since = cursor.fetchone() or (0, 0, 0, None)
+    return {
+        "total": int(total or 0),
+        "mismatched": int(mismatched or 0),
+        "refused": int(refused or 0),
+        "since": since.isoformat() if since else "",
+    }
+
+
+def fetch_unrolled_youtube_transcripts(limit: int = 500) -> list[dict]:
+    """Дорожки, у которых «катящиеся» кадры ещё не склеены (backend/subtitle_cues.py).
+
+    Нужна ночному проходу: тех, кого смотрят, чинит само открытие ролика, а до
+    остальных иначе никто никогда не доберётся. Сначала самые свежие — их скорее
+    откроют. Ошибки не глушим: пустой список от сбоя неотличим от «всё склеено».
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT video_id, items, translations
+                FROM bt_3_youtube_transcripts
+                WHERE cues_rolled = FALSE
+                ORDER BY updated_at DESC NULLS LAST
+                LIMIT %s;
+            """, (int(limit),))
+            rows = cursor.fetchall()
+    out = []
+    for video_id, items, translations in rows:
+        if isinstance(items, str):
+            items = json.loads(items)
+        if isinstance(translations, str):
+            translations = json.loads(translations)
+        out.append({
+            "video_id": str(video_id or ""),
+            "items": items or [],
+            "translations": translations or {},
+        })
+    return out
 
 
 def purge_old_youtube_transcripts(days: int = 7) -> None:
@@ -31754,6 +31919,7 @@ def put_on_standup_shelf(
     transcript: list,
     transcript_lang: str,
     transcript_is_generated: bool | None,
+    transcript_cues_rolled: bool = False,
 ) -> bool:
     """Положить проверенный ролик на полку вместе с текстом субтитров.
 
@@ -31775,14 +31941,14 @@ def put_on_standup_shelf(
                 INSERT INTO bt_3_standup_shelf
                     (video_id, video_title, channel_title, duration_seconds,
                      has_manual_captions, view_count, transcript, transcript_lang,
-                     transcript_is_generated, added_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                     transcript_is_generated, transcript_cues_rolled, added_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (video_id) DO NOTHING;
                 """,
                 (vid, video_title, channel_title, int(duration_seconds or 0),
                  bool(has_manual_captions), view_count,
                  json.dumps(transcript, ensure_ascii=False), transcript_lang,
-                 transcript_is_generated),
+                 transcript_is_generated, bool(transcript_cues_rolled)),
             )
             return bool(cursor.rowcount)
 
@@ -31802,7 +31968,8 @@ def take_next_from_standup_shelf(exclude_video_ids: set | None = None) -> dict |
             if exclude:
                 cursor.execute(
                     "SELECT video_id, video_title, channel_title, duration_seconds, "
-                    "has_manual_captions, transcript, transcript_lang, transcript_is_generated "
+                    "has_manual_captions, transcript, transcript_lang, transcript_is_generated, "
+                    "transcript_cues_rolled "
                     "FROM bt_3_standup_shelf WHERE used_on IS NULL AND NOT (video_id = ANY(%s)) "
                     "ORDER BY has_manual_captions DESC, view_count DESC NULLS LAST, added_at "
                     "LIMIT 1;",
@@ -31811,7 +31978,8 @@ def take_next_from_standup_shelf(exclude_video_ids: set | None = None) -> dict |
             else:
                 cursor.execute(
                     "SELECT video_id, video_title, channel_title, duration_seconds, "
-                    "has_manual_captions, transcript, transcript_lang, transcript_is_generated "
+                    "has_manual_captions, transcript, transcript_lang, transcript_is_generated, "
+                    "transcript_cues_rolled "
                     "FROM bt_3_standup_shelf WHERE used_on IS NULL "
                     "ORDER BY has_manual_captions DESC, view_count DESC NULLS LAST, added_at "
                     "LIMIT 1;"
@@ -31819,7 +31987,7 @@ def take_next_from_standup_shelf(exclude_video_ids: set | None = None) -> dict |
             row = cursor.fetchone()
             if not row:
                 return None
-            (vid, title, channel, dur, manual, transcript, lang, generated) = row
+            (vid, title, channel, dur, manual, transcript, lang, generated, rolled) = row
             if isinstance(transcript, str):
                 transcript = json.loads(transcript)
             return {
@@ -31831,6 +31999,9 @@ def take_next_from_standup_shelf(exclude_video_ids: set | None = None) -> dict |
                 "transcript": transcript or [],
                 "transcript_lang": str(lang or "de"),
                 "transcript_is_generated": generated,
+                # Склеены ли кадры. Едет с полки дальше, в общий кеш дорожек: склеить
+                # второй раз — значит сдвинуть номера русских субтитров.
+                "transcript_cues_rolled": bool(rolled),
             }
 
 

@@ -8039,28 +8039,101 @@ async def run_dictionary_collocations_multilang(
         return {"items": []}
 
 
+class SubtitleTranslationCountMismatch(RuntimeError):
+    """Модель вернула не столько строк субтитров, сколько ей прислали.
+
+    Почему это исключение, а не «добьём пустыми» и не «обрежем лишнее».
+
+    Перевод субтитров раскладывается ПО ПОРЯДКУ: первый перевод — первой реплике,
+    второй — второй. Стоит модели склеить две обрывочные фразы в одну русскую (а
+    YouTube режет реплики посреди предложения, и склеивать их — самое естественное для
+    переводчика), как весь остаток пачки съезжает на реплику: русский идёт вперёд.
+    Разделила одну на две — идёт назад. Именно это владелец увидел 15.09.2026.
+
+    Добивание пустыми и обрезание `zip`-ом выглядят как «хоть что-то показали», но
+    сохраняют в базу НЕВЕРНОЕ соответствие — навсегда и для всех следующих зрителей.
+    Честный отказ дешевле: пачку переспросят, а человеку скажут словами.
+    """
+
+    def __init__(self, expected: int, got: int):
+        super().__init__(f"модель вернула {got} строк вместо {expected}")
+        self.expected = int(expected)
+        self.got = int(got)
+
+
+def _parse_subtitle_translations(content: str, expected: int) -> list[str]:
+    """Разобрать ответ и убедиться, что строк ровно столько, сколько просили.
+
+    Разбор НЕ глушим: раньше здесь стоял `except: pass` и возврат пустых строк нужной
+    длины — сбой модели становился неотличим от честного «перевода нет», и пустые
+    уезжали в базу.
+    """
+    parsed = json.loads(str(content or "").strip())
+    translations = parsed.get("translations") if isinstance(parsed, dict) else None
+    if not isinstance(translations, list):
+        raise ValueError("в ответе нет списка translations")
+    if len(translations) != expected:
+        raise SubtitleTranslationCountMismatch(expected=expected, got=len(translations))
+    return [str(item).strip() for item in translations]
+
+
+async def _run_subtitle_translation(
+    *,
+    task_name: str,
+    system_instruction_key: str,
+    payload: dict,
+    lines: list[str],
+) -> list[str]:
+    """Один запрос на перевод субтитров с ОДНИМ переспросом при несовпадении числа строк.
+
+    Переспрашиваем ровно один раз: модель стохастична, и повтор с явно названным числом
+    обычно попадает. Не попал и он — поднимаем ошибку, пачка НЕ сохраняется, счётчик
+    растёт (backend/subtitle_translate_counter.py), и число видно в `/subtitry`.
+    """
+    from backend.subtitle_translate_counter import record_batch
+
+    expected = len(lines)
+    attempt_payload = dict(payload)
+    last_error: Exception | None = None
+    for attempt in (1, 2):
+        if attempt == 2:
+            # Во второй раз называем число прямо в задании: инструкция просит «столько
+            # же», но числа в ней нет, а модель считает хуже, чем сверяет.
+            attempt_payload = {**payload, "must_return_exactly": expected}
+        content = await llm_execute(
+            task_name=task_name,
+            system_instruction_key=system_instruction_key,
+            user_message=json.dumps(attempt_payload, ensure_ascii=False),
+            poll_interval_seconds=2.0,
+        )
+        try:
+            translations = _parse_subtitle_translations(content, expected)
+        except SubtitleTranslationCountMismatch as exc:
+            last_error = exc
+            logging.warning(
+                "%s: попытка %s — модель вернула %s строк вместо %s",
+                task_name, attempt, exc.got, exc.expected,
+            )
+            continue
+        except Exception as exc:
+            last_error = exc
+            logging.warning("%s: попытка %s — ответ не разобран: %s", task_name, attempt, exc)
+            continue
+        record_batch(mismatched=(attempt == 2), refused=False)
+        return translations
+
+    record_batch(mismatched=True, refused=True)
+    raise last_error if last_error is not None else RuntimeError(f"{task_name}: ответа нет")
+
+
 async def run_translate_subtitles_ru(lines: list[str]) -> list[str]:
     _LAST_LLM_USAGE.set(None)
-    task_name = "translate_subtitles_ru"
-    system_instruction_key = "translate_subtitles_ru"
-
-    payload = {"lines": lines}
-    content = await llm_execute(
-        task_name=task_name,
-        system_instruction_key=system_instruction_key,
-        user_message=json.dumps(payload, ensure_ascii=False),
-        poll_interval_seconds=2.0,
+    return await _run_subtitle_translation(
+        task_name="translate_subtitles_ru",
+        system_instruction_key="translate_subtitles_ru",
+        payload={"lines": lines},
+        lines=lines,
     )
-    content = content.strip()
-
-    try:
-        parsed = json.loads(content)
-        translations = parsed.get("translations")
-        if isinstance(translations, list):
-            return [str(item).strip() for item in translations]
-    except Exception:
-        pass
-    return [""] * len(lines)
 
 
 async def run_translate_subtitles_multilang(
@@ -8069,30 +8142,16 @@ async def run_translate_subtitles_multilang(
     target_lang: str,
 ) -> list[str]:
     _LAST_LLM_USAGE.set(None)
-    task_name = "translate_subtitles_multilang"
-    system_instruction_key = "translate_subtitles_multilang"
-
-    payload = {
-        "source_language": (source_lang or "de").strip().lower(),
-        "target_language": (target_lang or "ru").strip().lower(),
-        "lines": lines,
-    }
-    content = await llm_execute(
-        task_name=task_name,
-        system_instruction_key=system_instruction_key,
-        user_message=json.dumps(payload, ensure_ascii=False),
-        poll_interval_seconds=2.0,
+    return await _run_subtitle_translation(
+        task_name="translate_subtitles_multilang",
+        system_instruction_key="translate_subtitles_multilang",
+        payload={
+            "source_language": (source_lang or "de").strip().lower(),
+            "target_language": (target_lang or "ru").strip().lower(),
+            "lines": lines,
+        },
+        lines=lines,
     )
-    content = content.strip()
-
-    try:
-        parsed = json.loads(content)
-        translations = parsed.get("translations")
-        if isinstance(translations, list):
-            return [str(item).strip() for item in translations]
-    except Exception:
-        pass
-    return [""] * len(lines)
 
 
 async def run_generate_word_quiz(prompt_payload: dict) -> dict:

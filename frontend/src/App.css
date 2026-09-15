@@ -16182,6 +16182,18 @@ body:has(.webapp-page.is-theme-light),
   gap: 12px;
 }
 
+/* Честная строка в русской колонке, когда перевод куска не доехал. Не красная плашка
+   ошибки: ролик идёт, немецкие субтитры на месте, не получен только перевод отрывка. */
+.youtube-subtitles-notice {
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(255, 176, 32, 0.12);
+  color: #8a5a00;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .youtube-subtitles-card-head.youtube-subtitles-card-head-with-nav {
   display: grid;
   /* Center transport moved under the player, so only two buttons remain:

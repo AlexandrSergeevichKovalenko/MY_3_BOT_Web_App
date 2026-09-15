@@ -126,6 +126,7 @@ from backend.database import (
     SHORTCUT_PAIRING_CODE_TTL_SECONDS,
 )
 from backend.hotpath_cache import HotPathCacheManager
+from backend.subtitle_cues import deroll_transcript_cues
 from backend.job_queue import (
     can_enqueue_background_jobs,
     claim_translation_check_resume_cooldown,
@@ -391,6 +392,7 @@ from backend.openai_manager import (
     run_dictionary_collocations,
     run_dictionary_collocations_multilang,
     run_translate_subtitles_ru,
+    SubtitleTranslationCountMismatch,
     run_translate_subtitles_multilang,
     run_translation_explanation,
     run_translation_explanation_multilang,
@@ -30789,14 +30791,27 @@ def _build_youtube_transcript_result(
     is_generated: bool | None,
     ip_country: str | None = None,
 ) -> dict:
+    """Единственное место, где рождается список реплик: через него проходят ВСЕ четыре
+    источника субтитров (yta, yt-dlp, webshare и webshare+yt-dlp).
+
+    Здесь же «катящиеся» кадры YouTube склеиваются в строки — ОДИН раз и на сервере.
+    Раньше склейка жила только в браузере, и у одной реплики было два номера: сырой в
+    базе и склеенный на экране. Перевод сохранялся под склеенным, а при следующем
+    открытии ролика браузер перекладывал его ещё раз — русские субтитры уезжали вперёд
+    и обрывались (владелец, 15.09.2026). Теперь номер у реплики один на всю систему.
+    """
     _record_transcript_source_hit(source)
+    rolled_items, _index_map = deroll_transcript_cues(items or [])
     return {
         "success": True,
         "source": source,
         "ip_country": ip_country,
         "language": language,
         "is_generated": is_generated,
-        "items": items,
+        "items": rolled_items,
+        # Для того, кто будет это сохранять: номера уже окончательные, второй раз
+        # склеивать НЕЛЬЗЯ — склейка не идемпотентна.
+        "cues_rolled": True,
     }
 
 
@@ -60755,6 +60770,35 @@ def enrich_flashcard_entry():
     )
 
 
+def _roll_stored_cues_once(video_id: str, row: dict) -> dict:
+    """Перевести одну накопленную дорожку в склеенное пространство номеров — один раз.
+
+    Зачем чинить на чтении, а не разовой миграцией всей таблицы: ролики смотрят прямо
+    сейчас, и большая единовременная переделка — риск для живого экрана. Флаг
+    `cues_rolled` позволяет чинить каждую дорожку в момент первого обращения и больше к
+    ней не возвращаться. Тех, кого никто не открыл, добирает ночной проход, а остаток
+    виден числом в `/subtitry`.
+
+    Сбой записи не прячем: он в журнале, дорожка останется в отчёте как незакрытая, но
+    человеку в любом случае уйдут ПРАВИЛЬНЫЕ склеенные реплики — сдвига на экране нет.
+    """
+    from backend.subtitle_cue_migration import plan_roll, roll_one
+
+    try:
+        return roll_one(video_id, row)
+    except Exception:
+        logging.exception("не удалось сохранить склеенные реплики video_id=%s", video_id)
+        rolled, drop_keys = plan_roll(row)
+        dropped = set(drop_keys)
+        translations = row.get("translations") or {}
+        return {
+            **row,
+            "items": rolled,
+            "translations": {k: v for k, v in translations.items() if k not in dropped},
+            "cues_rolled": True,
+        }
+
+
 def _load_cached_youtube_transcript_data(video_id: str) -> tuple[dict | None, str | None, int]:
     now = time.time()
     cached = _yt_transcript_cache.get(video_id)
@@ -60769,6 +60813,8 @@ def _load_cached_youtube_transcript_data(video_id: str) -> tuple[dict | None, st
         cached_db = None
     cached_db_duration_ms = _elapsed_ms_since(cached_db_started_perf)
     if cached_db and cached_db.get("items"):
+        if not cached_db.get("cues_rolled"):
+            cached_db = _roll_stored_cues_once(video_id, cached_db)
         data = {
             "items": cached_db.get("items", []),
             "language": cached_db.get("language"),
@@ -61178,6 +61224,8 @@ def get_youtube_transcript():
                 data.get("language"),
                 data.get("is_generated"),
                 data.get("translations"),
+                # Реплики пришли из _build_youtube_transcript_result — они уже склеены.
+                cues_rolled=bool(data.get("cues_rolled")),
             )
         except Exception:
             pass
@@ -62154,6 +62202,9 @@ def save_manual_youtube_transcript():
     if not normalized:
         return jsonify({"error": "items пустой"}), 400
 
+    # Вставленную руками расшифровку склеиваем тем же правилом, что и скачанную: до
+    # 15.09.2026 это делал браузер для ЛЮБОЙ дорожки, и поведение на экране не меняется.
+    normalized, _paste_index_map = deroll_transcript_cues(normalized)
     try:
         upsert_youtube_transcript_cache(
             video_id,
@@ -62161,6 +62212,7 @@ def save_manual_youtube_transcript():
             language,
             False,
             {},
+            cues_rolled=True,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения: {exc}"}), 500
@@ -62374,6 +62426,16 @@ def translate_youtube_subtitles():
                         )
                     )
             except Exception as exc:
+                # Пачку НЕ сохраняем и ничего не подставляем. Особый случай —
+                # SubtitleTranslationCountMismatch: модель вернула не то число строк, и
+                # разложить ответ по репликам можно только наугад. Наугад — это русские
+                # субтитры, навсегда привязанные не к тем репликам (жалоба владельца
+                # 15.09.2026). Честный отказ дешевле.
+                count_mismatch = isinstance(exc, SubtitleTranslationCountMismatch)
+                logging.warning(
+                    "перевод субтитров не получен video_id=%s start=%s lines=%s: %s",
+                    video_id, start_index, len(missing_lines), exc,
+                )
                 _log_flow_observation(
                     "youtube_translate",
                     "youtube_translate_completed",
@@ -62394,12 +62456,20 @@ def translate_youtube_subtitles():
                     cache_hit=False,
                     cache_tier="miss",
                     final_status="error",
-                    error_code=exc.__class__.__name__,
+                    error_code=("subtitle_translation_count_mismatch" if count_mismatch
+                                else exc.__class__.__name__),
                     duration_ms=_elapsed_ms_since(started_perf),
-                    http_status=500,
+                    http_status=502,
                     **summarize_db_acquire_events(db_acquire_events),
                 )
-                return jsonify({"error": f"translation error: {exc}"}), 500
+                # Человеку — человеческий текст, техническая причина осталась в журнале.
+                return jsonify({
+                    "error": "subtitle_translation_unavailable",
+                    "error_code": ("subtitle_translation_count_mismatch" if count_mismatch
+                                   else "subtitle_translation_failed"),
+                    "message": "Перевод этого куска не получен. Попробуйте ещё раз через минуту.",
+                    "start_index": start_index,
+                }), 502
             llm_translate_duration_ms = _elapsed_ms_since(llm_started_perf)
             usage_subtitles = get_last_llm_usage(reset=True)
             _billing_log_openai_usage(
@@ -62416,6 +62486,14 @@ def translate_youtube_subtitles():
                     "lines_count": len(missing_lines),
                 },
             )
+            # Длину сверил переводчик (backend/openai_manager.py: он переспрашивает и
+            # падает, если модель сбилась со счёта). Здесь — последний замок: раскладка
+            # по позиции имеет смысл ТОЛЬКО при равной длине, и молчаливый zip, который
+            # просто обрезал бы лишнее, был первопричиной сдвига русских субтитров.
+            if len(translated) != len(missing_indices):
+                raise RuntimeError(
+                    f"перевод субтитров: {len(translated)} строк на {len(missing_indices)} реплик"
+                )
             update_map = {}
             for idx_int, text in zip(missing_indices, translated):
                 idx = str(idx_int)
@@ -62427,7 +62505,9 @@ def translate_youtube_subtitles():
             try:
                 upsert_youtube_translations(video_id, update_map)
             except Exception:
-                pass
+                # Человеку перевод уже уходит — он в ответе. Не сохранился только кеш:
+                # следующий зритель закажет заново, лишние деньги. Молчать об этом нельзя.
+                logging.exception("не сохранился перевод субтитров video_id=%s", video_id)
             persist_duration_ms = _elapsed_ms_since(persist_started_perf)
             for idx_int in missing_indices:
                 pos = idx_int - start_index
