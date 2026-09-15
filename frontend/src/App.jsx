@@ -7093,6 +7093,37 @@ function AppInner() {
   const [youtubePlayerReady, setYoutubePlayerReady] = useState(false);
   const [youtubeCurrentTime, setYoutubeCurrentTime] = useState(0);
   const [youtubeDuration, setYoutubeDuration] = useState(0);
+  // ┌─ ОДНА ДВЕРЬ ВОССТАНОВЛЕНИЯ. Владелец 15.09.2026: «то запоминается, то нет». ──────┐
+  // │ Дверей было ТРИ, и у каждой своё правило: (1) перемотка в onReady из памяти       │
+  // │ телефона, (2) перемотка по ответу сервера с условием «сохранённое больше          │
+  // │ текущего», (3) смена ролика через cueVideoById — там не делалось НИЧЕГО.          │
+  // │ Отсюда и «иногда»: закрыл мини-апп и открыл — работало; ушёл в другой раздел и    │
+  // │ вернулся — нет (раздел размонтируется, плеер строится заново, а «текущее» число   │
+  // │ живёт дольше плеера, и условие двери 2 не выполнялось никогда).                   │
+  // │                                                                                   │
+  // │ Теперь дверь ОДНА: секунда старта решается ДО постройки плеера и передаётся ему   │
+  // │ при рождении (playerVars.start / cueVideoById(id, сек)) — штатный вход YouTube,   │
+  // │ которым пользуются Coursera, Udemy, edX. Перематывать после готовности больше     │
+  // │ нечего, поэтому весь класс гонок с опросом раз в 400 мс исчезает.                 │
+  // │                                                                                   │
+  // │ status — ТРИ состояния, и ноль не подменяет ни одно из них:                       │
+  // │   'unknown' — ещё не знаем, откуда начинать. Плеер НЕ строится.                    │
+  // │   'ready'   — знаем: seconds (0 = с начала, это тоже ответ).                       │
+  // │ outcome — чем кончилось; уходит на сервер и считается (см. fix_promises).          │
+  // └──────────────────────────────────────────────────────────────────────────────────┘
+  const YOUTUBE_WATCHED_SHARE = 0.95;  // досмотрено = позиция в последних 5% ролика
+  const [youtubeResumeStart, setYoutubeResumeStart] = useState({
+    videoId: '', status: 'unknown', seconds: 0, savedSeconds: 0, outcome: '',
+  });
+  const youtubeResumeStartRef = useRef({ videoId: '', status: 'unknown', seconds: 0, savedSeconds: 0, outcome: '' });
+  const youtubeResumeOutcomeSentForRef = useRef('');
+  // Что мы попросили у плеера при рождении. Нужно ровно для одного: поймать случай,
+  // когда позиция БЫЛА, а ролик всё равно пошёл с начала (исход 'lost'). По новому
+  // устройству он невозможен — поэтому обещание в fix_promises ждёт по нему ноль.
+  const youtubeResumeExpectedStartRef = useRef({ videoId: '', seconds: 0 });
+  // Заполняется, только если стартовая секунда НЕ доехала. Пусто = доехала.
+  const youtubeResumeLostRef = useRef(null);
+  const youtubeDurationRef = useRef(0);
   const youtubeScrubbingRef = useRef(false); // true while the user drags the scrubber
   // Куда человек перемотал и ждём, пока плеер туда доедет: { value, ticks } либо null.
   // Пока ждём — опрос позиции НЕ трогает показанное число (см. startTimePolling).
@@ -8426,7 +8457,6 @@ function AppInner() {
   const youtubeInputDraftRef = useRef('');
   const youtubeChangeQueryDraftRef = useRef('');
   const youtubeTranscriptVideoIdRef = useRef('');
-  const youtubeResumeAppliedForVideoRef = useRef('');
   const youtubeNewsTranscriptRequestedRef = useRef(''); // news mode: auto-load subs once per video
   const worldNewsRequestedRef = useRef(false); // news mode: fetch today's entry exactly once
   const worldNewsTouchXRef = useRef(null); // swipe-deck touch start X
@@ -9137,6 +9167,15 @@ function AppInner() {
       return null;
     }
   }, [youtubeResumeStorageKey]);
+  // Длина ролика из карты телефона. 0 = «не знаем» (в карте её нет), и это НЕ «ролик
+  // нулевой длины»: по нулю правило «досмотрено» не применяется вовсе.
+  const readYoutubeResumeDurationFor = useCallback((videoId) => {
+    const id = String(videoId || '').trim();
+    if (!id) return 0;
+    const blob = readYoutubeResumeBlob();
+    const entry = blob?.byId && typeof blob.byId === 'object' ? blob.byId[id] : null;
+    return Math.max(0, Number(entry?.d || 0));
+  }, [readYoutubeResumeBlob]);
   const readYoutubeResumeSecondsFor = useCallback((videoId) => {
     const id = String(videoId || '').trim();
     if (!id) return 0;
@@ -9153,9 +9192,17 @@ function AppInner() {
     const previousMap = (previous?.byId && typeof previous.byId === 'object') ? previous.byId : {};
     const nextMap = { ...previousMap };
     if (id) {
+      // Длину не назвали — оставляем ту, что знали раньше. Ноль сюда не пишем:
+      // «не знаем длину» и «ролик длиной ноль» — разные вещи, и вторая включила бы
+      // правило «досмотрено» на первой же секунде.
+      const previousDuration = Math.max(0, Number(previousMap[id]?.d || 0));
+      const nextDuration = Math.max(0, Math.floor(Number(payload.durationSeconds || 0)));
       nextMap[id] = {
         t: Math.max(0, Math.floor(Number(payload.currentTime || 0))),
         at: Number(payload.updatedAt || Date.now()),
+        ...(nextDuration > 0 || previousDuration > 0
+          ? { d: nextDuration > 0 ? nextDuration : previousDuration }
+          : {}),
       };
     }
     // Не даём карте расти бесконечно: держим самые свежие ролики, остальное отпускаем.
@@ -9167,6 +9214,23 @@ function AppInner() {
         .forEach((staleId) => { delete nextMap[staleId]; });
     }
     const serialized = JSON.stringify({ ...payload, byId: nextMap });
+    safeStorageSet(youtubeResumeStorageKey, serialized);
+    safeStorageSet('webapp_youtube', serialized);
+  }, [readYoutubeResumeBlob, youtubeResumeStorageKey]);
+  // ┌─ ИСПРАВЛЕНО 15.09.2026. ПУСТОЕ ПОЛЕ ВВОДА ≠ «ЗАБУДЬ 50 РОЛИКОВ». ────────────────┐
+  // │ Эффект по пустому youtubeInput сносил ОБА ключа целиком — вместе с картой byId.   │
+  // │ А пустым это поле бывает на каждом холодном запуске: эффект восстановления        │
+  // │ объявлен ВЫШЕ и ставит ссылку, но уборщик в том же проходе видит ещё пустое       │
+  // │ значение. Следующим проходом он записывал в карту currentTime: 0 — и локальная    │
+  // │ память о позиции не доживала до первого использования НИ РАЗУ. Всё «продолжить    │
+  // │ с места» держалось на одном сетевом ответе.                                       │
+  // │ Теперь снимается только указатель «последний открытый ролик» (input/id), а карта  │
+  // │ позиций остаётся: она — память о многих роликах, а не о текущем.                  │
+  // └──────────────────────────────────────────────────────────────────────────────────┘
+  const forgetYoutubeLastVideoKeepingMap = useCallback(() => {
+    const blob = readYoutubeResumeBlob();
+    const map = (blob?.byId && typeof blob.byId === 'object') ? blob.byId : {};
+    const serialized = JSON.stringify({ byId: map });
     safeStorageSet(youtubeResumeStorageKey, serialized);
     safeStorageSet('webapp_youtube', serialized);
   }, [readYoutubeResumeBlob, youtubeResumeStorageKey]);
@@ -9361,6 +9425,8 @@ function AppInner() {
       input: trimmed,
       id: resolvedId,
       currentTime: safeTime,
+      // Длину кладём, только если плеер её назвал: по ней решается «досмотрено».
+      durationSeconds: Math.max(0, Math.floor(Number(youtubeDurationRef.current || 0))),
       updatedAt: Date.now(),
     });
   }, [writeYoutubeResumeToLocalCache, youtubeId, youtubeInput, youtubeResumeValueIsWritable]);
@@ -9374,6 +9440,24 @@ function AppInner() {
     // воспроизведения — это «мы ещё не знаем», а не «человек в начале ролика».
     if (!youtubeResumeValueIsWritable(safeTime)) return;
     persistYoutubeResumeState(safeTime);
+    // Исход восстановления уходит ОДИН раз на открытие ролика — вместе с первым же
+    // сохранением, чтобы не заводить отдельный запрос ради телеметрии. Без этого числа
+    // о поломке узнавал бы только раздражённый владелец и только через неделю.
+    let resumeOutcomePayload = {};
+    const resume = youtubeResumeStartRef.current;
+    if (youtubeResumeOutcomeSentForRef.current !== resolvedId
+        && resume?.videoId === resolvedId && resume.status === 'ready' && resume.outcome) {
+      const lost = youtubeResumeLostRef.current;
+      const lostHere = lost?.videoId === resolvedId;
+      resumeOutcomePayload = {
+        resume_outcome: lostHere ? 'lost' : resume.outcome,
+        resume_saved_seconds: Math.max(0, Math.floor(Number(resume.savedSeconds || 0))),
+        resume_started_seconds: lostHere
+          ? Math.max(0, Math.floor(Number(lost.startedAt || 0)))
+          : Math.max(0, Math.floor(Number(resume.seconds || 0))),
+      };
+      youtubeResumeOutcomeSentForRef.current = resolvedId;
+    }
     try {
       await fetch('/api/webapp/youtube/state', {
         method: 'POST',
@@ -9385,6 +9469,12 @@ function AppInner() {
           current_time_seconds: safeTime,
           // Второй пояс живёт на сервере: без этого флага он не примет ноль.
           playback_started: Boolean(youtubePlaybackStartedRef.current),
+          // Длина ролика: только когда плеер её назвал. 0 → поле не шлём вовсе, чтобы
+          // сервер не принял «не знаем» за «ролик нулевой длины».
+          ...(youtubeDurationRef.current > 0
+            ? { duration_seconds: Math.floor(youtubeDurationRef.current) }
+            : {}),
+          ...resumeOutcomePayload,
         }),
         keepalive: Boolean(options?.keepalive),
       });
@@ -27078,23 +27168,30 @@ function AppInner() {
       setMovies((prev) => prev.filter((item) => !removed.has(item?.video_id)));
       // Удалённое видео нужно забыть и на устройстве: приложение восстанавливает
       // последнее просмотренное при каждом запуске, и удалённый фильм так возвращался.
+      // ┌─ ИСПРАВЛЕНО 15.09.2026. ЗАБЫВАЕМ УДАЛЁННЫЕ РОЛИКИ, А НЕ ВСЮ ПАМЯТЬ. ──────────┐
+      // │ Здесь стояло: если удалили ТЕКУЩИЙ ролик — снести оба ключа целиком, то есть │
+      // │ вместе с картой позиций остальных 50 роликов. И то же самое в catch на любой │
+      // │ сбой разбора. Человек удалял один фильм и терял места во всех остальных.     │
+      // │ Тот же класс, что и уборщик по пустому полю ввода (forgetYoutubeLastVideo-   │
+      // │ KeepingMap): «забыть один» подменялось на «забыть всё».                      │
+      // └──────────────────────────────────────────────────────────────────────────────┘
       try {
         const storedBlob = readYoutubeResumeBlob();
         const storedId = String(storedBlob?.id || '').trim();
-        if (storedId && removed.has(storedId)) {
-          safeStorageRemove(youtubeResumeStorageKey);
-          safeStorageRemove('webapp_youtube');
-        } else if (storedBlob?.byId && Object.keys(storedBlob.byId).some((id) => removed.has(id))) {
-          // Текущий ролик остался, но удалённые нужно забыть и в карте позиций.
-          const cleanedMap = { ...storedBlob.byId };
-          removed.forEach((id) => { delete cleanedMap[id]; });
-          const cleaned = JSON.stringify({ ...storedBlob, byId: cleanedMap });
-          safeStorageSet(youtubeResumeStorageKey, cleaned);
-          safeStorageSet('webapp_youtube', cleaned);
-        }
-      } catch (_error) {
-        safeStorageRemove(youtubeResumeStorageKey);
-        safeStorageRemove('webapp_youtube');
+        const storedMap = (storedBlob?.byId && typeof storedBlob.byId === 'object') ? storedBlob.byId : {};
+        const cleanedMap = { ...storedMap };
+        removed.forEach((id) => { delete cleanedMap[id]; });
+        // Указатель «последний открытый» снимаем, только если удалили именно его.
+        const keepPointer = !(storedId && removed.has(storedId));
+        const cleaned = JSON.stringify(
+          keepPointer ? { ...(storedBlob || {}), byId: cleanedMap } : { byId: cleanedMap },
+        );
+        safeStorageSet(youtubeResumeStorageKey, cleaned);
+        safeStorageSet('webapp_youtube', cleaned);
+      } catch (error) {
+        // Разобрать память не вышло — это сбой ЧТЕНИЯ, а не повод стереть места
+        // остальных роликов. Говорим в консоль и оставляем как есть.
+        console.warn('[youtube-resume] не смогли вычистить удалённые ролики из памяти', error);
       }
       if (youtubeId && removed.has(youtubeId)) {
         setYoutubeInput('');
@@ -33942,9 +34039,9 @@ function AppInner() {
       setYoutubeError('');
       setYoutubeSearchError('');
       setYoutubeSearchResults([]);
-      safeStorageRemove(youtubeResumeStorageKey);
-      safeStorageRemove('webapp_youtube');
-      youtubeResumeAppliedForVideoRef.current = '';
+      // Снимаем указатель «последний ролик», карту позиций НЕ трогаем — см. блок
+      // ИСПРАВЛЕНО 15.09.2026 у forgetYoutubeLastVideoKeepingMap.
+      forgetYoutubeLastVideoKeepingMap();
       youtubeResumeLastSavedSecondRef.current = -1;
       youtubeResumeLastSyncedSecondRef.current = -1;
       return;
@@ -33970,7 +34067,7 @@ function AppInner() {
       setYoutubeError('');
       setYoutubeId('');
     }
-  }, [readYoutubeResumeSecondsFor, tr, writeYoutubeResumeToLocalCache, youtubeInput, youtubeResumeStorageKey]);
+  }, [forgetYoutubeLastVideoKeepingMap, readYoutubeResumeSecondsFor, tr, writeYoutubeResumeToLocalCache, youtubeInput, youtubeResumeStorageKey]);
 
   const searchYoutubeVideos = async (overrideQuery = null) => {
     const committedInput = commitYoutubeInputDraft(
@@ -34654,9 +34751,16 @@ function AppInner() {
   }, [youtubeCurrentTime]);
 
   useEffect(() => {
+    youtubeDurationRef.current = Number(youtubeDuration || 0);
+  }, [youtubeDuration]);
+
+  useEffect(() => {
+    youtubeResumeStartRef.current = youtubeResumeStart;
+  }, [youtubeResumeStart]);
+
+  useEffect(() => {
     youtubeResumeLastSavedSecondRef.current = -1;
     youtubeResumeLastSyncedSecondRef.current = -1;
-    youtubeResumeAppliedForVideoRef.current = '';
     youtubePlaybackStartedRef.current = false;
   }, [youtubeId]);
 
@@ -34729,6 +34833,117 @@ function AppInner() {
     }
   }, [youtubeId]);
 
+  // ── РЕШАТЕЛЬ СТАРТОВОЙ СЕКУНДЫ. Единственное место, где решается «откуда начать». ──
+  // Порядок источников (это ИСТОЧНИКИ, а не подстановки друг за друга):
+  //   1. карта телефона — та же величина, что и на сервере, просто уже у нас под рукой;
+  //   2. сервер — единственная правда между устройствами.
+  // Карта знает ролик → стартуем немедленно, а сервер спрашиваем ФОНОМ, только чтобы
+  // освежить карту к следующему разу (прыгать по готовому плееру мы больше не будем —
+  // именно этот прыжок и был гонкой). Карта не знает → честно ждём сервер: владелец
+  // 15.09.2026 согласился на задержку 0.1–0.6 с ради того, чтобы место не терялось.
+  // Сеть не ответила → НЕ молчим: начинаем сначала, говорим об этом человеку строкой
+  // и считаем исход (outcome: 'lookup_failed').
+  useEffect(() => {
+    if (!youtubeId) {
+      setYoutubeResumeStart({ videoId: '', status: 'unknown', seconds: 0, savedSeconds: 0, outcome: '' });
+      return undefined;
+    }
+    let cancelled = false;
+    const decide = (seconds, savedSeconds, outcome) => {
+      if (cancelled) return;
+      setYoutubeResumeStart({
+        videoId: youtubeId,
+        status: 'ready',
+        seconds: Math.max(0, Math.floor(Number(seconds || 0))),
+        savedSeconds: Math.max(0, Math.floor(Number(savedSeconds || 0))),
+        outcome,
+      });
+    };
+    // Досмотрен ли ролик. Длины не знаем — правило НЕ применяется (а не «считаем, что
+    // не досмотрен по умолчанию»): без длины вопрос просто не задан.
+    const looksFinished = (seconds, duration) => (
+      Number(duration || 0) > 0 && Number(seconds || 0) >= Number(duration) * YOUTUBE_WATCHED_SHARE
+    );
+
+    setYoutubeResumeStart({ videoId: youtubeId, status: 'unknown', seconds: 0, savedSeconds: 0, outcome: '' });
+    youtubeResumeOutcomeSentForRef.current = '';
+
+    const localSeconds = readYoutubeResumeSecondsFor(youtubeId);
+    const localDuration = readYoutubeResumeDurationFor(youtubeId);
+    const localKnows = localSeconds >= 2;
+    if (localKnows) {
+      decide(
+        looksFinished(localSeconds, localDuration) ? 0 : localSeconds,
+        localSeconds,
+        looksFinished(localSeconds, localDuration) ? 'finished' : 'restored',
+      );
+    }
+    if (!initData) {
+      // Телеграма нет (браузер без initData) — сервер спросить нечем. Это не ошибка
+      // сети, это отсутствие источника: если и карта молчит, начинаем с начала.
+      if (!localKnows) decide(0, 0, 'no_saved_position');
+      return () => { cancelled = true; };
+    }
+    // ПРЕДЕЛ ОЖИДАНИЯ. Без него зависшая сеть означала бы, что плеер не построится
+    // ВООБЩЕ: ворота ждут ответа вечно, человек смотрит на заглушку. Это не «тихо взять
+    // что попроще»: по истечении предела мы начинаем с начала, ГОВОРИМ об этом строкой
+    // и считаем исход 'lookup_failed'. Четыре секунды — вдвое больше самого медленного
+    // ответа этого эндпоинта, который мы видели (0.6 с).
+    const controller = new AbortController();
+    const waitLimit = setTimeout(() => {
+      try { controller.abort(); } catch (_e) { /* уже закрыт */ }
+    }, 4000);
+    fetch('/api/webapp/youtube/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData, videoId: youtubeId }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+        return response.json();
+      })
+      .then((data) => {
+        clearTimeout(waitLimit);
+        if (cancelled) return;
+        const state = data?.state;
+        const savedId = String(state?.video_id || '').trim();
+        const savedTime = Math.max(0, Math.floor(Number(state?.current_time_seconds || 0)));
+        const savedDuration = Math.max(0, Math.floor(Number(state?.duration_seconds || 0)));
+        const known = savedId === youtubeId && savedTime >= 2;
+        if (known) {
+          writeYoutubeResumeToLocalCache({
+            input: String(state?.input_text || '').trim() || `https://youtu.be/${youtubeId}`,
+            id: youtubeId,
+            currentTime: savedTime,
+            durationSeconds: savedDuration,
+            updatedAt: Date.now(),
+          });
+        }
+        // Карта уже дала ответ и плеер, возможно, уже рождён — второй раз не решаем:
+        // прыжок по живому плееру и был той самой гонкой, ради которой всё переделано.
+        if (localKnows) return;
+        if (!known) {
+          decide(0, 0, 'no_saved_position');
+          return;
+        }
+        const finished = looksFinished(savedTime, savedDuration);
+        decide(finished ? 0 : savedTime, savedTime, finished ? 'finished' : 'restored');
+      })
+      .catch((error) => {
+        clearTimeout(waitLimit);
+        // ЗАПРЕЩЕНО молчать: «сеть не ответила» и «позиции нет» — разные миры.
+        console.warn('[youtube-resume] не смогли спросить сервер о месте остановки', error);
+        if (cancelled || localKnows) return;
+        decide(0, 0, 'lookup_failed');
+      });
+    return () => {
+      cancelled = true;
+      clearTimeout(waitLimit);
+      try { controller.abort(); } catch (_e) { /* уже закрыт */ }
+    };
+  }, [initData, readYoutubeResumeDurationFor, readYoutubeResumeSecondsFor, writeYoutubeResumeToLocalCache, youtubeId]);
+
   useEffect(() => {
     if (!youtubeId) {
       setYoutubePlayerReady(false);
@@ -34736,7 +34951,6 @@ function AppInner() {
       setYoutubePlaybackStarted(false);
       setYoutubeIsPaused(true);
       setYoutubeForceShowPanel(false);
-      youtubeResumeAppliedForVideoRef.current = '';
       if (youtubeTimeIntervalRef.current) {
         clearInterval(youtubeTimeIntervalRef.current);
         youtubeTimeIntervalRef.current = null;
@@ -34756,6 +34970,15 @@ function AppInner() {
       }
       return;
     }
+
+    // ВОРОТА. Пока решатель не назвал стартовую секунду, плеер не рождается. Рождённый
+    // на нуле плеер пришлось бы перематывать после готовности — это и была та гонка
+    // (перемотка против опроса раз в 400 мс), из-за которой место терялось «иногда».
+    // 'unknown' — это НЕ ноль и не «начинай с начала»: это «ещё не знаем».
+    if (youtubeResumeStart.status !== 'ready' || youtubeResumeStart.videoId !== youtubeId) {
+      return;
+    }
+    const resumeStartSeconds = Math.max(0, Math.floor(Number(youtubeResumeStart.seconds || 0)));
 
     const ensureApiReady = () => new Promise((resolve) => {
       if (window.YT && window.YT.Player) {
@@ -34846,9 +35069,13 @@ function AppInner() {
     // without auto-playing) instead of a full teardown/rebuild.
     if (playerLive && typeof youtubePlayerRef.current.cueVideoById === 'function') {
       try {
-        youtubePlayerRef.current.cueVideoById(youtubeId);
+        // Штатный вход YouTube: ролик СРАЗУ становится на нужную секунду. Раньше здесь
+        // не делалось ничего, и позиция нового ролика зависела от того, как глубоко был
+        // отсмотрен предыдущий (сравнение шло с его секундами).
+        youtubePlayerRef.current.cueVideoById(youtubeId, resumeStartSeconds);
         youtubePlayerLoadedIdRef.current = youtubeId;
-        youtubeResumeAppliedForVideoRef.current = '';
+        youtubeResumeExpectedStartRef.current = { videoId: youtubeId, seconds: resumeStartSeconds };
+        setYoutubeCurrentTime(resumeStartSeconds);
         setYoutubeDuration(0); // new video → forget the old length until the poll reads the new one
         startTimePolling();
         return;
@@ -34892,6 +35119,9 @@ function AppInner() {
       youtubePlayerRef.current = new window.YT.Player(mountNode, {
         videoId: youtubeId,
         playerVars: {
+          // Ролик РОЖДАЕТСЯ на сохранённой секунде. Ноль означает «с начала» и это
+          // такой же честный ответ решателя, как и любое другое число.
+          start: resumeStartSeconds,
           rel: 0,
           modestbranding: 1,
           fs: 0,
@@ -34911,16 +35141,12 @@ function AppInner() {
             setYoutubePlayerReady(true);
             setYoutubeIsPaused(true);
             setYoutubePlaybackStarted(false);
-            try {
-              const savedTime = readYoutubeResumeSecondsFor(youtubeId);
-              if (savedTime >= 2 && youtubeResumeAppliedForVideoRef.current !== youtubeId) {
-                youtubePlayerRef.current?.seekTo?.(savedTime, true);
-                setYoutubeCurrentTime(savedTime);
-                youtubeResumeAppliedForVideoRef.current = youtubeId;
-              }
-            } catch (_error) {
-              // ignore
-            }
+            // Перемотки здесь БОЛЬШЕ НЕТ и она сюда не возвращается: плеер уже рождён
+            // на нужной секунде (playerVars.start). Прежний код звал seekTo без
+            // ожидания, и опрос через 400 мс возвращал на экран ноль, который потом
+            // затирал настоящую позицию.
+            youtubeResumeExpectedStartRef.current = { videoId: youtubeId, seconds: resumeStartSeconds };
+            setYoutubeCurrentTime(resumeStartSeconds);
             startTimePolling();
             applyYoutubeNativeCc(youtubeNativeCcOnRef.current);
           },
@@ -34948,6 +35174,25 @@ function AppInner() {
               // истинным от предыдущего — тогда ноль нового ролика снова стирал бы
               // его сохранённую позицию. Сбрасывается в эффекте по [youtubeId].
               youtubePlaybackStartedRef.current = true;
+              // ── Проверка обещания прямо на месте ─────────────────────────────────
+              // Плеер реально заиграл. Если мы просили начать с секунды N, а он играет
+              // заметно раньше — значит стартовая секунда не доехала, и это ровно тот
+              // дефект, ради которого всё переделано. Ловим ЗДЕСЬ, а не по опросу: до
+              // первого воспроизведения getCurrentTime у cued-ролика отвечает по-разному
+              // на разных устройствах, и ранняя проверка давала бы ложную тревогу.
+              try {
+                const expected = youtubeResumeExpectedStartRef.current;
+                if (expected?.videoId === youtubeId && Number(expected.seconds || 0) >= 2) {
+                  const playingAt = Number(youtubePlayerRef.current?.getCurrentTime?.() || 0);
+                  if (playingAt < Number(expected.seconds) - 5) {
+                    console.warn('[youtube-resume] место не доехало до плеера',
+                      { videoId: youtubeId, ожидали: expected.seconds, играет: playingAt });
+                    youtubeResumeLostRef.current = { videoId: youtubeId, startedAt: Math.floor(playingAt) };
+                  }
+                }
+              } catch (_error) {
+                // молчать тут нечему: проверка не обязана мешать воспроизведению
+              }
               setYoutubeForceShowPanel(false);
               // YouTube иногда сам подгружает CC при старте — гасим их, если тумблер выкл.
               applyYoutubeNativeCc(youtubeNativeCcOnRef.current);
@@ -34981,50 +35226,19 @@ function AppInner() {
     };
     // worldNewsStage: in news mode the player host only mounts in the 'video' stage, so re-run
     // when the stage changes to (re)create the player once its host is in the DOM.
-  }, [persistYoutubeResumeState, readYoutubeResumeSecondsFor, syncYoutubeResumeState, youtubeId, youtubeResumeStorageKey, youtubeSectionVisible, worldNewsStage]);
+  }, [persistYoutubeResumeState, readYoutubeResumeSecondsFor, syncYoutubeResumeState, youtubeId, youtubeResumeStart, youtubeResumeStorageKey, youtubeSectionVisible, worldNewsStage]);
 
-  useEffect(() => {
-    if (!youtubePlayerReady || !youtubeId || !initData || !youtubePlayerRef.current?.seekTo) return;
-    let cancelled = false;
-    fetch('/api/webapp/youtube/state', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData, videoId: youtubeId }),
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(await response.text());
-        return response.json();
-      })
-      .then((data) => {
-        if (cancelled) return;
-        const state = data?.state;
-        const savedId = String(state?.video_id || '').trim();
-        const savedTime = Math.max(0, Number(state?.current_time_seconds || 0));
-        if (savedId !== youtubeId || savedTime < 2) return;
-        const localTime = readYoutubeResumeSecondsFor(youtubeId);
-        writeYoutubeResumeToLocalCache({
-          input: String(state?.input_text || '').trim() || `https://youtu.be/${youtubeId}`,
-          id: youtubeId,
-          currentTime: Math.max(localTime, savedTime),
-          updatedAt: Date.now(),
-        });
-        // Ответ сервера может прийти в момент, когда человек уже сам ведёт бегунок или
-        // ждёт свою перемотку. Его выбор главнее сохранённой позиции — не перебиваем.
-        const userIsSeeking = youtubeScrubbingRef.current || youtubeSeekTargetRef.current !== null;
-        if (!userIsSeeking && savedTime > (youtubeCurrentTimeRef.current + 1)) {
-          youtubePlayerRef.current?.seekTo?.(savedTime, true);
-          setYoutubeCurrentTime(savedTime);
-          awaitYoutubeSeek(savedTime);
-          youtubeResumeAppliedForVideoRef.current = youtubeId;
-        }
-      })
-      .catch(() => {
-        // ignore server resume lookup errors
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [initData, readYoutubeResumeSecondsFor, writeYoutubeResumeToLocalCache, youtubeId, youtubePlayerReady, youtubeResumeStorageKey]);
+  // ┌─ УДАЛЕНО 15.09.2026. ВТОРАЯ ДВЕРЬ ВОССТАНОВЛЕНИЯ. НЕ ВОЗВРАЩАТЬ. ────────────────┐
+  // │ Здесь стоял эффект, который после готовности плеера спрашивал сервер и перематывал│
+  // │ при условии `savedTime > youtubeCurrentTimeRef.current + 1`. Условие сравнивало   │
+  // │ сохранённую секунду с числом, которое живёт ДОЛЬШЕ плеера и ролика: при возврате  │
+  // │ в раздел там лежала та же самая секунда этого же ролика, и перемотка не делалась  │
+  // │ НИКОГДА. Это и был главный источник «то запоминается, то нет».                    │
+  // │ Теперь секунду решает один решатель ДО постройки плеера, и плеер рождается на ней │
+  // │ (playerVars.start / cueVideoById(id, сек)). Перематывать после готовности нечего. │
+  // │ Если соблазн вернётся: любая перемотка по живому плееру снова заведёт гонку с     │
+  // │ опросом раз в 400 мс — чините решатель, а не добавляйте вторую дверь.             │
+  // └──────────────────────────────────────────────────────────────────────────────────┘
 
   useEffect(() => {
     if (youtubeTranscript.length > 0 && youtubeSubtitlesRef.current) {
@@ -39599,6 +39813,24 @@ function AppInner() {
                       className="youtube-player-card"
                       style={youtubeChangeOpen ? { display: 'none' } : undefined}
                     >
+                      {/* ── Почему ролик начался с начала ────────────────────────────
+                          Молча начать сначала нельзя: человек помнит, что остановился
+                          на середине, и молчание он читает как поломку (так и вышло
+                          15.09.2026). Говорим одной строкой и только когда есть что
+                          сказать: досмотрел — или мы не смогли спросить сервер. */}
+                      {youtubeId
+                        && youtubeResumeStart.videoId === youtubeId
+                        && youtubeResumeStart.status === 'ready'
+                        && !youtubePlaybackStarted
+                        && (youtubeResumeStart.outcome === 'finished' || youtubeResumeStart.outcome === 'lookup_failed') && (
+                        <div className="webapp-muted" style={{ fontSize: 13, padding: '6px 10px 2px' }}>
+                          {youtubeResumeStart.outcome === 'finished'
+                            ? tr('Вы досмотрели этот ролик — начинаем сначала.',
+                                 'Du hast dieses Video zu Ende gesehen — wir starten von vorn.')
+                            : tr('Не смогли вспомнить, где вы остановились, — начинаем сначала.',
+                                 'Wir konnten nicht abrufen, wo du stehen geblieben bist — wir starten von vorn.')}
+                        </div>
+                      )}
                       <div
                         ref={youtubePlayerShellRef}
                         className={`webapp-video-player-shell ${youtubeAppFullscreen ? 'is-app-fullscreen' : ''}`}
@@ -39642,7 +39874,12 @@ function AppInner() {
                           {!youtubePlayerReady && youtubeId && (
                             <iframe
                               title="YouTube player"
-                              src={`https://www.youtube.com/embed/${youtubeId}?rel=0&modestbranding=1&fs=0&disablekb=1&playsinline=1&controls=0&cc_load_policy=0&iv_load_policy=3`}
+                              src={`https://www.youtube.com/embed/${youtubeId}?rel=0&modestbranding=1&fs=0&disablekb=1&playsinline=1&controls=0&cc_load_policy=0&iv_load_policy=3${
+                                (youtubeResumeStart.videoId === youtubeId
+                                  && youtubeResumeStart.status === 'ready'
+                                  && youtubeResumeStart.seconds > 0)
+                                  ? `&start=${youtubeResumeStart.seconds}`
+                                  : ''}`}
                               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                             />
                           )}

@@ -504,6 +504,7 @@ from backend.database import (
     get_youtube_watch_state,
     get_latest_youtube_watch_state,
     upsert_youtube_watch_state,
+    record_youtube_resume_outcome,
     delete_youtube_catalog_video,
     purge_nonadmin_youtube_watch_state,
     get_translation_draft_state,
@@ -61445,6 +61446,12 @@ def youtube_watch_state():
         raw_playback_started = payload.get("playback_started")
         playback_started_present = raw_playback_started is not None
         playback_started = bool(raw_playback_started) if playback_started_present else False
+        # Длина ролика и исход восстановления — оба НЕОБЯЗАТЕЛЬНЫ: старый закешированный
+        # бандл их не знает, и это не ошибка. Отсутствие = «не сказали», а не ноль.
+        duration_seconds = payload.get("duration_seconds")
+        resume_outcome = str(payload.get("resume_outcome") or "").strip().lower()
+        resume_saved_seconds = payload.get("resume_saved_seconds")
+        resume_started_seconds = payload.get("resume_started_seconds")
 
         if not init_data:
             _log_flow_observation(
@@ -61611,6 +61618,7 @@ def youtube_watch_state():
                 video_id=video_id,
                 current_time_seconds=safe_seconds,
                 input_text=input_text or None,
+                duration_seconds=duration_seconds,
             )
         except Exception as exc:
             _log_flow_observation(
@@ -61630,6 +61638,27 @@ def youtube_watch_state():
                 **summarize_db_acquire_events(db_acquire_events),
             )
             return jsonify({"error": f"Ошибка сохранения прогресса YouTube: {exc}"}), 500
+        # ── Журнал исходов восстановления ───────────────────────────────────────────
+        # Клиент сообщает его ОДИН раз на открытие ролика, вместе с первым сохранением.
+        # Запись побочная: её падение не имеет права отменить сохранение позиции, ради
+        # которого человек сюда и пришёл. Поэтому — свой try, и при провале громкий лог
+        # и счётчик, а НЕ тихий проход мимо.
+        resume_outcome_recorded = None
+        if resume_outcome:
+            try:
+                resume_outcome_recorded = record_youtube_resume_outcome(
+                    user_id=user_id_int,
+                    video_id=video_id,
+                    outcome=resume_outcome,
+                    saved_seconds=(None if resume_saved_seconds is None else int(float(resume_saved_seconds))),
+                    started_seconds=(None if resume_started_seconds is None else int(float(resume_started_seconds))),
+                )
+            except Exception:
+                resume_outcome_recorded = False
+                logging.warning(
+                    "youtube resume outcome not recorded (user=%s video=%s outcome=%s)",
+                    user_id_int, video_id, resume_outcome, exc_info=True,
+                )
         response_payload = {"ok": True, "state": state}
         _log_flow_observation(
             "youtube_state",
@@ -61640,6 +61669,8 @@ def youtube_watch_state():
             video_id=video_id,
             mode="save",
             current_time_seconds=safe_seconds,
+            resume_outcome=resume_outcome or "absent",
+            resume_outcome_recorded=resume_outcome_recorded,
             save_duration_ms=_elapsed_ms_since(save_started_perf),
             response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
             final_status="success",
