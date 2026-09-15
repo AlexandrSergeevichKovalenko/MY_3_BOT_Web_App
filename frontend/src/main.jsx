@@ -250,6 +250,30 @@ function setupMediaSession() {
 
 setupMediaSession();
 
+// ┌─ СТРАЖ КУСКОВ БАНДЛА. Добавлен 15.09.2026. ────────────────────────────────────┐
+// │ Разделы приложения грузятся отдельными кусками по требованию. Между открытием   │
+// │ страницы и нажатием на раздел мог выйти деплой: имена кусков содержат хеш, и    │
+// │ старого файла на сервере больше нет. Раньше такой отказ не ловил никто —        │
+// │ import() отклонялся, функция запуска обрывалась, и человек оставался с пустым   │
+// │ экраном или вечным кружком, без единого слова о том, что произошло.             │
+// │                                                                                 │
+// │ Лечение стандартное и ровно одно: снять service worker, выбросить его кеш и     │
+// │ перезагрузиться ОДИН раз (повтор помечен в sessionStorage, цикла не будет).     │
+// │ Если это уже не помогло — показываем человеческий экран с кнопкой «Обновить».   │
+// │ Экран и чистка живут в index.html (window.__bootFailure): туда же смотрит       │
+// │ сторож, который срабатывает, когда не доехал САМ main.jsx.                      │
+// └─────────────────────────────────────────────────────────────────────────────────┘
+async function loadBootChunk(loader) {
+  try {
+    return await loader();
+  } catch (error) {
+    const guard = typeof window !== 'undefined' ? window.__bootFailure : null;
+    if (guard && !guard.tried()) { guard.recover(); return null; }
+    if (guard) { guard.show(); return null; }
+    throw error;
+  }
+}
+
 async function loadAppComponent() {
   try {
     const module = await import('./App.jsx');
@@ -268,6 +292,10 @@ async function loadAppComponent() {
         return null;
       }
     }
+    // Дальше бросать наружу нельзя: ловить некому, и человек оставался с пустым экраном.
+    const guard = typeof window !== 'undefined' ? window.__bootFailure : null;
+    if (guard && !guard.tried()) { guard.recover(); return null; }
+    if (guard) { guard.show(); return null; }
     throw error;
   }
 }
@@ -362,7 +390,9 @@ function showBootSpinner() {
 async function bootstrapShortcutGuide() {
   tgReady();
   showBootSpinner();
-  const { default: ShortcutGuide } = await import('./shortcut/ShortcutGuide.jsx');
+  const module = await loadBootChunk(() => import('./shortcut/ShortcutGuide.jsx'));
+  if (!module) return;
+  const ShortcutGuide = module.default;
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <ShortcutGuide />
@@ -373,7 +403,9 @@ async function bootstrapShortcutGuide() {
 async function bootstrapOnboarding() {
   tgReady();
   showBootSpinner();
-  const { default: OnboardingWizard } = await import('./onboarding/OnboardingWizard.jsx');
+  const module = await loadBootChunk(() => import('./onboarding/OnboardingWizard.jsx'));
+  if (!module) return;                       // страж уже перезагрузил или показал экран
+  const OnboardingWizard = module.default;
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <OnboardingWizard />
