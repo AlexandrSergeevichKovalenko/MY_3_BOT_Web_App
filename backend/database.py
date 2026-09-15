@@ -12047,6 +12047,48 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_youtube_watch_state (user_id, updated_at DESC);
                 """
             )
+            # Длительность ролика. Нужна ровно для одного: отличить «человек остановился
+            # на 4526-й секунде» от «человек ДОСМОТРЕЛ ролик до конца». Без неё позиция у
+            # самого конца хранится как позиция, и «продолжить с места» отправляет человека
+            # в финал — а это для него неотличимо от «началось сначала» (владелец, 15.09.2026;
+            # замер: 28 строк, из них у конца 1 — его собственная, 4526 из 4527).
+            # NULL = длины не знаем (ролик ещё не открывали новым бандлом). Это ТРЕТЬЕ
+            # состояние, не ноль: пока длины нет, правило «досмотрено» не применяется.
+            cursor.execute(
+                """
+                ALTER TABLE bt_3_youtube_watch_state
+                ADD COLUMN IF NOT EXISTS duration_seconds INTEGER;
+                """
+            )
+            # Чем кончилась попытка вернуть человека на его место. Без этого журнала о
+            # поломке узнаёт только раздражённый владелец и только через неделю
+            # (так и вышло 15.09.2026). Исходы:
+            #   restored            — вернули на сохранённую секунду;
+            #   no_saved_position   — возвращать было нечего, ролик новый;
+            #   finished            — ролик досмотрен, начали сначала осознанно;
+            #   lookup_failed       — не смогли спросить сервер (сеть), сказали человеку;
+            #   lost                — ПОЗИЦИЯ БЫЛА, а плеер всё равно начал с начала.
+            # Последний исход — тот самый дефект. По новому устройству он невозможен,
+            # поэтому обещание в fix_promises меряет именно его и ждёт ноль.
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_youtube_resume_outcomes (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    video_id TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    saved_seconds INTEGER,
+                    started_seconds INTEGER,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_youtube_resume_outcomes_when
+                ON bt_3_youtube_resume_outcomes (outcome, created_at DESC);
+                """
+            )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS bt_3_translation_draft_state (
@@ -32646,6 +32688,9 @@ def _youtube_watch_state_row_to_dict(row) -> dict | None:
         "last_opened_at": row[4].isoformat() if row[4] else None,
         "created_at": row[5].isoformat() if row[5] else None,
         "updated_at": row[6].isoformat() if row[6] else None,
+        # NULL остаётся None и НЕ превращается в 0: «длины не знаем» — это не «ролик
+        # нулевой длины». Клиент по None просто не применяет правило «досмотрено».
+        "duration_seconds": (int(row[7]) if (len(row) > 7 and row[7] is not None) else None),
     }
 
 
@@ -32657,7 +32702,7 @@ def get_youtube_watch_state(user_id: int, video_id: str) -> dict | None:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_id, video_id, input_text, current_time_seconds, last_opened_at, created_at, updated_at
+                SELECT user_id, video_id, input_text, current_time_seconds, last_opened_at, created_at, updated_at, duration_seconds
                 FROM bt_3_youtube_watch_state
                 WHERE user_id = %s
                   AND video_id = %s
@@ -32674,7 +32719,7 @@ def get_latest_youtube_watch_state(user_id: int) -> dict | None:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_id, video_id, input_text, current_time_seconds, last_opened_at, created_at, updated_at
+                SELECT user_id, video_id, input_text, current_time_seconds, last_opened_at, created_at, updated_at, duration_seconds
                 FROM bt_3_youtube_watch_state
                 WHERE user_id = %s
                 ORDER BY updated_at DESC
@@ -32692,12 +32737,23 @@ def upsert_youtube_watch_state(
     video_id: str,
     current_time_seconds: int | float,
     input_text: str | None = None,
+    duration_seconds: int | float | None = None,
 ) -> dict | None:
     normalized_video_id = str(video_id or "").strip()
     if not normalized_video_id:
         return None
     resolved_input = str(input_text or "").strip()
     safe_seconds = max(0, int(float(current_time_seconds or 0)))
+    # Длина ролика приходит от плеера и только когда он её назвал. None = не назвал;
+    # тогда мы НЕ трогаем то, что уже записано, и не пишем ноль (ноль здесь означал бы
+    # «ролик нулевой длины» и включил бы правило «досмотрено» на первой же секунде).
+    safe_duration = None
+    if duration_seconds is not None:
+        try:
+            candidate = int(float(duration_seconds))
+        except (TypeError, ValueError):
+            candidate = 0
+        safe_duration = candidate if candidate > 0 else None
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -32707,14 +32763,17 @@ def upsert_youtube_watch_state(
                     video_id,
                     input_text,
                     current_time_seconds,
+                    duration_seconds,
                     last_opened_at,
                     created_at,
                     updated_at
                 )
-                VALUES (%s, %s, NULLIF(%s, ''), %s, NOW(), NOW(), NOW())
+                VALUES (%s, %s, NULLIF(%s, ''), %s, %s, NOW(), NOW(), NOW())
                 ON CONFLICT (user_id, video_id) DO UPDATE
                 SET
                     input_text = COALESCE(NULLIF(EXCLUDED.input_text, ''), bt_3_youtube_watch_state.input_text),
+                    -- Плеер не назвал длину — оставляем то, что знали раньше.
+                    duration_seconds = COALESCE(EXCLUDED.duration_seconds, bt_3_youtube_watch_state.duration_seconds),
                     -- ┌─ ПРОВЕРЕНО 29.08.2026. НЕ ПЕРЕДЕЛЫВАТЬ В GREATEST(старое, новое). ──────┐
                     -- │ GREATEST(..., 0) здесь = «не ниже нуля», то есть берётся ПРИСЛАННОЕ    │
                     -- │ значение. Это верно: человек имеет право отмотать назад, и позиция     │
@@ -32727,17 +32786,94 @@ def upsert_youtube_watch_state(
                     current_time_seconds = GREATEST(EXCLUDED.current_time_seconds, 0),
                     last_opened_at = NOW(),
                     updated_at = NOW()
-                RETURNING user_id, video_id, input_text, current_time_seconds, last_opened_at, created_at, updated_at;
+                RETURNING user_id, video_id, input_text, current_time_seconds, last_opened_at, created_at, updated_at, duration_seconds;
                 """,
                 (
                     int(user_id),
                     normalized_video_id,
                     resolved_input,
                     safe_seconds,
+                    safe_duration,
                 ),
             )
             row = cursor.fetchone()
     return _youtube_watch_state_row_to_dict(row)
+
+
+YOUTUBE_RESUME_OUTCOMES = ("restored", "no_saved_position", "finished", "lookup_failed", "lost")
+
+
+def record_youtube_resume_outcome(
+    *,
+    user_id: int,
+    video_id: str,
+    outcome: str,
+    saved_seconds: int | None = None,
+    started_seconds: int | None = None,
+) -> bool:
+    """Записать, чем кончилась попытка вернуть человека на его место.
+
+    Неизвестный исход НЕ пишется и НЕ подменяется на «какой-нибудь»: журнал, в котором
+    половина значений выдумана, хуже пустого. Возвращаем False, чтобы вызывающий мог посчитать.
+    """
+    normalized_video_id = str(video_id or "").strip()
+    normalized_outcome = str(outcome or "").strip().lower()
+    if not normalized_video_id or normalized_outcome not in YOUTUBE_RESUME_OUTCOMES:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_youtube_resume_outcomes (
+                    user_id, video_id, outcome, saved_seconds, started_seconds
+                )
+                VALUES (%s, %s, %s, %s, %s);
+                """,
+                (
+                    int(user_id),
+                    normalized_video_id,
+                    normalized_outcome,
+                    None if saved_seconds is None else max(0, int(saved_seconds)),
+                    None if started_seconds is None else max(0, int(started_seconds)),
+                ),
+            )
+    return True
+
+
+def youtube_resume_lost_count(hours: int = 24) -> int:
+    """Сколько раз за последние `hours` позиция БЫЛА, а ролик всё равно начался с нуля.
+
+    По устройству «одна дверь» (15.09.2026) это невозможно: стартовая секунда решается
+    ДО постройки плеера и передаётся плееру при рождении. Появится хоть один случай —
+    значит дверь снова разъехалась, и обещание в fix_promises обязано покраснеть."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_youtube_resume_outcomes
+                WHERE outcome = 'lost'
+                  AND created_at >= NOW() - (%s * INTERVAL '1 hour');
+                """,
+                (int(max(1, hours)),),
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def youtube_resume_outcome_counts(hours: int = 24) -> dict[str, int]:
+    """Разбивка исходов за последние `hours` — для экрана «после»."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT outcome, COUNT(*)
+                FROM bt_3_youtube_resume_outcomes
+                WHERE created_at >= NOW() - (%s * INTERVAL '1 hour')
+                GROUP BY outcome;
+                """,
+                (int(max(1, hours)),),
+            )
+            return {str(row[0]): int(row[1]) for row in (cursor.fetchall() or [])}
 
 
 def _normalize_translation_draft_map(drafts) -> dict[str, str]:

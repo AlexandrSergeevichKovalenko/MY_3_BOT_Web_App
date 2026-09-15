@@ -1683,6 +1683,42 @@ def _form_headwords_unfixed() -> int:
     return unfixed_forms_count()
 
 
+def _youtube_resume_lost_today() -> int:
+    """Сколько раз за сутки позиция БЫЛА, а ролик всё равно начался с начала. Обещано: 0.
+
+    Повод 15.09.2026: владелец — «место иногда запоминается, а иногда нет». Сохранение
+    было живо (28 строк, 0 нулей), ломалось ВОЗВРАЩЕНИЕ, и узнать об этом можно было
+    только от раздражённого владельца через неделю.
+
+    По устройству «одна дверь» исход 'lost' невозможен: стартовая секунда решается ДО
+    постройки плеера и передаётся ему при рождении (playerVars.start / cueVideoById).
+    Клиент проверяет себя сам в момент, когда плеер реально заиграл: попросили N, играет
+    заметно раньше — пишет 'lost'. Число больше нуля = дверь снова разъехалась."""
+    from backend.database import youtube_resume_lost_count
+    return youtube_resume_lost_count(24)
+
+
+def _youtube_resume_screen() -> str:
+    """Экран «после»: чем кончались попытки вернуть человека на его место за сутки."""
+    from backend.database import youtube_resume_outcome_counts
+    try:
+        счёт = youtube_resume_outcome_counts(24)
+    except Exception:
+        logging.warning("youtube resume screen failed", exc_info=True)
+        return "▶️ Место в видео: экран не снялся — база не ответила"
+    if not счёт:
+        return "▶️ Место в видео: за сутки ролики не открывали, считать нечего"
+    подписи = {
+        "restored": "вернули на место",
+        "no_saved_position": "ролик новый",
+        "finished": "досмотрен, начали сначала",
+        "lookup_failed": "не смогли спросить сервер",
+        "lost": "ПОТЕРЯЛИ МЕСТО",
+    }
+    куски = [f"{подписи.get(k, k)} {v}" for k, v in sorted(счёт.items(), key=lambda kv: -kv[1])]
+    return "▶️ Место в видео за сутки: " + ", ".join(куски)
+
+
 def _anagram_people_running_out() -> int:
     """Людей, у кого запас непоказанных анаграмм меньше недели. Обещано: 0.
 
@@ -2307,6 +2343,19 @@ PROMISES: tuple[Promise, ...] = (
         how="/admin_promises — или открыть «Мои слова» и сверить: у записи, под которой "
             "справочник назвал часть речи, обязана стоять кнопка с этой частью речи "
             "(«begreifen» → «глагол»), а не одни «Оставить»/«Удалить»",
+    ),
+    Promise(
+        key="youtube_resume_lost",
+        title="Открытий видео, где место остановки было, а ролик начался с начала",
+        since="15.09.2026",
+        expected=0,
+        measure=_youtube_resume_lost_today,
+        screen=_youtube_resume_screen,
+        how="SELECT outcome, count(*) FROM bt_3_youtube_resume_outcomes "
+            "WHERE created_at >= NOW() - INTERVAL '24 hours' GROUP BY outcome — строка "
+            "outcome='lost' обязана отсутствовать. Руками: досмотреть ролик до 2:00, "
+            "подождать 10 с, уйти в «Словарь», вернуться в «Видео» — ролик обязан "
+            "открыться на 2:00, а не на нуле",
     ),
     Promise(
         key="db_guardrails_alive",
