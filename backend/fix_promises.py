@@ -1273,7 +1273,11 @@ def _relation_gap_silent_days() -> int:
                                          CURRENT_DATE - 1, '1 day') g
                 ),
                 moglo AS (
-                    SELECT d.d, b.relation
+                    -- DISTINCT обязателен: у одного дня бывает НЕСКОЛЬКО слов с той же
+                    -- отметкой тренировки, и без него измеритель считал строки банка, а
+                    -- не пропущенные слоты. 15.09.2026 он показал 4 там, где пропущено
+                    -- было максимум 2 — сырое число ушло бы владельцу завышенным.
+                    SELECT DISTINCT d.d, b.relation
                     FROM dni d
                     JOIN bt_3_sprint_bank b
                       ON b.trainer_sent_date = d.d - 2
