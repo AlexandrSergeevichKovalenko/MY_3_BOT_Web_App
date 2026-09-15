@@ -74,6 +74,15 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
   // │ средствами браузера, клавиатура открывается сама, печать заменяет букву.     │
   // └─────────────────────────────────────────────────────────────────────────────┘
   const cellRefs = useRef([]);
+  // ┌─ ПРОВЕРЕНО 15.09.2026. НЕ ССЫЛАТЬСЯ ОТСЮДА НА `check` НАПРЯМУЮ. ──────────────┐
+  // │ Обработчик клавиш объявлен ВЫШЕ, чем сам `check`. Список зависимостей        │
+  // │ useCallback вычисляется прямо во время отрисовки — и ссылка на ещё не        │
+  // │ созданную переменную роняет ВЕСЬ экран: владелец открыл задание и увидел     │
+  // │ пустоту. Сборка такого не ловит, `npm run build` проходит зелёным.           │
+  // │ Поэтому держим ссылку в ref: она всегда указывает на свежий `check`, а в     │
+  // │ зависимостях его нет.                                                        │
+  // └─────────────────────────────────────────────────────────────────────────────┘
+  const checkRef = useRef(null);
 
   const focusCell = useCallback((i) => {
     const el = cellRefs.current[i];
@@ -103,7 +112,7 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
   }, [setCharAt, focusCell]);
 
   const onCellKey = useCallback((i) => (e) => {
-    if (e.key === 'Enter') { check(); return; }
+    if (e.key === 'Enter') { checkRef.current?.(); return; }
     if (e.key === 'Backspace') {
       const cur = String(cellRefs.current[i]?.value || '');
       if (!cur && i > 0) {                       // пустая — стираем предыдущую и идём назад
@@ -115,7 +124,7 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
     }
     if (e.key === 'ArrowLeft' && i > 0) { e.preventDefault(); focusCell(i - 1); }
     if (e.key === 'ArrowRight') { e.preventDefault(); focusCell(i + 1); }
-  }, [check, setCharAt, focusCell]);
+  }, [setCharAt, focusCell]);
 
   const heroRef = useFitText(`${phase}|${meta?.wort || ''}`, { max: 'css', min: 15, padding: 10, fitBy: 'word' });
 
@@ -237,6 +246,8 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
     setVerdict(null); setAttempt(2);
     setTimeout(() => focusCell(String(value || '').length), 0);   // дописывать — с конца
   }, [value]);
+
+  useEffect(() => { checkRef.current = check; });
 
   const next = useCallback(() => {
     setSelection(null); setVerdict(null); setValue(''); setAttempt(1); setHints(0); setCaret(0);
