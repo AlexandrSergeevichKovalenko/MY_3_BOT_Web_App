@@ -1803,7 +1803,102 @@ def _battle_invite_targets_screen() -> str:
     return "\n".join(строки)
 
 
+# ── онбординг: шаг «Базовый словарь» ──────────────────────────────────────────────────
+
+# Порядковый номер шага «Базовый словарь» в туре (frontend/src/onboarding/OnboardingWizard.jsx,
+# массив STEPS, отсчёт с нуля). Если шаги переставят — поправить ЗДЕСЬ, иначе обещание
+# начнёт мерить чужой шаг и молча показывать 0.
+_ONBOARDING_DICTIONARY_STEP = 3
+
+# Починка уехала в прод 15.09.2026. Кто пришёл на шаг РАНЬШЕ, заперт старым кодом —
+# его освобождает сам деплой, как только он откроет приложение снова. Считать таких
+# нарушением обещания нечестно: обещание про то, что НОВЫХ запертых не появляется.
+_ONBOARDING_DICTIONARY_FIX_AT = "2026-09-15 07:00:00+00"
+
+_STUCK_ON_DICTIONARY_SQL = """
+    SELECT o.user_id, o.updated_at, s.decided_at, s.decision_status, s.subscription_limit
+      FROM bt_3_user_onboarding o
+      JOIN bt_3_starter_dictionary_state s ON s.user_id = o.user_id
+     WHERE o.completed = FALSE
+       AND o.current_step = %s
+       AND s.decision_status IN ('accepted', 'declined')
+       AND s.decided_at IS NOT NULL
+       AND s.decided_at < o.updated_at
+       AND o.updated_at >= %s::timestamptz
+       AND o.updated_at < NOW() - INTERVAL '24 hours'
+     ORDER BY o.updated_at
+"""
+
+
+def _stuck_on_dictionary_step() -> int:
+    """Сколько человек заперты на шаге «Базовый словарь». Обещано: 0.
+
+    Отбор описывает РОВНО тупик, а не «бросил тур на этом шаге»:
+      • тур не завершён и стоит именно на этом шаге;
+      • решение по словарю у человека УЖЕ записано сервером;
+      • записано РАНЬШЕ, чем он на шаг пришёл (decided_at < updated_at) — то есть
+        кнопок он на экране не видел, их спрятала плашка «подключён»;
+      • и он не сдвинулся больше суток.
+    Кто выбрал размер ВНУТРИ тура, отсеивается сам: у него decided_at позже прихода.
+
+    До 15.09.2026 таких было 1 (uid 313002147: словарь подключён в 06:04:17, на шаг
+    пришёл в 06:08:52, «Далее» была выключена навсегда). Число ВЫРОСЛО = отметка
+    «человек решил» опять берётся только из клика в открытой вкладке, а не с сервера."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(_STUCK_ON_DICTIONARY_SQL,
+                           (int(_ONBOARDING_DICTIONARY_STEP), _ONBOARDING_DICTIONARY_FIX_AT))
+            return len(cursor.fetchall() or [])
+
+
+def _onboarding_dictionary_screen() -> str:
+    """Экран владельца «после»: где сейчас стоят люди в незавершённом туре.
+
+    Это то же место, откуда пришла жалоба 15.09.2026 (скриншот «Шаг 4 из 20»), только
+    числами: кто застрял, и кому плашка врёт про размер подключённого набора."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(_STUCK_ON_DICTIONARY_SQL,
+                           (int(_ONBOARDING_DICTIONARY_STEP), _ONBOARDING_DICTIONARY_FIX_AT))
+            заперты = cursor.fetchall() or []
+            cursor.execute("""
+                SELECT COUNT(*) FROM bt_3_user_onboarding o
+                  JOIN bt_3_starter_dictionary_state s ON s.user_id = o.user_id
+                 WHERE o.completed = FALSE AND o.current_step = %s
+            """, (int(_ONBOARDING_DICTIONARY_STEP),))
+            на_шаге = int((cursor.fetchone() or [0])[0] or 0)
+            cursor.execute("""
+                SELECT COUNT(*) FROM bt_3_starter_dictionary_state
+                 WHERE live_subscription = TRUE AND subscription_limit IS NOT NULL
+            """)
+            с_потолком = int((cursor.fetchone() or [0])[0] or 0)
+    строки = ["📚 Онбординг, шаг «Базовый словарь»:",
+              f"⛔️ Заперты (кнопок нет, «Далее» выключена): {len(заперты)}",
+              f"🧍 Всего стоят на этом шаге сейчас: {на_шаге}",
+              f"📦 Подписок «Быстрый старт» (плашка обязана называть их так, а не «весь словарь»): {с_потолком}"]
+    for uid, updated_at, decided_at, статус, потолок in заперты[:10]:
+        размер = "быстрый старт" if потолок else ("весь словарь" if статус == "accepted" else "отказ")
+        строки.append(f"  • uid {uid}: стоит с {updated_at:%d.%m %H:%M}, решение «{размер}» от {decided_at:%d.%m %H:%M}")
+    return "\n".join(строки)
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="onboarding_dictionary_step_not_a_dead_end",
+        title="Людей, запертых на шаге онбординга «Базовый словарь»",
+        since="15.09.2026",
+        expected=0,
+        measure=_stuck_on_dictionary_step,
+        screen=_onboarding_dictionary_screen,
+        how="/admin_promises — или backend.fix_promises._stuck_on_dictionary_step(). До "
+            "15.09.2026 был 1 (uid 313002147, скриншот «Шаг 4 из 20»): словарь подключился "
+            "вне тура, шаг спрятал кнопки под плашку «подключён», а «Далее» ждала нажатия "
+            "ИМЕННО в этой вкладке — нажать было нечего. Ещё 9 человек с подпиской и без "
+            "строки тура упёрлись бы при первом же его открытии. Число ВЫРОСЛО = отметка "
+            "«человек решил» опять берётся из клика, а не из decision_status на сервере",
+    ),
     Promise(
         key="allowed_rows_are_real_people",
         title="Строк в списке доступа, за которыми нет человека",

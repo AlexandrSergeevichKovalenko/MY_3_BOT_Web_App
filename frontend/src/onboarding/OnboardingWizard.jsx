@@ -430,6 +430,58 @@ const GUEST_NOTE = (
 const REAL_STEPS = new Set(['install_app', 'language', 'dictionary', 'intensity', 'windows',
   'battles', 'groups', 'shortcut', 'howto_words', 'howto_interactives', 'howto_translations',
   'skill_map', 'howto_tools', 'howto_youtube', 'keyboard', 'howto_morning', 'howto_learn', 'plans']);
+// ⟦TEST-EXTRACT-START⟧ dictionary-step-state
+// Состояние шага «Базовый словарь» и решение человека — ДВЕ чистые функции, вынесенные
+// из разметки, чтобы их можно было проверить тестом без рендера:
+// frontend/tests/onboarding_dictionary_step.test.mjs.
+//
+// ┌─ ПРОВЕРЕНО 15.09.2026. Подписка включается на ОБА размера. ─────────────────────┐
+// │ /starter-dictionary/apply ставит live_subscription=TRUE и для «Быстрого старта»  │
+// │ тоже — разница ТОЛЬКО в потолке: subscription_limit=null → весь словарь,         │
+// │ 1000 → быстрый старт (backend_server.py, ветка _want_full). Шаг смотрел на один  │
+// │ флаг и писал «✅ Весь словарь подключён» тому, кто выбрал быстрый старт: замер   │
+// │ на живой базе 15.09.2026 — 6 таких записей из 19 подписок. Потолок сервер        │
+// │ присылает в state.subscription_limit (database.get_starter_dictionary_state      │
+// │ кладёт его всегда), поэтому читаем ЕГО, а не флаг в одиночку.                    │
+// └─────────────────────────────────────────────────────────────────────────────────┘
+function dictionaryStepState(dictOffer, confirmedHere) {
+  const have = Number(dictOffer?.starter_pair_total || 0);
+  const suggested = Number(dictOffer?.suggested_count || dictOffer?.import_limit || 0);
+  const total = Number(dictOffer?.template_total || 0);
+  const state = dictOffer?.state || {};
+  const subscribed = !!state.live_subscription;
+  const subLimit = state.subscription_limit == null ? null : Number(state.subscription_limit);
+  const subscribedCapped = subscribed && subLimit != null;   // подписка «Быстрый старт»
+  const hasFull = (subscribed && subLimit == null) || (total > 0 && have >= total);
+  // Базовый набор есть, весь словарь ещё можно добрать: либо старые скопированные
+  // строки (have > 0), либо подписка с потолком (копий нет, have всегда 0).
+  const partial = (have > 0 || subscribedCapped) && !hasFull;
+  const done = (!!confirmedHere && !partial) || hasFull;
+  return { have, suggested, total, subscribed, subLimit, subscribedCapped, hasFull, partial, done };
+}
+
+// Размер набора, который человек УЖЕ подключил и сервер записал. null = не подключал.
+// Это не догадка: decision_status пишется ровно тем запросом, которым он нажал кнопку.
+//
+// Отметку «шаг пройден» ставим ТОЛЬКО когда набор ПРАВДА подключён — ровно тогда шаг и
+// прячет кнопки под плашку, то есть только тогда и возникает тупик. Два соседних случая
+// намеренно оставлены как были, потому что тупика в них нет и подтверждать там нечего:
+//   • «отказался» — на экране все три кнопки, человек может передумать прямо сейчас;
+//   • «согласился, но не подключилось» (сорванный импорт) — кнопки тоже на месте.
+// Иначе отметка сделала бы шаг «пройденным» и плашка сказала бы «подключён» тому, у
+// кого не подключено ничего, — это ровно то враньё, из-за которого чинится второй дефект.
+function dictionaryDecisionFromOffer(dictOffer) {
+  const state = dictOffer?.state || {};
+  if (String(state.decision_status || '').trim().toLowerCase() !== 'accepted') return null;
+  const subscribed = !!state.live_subscription;
+  const have = Number(dictOffer?.starter_pair_total || 0);
+  if (!subscribed && have <= 0) return null;
+  // Весь словарь — только подписка БЕЗ потолка. Старые записи (копирование до перехода
+  // на подписку) — это «быстрый старт»: полный ещё можно добрать.
+  return (subscribed && state.subscription_limit == null) ? 'full' : 'quick';
+}
+// ⟦TEST-EXTRACT-END⟧
+
 function StepBody(props) {
   const { step, isPro, confirmed, busy, dictBusy, dictChoice, stepErr, onConfirm, dictOffer, onDictAction,
     selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle,
@@ -530,15 +582,8 @@ function StepBody(props) {
         </div>
       );
     case 'dictionary': {
-      const have = Number(dictOffer?.starter_pair_total || 0);
-      const n = Number(dictOffer?.suggested_count || dictOffer?.import_limit || 0);
-      const total = Number(dictOffer?.template_total || 0);
-      // «Весь словарь» is now a LIVE subscription (no bulk copy), so `have` stays 0 — detect it
-      // from the subscription flag, not from the imported-word count.
-      const subscribed = !!(dictOffer?.state?.live_subscription);
-      const hasFull = subscribed || (total > 0 && have >= total);
-      const partial = have > 0 && !hasFull;          // small starter connected, full still available
-      const done = (confirmed && !partial) || hasFull;
+      const { suggested: n, total, subLimit, subscribedCapped, hasFull, partial, done } =
+        dictionaryStepState(dictOffer, confirmed);
       return (
         <div className="ob-stub">
           <p className="ob-lead">
@@ -562,7 +607,11 @@ function StepBody(props) {
             )
           ) : partial ? (
             <div className="ob-actions ob-actions-col">
-              <span className="ob-lock ob-ok">{t('✅ Базовый словарь подключён', '✅ Basis-Wörterbuch verbunden')}</span>
+              <span className="ob-lock ob-ok">
+                {subscribedCapped
+                  ? `${t('✅ Быстрый старт подключён', '✅ Schnellstart verbunden')}${subLimit ? ` — ${subLimit} ${t('слов', 'Wörter')}` : ''}`
+                  : t('✅ Базовый словарь подключён', '✅ Basis-Wörterbuch verbunden')}
+              </span>
               {dictChoice === 'full' ? (
                 <span className="ob-lock ob-ok">{t('✅ Весь словарь подключён — слова будут открываться по мере занятий', '✅ Volles Wörterbuch verbunden — die Wörter werden nach und nach freigeschaltet')}</span>
               ) : (
@@ -1868,6 +1917,39 @@ export default function OnboardingWizard() {
     return () => { off = true; };
   }, [step.id, loading, dictOffer]);
 
+  // ┌─ НАЙДЕНО 15.09.2026, ПОЧИНЕНО. НЕ ВОЗВРАЩАТЬ «confirmed только по клику». ──────┐
+  // │ Шаг «Базовый словарь» обязательный: «Далее» ждала нажатия кнопки В ЭТОЙ         │
+  // │ вкладке (confirmed.dictionary). А кнопок на экране НЕТ, если словарь уже        │
+  // │ подключён — шаг рисует вместо них зелёную плашку. Круг замыкался: нажать        │
+  // │ нечего → отметки нет → «Далее» выключена навсегда, и подпись на ней             │
+  // │ оставалась обычная «Далее →» — человек даже не понимал, чего от него ждут.      │
+  // │                                                                                 │
+  // │ Дорог к «уже подключён» ТРИ, все живые:                                         │
+  // │  1) главное приложение спрашивает про базовый словарь своим окном               │
+  // │     (App.jsx, starterDictionaryPromptOpen) РАНЬШЕ, чем тур доходит до шага 4;   │
+  // │  2) выбор из гостевого тура применяется при первом входе с аккаунтом            │
+  // │     (readPendingChoices ниже по файлу) — на сервере он есть, в памяти нет;      │
+  // │  3) перезагрузка мини-аппа: точка возврата живёт на сервере, а confirmed жил    │
+  // │     только в памяти страницы (Telegram на Android перезагружает WebView охотнее │
+  // │     — поэтому дефект и выглядел «андроидным», хотя платформы не касается).      │
+  // │                                                                                 │
+  // │ Замер на живой базе 15.09.2026: 1 человек стоял в тупике прямо сейчас           │
+  // │ (uid 313002147 — словарь подключён в 06:04:17, на шаг 4 пришёл в 06:08:52),     │
+  // │ ещё 9 с подпиской и без строки тура упрутся при первом же его открытии.         │
+  // │                                                                                 │
+  // │ Источник истины для «человек решил» — СЕРВЕР (state.decision_status), а не      │
+  // │ клик в этой вкладке. Ничего не угадываем: decision_status пишется ровно тем     │
+  // │ запросом, которым человек и нажал кнопку.                                       │
+  // └─────────────────────────────────────────────────────────────────────────────────┘
+  useEffect(() => {
+    if (!dictOffer || !HAS_ACCOUNT) return;
+    const decided = dictionaryDecisionFromOffer(dictOffer);
+    if (!decided) return;
+    setConfirmed((c) => (c.dictionary ? c : { ...c, dictionary: true }));
+    // Выбор, сделанный ПРЯМО СЕЙЧАС, важнее записанного раньше — не перетираем его.
+    setDictChoice((cur) => cur || decided);
+  }, [dictOffer]);
+
   // ┌─ УБРАНО 14.09.2026. НЕ ВОЗВРАЩАТЬ ЭТОТ ЭФФЕКТ. ──────────────────────────────┐
   // │ Здесь стоял «battle readiness defaults ON»: шаг тура сам отправлял           │
   // │ opt_in: true. Защита от повтора жила в useRef, то есть только внутри одного  │
@@ -2060,9 +2142,15 @@ export default function OnboardingWizard() {
               onClick={goNext}
               disabled={!canNext || finishing || done || !contentReady || !atBottom}
             >
+              {/* Выключенная кнопка ОБЯЗАНА сказать, чего от человека ждут. Три причины из
+                  четырёх были подписаны, а четвёртая (шаг не подтверждён) молчала: кнопка
+                  просто бледнела с надписью «Далее →». Именно на этом 15.09.2026 встал
+                  человек на шаге «Базовый словарь». Молчащая блокировка неотличима от
+                  поломки — подписываем все. */}
               {done ? t('✅ Готово', '✅ Fertig')
                 : !contentReady ? t('⏳ Загрузка…', '⏳ Lädt…')
                 : !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
+                : !canNext ? t('↑ Сначала выбери выше', '↑ Wähle zuerst oben')
                 : isLast ? (TOUR_IN_PLACE ? t('Закрыть', 'Schließen') : !HAS_ACCOUNT ? t('🚀 Установить бота', '🚀 Bot installieren') : IS_PUBLIC ? t('🎯 Открыть приложение', '🎯 App öffnen') : t('🎯 Закрыть и открыть приложение', '🎯 Schließen und App öffnen'))
                 : t('Далее →', 'Weiter →')}
             </button>
