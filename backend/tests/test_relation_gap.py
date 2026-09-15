@@ -208,3 +208,58 @@ def test_spravochnik_podayotsya_vyzyvayushchim_i_padenie_ne_roniaet_sborku():
     items, skipped = build_gap_items(wort="detailliert", accepted=[], trainer_json=tj,
                                      forms_of=broken)
     assert len(items) == 1 and not skipped, "падение источника не должно ронять сборку"
+
+
+# ── ОДНА ДВЕРЬ СБОРКИ НА ВСЕХ (15.09.2026) ───────────────────────────────────
+# Правил было два: экран человека и проверка ответа строили заготовки СО справочником
+# спряжений, а отправители (рассылка по часам и капля) — без него. Отправитель строит
+# заготовки только чтобы решить «есть ли что показывать», и по бедному правилу он видел
+# ноль там, где у человека на экране собралось бы задание целиком.
+# Замер 15.09.2026 на живом банке (77 слов): 475 заготовок без справочника против 485 с
+# ним, и ровно три слова — verwirren (4), bemerken (2), versäumen (4) — отправитель
+# молча считал пустыми. Слов, где он видит меньше, но не ноль, нет ни одного.
+def test_dver_sborki_sama_podayot_spravochnik_form():
+    """build_gap_items_for берёт справочник сам — вызывающему о нём знать не нужно."""
+    from unittest import mock
+    from backend import relation_gap
+
+    строка_банка = {"wort": "bemerken", "accepted": [{"de": "registrieren", "ru": "заметить"}],
+                    "trainer_json": {"correct_examples": [
+                        {"word": "registrieren",
+                         "sentence_de": "Plötzlich registrierte sie einen Fehler im Text.",
+                         "sentence_ru": "Вдруг она заметила ошибку в тексте."}]}}
+    # Без справочника форма «registrierte» не находится: немецкий глагол спрягается
+    # заменой «-en», а не приклейкой окончания.
+    без, _ = build_gap_items(wort=строка_банка["wort"], accepted=строка_банка["accepted"],
+                             trainer_json=строка_банка["trainer_json"])
+    assert без == [], "замер изменился: проверь, не переписан ли поиск формы"
+
+    with mock.patch("backend.answer_eval._gap_forms_lookup",
+                    return_value=lambda w: {"registrierte"} if w == "registrieren" else None):
+        сдверью, _ = relation_gap.build_gap_items_for(строка_банка)
+    assert len(сдверью) == 1, "дверь сборки не подала справочник форм"
+
+
+def test_nikto_ne_sobiraet_zagotovki_mimo_dveri():
+    """Второй текст того же правила — это два экрана с двумя ответами на один вопрос.
+
+    Прямой вызов build_gap_items разрешён ТОЛЬКО внутри самой двери (relation_gap.py) и
+    в тестах. Красный тест = где-то опять собирают заготовки своим правилом.
+    """
+    import os
+    import re
+
+    корень = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    нарушители = []
+    for путь in ("bot_3.py", "backend/answer_eval.py", "backend/fix_promises.py",
+                 "backend/backend_server.py"):
+        полный = os.path.join(корень, путь)
+        if not os.path.exists(полный):
+            continue
+        for n, строка in enumerate(open(полный, encoding="utf-8"), 1):
+            голая = строка.split("#")[0]
+            if re.search(r"\bbuild_gap_items\s*\(", голая) or \
+               re.search(r"\bbuild_gap_items\b(?!_for)\s*,", голая):
+                нарушители.append(f"{путь}:{n}")
+    assert not нарушители, ("заготовки собираются мимо двери build_gap_items_for: "
+                            + ", ".join(нарушители))

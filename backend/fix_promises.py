@@ -1237,11 +1237,10 @@ def _relation_gap_builds_from_bank() -> int:
     не его пересказом: иначе обещание стережёт не то, что работает.
     """
     from backend.database import get_db_connection_context
-    from backend.relation_gap import build_gap_items
-    # Справочник форм подаём ТОТ ЖЕ, что и живая сборка (backend/answer_eval.
-    # _gap_forms_lookup): измеритель обязан считать тем же правилом, что работает у
-    # человека. Без него 14.09.2026 он показал 3 при живом 0 — мерил другое правило.
-    from backend.answer_eval import _gap_forms_lookup
+    # Одна дверь сборки на всех (15.09.2026): измеритель обязан считать тем же
+    # правилом, что работает у человека. Отдельный вызов со своим справочником здесь
+    # уже стоял и однажды разошёлся с живым — 14.09.2026 показал 3 при живом 0.
+    from backend.relation_gap import build_gap_items_for
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1252,9 +1251,7 @@ def _relation_gap_builds_from_bank() -> int:
     empty = 0
     for wort, accepted, trainer_json in rows:
         full = {"wort": wort, "accepted": accepted, "trainer_json": trainer_json or {}}
-        items, _skipped = build_gap_items(
-            wort=str(wort or ""), accepted=accepted, trainer_json=trainer_json or {},
-            forms_of=_gap_forms_lookup(full))
+        items, _skipped = build_gap_items_for(full)
         if not items:
             empty += 1
     return int(empty)

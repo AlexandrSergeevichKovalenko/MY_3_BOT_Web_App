@@ -5118,12 +5118,10 @@ async def _drip_bonus_pass(context: CallbackContext, uid: int, now) -> int:
                 if int(uid) in (prepped_gap or set()):
                     # Заготовки строим ДО отправки — ровно как слотовая рассылка: карточка
                     # с пустым экраном за ней хуже, чем не отправленная карточка.
-                    from backend.relation_gap import build_gap_items
+                    from backend.relation_gap import build_gap_items_for
                     try:
                         gap_items, _ = await asyncio.to_thread(
-                            build_gap_items, wort=str(gap_entry.get("wort") or ""),
-                            accepted=gap_entry.get("accepted"),
-                            trainer_json=gap_entry.get("trainer_json") or {})
+                            build_gap_items_for, gap_entry)
                     except Exception:
                         logging.warning("drip gap: сборка заготовок упала relation=%s uid=%s",
                                         relation, uid, exc_info=True)
@@ -43589,10 +43587,11 @@ async def _send_scheduled_relation_gap(context: CallbackContext, relation: str) 
     # Заготовки строятся из банка ЗДЕСЬ ЖЕ, до рассылки: если ни одна не собралась,
     # человеку уходит карточка, за которой пустой экран. Лучше не слать и посчитать.
     try:
-        from backend.relation_gap import build_gap_items
-        items, skipped = await asyncio.to_thread(
-            build_gap_items, wort=str(entry.get("wort") or ""),
-            accepted=entry.get("accepted"), trainer_json=entry.get("trainer_json") or {})
+        # Одна дверь сборки на всех (15.09.2026): раньше отправитель строил заготовки
+        # БЕЗ справочника спряжений, а экран человека — с ним, и три слова банка
+        # (verwirren, bemerken, versäumen) отправитель молча считал пустыми.
+        from backend.relation_gap import build_gap_items_for
+        items, skipped = await asyncio.to_thread(build_gap_items_for, entry)
     except Exception:
         logging.warning("gap_sched: сборка заготовок упала relation=%s", relation, exc_info=True)
         return
@@ -43625,11 +43624,8 @@ async def _send_scheduled_relation_gap(context: CallbackContext, relation: str) 
                  relation, entry.get("wort"), len(items), sent, skipped_users, skipped)
 
 
-def _gap_forms_for(full: dict):
-    """Поиск форм по справочнику спряжений для одного слова банка (см.
-    backend/answer_eval._gap_forms_lookup — то же правило, тот же источник)."""
-    from backend.answer_eval import _gap_forms_lookup
-    return _gap_forms_lookup(full or {})
+# Обёртка _gap_forms_for убрана 15.09.2026: справочник форм подаёт сама дверь сборки
+# backend.relation_gap.build_gap_items_for, и знать о нём вызывающему больше не нужно.
 
 
 async def _admin_gap_test_command(update: Update, context: CallbackContext) -> None:
@@ -43658,7 +43654,7 @@ async def _admin_gap_test_command(update: Update, context: CallbackContext) -> N
     # получил отказ), потому что pick_next_trainer с кулдауном 0 отдаёт одно и то же
     # слово. Перебираем дальше по банку и берём первое годное; если годных нет вовсе —
     # говорим это прямо, с разбором отказов.
-    from backend.relation_gap import build_gap_items
+    from backend.relation_gap import build_gap_items_for
     tried: list[str] = []
     entry = full = None
     items: list = []
@@ -43667,11 +43663,7 @@ async def _admin_gap_test_command(update: Update, context: CallbackContext) -> N
         cand_full = await asyncio.to_thread(get_sprint_trainer_item, str(cand["sprint_id"]))
         if not cand_full:
             continue
-        cand_items, cand_skipped = await asyncio.to_thread(
-            build_gap_items, wort=str(cand_full.get("wort") or ""),
-            accepted=cand_full.get("accepted"),
-            trainer_json=cand_full.get("trainer_json") or {},
-            forms_of=_gap_forms_for(cand_full))
+        cand_items, cand_skipped = await asyncio.to_thread(build_gap_items_for, cand_full)
         if cand_items:
             entry, full, items, skipped = cand, cand_full, cand_items, cand_skipped
             break
