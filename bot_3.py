@@ -18,7 +18,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 import contextvars
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ForceReply
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ForceReply, WebAppInfo
 from telegram import InlineQueryResultPhoto
 from telegram.ext import CallbackQueryHandler, InlineQueryHandler
 from telegram.ext import PreCheckoutQueryHandler
@@ -43741,6 +43741,54 @@ async def _admin_gap_test_command(update: Update, context: CallbackContext) -> N
         parse_mode="HTML")
 
 
+# ── /lab — пробник поведения клавиатуры и оформления, ТОЛЬКО для владельца ───────
+# Владелец, 15.09.2026: «сделай мне 2-3 варианта… но не менять действующие, потому что
+# пользователи сейчас пользуются этим, а именно какой-то сделать копию только для меня».
+#
+# Поэтому это ОТДЕЛЬНАЯ статическая страница frontend/public/lab/kbd.html: копии четырёх
+# интерактивов с вводом, три режима поведения клавиатуры и три оформления. Ни один живой
+# экран она не трогает и данных не пишет.
+#
+# Открывается кнопкой web_app, а НЕ обычной ссылкой: в мини-аппе Telegram своя механика
+# высоты окна, и именно она — половина вопроса про «экран прыгает». В браузерной вкладке
+# поведение было бы другим, и замер оказался бы неправдой.
+LAB_KEYBOARD_PATH = "/lab/kbd.html"
+
+
+async def _admin_lab_command(update: Update, context: CallbackContext) -> None:
+    """/lab — прислать себе кнопку на страницу-лабораторию ввода."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    base = (get_webapp_url() or "").rstrip("/")
+    if not base.startswith("https://"):
+        await message.reply_text(
+            "WEB_APP_URL не задан или не https — Telegram откроет мини-апп только по https. "
+            "Кнопку не рисую, чтобы не отправлять заведомо нерабочую.")
+        return
+    url = base + LAB_KEYBOARD_PATH
+    await message.reply_text(
+        "<b>Лаборатория ввода</b>\n\n"
+        "Четыре интерактива, где человек печатает. Вверху — кнопка «настройки»: там "
+        "переключаются задание, поведение клавиатуры и оформление.\n\n"
+        "<b>Поведение клавиатуры</b>\n"
+        "• <i>Как сейчас</i> — кадр сжимается вместе с клавиатурой, содержимое прыгает.\n"
+        "• <i>Стабильный кадр</i> — ничего не прыгает, но клавиатура накрывает низ.\n"
+        "• <i>Панель у клавиатуры</i> — строка ввода приклеена к кромке клавиатуры.\n\n"
+        "<b>Оформление</b>: Бланк · Панель · Фокус.\n\n"
+        "Серая строка сверху — приборы: видно, на сколько пикселей клавиатура "
+        "съедает экран прямо сейчас.\n\n"
+        "Настоящие интерактивы не изменены — это отдельная страница.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🧪 Открыть лабораторию", web_app=WebAppInfo(url=url))
+        ]]))
+
+
 async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> None:
     if _is_quiet_hours_now():
         logging.info("quiet_hours: skip sprint")
@@ -47742,6 +47790,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_synonym_review_callback, pattern=r"^sacc:"))
     application.add_handler(CommandHandler("admin_synonym_review", admin_synonym_review_command))
     application.add_handler(CommandHandler("gap_test", _admin_gap_test_command))
+    application.add_handler(CommandHandler("lab", _admin_lab_command))
     application.add_handler(CallbackQueryHandler(handle_word_review_callback, pattern=r"^wrev:"))
     application.add_handler(CallbackQueryHandler(handle_reference_forms_review_callback, pattern=r"^reffrm:"))
     application.add_handler(CallbackQueryHandler(handle_fill_control_callback, pattern=r"^artfill:"))

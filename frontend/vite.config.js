@@ -91,6 +91,10 @@ export default defineConfig(async () => {
         injectRegister: false,
         manifest: false,
         workbox: {
+          // Страницы-пробники владельца (/lab/*) в предзагрузку НЕ кладём: иначе
+          // каждый пользователь скачивает себе в кеш макет, который ему не покажут,
+          // а сама страница обновляется только вместе со сменой service worker.
+          globIgnores: ['**/node_modules/**/*', 'lab/**'],
           // Take over as soon as a new build is deployed instead of waiting for
           // every Telegram webview to close first. Without this the Mini-App keeps
           // serving the previously cached bundle for a long time after a deploy
@@ -111,7 +115,10 @@ export default defineConfig(async () => {
           // Same reason for the MAIN app's token entry /webapp/t/<token> (and /webapp): the
           // server rewrites the manifest link to carry the app token (…?aqt=…), so the
           // installed home-screen icon cold-launches authenticated instead of logged out.
-          navigateFallbackDenylist: [/^\/api\//, /^\/dict(\/|$|\?)/, /^\/d(\/|$|\?)/, /^\/webapp(\/|$|\?)/],
+          // /lab/* — отдельные страницы-пробники для владельца (макеты, замеры поведения
+          // клавиатуры). Это самостоятельные .html из public/, а не маршруты SPA: без
+          // запрета service worker подменил бы их index.html'ом приложения из кеша.
+          navigateFallbackDenylist: [/^\/api\//, /^\/dict(\/|$|\?)/, /^\/d(\/|$|\?)/, /^\/webapp(\/|$|\?)/, /^\/lab(\/|$|\?)/],
           runtimeCaching: [
             {
               urlPattern: ({ url, request }) => {
