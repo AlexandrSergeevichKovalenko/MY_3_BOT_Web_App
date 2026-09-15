@@ -107,7 +107,12 @@ class ДвериЗаписи(unittest.TestCase):
     def test_самозапись_по_ссылке_пишет_старт(self):
         курсор = mock.MagicMock()
         курсор.fetchone.return_value = (8546091375,)
-        with mock.patch.object(db, "is_access_denied_for_user", return_value=False), \
+        # Здесь проверяется ПОВЕДЕНИЕ ПРОДА, поэтому тестовый запрет на впуск
+        # (SKIP_ACCESS_GRANT_WRITES, conftest) снимается явно. Боевая база при этом не
+        # задета: соединение подменено, наружу не ходит ни один запрос.
+        with mock.patch.dict(os.environ, {"SKIP_ACCESS_GRANT_WRITES": "",
+                                          "SKIP_STARTUP_SCHEMA_BOOTSTRAP": ""}), \
+             mock.patch.object(db, "is_access_denied_for_user", return_value=False), \
              mock.patch.object(db, "_public_access_cap_reached", return_value=False), \
              mock.patch.object(db, "get_db_connection_context", _соединение_с_курсором(курсор)), \
              mock.patch.object(db, "invalidate_telegram_user_allowed_cache"), \

@@ -3442,7 +3442,19 @@ def _cache_webapp_instance_lease(user_id: int, lease: dict | None) -> None:
 
 def _notify_admins_new_user_async(user_id: int, display_name: str, source: str) -> None:
     """Fire-and-forget «+1» DM to admins. Never on the request's critical path: this runs
-    once per brand-new user, and a slow Telegram API call must not delay their first screen."""
+    once per brand-new user, and a slow Telegram API call must not delay their first screen.
+
+    ⛔ Из прогона тестов письмо НЕ уходит. 14.09.2026 владелец получил три письма
+    «🆕 Новый пользователь подключился» про id 777, 77 и 987654321 — это ходили тесты
+    по боевой базе с настоящим токеном бота (разбор — в
+    backend.database._access_grant_writes_disabled). Нового человека там не было, и
+    письма быть не должно. В проде переменная не ставится.
+    """
+    from backend.database import _access_grant_writes_disabled
+    if _access_grant_writes_disabled():
+        logging.warning("прогон тестов: письмо «+1» про user_id=%s владельцу НЕ отправлено",
+                        int(user_id))
+        return
 
     def _send() -> None:
         try:

@@ -41,7 +41,14 @@ class ПотолокСтоитВОднойДвери(unittest.TestCase):
     def _впустить(self, cap, впущено):
         """Попытка входа при данном потолке. Возвращает (пустили?, встал_в_очередь?)."""
         очередь = []
-        with mock.patch.object(db, "is_access_denied_for_user", return_value=False), \
+        # Проверяется ПОВЕДЕНИЕ ПРОДА (потолок и очередь), поэтому тестовый запрет на
+        # впуск (SKIP_ACCESS_GRANT_WRITES, conftest) снимается явно. Боевая база не
+        # задета: соединение подменено. Id взят правдоподобный: с 15.09.2026 дверь не
+        # впускает id, который по правилу проекта не может принадлежать человеку
+        # (is_real_telegram_user_id), и на выдуманном 555 проверялся бы не потолок.
+        with mock.patch.dict(os.environ, {"SKIP_ACCESS_GRANT_WRITES": "",
+                                          "SKIP_STARTUP_SCHEMA_BOOTSTRAP": ""}), \
+             mock.patch.object(db, "is_access_denied_for_user", return_value=False), \
              mock.patch.object(db, "public_access_cap", return_value=cap), \
              mock.patch.object(db, "count_allowed_users", return_value=впущено), \
              mock.patch.object(db, "add_to_access_waitlist",
@@ -50,9 +57,9 @@ class ПотолокСтоитВОднойДвери(unittest.TestCase):
              mock.patch.object(db, "invalidate_telegram_user_allowed_cache"), \
              mock.patch.object(db, "_invalidate_webapp_allowlist_redis"):
             курсор = mock.MagicMock()
-            курсор.fetchone.return_value = (555,)
+            курсор.fetchone.return_value = (500000555,)
             соединение.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = курсор
-            пустили = db.auto_grant_telegram_user(555, "Кто-то", "invite")
+            пустили = db.auto_grant_telegram_user(500000555, "Кто-то", "invite")
         return пустили, bool(очередь)
 
     def test_потолка_нет_значит_пускаем_всех(self):
