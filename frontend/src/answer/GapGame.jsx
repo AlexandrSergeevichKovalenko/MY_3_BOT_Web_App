@@ -64,6 +64,7 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
   const [saved, setSaved] = useState(() => new Set());
   const [selection, setSelection] = useState(null);
   const inputRef = useRef(null);
+  const cellsRef = useRef(null);
   const toast = useToast();
 
   // Каретка из самого поля: браузер двигает её при вводе, стрелках и тапе.
@@ -91,28 +92,43 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
   // Тап по клетке ставит каретку ИМЕННО В НЕЁ — можно поправить букву в середине, а не
   // стирать слово целиком. preventDefault держит фокус на поле: без него нажатие уводит
   // его на сам span, и на айфоне клавиатура прячется.
-  // Ставим каретку по КЛИКУ, а не по нажатию: <label> сам наводит фокус на поле после
-  // нажатия, и каретка, выставленная раньше, тут же уезжала бы в конец. Клик — тоже
-  // касание пользователя, так что на айфоне клавиатура поднимается.
-  const tapCell = useCallback((i) => () => {
+  // КЛЕТКА ПО ТОЧКЕ КАСАНИЯ. Поле ввода лежит поверх ряда и обязано ловить касания
+  // само: только тогда айфон считает тап настоящим и поднимает клавиатуру. Поэтому
+  // нужную клетку ищем не обработчиком на ней, а по координатам нажатия.
+  //
+  // ┌─ ПРОВЕРЕНО 15.09.2026. НЕ ВЕШАТЬ onClick НА САМУ КЛЕТКУ. ────────────────────┐
+  // │ Сначала обработчик висел на клетке — он не вызывался ни разу, потому что     │
+  // │ поле перекрывало ряд. Потом я пропустил касания сквозь поле (pointer-events:  │
+  // │ none) — тап заработал, но КЛАВИАТУРА ПЕРЕСТАЛА ВЫЕЗЖАТЬ. Владелец поймал оба  │
+  // │ раза. Рабочий путь один: касание достаётся полю, клетка считается по точке.   │
+  // └──────────────────────────────────────────────────────────────────────────────┘
+  const tapAt = useCallback((e) => {
     if (verdict) return;
     const el = inputRef.current;
-    if (!el) return;
-    el.focus();
+    const row = cellsRef.current;
+    if (!el || !row) return;
+    const x = Number(e.clientX), y = Number(e.clientY);
+    let index = null;
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      const boxes = row.querySelectorAll('.gp-cell');
+      for (let i = 0; i < boxes.length; i += 1) {
+        const r = boxes[i].getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) { index = i; break; }
+      }
+    }
     const len = String(value || '').length;
-    const pos = Math.min(i, len);
-    // ТАП ПО БУКВЕ ВЫДЕЛЯЕТ ЕЁ, а не ставит курсор перед ней: следующая напечатанная
-    // буква встаёт НА ЕЁ МЕСТО. Так и ждёт человек от клеток — каждая клетка это одна
-    // буква. Первая попытка ставила курсор перед буквой, и печать сдвигала слово
-    // вправо вместо замены; владелец 15.09.2026: «приходится всё удалять».
-    // Пустая клетка в конце — просто курсор, выделять там нечего.
+    // Мимо клеток (в зазор или в край ряда) — не трогаем каретку, пусть ведёт себя
+    // как обычное поле: человек просто вызвал клавиатуру.
+    if (index == null) { syncCaret(); return; }
+    const pos = Math.min(index, len);
     try {
+      // Тап по написанной букве ВЫДЕЛЯЕТ её: следующая встанет на её место.
       if (pos < len) el.setSelectionRange(pos, pos + 1);
       else el.setSelectionRange(pos, pos);
-    } catch (_e) { /* noop */ }
+    } catch (_err) { /* noop */ }
     setCaret(pos);
     setPicked(pos < len);
-  }, [verdict, value]);
+  }, [verdict, value, syncCaret]);
 
   const heroRef = useFitText(`${phase}|${meta?.wort || ''}`, { max: 'css', min: 15, padding: 10, fitBy: 'word' });
 
@@ -351,7 +367,7 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
               onChange={(e) => { setValue(e.target.value); syncCaret(); }}
               onSelect={syncCaret}
               onKeyUp={syncCaret}
-              onClick={syncCaret}
+              onClick={tapAt}
               onKeyDown={(e) => { if (e.key === 'Enter' && !verdict) check(); }}
               aria-label={attempt === 2 ? 'Поправь форму' : 'Впиши слово по буквам'}
               autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
@@ -359,7 +375,6 @@ export default function GapGame({ id, api, haptic, onClose, task = null }) {
             {cells.map((c, i) => (
               <span key={i}
                 className={`gp-cell${c.cls}${!verdict && i === caret ? (picked ? ' picked' : ' next') : ''}`}
-                onClick={tapCell(i)}
                 aria-hidden="true">{c.ch}</span>
             ))}
           </label>
