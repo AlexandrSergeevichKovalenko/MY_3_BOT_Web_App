@@ -2683,17 +2683,14 @@ def load_gap_task(*, dispatch_id: int, user_id: int) -> dict | None:
     и вызывающий честно отвечает «для этого слова пока нет предложений», а не
     показывает пустой экран."""
     from backend.database import get_relation_gap_dispatch_by_id, get_sprint_trainer_item
-    from backend.relation_gap import build_gap_items
+    from backend.relation_gap import build_gap_items_for
     dispatch = get_relation_gap_dispatch_by_id(int(dispatch_id))
     if not dispatch:
         return None
     item = get_sprint_trainer_item(str(dispatch.get("sprint_id") or ""))
     if not item or not item.get("trainer_ready"):
         return None
-    items, skipped = build_gap_items(
-        wort=str(item.get("wort") or ""), accepted=item.get("accepted"),
-        trainer_json=item.get("trainer_json") or {}, forms_of=_gap_forms_lookup(item),
-    )
+    items, skipped = build_gap_items_for(item)
     if not items:
         logging.info("gap: нет заготовок sprint=%s skipped=%s", dispatch.get("sprint_id"), skipped)
         return None
@@ -2726,17 +2723,14 @@ def evaluate_gap_answer(*, dispatch_id: int, user_id: int, index: int,
     from backend.database import (
         get_relation_gap_dispatch_by_id, get_sprint_trainer_item, record_relation_answer,
     )
-    from backend.relation_gap import build_gap_items, grade_gap_answer
+    from backend.relation_gap import build_gap_items_for, grade_gap_answer
     dispatch = get_relation_gap_dispatch_by_id(int(dispatch_id))
     if not dispatch:
         return None
     item = get_sprint_trainer_item(str(dispatch.get("sprint_id") or ""))
     if not item:
         return None
-    items, _skipped = build_gap_items(
-        wort=str(item.get("wort") or ""), accepted=item.get("accepted"),
-        trainer_json=item.get("trainer_json") or {}, forms_of=_gap_forms_lookup(item),
-    )
+    items, _skipped = build_gap_items_for(item)
     try:
         gap = items[int(index)]
     except (IndexError, ValueError, TypeError):
