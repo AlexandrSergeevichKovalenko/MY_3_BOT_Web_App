@@ -1976,6 +1976,50 @@ def _starter_size_chosen_without_offering_both() -> int:
             return int((cursor.fetchone() or [0])[0] or 0)
 
 
+def _sprint_examples_unchecked() -> int:
+    """Слов банка, чьи примеры ни разу не проходили судью на непротиворечивость. Обещано: 0.
+
+    Зачем. Предложение для партнёра строится подстановкой его в фразу ГОЛОВНОГО слова.
+    У синонима смысл тот же — подстановка законна. У антонима смысл переворачивается, а
+    остаток фразы несёт прежний: «Экзамен был оценён как безупречный, потому что было
+    сделано много ошибок». Человек это читает и заучивает.
+
+    Замер 15.09.2026 по живому банку: прочитано вручную 14 случайных антонимов — 6
+    противоречат себе; у синонимов 0 из 14. Всего слов с примерами 78 (47 антонимов,
+    31 синоним), предложений у антонимов 238.
+
+    Ноль здесь означает ровно одно: у каждого слова с примерами кто-то, кроме автора
+    этих примеров, подтвердил, что они не противоречат сами себе. Число растёт назад,
+    когда судья не отвечает: непроверенное НЕ помечается проверенным, и ночь берёт
+    такое слово снова.
+    """
+    from backend.database import count_sprint_words_with_unchecked_examples
+    return int(count_sprint_words_with_unchecked_examples())
+
+
+def _sprint_examples_screen() -> str:
+    """Экран «после»: сами предложения антонимов, как их видит человек."""
+    from backend.database import get_db_connection_context
+    строки = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT wort, trainer_json->'correct_examples', "
+                "       COALESCE((trainer_json->>'examples_checked')::boolean, FALSE) "
+                "FROM bt_3_sprint_bank "
+                "WHERE retired = FALSE AND relation = 'antonym' "
+                "  AND jsonb_array_length(COALESCE(trainer_json->'correct_examples','[]'::jsonb)) > 0 "
+                "ORDER BY random() LIMIT 4;"
+            )
+            for wort, examples, checked in (cur.fetchall() or []):
+                метка = "✅" if checked else "⏳ не проверено"
+                строки.append(f"{метка} <b>{wort}</b>")
+                for ex in (examples or [])[:2]:
+                    строки.append(f"   {ex.get('sentence_de','')}")
+                    строки.append(f"   <i>{ex.get('sentence_ru','')}</i>")
+    return "\n".join(строки) or "в банке нет антонимов с примерами"
+
+
 PROMISES: tuple[Promise, ...] = (
     Promise(
         key="starter_dictionary_doors_offer_both_sizes",
@@ -2118,6 +2162,20 @@ PROMISES: tuple[Promise, ...] = (
             "count_available_trainer_items по обоим видам: худшее из двух должно быть "
             "не меньше расход×3. 14.09 до починки было синонимы 12 против 1 при пороге 4. "
             "Первое утро после деплоя красное законно — добор берёт 6 карточек за ночь",
+    ),
+    Promise(
+        key="sprint_examples_unchecked",
+        title="Слов банка, чьи примеры никто не проверял на противоречие самим себе",
+        since="15.09.2026",
+        expected=0,
+        measure=_sprint_examples_unchecked,
+        screen=_sprint_examples_screen,
+        how="/admin_promises, разовый прогон — /recheck_examples [сколько]. Ночью слова "
+            "разбираются сами по SPRINT_EXAMPLE_RECHECK_PER_RUN (10) за прогон, антонимы "
+            "первыми. 15.09.2026 на старте было 78 (47 антонимов + 31 синоним). Не ноль "
+            "через несколько ночей = судья молчит: смотреть лог "
+            "recheck_sprint_examples_job. Стережёт "
+            "backend/tests/test_sprint_example_consistency.py",
     ),
     Promise(
         key="relation_gap_reaches_learners",

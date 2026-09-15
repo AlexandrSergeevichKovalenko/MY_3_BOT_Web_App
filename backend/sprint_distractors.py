@@ -64,6 +64,9 @@ def trainer_json_from_result(result: dict) -> dict:
         "distractors": result.get("kept") or [],
         "target_example": result.get("target_example") or {},
         "correct_examples": result.get("correct_examples") or [],
+        # Прошёл ли набор примеров через судью на внутреннюю непротиворечивость.
+        # Отсутствие ключа = «построено до 15.09.2026, не проверялось» — ночь такие берёт.
+        "examples_checked": bool(result.get("examples_checked")),
         "counts": result.get("counts") or {},
     }
 
@@ -97,7 +100,7 @@ async def build_trainer_distractors(
     """
     from backend.openai_manager import (
         run_generate_sprint_distractors, run_prosecute_distractor, run_judge_distractor_set,
-        run_substitute_correct_examples,
+        run_substitute_correct_examples, run_check_example_consistency,
     )
 
     relation = str(relation or "synonym")
@@ -207,17 +210,48 @@ async def build_trainer_distractors(
     # answer swapped in (grammar adjusted). One batched call; only worth it if the word
     # will actually enter rotation (>= MIN_CLEAN_DISTRACTORS clean distractors).
     correct_examples: list[dict] = []
+    # ┌─ ПРОВЕРЕНО 15.09.2026. ЭТОТ ПРОХОД НЕ СНИМАТЬ. ────────────────────────────────┐
+    # │ Предложение строится подстановкой партнёра в фразу ГОЛОВНОГО слова. Для        │
+    # │ синонима это законно, для антонима — нет: остаток фразы (weil/um…zu/trotz/     │
+    # │ wenn, отрицание, immer-nie) продолжает нести прежний смысл, и получается       │
+    # │ «Экзамен оценён как безупречный, потому что было сделано много ошибок».        │
+    # │ Замер по живому банку 15.09.2026: 6 противоречий из 14 прочитанных антонимов,  │
+    # │ у синонимов 0 из 14. Инструкция генерации переписана, НО одной инструкции      │
+    # │ мало: проверять некому, а ошибка видна только глазами. Поэтому каждый набор    │
+    # │ примеров проходит через судью, который обязан вернуть ИСПРАВЛЕННЫЙ текст.      │
+    # │ Судья молчит (сеть, разбор) → examples_checked=False, и ночь берёт слово на    │
+    # │ перепроверку. Непроверенное НЕ выдаётся за проверенное.                        │
+    # └───────────────────────────────────────────────────────────────────────────────┘
+    examples_checked = False
+    examples_repaired = 0
     if len(kept) >= MIN_CLEAN_DISTRACTORS and target_example.get("de") and correct_de:
         correct_examples = await run_substitute_correct_examples(
             target_word=target_word, relation=relation,
             base_de=target_example["de"], answers=correct_de[:CORRECT_EXAMPLE_CAP],
         )
+        if correct_examples:
+            checked = await run_check_example_consistency(items=correct_examples)
+            if checked and len(checked) == len(correct_examples):
+                for src, fix in zip(correct_examples, checked):
+                    if fix.get("repaired"):
+                        examples_repaired += 1
+                        logger.info("example repaired word=%s relation=%s why=%s\n  было: %s\n  стало: %s",
+                                    src.get("word"), relation, fix.get("why"),
+                                    src.get("sentence_de"), fix.get("sentence_de"))
+                    src["sentence_de"] = fix["sentence_de"]
+                    src["sentence_ru"] = fix["sentence_ru"]
+                examples_checked = True
+            else:
+                logger.warning("example consistency check unavailable word=%s relation=%s n=%d",
+                               target_word, relation, len(correct_examples))
 
     result = {
         "kept": kept,
         "rejected": rejected,
         "target_example": target_example,
         "correct_examples": correct_examples,
+        "examples_checked": examples_checked,
+        "examples_repaired": examples_repaired,
         "trainer_ready": len(kept) >= MIN_CLEAN_DISTRACTORS,
         "counts": {"generated": generated, "after_prosecutor": after_prosecutor, "kept": len(kept)},
         "diag": {"judge_rows": len(verdicts),

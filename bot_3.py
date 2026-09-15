@@ -484,6 +484,9 @@ from backend.database import (
     get_sprint_item_by_word,
     list_sprint_bank_words,
     list_sprint_words_needing_trainer,
+    list_sprint_words_with_unchecked_examples,
+    count_sprint_words_with_unchecked_examples,
+    save_sprint_checked_examples,
     update_sprint_trainer_data,
     ensure_trainer_schema,
     create_trainer_dispatch,
@@ -43305,8 +43308,61 @@ async def build_sprint_trainer_job(context: CallbackContext, *, limit: int | Non
                                 item.get("wort"), exc_info=True)
                 statuses.append(f"{item.get('wort')}: ❌ ошибка")
         logging.info("build_sprint_trainer_job done built=%d", len(statuses))
+        # Той же ночью — перепроверка примеров, собранных ДО 15.09.2026 (у них судьи не
+        # было) и тех, где судья в прошлый раз не ответил. Своего слота не заводим:
+        # работа того же рода, то же окно без трафика, тот же лимит за прогон.
+        statuses += await recheck_sprint_examples_job(context)
     except Exception:
         logging.warning("build_sprint_trainer_job failed", exc_info=True)
+    return statuses
+
+
+# Сколько слов за одну ночь проходит перепроверку примеров. Один запрос к модели на
+# слово (пачкой по всем его примерам), поэтому потолок держим рядом со сборкой.
+SPRINT_EXAMPLE_RECHECK_PER_RUN = max(
+    1, int((os.getenv("SPRINT_EXAMPLE_RECHECK_PER_RUN") or "10").strip() or "10"))
+
+
+async def recheck_sprint_examples_job(context: CallbackContext, *, limit: int | None = None) -> list[str]:
+    """Перепроверить и починить примеры слов, не проходивших судью.
+
+    Ровно тот же судья, что стоит на входе у новой сборки, — одна механика чинит и
+    накопленное, и будущее. Слово, где судья не ответил, остаётся непроверенным и
+    вернётся следующей ночью: тихо пометить его проверенным запрещено."""
+    from backend.openai_manager import run_check_example_consistency
+    statuses: list[str] = []
+    try:
+        cap = int(limit) if limit else SPRINT_EXAMPLE_RECHECK_PER_RUN
+        words = await asyncio.to_thread(list_sprint_words_with_unchecked_examples, limit=cap)
+        for w in words:
+            wort = str(w.get("wort") or "")
+            examples = list(((w.get("trainer_json") or {}).get("correct_examples")) or [])
+            if not examples:
+                continue
+            try:
+                checked = await run_check_example_consistency(items=examples)
+            except Exception:
+                logging.warning("recheck_sprint_examples_job: судья упал wort=%s", wort, exc_info=True)
+                checked = []
+            if not checked or len(checked) != len(examples):
+                statuses.append(f"{wort}: судья не ответил — оставил на следующую ночь")
+                continue
+            fixed = 0
+            for src, fix in zip(examples, checked):
+                if fix.get("repaired"):
+                    fixed += 1
+                    logging.info("example repaired wort=%s why=%s\n  было: %s\n  стало: %s",
+                                 wort, fix.get("why"), src.get("sentence_de"), fix.get("sentence_de"))
+                src["sentence_de"] = fix["sentence_de"]
+                src["sentence_ru"] = fix["sentence_ru"]
+            await asyncio.to_thread(save_sprint_checked_examples, str(w.get("sprint_id")),
+                                    correct_examples=examples)
+            statuses.append(f"{wort}: проверено {len(examples)}, исправлено {fixed}")
+        if words:
+            left = await asyncio.to_thread(count_sprint_words_with_unchecked_examples)
+            logging.info("recheck_sprint_examples_job done words=%d осталось=%d", len(words), left)
+    except Exception:
+        logging.warning("recheck_sprint_examples_job failed", exc_info=True)
     return statuses
 
 
@@ -43796,6 +43852,29 @@ async def _admin_lab_command(update: Update, context: CallbackContext) -> None:
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🧪 Открыть лабораторию", web_app=WebAppInfo(url=url))
         ]]))
+
+
+async def _admin_recheck_examples_command(update: Update, context: CallbackContext) -> None:
+    """/recheck_examples [сколько] — прогнать судью по примерам, не прошедшим проверку."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    try:
+        limit = int((context.args or ["10"])[0])
+    except (TypeError, ValueError):
+        limit = 10
+    await asyncio.to_thread(ensure_sprint_schema)
+    before = await asyncio.to_thread(count_sprint_words_with_unchecked_examples)
+    await message.reply_text(
+        f"🔎 Непроверенных слов сейчас: <b>{before}</b>. Беру {limit}…", parse_mode="HTML")
+    statuses = await recheck_sprint_examples_job(context, limit=limit)
+    after = await asyncio.to_thread(count_sprint_words_with_unchecked_examples)
+    body = "\n".join(f"• {_html_escape(s)}" for s in statuses) or "• нечего проверять"
+    await message.reply_text(
+        f"{body}\n\nОсталось непроверенных: <b>{after}</b> (было {before}).",
+        parse_mode="HTML")
 
 
 async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> None:
@@ -47800,6 +47879,7 @@ def main():
     application.add_handler(CommandHandler("admin_synonym_review", admin_synonym_review_command))
     application.add_handler(CommandHandler("gap_test", _admin_gap_test_command))
     application.add_handler(CommandHandler("lab", _admin_lab_command))
+    application.add_handler(CommandHandler("recheck_examples", _admin_recheck_examples_command))
     application.add_handler(CallbackQueryHandler(handle_word_review_callback, pattern=r"^wrev:"))
     application.add_handler(CallbackQueryHandler(handle_reference_forms_review_callback, pattern=r"^reffrm:"))
     application.add_handler(CallbackQueryHandler(handle_fill_control_callback, pattern=r"^artfill:"))
