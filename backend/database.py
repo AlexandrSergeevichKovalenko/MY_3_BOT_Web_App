@@ -31473,6 +31473,46 @@ def find_reader_document_by_source_url(user_id: int, *, source_lang: str, target
             }
 
 
+def iter_youtube_transcripts_for_audit(page_size: int = 200):
+    """Все дорожки субтитров с их переводами — порциями, для подсчёта сдвига RU↔DE.
+
+    Таблица не чистится (purge_old_youtube_transcripts ниже никто не зовёт), поэтому
+    читаем страницами по video_id, а не одним SELECT: отчёт не должен зависеть от того,
+    сколько роликов накопилось.
+
+    Ошибки НЕ глушим. Пустой ответ от сбоя неотличим от честного «роликов нет», а это
+    два разных мира: в одном чинят базу, в другом успокаиваются.
+    """
+    last_id = ""
+    while True:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT video_id, items, translations, language, is_generated, updated_at
+                    FROM bt_3_youtube_transcripts
+                    WHERE video_id > %s
+                    ORDER BY video_id ASC
+                    LIMIT %s;
+                """, (last_id, int(page_size)))
+                rows = cursor.fetchall()
+        if not rows:
+            return
+        for video_id, items, translations, language, is_generated, updated_at in rows:
+            if isinstance(items, str):
+                items = json.loads(items)
+            if isinstance(translations, str):
+                translations = json.loads(translations)
+            yield {
+                "video_id": str(video_id or ""),
+                "items": items or [],
+                "translations": translations or {},
+                "language": str(language or ""),
+                "is_generated": bool(is_generated),
+                "updated_at": updated_at,
+            }
+        last_id = str(rows[-1][0] or "")
+
+
 def purge_old_youtube_transcripts(days: int = 7) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

@@ -12908,6 +12908,30 @@ async def admin_standup_pool_command(update: Update, context: CallbackContext):
     await status.edit_text(format_standup_pool_report(state), parse_mode="HTML")
 
 
+async def admin_subtitry_command(update: Update, context: CallbackContext):
+    """/subtitry — сходятся ли номера русских субтитров с немецкими, числом по классам.
+
+    Повод (владелец, 15.09.2026): «русские субтитры то отстают, то идут вперёд». Чтобы
+    решать по числу, а не по рассказу. Отчёт читает только нашу базу: ни YouTube, ни
+    модель не трогает, денег не стоит."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    status = await message.reply_text("🎬 Сверяю номера русских строк с немецкими…")
+    try:
+        from backend.subtitle_sync_report import format_subtitle_sync_report, subtitle_sync_state
+        state = await asyncio.to_thread(subtitle_sync_state)
+    except Exception as exc:
+        logging.exception("admin subtitry failed user_id=%s", int(sender.id))
+        await status.edit_text(f"❌ Не удалось сверить субтитры: {exc}")
+        return
+    await status.edit_text(format_subtitle_sync_report(state), parse_mode="HTML")
+
+
 async def admin_standup_command(update: Update, context: CallbackContext):
     """/standup[ <youtube_url>] — подготовить стендап на СЕГОДНЯ, минуя чередование.
     Нужна, когда владелец хочет посмотреть рубрику вне её дня или переформировать её вручную."""
@@ -47585,6 +47609,7 @@ def main():
     application.add_handler(CommandHandler("worldnews", admin_world_news_command))
     application.add_handler(CommandHandler("standup", admin_standup_command))
     application.add_handler(CommandHandler("standup_pool", admin_standup_pool_command))
+    application.add_handler(CommandHandler("subtitry", admin_subtitry_command))
     application.add_handler(CommandHandler("standup_shelf", admin_standup_shelf_command))
     application.add_handler(CommandHandler("recheck_cards", admin_daily_video_recheck_command))
     application.add_handler(CommandHandler("worldnews_card", admin_world_news_card_command))
