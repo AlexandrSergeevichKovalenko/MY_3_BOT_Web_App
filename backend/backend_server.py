@@ -505,6 +505,7 @@ from backend.database import (
     get_latest_youtube_watch_state,
     upsert_youtube_watch_state,
     record_youtube_resume_outcome,
+    record_youtube_client_anomaly,
     delete_youtube_catalog_video,
     purge_nonadmin_youtube_watch_state,
     get_translation_draft_state,
@@ -61452,6 +61453,11 @@ def youtube_watch_state():
         resume_outcome = str(payload.get("resume_outcome") or "").strip().lower()
         resume_saved_seconds = payload.get("resume_saved_seconds")
         resume_started_seconds = payload.get("resume_started_seconds")
+        # Сколько ответов субтитров клиент отбросил как «про другой ролик» (16.09.2026).
+        try:
+            stale_subtitle_drops = max(0, int(payload.get("stale_subtitle_drops") or 0))
+        except (TypeError, ValueError):
+            stale_subtitle_drops = 0
 
         if not init_data:
             _log_flow_observation(
@@ -61643,6 +61649,20 @@ def youtube_watch_state():
         # Запись побочная: её падение не имеет права отменить сохранение позиции, ради
         # которого человек сюда и пришёл. Поэтому — свой try, и при провале громкий лог
         # и счётчик, а НЕ тихий проход мимо.
+        if stale_subtitle_drops > 0:
+            # Побочная запись, как и журнал исходов: её падение не отменяет сохранение.
+            try:
+                record_youtube_client_anomaly(
+                    user_id=user_id_int,
+                    video_id=video_id,
+                    kind="stale_subtitle_payload",
+                    amount=stale_subtitle_drops,
+                )
+            except Exception:
+                logging.warning(
+                    "youtube stale-subtitle anomaly not recorded (user=%s video=%s n=%s)",
+                    user_id_int, video_id, stale_subtitle_drops, exc_info=True,
+                )
         resume_outcome_recorded = None
         if resume_outcome:
             try:
@@ -61671,6 +61691,7 @@ def youtube_watch_state():
             current_time_seconds=safe_seconds,
             resume_outcome=resume_outcome or "absent",
             resume_outcome_recorded=resume_outcome_recorded,
+            stale_subtitle_drops=stale_subtitle_drops,
             save_duration_ms=_elapsed_ms_since(save_started_perf),
             response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
             final_status="success",

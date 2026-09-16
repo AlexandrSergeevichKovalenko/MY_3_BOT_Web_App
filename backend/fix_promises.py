@@ -1698,6 +1698,37 @@ def _youtube_resume_lost_today() -> int:
     return youtube_resume_lost_count(24)
 
 
+def _youtube_stale_subtitles_today() -> int:
+    """Ответов субтитров за сутки, пришедших про ЧУЖОЙ ролик. Обещано: 0.
+
+    Повод 16.09.2026: владелец открыл стендап из «Фильмов», а под ним стояли немецкие
+    субтитры предыдущего ролика (документалка), при этом русская дорожка была уже от
+    нового. Запрос субтитров живёт до ~30 секунд (опрос статуса при 202); человек за это
+    время переключался, и старый ответ молча ложился в состояние — проверки «а к тому ли
+    ролику ответ» не было НИ В ОДНОМ месте записи.
+
+    Теперь чужой ответ не принимается, но и не пропадает бесследно: клиент считает каждый
+    отброшенный и присылает счёт с ближайшим сохранением позиции. Ноль здесь означает
+    «гонки не случилось». Число больше нуля — не поломка экрана (его мы уже защитили), а
+    сигнал, что ролики переключают быстрее, чем отвечает сервер субтитров."""
+    from backend.database import youtube_stale_subtitle_drops
+    return youtube_stale_subtitle_drops(24)
+
+
+def _youtube_stale_subtitles_screen() -> str:
+    """Экран «после»: сколько чужих ответов субтитров отброшено за сутки."""
+    from backend.database import youtube_stale_subtitle_drops
+    try:
+        n = youtube_stale_subtitle_drops(24)
+    except Exception:
+        logging.warning("youtube stale subtitles screen failed", exc_info=True)
+        return "💬 Субтитры: экран не снялся — база не ответила"
+    if n == 0:
+        return "💬 Субтитры: за сутки ни одного ответа про чужой ролик — дорожка совпадает с видео"
+    return (f"💬 Субтитры: отброшено ответов про чужой ролик — {n}. На экран они не попали, "
+            f"но столько раз ролики переключали быстрее, чем отвечал сервер субтитров")
+
+
 def _youtube_resume_screen() -> str:
     """Экран «после»: чем кончались попытки вернуть человека на его место за сутки."""
     from backend.database import youtube_resume_outcome_counts
@@ -2343,6 +2374,19 @@ PROMISES: tuple[Promise, ...] = (
         how="/admin_promises — или открыть «Мои слова» и сверить: у записи, под которой "
             "справочник назвал часть речи, обязана стоять кнопка с этой частью речи "
             "(«begreifen» → «глагол»), а не одни «Оставить»/«Удалить»",
+    ),
+    Promise(
+        key="youtube_stale_subtitles",
+        title="Ответов субтитров, пришедших про другой ролик (отброшено клиентом)",
+        since="16.09.2026",
+        expected=0,
+        measure=_youtube_stale_subtitles_today,
+        screen=_youtube_stale_subtitles_screen,
+        how="SELECT COALESCE(SUM(amount),0) FROM bt_3_youtube_client_anomalies "
+            "WHERE kind='stale_subtitle_payload' AND created_at >= NOW() - INTERVAL '24 hours' "
+            "— ждём 0. Руками: открыть ролик с субтитрами и сразу, не дожидаясь их "
+            "появления, переключиться через «Фильмы» на другой — под новым роликом "
+            "обязаны быть ЕГО субтитры, а не прежние",
     ),
     Promise(
         key="youtube_resume_lost",
