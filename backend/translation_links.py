@@ -219,3 +219,217 @@ def count_units_missing_ru_link() -> int:
                                      AND COALESCE(TRIM(q.translation_ru), '') <> '');"""
             )
             return int((cursor.fetchone() or [0])[0])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ВОПРОС БЕЗ ГОТОВОГО ВАРИАНТА ОБЯЗАН БЫТЬ ДОСПРОШЕН. Владелец, 16.09.2026.
+#
+# ЧТО БЫЛО СЛОМАНО. Ключ `fix` («как правильно») появился в вопросе о переводе
+# 31.08.2026. Всё, что легло в очередь раньше, осталось без него — и получить его
+# уже не могло НИКАК: пересуд на экране скрыт для этого вида вопросов, ночной
+# подъём не берёт единицу с открытым вопросом (`units_missing_ru_link`), вставка
+# идёт `ON CONFLICT DO NOTHING`, а слепой массовый пересуд отфильтровывает всё
+# непграмматическое. Замер 16.09.2026 на живой базе: в очереди владельца 68
+# вопросов, у 15 из них варианта нет и взяться ему неоткуда (записи 27–31.08.2026).
+# Владелец открывал такой вопрос и читал «Готового варианта голос не назвал» —
+# при том, что модель за эту фразу уже оплачена, просто её тогда не спросили.
+#
+# ПОЧЕМУ НЕ «ПРОСТО СПРОСИТЬ ЕЩЁ РАЗ КАЖДУЮ НОЧЬ». Есть законный класс, где
+# варианта не будет никогда: немецкого текста такого не существует («Soile»,
+# «Ich bin zu für dich» — замер 16.09.2026, 3 записи), и чинить там нечего.
+# Спрашивать про них ежедневно — жечь деньги на заведомо пустой ответ. Поэтому
+# попытка помечается в самом голосе (`rejudge`), и повторной не будет: один
+# доспрос на вопрос, дальше решает владелец.
+#
+# ЧЕГО ЗДЕСЬ НЕТ И НЕ БУДЕТ: перевод не сочиняется нами. Если модель варианта не
+# назвала — на экране так и написано, кнопки нет.
+REJUDGE_CAP = int(os.getenv("TRANSLATION_REJUDGE_CAP", "40") or "40")
+REJUDGE_BUDGET_USD = float(os.getenv("TRANSLATION_REJUDGE_BUDGET", "0.05") or "0.05")
+
+_ВОПРОС_БЕЗ_ВАРИАНТА = """
+    r.status = 'open'
+    AND COALESCE(r.kind, 'grammar') = 'translation'
+    AND COALESCE(BTRIM(r.translation), '') <> ''
+    AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(r.judges) j
+                     WHERE COALESCE(BTRIM(j->>'fix'), '') <> '')
+    AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(r.judges) j
+                     WHERE j->'rejudge' IS NOT NULL)
+"""
+
+
+def translation_questions_without_fix(limit: int) -> list[dict]:
+    """Открытые вопросы о переводе, которым готовый вариант ещё не спрашивали.
+
+    Условие отбора — в `_ВОПРОС_БЕЗ_ВАРИАНТА`, оно же считается счётчиком ниже и
+    проверяется обещанием: одно правило в одном месте, чтобы замер и работа не
+    разъехались."""
+    from backend.database import get_db_connection_context
+
+    if limit <= 0:
+        return []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""SELECT r.id, r.unit_id, r.text, r.translation,
+                           COALESCE(u.kind, 'collocation')
+                      FROM bt_3_phrase_review r
+                      LEFT JOIN bt_3_lex_units u ON u.id = r.unit_id
+                     WHERE {_ВОПРОС_БЕЗ_ВАРИАНТА}
+                     ORDER BY r.id
+                     LIMIT %s;""",
+                (int(limit),),
+            )
+            rows = cursor.fetchall() or []
+    return [{"review_id": int(r[0]), "unit_id": int(r[1] or 0), "text": r[2],
+             "translation": r[3], "kind": r[4]} for r in rows]
+
+
+def count_translation_questions_without_fix() -> int:
+    """Сколько вопросов о переводе ждут доспроса. После ночного прохода — ноль.
+
+    Ноль тут значит именно «каждый вопрос спросили»: запись, где модель варианта не
+    назвала, из счёта уходит по метке `rejudge`, а не по наличию текста."""
+    from backend.database import get_db_connection_context
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT count(*) FROM bt_3_phrase_review r WHERE {_ВОПРОС_БЕЗ_ВАРИАНТА};")
+            return int((cursor.fetchone() or [0])[0])
+
+
+def голос_после_доспроса(judges: list, verdict: dict) -> dict:
+    """Как выглядит голос после доспроса. Чистая сборка, без базы — её проверяет тест.
+
+    Прежняя претензия не теряется — она переезжает в `why_before`. Голос остаётся
+    ОДНИМ: два голоса об одном и том же нарисовали бы владельцу две одинаковые
+    претензии на экране."""
+    from datetime import datetime, timezone
+
+    from backend.database import TRANSLATION_REVIEW_CATEGORY
+
+    прежний = next((j for j in (judges or []) if isinstance(j, dict)), {})
+    было = str(прежний.get("why") or "").strip()
+    согласился = bool(verdict.get("ok"))
+    вариант = "" if согласился else str(verdict.get("better") or "").strip()[:300]
+    метка = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+             "ok": согласился,
+             "why": str(verdict.get("why") or "").strip()[:400]}
+    голос = {
+        "verdict": "ok" if согласился else "doubt",
+        "category": TRANSLATION_REVIEW_CATEGORY,
+        "field": "translation",
+        "voice": 0,
+        "fix": вариант,
+        "corrected": "", "proposal": "",
+        # Претензия на экране — свежая, если доспрос её подтвердил; прежняя, если он
+        # снял. Молча подменять текст нельзя: владелец видел старую формулировку.
+        "why": (было if согласился
+                else (str(verdict.get("why") or "").strip()[:400] or было)),
+        "why_before": было,
+        "rejudge": метка,
+    }
+    return голос
+
+
+def _записать_пересуд(review_id: int, judges: list, verdict: dict) -> bool:
+    """Положить собранный голос в строку вопроса. Строку, которую успели закрыть, не
+    трогаем: `status = 'open'` в условии."""
+    from backend.database import get_db_connection_context
+
+    голос = голос_после_доспроса(judges, verdict)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                # Вид назван и здесь, а не только при чтении: перепутанный id иначе
+                # переписал бы голоса чужого вопроса — панельного или грамматического.
+                "UPDATE bt_3_phrase_review SET judges = %s::jsonb "
+                "WHERE id = %s AND status = 'open' "
+                "  AND COALESCE(kind, 'grammar') = 'translation';",
+                (json.dumps([голос], ensure_ascii=False), int(review_id)))
+            записано = cursor.rowcount or 0
+        conn.commit()
+    return bool(записано)
+
+
+def rejudge_translation_question(review_id: int) -> dict:
+    """Спросить заново по ОДНОМУ вопросу о переводе. Кнопка на экране и ночной добор.
+
+    Исходов четыре, и ни один не молчаливый:
+      • `fixed`      — модель назвала готовый перевод, на экране он встал кнопкой;
+      • `agreed`     — модель теперь считает перевод верным; вопрос НЕ закрываем сами,
+                       владелец решает кнопкой «Сохранить этот перевод как общий»;
+      • `no_fix`     — спросили, варианта опять нет. Метка стоит, денег больше не тратим;
+      • `not_asked`  — модель не ответила. НИЧЕГО не пишем: вопрос вернётся в следующий
+                       проход. Это «не спросили», а не «ответа нет».
+    """
+    from backend.database import get_db_connection_context
+    from backend.openai_manager import _LAST_LLM_USAGE, run_translation_pair_check
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """SELECT r.text, r.translation, r.judges, COALESCE(u.kind, 'collocation')
+                     FROM bt_3_phrase_review r
+                     LEFT JOIN bt_3_lex_units u ON u.id = r.unit_id
+                    WHERE r.id = %s AND r.status = 'open'
+                      AND COALESCE(r.kind, 'grammar') = 'translation';""",
+                (int(review_id),))
+            row = cursor.fetchone()
+    if not row:
+        return {"state": "gone", "spent": 0.0}
+    text, translation, judges, kind = row[0], row[1], row[2], row[3]
+    if not str(translation or "").strip():
+        # Спрашивать «означает ли пустой русский эту фразу» бессмысленно: вопрос не
+        # про перевод, а про то, что его нет. Владельцу это и так видно на экране.
+        return {"state": "no_translation", "spent": 0.0}
+
+    verdict = run_translation_pair_check(german=str(text or ""),
+                                         russian=str(translation or ""),
+                                         kind=str(kind or "collocation"))
+    usage = _LAST_LLM_USAGE.get() or {}
+    потрачено = (int(usage.get("prompt_tokens") or 0) * PRICE_IN
+                 + int(usage.get("completion_tokens") or 0) * PRICE_OUT)
+    if not verdict.get("checked"):
+        return {"state": "not_asked", "spent": round(потрачено, 6)}
+    if not _записать_пересуд(review_id, judges if isinstance(judges, list) else [], verdict):
+        # Строку закрыли, пока мы спрашивали. Не ошибка, но и не работа.
+        return {"state": "gone", "spent": round(потрачено, 6)}
+    if verdict.get("ok"):
+        состояние = "agreed"
+    elif str(verdict.get("better") or "").strip():
+        состояние = "fixed"
+    else:
+        состояние = "no_fix"
+    return {"state": состояние, "spent": round(потрачено, 6),
+            "fix": str(verdict.get("better") or "").strip(),
+            "why": str(verdict.get("why") or "").strip()}
+
+
+def rejudge_translation_questions(*, limit: int | None = None,
+                                  budget_usd: float | None = None) -> dict:
+    """Ночной добор: каждому вопросу о переводе — по одной попытке получить вариант."""
+    cap = int(limit if limit is not None else REJUDGE_CAP)
+    budget = float(budget_usd if budget_usd is not None else REJUDGE_BUDGET_USD)
+    report = {"взято": 0, "с вариантом": 0, "судья согласился": 0,
+              "снова без варианта": 0, "не смогли спросить": 0, "потрачено": 0.0}
+    for row in translation_questions_without_fix(cap):
+        if report["потрачено"] >= budget:
+            logging.info("доспрос переводов: потолок $%.2f, остановились", budget)
+            break
+        итог = rejudge_translation_question(row["review_id"])
+        report["потрачено"] += float(итог.get("spent") or 0.0)
+        состояние = str(итог.get("state") or "")
+        if состояние == "fixed":
+            report["с вариантом"] += 1
+        elif состояние == "agreed":
+            report["судья согласился"] += 1
+        elif состояние == "no_fix":
+            report["снова без варианта"] += 1
+        elif состояние == "not_asked":
+            report["не смогли спросить"] += 1
+        report["взято"] += 1
+    report["потрачено"] = round(report["потрачено"], 4)
+    report["осталось без доспроса"] = count_translation_questions_without_fix()
+    logging.info("доспрос вопросов о переводе: %s", report)
+    return report

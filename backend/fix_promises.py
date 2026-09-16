@@ -2417,7 +2417,69 @@ def _promise_letter_screen() -> str:
     return "\n".join(строки)
 
 
+def _translation_questions_never_asked_for_a_fix() -> int:
+    """Вопросов о переводе, которым «как правильно» так и не спросили. Обещано: 0.
+
+    Замер в день починки (16.09.2026, живая база): в очереди владельца 68 вопросов, из
+    них 15 без готового варианта и без единой возможности его получить — их завели
+    27–31.08.2026, до того как судью стали просить назвать перевод. Число вырастет,
+    если ночной доспрос перестал ходить (`bot_3._run_translation_links_safe`) или если
+    вопросы снова начали заводиться без `fix`."""
+    from backend.translation_links import count_translation_questions_without_fix
+    return int(count_translation_questions_without_fix())
+
+
+def _translation_questions_screen() -> str:
+    """Экран «после» — очередь спорных фраз в разбивке, которую владелец видит сам.
+
+    Тот же экран `ans_frv_0`, откуда пришла жалоба: сколько вопросов о переводе несут
+    кнопку с готовым текстом, сколько ещё ждут доспроса и сколько его уже прошли, не
+    получив варианта (немецкого такого не существует — чинить нечего)."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """SELECT CASE
+                            WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(r.judges) j
+                                          WHERE COALESCE(BTRIM(j->>'fix'), '') <> '')
+                              THEN 'с кнопкой «Записать»'
+                            WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(r.judges) j
+                                          WHERE j->'rejudge' IS NOT NULL)
+                              THEN 'спросили заново, варианта нет'
+                            ELSE 'ждут доспроса' END AS корзина,
+                          count(*)
+                     FROM bt_3_phrase_review r
+                    WHERE r.status = 'open'
+                      AND COALESCE(r.kind, 'grammar') = 'translation'
+                    GROUP BY 1 ORDER BY 2 DESC;""")
+            корзины = cursor.fetchall() or []
+            cursor.execute(
+                "SELECT count(*) FROM bt_3_phrase_review "
+                "WHERE status = 'open' AND COALESCE(kind, 'grammar') <> 'personal';")
+            всего = int((cursor.fetchone() or [0])[0] or 0)
+    строки = [f"📝 Спорные фразы: осталось {всего}", "", "Из них вопросы о переводе:"]
+    строки += [f"   • {имя} — {число}" for имя, число in корзины] or ["   • ни одного"]
+    return "\n".join(строки)
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="translation_questions_always_get_a_fix_asked",
+        title="Вопрос о переводе без готового варианта, который неоткуда взять",
+        since="16.09.2026",
+        expected=0,
+        measure=_translation_questions_never_asked_for_a_fix,
+        screen=_translation_questions_screen,
+        how="/admin_promises — или backend.translation_links."
+            "count_translation_questions_without_fix(). Считает открытые вопросы вида "
+            "'translation', у которых ни у одного голоса нет непустого `fix` И нет "
+            "метки `rejudge`, то есть доспрос им не делали. Замер 16.09.2026 до "
+            "починки: 15 из 68 (записи 27–31.08.2026, ключ `fix` появился 31.08.2026). "
+            "Число ВЫРОСЛО = ночной доспрос не ходит (heartbeat 'translation_links', "
+            "ключ «доспрос») либо вопросы снова заводятся без варианта. Записи, где "
+            "модель варианта не назвала законно (немецкого такого нет), сюда не "
+            "попадают — у них стоит метка, и повторно денег они не стоят.",
+    ),
     Promise(
         key="update_never_reloads_under_hands",
         title="Потерянных сторожей: обновление снова перезагружает экран под руками",
