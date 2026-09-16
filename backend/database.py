@@ -12089,6 +12089,31 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_youtube_resume_outcomes (outcome, created_at DESC);
                 """
             )
+            # Отброшенные клиентом ответы, пришедшие про ДРУГОЙ ролик. Повод 16.09.2026:
+            # владелец открыл стендап, а под ним стояли немецкие субтитры предыдущего
+            # ролика. Запрос субтитров живёт до 30 секунд (опрос статуса), человек за это
+            # время успевает переключиться, и старый ответ ложился поверх нового экрана —
+            # проверки «а к тому ли ролику ответ» не было ни в одном месте записи.
+            # Теперь такие ответы не принимаются. Молча ронять и не считать нельзя:
+            # число отброшенных — единственный способ узнать, что гонка вообще случается.
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_youtube_client_anomalies (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    video_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    amount INTEGER NOT NULL DEFAULT 1,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_youtube_client_anomalies_when
+                ON bt_3_youtube_client_anomalies (kind, created_at DESC);
+                """
+            )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS bt_3_translation_draft_state (
@@ -32838,6 +32863,53 @@ def record_youtube_resume_outcome(
                 ),
             )
     return True
+
+
+YOUTUBE_CLIENT_ANOMALIES = ("stale_subtitle_payload",)
+
+
+def record_youtube_client_anomaly(
+    *,
+    user_id: int,
+    video_id: str,
+    kind: str,
+    amount: int = 1,
+) -> bool:
+    """Записать аномалию, замеченную КЛИЕНТОМ. Неизвестный вид не пишем и не выдумываем."""
+    normalized_kind = str(kind or "").strip().lower()
+    normalized_video_id = str(video_id or "").strip()
+    safe_amount = max(0, int(amount or 0))
+    if normalized_kind not in YOUTUBE_CLIENT_ANOMALIES or not normalized_video_id or safe_amount <= 0:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_youtube_client_anomalies (user_id, video_id, kind, amount)
+                VALUES (%s, %s, %s, %s);
+                """,
+                (int(user_id), normalized_video_id, normalized_kind, safe_amount),
+            )
+    return True
+
+
+def youtube_stale_subtitle_drops(hours: int = 24) -> int:
+    """Сколько ответов субтитров за сутки пришло про ЧУЖОЙ ролик. Обещано: 0.
+
+    Ноль означает не «мы их прячем», а «гонки не случилось»: клиент считает КАЖДЫЙ
+    отброшенный ответ и присылает счёт вместе с ближайшим сохранением позиции."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM bt_3_youtube_client_anomalies
+                WHERE kind = 'stale_subtitle_payload'
+                  AND created_at >= NOW() - (%s * INTERVAL '1 hour');
+                """,
+                (int(max(1, hours)),),
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
 
 
 def youtube_resume_lost_count(hours: int = 24) -> int:

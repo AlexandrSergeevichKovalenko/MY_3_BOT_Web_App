@@ -8456,7 +8456,37 @@ function AppInner() {
   const youtubePlaybackStartedRef = useRef(false);
   const youtubeInputDraftRef = useRef('');
   const youtubeChangeQueryDraftRef = useRef('');
+  // ┌─ ИСПРАВЛЕНО 16.09.2026. ОТВЕТ СУБТИТРОВ ОБЯЗАН НАЗВАТЬ СВОЙ РОЛИК. ──────────────┐
+  // │ Владелец открыл стендап из «Фильмов», а под ним стояли немецкие субтитры          │
+  // │ ПРЕДЫДУЩЕГО ролика (документалка про Hells Angels), при этом русская дорожка была │
+  // │ уже от нового. Выглядело как «субтитры не подтягиваются».                         │
+  // │                                                                                   │
+  // │ Что происходило: запрос субтитров живёт долго (при 202 идёт опрос до 25 попыток,  │
+  // │ это около 30 секунд). Человек за это время переключал ролик. Старый ответ         │
+  // │ возвращался ПОСЛЕ переключения и молча ложился в состояние — проверки «а к тому   │
+  // │ ли ролику этот ответ» не было НИ В ОДНОМ месте записи.                            │
+  // │ Немецкое и русское расходились потому, что русский догружается отдельно, по       │
+  // │ НОМЕРАМ реплик ТЕКУЩЕГО ролика (translate_rows с videoId): ярлыки строк совпадали │
+  // │ по форме, и свежий перевод ложился на чужой немецкий текст.                       │
+  // │                                                                                   │
+  // │ Правило: этот ref — «для какого ролика собрано то, что лежит в состоянии          │
+  // │ субтитров». Любая запись после await сверяется с ним и МОЛЧА НЕ ПРИНИМАЕТСЯ, если │
+  // │ ролик уже другой. Отброшенные ответы считаются (youtubeStaleSubtitleDropsRef) и   │
+  // │ уходят числом в отчёт — тихо ронять и не считать нельзя.                          │
+  // └──────────────────────────────────────────────────────────────────────────────────┘
   const youtubeTranscriptVideoIdRef = useRef('');
+  const youtubeStaleSubtitleDropsRef = useRef(0);
+  const youtubeSubtitlePayloadIsStale = (forVideoId, where) => {
+    const expected = String(forVideoId || '').trim();
+    const current = String(youtubeTranscriptVideoIdRef.current || '').trim();
+    if (expected && current && expected !== current) {
+      youtubeStaleSubtitleDropsRef.current += 1;
+      console.warn('[youtube-subs] ответ пришёл про другой ролик — не принимаем',
+        { где: where, ответПро: expected, наЭкране: current });
+      return true;
+    }
+    return false;
+  };
   const youtubeNewsTranscriptRequestedRef = useRef(''); // news mode: auto-load subs once per video
   const worldNewsRequestedRef = useRef(false); // news mode: fetch today's entry exactly once
   const worldNewsTouchXRef = useRef(null); // swipe-deck touch start X
@@ -9475,9 +9505,15 @@ function AppInner() {
             ? { duration_seconds: Math.floor(youtubeDurationRef.current) }
             : {}),
           ...resumeOutcomePayload,
+          // Счёт отброшенных чужих ответов субтитров. Шлём вместе с ближайшим
+          // сохранением позиции, чтобы не заводить отдельный запрос ради числа.
+          ...(youtubeStaleSubtitleDropsRef.current > 0
+            ? { stale_subtitle_drops: youtubeStaleSubtitleDropsRef.current }
+            : {}),
         }),
         keepalive: Boolean(options?.keepalive),
       });
+      youtubeStaleSubtitleDropsRef.current = 0;
     } catch (_error) {
       // ignore sync errors; local cache already has the latest position
     }
@@ -34186,7 +34222,10 @@ function AppInner() {
     }
   };
 
-  const applyYoutubeTranscriptPayload = (data) => {
+  const applyYoutubeTranscriptPayload = (data, forVideoId) => {
+    // Ответа нет вовсе (опрос прекращён из-за смены ролика) — это НЕ «субтитров нет».
+    // Пустой список сюда не подставляем: он стёр бы то, что уже стоит на экране.
+    if (data == null) return;
     const rawItems = data?.items || [];
     // Some caption sources deliver text with literal HTML entities (e.g. "&nbsp;"); decode at
     // ingestion so every consumer (subtitles panel, clickable words, translate) sees clean text.
@@ -34217,6 +34256,9 @@ function AppInner() {
     // │ на 4000 случайных катящихся дорожек второй прогон менял текст у 31. Поэтому    │
     // │ она обязана выполняться ровно один раз и в одном месте — на сервере.           │
     // └───────────────────────────────────────────────────────────────────────────────┘
+    // Чей это ответ. Вызывающий ОБЯЗАН назвать ролик: без имени мы не умеем отличить
+    // «субтитры текущего видео» от «субтитров того, что человек уже закрыл».
+    if (youtubeSubtitlePayloadIsStale(forVideoId, 'applyYoutubeTranscriptPayload')) return;
     setYoutubeTranscript(items);
     const srcRows = Array.isArray(data?.rows) ? data.rows : [];
     setYoutubeSubtitleRows(srcRows);
@@ -34237,6 +34279,11 @@ function AppInner() {
     const maxAttempts = 25;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 800 : 1200));
+      // Человек ушёл на другой ролик — спрашивать про этот больше незачем. Раньше опрос
+      // продолжался все 25 попыток (~30 с) и в конце клал чужие субтитры на экран.
+      if (String(youtubeTranscriptVideoIdRef.current || '').trim() !== String(videoId || '').trim()) {
+        return null;
+      }
       const response = await fetch('/api/webapp/youtube/transcript/status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -34277,6 +34324,9 @@ function AppInner() {
   const fetchTranscript = async (options = {}) => {
     const autoRequest = options?.auto === true;
     if (!youtubeId) return;
+    // Ролик фиксируем ДО первого await. Всё, что вернётся потом, принадлежит ЕМУ, а не
+    // тому, что человек успел открыть за это время (см. блок ИСПРАВЛЕНО 16.09.2026).
+    const requestedVideoId = String(youtubeId).trim();
     if (!initData) {
       if (!autoRequest) setYoutubeTranscriptError(initDataMissingMsg);
       return;
@@ -34297,8 +34347,8 @@ function AppInner() {
         }),
       });
       if (response.status === 202) {
-        const data = await pollYoutubeTranscriptStatus({ videoId: youtubeId, lang: requestedLang });
-        applyYoutubeTranscriptPayload(data);
+        const data = await pollYoutubeTranscriptStatus({ videoId: requestedVideoId, lang: requestedLang });
+        applyYoutubeTranscriptPayload(data, requestedVideoId);
         return;
       }
       if (!response.ok) {
@@ -34308,6 +34358,9 @@ function AppInner() {
           if (data.error_code === 'youtube_transcript_not_cached') {
             // Автоподгрузка не нашла сохранённых субтитров. Это не ошибка: человек нажмёт
             // «Субтитры» — тогда они и загрузятся. Красную плашку не показываем.
+            // Чистить тоже можно только СВОЙ ролик: иначе «нет субтитров» у закрытого
+            // видео стирало бы субтитры того, что уже идёт на экране.
+            if (youtubeSubtitlePayloadIsStale(requestedVideoId, 'not_cached')) return;
             setYoutubeTranscript([]);
             setYoutubeTranscriptError('');
             return;
@@ -34326,8 +34379,9 @@ function AppInner() {
         throw new Error(message);
       }
       const data = await response.json();
-      applyYoutubeTranscriptPayload(data);
+      applyYoutubeTranscriptPayload(data, requestedVideoId);
     } catch (error) {
+      if (youtubeSubtitlePayloadIsStale(requestedVideoId, 'fetchTranscript:catch')) return;
       setYoutubeTranscript([]);
       const message = String(error?.message || '').trim();
       if (message.startsWith(YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX)) {
@@ -34340,7 +34394,11 @@ function AppInner() {
         ));
       }
     } finally {
-      setYoutubeTranscriptLoading(false);
+      // Флаг «идёт загрузка» тоже принадлежит ролику: сняв его за чужой запрос, мы
+      // открыли бы дверь повторной загрузке поверх текущей.
+      if (String(youtubeTranscriptVideoIdRef.current || '').trim() === requestedVideoId) {
+        setYoutubeTranscriptLoading(false);
+      }
     }
   };
 
@@ -34349,6 +34407,15 @@ function AppInner() {
     if (!youtubeId || !initData) {
       youtubeTranscriptVideoIdRef.current = currentVideoId;
       setYoutubeTranscript([]);
+      // ┌─ ИСПРАВЛЕНО 16.09.2026. ФЛАГ ЗАГРУЗКИ ПРИНАДЛЕЖИТ РОЛИКУ. ───────────────────┐
+      // │ Он глобальный, а запросов бывает два подряд: старый ещё летит, человек уже   │
+      // │ на новом ролике. Автозагрузка нового смотрит на этот флаг и молча выходит,   │
+      // │ если он поднят, — и субтитры нового видео не запрашивались НИКОГДА. Человек  │
+      // │ при этом даже кнопку «Загрузить субтитры» не видел: плашку прячет признак    │
+      // │ «субтитры есть», посчитанный по ЧУЖИМ данным.                                │
+      // │ Сменился ролик — у нового запросов в полёте нет, флаг обязан быть опущен.    │
+      // └──────────────────────────────────────────────────────────────────────────────┘
+      setYoutubeTranscriptLoading(false);
       setYoutubeTranscriptError('');
       setYoutubeTranslationEnabled(false);
       setYoutubeManualOverride(false);
@@ -34366,6 +34433,8 @@ function AppInner() {
     if (youtubeTranscriptVideoIdRef.current !== currentVideoId) {
       youtubeTranscriptVideoIdRef.current = currentVideoId;
       setYoutubeTranscript([]);
+      // См. блок ИСПРАВЛЕНО 16.09.2026 выше: флаг загрузки принадлежит ролику.
+      setYoutubeTranscriptLoading(false);
       setYoutubeTranscriptError('');
       setYoutubeTranslationEnabled(false);
       setYoutubeManualOverride(false);
@@ -35404,6 +35473,10 @@ function AppInner() {
     youtubeTranslateInFlightRef.current = true;
     youtubeTranslateIndexRef.current = firstMissingCue;
 
+    // Ролик фиксируем ДО запроса. Именно здесь свежий русский ложился на чужой немецкий
+    // текст: перевод заказывается по НОМЕРАМ реплик, а ярлыки строк у разных роликов
+    // совпадают по форме («12-13»), поэтому чужой ответ выглядел как свой.
+    const translationVideoId = String(youtubeId).trim();
     fetch('/api/webapp/youtube/translate_rows', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -35417,6 +35490,7 @@ function AppInner() {
     })
       .then((res) => res.ok ? res.json() : Promise.reject(res))
       .then((data) => {
+        if (youtubeSubtitlePayloadIsStale(translationVideoId, 'translate_rows')) return;
         const rows = Array.isArray(data?.rows) ? data.rows : [];
         if (!rows.length) return;
         delete youtubeTranslateFailedRef.current[firstMissingCue];
