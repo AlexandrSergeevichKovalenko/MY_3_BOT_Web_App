@@ -2673,6 +2673,19 @@ def _false_claims_still_on_the_screen() -> int:
     return int(count_false_claims_still_open())
 
 
+def _en_bridge_backlog() -> int:
+    """Сколько немецких слов ещё без английской стороны.
+
+    Обещание не «ноль завтра», а «число УБЫВАЕТ»: ночь берёт до 500 за раз, а база
+    растёт примерно на 64 в сутки. Замер 16.09.2026 сразу после разового прогона моста:
+    2 752. Через шесть ночей должно стать около нуля и дальше держаться у нуля.
+    Число РАСТЁТ = ночь не отработала: актёр не дошёл, модель отказала, или кто-то
+    выключил EN_BRIDGE_NIGHTLY_ENABLED.
+    """
+    from backend.en_bridge_nightly import сколько_осталось
+    return int(сколько_осталось())
+
+
 def _translation_questions_without_dictionary_trace() -> int:
     """Новых вопросов о переводе, заведённых БЕЗ обращения к словарю. Обещано: 0.
 
@@ -2695,6 +2708,20 @@ def _translation_questions_without_dictionary_trace() -> int:
 
 
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="en_bridge_backlog_shrinks",
+        title="Немецкие слова без английской стороны: число обязано убывать",
+        since="16.09.2026",
+        expected=0,
+        measure=_en_bridge_backlog,
+        how="/admin_promises — или backend.fix_promises._en_bridge_backlog(). Считает "
+            "немецкие единицы, у которых русская сторона есть, а английской нет, кроме "
+            "тех, что ждут решения человека. Замер 16.09.2026 сразу после разового "
+            "прогона моста: 2 752 (было 24 242 до моста). Ночь 04:10 берёт до 500 за "
+            "раз, база растёт на ~64 в сутки — за шесть ночей хвост должен разойтись. "
+            "Число РАСТЁТ от дня ко дню = ночь не отработала.",
+    ),
+
     Promise(
         key="translation_judge_always_sees_the_dictionary",
         title="Вопрос о переводе, заведённый без словарной статьи у судьи",
