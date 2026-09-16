@@ -331,14 +331,22 @@ def sweep_missing_genitive_articles(*, dry_run: bool = False) -> dict:
     """Дописать артикль всем группам «сущ. + родительный», у которых его нет.
 
     В отчёте разные числа, и путать их нельзя:
-      fixed       — заголовков починено;
-      from_plural — сколько из них ответила ВТОРАЯ ступень лестницы (форма множественного).
-                    Отдельно, чтобы было видно, работает ли она вообще;
-      unknown     — форма подходит, а обе ступени справочника молчат. Это НЕ «починено» и
-                    НЕ «нечего чинить»: пустая ячейка — такая же незакрытая задача, как
-                    выдумка, просто дешевле. Уходит владельцу вслух поимённым списком;
+      fixed        — заголовков починено;
+      from_plural  — сколько из них ответила ВТОРАЯ ступень (форма множественного);
+      from_model   — сколько ответила ТРЕТЬЯ (модель, когда молчат все справочники).
+                     Обе отдельно, чтобы было видно, работает ли каждая ступень вообще;
+      form_changes — модель сказала «артикль тут не дописывается, надо менять саму форму»
+                     («Vorsitzender» → «Vorsitzende»). Мы НЕ трогаем такие заголовки:
+                     это другое решение, не наше;
+      unknown      — ни одна ступень не ответила. Это НЕ «починено» и НЕ «нечего чинить»:
+                     пустая ячейка — такая же незакрытая задача, как выдумка, просто
+                     дешевле. Уходит владельцу вслух поимённым списком;
       cards/pool/units — сколько строк в каждом хранилище затронуто (заголовок живёт
-                    не в одном месте).
+                     не в одном месте).
+
+    ⚠ `dry_run=True` к модели НЕ ХОДИТ и денег не тратит: он читает только те вердикты,
+    что уже куплены и лежат в `bt_3_genitive_head_article`. Поэтому обещание в
+    fix_promises, которое меряется сухим прогоном, не может случайно начать тратить.
     """
     from backend.database import get_db_connection_context, spread_correction_everywhere
     from backend.noun_declension_reference import (
@@ -347,7 +355,8 @@ def sweep_missing_genitive_articles(*, dry_run: bool = False) -> dict:
     )
 
     отчёт = {"fixed": 0, "unknown": 0, "cards": 0, "pool": 0, "units": 0,
-             "from_plural": 0, "unknown_words": [], "examples": []}
+             "from_plural": 0, "from_model": 0, "form_changes": 0,
+             "unknown_words": [], "examples": []}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             места = _collect_candidates(cursor)
@@ -360,6 +369,18 @@ def sweep_missing_genitive_articles(*, dry_run: bool = False) -> dict:
         ответы = articles_from_declension_reference(слова)
         молчат = [с for с in слова if not ответы.get(с, (None, ""))[0]]
         ответы_мн = plural_articles_from_declension_reference(молчат) if молчат else {}
+        # ТРЕТЬЯ ступень — модель, и только про то, чего не знает НИ ОДИН справочник.
+        # Решение владельца 16.09.2026, распространение его же правила от 25.08.2026:
+        # «знает только модель — то на кого нам ещё надеяться». Сухой прогон к модели не
+        # ходит и денег не тратит: там мы лишь считаем, сколько бы спросили.
+        молчат_совсем = [с for с in молчат if not ответы_мн.get(с, ("", ""))[0]]
+        вердикты = {}
+        if молчат_совсем and not dry_run:
+            from backend.genitive_head_article_judge import judge_heads
+            вердикты = judge_heads(молчат_совсем)
+        elif молчат_совсем:
+            from backend.genitive_head_article_judge import known_verdicts
+            вердикты = known_verdicts(молчат_совсем)
         for текст in sorted(места):
             артикль, причина = ответы.get(
                 головы[текст], (None, "справочник склонений не знает слова"))
@@ -370,6 +391,16 @@ def sweep_missing_genitive_articles(*, dry_run: bool = False) -> dict:
                     отчёт["from_plural"] += 1
                 elif мн_причина.startswith("два прочтения"):
                     причина = f"{головы[текст]}: {мн_причина}"
+            if not артикль and головы[текст] in вердикты:
+                from backend.genitive_head_article_judge import article_from_judge
+                суд_артикль, суд_причина = article_from_judge(вердикты[головы[текст]])
+                if суд_артикль:
+                    артикль, причина = суд_артикль, суд_причина
+                    отчёт["from_model"] += 1
+                else:
+                    причина = f"{головы[текст]}: {суд_причина}"
+                    if "форму надо менять" in суд_причина:
+                        отчёт["form_changes"] += 1
             if not артикль:
                 отчёт["unknown"] += 1
                 отчёт["unknown_words"].append(f"{текст} — {причина}")
