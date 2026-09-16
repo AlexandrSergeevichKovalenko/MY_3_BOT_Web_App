@@ -394,28 +394,35 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
     };
   }, []);
 
-  // ┌─ ЭКРАН ПРИБИТ К ВИДИМОЙ ЧАСТИ ОКНА. КЛАВИАТУРА БОЛЬШЕ НЕ ТАСКАЕТ СЛОВАРЬ. ────────┐
+  // ┌─ ПАНЕЛЬ ЖИВЁТ ПО ВИДИМОЙ ВЫСОТЕ ОКНА. ДВИГАТЬ ЕЁ САМИМ — ЗАПРЕЩЕНО. ─────────────┐
   // │ Жалоба владельца 16.09.2026 (видео 10-54-35): встаёшь в поле — шапка «Быстрый     │
-  // │ словарь» и кнопки вкладок уезжают за верх экрана, строка языков налезает на часы. │
-  // │ Причина не в нашей вёрстке, а в устройстве айфона: при выезде клавиатуры окно     │
-  // │ СТРАНИЦЫ не уменьшается (100dvh остаётся прежним), поэтому WebKit просто          │
-  // │ прокручивает всё вверх, лишь бы поле оказалось над клавиатурой. Прокручивает он   │
-  // │ и наш контейнер, и саму страницу — отсюда «расхлябанный» вид.                     │
-  // │ Решение то же, что у Яндекс.Переводчика и Google Translate: панель живёт не по    │
-  // │ высоте страницы, а по ВИДИМОЙ высоте окна. Прибор для этого штатный —             │
-  // │ window.visualViewport: height = сколько видно, offsetTop = насколько видимая      │
-  // │ часть уже сдвинута. Отдаём оба числа в CSS, панель встаёт ровно в видимую полосу, │
-  // │ прокручивать системе становится нечего — шапка остаётся на месте, а поле ввода    │
-  // │ само становится ниже (см. dict.css, «Клавиатура не таскает экран»).               │
-  // │ Прибора нет (старый движок) — переменные не ставятся, и CSS остаётся на прежних   │
-  // │ 100dvh: вид ровно такой, каким был до этой правки.                                │
+  // │ словарь» и вкладки уезжают за верх экрана, строка языков налезает на часы.        │
+  // │ Причина в устройстве айфона: при выезде клавиатуры окно СТРАНИЦЫ не уменьшается   │
+  // │ (100dvh остаётся прежним), и WebKit прокручивает всё вверх, лишь бы поле было     │
+  // │ видно. Лечится тем, что панель живёт по ВИДИМОЙ высоте окна (visualViewport),     │
+  // │ а не по высоте страницы: тогда поле и так на виду и прокручивать нечего.          │
+  // │                                                                                  │
+  // │ ┌─ ПРОВЕРЕНО 16.09.2026. offsetTop СЮДА НЕ ВОЗВРАЩАТЬ. ────────────────────────┐ │
+  // │ │ Первая версия этой правки, кроме высоты, ставила ещё и сдвиг видимой полосы   │ │
+  // │ │ (visualViewport.offsetTop) и двигала панель на него через position: fixed.    │ │
+  // │ │ По книжке это верно: у фиксированного слоя точка отсчёта — окно СТРАНИЦЫ, и   │ │
+  // │ │ без компенсации он ушёл бы под часы. На айфоне книжка не работает: во время    │ │
+  // │ │ выезда клавиатуры WebKit уже пересаживает фиксированные слои на ВИДИМУЮ        │ │
+  // │ │ полосу сам, и наша компенсация складывалась с его собственной — карточка       │ │
+  // │ │ съезжала вниз и возвращалась. Замер по кадрам видео владельца 11-36-42:        │ │
+  // │ │ верх экрана двигался в 28 кадрах из 89 (в пике менялось 59% точек), у          │ │
+  // │ │ Яндекс.Переводчика на том же замере — 0 кадров из 63.                          │ │
+  // │ │ Поэтому: меряем ТОЛЬКО высоту, панель остаётся в обычном потоке, ничего        │ │
+  // │ │ никуда не переставляем. Перемерить: scratchpad-скрипт из той сессии —          │ │
+  // │ │ покадровая разница верхней трети кадра, порог 1% точек.                        │ │
+  // │ └──────────────────────────────────────────────────────────────────────────────┘ │
+  // │ Прибора нет (старый движок) — переменная не ставится, CSS остаётся на 100dvh:     │
+  // │ вид ровно такой, каким был до этой правки.                                        │
   // └──────────────────────────────────────────────────────────────────────────────────┘
   useEffect(() => {
     const vv = typeof window !== 'undefined' ? window.visualViewport : null;
     const root = typeof document !== 'undefined' ? document.documentElement : null;
-    if (!root) return undefined;
-    root.setAttribute('data-dq-panel', '1');
-    if (!vv) return () => { root.removeAttribute('data-dq-panel'); };
+    if (!vv || !root) return undefined;
     let frame = null;
     const apply = () => {
       frame = null;
@@ -428,28 +435,26 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
       const windowHeight = Math.max(Number(window.innerHeight) || 0,
         Number(document.documentElement.clientHeight) || 0);
       const height = Math.round(vv.height);
-      const top = Math.round(vv.offsetTop);
-      const readingIsSane = height > 0
-        && (windowHeight <= 0 || height >= windowHeight * 0.35);
-      if (readingIsSane) root.style.setProperty('--dq-vh', `${height}px`);
-      root.style.setProperty('--dq-vtop', `${top}px`);
+      if (height > 0 && (windowHeight <= 0 || height >= windowHeight * 0.35)) {
+        root.style.setProperty('--dq-vh', `${height}px`);
+      }
     };
     const schedule = () => {
       if (frame !== null) window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(apply);
     };
     apply();
+    // Только «размер окна изменился». На `scroll` не подписываемся сознательно: прокрутка
+    // видимой полосы во время анимации клавиатуры сыплется десятками событий, и подписка
+    // на неё превращала одно изменение высоты в дрожь (жалоба владельца 16.09.2026:
+    // «поле сужается, потом расширяется, постоянные прыжки»).
     vv.addEventListener('resize', schedule);
-    vv.addEventListener('scroll', schedule);
     window.addEventListener('orientationchange', schedule);
     return () => {
       if (frame !== null) window.cancelAnimationFrame(frame);
       vv.removeEventListener('resize', schedule);
-      vv.removeEventListener('scroll', schedule);
       window.removeEventListener('orientationchange', schedule);
-      root.removeAttribute('data-dq-panel');
       root.style.removeProperty('--dq-vh');
-      root.style.removeProperty('--dq-vtop');
     };
   }, []);
 
