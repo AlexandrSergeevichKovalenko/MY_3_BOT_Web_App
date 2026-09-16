@@ -2599,6 +2599,11 @@ html[data-scheme="light"] .frrev-w {
 .frv-objection { color: var(--frv-stop); }
 .frv-objection b { color: var(--frv-stop); }
 
+/* Доспрос снял претензию — зелёным, тем же цветом, что и остальное согласие на
+   экране. Красным это выглядело бы новой претензией (16.09.2026). */
+.frv-agreed { color: var(--frv-good); }
+.frv-agreed b { color: var(--frv-good); }
+
 .frv-save {
   appearance: none; border: 0; font: inherit; cursor: pointer; width: 100%;
   border-radius: 0.875rem; padding: 0.6875rem 0.875rem; font-size: 0.9375rem; font-weight: 700;

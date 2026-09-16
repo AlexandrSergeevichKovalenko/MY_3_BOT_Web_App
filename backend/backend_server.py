@@ -33152,6 +33152,37 @@ def answer_phrase_review_rejudge():
         review_id = int(payload.get("review_id"))
     except (TypeError, ValueError):
         return jsonify({"error": "нет фразы"}), 400
+
+    # ⚠ У ВОПРОСА О ПЕРЕВОДЕ СВОЙ СУДЬЯ. Грамматический пересуд спрашивает «как
+    # правильно по-немецки» — здесь же спор о РУССКОМ: означает ли он эту фразу.
+    # Отправить такой вопрос грамматическим судьям значит получить ответ не о том.
+    from backend.database import get_open_phrase_review, phrase_review_kind
+    строка = get_open_phrase_review(review_id)
+    if строка and phrase_review_kind(строка.get("judges") or []) == "translation":
+        from backend.translation_links import rejudge_translation_question
+        try:
+            итог = rejudge_translation_question(review_id)
+        except Exception:
+            logging.warning("phrasereview: доспрос перевода не прошёл id=%s",
+                            review_id, exc_info=True)
+            return jsonify({"error": "Проверка не ответила. Попробуйте ещё раз."}), 503
+        состояние = str(итог.get("state") or "")
+        if состояние == "not_asked":
+            return jsonify({"error": "Проверка не ответила. Попробуйте ещё раз."}), 503
+        # Каждый исход назван словами: «переспросил» без результата владелец уже
+        # читал как «ничего не произошло» и жал кнопку снова.
+        note = {
+            "fixed": "Спросил заново — вариант есть, он на кнопке.",
+            "agreed": "Спросил заново: теперь проверка считает этот перевод верным. "
+                      "Решаешь ты — «Сохранить этот перевод как общий» или свой текст.",
+            "no_fix": "Спросил заново — готового варианта проверка снова не назвала. "
+                      "Больше её об этом не спрашиваем: впиши свой перевод.",
+            "no_translation": "У этой записи нет русского перевода — спрашивать не о чем.",
+            "gone": "Этот вопрос уже разобран.",
+        }.get(состояние, "Спросил заново.")
+        return jsonify({"ok": True, "note": note, "state": состояние,
+                        **_phrase_review_payload()})
+
     from backend.phrase_night_check import rejudge_phrase_review
     try:
         ok = bool(rejudge_phrase_review(review_id))

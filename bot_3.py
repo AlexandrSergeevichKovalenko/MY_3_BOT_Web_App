@@ -10894,6 +10894,19 @@ def _translation_links_line() -> str:
             out += f"\n   спросить не удалось (попробуем ещё): {silent}"
         if left:
             out += f"\n   осталось поднять: {left}"
+        # Доспрос «как правильно» по вопросам, что уже лежат у владельца (16.09.2026).
+        # Он идёт той же ночью и тем же механизмом — значит и отчитывается тут же.
+        доспрос = meta.get("доспрос") if isinstance(meta.get("доспрос"), dict) else {}
+        if доспрос and int(доспрос.get("взято") or 0):
+            out += (f"\n   доспрошено «как правильно»: <b>{int(доспрос.get('взято') or 0)}</b>"
+                    f" · с вариантом: {int(доспрос.get('с вариантом') or 0)}"
+                    f" · судья согласился: {int(доспрос.get('судья согласился') or 0)}")
+            без = int(доспрос.get("снова без варианта") or 0)
+            if без:
+                out += f"\n   вариант не назван (чинить нечего): {без}"
+            ждут = int(доспрос.get("осталось без доспроса") or 0)
+            if ждут:
+                out += f"\n   ещё ждут доспроса: {ждут}"
         return out + "\n"
     except Exception:
         logging.debug("строка о подъёме переводов не собралась", exc_info=True)
@@ -11024,8 +11037,15 @@ def _run_translation_links_safe() -> None:
     Порядок важен: связь, протянутая этой ночью, делает фразу видимой для ночной
     проверки грамматики уже сегодня, а не через сутки."""
     try:
-        from backend.translation_links import promote_card_translations
+        from backend.translation_links import (promote_card_translations,
+                                               rejudge_translation_questions)
         stats = promote_card_translations()
+        # ⛔ ВОПРОС БЕЗ ГОТОВОГО ВАРИАНТА НЕ ИМЕЕТ ПРАВА ЗАСТРЯТЬ НАВСЕГДА.
+        # 16.09.2026: 15 вопросов лежали у владельца с 27–31.08 без ответа «как
+        # правильно», и получить его не могли ничем — доспроса не существовало.
+        # Теперь каждую ночь каждому такому вопросу даётся ровно одна попытка; та,
+        # где модель варианта не назвала, помечается и денег больше не стоит.
+        stats["доспрос"] = rejudge_translation_questions()
         _record_sched_heartbeat("translation_links", "completed", stats)
     except Exception as exc:
         logging.exception("подъём переводов в общий слой упал")
