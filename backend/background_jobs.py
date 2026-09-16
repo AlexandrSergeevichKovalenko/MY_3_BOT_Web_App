@@ -2831,6 +2831,19 @@ def run_reference_forms_review_dm_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_en_bridge_nightly_actor() -> None:
+    """Ночью: у немецкого слова появляется английская сторона.
+
+    Только ДОБАВЛЯЕТ связи немецкое→английское. Немецкой и русской стороны
+    не касается, ничего не удаляет и не понижает. Слова, по которым человеку
+    отправлено предложение поправить и он ещё не ответил, пропускаются.
+    """
+    from backend.en_bridge_nightly import sweep
+    итог = sweep()
+    logging.info("мост de→en: %s", итог)
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_form_headword_sweep_actor() -> None:
     """Ночью: заголовок карточки — словарное слово, а не форма («beruhte» → «beruhen»)."""
     from backend.form_headword_sweep import sweep
