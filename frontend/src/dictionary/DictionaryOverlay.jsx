@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import '../answer/answer.css';
 import './dict.css';
+import { computeBaseFontSize } from '../answer/baseFontSize.js';
 import { WordBreakdown, useTts, SpeakButton, genderClass, resolveArticle, resolveNumber, resolveLemma, clean, cleanArticle as cleanArticleText, stripLeadingArticle, api, haptic, getInitData, getDictToken } from './WordBreakdown';
 import BreakdownSkeleton from './BreakdownSkeleton';
 import { streamDictionaryLookup } from './lookupStream';
@@ -426,6 +427,19 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
     root.setAttribute('data-dq-panel', '1');
     if (!vv) return () => { root.removeAttribute('data-dq-panel'); };
     let frame = null;
+    // Полная высота окна — та, что БЫЛА до выезда клавиатуры. Запоминаем её сами, и вот
+    // почему нельзя взять window.innerHeight: на айфоне он при клавиатуре не меняется, а
+    // Chrome на Android сжимает окно целиком, и там innerHeight уезжает вместе с видимой
+    // частью. Признак «окно не изменилось, а видимая часть уменьшилась» работал бы ТОЛЬКО
+    // на айфоне (замер 16.09.2026: на Android отметка не ставилась ни разу). Поэтому
+    // запоминаем наибольшую высоту, какую видели, пока в поля никто не писал, — этот
+    // признак одинаково верен на обеих платформах.
+    let полныйЭкран = 0;
+    const пишет = () => {
+      const el = document.activeElement;
+      if (!el) return false;
+      return /^(input|textarea|select)$/i.test(el.tagName || '') || el.isContentEditable === true;
+    };
     const apply = () => {
       frame = null;
       // Айфон, установленный на рабочий стол, иногда отдаёт ЗАВЕДОМО НЕВЕРНУЮ высоту в
@@ -439,14 +453,29 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
       const height = Math.round(vv.height);
       if (height <= 0 || (windowHeight > 0 && height < windowHeight * 0.35)) return;
       root.style.setProperty('--dq-vh', `${height}px`);
-      // Клавиатура на экране или нет. Нужно ровно для одного: под клавиатурой нижний
-      // отступ панели (место под «домашнюю полоску» айфона) не нужен — полоски там уже
-      // нет, её закрыла клавиатура, и отступ превращается в пустую серую ленту между
-      // карточкой и клавиатурой. У Яндекса такой ленты нет, и это владелец назвал
-      // прямо: «нет такого пустого места внизу после всплытия клавиатуры».
-      const клавиатураВидна = windowHeight > 0 && (windowHeight - height) > 120;
+
+      if (!пишет() && height > полныйЭкран) полныйЭкран = height;
+      // Клавиатура на экране или нет. Нужно для двух вещей.
+      // Первая: под клавиатурой нижний отступ панели (место под «домашнюю полоску»
+      // айфона) не нужен — полоски там уже нет, её закрыла клавиатура, и отступ
+      // превращается в пустую серую ленту между карточкой и клавиатурой. Владелец
+      // 16.09.2026: «нет такого пустого места внизу после всплытия клавиатуры».
+      const клавиатураВидна = полныйЭкран > 0 && (полныйЭкран - height) > 120;
       if (клавиатураВидна) root.setAttribute('data-dq-kbd', '1');
       else root.removeAttribute('data-dq-kbd');
+
+      // Вторая: базовый кегль. Все размеры в answer.css заданы в `rem`, а база считалась
+      // формулой от высоты окна. На Android окно с клавиатурой сжимается — и весь словарь
+      // ужимался сам собой: 18,46 → 13,91 точки, надпись «Быстрый словарь» с 14,4 до 10,9
+      // (замер 16.09.2026). На айфоне этого не видно, окно там не меняется. Считаем кегль
+      // сами и обновляем ТОЛЬКО пока клавиатуры нет — ровно так же, как это давно сделано
+      // в интерактивах (answer/fitCard.js), формула у нас теперь общая.
+      if (клавиатураВидна) return;
+      const кегль = computeBaseFontSize(
+        Number(document.documentElement.clientHeight) || 0,
+        Number(document.documentElement.clientWidth) || 0,
+      );
+      if (кегль !== null) root.style.setProperty('--ans-base', `${кегль}px`);
     };
     const schedule = () => {
       if (frame !== null) window.cancelAnimationFrame(frame);
@@ -458,14 +487,22 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
     // на неё превращала одно изменение высоты в дрожь (жалоба владельца 16.09.2026:
     // «поле сужается, потом расширяется, постоянные прыжки»).
     vv.addEventListener('resize', schedule);
-    window.addEventListener('orientationchange', schedule);
+    // Поворот меняет саму полную высоту окна — запомненное число больше не про этот
+    // экран. Забываем его и учим заново, иначе после поворота «клавиатура видна» станет
+    // враньём в любую сторону.
+    const наПоворот = () => { полныйЭкран = 0; schedule(); };
+    window.addEventListener('orientationchange', наПоворот);
+    // Клавиатура ушла — это и есть момент, когда полную высоту можно померить честно.
+    document.addEventListener('focusout', schedule, true);
     return () => {
       if (frame !== null) window.cancelAnimationFrame(frame);
       vv.removeEventListener('resize', schedule);
-      window.removeEventListener('orientationchange', schedule);
+      window.removeEventListener('orientationchange', наПоворот);
+      document.removeEventListener('focusout', schedule, true);
       root.removeAttribute('data-dq-panel');
       root.removeAttribute('data-dq-kbd');
       root.style.removeProperty('--dq-vh');
+      root.style.removeProperty('--ans-base');
     };
   }, []);
 

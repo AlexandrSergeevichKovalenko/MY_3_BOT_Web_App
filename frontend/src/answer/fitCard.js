@@ -1,3 +1,4 @@
+import { computeBaseFontSize } from './baseFontSize.js';
 // Подгонка интерактива под экран пользователя — по высоте И по ширине, на любом телефоне.
 //
 // Игра — это одна карточка (`.ans-root > .ans-card`) высотой во столько, сколько занял
@@ -614,20 +615,16 @@ function schedule() {
 // Меряем `clientHeight`/`clientWidth` документа: это ровно то, что означают единицы
 // `vh`/`vw` и что проверяет медиазапрос, — поэтому без клавиатуры кегль получается
 // в точности такой же, каким был, и вёрстка ни на одном экране не поедет.
-const clampPx = (min, val, max) => Math.min(max, Math.max(min, val));
+// Сама формула переехала 16.09.2026 в answer/baseFontSize.js: её применяет ещё и
+// быстрый словарь (там от неё на Android ужимался весь экран при выезде клавиатуры).
+// Числа не менялись — они закреплены тестом frontend/tests/base_font_size.test.mjs.
 function updateBaseFontSize() {
   // Открыта клавиатура (или она ещё едет) — величина сейчас недостоверна, не трогаем.
   if (typing || askTyping || settling) return;
   const el = document.documentElement;
-  const h = el.clientHeight || 0;
-  const w = el.clientWidth || 0;
-  if (!(h > 200) || !(w > 0)) return;
-  // Порог тот же, что у медиазапроса в answer.css: ширина от 700 И высота от 560.
-  const wide = w >= 700 && h >= 560;
-  const px = wide
-    ? clampPx(16, (0.9 * h + 0.7 * w) / 100 + 5, 26)
-    : clampPx(13, (1.42 * h + 0.4 * w) / 100 + 4.8, 18.5);
-  el.style.setProperty('--ans-base', `${Math.round(px * 100) / 100}px`);
+  const px = computeBaseFontSize(el.clientHeight || 0, el.clientWidth || 0);
+  if (px === null) return;
+  el.style.setProperty('--ans-base', `${px}px`);
 }
 
 // Внешние обстоятельства поменялись (поворот, шторка Telegram) — забываем кеш и считаем заново.
