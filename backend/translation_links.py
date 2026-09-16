@@ -125,7 +125,7 @@ def _link_translation(unit_id: int, russian: str) -> bool:
 
 
 def _ask_owner(unit_id: int, display: str, russian: str, why: str,
-               better: str = "") -> bool:
+               better: str = "", *, справка: dict | None = None) -> bool:
     """Перевод не прошёл проверку — вопрос владельцу, в его очередь карточек словаря.
 
     Ложится в ту же таблицу, что и споры о грамматике, но со своей категорией: экран по
@@ -143,6 +143,11 @@ def _ask_owner(unit_id: int, display: str, russian: str, why: str,
                "field": "translation", "voice": 0,
                "fix": str(better or "").strip()[:300],
                "corrected": "", "proposal": "",
+               # След словарной справки: какие слова спрашивали и на сколько нашлась
+               # статья. Без него через неделю не ответить, доходил ли словарь до
+               # судьи вообще — а молчащий механизм неотличим от сломанного.
+               "reference": {"lemmas": list((справка or {}).get("lemmas") or []),
+                             "found": int((справка or {}).get("found") or 0)},
                "why": (why or "Проверка не подтвердила, что этот русский означает эту фразу.")[:400]}]
     try:
         with get_db_connection_context() as conn:
@@ -164,6 +169,7 @@ def _ask_owner(unit_id: int, display: str, russian: str, why: str,
 def promote_card_translations(*, limit: int | None = None,
                               budget_usd: float | None = None) -> dict:
     """Одна порция: поднять переводы карточек в общий слой. Возвращает отчёт числами."""
+    from backend.judge_dictionary_context import справка_для_судьи
     from backend.openai_manager import _LAST_LLM_USAGE, run_translation_pair_check
 
     cap = int(limit if limit is not None else NIGHT_CAP)
@@ -176,9 +182,13 @@ def promote_card_translations(*, limit: int | None = None,
         if report["потрачено"] >= budget:
             logging.info("подъём переводов: потолок $%.2f, остановились", budget)
             break
+        # Словарная статья едет судье вместе с вопросом: без неё он спорил со
+        # словарём по памяти (разбор 16.09.2026, `judge_dictionary_context`).
+        справка = справка_для_судьи(row["display"])
         verdict = run_translation_pair_check(
             german=row["display"], russian=row["translation"],
-            kind=str(row.get("kind") or "collocation"))
+            kind=str(row.get("kind") or "collocation"),
+            reference=справка["text"])
         usage = _LAST_LLM_USAGE.get() or {}
         report["потрачено"] += (int(usage.get("prompt_tokens") or 0) * PRICE_IN
                                 + int(usage.get("completion_tokens") or 0) * PRICE_OUT)
@@ -193,7 +203,7 @@ def promote_card_translations(*, limit: int | None = None,
             continue
         if _ask_owner(row["unit_id"], row["display"], row["translation"],
                       str(verdict.get("why") or ""),
-                      str(verdict.get("better") or "")):
+                      str(verdict.get("better") or ""), справка=справка):
             report["ушло владельцу"] += 1
     report["потрачено"] = round(report["потрачено"], 4)
     report["осталось"] = count_units_missing_ru_link()
@@ -338,12 +348,15 @@ def голос_после_доспроса(judges: list, verdict: dict) -> dict:
     return голос
 
 
-def _записать_пересуд(review_id: int, judges: list, verdict: dict) -> bool:
+def _записать_пересуд(review_id: int, judges: list, verdict: dict,
+                      *, справка: dict | None = None) -> bool:
     """Положить собранный голос в строку вопроса. Строку, которую успели закрыть, не
     трогаем: `status = 'open'` в условии."""
     from backend.database import get_db_connection_context
 
     голос = голос_после_доспроса(judges, verdict)
+    голос["reference"] = {"lemmas": list((справка or {}).get("lemmas") or []),
+                          "found": int((справка or {}).get("found") or 0)}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -370,6 +383,7 @@ def rejudge_translation_question(review_id: int) -> dict:
                        проход. Это «не спросили», а не «ответа нет».
     """
     from backend.database import get_db_connection_context
+    from backend.judge_dictionary_context import справка_для_судьи
     from backend.openai_manager import _LAST_LLM_USAGE, run_translation_pair_check
 
     with get_db_connection_context() as conn:
@@ -390,15 +404,18 @@ def rejudge_translation_question(review_id: int) -> dict:
         # про перевод, а про то, что его нет. Владельцу это и так видно на экране.
         return {"state": "no_translation", "spent": 0.0}
 
+    справка = справка_для_судьи(str(text or ""))
     verdict = run_translation_pair_check(german=str(text or ""),
                                          russian=str(translation or ""),
-                                         kind=str(kind or "collocation"))
+                                         kind=str(kind or "collocation"),
+                                         reference=справка["text"])
     usage = _LAST_LLM_USAGE.get() or {}
     потрачено = (int(usage.get("prompt_tokens") or 0) * PRICE_IN
                  + int(usage.get("completion_tokens") or 0) * PRICE_OUT)
     if not verdict.get("checked"):
         return {"state": "not_asked", "spent": round(потрачено, 6)}
-    if not _записать_пересуд(review_id, judges if isinstance(judges, list) else [], verdict):
+    if not _записать_пересуд(review_id, judges if isinstance(judges, list) else [],
+                             verdict, справка=справка):
         # Строку закрыли, пока мы спрашивали. Не ошибка, но и не работа.
         return {"state": "gone", "spent": round(потрачено, 6)}
     if verdict.get("ok"):

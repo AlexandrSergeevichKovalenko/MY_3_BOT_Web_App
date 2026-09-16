@@ -2669,7 +2669,44 @@ def _false_claims_still_on_the_screen() -> int:
     return int(count_false_claims_still_open())
 
 
+def _translation_questions_without_dictionary_trace() -> int:
+    """Новых вопросов о переводе, заведённых БЕЗ обращения к словарю. Обещано: 0.
+
+    С 16.09.2026 судья перевода получает статью de.wiktionary и кладёт в вопрос след:
+    какие слова спрашивали и на сколько нашлась статья (`judges[].reference`). Считаем
+    только записи, заведённые с 17.09.2026: до этой даты следа нет ни у одной, и
+    мешать старое с новым значит не увидеть возврата дефекта. Пустая справка (`found`
+    = 0) нарушением НЕ считается — словарь имеет право не знать слова; нарушение это
+    когда механизм не сработал вовсе."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """SELECT count(*) FROM bt_3_phrase_review r
+                    WHERE COALESCE(r.kind, 'grammar') = 'translation'
+                      AND r.created_at >= TIMESTAMPTZ '2026-09-17 00:00:00+00'
+                      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(r.judges) j
+                                       WHERE j->'reference' IS NOT NULL);""")
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="translation_judge_always_sees_the_dictionary",
+        title="Вопрос о переводе, заведённый без словарной статьи у судьи",
+        since="16.09.2026",
+        expected=0,
+        measure=_translation_questions_without_dictionary_trace,
+        screen=_translation_questions_screen,
+        how="/admin_promises — или backend.fix_promises."
+            "_translation_questions_without_dictionary_trace(). Считает вопросы вида "
+            "'translation' с 17.09.2026, у которых в judges нет ключа `reference`. "
+            "Замер до починки: следа не было ни у одного из 46. Живой прогон 16.09.2026 "
+            "(gpt-4.1-mini, t=0): со словарём снято 5 ложных претензий из 5 и поймано "
+            "5 настоящих ошибок из 5. Число ВЫРОСЛО = справка отвалилась (Wiktionary "
+            "молчит дольше ретраев, или вызов потерян при правке translation_links).",
+    ),
+
     Promise(
         key="false_translation_claims_are_off_the_screen",
         title="Ложная претензия судьи с кнопкой, записывающей неправду",

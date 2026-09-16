@@ -37,7 +37,10 @@ class PromotionRulesTests(unittest.TestCase):
 
         calls = {"linked": [], "asked": []}
 
-        def fake_check(*, german, russian, kind="collocation"):
+        # `reference` — словарная статья судье (16.09.2026). Дубль обязан её
+        # принимать: иначе тест зелёный там, где прод падает на неизвестном
+        # аргументе.
+        def fake_check(*, german, russian, kind="collocation", reference=""):
             return verdicts[german]
 
         def fake_link(unit_id, russian):
@@ -46,7 +49,8 @@ class PromotionRulesTests(unittest.TestCase):
 
         # ⛔ Пятым аргументом едет ГОТОВЫЙ перевод (31.08.2026): «не тот перевод» без
         # «а какой тот» — это диагноз без ответа, и владелец на него смотрел молча.
-        def fake_ask(unit_id, display, russian, why, better=""):
+        def fake_ask(unit_id, display, russian, why, better="", *,
+                     справка=None):
             calls["asked"].append((unit_id, russian, why, better))
             return True
 

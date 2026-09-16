@@ -10309,7 +10309,9 @@ def run_phrase_fix_check(*, original: str, meaning_ru: str, fix: str) -> dict:
     }
 
 
-def run_translation_pair_check(*, german: str, russian: str, kind: str = "collocation") -> dict:
+def run_translation_pair_check(*, german: str, russian: str,
+                               kind: str = "collocation",
+                               reference: str = "") -> dict:
     """Означает ли этот русский именно эту немецкую фразу. Один короткий вопрос.
 
     ЗАЧЕМ. Русская половина карточки почти никогда не написана человеком: он спросил
@@ -10350,6 +10352,32 @@ def run_translation_pair_check(*, german: str, russian: str, kind: str = "colloc
         "of some OTHER German words entirely; or the two sides are swapped (German text "
         "sitting in the Russian field).\n"
         "- An empty or nonsense Russian is wrong.\n"
+        # ⛔ СУДЬЯ СПОРИЛ СО СЛОВАРЁМ ПО ПАМЯТИ. Разбор 46 вопросов 16.09.2026: из 12
+        # ложных претензий 5 звучали как «X означает A, а не B» при том, что словарь
+        # даёт оба («Laster» — и порок, и грузовик; «festsetzen» — и назначить, и
+        # задержать), а ещё одна путала падежную рамку («jemandem kündigen» против
+        # «etwas kündigen»). Статья приходит в запросе (`judge_dictionary_context`),
+        # и эти две строки говорят, что с ней делать.
+        "- A `dictionary` field may be present: senses copied verbatim from "
+        "de.wiktionary, case frames included («jemandem kündigen» = fire someone vs "
+        "«etwas kündigen» = terminate one\'s own contract). IT OVERRIDES YOUR OWN "
+        "KNOWLEDGE OF THE WORD. If what you believe the word means contradicts "
+        "`dictionary`, you are wrong and the dictionary is right.\n"
+        "- NEVER write a `why` that denies a sense listed in `dictionary` (no «X means "
+        "A, not B» when the dictionary lists B). When the dictionary lists several "
+        "senses, the saved Russian is CORRECT if it matches ANY of them — including "
+        "senses marked ugs./veraltet/regional, which are real senses.\n"
+        "- Pick the sense whose case frame matches the German sentence in front of you, "
+        "and judge the Russian against THAT sense only.\n"
+        # ⛔ ГРАНИЦА СЛОВАРЯ. Первая же проверка усиленной формулировки (16.09.2026)
+        # дала регресс: «Rückgrat haben» → «иметь позвоночник» судья БЕЗ словаря
+        # браковал дважды из двух, а со словарём пропустил — анатомическое значение в
+        # статье есть, и он счёл дословный перевод оправданным. Словарь решает, КАКИЕ
+        # значения существуют, а не годится ли русский в этой фразе.
+        "- `dictionary` settles WHICH senses exist. It does NOT settle whether the "
+        "Russian is a good rendering of THIS sentence. A Russian that copies a German "
+        "idiom word by word («Rückgrat haben» → «иметь позвоночник») is still WRONG, "
+        "even when every word matches a dictionary sense.\n"
         "- `why` MUST be written in RUSSIAN, in Cyrillic letters, one short sentence. "
         "Leave it empty when the pair is correct.\n"
         "- When the pair is WRONG, `better` MUST hold the Russian that DOES mean the "
@@ -10366,7 +10394,11 @@ def run_translation_pair_check(*, german: str, russian: str, kind: str = "colloc
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": json.dumps(
-                    {"german": de, "russian": ru, "kind": kind}, ensure_ascii=False)},
+                    ({"dictionary": str(reference or "").strip()[:1600],
+                      "german": de, "russian": ru, "kind": kind}
+                     if str(reference or "").strip()
+                     else {"german": de, "russian": ru, "kind": kind}),
+                    ensure_ascii=False)},
             ],
             temperature=0,
             response_format={"type": "json_object"},

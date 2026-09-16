@@ -341,7 +341,10 @@ class TheJudgeMustHandOverTheFixTests(unittest.TestCase):
         и ни слова о том, какой означает. Поле в том же ответе, лишних денег не стоит."""
         src = _src("backend/openai_manager.py")
         i = src.index("def run_translation_pair_check(")
-        тело = src[i:i + 6000]
+        # Режем по КОНЦУ функции, а не по 6000 символов: 16.09.2026 в промпт добавились
+        # правила о словарной статье, требование про `better` уехало за это окно, и
+        # тест покраснел, хотя продукт был цел.
+        тело = src[i:src.index("\ndef ", i + 10)]
         self.assertIn("`better` MUST hold the Russian that DOES mean the", тело)
         self.assertIn('"better"', тело)
 
