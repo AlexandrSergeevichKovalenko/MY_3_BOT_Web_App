@@ -394,6 +394,65 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
     };
   }, []);
 
+  // ┌─ ЭКРАН ПРИБИТ К ВИДИМОЙ ЧАСТИ ОКНА. КЛАВИАТУРА БОЛЬШЕ НЕ ТАСКАЕТ СЛОВАРЬ. ────────┐
+  // │ Жалоба владельца 16.09.2026 (видео 10-54-35): встаёшь в поле — шапка «Быстрый     │
+  // │ словарь» и кнопки вкладок уезжают за верх экрана, строка языков налезает на часы. │
+  // │ Причина не в нашей вёрстке, а в устройстве айфона: при выезде клавиатуры окно     │
+  // │ СТРАНИЦЫ не уменьшается (100dvh остаётся прежним), поэтому WebKit просто          │
+  // │ прокручивает всё вверх, лишь бы поле оказалось над клавиатурой. Прокручивает он   │
+  // │ и наш контейнер, и саму страницу — отсюда «расхлябанный» вид.                     │
+  // │ Решение то же, что у Яндекс.Переводчика и Google Translate: панель живёт не по    │
+  // │ высоте страницы, а по ВИДИМОЙ высоте окна. Прибор для этого штатный —             │
+  // │ window.visualViewport: height = сколько видно, offsetTop = насколько видимая      │
+  // │ часть уже сдвинута. Отдаём оба числа в CSS, панель встаёт ровно в видимую полосу, │
+  // │ прокручивать системе становится нечего — шапка остаётся на месте, а поле ввода    │
+  // │ само становится ниже (см. dict.css, «Клавиатура не таскает экран»).               │
+  // │ Прибора нет (старый движок) — переменные не ставятся, и CSS остаётся на прежних   │
+  // │ 100dvh: вид ровно такой, каким был до этой правки.                                │
+  // └──────────────────────────────────────────────────────────────────────────────────┘
+  useEffect(() => {
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    const root = typeof document !== 'undefined' ? document.documentElement : null;
+    if (!root) return undefined;
+    root.setAttribute('data-dq-panel', '1');
+    if (!vv) return () => { root.removeAttribute('data-dq-panel'); };
+    let frame = null;
+    const apply = () => {
+      frame = null;
+      // Айфон, установленный на рабочий стол, иногда отдаёт ЗАВЕДОМО НЕВЕРНУЮ высоту в
+      // момент выезда клавиатуры — десятки точек вместо сотен (уже проверено на этом же
+      // проекте, см. App.jsx, --app-height). Настоящая клавиатура никогда не оставляет
+      // меньше трети экрана, поэтому такой замер не берём: держим прошлый, пока прибор
+      // не успокоится. Это не подстановка удобного числа — это отказ верить сломанному
+      // показанию, следующий кадр всё равно придёт.
+      const windowHeight = Math.max(Number(window.innerHeight) || 0,
+        Number(document.documentElement.clientHeight) || 0);
+      const height = Math.round(vv.height);
+      const top = Math.round(vv.offsetTop);
+      const readingIsSane = height > 0
+        && (windowHeight <= 0 || height >= windowHeight * 0.35);
+      if (readingIsSane) root.style.setProperty('--dq-vh', `${height}px`);
+      root.style.setProperty('--dq-vtop', `${top}px`);
+    };
+    const schedule = () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(apply);
+    };
+    apply();
+    vv.addEventListener('resize', schedule);
+    vv.addEventListener('scroll', schedule);
+    window.addEventListener('orientationchange', schedule);
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      vv.removeEventListener('resize', schedule);
+      vv.removeEventListener('scroll', schedule);
+      window.removeEventListener('orientationchange', schedule);
+      root.removeAttribute('data-dq-panel');
+      root.style.removeProperty('--dq-vh');
+      root.style.removeProperty('--dq-vtop');
+    };
+  }, []);
+
   // Выбранная статья. Всё, что ниже — заголовок, артикль, часть речи, озвучка,
   // разбор и сохранение — берётся из НЕЁ, а не из строки переводчика.
   const entries = Array.isArray(quick?.entries) ? quick.entries : [];
@@ -1217,7 +1276,10 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
 
   return (
     <div className="ans-root dq-scroll">
-      <div className="ans-card dq-card">
+      {/* Стартовый экран (поле ввода, ещё нет перевода) обязан помещаться в видимую
+          часть окна целиком: при клавиатуре сжимается ТОЛЬКО поле, шапка и кнопки
+          остаются на месте. Экран с переводом длинный и прокручивается как раньше. */}
+      <div className={`ans-card dq-card${tab === 'search' && !quick ? ' dq-card--compose' : ''}`}>
         <div className="ans-head dq-head-row">
           <span className="ans-eyebrow">📖 Быстрый словарь</span>
           {typeof onClose === 'function' && (
