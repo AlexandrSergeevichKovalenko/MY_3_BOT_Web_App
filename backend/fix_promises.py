@@ -2646,7 +2646,36 @@ def _translation_questions_screen() -> str:
     return "\n".join(строки)
 
 
+def _false_claims_still_on_the_screen() -> int:
+    """Проверенных по словарю ложных претензий, ещё висящих у владельца. Обещано: 0.
+
+    Владелец 16.09.2026: «если мы знаем, что их нельзя нажимать, — таких убери оттуда!
+    Ты что, надеешься на мою память?» Восемь карточек, где претензия судьи ложная, а
+    кнопка «Записать» писала неправду (Police → «полиция», «Holz vor der Hütte» → «быть
+    осторожным»). Число вырастет, если ночной проход перестал ходить или запись
+    переоткрыли."""
+    from backend.false_translation_claims import count_false_claims_still_open
+    return int(count_false_claims_still_open())
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="false_translation_claims_are_off_the_screen",
+        title="Ложная претензия судьи с кнопкой, записывающей неправду",
+        since="16.09.2026",
+        expected=0,
+        measure=_false_claims_still_on_the_screen,
+        screen=_translation_questions_screen,
+        how="/admin_promises — или backend.false_translation_claims."
+            "count_false_claims_still_open(). Считает, сколько из восьми проверенных по "
+            "словарю ложных претензий (id 561, 1043, 1044, 1045, 1047, 1130, 1148, 1173) "
+            "ещё открыты. Замер 16.09.2026 до починки: 8 из 8. Проверка каждой — в "
+            "backend/false_translation_claims.ПРОВЕРЕНО_ЛОЖНЫЕ, там у строки свой "
+            "источник (DWDS, de.wiktionary). Число ВЫРОСЛО = ночной проход не ходит либо "
+            "вопрос переоткрыт; запись, чей текст изменился с момента сверки, не "
+            "трогается сознательно и считается отдельно («разошлось» в отчёте).",
+    ),
+
     Promise(
         key="translation_questions_always_get_a_fix_asked",
         title="Вопрос о переводе без готового варианта, который неоткуда взять",

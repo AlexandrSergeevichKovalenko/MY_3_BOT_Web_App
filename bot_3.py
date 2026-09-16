@@ -10948,6 +10948,14 @@ def _translation_links_line() -> str:
             ждут = int(доспрос.get("осталось без доспроса") or 0)
             if ждут:
                 out += f"\n   ещё ждут доспроса: {ждут}"
+        ложные = (meta.get("ложные претензии")
+                  if isinstance(meta.get("ложные претензии"), dict) else {})
+        if int(ложные.get("закрыто") or 0):
+            out += (f"\n   снято ложных претензий (проверено по словарю): "
+                    f"<b>{int(ложные['закрыто'])}</b>")
+        if int(ложные.get("разошлось") or 0):
+            out += (f"\n   ⚠️ не тронуто, текст изменился с момента сверки: "
+                    f"{int(ложные['разошлось'])}")
         return out + "\n"
     except Exception:
         logging.debug("строка о подъёме переводов не собралась", exc_info=True)
@@ -11087,6 +11095,11 @@ def _run_translation_links_safe() -> None:
         # Теперь каждую ночь каждому такому вопросу даётся ровно одна попытка; та,
         # где модель варианта не назвала, помечается и денег больше не стоит.
         stats["доспрос"] = rejudge_translation_questions()
+        # Ложные претензии, снятые по словарю 16.09.2026: перевод человека верен, а на
+        # экране у владельца стояла кнопка, записывающая неправду. Список идёт со своим
+        # источником на каждую строку, проход идемпотентен.
+        from backend.false_translation_claims import close_false_translation_claims
+        stats["ложные претензии"] = close_false_translation_claims()
         _record_sched_heartbeat("translation_links", "completed", stats)
     except Exception as exc:
         logging.exception("подъём переводов в общий слой упал")
