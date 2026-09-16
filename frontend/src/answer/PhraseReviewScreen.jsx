@@ -522,6 +522,16 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
                       {c.voice ? ` · голос ${c.voice}` : ''}
                     </div>
                     <div className="frv-claim-w">{c.why}</div>
+                    {/* Доспрос СНЯЛ претензию. Вопрос при этом не закрывается сам:
+                        владелец 25.08.2026 — молчание не согласие, решение остаётся
+                        за ним, здесь только честно сказано, что голос передумал. */}
+                    {c.rejudge?.ok ? (
+                      <div className="frv-v-why frv-agreed">
+                        <b>Спросили заново — проверка теперь согласна с этим переводом.</b>
+                        {c.rejudge.why ? ` ${c.rejudge.why}` : ''} Решаешь ты: «Сохранить
+                        этот перевод как общий» или впиши свой.
+                      </div>
+                    ) : null}
                     {c.fix ? (
                       <>
                         {state === 'bad' ? (
@@ -542,9 +552,17 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
                       </>
                     ) : (
                       <div className="frv-claim-nofix">
+                        {/* ⛔ НАДПИСЬ ОБЯЗАНА СОВПАДАТЬ С ТЕМ, ЧТО ЕСТЬ НА ЭКРАНЕ.
+                            До 16.09.2026 здесь звало «спроси заново» — а кнопки на
+                            этом виде карточек не было вовсе. Теперь три разных
+                            случая названы по-разному, и ни один не врёт. */}
                         {c.field === 'examples' || c.field === 'meaning'
                           ? 'Это чинится пересборкой — кнопка «Переписать примеры и перевод заново» внизу.'
-                          : 'Готового варианта голос не назвал. Впиши свой или спроси заново.'}
+                          : c.rejudge
+                            ? 'Спросили заново — готового варианта проверка не назвала. Впиши свой перевод.'
+                            : isTranslation
+                              ? 'Готового варианта у этой записи нет: её завели раньше, чем мы стали его спрашивать. Нажми «Спросить заново» внизу.'
+                              : 'Готового варианта голос не назвал. Впиши свой или спроси заново.'}
                       </div>
                     )}
                   </div>
@@ -826,10 +844,17 @@ export default function PhraseReviewScreen({ api, haptic, onClose, only = '' }) 
             <button className="ans-btn-ghost" disabled={busy}
               onClick={() => { setAsking(true); setAnswer(''); }}>❓ Спросить</button>
           ) : null}
-          {/* «Пересудить» только у грамматики: панельную карточку судят три голоса о
-              примерах, и пересуживать её этим судьёй бессмысленно. */}
-          {!isCard ? (
-            <button className="ans-btn-ghost" disabled={busy} onClick={rejudge}>🔁 Пересудить</button>
+          {/* «Пересудить» — у грамматики и у вопроса о ПЕРЕВОДЕ, но не у панельной
+              карточки: её судят три голоса о примерах, и этим судьёй её не пересудить.
+              ⛔ ДО 16.09.2026 КНОПКИ ЗДЕСЬ НЕ БЫЛО, А ТЕКСТ НА НЕЁ УКАЗЫВАЛ. Надпись
+              под претензией звала «спроси заново», и владелец искал на экране кнопку,
+              которой не существовало (`isCard` прятал её и у переводов тоже). У
+              перевода свой судья — `translation_links.rejudge_translation_question`,
+              развилка на сервере. */}
+          {!isPanel ? (
+            <button className="ans-btn-ghost" disabled={busy} onClick={rejudge}>
+              {isTranslation ? '🔁 Спросить заново' : '🔁 Пересудить'}
+            </button>
           ) : null}
           {!isCard && variants.length > 0 && !arbiter ? (
             <button className="ans-btn-ghost" disabled={busy} onClick={settle}>⚖️ Кто прав?</button>

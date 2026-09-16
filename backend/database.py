@@ -27345,6 +27345,11 @@ def phrase_review_dispute(judges: list, default_field: str = "") -> dict:
             "fix": str(j.get("fix") or "").strip(),
             "fix_check": (j.get("fix_check")
                           if isinstance(j.get("fix_check"), dict) else None),
+            # Была ли попытка доспросить готовый вариант (16.09.2026). Экран по ней
+            # отличает «ещё не спрашивали» от «спросили, и варианта нет»: без этого
+            # владелец жмёт «спросить заново» по кругу и каждый раз платит.
+            "rejudge": (j.get("rejudge")
+                        if isinstance(j.get("rejudge"), dict) else None),
         })
     return {"fields": поля, "claims": claims}
 
