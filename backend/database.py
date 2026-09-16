@@ -849,6 +849,118 @@ def is_real_telegram_user_id(user_id: int | None) -> bool:
     return safe_user_id < SYNTHETIC_TELEGRAM_USER_ID_MIN
 
 
+class NotARealPerson(ValueError):
+    """Попытка записать в список доступа id, за которым не может быть человека."""
+
+
+def refuse_if_not_a_person(user_id: int | None, *, дверь: str) -> int:
+    """ЕДИНСТВЕННОЕ место, где решается «пускать ли эту строку в список доступа».
+
+    ┌─ РЕШЕНИЕ ВЛАДЕЛЬЦА 16.09.2026. ──────────────────────────────────────────────┐
+    │ 15.09 замок поставили на дверь самостоятельного входа — и 16.09 обещание      │
+    │ allowed_rows_are_real_people всё равно показало 2 вместо 0. Разбор: дверей в  │
+    │ bt_3_allowed_users пять, замок стоял на одной. Владелец: «поставить правило   │
+    │ в саму запись, один раз, вместо замка на каждую дверь. Тогда неважно, кто     │
+    │ пишет — прогон, посев, очередь или новый путь, которого ещё нет».             │
+    │                                                                              │
+    │ Правило НЕ новое и здесь не придумано: `is_real_telegram_user_id` уже живёт   │
+    │ в REAL_ALLOWED_USER_SQL, по которому собирается ЛЮБАЯ рассылка бота. Строка,  │
+    │ которую все рассылки считают не человеком, не имеет права занимать место в    │
+    │ списке впущенных и в потолке впуска.                                          │
+    │                                                                              │
+    │ Второй слой — запрет в самой таблице (CHECK, см. ensure_core_schema): он      │
+    │ ловит и то, что пойдёт мимо этого кода, — например, отдельный скрипт с        │
+    │ собственным подключением. Здесь же отказ human-readable и с записью в лог,    │
+    │ чтобы вызывающий получил понятную ошибку, а не IntegrityError посреди          │
+    │ чужой транзакции.                                                            │
+    └──────────────────────────────────────────────────────────────────────────────┘
+
+    Возвращает id, если это может быть человек. Иначе НЕ «тихо ничего не делает», а
+    бросает NotARealPerson: молчаливый пропуск был бы неотличим от успешной записи.
+    """
+    uid = int(user_id or 0)
+    if is_real_telegram_user_id(uid):
+        return uid
+    logging.warning("список доступа: id=%s не может быть человеком, дверь «%s» отклонена",
+                    uid, дверь)
+    raise NotARealPerson(
+        f"id={uid} не может принадлежать человеку "
+        f"(настоящие telegram id лежат между {_MIN_REAL_TELEGRAM_USER_ID} и "
+        f"{SYNTHETIC_TELEGRAM_USER_ID_MIN}); дверь «{дверь}»")
+
+
+def allowed_users_person_check_name() -> str:
+    """Имя ограничения в таблице списка доступа. Границы — в имени: поменялись границы,
+    имя другое, старое правило снимается. Одно место на постановку и на проверку."""
+    return f"bt_3_allowed_users_person_{_MIN_REAL_TELEGRAM_USER_ID}_{SYNTHETIC_TELEGRAM_USER_ID_MIN}"
+
+
+def allowed_users_person_check_is_in_place() -> bool:
+    """Стоит ли запрет в самой таблице. Проверяется измерителем обещания: если ALTER не
+    прошёл при старте (прав не хватило, откат), число «0 строк без человека» было бы
+    правдой ровно до первой записи — и мы бы об этом не узнали."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM pg_constraint "
+                "WHERE conrelid = 'bt_3_allowed_users'::regclass AND conname = %s",
+                (allowed_users_person_check_name(),),
+            )
+            return cursor.fetchone() is not None
+
+
+def _ensure_allowed_users_person_check(cursor) -> None:
+    """Запрет «строка без человека» в САМОЙ таблице списка доступа.
+
+    Решение владельца 16.09.2026: правило ставится в запись, а не на каждую дверь.
+    Питоновский страж (refuse_if_not_a_person) даёт понятный отказ тем, кто зовёт нас
+    из кода; это ограничение ловит ВСЁ остальное — отдельный скрипт со своим
+    подключением, ручной psql, путь, которого ещё нет.
+
+    NOT VALID намеренно: уже лежащие строки не трогаются. Удаление доступа — решение
+    человека (scripts/allowed_users_drop_test_rows.py), а не побочный эффект деплоя;
+    молчаливая чистка при старте была бы ровно тем «решили за владельца», которое
+    запрещено. Новые записи проверяются с первой же секунды.
+
+    Границы живут в имени ограничения: поменялась SYNTHETIC_TELEGRAM_USER_ID_MIN —
+    имя другое, старое правило снимается и ставится новое. Иначе в базе осталось бы
+    ограничение по вчерашним границам, и мы бы об этом не узнали."""
+    имя = allowed_users_person_check_name()
+    cursor.execute(
+        "SELECT conname FROM pg_constraint "
+        "WHERE conrelid = 'bt_3_allowed_users'::regclass AND conname LIKE %s",
+        ("bt_3_allowed_users_person_%",),
+    )
+    стоящие = [str(r[0]) for r in (cursor.fetchall() or [])]
+    if имя in стоящие:
+        return
+    # ⛔ ЕДИНСТВЕННОЕ ИСКЛЮЧЕНИЕ ИЗ «НИКАКИХ except» — целостность транзакции, не логика.
+    # Эта постановка идёт внутри общего бутстрапа схемы: если у роли не хватит прав на
+    # ALTER TABLE, без SAVEPOINT упала бы ВСЯ подготовка базы и бот не поднялся бы вообще.
+    # Ответ при этом не подменяется и ошибка не проглатывается: пишем ERROR, а измеритель
+    # обещания allowed_rows_are_real_people отдельно проверяет, что ограничение на месте,
+    # и молча «нулём» такой случай не прикинется.
+    cursor.execute("SAVEPOINT allowed_users_person_check")
+    try:
+        for старое in стоящие:
+            cursor.execute(f'ALTER TABLE bt_3_allowed_users DROP CONSTRAINT "{старое}"')
+            logging.info("список доступа: снято старое ограничение %s", старое)
+        cursor.execute(
+            f'ALTER TABLE bt_3_allowed_users ADD CONSTRAINT "{имя}" '
+            f"CHECK (user_id >= {int(_MIN_REAL_TELEGRAM_USER_ID)} "
+            f"AND user_id < {int(SYNTHETIC_TELEGRAM_USER_ID_MIN)}) NOT VALID"
+        )
+    except Exception:
+        cursor.execute("ROLLBACK TO SAVEPOINT allowed_users_person_check")
+        logging.error("список доступа: ограничение %s НЕ поставлено — запись в таблице "
+                      "больше ничем не защищена, кроме питоновского стража", имя,
+                      exc_info=True)
+        return
+    finally:
+        cursor.execute("RELEASE SAVEPOINT allowed_users_person_check")
+    logging.info("список доступа: поставлено ограничение %s", имя)
+
+
 def _identity_cache_get(user_id: int) -> str | None:
     if _USER_IDENTITY_CACHE_TTL_SEC <= 0:
         return None
@@ -9459,6 +9571,7 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_allowed_users_updated
                 ON bt_3_allowed_users (updated_at);
             """)
+            _ensure_allowed_users_person_check(cursor)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_user_removal_queue (
                     user_id BIGINT PRIMARY KEY,
@@ -16676,6 +16789,13 @@ def allow_telegram_user(
     added_by: int | None = None,
     note: str | None = None,
 ) -> None:
+    """Впустить в список доступа. Бросает NotARealPerson, если за id не может быть человека.
+
+    Сюда приходят три двери: команда /allow, кнопка «одобрить заявку» и посев админов при
+    старте бота. Раньше правила не было ни на одной — админ мог опечататься в id, а посев
+    писал что угодно из BOT_ADMIN_TELEGRAM_IDS. Проверка одна на всех (решение владельца
+    16.09.2026), и она НЕ молчит: тот, кто позвал, обязан показать человеку отказ."""
+    user_id = refuse_if_not_a_person(user_id, дверь="allow_telegram_user")
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -17650,11 +17770,17 @@ def admit_from_access_waitlist(limit: int) -> list[dict]:
     ensure_access_waitlist_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            # ⛔ Правило «это должен быть человек» (решение владельца 16.09.2026) стоит
+            # ЗДЕСЬ, в отборе, а не после него: пропущенная строка иначе вставала бы в
+            # голову очереди каждую ночь и съедала место, которое ждут живые люди.
+            # Такие строки из очереди НЕ удаляются — их видно, и решение по ним за
+            # владельцем, как и по любому удалению доступа.
             cursor.execute(
                 "SELECT user_id, username FROM bt_3_access_waitlist "
-                "WHERE admitted_at IS NULL ORDER BY requested_at ASC LIMIT %s "
+                "WHERE admitted_at IS NULL AND user_id >= %s AND user_id < %s "
+                "ORDER BY requested_at ASC LIMIT %s "
                 "FOR UPDATE SKIP LOCKED;",
-                (n,),
+                (_MIN_REAL_TELEGRAM_USER_ID, SYNTHETIC_TELEGRAM_USER_ID_MIN, n),
             )
             rows = cursor.fetchall() or []
             впущенные = []
@@ -17800,8 +17926,11 @@ def auto_grant_telegram_user(
     # потолке впуска и показывается владельцу как «не дошло».
     # Замер 15.09.2026: среди 30 настоящих впущенных самый маленький id 117 649 764 —
     # правило не задевает НИ ОДНОГО живого человека, только выдуманные строки.
-    if not is_real_telegram_user_id(uid):
-        logging.warning("дверь доступа: id=%s не может быть человеком, впуск отклонён", uid)
+    try:
+        refuse_if_not_a_person(uid, дверь="auto_grant_telegram_user")
+    except NotARealPerson:
+        # Дверь отвечает «не впустили» (её договор — bool), но само правило и запись в лог
+        # общие для всех пяти дверей: второго текста правила в проекте быть не должно.
         return False
     if is_access_denied_for_user(uid):
         return False
@@ -65782,6 +65911,54 @@ def list_allowed_telegram_user_ids() -> list[int]:
             )
             rows = cursor.fetchall() or []
     return [int(r[0]) for r in rows if r and r[0] is not None]
+
+
+def list_allowed_rows_not_real_people() -> list[dict]:
+    """Те же строки, что считает count_allowed_rows_not_real_people, — но поимённо.
+
+    Одного числа мало: «2» не говорит, КТО их записал. Здесь видно пометку (note) и дату,
+    а по ним — дверь: «self-serve access: …» это самостоятельный вход, «auto-seeded admin
+    (startup)» — посев админов, «load_test_…» — нагрузочный прогон, «approved via …» —
+    решение админа. Именно это идёт владельцу экраном обещания allowed_rows_are_real_people,
+    чтобы решение по удалению он принимал, видя строки, а не счётчик."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, username, added_by, note, created_at, updated_at "
+                "FROM bt_3_allowed_users "
+                "WHERE NOT (user_id >= %s AND user_id < %s) "
+                "ORDER BY created_at;",
+                (_MIN_REAL_TELEGRAM_USER_ID, SYNTHETIC_TELEGRAM_USER_ID_MIN),
+            )
+            return [{"user_id": int(r[0]), "username": r[1], "added_by": r[2],
+                     "note": r[3], "created_at": r[4], "updated_at": r[5]}
+                    for r in (cursor.fetchall() or [])]
+
+
+def delete_allowed_rows_not_real_people(user_ids: list[int]) -> int:
+    """Удалить НАЗВАННЫЕ строки-нелюди. Список не вычисляется здесь и не берётся «все».
+
+    Удаление доступа — решение человека (правило владельца: молчание не согласие). Поэтому
+    id передаются снаружи: тот, кто зовёт, показал их владельцу и получил его слово.
+    Строка, которая вдруг оказалась настоящим человеком, НЕ удаляется — правило то же."""
+    можно = [int(u) for u in (user_ids or []) if not is_real_telegram_user_id(int(u))]
+    if not можно:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT user_id, username, note, created_at FROM bt_3_allowed_users "
+                           "WHERE user_id = ANY(%s);", (можно,))
+            уходят = cursor.fetchall() or []
+            cursor.execute("DELETE FROM bt_3_allowed_users WHERE user_id = ANY(%s);", (можно,))
+            удалено = int(cursor.rowcount or 0)
+        conn.commit()
+    for uid, username, note, created in уходят:
+        # След удаления обязателен: кого убрали и чем он был помечен.
+        logging.warning("список доступа: удалена строка без человека id=%s username=%s "
+                        "note=%s created=%s", uid, username, note, created)
+        invalidate_telegram_user_allowed_cache(int(uid))
+    _ACCESS_COUNT_CACHE.pop("allowed", None)
+    return удалено
 
 
 def count_allowed_rows_not_real_people() -> int:

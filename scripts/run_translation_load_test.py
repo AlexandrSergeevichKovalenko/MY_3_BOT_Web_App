@@ -164,50 +164,25 @@ def build_signed_init_data(user_data: dict[str, Any], bot_token: str, auth_date:
 
 
 def ensure_synthetic_users(args: argparse.Namespace) -> None:
-    bot_token = str(os.getenv("TELEGRAM_Deutsch_BOT_TOKEN") or "").strip()
-    if not bot_token:
-        raise RuntimeError("TELEGRAM_Deutsch_BOT_TOKEN is required")
-    count = int(args.count)
-    start_id = int(args.start_id)
-    note = str(args.note or DEFAULT_USER_NOTE).strip() or DEFAULT_USER_NOTE
-    users: list[dict[str, Any]] = []
-    with connect_db() as conn:
-        with conn.cursor() as cursor:
-            for idx in range(count):
-                user_id = start_id + idx
-                username = f"load_test_{user_id}"
-                cursor.execute(
-                    """
-                    INSERT INTO bt_3_allowed_users (user_id, username, note)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (user_id)
-                    DO UPDATE SET
-                        username = EXCLUDED.username,
-                        note = EXCLUDED.note,
-                        updated_at = CURRENT_TIMESTAMP;
-                    """,
-                    (user_id, username, note),
-                )
-                init_data = build_signed_init_data(
-                    {
-                        "id": user_id,
-                        "first_name": "Load",
-                        "last_name": "Test",
-                        "username": username,
-                    },
-                    bot_token=bot_token,
-                )
-                users.append(
-                    {
-                        "user_id": user_id,
-                        "username": username,
-                        "init_data": init_data,
-                        "synthetic": True,
-                    }
-                )
-    write_json(args.out, users)
-    print(json.dumps({"ok": True, "count": count, "out": args.out, "start_id": start_id}))
+    """ЗАКРЫТО 16.09.2026 по решению владельца. Живой список доступа — не полигон.
 
+    Этот шаг был ШЕСТОЙ дверью в bt_3_allowed_users и единственной, которая писала туда
+    заведомо не-людей (`load_test_<id>`). Их строки занимали место в потолке впуска,
+    показывались владельцу как «🚫 Не дошло» в подписи батла и держали нарушенным
+    обещание allowed_rows_are_real_people.
+
+    Тело удалено, а не закомментировано и не оставлено за `raise`: неработающий код,
+    который выглядит работающим, — это ровно та заглушка, которую нельзя.
+
+    Что делать вместо: гонять нагрузку на отдельной базе. Числом такие id отличимы не
+    всегда (987654321 выглядит настоящим), поэтому дверь закрыта целиком, а не по
+    диапазону."""
+    raise RuntimeError(
+        f"нагрузочный прогон больше НЕ заводит пользователей в боевом списке доступа "
+        f"(просили {int(args.count)} начиная с {int(args.start_id)}). Решение владельца "
+        f"16.09.2026: правило «в списке доступа только настоящие люди» стоит в самой "
+        f"записи. Гонять нагрузку — на отдельной базе."
+    )
 
 def cleanup_synthetic_users(args: argparse.Namespace) -> None:
     users = load_users(args.users_file)

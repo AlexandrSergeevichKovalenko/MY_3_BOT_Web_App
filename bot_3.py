@@ -187,6 +187,7 @@ from backend.database import (
     log_billing_event,
     log_limit_runtime_event,
     allow_telegram_user,
+    NotARealPerson,
     AUTO_ACCESS_NOTE_PREFIX,
     auto_grant_telegram_user,
     get_access_growth_snapshot,
@@ -9126,12 +9127,20 @@ async def allow_user_command(update: Update, context: CallbackContext):
         return
 
     username_hint = " ".join(context.args[1:]).strip() or None
-    allow_telegram_user(
-        user_id=target_id,
-        username=username_hint,
-        added_by=int(sender.id),
-        note="approved via bot command",
-    )
+    try:
+        allow_telegram_user(
+            user_id=target_id,
+            username=username_hint,
+            added_by=int(sender.id),
+            note="approved via bot command",
+        )
+    except NotARealPerson:
+        # Правило одно на все двери (решение владельца 16.09.2026). Отказ показывается
+        # словами: молча проглоченный /allow выглядел бы как выданный доступ.
+        await update.effective_message.reply_text(
+            f"⛔️ {target_id} — не похоже на telegram id человека, доступ не выдан.\n"
+            f"Проверь число: настоящие id длиннее и не бывают такими маленькими.")
+        return
     resolve_latest_pending_access_request_for_user(
         user_id=target_id,
         status="approved",
@@ -9270,12 +9279,18 @@ async def handle_access_request_action(update: Update, context: CallbackContext)
 
     username = request_row.get("username")
     if decision == "approved":
-        allow_telegram_user(
-            user_id=target_id,
-            username=username,
-            added_by=int(admin.id),
-            note="approved via inline button",
-        )
+        try:
+            allow_telegram_user(
+                user_id=target_id,
+                username=username,
+                added_by=int(admin.id),
+                note="approved via inline button",
+            )
+        except NotARealPerson:
+            await query.answer(
+                f"{target_id} — не похоже на telegram id человека. Доступ не выдан.",
+                show_alert=True)
+            return
         cancel_telegram_user_removal(
             user_id=target_id,
             canceled_by=int(admin.id),
@@ -47662,6 +47677,12 @@ def _seed_admins_into_allowlist() -> None:
     for aid in ids:
         try:
             allow_telegram_user(aid, added_by=aid, note="auto-seeded admin (startup)")
+        except NotARealPerson:
+            # BOT_ADMIN_TELEGRAM_IDS содержит id, за которым не может быть человека.
+            # Раньше посев писал его молча на КАЖДОМ старте бота — это была одна из
+            # пяти дверей мимо правила (разбор 16.09.2026).
+            logging.error("посев админов: id=%s не похож на telegram id человека, "
+                          "в список доступа не записан — поправь BOT_ADMIN_TELEGRAM_IDS", aid)
         except Exception:
             logging.warning("seed admin allowlist failed id=%s", aid, exc_info=True)
     logging.info("startup: seeded %s admin id(s) into allow-list", len(ids))
