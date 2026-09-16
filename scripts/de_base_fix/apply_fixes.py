@@ -99,7 +99,8 @@ def править(cur, шаг, новый_ru_id, копия):
                       AND (q.translation_ru = ANY(%s) OR q.response_json->>'translation_ru' = ANY(%s))
                       AND NOT EXISTS (SELECT 1 FROM bt_3_user_word_overrides o
                                        WHERE o.user_id=q.user_id AND o.entry_id=q.id
-                                         AND o.field='translation_ru')""",
+                                         AND o.field_key='translation_ru'
+                                         AND o.released_at IS NULL)""",
                 (uid, старые, старые))
     личные = [dict(r) for r in cur.fetchall()]
     копия["личные_до"] = личные
