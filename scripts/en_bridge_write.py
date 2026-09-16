@@ -41,7 +41,9 @@ def main():
     conn = psycopg2.connect(os.environ["DB_URL"], connect_timeout=60)
     conn.autocommit = False
     итоги = collections.Counter()
-    журнал = os.path.join(S, "bridge_write_log.jsonl")
+    # Журнал свой у каждой цели: иначе прогон по стенду и по проду сливаются в один
+    # файл, и не понять, что куда легло (поймано 16.09.2026).
+    журнал = os.path.join(S, os.environ.get("JOURNAL") or "bridge_write_log.jsonl")
     кеш_единиц = {}
     for n, (k, x, en) in enumerate(работа, 1):
         uid = int(k.split(":")[0]); sid = k.split(":")[1]
