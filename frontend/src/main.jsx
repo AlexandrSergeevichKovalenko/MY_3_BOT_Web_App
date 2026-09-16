@@ -167,52 +167,136 @@ if (shouldTreatAsTelegram) {
       });
   }
 } else {
-  // Pick up a fresh deploy on THIS open instead of one open later. The SW skip-waits +
-  // clients-claims, so a new bundle activates immediately — but the already-loaded page keeps
-  // running the old JS/CSS (StaleWhileRevalidate served the previous bundle) until the next
-  // launch. Reload once when the UPDATED worker takes control so the new build is applied now.
-  // Guarded so we don't reload on the first-ever control acquisition (initial install claim)
-  // and never loop.
+  // Свежий деплой применяем на ЭТОМ открытии, а не на следующем: новый service worker
+  // сразу забирает управление (skipWaiting + clientsClaim), но УЖЕ загруженная страница
+  // продолжает крутить старый JS/CSS до следующего запуска. Поэтому её надо перезагрузить.
+  //
+  // ┌─ ПОЧИНЕНО 16.09.2026. ОБНОВЛЕНИЕ БОЛЬШЕ НЕ ПЕРЕЗАГРУЖАЕТ ЭКРАН ПОД РУКАМИ. ────────┐
+  // │ Жалоба владельца 15.09.2026: открываешь словарь с иконки после перерыва, тапаешь в │
+  // │ поле — курсор мигнул и пропал, экран дёрнулся, нужен второй тап. Виноват был не    │
+  // │ курсор: здесь стоял безусловный window.location.reload() по controllerchange.      │
+  // │                                                                                    │
+  // │ ЗАМЕР (настоящая сборка, профиль «иконка на рабочем столе», сымитирован деплой):   │
+  // │   0.28 c  страница нарисована, controller=yes                                      │
+  // │   ~1.0 c  человек тапает в поле — клавиатура, курсор                               │
+  // │   1.96 c  controllerchange → reload() → beforeunload                               │
+  // │   3.10 c  страница загрузилась заново: ни клавиатуры, ни курсора                   │
+  // │ Контроль без деплоя — перезагрузки нет (поэтому «только после перерыва»: за        │
+  // │ перерыв успевает выйти новый деплой; фронт трогали в 12 из 15 последних дней).     │
+  // │ В том же замере набранное до перезагрузки слово «Entschuldigung» стёрлось начисто. │
+  // │ Перемерить: см. историю задачи, стенд поднимается из frontend/dist за две минуты.  │
+  // │                                                                                    │
+  // │ РЕШЕНИЕ ВЛАДЕЛЬЦА 16.09.2026 (вариант C): применять сразу, только пока человеку    │
+  // │ нечего терять; иначе ждать, пока он уйдёт из приложения. Никогда — под руками.     │
+  // │ Отметка о выборе видна в DOM: <html data-sw-update="instant|deferred|background">. │
+  // └────────────────────────────────────────────────────────────────────────────────────┘
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     const hadControllerAtLoad = Boolean(navigator.serviceWorker.controller);
     let reloadingForSwUpdate = false;
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (reloadingForSwUpdate || !hadControllerAtLoad) return;
+    let updateWaiting = false;
+
+    // «Человек в работе» = он хоть раз коснулся экрана в этот запуск. Берём только
+    // настоящие жесты: focusin сюда не годится — фокус умеет ставить сама программа.
+    let touched = false;
+    const markTouched = () => { touched = true; };
+    for (const gesture of ['pointerdown', 'touchstart', 'keydown']) {
+      window.addEventListener(gesture, markTouched, { capture: true, passive: true });
+    }
+
+    // Терять нечего = ни в одном поле нет текста и ничего не звучит. Аудио проверяем
+    // потому, что читалка и озвучка продолжают играть в свёрнутом приложении:
+    // перезагрузка в этот момент оборвала бы человеку прослушивание на полуслове.
+    // Не смогли посмотреть — считаем, что терять ЕСТЬ что: молчаливо рисковать нельзя.
+    const nothingToLose = () => {
+      try {
+        for (const field of document.querySelectorAll('input, textarea, [contenteditable="true"]')) {
+          const typed = field.isContentEditable
+            ? String(field.textContent || '')
+            : String(field.value || '');
+          if (typed.trim()) return false;
+        }
+        for (const media of document.querySelectorAll('audio, video')) {
+          if (!media.paused && !media.ended) return false;
+        }
+        return true;
+      } catch (_e) {
+        return false;
+      }
+    };
+
+    const applyUpdate = (reason) => {
+      if (reloadingForSwUpdate) return;
       reloadingForSwUpdate = true;
+      try { document.documentElement.setAttribute('data-sw-update', reason); } catch (_e) { /* ignore */ }
       window.location.reload();
+    };
+
+    // Мгновенно — только в первые секунды запуска, пока экран заведомо нетронут. Позже
+    // «не трогал» уже не значит «не занят»: человек может читать страницу книги или
+    // статью, и перезагрузка сбросила бы ему место, на котором он стоит.
+    const FRESH_LAUNCH_MS = 10000;
+    const applyWhenSafe = () => {
+      if (reloadingForSwUpdate) return;
+      const freshLaunch = (typeof performance !== 'undefined' ? performance.now() : Infinity) < FRESH_LAUNCH_MS;
+      if (!touched && freshLaunch && nothingToLose()) { applyUpdate('instant'); return; }
+      updateWaiting = true;
+      try { document.documentElement.setAttribute('data-sw-update', 'deferred'); } catch (_e) { /* ignore */ }
+    };
+
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadControllerAtLoad) return;
+      applyWhenSafe();
+    });
+
+    // Отложенное обновление применяем, когда человек ушёл из приложения — и только если
+    // и там терять нечего. Не дождались — ничего страшного: новый worker уже главный,
+    // и СЛЕДУЮЩИЙ запуск и так придёт на свежей сборке.
+    document.addEventListener('visibilitychange', () => {
+      if (!updateWaiting || document.visibilityState !== 'hidden') return;
+      if (!nothingToLose()) return;
+      applyUpdate('background');
     });
   }
-  import('virtual:pwa-register')
-    .then(({ registerSW }) => {
-      registerSW({
-        immediate: true,
-        // Make a fresh deploy land WITHOUT any user action — no "clear your cache",
-        // no reinstall, no per-user hand-holding. registerSW on its own only checks
-        // for a new worker on a hard navigation; an iOS home-screen PWA relaunched
-        // from a suspended state does none, so it can keep serving a stale bundle for
-        // days (the root cause of "nothing changed after deploy"). Force
-        // registration.update() every time the app returns to the foreground (plus a
-        // slow safety interval for sessions left open): that re-fetches sw.js, the new
-        // worker installs, skipWaiting + clientsClaim make it take control, and the
-        // controllerchange handler above reloads once — so the newest build goes live
-        // on the very next open, invisibly, for every user.
-        onRegisteredSW(_swScriptUrl, registration) {
+  // Свежий деплой должен доезжать до человека САМ: без «почистите кеш», без переустановки
+  // иконки. Браузер сам проверяет sw.js только при жёстком переходе, а иконка на рабочем
+  // столе просыпается из сна и такого перехода не делает — поэтому проверяем сами при
+  // каждом возвращении в приложение (плюс редкая страховка для сессий, открытых сутками).
+  //
+  // ┌─ ПОЧИНЕНО 16.09.2026. РЕГИСТРАЦИЯ СВОЯ — ЧТОБЫ ДВЕРЬ ПЕРЕЗАГРУЗКИ БЫЛА ОДНА. ─────┐
+  // │ Здесь стоял registerSW из 'virtual:pwa-register'. Этот модуль плагин генерирует    │
+  // │ САМ и вписывает в него собственную перезагрузку, поверх любой нашей:               │
+  // │   autoUpdate: wb.on('activated', e => (e.isUpdate||e.isExternal) && reload())      │
+  // │   prompt:     wb.on('waiting',  () => wb.on('controlling', e => e.isUpdate &&      │
+  // │                                                             reload()))             │
+  // │ 16.09.2026 это стоило прогона впустую: страж «не перезагружать под руками» был     │
+  // │ поставлен, собран — и экран всё равно перезагружался под пальцами (замер на        │
+  // │ стенде: reload на 2.9 с, набранное слово стёрлось). В режиме prompt дверь          │
+  // │ открывается только через состояние waiting, которого у нас не бывает из-за         │
+  // │ skipWaiting, — то есть тишина держалась бы на совпадении двух настроек в разных    │
+  // │ файлах. Так строить нельзя: одна правка в vite.config молча вернула бы дефект.     │
+  // │                                                                                    │
+  // │ Поэтому регистрируем worker сами (плагин по-прежнему собирает сам sw.js,           │
+  // │ injectRegister: false). Нам от него нужны только register + update, а момент       │
+  // │ перезагрузки решает страж выше, и он теперь единственный.                          │
+  // └────────────────────────────────────────────────────────────────────────────────────┘
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        .then((registration) => {
           if (!registration) return;
-          const checkForUpdate = () => { registration.update().catch(() => {}); };
+          const checkForUpdate = () => { registration.update().catch(() => { /* сеть молчит */ }); };
           const checkIfVisible = () => {
             if (document.visibilityState === 'visible') checkForUpdate();
           };
           document.addEventListener('visibilitychange', checkIfVisible);
           window.addEventListener('focus', checkForUpdate);
           window.addEventListener('pageshow', checkForUpdate);
-          setInterval(checkForUpdate, 60 * 60 * 1000); // hourly safety net for long-open sessions
-          checkForUpdate(); // and once right now
-        },
-      });
-    })
-    .catch(() => {
-      // ignore SW registration errors in non-PWA environments
+          setInterval(checkForUpdate, 60 * 60 * 1000); // страховка для сессий, открытых сутками
+          checkForUpdate();                            // и один раз прямо сейчас
+        })
+        .catch(() => { /* вне PWA регистрация недоступна — это не ошибка */ });
     });
+  }
 }
 
 installTelegramRuntimeRecovery();

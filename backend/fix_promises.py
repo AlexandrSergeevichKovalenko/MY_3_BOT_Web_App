@@ -358,6 +358,92 @@ def _served_webapp_chunk(имя: str) -> str:
     raise LookupError(f"во входных скриптах {base} нет куска {имя}-*.js — это не собранный фронт")
 
 
+def _served_webapp_entry_js() -> str:
+    """Входные скрипты ЖИВОЙ страницы — то, что телефон выполняет первым.
+
+    Тот же приём и та же причина, что у _served_webapp_css / _served_webapp_chunk: у
+    сервиса бота фронта на диске нет (Dockerfile.bot), честный источник — сам сайт по
+    WEB_APP_URL. Нет адреса, нет сети, нет ни одного скрипта — исключение, и проверка
+    получает исход «не измерено», а не «0»."""
+    import os
+    import re
+    from urllib.parse import urljoin
+    from urllib.request import Request, urlopen
+    base = str(os.getenv("WEB_APP_URL") or "").strip()
+    if not base:
+        raise LookupError("WEB_APP_URL не задан: где живёт веб-приложение, бот не знает")
+    if not base.endswith("/"):
+        base += "/"
+
+    def _get(url: str) -> str:
+        # Веб-сервис засыпает без трафика и просыпается ~35 с (замер 05.09.2026).
+        with urlopen(Request(url, headers={"User-Agent": "fix-promises/1"}), timeout=120) as r:
+            return r.read().decode("utf-8", errors="replace")
+
+    html = _get(base)
+    входные = re.findall(r'<script[^>]+src="(/[^"]+\.js)"', html)
+    if not входные:
+        raise LookupError(f"на странице {base} не нашлось ни одного скрипта")
+    return "".join(_get(urljoin(base, путь)) for путь in входные)
+
+
+# ── Обновление не перезагружает экран под руками (16.09.2026) ────────────────────────
+# Жалоба владельца 15.09.2026 про быстрый словарь с иконки: тапаешь в поле — курсор
+# мигнул и пропал, нужен второй тап. Причина — перезагрузка страницы при смене service
+# worker. Замер на стенде с настоящей сборкой: reload на 2.9 с после открытия, набранное
+# слово стирается. Починка — страж в main.jsx (применять, только когда нечего терять) и
+# СОБСТВЕННАЯ регистрация worker вместо virtual:pwa-register (в нём своя безусловная
+# перезагрузка, поверх любой нашей).
+#
+# Меряем не исходник, а то, что вправду отдано телефону.
+def _reload_guards_missing_from(js: str) -> list[str]:
+    """Каких сторожей НЕТ в отданном телефону входном скрипте."""
+    нет = []
+    if '"data-sw-update"' not in js and "'data-sw-update'" not in js:
+        нет.append("страж «нечего терять» (отметка data-sw-update)")
+    if "virtual_pwa-register" in js:
+        нет.append("подключён чужой регистратор virtual:pwa-register со своей перезагрузкой")
+    return нет
+
+
+def _update_reloads_under_hands() -> int:
+    """Сколько сторожей перезагрузки потеряно в живой сборке. Обещано: 0."""
+    return len(_reload_guards_missing_from(_served_webapp_entry_js()))
+
+
+_DICT_KEYBOARD_PROBE = "(hover: hover) and (pointer: fine)"
+
+
+def _dict_autofocus_without_keyboard_check() -> int:
+    """1, если быстрый словарь в живой сборке снова ставит фокус, не спросив устройство.
+
+    На телефоне фокус, поставленный программой без жеста, клавиатуру не открывает ни в
+    WebKit, ни в Chrome: поле выглядит выбранным, каретки нет, и первый тап человека
+    уходит впустую. Признак в коде — прямой медиазапрос про указатель; нет его в куске
+    словаря, значит автофокус снова безусловный. Нет самого куска — исключение, и это
+    «не измерено», а не 0."""
+    return 0 if _DICT_KEYBOARD_PROBE in _served_webapp_chunk("DictionaryOverlay") else 1
+
+
+def _smooth_dictionary_entry_screen() -> str:
+    """Экран «после»: что про вход в словарь отдаёт сайт прямо сейчас."""
+    нет = _reload_guards_missing_from(_served_webapp_entry_js())
+    фокус = _dict_autofocus_without_keyboard_check()
+    строки = []
+    if нет:
+        строки.append("⚠️ Обновление снова может перезагрузить экран под руками: " + "; ".join(нет))
+    else:
+        строки.append("🔄 Обновление применяется, только когда человеку нечего терять: "
+                      "не трогал экран — сразу и незаметно; печатает или слушает — ждём, "
+                      "пока он свернёт приложение.")
+    if фокус:
+        строки.append("⚠️ Быстрый словарь снова ставит фокус сам — на телефоне это съедает первый тап.")
+    else:
+        строки.append("⌨️ Быстрый словарь на телефоне ждёт первого тапа — и этот тап сразу "
+                      "открывает клавиатуру. На компьютере поле по-прежнему готово к печати.")
+    return "\n".join(строки)
+
+
 # Строки-источники, которые экраны «Работа над ошибками» передают дискетке сохранения.
 # В собранном коде имена переменных перемолоты, а строковые литералы — нет: именно они
 # и доказывают, что дискетка на экране стоит и подписана своим источником.
@@ -2149,7 +2235,220 @@ def _sprint_examples_screen() -> str:
     return "\n".join(строки) or "в банке нет антонимов с примерами"
 
 
+# ── куда едет число: догоняет само или стоит ──────────────────────────────────────────
+#
+# ПОВОД, 16.09.2026. Владелец получил утром пять писем подряд и ответил дословно:
+# «я вообще не понимаю зачем я это получаю... какой результат я должен из этого сделать».
+# Разбор того утра: из четырёх нарушенных обещаний ТРИ не требовали от него ничего —
+# два числа сами ехали к нулю ночными прогонами (78 → 68), третье было починено накануне
+# и ждало пересчёта. Требовало человека ОДНО. Письма при этом были одинаково тревожные.
+#
+# Отличать «догоняет само» от «стоит» по пометке в коде нельзя: пометка — это обещание об
+# обещании, её никто не перемеряет. Отличаем по ЖУРНАЛУ замеров bt_3_fix_promise_checks,
+# то есть по тому, как число вело себя на живой базе.
+
+CATCHING_UP, STUCK, GREW, FIRST_MORNING, TREND_UNKNOWN = (
+    "catching_up", "stuck", "grew", "first_morning", "unknown")
+
+# Движения, при которых письмо владельцу УХОДИТ. «Первое утро» сюда не входит осознанно:
+# у свежей починки сегодняшний замер — единственный, сравнивать не с чем, а красное первое
+# утро после деплоя законно (ночь ещё не отработала). Оно видно строкой в отчёте.
+NEEDS_OWNER_TRENDS = (STUCK, GREW, TREND_UNKNOWN)
+
+# Сколько суток истории смотрим. Неделя: ночные доборы идут раз в сутки, и за неделю
+# видно и движение, и остановку.
+TREND_WINDOW_DAYS = 7
+
+
+def history(keys, *, days: int = TREND_WINDOW_DAYS) -> dict[str, list[tuple]]:
+    """Как менялось число каждого обещания: [(день, значение), …] по календарным дням.
+
+    Источник — журнал проверок, а не пометка в коде. На один день берётся ПОСЛЕДНИЙ замер:
+    утренний прогон пишет один раз, но ручной /admin_promises может добавить второй.
+
+    Не смогли прочитать журнал — падаем. Пустой словарь на месте ошибки сделал бы «истории
+    нет» и «не сумели посмотреть» неотличимыми, а это два разных мира: в первом обещание
+    свежее, во втором мы просто ослепли."""
+    from backend.database import get_db_connection_context
+    ключи = [str(k) for k in keys]
+    if not ключи:
+        return {}
+    ряды: dict[str, list[tuple]] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_tables(cursor)
+            cursor.execute(
+                """
+                SELECT promise_key, день, value FROM (
+                    SELECT promise_key,
+                           (checked_at AT TIME ZONE 'UTC')::date AS день,
+                           value,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY promise_key, (checked_at AT TIME ZONE 'UTC')::date
+                               ORDER BY checked_at DESC) AS n
+                    FROM bt_3_fix_promise_checks
+                    WHERE promise_key = ANY(%s)
+                      AND value IS NOT NULL
+                      AND checked_at >= NOW() - make_interval(days => %s)
+                ) t
+                WHERE n = 1
+                ORDER BY promise_key, день
+                """,
+                (ключи, int(days)),
+            )
+            for ключ, день, значение in (cursor.fetchall() or []):
+                ряды.setdefault(str(ключ), []).append((день, int(значение)))
+    return ряды
+
+
+def trend_of(значения: list[int], *, expected: int) -> str:
+    """Куда едет число относительно обещанного — только по замерам, без догадок.
+
+    Смотрим РАССТОЯНИЕ до обещанного, а не «больше/меньше»: обещано может быть и не ноль
+    (например, «ночной добор идёт по слою слов» обещает 1), и там рост — это приближение."""
+    ряд = [int(v) for v in (значения or [])]
+    if len(ряд) < 2:
+        return FIRST_MORNING
+    было, стало = abs(ряд[-2] - int(expected)), abs(ряд[-1] - int(expected))
+    if стало < было:
+        return CATCHING_UP
+    if стало > было:
+        return GREW
+    return STUCK
+
+
+def classify(results: list[dict], *, trends: dict | None = None) -> list[dict]:
+    """Дописать каждому нарушенному обещанию, как двигалось его число.
+
+    Журнал читается ОДНИМ запросом на все обещания сразу. Не прочитался — движение
+    «неизвестно», и такое обещание идёт владельцу письмом: лишнее письмо дешевле
+    молча спрятанного нарушения.
+
+    `trends` передаётся готовым только из тестов: прогон не имеет права ходить в боевой
+    журнал (backend/tests/conftest.py, тот же запрет, что и на остальные записи)."""
+    нарушенные = [r for r in results if r.get("status") == BROKEN]
+    if not нарушенные:
+        return results
+    try:
+        ряды = dict(trends) if trends is not None else history([r["key"] for r in нарушенные])
+        ошибка = ""
+    except Exception as exc:
+        logging.warning("история обещаний не прочиталась: %s", exc, exc_info=True)
+        ряды, ошибка = None, (str(exc)[:200] or exc.__class__.__name__)
+    сегодня = datetime.now(timezone.utc).date()
+    for r in нарушенные:
+        if ряды is None:
+            r["trend"], r["trend_error"], r["prev"] = TREND_UNKNOWN, ошибка, None
+            continue
+        ряд = list(ряды.get(r["key"]) or [])
+        # Сегодняшний замер мог ещё не попасть в журнал (check_all(record=False)) — тогда
+        # он дописывается сюда, иначе движение сравнивало бы вчера с позавчера.
+        if r.get("value") is not None and (not ряд or ряд[-1][0] != сегодня):
+            ряд.append((сегодня, int(r["value"])))
+        значения = [v for _, v in ряд]
+        r["trend"] = trend_of(значения, expected=int(r["expected"]))
+        r["prev"] = значения[-2] if len(значения) >= 2 else None
+        r["trend_error"] = ""
+    return results
+
+
+def needs_owner(r: dict) -> bool:
+    """Требует ли обещание человека ПРЯМО СЕЙЧАС.
+
+    Нарушенное и стоящее на месте — да. Нарушенное, но едущее к обещанному, — нет: за него
+    работает ночь. Не измеренное — да, сломана сама проверка."""
+    if r.get("status") == UNMEASURED:
+        return True
+    if r.get("status") != BROKEN:
+        return False
+    return str(r.get("trend") or TREND_UNKNOWN) in NEEDS_OWNER_TRENDS
+
+
+# ── журнал писем: «одно письмо в утро» должно быть измеримо, а не обещано словами ──────
+
+def record_alert(kind: str, keys: list[str]) -> None:
+    """Отметить, что письмо об обещаниях ушло. Без этой отметки обещание «не больше одного
+    письма в утро» проверять нечем — оно осталось бы словами в коммите."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_tables(cursor)
+            cursor.execute(
+                "INSERT INTO bt_3_fix_promise_alerts (kind, promise_keys) VALUES (%s, %s)",
+                (str(kind)[:40], ",".join(str(k) for k in (keys or []))[:2000]),
+            )
+        conn.commit()
+
+
+def _mornings_with_more_than_one_letter() -> int:
+    """Утр за неделю, когда писем об обещаниях ушло больше одного. Обещано: 0.
+
+    Меряется по журналу отправок, то есть по тому, что владелец правда получил, а не по
+    намерению кода. Вырастет — значит письма снова рассылаются по одному на обещание."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_tables(cursor)
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT (sent_at AT TIME ZONE 'UTC')::date AS день
+                    FROM bt_3_fix_promise_alerts
+                    WHERE sent_at >= NOW() - make_interval(days => 7)
+                    GROUP BY 1 HAVING COUNT(*) > 1
+                ) t
+                """
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def _promise_letter_screen() -> str:
+    """Экран владельца «после»: ровно то, что он получит утром — строка отчёта и письмо.
+
+    Не «тест зелёный» и не «скрипт посчитал», а вид его собственного экрана: сколько
+    обещаний догоняют сами (о них письма не будет) и сколько ждут его (о них письмо одно)."""
+    итог = check_all(record=False)
+    строки = ["<b>Строка в утреннем отчёте:</b>", ""]
+    строки += report_lines(итог)
+    строки += ["", "<b>Письмо, которое придёт отдельно:</b>", ""]
+    письмо = digest_alert(итог)
+    строки.append(письмо[0] if письмо else
+                  "— письма не будет: обещаний, которые ждут тебя, нет.")
+    return "\n".join(строки)
+
+
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="update_never_reloads_under_hands",
+        title="Потерянных сторожей: обновление снова перезагружает экран под руками",
+        since="16.09.2026",
+        expected=0,
+        measure=_update_reloads_under_hands,
+        screen=_smooth_dictionary_entry_screen,
+        how="/admin_promises — или backend.fix_promises._update_reloads_under_hands(). "
+            "Читает входной скрипт ЖИВОГО сайта. До 16.09.2026 страница перезагружала "
+            "себя сама, как только новый service worker забирал управление: замер на "
+            "стенде (настоящая сборка, профиль иконки на рабочем столе, сымитирован "
+            "деплой) — controllerchange 1.9 с → reload 2.9 с, набранное слово стиралось. "
+            "Число ВЫРОСЛО = либо из main.jsx ушёл страж (отметка data-sw-update), либо "
+            "кто-то вернул импорт virtual:pwa-register: внутри этого модуля плагин "
+            "держит СВОЮ безусловную window.location.reload(), и она бьёт поверх нашей",
+    ),
+    Promise(
+        key="quick_dict_first_tap_opens_keyboard",
+        title="Быстрый словарь ставит фокус, не спросив, есть ли у человека клавиатура",
+        since="16.09.2026",
+        expected=0,
+        measure=_dict_autofocus_without_keyboard_check,
+        screen=_smooth_dictionary_entry_screen,
+        how="/admin_promises — или backend.fix_promises._dict_autofocus_without_keyboard_check(). "
+            "Читает кусок DictionaryOverlay ЖИВОГО сайта. До 16.09.2026 словарь ставил "
+            "фокус в поле через 250 мс безусловно; на телефоне такой фокус клавиатуру не "
+            "открывает (ни WebKit, ни Chrome не открывают её без жеста человека), поле "
+            "выглядело выбранным, и первый тап уходил впустую — владелец тапал дважды. "
+            "Проверено на стенде: сенсорное устройство — поле не в фокусе, компьютер — в "
+            "фокусе, как было. Число ВЫРОСЛО = автофокус снова безусловный",
+    ),
     Promise(
         key="starter_dictionary_doors_offer_both_sizes",
         title="Людей на «быстром старте», которым полный словарь не предлагала ни одна дверь",
@@ -2282,7 +2581,7 @@ PROMISES: tuple[Promise, ...] = (
     ),
     Promise(
         key="trainer_bank_has_slack",
-        title="Видов, где свободного запаса слов меньше, чем на длину рельса",
+        title="Тренажёров (синонимы, антонимы), где запас слов кончится раньше срока",
         since="14.09.2026",
         expected=0,
         measure=_trainer_bank_thin,
@@ -2294,7 +2593,7 @@ PROMISES: tuple[Promise, ...] = (
     ),
     Promise(
         key="sprint_examples_unchecked",
-        title="Слов банка, чьи примеры никто не проверял на противоречие самим себе",
+        title="Слов, чьи примеры ещё не проверены на противоречие самим себе",
         since="15.09.2026",
         expected=0,
         measure=_sprint_examples_unchecked,
@@ -2308,7 +2607,7 @@ PROMISES: tuple[Promise, ...] = (
     ),
     Promise(
         key="relation_gap_reaches_learners",
-        title="Слотов «Подставь синоним», которые могли уйти людям, но не ушли ни одному",
+        title="Дней, когда «Подставь синоним» было готово, но не ушло ни одному человеку",
         # Дата сдвинута на 15.09.2026 осознанно: в этот день закрыта причина молчания
         # (капля не умела третью ступеньку), и владельцу три утра подряд приходит экран
         # «после» — иначе о починке снова пришлось бы верить на слово.
@@ -2331,7 +2630,7 @@ PROMISES: tuple[Promise, ...] = (
     ),
     Promise(
         key="relation_gap_builds_from_bank",
-        title="Слов банка, у которых «Подставь синоним» не собирает ни одного пропуска",
+        title="Слов, где «Подставь синоним» не может собрать ни одного пропуска",
         since="13.09.2026",
         expected=0,
         measure=_relation_gap_builds_from_bank,
@@ -2343,7 +2642,7 @@ PROMISES: tuple[Promise, ...] = (
     ),
     Promise(
         key="relation_answers_sane",
-        title="Записей ответов рельса с исходом, которого в продукте нет",
+        title="Записей ответов в тренажёрах с исходом, которого в продукте нет",
         since="13.09.2026",
         expected=0,
         measure=_relation_answers_broken_rows,
@@ -2829,6 +3128,21 @@ PROMISES: tuple[Promise, ...] = (
             "письмо придёт тебе ровно таким, каким его видит новичок",
         screen=_welcome_letter_screen,
     ),
+    Promise(
+        key="one_promise_letter_per_morning",
+        title="Утр, когда писем об обещаниях пришло больше одного",
+        since="16.09.2026",
+        expected=0,
+        measure=_mornings_with_more_than_one_letter,
+        screen=_promise_letter_screen,
+        how="/admin_promises — или SELECT (sent_at AT TIME ZONE 'UTC')::date, COUNT(*) FROM "
+            "bt_3_fix_promise_alerts WHERE sent_at >= NOW() - make_interval(days => 7) "
+            "GROUP BY 1 HAVING COUNT(*) > 1; ждём пусто. Повод 16.09.2026: владельцу пришло "
+            "пять писем подряд, действий требовало ОДНО, и он ответил «я вообще не понимаю "
+            "зачем я это получаю». Теперь письмо одно (digest_alert), а нарушенное, чьё "
+            "число едет к обещанному, живёт строкой в отчёте и письма не порождает. Число "
+            "ВЫРОСЛО = кто-то вернул рассылку по письму на обещание",
+    ),
 )
 
 
@@ -2893,6 +3207,14 @@ def _ensure_tables(cursor) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_bt_3_fix_promise_checks_key
             ON bt_3_fix_promise_checks (promise_key, checked_at DESC);
+        CREATE TABLE IF NOT EXISTS bt_3_fix_promise_alerts (
+            id           BIGSERIAL PRIMARY KEY,
+            sent_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            kind         TEXT NOT NULL,          -- digest | screen
+            promise_keys TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_bt_3_fix_promise_alerts_sent
+            ON bt_3_fix_promise_alerts (sent_at DESC);
         CREATE TABLE IF NOT EXISTS bt_3_fix_promise_state (
             promise_key TEXT PRIMARY KEY,
             muted_at    TIMESTAMPTZ,
@@ -2960,7 +3282,7 @@ def _record(results: list[dict]) -> None:
 # ── проверка ──────────────────────────────────────────────────────────────────────────
 
 def check_all(*, record: bool = True, promises: tuple[Promise, ...] | None = None,
-              muted: set[str] | None = None) -> list[dict]:
+              muted: set[str] | None = None, trends: dict | None = None) -> list[dict]:
     """Прогнать все обещания. Снятые владельцем не измеряются и не входят в итог.
 
     Исключение внутри измерителя — исход «не измерено», а не падение всей проверки:
@@ -2988,7 +3310,9 @@ def check_all(*, record: bool = True, promises: tuple[Promise, ...] | None = Non
         except Exception:
             # Журнал — не сама проверка: не записалось — сказали в лог, отчёт всё равно уйдёт.
             logging.exception("журнал обещаний не записался")
-    return итог
+    # Движение числа дописывается ЗДЕСЬ, после записи в журнал: сегодняшний замер уже лёг,
+    # и сравнение идёт «сегодня против вчера», а не «вчера против позавчера».
+    return classify(итог, trends=trends)
 
 
 def _esc(text: str) -> str:
@@ -3005,30 +3329,71 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
     return many
 
 
+def _movement_words(r: dict) -> str:
+    """Как двигалось число — человеческими словами, без чисел из кода."""
+    движение = str(r.get("trend") or TREND_UNKNOWN)
+    было = r.get("prev")
+    if движение == CATCHING_UP:
+        шаг = abs(int(было) - int(r["value"])) if было is not None else 0
+        осталось = abs(int(r["value"]) - int(r["expected"]))
+        хвост = ""
+        if шаг > 0 and осталось > 0:
+            ночей = -(-осталось // шаг)   # вверх
+            хвост = f", такими темпами ещё ~{ночей} {_plural(ночей, 'ночь', 'ночи', 'ночей')}"
+        return f"вчера {было} → сегодня {r['value']}{хвост}"
+    if движение == STUCK:
+        return "не двигается: столько же, что и вчера"
+    if движение == GREW:
+        return f"стало хуже: вчера было {было}"
+    if движение == FIRST_MORNING:
+        return "первое утро после починки, ночь ещё не пересчитывала"
+    подробность = str(r.get("trend_error") or "")
+    return "историю чисел прочитать не удалось" + (f" ({_esc(подробность)})" if подробность else "")
+
+
 def report_lines(results: list[dict]) -> list[str]:
-    """Строки для утреннего отчёта. Первая — итог одним взглядом, дальше только то,
-    что требует человека: нарушенное и не измеренное. Держащееся не перечисляется."""
+    """Строки блока «Обещания» в утреннем отчёте.
+
+    ┌─ ПОЧЕМУ ДВЕ КУЧИ, А НЕ ОДНА. Решение владельца 16.09.2026. ───────────────────┐
+    │ До этого дня всё нарушенное шло одним списком и одинаково тревожным значком,  │
+    │ а рядом падало по отдельному письму на каждое. Утром 16.09 таких писем было   │
+    │ четыре, и три из них не требовали от владельца ничего: два числа сами ехали   │
+    │ к нулю ночными прогонами, третье ждало первого пересчёта после починки.       │
+    │ Владелец: «какой результат я должен из этого сделать, в чем проблема».        │
+    │ Теперь «ждут тебя» и «догоняют сами» разведены, и письмо уходит только за     │
+    │ первую кучу. Разделение — по журналу замеров (classify), а не по пометке.     │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    """
     if not results:
         return ["🤝 Обещаний в реестре нет."]
     держится = [r for r in results if r["status"] == HELD]
     нарушено = [r for r in results if r["status"] == BROKEN]
     не_измерено = [r for r in results if r["status"] == UNMEASURED]
+    ждут = [r for r in нарушено if needs_owner(r)]
+    догоняют = [r for r in нарушено if not needs_owner(r)]
     части = []
     if держится:
         n = len(держится)
         части.append(f"<b>{n}</b> {_plural(n, 'держится', 'держатся', 'держатся')}")
-    if нарушено:
-        части.append(f"<b>{len(нарушено)}</b> нарушено")
+    if догоняют:
+        части.append(f"<b>{len(догоняют)}</b> идут сами")
+    if ждут:
+        части.append(f"<b>{len(ждут)}</b> ждут тебя")
     if не_измерено:
         части.append(f"<b>{len(не_измерено)}</b> не измерено")
-    строки = ["🤝 Обещания: " + ", ".join(части) + ("." if not (нарушено or не_измерено) else ":")]
-    for r in нарушено:
+    есть_разбор = bool(ждут or догоняют or не_измерено)
+    строки = ["🤝 Обещания: " + ", ".join(части) + (":" if есть_разбор else ".")]
+    for r in ждут:
         строки.append(
             f"   ⛔ {_esc(r['title'])}: обещано <b>{r['expected']}</b>, сейчас <b>{r['value']}</b> "
-            f"(обещание от {_esc(r['since'])})"
+            f"({_movement_words(r)}; обещание от {_esc(r['since'])})"
         )
     for r in не_измерено:
         строки.append(f"   ❓ {_esc(r['title'])}: проверка не отработала — {_esc(r['error'])}")
+    if догоняют:
+        строки.append("   ⏳ Идут сами, от тебя сегодня ничего не нужно:")
+        for r in догоняют:
+            строки.append(f"      • {_esc(r['title'])}: {_movement_words(r)}")
     return строки
 
 
@@ -3052,28 +3417,72 @@ def full_lines(results: list[dict], muted: set[str]) -> list[str]:
 
 
 
-def broken_alert(r: dict) -> tuple[str, dict]:
-    """Письмо владельцу об одном нарушенном или не измеренном обещании — с кнопками.
+# Сколько обещаний получают в письме свою кнопку «снять». Больше — клавиатура перестаёт
+# читаться с телефона; остальные владелец разбирает командой /admin_promises.
+MAX_ALERT_BUTTONS = 6
 
-    Кнопок две: снять обещание (решение: больше не следим) и держать дальше (придёт снова
-    завтра). Без нажатия — как «держать»: молчание не снимает обещание."""
-    if r["status"] == BROKEN:
-        text = (
-            f"⛔ <b>Обещание нарушено</b>\n\n"
-            f"{_esc(r['title'])}: обещано <b>{r['expected']}</b>, сейчас <b>{r['value']}</b>.\n"
-            f"Обещание от {_esc(r['since'])}. Починка либо откатилась, либо не работала.\n\n"
-            f"Перемерить: <code>{_esc(r['how'])}</code>\n\n"
-            f"<i>Ничего не нажать — тоже ответ: обещание остаётся, завтра проверю снова.</i>"
+
+def _short(title: str, limit: int = 28) -> str:
+    """Короткое имя для кнопки: подпись кнопки в Telegram обрезается молча."""
+    t = str(title or "").strip()
+    return t if len(t) <= limit else t[:limit - 1].rstrip() + "…"
+
+
+def digest_alert(results: list[dict]) -> tuple[str, dict] | None:
+    """ОДНО письмо в утро — и только про то, где человек правда нужен. None — писать не о чем.
+
+    ┌─ РЕШЕНИЕ ВЛАДЕЛЬЦА 16.09.2026. НЕ ВОЗВРАЩАТЬ ПИСЬМО НА КАЖДОЕ ОБЕЩАНИЕ. ──────┐
+    │ Раньше письмо уходило на каждое нарушенное и не измеренное обещание отдельно  │
+    │ — «кнопки живут на своём сообщении». В утро 16.09 это дало пять сообщений     │
+    │ подряд, из которых действий требовало одно. Владелец: «я не понимаю как с     │
+    │ ними обращаться, для чего они нужны».                                          │
+    │ Теперь письмо одно, а решение по-прежнему принимается по КАЖДОМУ обещанию:    │
+    │ у каждого своя кнопка «снять» внутри общей клавиатуры, и снятие одного не     │
+    │ трогает остальные (обработчик убирает только его строку).                     │
+    │ Инженерный текст «как перемерить» в письмо НЕ идёт: он для агента, и он есть  │
+    │ в /admin_promises. Владельцу — что обещано, что сейчас и куда едет число.     │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    """
+    нарушено = [r for r in (results or [])
+                if r.get("status") == BROKEN and not r.get("__failed__") and needs_owner(r)]
+    не_измерено = [r for r in (results or [])
+                   if r.get("status") == UNMEASURED and not r.get("__failed__")]
+    if not нарушено and not не_измерено:
+        return None
+
+    куски = []
+    if нарушено:
+        n = len(нарушено)
+        куски.append(
+            f"⛔ <b>Ждут тебя: {n} "
+            f"{_plural(n, 'обещание', 'обещания', 'обещаний')}</b>\n\n"
+            f"Это починки, которые я объявлял сделанными. Система перемерила их сама: число "
+            f"не сошлось и к обещанному НЕ едет.\n"
         )
-    else:
-        text = (
-            f"❓ <b>Обещание не удалось проверить</b>\n\n"
-            f"{_esc(r['title'])}: проверка не отработала — {_esc(r['error'])}.\n"
-            f"Это не «держится» и не «нарушено», это отдельный исход: проверку надо чинить.\n\n"
-            f"<i>Ничего не нажать — тоже ответ: завтра проверю снова.</i>"
-        )
-    markup = {"inline_keyboard": [[
-        {"text": "👀 Держать дальше", "callback_data": f"fp:keep:{r['key']}"},
-        {"text": "🔕 Снять обещание", "callback_data": f"fp:mute:{r['key']}"},
-    ]]}
-    return text, markup
+        for i, r in enumerate(нарушено, 1):
+            куски.append(
+                f"\n<b>{i}. {_esc(r['title'])}</b>\n"
+                f"    обещано {r['expected']}, сейчас <b>{r['value']}</b> — {_movement_words(r)}\n"
+                f"    обещание от {_esc(r['since'])}\n"
+            )
+    if не_измерено:
+        n = len(не_измерено)
+        куски.append(f"\n❓ <b>Не удалось проверить: {n}</b>\n"
+                     f"Это не «держится» и не «нарушено» — сломана сама проверка.\n")
+        for r in не_измерено:
+            куски.append(f"    • {_esc(r['title'])} — {_esc(r['error'])}\n")
+
+    куски.append(
+        "\n<i>«Снять» — обещание перестаёт проверяться навсегда. Ничего не нажать — тоже "
+        "ответ: завтра проверю снова. Подробности по каждому — /admin_promises.</i>"
+    )
+
+    строки_кнопок = []
+    for r in (нарушено + не_измерено)[:MAX_ALERT_BUTTONS]:
+        строки_кнопок.append([{"text": f"🔕 Снять: {_short(r['title'])}",
+                               "callback_data": f"fp:mute:{r['key']}"}])
+    строки_кнопок.append([{"text": "👀 Держать все", "callback_data": "fp:keep:all"}])
+    if len(нарушено) + len(не_измерено) > MAX_ALERT_BUTTONS:
+        куски.append(f"\n<i>Кнопок показано {MAX_ALERT_BUTTONS} из "
+                     f"{len(нарушено) + len(не_измерено)} — остальные в /admin_promises.</i>")
+    return "".join(куски), {"inline_keyboard": строки_кнопок}
