@@ -358,6 +358,92 @@ def _served_webapp_chunk(имя: str) -> str:
     raise LookupError(f"во входных скриптах {base} нет куска {имя}-*.js — это не собранный фронт")
 
 
+def _served_webapp_entry_js() -> str:
+    """Входные скрипты ЖИВОЙ страницы — то, что телефон выполняет первым.
+
+    Тот же приём и та же причина, что у _served_webapp_css / _served_webapp_chunk: у
+    сервиса бота фронта на диске нет (Dockerfile.bot), честный источник — сам сайт по
+    WEB_APP_URL. Нет адреса, нет сети, нет ни одного скрипта — исключение, и проверка
+    получает исход «не измерено», а не «0»."""
+    import os
+    import re
+    from urllib.parse import urljoin
+    from urllib.request import Request, urlopen
+    base = str(os.getenv("WEB_APP_URL") or "").strip()
+    if not base:
+        raise LookupError("WEB_APP_URL не задан: где живёт веб-приложение, бот не знает")
+    if not base.endswith("/"):
+        base += "/"
+
+    def _get(url: str) -> str:
+        # Веб-сервис засыпает без трафика и просыпается ~35 с (замер 05.09.2026).
+        with urlopen(Request(url, headers={"User-Agent": "fix-promises/1"}), timeout=120) as r:
+            return r.read().decode("utf-8", errors="replace")
+
+    html = _get(base)
+    входные = re.findall(r'<script[^>]+src="(/[^"]+\.js)"', html)
+    if not входные:
+        raise LookupError(f"на странице {base} не нашлось ни одного скрипта")
+    return "".join(_get(urljoin(base, путь)) for путь in входные)
+
+
+# ── Обновление не перезагружает экран под руками (16.09.2026) ────────────────────────
+# Жалоба владельца 15.09.2026 про быстрый словарь с иконки: тапаешь в поле — курсор
+# мигнул и пропал, нужен второй тап. Причина — перезагрузка страницы при смене service
+# worker. Замер на стенде с настоящей сборкой: reload на 2.9 с после открытия, набранное
+# слово стирается. Починка — страж в main.jsx (применять, только когда нечего терять) и
+# СОБСТВЕННАЯ регистрация worker вместо virtual:pwa-register (в нём своя безусловная
+# перезагрузка, поверх любой нашей).
+#
+# Меряем не исходник, а то, что вправду отдано телефону.
+def _reload_guards_missing_from(js: str) -> list[str]:
+    """Каких сторожей НЕТ в отданном телефону входном скрипте."""
+    нет = []
+    if '"data-sw-update"' not in js and "'data-sw-update'" not in js:
+        нет.append("страж «нечего терять» (отметка data-sw-update)")
+    if "virtual_pwa-register" in js:
+        нет.append("подключён чужой регистратор virtual:pwa-register со своей перезагрузкой")
+    return нет
+
+
+def _update_reloads_under_hands() -> int:
+    """Сколько сторожей перезагрузки потеряно в живой сборке. Обещано: 0."""
+    return len(_reload_guards_missing_from(_served_webapp_entry_js()))
+
+
+_DICT_KEYBOARD_PROBE = "(hover: hover) and (pointer: fine)"
+
+
+def _dict_autofocus_without_keyboard_check() -> int:
+    """1, если быстрый словарь в живой сборке снова ставит фокус, не спросив устройство.
+
+    На телефоне фокус, поставленный программой без жеста, клавиатуру не открывает ни в
+    WebKit, ни в Chrome: поле выглядит выбранным, каретки нет, и первый тап человека
+    уходит впустую. Признак в коде — прямой медиазапрос про указатель; нет его в куске
+    словаря, значит автофокус снова безусловный. Нет самого куска — исключение, и это
+    «не измерено», а не 0."""
+    return 0 if _DICT_KEYBOARD_PROBE in _served_webapp_chunk("DictionaryOverlay") else 1
+
+
+def _smooth_dictionary_entry_screen() -> str:
+    """Экран «после»: что про вход в словарь отдаёт сайт прямо сейчас."""
+    нет = _reload_guards_missing_from(_served_webapp_entry_js())
+    фокус = _dict_autofocus_without_keyboard_check()
+    строки = []
+    if нет:
+        строки.append("⚠️ Обновление снова может перезагрузить экран под руками: " + "; ".join(нет))
+    else:
+        строки.append("🔄 Обновление применяется, только когда человеку нечего терять: "
+                      "не трогал экран — сразу и незаметно; печатает или слушает — ждём, "
+                      "пока он свернёт приложение.")
+    if фокус:
+        строки.append("⚠️ Быстрый словарь снова ставит фокус сам — на телефоне это съедает первый тап.")
+    else:
+        строки.append("⌨️ Быстрый словарь на телефоне ждёт первого тапа — и этот тап сразу "
+                      "открывает клавиатуру. На компьютере поле по-прежнему готово к печати.")
+    return "\n".join(строки)
+
+
 # Строки-источники, которые экраны «Работа над ошибками» передают дискетке сохранения.
 # В собранном коде имена переменных перемолоты, а строковые литералы — нет: именно они
 # и доказывают, что дискетка на экране стоит и подписана своим источником.
@@ -2150,6 +2236,37 @@ def _sprint_examples_screen() -> str:
 
 
 PROMISES: tuple[Promise, ...] = (
+    Promise(
+        key="update_never_reloads_under_hands",
+        title="Потерянных сторожей: обновление снова перезагружает экран под руками",
+        since="16.09.2026",
+        expected=0,
+        measure=_update_reloads_under_hands,
+        screen=_smooth_dictionary_entry_screen,
+        how="/admin_promises — или backend.fix_promises._update_reloads_under_hands(). "
+            "Читает входной скрипт ЖИВОГО сайта. До 16.09.2026 страница перезагружала "
+            "себя сама, как только новый service worker забирал управление: замер на "
+            "стенде (настоящая сборка, профиль иконки на рабочем столе, сымитирован "
+            "деплой) — controllerchange 1.9 с → reload 2.9 с, набранное слово стиралось. "
+            "Число ВЫРОСЛО = либо из main.jsx ушёл страж (отметка data-sw-update), либо "
+            "кто-то вернул импорт virtual:pwa-register: внутри этого модуля плагин "
+            "держит СВОЮ безусловную window.location.reload(), и она бьёт поверх нашей",
+    ),
+    Promise(
+        key="quick_dict_first_tap_opens_keyboard",
+        title="Быстрый словарь ставит фокус, не спросив, есть ли у человека клавиатура",
+        since="16.09.2026",
+        expected=0,
+        measure=_dict_autofocus_without_keyboard_check,
+        screen=_smooth_dictionary_entry_screen,
+        how="/admin_promises — или backend.fix_promises._dict_autofocus_without_keyboard_check(). "
+            "Читает кусок DictionaryOverlay ЖИВОГО сайта. До 16.09.2026 словарь ставил "
+            "фокус в поле через 250 мс безусловно; на телефоне такой фокус клавиатуру не "
+            "открывает (ни WebKit, ни Chrome не открывают её без жеста человека), поле "
+            "выглядело выбранным, и первый тап уходил впустую — владелец тапал дважды. "
+            "Проверено на стенде: сенсорное устройство — поле не в фокусе, компьютер — в "
+            "фокусе, как было. Число ВЫРОСЛО = автофокус снова безусловный",
+    ),
     Promise(
         key="starter_dictionary_doors_offer_both_sizes",
         title="Людей на «быстром старте», которым полный словарь не предлагала ни одна дверь",

@@ -368,8 +368,30 @@ export default function DictionaryOverlay({ onClose, sharedDiffToken = '' } = {}
     };
     applyScheme();
     try { tg?.onEvent?.('themeChanged', applyScheme); } catch (_e) { /* ignore */ }
-    setTimeout(() => { try { inputRef.current?.focus(); } catch (_e) { /* ignore */ } }, 250);
-    return () => { try { tg?.offEvent?.('themeChanged', applyScheme); } catch (_e) { /* ignore */ } };
+    // ┌─ ПОЧИНЕНО 16.09.2026. ФОКУС СТАВИМ ТОЛЬКО ТАМ, ГДЕ ОН ОТКРЫВАЕТ КЛАВИАТУРУ. ──────┐
+    // │ Здесь безусловно стоял focus() через 250 мс. На телефоне это НЕ РАБОТАЕТ и       │
+    // │ работать не может: и WebKit, и Chrome открывают клавиатуру только на фокус,      │
+    // │ поставленный внутри жеста человека. Запуск приложения жестом не является, так    │
+    // │ что клавиатуры не было никогда — а поле оказывалось уже выбранным, и первый тап  │
+    // │ человека уходил в пустоту: он тапал второй раз (жалоба владельца 15.09.2026).    │
+    // │ Теперь на телефоне поле ждёт первого тапа — и этот тап сразу даёт клавиатуру.    │
+    // │ На компьютере фокус остаётся: там клавиатура настоящая, ничего не всплывает и    │
+    // │ можно печатать сразу.                                                            │
+    // │ Признак — ПРЯМОЙ: чем человек указывает (CSS Media Queries Level 4, hover/       │
+    // │ pointer), а не догадка по строке браузера.                                       │
+    // └──────────────────────────────────────────────────────────────────────────────────┘
+    let focusTimer = null;
+    const hasRealKeyboard = (() => {
+      try { return window.matchMedia('(hover: hover) and (pointer: fine)').matches; }
+      catch (_e) { return false; }
+    })();
+    if (hasRealKeyboard) {
+      focusTimer = setTimeout(() => { try { inputRef.current?.focus(); } catch (_e) { /* ignore */ } }, 250);
+    }
+    return () => {
+      if (focusTimer) clearTimeout(focusTimer);
+      try { tg?.offEvent?.('themeChanged', applyScheme); } catch (_e) { /* ignore */ }
+    };
   }, []);
 
   // Выбранная статья. Всё, что ниже — заголовок, артикль, часть речи, озвучка,
