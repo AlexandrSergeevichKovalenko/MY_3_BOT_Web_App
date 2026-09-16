@@ -10680,9 +10680,16 @@ def _run_genitive_phrase_article_sweep_safe() -> None:
         stats = sweep_missing_genitive_articles()
         _record_sched_heartbeat("genitive_phrase_article_sweep", "completed", stats)
         logging.info("genitive phrase article sweep result=%s", stats)
+        if stats.get("form_changes"):
+            # Не «не знаем», а «знаем, что артикль тут не поможет»: у заголовка надо
+            # менять саму форму («Vorsitzender» → «Vorsitzende»). Мы такое не трогаем —
+            # переписывание заголовка это другое решение, не дописывание артикля.
+            logging.warning(
+                "заголовков, где артикль не дописывается (нужна другая форма): %d",
+                stats["form_changes"])
         if stats.get("unknown"):
             logging.warning(
-                "артикль не дописан, справочник склонений молчит по %d заголовкам: %s",
+                "артикль не дописан, все три ступени молчат по %d заголовкам: %s",
                 stats["unknown"], "; ".join(stats.get("unknown_words") or [])[:1500])
     except Exception as exc:
         logging.exception("genitive phrase article sweep failed")
