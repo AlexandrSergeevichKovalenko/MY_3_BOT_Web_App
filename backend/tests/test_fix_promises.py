@@ -59,10 +59,13 @@ class ТриИсходаПроверки(unittest.TestCase):
         self.assertNotIn("d", по_ключу, "снятое владельцем не проверяется и не показывается")
 
     def test_report_line_names_broken_and_unmeasured_but_not_held(self):
+        import datetime
         from backend.fix_promises import check_all, report_lines
-        строки = report_lines(check_all(record=False, promises=self._реестр(), muted={"d"}))
+        вчера = datetime.date.today() - datetime.timedelta(days=1)
+        строки = report_lines(check_all(record=False, promises=self._реестр(), muted={"d"},
+                                        trends={"b": [(вчера, 3)]}))
         self.assertIn("<b>1</b> держится", строки[0])
-        self.assertIn("<b>1</b> нарушено", строки[0])
+        self.assertIn("<b>1</b> ждут тебя", строки[0])
         self.assertIn("<b>1</b> не измерено", строки[0])
         текст = "\n".join(строки)
         self.assertIn("⛔ нарушено: обещано <b>0</b>, сейчас <b>3</b>", текст)
@@ -76,14 +79,6 @@ class ТриИсходаПроверки(unittest.TestCase):
         строки = report_lines(check_all(record=False, promises=реестр, muted=set()))
         self.assertEqual(["🤝 Обещания: <b>2</b> держатся."], строки)
 
-    def test_alert_has_two_buttons_and_silence_keeps_the_promise(self):
-        from backend.fix_promises import broken_alert, BROKEN
-        text, markup = broken_alert({"key": "b", "title": "t", "since": "04.09.2026",
-                                     "expected": 0, "value": 3, "how": "sql",
-                                     "status": BROKEN, "error": ""})
-        кнопки = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
-        self.assertEqual(["fp:keep:b", "fp:mute:b"], кнопки)
-        self.assertIn("Ничего не нажать — тоже ответ", text)
 
 
 class ОбещаниеВшитоВУтро(unittest.TestCase):

@@ -10159,24 +10159,45 @@ def _fix_promises_block(results: list[dict]) -> str:
 
 
 def _send_fix_promise_alerts(admin_ids: list[int], token: str, results: list[dict]) -> None:
-    """Каждое нарушенное или не измеренное обещание — отдельным письмом с кнопками.
+    """ОДНО письмо в утро — и только про обещания, где нужен человек.
 
-    Отдельно от отчёта намеренно: кнопки живут на своём сообщении, и владелец решает по
-    одному обещанию, а не по всему письму сразу."""
+    ┌─ РЕШЕНИЕ ВЛАДЕЛЬЦА 16.09.2026. ──────────────────────────────────────────────┐
+    │ До этого дня письмо уходило на КАЖДОЕ нарушенное обещание. Утром 16.09 их     │
+    │ пришло четыре подряд, и три не требовали ничего: числа сами ехали к нулю      │
+    │ ночными прогонами. Владелец: «зачем я это получаю... какой результат я        │
+    │ должен из этого сделать». Теперь письмо одно, «догоняет само» живёт строкой   │
+    │ в отчёте, а кнопка «снять» остаётся у каждого обещания своя.                  │
+    │ Отправка записывается в журнал (record_alert) — иначе обещание                │
+    │ `one_promise_letter_per_morning` проверять было бы нечем.                     │
+    └──────────────────────────────────────────────────────────────────────────────┘
+    """
     try:
-        from backend.fix_promises import BROKEN, UNMEASURED, broken_alert
+        from backend.fix_promises import digest_alert, record_alert
+        письмо = digest_alert(results or [])
     except Exception:
-        logging.exception("письма об обещаниях не собрались")
+        logging.exception("письмо об обещаниях не собралось")
         return
-    for r in results or []:
-        if r.get("__failed__") or r.get("status") not in (BROKEN, UNMEASURED):
-            continue
-        text, markup = broken_alert(r)
-        for uid in admin_ids:
-            ok, reason = send_telegram_message(chat_id=uid, text=text, token=token,
-                                               reply_markup=markup, what="обещание нарушено")
-            if not ok:
-                logging.error("письмо об обещании %s не дошло до %s: %s", r.get("key"), uid, reason)
+    if письмо is None:
+        return
+    text, markup = письмо
+    дошло = False
+    for uid in admin_ids:
+        ok, reason = send_telegram_message(chat_id=uid, text=text, token=token,
+                                           reply_markup=markup, what="обещания: нужен ты")
+        if ok:
+            дошло = True
+        else:
+            logging.error("письмо об обещаниях не дошло до %s: %s", uid, reason)
+    if not дошло:
+        return
+    try:
+        ключи = [str(b.get("callback_data", "")).split(":")[-1]
+                 for row in markup["inline_keyboard"] for b in row]
+        record_alert("digest", [k for k in ключи if k and k != "all"])
+    except Exception:
+        # Журнал отправок — не сама отправка: письмо уже у владельца, молчать об этом нельзя,
+        # но и переслать второй раз из-за незаписанной строки мы не имеем права.
+        logging.exception("журнал писем об обещаниях не записался")
 
 
 def _send_fix_promise_screens(admin_ids: list[int], token: str) -> None:
@@ -14028,11 +14049,24 @@ async def handle_fix_promise_callback(update: Update, context: CallbackContext) 
     if not _is_admin_user(user.id):
         await query.answer("Только для администратора.", show_alert=True)
         return
-    parts = str(query.data or "").split(":")   # fp:<keep|mute>:<key>
+    parts = str(query.data or "").split(":")   # fp:<keep|mute>:<key|all>
     action = parts[1] if len(parts) > 1 else ""
     key = parts[2] if len(parts) > 2 else ""
     from html import escape as _esc
     from backend.fix_promises import by_key, mute
+    # ⛔ ПИСЬМО ОДНО НА ВСЕ ОБЕЩАНИЯ (решение владельца 16.09.2026), поэтому снятие одного
+    # НЕ имеет права стереть текст про остальные: правится только клавиатура, а под текстом
+    # дописывается след решения. Раньше edit_message_text затирал всё сообщение целиком —
+    # с одним обещанием на письмо это было незаметно, с общим письмом стало бы потерей.
+    текст = query.message.text_html if query.message and query.message.text else ""
+    ряды = list((query.message.reply_markup.inline_keyboard
+                 if query.message and query.message.reply_markup else []) or [])
+    if action == "keep" and key == "all":
+        await query.answer("Держим.")
+        await query.edit_message_text(
+            текст + "\n\n👀 <i>Держим все. Придут завтра утром снова, если не выправятся.</i>",
+            parse_mode="HTML", disable_web_page_preview=True)
+        return
     promise = by_key(key)
     if not promise:
         await query.answer("Такого обещания в реестре уже нет.", show_alert=True)
@@ -14041,16 +14075,19 @@ async def handle_fix_promise_callback(update: Update, context: CallbackContext) 
         if action == "mute":
             await asyncio.to_thread(mute, key, int(user.id))
             await query.answer("Снято.")
+            остаток = [list(ряд) for ряд in ряды
+                       if not any(str(b.callback_data) == f"fp:mute:{key}" for b in ряд)]
             await query.edit_message_text(
-                f"🔕 Обещание снято: <b>{_esc(promise.title)}</b>.\n"
-                f"Больше не проверяется и в отчёт не входит. Вернуть: /admin_promises "
-                f"покажет его как снятое, а вернуть в реестр можно словом агенту.",
-                parse_mode="HTML")
+                текст + f"\n\n🔕 <i>Снято: {_esc(promise.title)} — больше не проверяется и в "
+                        f"отчёт не входит. Вернуть в реестр можно словом агенту.</i>",
+                parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=InlineKeyboardMarkup(остаток) if остаток else None)
         elif action == "keep":
             await query.answer("Держим.")
             await query.edit_message_text(
-                f"👀 Держим дальше: <b>{_esc(promise.title)}</b>. Придёт завтра утром снова, "
-                f"если не выправится.", parse_mode="HTML")
+                текст + f"\n\n👀 <i>Держим дальше: {_esc(promise.title)}. Придёт завтра утром "
+                        f"снова, если не выправится.</i>",
+                parse_mode="HTML", disable_web_page_preview=True)
         else:
             await query.answer()
     except Exception:
