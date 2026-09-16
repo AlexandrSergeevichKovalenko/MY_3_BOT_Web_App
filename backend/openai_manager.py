@@ -5184,6 +5184,37 @@ STRICT:
 
 Return STRICT JSON ONLY: {"nouns": [ {"word","article","meaning_ru","plural","difficulty"}, ... ]}.
 """,
+"en_bridge": """
+Ты строишь мост немецко-английского учебного словаря. На вход JSON:
+{"items": [{"key": "...", "kind": "word|collocation|sentence", "de": "...",
+            "sense": "пояснение значения по-русски или null", "ru": "русский перевод"}]}
+
+ЗАЧЕМ ДАЮТ И НЕМЕЦКОЕ, И РУССКОЕ. Немецкое слово в отрыве многозначно: "Absatz" — это
+и абзац, и каблук, и сбыт. Русская сторона и пояснение говорят, о КАКОМ ИЗ ЗНАЧЕНИЙ
+речь. Источник — немецкий; русский служит адресом значения, а не текстом перевода.
+Переводи немецкое в этом значении, а НЕ пересказывай русское.
+
+ЧТО ВЕРНУТЬ:
+  kind = word         — английский эквивалент этого значения в словарной форме.
+                        Обычно 1-3 слова. Без артикля "a/the", без "to" у глагола.
+  kind = collocation  — английское устойчивое соответствие. Есть своя идиома с тем же
+                        смыслом — дай её, а не дословную кальку.
+  kind = sentence     — естественный перевод ВСЕГО предложения. Не по словам.
+
+ЖЁСТКИЕ ЗАПРЕТЫ:
+  · НЕ ВЫДУМЫВАЙ. Нет устойчивого соответствия или не уверен — верни "en": null и
+    коротко объясни в "why". Пустая ячейка честнее выдуманной: по этому словарю человек
+    учит язык.
+  · РЕГИСТР ОРИГИНАЛА НЕПРИКОСНОВЕНЕН. Грубое остаётся грубым, вульгарное вульгарным,
+    официальное официальным. Смягчать и облагораживать запрещено.
+  · Один вариант, самый частотный. Второй, если он вправду нужен, — в "alt".
+  · Никаких пояснений и скобок внутри "en". Только сам текст.
+
+ФОРМАТ — строго JSON, без markdown:
+{"items": [{"key": "<тот же key>", "en": "<текст или null>",
+            "alt": "<второй вариант или null>", "why": "<почему null, иначе null>"}]}
+Ровно по одной записи на каждый пришедший key.
+""",
 "article_verify": """
 You verify German noun articles for a der/die/das drill. Input JSON:
 {"items": [ {"word": "...", "article": "der|die|das"}, ... ]}.
@@ -6344,6 +6375,10 @@ def set_llm_billing_user(user_id) -> None:
 # breakdown/разбор, story_*) are deliberately EXCLUDED — for them attribution follows
 # the contextvar (on-demand in a user session → that user; nightly prewarm → NULL).
 _SYSTEM_ATTRIBUTION_TASKS: frozenset[str] = frozenset({
+    # Мост немецкий→английский: ночной добор английской стороны. Просит не человек,
+    # а мы; результат ложится в ОБЩИЙ слой и достаётся всем. Без этой строки расход
+    # лёг бы на того, чьё слово попалось в пачку первым.
+    "en_bridge",
     # Shared dictionary pool enrichment (opportunistic fattening of the global entry)
     "enrich_word", "enrich_word_multilang",
     # Фоновая сборка карточки слова: досбор сразу после сохранения, ночной добор единиц и
@@ -9023,6 +9058,40 @@ async def run_article_noun_gen(*, theme: str, subtopic: str, count: int, avoid: 
         return [n for n in nouns if isinstance(n, dict)] if isinstance(nouns, list) else []
     except Exception:
         logging.warning("run_article_noun_gen failed theme=%s subtopic=%s", theme, subtopic, exc_info=True)
+        return []
+
+
+async def run_en_bridge(*, items: list[dict]) -> list[dict]:
+    """Английская сторона для пачки немецких записей. Возвращает
+    [{"key","en","alt","why"}]; при сбое — [].
+
+    Сопоставление ТОЛЬКО по key: «порядок как на входе» — обещание промпта, а не
+    гарантия. Пропавший элемент из середины сдвинул бы всё за ним, и чужой перевод
+    приехал бы на чужое слово (тот же урок, что у article_verify).
+    """
+    try:
+        content = await llm_execute(
+            task_name="en_bridge",
+            system_instruction_key="en_bridge",
+            # ⚠ ПУТЬ ЗАДАЁМ ЯВНО, а не надеемся на переменную окружения. В проде
+            # LLM_GATEWAY_MODE=responses и всё ходит новым путём; локально режим другой,
+            # задача уезжала на путь Assistants и получала 404 — он больше не отвечает.
+            # Тихого отката на мёртвый путь быть не должно: лучше честно упасть.
+            responses_only=True,
+            allow_assistants_fallback=False,
+            user_message=json.dumps({"items": [
+                {"key": str(i.get("key") or ""), "kind": str(i.get("kind") or "word"),
+                 "de": str(i.get("de") or ""), "sense": i.get("sense"),
+                 "ru": str(i.get("ru") or "")}
+                for i in (items or [])
+            ]}, ensure_ascii=False),
+            poll_interval_seconds=1.5,
+        )
+        data = json.loads(content)
+        out = data.get("items") if isinstance(data, dict) else None
+        return [x for x in (out or []) if isinstance(x, dict) and x.get("key")]
+    except Exception:
+        logging.warning("мост de→en: пачка не разобрана", exc_info=True)
         return []
 
 

@@ -10349,6 +10349,21 @@ async def handle_bot_blocked_review_callback(update: Update, context: CallbackCo
     except Exception:
         logging.exception("bot-blocked review callback failed data=%s", query.data)
         await query.answer("Не получилось — подробности в логах.", show_alert=True)
+def _en_bridge_line() -> str:
+    """Сколько немецких слов ещё ждут английской стороны. Пусто, если не дотянулись.
+
+    Пустая строка тут НЕ заглушка: отчёт о ночном доборе — не место, где падать.
+    Молчание видно в логах, а число не выдумывается.
+    """
+    try:
+        from backend.en_bridge_nightly import сколько_осталось
+        осталось = сколько_осталось()
+        if осталось <= 0:
+            return "\n🇬🇧 Английская сторона: у всех слов есть."
+        return f"\n🇬🇧 Английская сторона: ждут {осталось} слов, разбираю по ночам."
+    except Exception:
+        logging.warning("строка о мосте de→en не собралась", exc_info=True)
+        return ""
 
 
 def _dictionary_integrity_line() -> str:
@@ -10547,7 +10562,7 @@ def _send_pool_enrich_morning_report() -> None:
                 # Здесь идёт ВЕРДИКТ, а не отчёт: «делать нечего» либо «нужен ты».
                 # Разбивка по правилам — по команде /admin_dict_integrity, в ежедневное
                 # сообщение она не лезет: число, на которое нельзя нажать, это не работа.
-                + _dictionary_integrity_line()
+                + _dictionary_integrity_line() + _en_bridge_line()
             )
         text += _access_state_line()
         text += _welcome_letter_report_line()

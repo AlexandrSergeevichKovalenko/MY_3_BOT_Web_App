@@ -97,6 +97,7 @@ from backend.background_jobs import (  # noqa: E402
     run_word_audit_reminder_actor,
     run_reference_forms_warm_actor,
     run_retire_review_dm_actor,
+    run_en_bridge_nightly_actor,
     run_form_headword_sweep_actor,
     run_synonym_review_dm_actor,
     run_fill_control_dm_actor,
@@ -485,6 +486,10 @@ def _dispatch_reference_forms_review_dm() -> None:
 
 def _dispatch_retire_review_dm() -> None:
     run_retire_review_dm_actor.send()
+
+
+def _dispatch_en_bridge_nightly() -> None:
+    run_en_bridge_nightly_actor.send()
 
 
 def _dispatch_form_headword_sweep() -> None:
@@ -1056,6 +1061,21 @@ def _build_scheduler():
             max_instances=1,
             coalesce=True,
             misfire_grace_time=3600,
+        )
+
+    # Мост немецкий→английский. 04:10 — после ночного добора словаря (3:00) и
+    # починки заголовков (3:50), чтобы работать по уже собранному. Потолок за ночь
+    # задаётся EN_BRIDGE_NIGHTLY_LIMIT (по умолчанию 500): накопленный хвост
+    # разойдётся за несколько ночей, дальше работы будет ~64 в сутки.
+    if _enabled("EN_BRIDGE_NIGHTLY_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_en_bridge_nightly,
+            "cron",
+            hour=_int_env("EN_BRIDGE_NIGHTLY_HOUR", 4),
+            minute=_int_env("EN_BRIDGE_NIGHTLY_MINUTE", 10),
+            timezone=_tz(os.getenv("EN_BRIDGE_NIGHTLY_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
         )
 
     if _enabled("RETIRE_REVIEW_ENABLED", "1"):
