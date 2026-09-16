@@ -178,12 +178,24 @@ def head_noun_of_genitive_phrase(text: str | None) -> str:
     return head
 
 
-def article_for_genitive_phrase(text: str | None, *, tables: dict | None = None) -> tuple:
+def article_for_genitive_phrase(text: str | None, *, tables: dict | None = None,
+                                plural_verdict: tuple | None = None) -> tuple:
     """(артикль, источник) либо ("", причина). Артикль — только из справочника склонений.
 
-    `tables` позволяет отдать УЖЕ прочитанные таблицы (ночной проход читает их пачкой,
-    один запрос на сотню строк вместо сотни запросов) и проверить правило тестом,
-    не поднимая базу.
+    ЛЕСТНИЦА ИСТОЧНИКОВ, сверху вниз; следующая ступень спрашивается, только если
+    предыдущая честно сказала «не знаю»:
+      1. единственное число — `article_from_declension_reference` («Vollstrecker» → der);
+      2. множественное число — `plural_article_from_declension_reference` («Forderungen»
+         напечатано как множественное от «Forderung» → die). Замер 16.09.2026: вторая
+         ступень закрывает 8 заголовков из 12, на которых первая молчала, и ни одного
+         спорного.
+    Третьей ступени НЕТ намеренно: почему сюда нельзя ставить
+    `article_authority.authoritative_article`, записано вердиктом в
+    backend/noun_declension_reference.py — он добавляет одно слово и делает его неверным.
+
+    `tables` и `plural_verdict` позволяют отдать УЖЕ прочитанные данные (ночной проход
+    читает их пачкой, два запроса на сотню строк вместо двух сотен) и проверить правило
+    тестом, не поднимая базу.
     """
     head = head_noun_of_genitive_phrase(text)
     if not head:
@@ -191,18 +203,37 @@ def article_for_genitive_phrase(text: str | None, *, tables: dict | None = None)
     from backend.noun_declension_reference import (
         article_from_declension_tables,
         article_from_declension_reference,
+        plural_article_from_declension_reference,
     )
     if tables is not None:
         article, source = article_from_declension_tables(head, tables)
     else:
         article, source = article_from_declension_reference(head)
-    if not article:
-        # Отказ справочника — это «не знаем», и он возвращается вслух, чтобы его посчитали.
-        return ("", f"{head}: {source}")
-    return (article, source)
+    if article:
+        return (article, source)
+    # Единственное число не знает — спрашиваем то же самое с другого конца.
+    #
+    # ⚠ `tables` без `plural_verdict` означает «данные уже прочитаны, в базу не ходи».
+    # Без этого условия прогон тестов, передающий только `tables`, молча уходил в БАЗУ —
+    # а в окружении разработчика это БОЕВАЯ база (см. backend/tests/conftest.py, там же
+    # история про 1010 фантомных записей в живой ведомости). Поймано 16.09.2026 на
+    # тесте про «Truppen des Gegners»: он вернул ответ, которого в его данных не было.
+    if plural_verdict is not None:
+        plural_article, plural_source = plural_verdict
+    elif tables is not None:
+        plural_article, plural_source = ("", "вторую ступень не спрашивали")
+    else:
+        plural_article, plural_source = plural_article_from_declension_reference(head)
+    if plural_article:
+        return (plural_article, plural_source)
+    # Обе ступени молчат. Это «не знаем», и оно возвращается вслух, чтобы его посчитали.
+    # Называем причину ПЕРВОЙ ступени: она про само слово, а не про его форму, и человеку
+    # понятнее. Причина второй уходит в отчёт ночного прохода.
+    return ("", f"{head}: {source}")
 
 
-def headword_with_genitive_article(text: str | None, *, tables: dict | None = None) -> tuple:
+def headword_with_genitive_article(text: str | None, *, tables: dict | None = None,
+                                   plural_verdict: tuple | None = None) -> tuple:
     """(готовый заголовок, источник) либо (исходный текст, причина отказа).
 
     Идемпотентна: у строки, которая уже начинается с артикля, форма не подходит под
@@ -210,7 +241,8 @@ def headword_with_genitive_article(text: str | None, *, tables: dict | None = No
     ночь, а дверь — на каждом сохранении, не считая, сколько раз строка через них прошла.
     """
     compact = re.sub(r"\s+", " ", str(text or "").strip())
-    article, source = article_for_genitive_phrase(compact, tables=tables)
+    article, source = article_for_genitive_phrase(compact, tables=tables,
+                                                  plural_verdict=plural_verdict)
     if not article:
         return (compact, source)
     return (f"{article} {compact}", source)
@@ -298,28 +330,46 @@ def _rewrite_pool_row(cursor, row_id: int, old_text: str, new_text: str) -> int:
 def sweep_missing_genitive_articles(*, dry_run: bool = False) -> dict:
     """Дописать артикль всем группам «сущ. + родительный», у которых его нет.
 
-    В отчёте ТРИ разных числа, и путать их нельзя:
-      fixed   — заголовков починено;
-      unknown — форма подходит, а справочник склонений ответа не дал. Это НЕ «починено» и
-                НЕ «нечего чинить»: пустая ячейка — такая же незакрытая задача, как
-                выдумка, просто дешевле. Уходит владельцу вслух поимённым списком;
-      places  — сколько строк в трёх хранилищах затронуто (заголовок живёт не в одном).
+    В отчёте разные числа, и путать их нельзя:
+      fixed       — заголовков починено;
+      from_plural — сколько из них ответила ВТОРАЯ ступень лестницы (форма множественного).
+                    Отдельно, чтобы было видно, работает ли она вообще;
+      unknown     — форма подходит, а обе ступени справочника молчат. Это НЕ «починено» и
+                    НЕ «нечего чинить»: пустая ячейка — такая же незакрытая задача, как
+                    выдумка, просто дешевле. Уходит владельцу вслух поимённым списком;
+      cards/pool/units — сколько строк в каждом хранилище затронуто (заголовок живёт
+                    не в одном месте).
     """
     from backend.database import get_db_connection_context, spread_correction_everywhere
-    from backend.noun_declension_reference import articles_from_declension_reference
+    from backend.noun_declension_reference import (
+        articles_from_declension_reference,
+        plural_articles_from_declension_reference,
+    )
 
     отчёт = {"fixed": 0, "unknown": 0, "cards": 0, "pool": 0, "units": 0,
-             "unknown_words": [], "examples": []}
+             "from_plural": 0, "unknown_words": [], "examples": []}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             места = _collect_candidates(cursor)
         if not места:
             return отчёт
         головы = {текст: head_noun_of_genitive_phrase(текст) for текст in места}
-        ответы = articles_from_declension_reference(sorted(set(головы.values())))
+        слова = sorted(set(головы.values()))
+        # Обе ступени лестницы — пачкой: четыре запроса на весь проход, а не по два на
+        # каждый заголовок. Вторую спрашиваем только про тех, кого не знает первая.
+        ответы = articles_from_declension_reference(слова)
+        молчат = [с for с in слова if not ответы.get(с, (None, ""))[0]]
+        ответы_мн = plural_articles_from_declension_reference(молчат) if молчат else {}
         for текст in sorted(места):
             артикль, причина = ответы.get(
                 головы[текст], (None, "справочник склонений не знает слова"))
+            if not артикль:
+                мн_артикль, мн_причина = ответы_мн.get(головы[текст], ("", ""))
+                if мн_артикль:
+                    артикль, причина = мн_артикль, мн_причина
+                    отчёт["from_plural"] += 1
+                elif мн_причина.startswith("два прочтения"):
+                    причина = f"{головы[текст]}: {мн_причина}"
             if not артикль:
                 отчёт["unknown"] += 1
                 отчёт["unknown_words"].append(f"{текст} — {причина}")
