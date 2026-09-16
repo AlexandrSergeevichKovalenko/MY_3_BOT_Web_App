@@ -250,8 +250,14 @@ _ВОПРОС_БЕЗ_ВАРИАНТА = """
     r.status = 'open'
     AND COALESCE(r.kind, 'grammar') = 'translation'
     AND COALESCE(BTRIM(r.translation), '') <> ''
+    -- ⛔ ОТЛИЧАЕМ «НЕ СПРАШИВАЛИ» ОТ «СПРОСИЛИ, И ВАРИАНТА НЕТ» — по наличию
+    -- САМОГО КЛЮЧА, а не по пустоте текста. Запись, заведённая после 31.08.2026,
+    -- всегда несёт `fix`: пустой он там значит, что модель ответила и варианта не
+    -- назвала (немецкого такого нет — «Soile», «Ich bin zu für dich», замер
+    -- 16.09.2026). Спрашивать её повторно — платить за известный ответ. У записей
+    -- 27–31.08.2026 ключа нет вовсе: вот их и доспрашиваем.
     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(r.judges) j
-                     WHERE COALESCE(BTRIM(j->>'fix'), '') <> '')
+                     WHERE j->'fix' IS NOT NULL)
     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(r.judges) j
                      WHERE j->'rejudge' IS NOT NULL)
 """

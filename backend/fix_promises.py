@@ -2479,6 +2479,9 @@ def _translation_questions_screen() -> str:
                             WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(r.judges) j
                                           WHERE j->'rejudge' IS NOT NULL)
                               THEN 'спросили заново, варианта нет'
+                            WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(r.judges) j
+                                          WHERE j->'fix' IS NOT NULL)
+                              THEN 'спрашивали, варианта нет'
                             ELSE 'ждут доспроса' END AS корзина,
                           count(*)
                      FROM bt_3_phrase_review r

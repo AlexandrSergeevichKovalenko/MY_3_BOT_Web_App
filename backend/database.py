@@ -27350,6 +27350,11 @@ def phrase_review_dispute(judges: list, default_field: str = "") -> dict:
             # владелец жмёт «спросить заново» по кругу и каждый раз платит.
             "rejudge": (j.get("rejudge")
                         if isinstance(j.get("rejudge"), dict) else None),
+            # Спрашивали ли «как правильно» ХОТЯ БЫ РАЗ. Это НАЛИЧИЕ ключа, а не
+            # текст в нём: пустой `fix` значит «модель ответила и варианта не
+            # назвала», отсутствие ключа — «вопрос завели до 31.08.2026, когда её
+            # об этом не спрашивали». Экран обязан говорить об этом по-разному.
+            "asked": ("fix" in j) or isinstance(j.get("rejudge"), dict),
         })
     return {"fields": поля, "claims": claims}
 
