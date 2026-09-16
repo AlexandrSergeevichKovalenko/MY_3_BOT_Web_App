@@ -34787,6 +34787,79 @@ function AppInner() {
     setWorldNewsCardIndex((i) => Math.min(worldNewsPhrases.length - 1, i + 1));
   }, [worldNewsPhrases.length]);
 
+  // ── Высота колоды карточек: СПРАШИВАЕМ У СТРАНИЦЫ, а не вычитаем константу ─────────
+  // ┌─ НАЙДЕНО 16.09.2026, ПОЧИНЕНО. НЕ ПОДНИМАТЬ КАК НОВУЮ НАХОДКУ. ────────────────┐
+  // │ В CSS стояло max-height: calc(100dvh - 166px). 166 подобрали 04.09.2026 под    │
+  // │ «Новость дня», где сверху ещё заголовок рубрики. На экране видеоурока его нет: │
+  // │ занято ~75 точек, и коробка выходила короче экрана: под кнопкой «Смотреть     │
+  // │ видео» пустовала полоса в 78 точек (замер по снимку), а середине не хватало    │
+  // │ ~23 точек — и WebKit на айфоне вместо прокрутки давил первую строку середины,  │
+  // │ перевод (снимок владельца «aufs Auto angewiesen sein», 16.09.2026).            │
+  // │ Считаем от СОДЕРЖИМОГО страницы, а не от окна: прокрутка меняла бы высоту      │
+  // │ колоды, колода — высоту содержимого, и замер бегал бы сам за собой.            │
+  // └────────────────────────────────────────────────────────────────────────────────┘
+  const worldNewsDeckRef = useRef(null);
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const measure = () => {
+      const deck = worldNewsDeckRef.current;
+      if (!deck) return;
+      const page = deck.closest('.webapp-page') || document.documentElement;
+      if (!page) return;
+      // С открытой клавиатурой страница получает огромное нижнее поле (is-keyboard-open,
+      // max(48vh, 340px)) — это место под клавиатуру, а не под содержимое. Мерить в этот
+      // момент нельзя: колода сжалась бы вчетверо. Оставляем последнее измерение.
+      if (page.classList && page.classList.contains('is-keyboard-open')) return;
+      const pageRect = page.getBoundingClientRect();
+      const deckRect = deck.getBoundingClientRect();
+      // Оба прямоугольника сняты в один момент, поэтому прокрутка из разницы уходит,
+      // а scrollTop возвращает положение колоды внутри содержимого страницы.
+      const top = (deckRect.top - pageRect.top) + (page.scrollTop || 0);
+      // Что обязано остаться ПОД колодой: нижние поля предков (в них живёт и безопасная
+      // зона айфона). Не угадываем их числом — читаем у самой страницы.
+      let below = 0;
+      let parent = deck.parentElement;
+      while (parent && parent !== page) {
+        below += parseFloat(window.getComputedStyle(parent).paddingBottom) || 0;
+        parent = parent.parentElement;
+      }
+      below += parseFloat(window.getComputedStyle(page).paddingBottom) || 0;
+      // Потолок — ВИДИМЫЙ экран, а не высота страницы. Страница не везде включена
+      // как отдельный прокрутчик: там, где она растёт по содержимому, её высота
+      // растёт вместе с колодой — и замер, взятый от неё, раздувал бы колоду с
+      // каждым разом, пока кнопка «Смотреть видео» не ушла бы под сгиб (ровно тот
+      // случай, из-за которого 22.08.2026 и появился потолок по высоте экрана).
+      // Берём layout-viewport, а не visualViewport: клавиатура не должна менять
+      // раскладку карточки, окно «Сохранить по-своему» лежит поверх неё отдельным листом.
+      const visible = document.documentElement?.clientHeight || window.innerHeight || 0;
+      const box = visible > 0 ? Math.min(page.clientHeight, visible) : page.clientHeight;
+      const avail = Math.floor(box - top - below);
+      // Ниже 240 точек колода превращается в щель: это не замер, а сбой измерения
+      // (страница ещё не разложена, экран перекрыт клавиатурой). Тогда молчим и
+      // оставляем раскладочное значение из CSS, а не подставляем негодное число.
+      if (Number.isFinite(avail) && avail >= 240) {
+        deck.style.setProperty('--wn-deck-max', `${avail}px`);
+      } else {
+        deck.style.removeProperty('--wn-deck-max');
+      }
+    };
+    measure();
+    // Первый кадр может застать страницу недоразложенной — перемеряем сразу после него.
+    const raf = window.requestAnimationFrame(measure);
+    const settle = window.setTimeout(measure, 250);
+    window.addEventListener('resize', measure);
+    window.addEventListener('orientationchange', measure);
+    const vv = window.visualViewport;
+    if (vv) vv.addEventListener('resize', measure);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(settle);
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('orientationchange', measure);
+      if (vv) vv.removeEventListener('resize', measure);
+    };
+  }, [youtubeNewsMode, worldNewsStage, worldNewsData, worldNewsPhrases.length]);
+
   useEffect(() => {
     if (!youtubeSectionVisible) {
       setYoutubeSettingsOpen(false);
@@ -40080,7 +40153,7 @@ function AppInner() {
                         ? (article.toLowerCase() === 'der' ? 'g-m' : article.toLowerCase() === 'die' ? 'g-f' : 'g-n')
                         : '';
                       return (
-                        <div className="worldnews-deck">
+                        <div className="worldnews-deck" ref={worldNewsDeckRef}>
                           <div className="worldnews-deck-progress">
                             {tr('Слово', 'Wort')} <b>{idx + 1}</b> {tr('из', 'von')} {worldNewsPhrases.length}
                           </div>
