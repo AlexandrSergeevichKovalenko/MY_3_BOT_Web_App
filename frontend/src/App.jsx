@@ -31708,6 +31708,8 @@ function AppInner() {
 
   const saveManualTranscriptToDb = async (items) => {
     if (!initData || !youtubeId || !items?.length) return;
+    // Ролик фиксируем ДО первого await — как во всех остальных путях субтитров.
+    const requestedVideoId = String(youtubeId).trim();
     try {
       const language = detectTranscriptLanguage(items);
       const response = await fetch('/api/webapp/youtube/manual', {
@@ -31718,14 +31720,32 @@ function AppInner() {
       if (!response.ok) {
         throw new Error(await response.text());
       }
-      // Предложения собирает сервер — берём их из ответа. Без этого панель субтитров
-      // после ручной вставки осталась бы пустой: в браузере группировки больше нет.
-      const saved = await response.json().catch(() => null);
-      if (saved && Array.isArray(saved.rows)) {
-        if (Array.isArray(saved.items) && saved.items.length) setYoutubeTranscript(saved.items);
-        setYoutubeSubtitleRows(saved.rows);
-        setYoutubeRowTranslations({});
+      // ┌─ ИСПРАВЛЕНО 16.09.2026. РУЧНАЯ ВСТАВКА ИДЁТ В ТУ ЖЕ ЕДИНСТВЕННУЮ ДВЕРЬ. ──────┐
+      // │ Здесь стояло: `if (items.length) setYoutubeTranscript(items)` — ПОД УСЛОВИЕМ, │
+      // │ а `setYoutubeSubtitleRows(rows)` — безусловно. Два состояния одного и того же │
+      // │ текста записывались по РАЗНЫМ правилам, и стоило ответу прийти без текста —   │
+      // │ на экране оказывались предложения из ответа поверх старого текста. Тот же     │
+      // │ класс, что наложение чужих субтитров 16.09.2026, только без гонки.            │
+      // │ Сервер собирает и текст, и предложения ИЗ ОДНОГО списка и пустыми не отвечает │
+      // │ (backend_server.py, /api/webapp/youtube/manual: на пустых items — 400).       │
+      // │ Поэтому принимаем ответ целиком тем же приёмником, что и все остальные        │
+      // │ субтитры: он же сверяет ролик и не даёт положить ответ на чужой экран.        │
+      // └──────────────────────────────────────────────────────────────────────────────┘
+      let saved = null;
+      try {
+        saved = await response.json();
+      } catch (parseError) {
+        // Сервер СОХРАНИЛ (ответ 200), а тело прочитать не вышло. Это разные вещи, и
+        // молчать нельзя: панель осталась бы со старым текстом, а человек считал бы,
+        // что вставка не сработала, и вставлял бы ещё раз.
+        console.warn('[youtube-subs] ответ ручной вставки не разобрать', parseError);
+        setYoutubeTranscriptError(tr(
+          'Субтитры сохранены, но панель не обновилась. Откройте ролик заново.',
+          'Die Untertitel sind gespeichert, aber die Anzeige wurde nicht aktualisiert. Öffne das Video erneut.',
+        ));
+        return;
       }
+      applyYoutubeTranscriptPayload(saved, requestedVideoId);
       setMovies([]);
     } catch (error) {
       setYoutubeTranscriptError(normalizeNetworkErrorMessage(error, 'Субтитры пока не сохранились. Попробуйте ещё раз через минуту.', 'Die Untertitel sind noch nicht gespeichert. Versuch es in einer Minute noch einmal.'));

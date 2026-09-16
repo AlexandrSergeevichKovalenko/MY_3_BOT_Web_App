@@ -121,6 +121,43 @@ class StaleSubtitleGuardsInClientTests(unittest.TestCase):
             "автозагрузка нового видео залипнет навсегда",
         )
 
+    def test_manual_paste_uses_the_same_single_door(self):
+        """Ручная вставка админом (16.09.2026, решение владельца «do it»).
+
+        Здесь текст записывался ПОД УСЛОВИЕМ, а предложения — безусловно: два состояния
+        одного и того же текста по разным правилам. Ответ без текста — и на экране
+        предложения из ответа поверх старого текста. Тот же класс, что наложение чужих
+        субтитров, только без гонки.
+
+        Сервер собирает текст и предложения ИЗ ОДНОГО списка и пустыми не отвечает
+        (на пустых items — 400), поэтому ответ принимается целиком тем же приёмником,
+        что и все остальные субтитры: он же сверяет ролик."""
+        self.assertFalse(
+            "if (Array.isArray(saved.items) && saved.items.length) setYoutubeTranscript(saved.items);" in self.source,
+            "текст и предложения ручной вставки снова пишутся по разным правилам",
+        )
+        self.assertTrue(
+            "applyYoutubeTranscriptPayload(saved, requestedVideoId);" in self.source,
+            "ручная вставка снова не идёт через единственную дверь приёма субтитров",
+        )
+
+    def test_manual_paste_never_reports_success_it_did_not_see(self):
+        """Тело ответа не прочиталось — сервер всё равно СОХРАНИЛ. Молчание оставило бы
+        человека со старым текстом и мыслью, что вставка не сработала."""
+        # Проверяем ТОЛЬКО тело saveManualTranscriptToDb: такая же конструкция есть в
+        # других, не относящихся к делу местах приложения, и трогать их никто не просил.
+        body = self.source.split("const saveManualTranscriptToDb = async (items) => {", 1)
+        self.assertEqual(len(body), 2, "исчезла функция сохранения ручной вставки")
+        body = body[1].split("\n  };", 1)[0]
+        self.assertFalse(
+            "response.json().catch(" in body,
+            "вернулось молчаливое проглатывание неразобранного ответа ручной вставки",
+        )
+        self.assertTrue(
+            "Субтитры сохранены, но панель не обновилась. Откройте ролик заново." in self.source,
+            "исчезло honest-сообщение о сохранённых, но не показанных субтитрах",
+        )
+
     def test_dropped_answers_are_counted_not_swallowed(self):
         self.assertTrue(
             "youtubeStaleSubtitleDropsRef.current += 1;" in self.source,
