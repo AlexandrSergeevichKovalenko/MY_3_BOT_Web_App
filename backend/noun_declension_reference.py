@@ -221,3 +221,118 @@ def articles_from_declension_reference(words) -> dict:
         word: article_from_declension_tables(word, found.get(word.casefold()) or {})
         for word in wanted
     }
+
+
+# ── УКАЗАТЕЛЬ МНОЖЕСТВЕННОГО: тот же справочник, прочитанный с другого конца ──────────
+#
+# ПОВОД, 16.09.2026. Заголовки «Forderungen des Gläubigers», «Regeln der
+# Satzzeichensetzung», «Teile des Geländes» оставались без артикля, и причина была не в
+# том, что источник их не знает, а в том, что мы спрашивали его НЕ С ТОЙ СТОРОНЫ.
+# `article_from_declension_reference` ищет по ключу `noun`, то есть по единственному
+# числу, и на «Forderungen» не находит ничего. При этом форма «die Forderungen»
+# НАПЕЧАТАНА в таблице слова «Forderung» — строкой именительного падежа.
+#
+# ЗАЧЕМ ЭТО ВООБЩЕ РАБОТАЕТ. У множественного числа в немецком определённый артикль
+# ВСЕГДА «die», независимо от рода: die Forderungen (f), die Teile (n), die Protokolle (n).
+# Поэтому вопрос к источнику здесь не «какой артикль», а «это форма множественного или
+# нет», — и ответ на него напечатан. Ничего не выводится ни из окончания, ни из рода.
+#
+# Замер 16.09.2026 по живой базе: из 12 заголовков, на которых справочник молчал, этот
+# конец закрывает 8, и НИ ОДНОГО спорного — ни одно из восьми не оказалось ещё и чьим-то
+# именительным единственного.
+#
+# ┌─ ПРОВЕРЕНО 16.09.2026. НЕ ПРЕДЛАГАТЬ СЮДА `article_authority.authoritative_article`. ─┐
+# │ Он выглядит как «источник побольше» (выгрузка Wiktionary + банк + живой Wiktionary),  │
+# │ и соблазн добавить его в эту лестницу возникает сам собой. Замер: на тех же 12 словах │
+# │ он добавляет РОВНО ОДНО — «Vorsitzender → der» — и это единственное слово даёт        │
+# │ НЕВЕРНЫЙ немецкий: «der Vorsitzender des Vorstands» вместо «der Vorsitzende des       │
+# │ Vorstands». Vorsitzender — субстантивированное прилагательное, при определённом       │
+# │ артикле окончание обязано смениться с сильного на слабое. Это тот же класс, что       │
+# │ «das Adriatisches Meer» (жалоба владельца 22.08.2026).                                │
+# │ ПРИЧИНА РАЗНИЦЫ: здешние функции отвечают, только если написание СОВПАЛО с            │
+# │ напечатанным именительным; authoritative_article такой проверки не делает — он        │
+# │ отвечает про слово, а не про эту его форму. Чистый итог добавления: +1 ошибка, 0      │
+# │ пользы. Перемерить: scripts/... или ladder-прогон по «не знаем» из                    │
+# │ backend/genitive_phrase_article.sweep_missing_genitive_articles(dry_run=True).        │
+# └──────────────────────────────────────────────────────────────────────────────────────┘
+
+PLURAL_SOURCE_NAME = "справочник склонений: форма множественного"
+
+# Именительный падеж напечатан вместе с артиклем — «die Forderungen». Берём последнее
+# слово строки, как это делает _nominative_singular, только средствами Postgres, потому
+# что искать надо ПО ВСЕМ 89 704 таблицам, а не по одной уже прочитанной.
+_REVERSE_PLURAL_SQL = """
+SELECT lower(regexp_replace(btrim(r.value ->> 'plural'), '^.*\\s', '')) AS plural_key,
+       d.noun,
+       g.key AS gender,
+       lower(regexp_replace(btrim(COALESCE(r.value ->> 'singular', '')), '^.*\\s', '')) AS singular_key
+  FROM bt_3_german_noun_declensions d
+  CROSS JOIN LATERAL jsonb_each(d.tables) AS g(key, value)
+  CROSS JOIN LATERAL jsonb_array_elements(g.value -> 'rows') AS r(value)
+ WHERE g.key IN ('m', 'f', 'n')
+   AND lower(r.value ->> 'case') = 'nom'
+   AND lower(regexp_replace(btrim(COALESCE(r.value ->> 'plural', '')), '^.*\\s', '')) = ANY(%s)
+"""
+
+# Та же проверка с другой стороны: не является ли это написание ещё и чьим-то
+# ИМЕНИТЕЛЬНЫМ ЕДИНСТВЕННОГО. Если да — прочтений два, и выбирать за человека нельзя.
+_ALSO_SINGULAR_SQL = """
+SELECT DISTINCT lower(regexp_replace(btrim(r.value ->> 'singular'), '^.*\\s', '')) AS key
+  FROM bt_3_german_noun_declensions d
+  CROSS JOIN LATERAL jsonb_each(d.tables) AS g(key, value)
+  CROSS JOIN LATERAL jsonb_array_elements(g.value -> 'rows') AS r(value)
+ WHERE g.key IN ('m', 'f', 'n')
+   AND lower(r.value ->> 'case') = 'nom'
+   AND lower(regexp_replace(btrim(COALESCE(r.value ->> 'singular', '')), '^.*\\s', '')) = ANY(%s)
+"""
+
+
+def plural_verdict(word: str, *, plural_of: list, also_singular: bool) -> tuple:
+    """Вердикт по УЖЕ прочитанным данным — чтобы правило проверялось тестом без базы.
+
+    (артикль, источник) либо ("", причина). Три исхода, и все три из живых данных:
+      • написание числится чьим-то напечатанным множественным и больше ничьим
+        единственным — артикль «die», сомнений нет;
+      • числится и тем и другим — ДВА законных прочтения, выбирает человек, не мы
+        (правило владельца 26.08.2026 «не решаем за пользователя»);
+      • не числится множественным вовсе — не знаем, и это отдельный исход.
+    """
+    if not str(word or "").strip():
+        return ("", "пустое слово")
+    if not plural_of:
+        return ("", "справочник склонений не знает этого написания как множественное")
+    if also_singular:
+        return ("", "два прочтения: и множественное, и единственное — выбирает человек")
+    откуда = ", ".join(sorted({str(n) for n, _g in plural_of})[:3])
+    return ("die", f"{PLURAL_SOURCE_NAME} от «{откуда}»")
+
+
+def plural_articles_from_declension_reference(words) -> dict:
+    """{слово: (артикль|"", источник|причина)} ПАЧКОЙ — два запроса на любой список."""
+    wanted = [str(w or "").strip() for w in (words or []) if str(w or "").strip()]
+    if not wanted:
+        return {}
+    keys = sorted({w.casefold() for w in wanted})
+    from backend.database import get_db_connection_context
+
+    множественные: dict[str, list] = {}
+    единственные: set[str] = set()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(_REVERSE_PLURAL_SQL, (keys,))
+            for plural_key, noun, gender, _singular_key in cursor.fetchall() or []:
+                множественные.setdefault(plural_key, []).append((noun, gender))
+            cursor.execute(_ALSO_SINGULAR_SQL, (keys,))
+            единственные = {row[0] for row in cursor.fetchall() or []}
+    return {
+        word: plural_verdict(word,
+                             plural_of=множественные.get(word.casefold()) or [],
+                             also_singular=word.casefold() in единственные)
+        for word in wanted
+    }
+
+
+def plural_article_from_declension_reference(word: str) -> tuple:
+    """То же про одно слово."""
+    return plural_articles_from_declension_reference([word]).get(
+        str(word or "").strip(), ("", "пустое слово"))

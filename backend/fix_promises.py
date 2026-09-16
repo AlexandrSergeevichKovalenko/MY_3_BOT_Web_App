@@ -2560,7 +2560,13 @@ def _genitive_phrases_without_article() -> int:
     дать артикль, и которая при этом стоит без него. Строки, про которые справочник
     молчит, сюда НЕ входят — это отдельный исход, он считается отдельно и в ноль его
     записывать нельзя. Число выросло = дверь сохранения снова пускает разнобой либо
-    ночной проход не отработал."""
+    ночной проход не отработал.
+
+    16.09.2026 у справочника появилась ВТОРАЯ ступень — форма множественного числа
+    («Forderungen» напечатано как множественное от «Forderung» → die). Поэтому число,
+    которое здесь меряется, выросло с 37 до 45: это не новый дефект, а те же заголовки,
+    на которые у нас теперь есть ответ. Замер на живой базе 16.09.2026: 45 к починке,
+    из них 8 — второй ступенью, «не знаем» осталось 4."""
     from backend.genitive_phrase_article import count_missing_genitive_articles
     return int(count_missing_genitive_articles())
 
@@ -2724,11 +2730,13 @@ PROMISES: tuple[Promise, ...] = (
         measure=_genitive_phrases_without_article,
         screen=_genitive_phrase_screen,
         how="/admin_promises — или backend.genitive_phrase_article."
-            "count_missing_genitive_articles(). До 16.09.2026 было 37 таких заголовков "
-            "(карточек 45, записей пула 37, слов справочника 52): «Vollstrecker einer "
-            "Anordnung» при соседних «der Vollstrecker der Strafe». Артикль берётся ТОЛЬКО "
-            "из bt_3_german_noun_declensions; отказ справочника считается отдельно и в это "
-            "число не входит. Выросло = либо дверь _apply_german_headword_normalization "
+            "count_missing_genitive_articles(). До 16.09.2026 было 45 таких заголовков: "
+            "«Vollstrecker einer Anordnung» при соседних «der Vollstrecker der Strafe». "
+            "Артикль берётся ТОЛЬКО из bt_3_german_noun_declensions, двумя ступенями — "
+            "единственное число (37 заголовков) и форма множественного (ещё 8, «die "
+            "Forderungen des Gläubigers»). Отказ справочника считается отдельно и в это "
+            "число не входит: таких осталось 4 (Aussetzen, Buntheit, Schutzpflichten, "
+            "Vorsitzender). Выросло = либо дверь _apply_german_headword_normalization "
             "снова пускает разнобой, либо ночной проход 03:20 не отработал (смотреть "
             "bt_3_scheduler_run_guards, job_key=genitive_phrase_article_sweep)",
     ),

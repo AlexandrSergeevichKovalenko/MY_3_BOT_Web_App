@@ -18,6 +18,7 @@ from backend.genitive_phrase_article import (
     head_noun_of_genitive_phrase,
     headword_with_genitive_article,
 )
+from backend.noun_declension_reference import plural_verdict
 
 
 def _tables(gender: str, nominative: str, *, plural: str = "") -> dict:
@@ -123,12 +124,97 @@ def test_два_рода_выбирать_не_наше_дело():
 
 
 def test_форма_множественного_не_получает_артикль_единственного():
-    """У «Truppen» таблица найдётся по ключу «truppe», и её «die» относится к «die Truppe».
-    Справочник ловит это сам: написание не совпало с именительным единственного."""
+    """ПЕРВАЯ ступень обязана молчать на форме множественного — иначе «das Bücher».
+
+    ┌─ Ожидание переписано 16.09.2026, и вот почему. ─────────────────────────────────┐
+    │ До второй ступени лестницы этот тест требовал, чтобы у «Truppen des Gegners» НЕ  │
+    │ было артикля вовсе. Тогда это было верно: знать про множественное нам было       │
+    │ неоткуда, и молчание было единственным честным исходом. Теперь указатель         │
+    │ множественного отвечает, и «die Truppen des Gegners» — правильный немецкий.      │
+    │ Ожидание было про НЕДОСТАЮЩИЙ ИСТОЧНИК, а не про грамматику; источник появился.  │
+    │ Что тест обязан держать дальше: артикль ЕДИНСТВЕННОГО на форму множественного не │
+    │ навязывается. Поэтому слово взято среднего рода — у него «das Buch», и ошибка,   │
+    │ будь она, выглядела бы как «das Bücher», а не пряталась бы за совпадением «die». │
+    └─────────────────────────────────────────────────────────────────────────────────┘
+    """
     заголовок, причина = headword_with_genitive_article(
-        "Truppen des Gegners", tables=_tables("f", "Truppe", plural="Truppen"))
-    assert заголовок == "Truppen des Gegners"
+        "Bücher des Lehrers", tables=_tables("n", "Buch", plural="Bücher"))
+    assert заголовок == "Bücher des Lehrers", "das Bücher — так нельзя"
     assert "не именительный единственного" in причина
+
+
+def test_на_форме_множественного_отвечает_вторая_ступень():
+    """Та же строка, но со второй ступенью: артикль множественного, а не рода слова."""
+    заголовок, источник = headword_with_genitive_article(
+        "Bücher des Lehrers", tables=_tables("n", "Buch", plural="Bücher"),
+        plural_verdict=("die", "справочник склонений: форма множественного от «buch»"))
+    assert заголовок == "die Bücher des Lehrers"
+    assert "форма множественного" in источник
+
+
+def test_заданные_таблицы_означают_в_базу_не_ходить():
+    """Прогон тестов не имеет права молча уйти в базу: в окружении разработчика она
+    БОЕВАЯ (backend/tests/conftest.py). Поймано 16.09.2026 — тест вернул ответ, которого
+    в его собственных данных не было."""
+    заголовок, причина = headword_with_genitive_article(
+        "Bücher des Lehrers", tables=_tables("n", "Buch", plural="Bücher"))
+    assert заголовок == "Bücher des Lehrers"
+    assert "не именительный единственного" in причина
+
+
+# ── вторая ступень лестницы: форма множественного ────────────────────────────────────
+#
+# Замер 16.09.2026: закрывает 8 заголовков из 12, на которых первая ступень молчала.
+# Работает потому, что у множественного числа определённый артикль ВСЕГДА «die» —
+# независимо от рода. Вопрос к источнику здесь не «какой артикль», а «это множественное
+# или нет», и ответ на него НАПЕЧАТАН в таблице склонения.
+
+def test_форма_множественного_получает_die():
+    от_женского = plural_verdict("Forderungen", plural_of=[("forderung", "f")],
+                                 also_singular=False)
+    от_среднего = plural_verdict("Teile", plural_of=[("teil", "n")], also_singular=False)
+    assert от_женского[0] == "die", "die Forderungen"
+    assert от_среднего[0] == "die", "die Teile — род среднего слова на артикль не влияет"
+    assert "форма множественного" in от_женского[1]
+
+
+def test_и_множественное_и_единственное_выбирает_человек():
+    """Два ЗАКОННЫХ прочтения — решает человек, а не наш вес или частота.
+    Правило владельца 26.08.2026."""
+    артикль, причина = plural_verdict("Teile", plural_of=[("teil", "n")],
+                                      also_singular=True)
+    assert артикль == ""
+    assert "два прочтения" in причина
+
+
+def test_не_числится_множественным_остаётся_не_знаем():
+    артикль, причина = plural_verdict("Buntheit", plural_of=[], also_singular=False)
+    assert артикль == ""
+    assert "не знает" in причина
+
+
+def test_лестница_спускается_ко_второй_ступени():
+    """Первая ступень молчит (таблиц нет), вторая отвечает — заголовок чинится."""
+    заголовок, источник = headword_with_genitive_article(
+        "Forderungen des Gläubigers", tables={},
+        plural_verdict=("die", "справочник склонений: форма множественного от «forderung»"))
+    assert заголовок == "die Forderungen des Gläubigers"
+    assert "форма множественного" in источник
+
+
+def test_обе_ступени_молчат_ничего_не_приписываем():
+    заголовок, причина = headword_with_genitive_article(
+        "Buntheit der Menschenwelt", tables={}, plural_verdict=("", "не числится"))
+    assert заголовок == "Buntheit der Menschenwelt"
+    assert "не знает слова" in причина
+
+
+def test_первая_ступень_главнее_второй():
+    """Если слово знают ОБЕ, отвечает единственное число: «der Wechsel», а не «die»."""
+    заголовок, _ = headword_with_genitive_article(
+        "Wechsel der Geschäftsleitung", tables=_tables("m", "Wechsel"),
+        plural_verdict=("die", "форма множественного"))
+    assert заголовок == "der Wechsel der Geschäftsleitung"
 
 
 def test_правило_идемпотентно():
