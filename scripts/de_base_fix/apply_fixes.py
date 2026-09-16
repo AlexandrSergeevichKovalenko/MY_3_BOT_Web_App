@@ -10,7 +10,9 @@
 import argparse, json, os, sys, datetime
 import psycopg2, psycopg2.extras
 
-S = os.path.dirname(os.path.abspath(__file__))
+# Данные прогона (items_all.json, dry_run_plan.json, rollback.jsonl) лежат отдельно
+# от кода: они большие и разовые. Путь задаётся через DATA_DIR.
+S = os.environ.get("DATA_DIR") or os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, "/Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE-english2")
 from backend.lex_units import ensure_unit, OWNER_CHOICE_SOURCE, _DEMOTED_RANK
 
@@ -41,6 +43,14 @@ def править(cur, шаг, новый_ru_id, копия):
     копия["связи_до"] = было_связи
     if not было_связи:
         return "ОТКАЗ: связь значения исчезла между прогоном и правкой"
+
+    # ⚠ СТРАЖ ВИДИМОСТИ. Судье я скармливал ВСЕ переводы значения, склеенные в одну
+    # строку («доспехи; Вооружение, оснащение»), а человеку выдача отдаёт РОВНО ОДИН
+    # (native_display_sql, lex_units.py:95). Значит там, где у значения несколько
+    # живых связей, судья судил текст, которого на экране нет. Такие не трогаем.
+    живые = [s for s in было_связи if int(s["rank"]) < _DEMOTED_RANK]
+    if len(живые) != 1:
+        return f"ОТКАЗ: у значения {len(живые)} живых переводов, судья видел не то, что человек"
 
     cur.execute("""INSERT INTO bt_3_lex_links (from_unit,to_unit,sense_id,rank,source)
                    VALUES (%s,%s,%s,1,%s)
