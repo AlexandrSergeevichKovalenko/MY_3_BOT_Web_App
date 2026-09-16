@@ -69,18 +69,47 @@ def ensure_schema() -> None:
 
 
 def _candidates(cur, limit: int) -> list[str]:
-    """Написания-одиночки из личных карточек, которых мы ещё не спрашивали."""
+    """Написания-одиночки из личных карточек, которых мы ещё не спрашивали.
+
+    ⛔ ТОЛЬКО НЕМЕЦКИЕ СЛОВА. Эта работа переписывает заголовок по НЕМЕЦКОМУ справочнику
+    форм, и до 16.09.2026 брала всё подряд: язык карточки не спрашивался вовсе. Пока
+    база одноязычная, это незаметно. В день, когда рядом ляжет английское слово,
+    «Gift» (подарок) превратится в «das Gift» (яд) — молча, ночью, без следа на экране.
+
+    Язык спрашивается ОДНИМ ответчиком на всё приложение (backend/lang_of_word.py), а не
+    условием «есть ли de в паре»: у пары en→de немецкий — РОДНОЙ язык человека, а слово
+    английское, и такое условие пропустило бы его в немецкую машину.
+
+    Замер живой базы 16.09.2026 перед постановкой: кандидатов 6 117, новое условие
+    отсекает РОВНО ОДИН — итальянское «aspettiamo» (пара ru→it), которое немецкий
+    справочник форм переписывать не должен. Немецкие 6 116 не затронуты.
+    """
+    from backend.lang_of_word import это_немецкое
     cur.execute("""
-        SELECT DISTINCT regexp_replace(q.word_de, '^(der|die|das) ', '') AS surface
+        SELECT DISTINCT regexp_replace(q.word_de, '^(der|die|das) ', '') AS surface,
+               q.source_lang, q.target_lang, p.native_language
           FROM bt_3_webapp_dictionary_queries q
+          LEFT JOIN bt_3_user_language_profile p ON p.user_id = q.user_id
          WHERE q.word_de IS NOT NULL AND q.word_de <> ''
            AND position(' ' in trim(regexp_replace(q.word_de, '^(der|die|das) ', ''))) = 0
            AND NOT EXISTS (SELECT 1 FROM bt_3_form_headword_checked c
                             WHERE c.surface = regexp_replace(q.word_de, '^(der|die|das) ', ''))
          ORDER BY 1
          LIMIT %s
-    """, (int(limit),))
-    return [str(r[0]) for r in cur.fetchall() or []]
+    """, (int(limit) * 2,))
+    годные: list[str] = []
+    видели: set[str] = set()
+    for surface, src, tgt, native in cur.fetchall() or []:
+        ключ = str(surface)
+        if ключ in видели:
+            continue
+        видели.add(ключ)
+        if not это_немецкое(source_lang=src, target_lang=tgt, native_lang=native):
+            continue
+        годные.append(ключ)
+        if len(годные) >= int(limit):
+            break
+    return годные
 
 
 def _ask_reference(surfaces: list[str]) -> dict[str, dict]:
@@ -144,14 +173,21 @@ def _fix_surface(cur, surface: str, lemma: str) -> dict:
             article, _ = authoritative_article(голая_лемма)
             новый = f"{article} {голая_лемма}" if article else голая_лемма
 
+    # ⛔ Правим ТОЛЬКО немецкие карточки. Одно написание может лежать у разных людей
+    # в разных парах («Hand» есть и в немецком, и в английском): отбор кандидатов
+    # выше решает, БРАТЬ ли написание в работу, а этот — ЧЬЮ карточку трогать.
+    from backend.lang_of_word import это_немецкое
     cur.execute("""
-        SELECT q.id, q.user_id, COALESCE(u.pos, ''), COALESCE(q.word_ru, q.translation_ru, '')
+        SELECT q.id, q.user_id, COALESCE(u.pos, ''), COALESCE(q.word_ru, q.translation_ru, ''),
+               q.source_lang, q.target_lang, p.native_language
           FROM bt_3_webapp_dictionary_queries q
           LEFT JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
+          LEFT JOIN bt_3_user_language_profile p ON p.user_id = q.user_id
          WHERE regexp_replace(q.word_de, '^(der|die|das) ', '') = %s
     """, (surface,))
     карточки = [{"id": r[0], "user": r[1], "pos": str(r[2]).lower(), "ru": r[3]}
-                for r in cur.fetchall() or []]
+                for r in cur.fetchall() or []
+                if это_немецкое(source_lang=r[4], target_lang=r[5], native_lang=r[6])]
     if not карточки:
         итог["почему"] = "карточек нет"
         return итог
