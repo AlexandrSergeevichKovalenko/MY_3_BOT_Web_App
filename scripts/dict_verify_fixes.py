@@ -39,6 +39,13 @@ with get_db_connection_context() as conn:
             cur.execute(sql, {"d": D})
             check(name, cur.fetchone()[0], 0)
 
+        # 2б. артикль у группы «сущ. + родительный» (жалоба владельца 15.09.2026:
+        #     «Vollstrecker einer Anordnung» рядом с «der Vollstrecker der Strafe»)
+        import backend.genitive_phrase_article as GPA
+        check("группы «сущ.+родит.» без артикля", GPA.count_missing_genitive_articles(), 0)
+        cur.execute("SELECT word_de FROM bt_3_webapp_dictionary_queries WHERE id=330784")
+        check("карточка 330784: заголовок", cur.fetchone()[0], "der Vollstrecker einer Anordnung")
+
         # 3. склонённые прилагательные
         cur.execute("""SELECT count(*) FROM bt_3_lex_units WHERE lang='de' AND lower(lemma) = ANY(%s)""",
                     (["schlammigen","aussichtslosen","außereuropäischen","tatverdächtige","adversative"],))

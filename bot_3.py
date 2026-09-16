@@ -10649,6 +10649,32 @@ def _run_weekly_ranking_snapshot_repair_safe() -> None:
         _record_sched_heartbeat("weekly_ranking_snapshot_repair", "failed", {"error": str(exc)[:300]})
 
 
+def _run_genitive_phrase_article_sweep_safe() -> None:
+    """Ночная дописка артикля группам «сущ. + родительный» (03:20 Вена). Идемпотентна.
+
+    Повод — карточка владельца 15.09.2026 «Vollstrecker einer Anordnung» при соседних
+    «der Vollstrecker der Strafe» из той же пачки. Дверь сохранения закрыта отдельно
+    (`_apply_german_headword_normalization`), а этот проход нужен всё равно: прямой путь
+    бота идёт в слой базы мимо двери, и справочник склонений пополняется — строка, про
+    которую сегодня «не знаем», завтра может получить ответ.
+
+    ТРИ ИСХОДА, и они не сливаются в один: починено / «не знаем» / нечего делать. Число
+    «не знаем» уходит в журнал поимённо — пустая ячейка тоже незакрытая задача."""
+    try:
+        from backend.genitive_phrase_article import sweep_missing_genitive_articles
+        stats = sweep_missing_genitive_articles()
+        _record_sched_heartbeat("genitive_phrase_article_sweep", "completed", stats)
+        logging.info("genitive phrase article sweep result=%s", stats)
+        if stats.get("unknown"):
+            logging.warning(
+                "артикль не дописан, справочник склонений молчит по %d заголовкам: %s",
+                stats["unknown"], "; ".join(stats.get("unknown_words") or [])[:1500])
+    except Exception as exc:
+        logging.exception("genitive phrase article sweep failed")
+        _record_sched_heartbeat("genitive_phrase_article_sweep", "failed",
+                                {"error": str(exc)[:300]})
+
+
 def _run_phrase_night_check_safe() -> None:
     """Ночная проверка грамматики фраз общего словаря (03:40 Вена — после добора слов).
     Крутится в потоке BackgroundScheduler → обязан быть синхронным. Тратит GPT, поэтому
@@ -48601,6 +48627,21 @@ def main():
             "cron",
             hour=int((os.getenv("POOL_NIGHT_ENRICH_HOUR") or "3").strip() or "3"),
             minute=int((os.getenv("POOL_NIGHT_ENRICH_MINUTE") or "10").strip() or "10"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Ночная дописка артикля группам «сущ. + родительный» (03:20 Europe/Vienna) --
+        # Заголовок «Vollstrecker einer Anordnung» стоял в тренажёре рядом с «der
+        # Vollstrecker der Strafe» из той же пачки: формат решала модель, а не правило.
+        # Проход бесплатный — справочник склонений лежит в нашей базе, к модели он не
+        # ходит, — поэтому дневной кошелёк с добором в 03:10 и примерами в 03:40 не делит.
+        scheduler.add_job(
+            _run_genitive_phrase_article_sweep_safe,
+            "cron",
+            hour=3,
+            minute=20,
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,

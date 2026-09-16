@@ -10827,6 +10827,29 @@ def _apply_german_headword_normalization(
         _gtext = str((normalized.get(_gk) if _gk else "") or "").strip()
     if _gtext and not _is_single_word_dictionary_entry(_gtext, "de"):
         _fixed = _strip_spurious_leading_article(_gtext) or _gtext
+        # ── ГРУППА «СУЩ. + РОДИТЕЛЬНЫЙ» ПОЛУЧАЕТ АРТИКЛЬ ГОЛОВНОГО СЛОВА ─────────────
+        #
+        # Владелец 15.09.2026 прислал карточку «Vollstrecker einer Anordnung», а в той же
+        # пачке, сохранённой в ту же секунду, лежат «der Vollstrecker der Strafe» и
+        # «der Vollstrecker von Gerichtsurteilen». Формат решала не наша логика, а модель:
+        # промпт просит артикль (openai_manager.py:3346), она даёт его через раз, а строка
+        # выше артикль СОХРАНЯЕТ, если он пришёл, и НЕ добавляет, если не пришёл.
+        #
+        # Замер 15.09.2026 по живой базе, конструкция «сущ. + родительный»:
+        #     личные карточки 88 с артиклем / 45 без · общий пул 57 / 37.
+        # Решение владельца 16.09.2026: меньшинство подтянуть к большинству; голый
+        # словарный вид (как у DWDS и Duden) НЕ вводим — он потребовал бы снять артикль
+        # у 145 записей, которые владельца устраивают.
+        #
+        # Артикль берётся ТОЛЬКО из справочника склонений, отказ справочника остаётся
+        # отказом. Почему это не повторяет «das Adriatisches Meer» от 22.08.2026 и какие
+        # строки правило не трогает — в шапке backend/genitive_phrase_article.py.
+        from backend.genitive_phrase_article import headword_with_genitive_article
+        _with_article, _article_source = headword_with_genitive_article(_fixed)
+        if _with_article != _fixed:
+            logging.info("артикль дописан группе «сущ. + родительный»: %r → %r (%s)",
+                         _fixed, _with_article, _article_source)
+            _fixed = _with_article
         if _fixed != _gtext:
             if _gk:
                 normalized[_gk] = _fixed

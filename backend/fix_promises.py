@@ -2415,6 +2415,39 @@ def _promise_letter_screen() -> str:
     строки.append(письмо[0] if письмо else
                   "— письма не будет: обещаний, которые ждут тебя, нет.")
     return "\n".join(строки)
+def _genitive_phrases_without_article() -> int:
+    """Групп «сущ. + родительный», стоящих без артикля, хотя справочник его знает. Обещано: 0.
+
+    Повод — карточка владельца 15.09.2026 «Vollstrecker einer Anordnung», а рядом, в той
+    же пачке и в ту же секунду, «der Vollstrecker der Strafe» и «der Vollstrecker von
+    Gerichtsurteilen». Формат заголовка решала модель, а не наше правило.
+
+    Замер 15.09.2026: карточки 88 с артиклем / 45 без, пул 57 / 37. У одиночных слов
+    разнобоя нет — артикль стоит у 94,4% карточек.
+
+    Ноль здесь значит ровно одно: ни одной строки, которой справочник склонений ГОТОВ
+    дать артикль, и которая при этом стоит без него. Строки, про которые справочник
+    молчит, сюда НЕ входят — это отдельный исход, он считается отдельно и в ноль его
+    записывать нельзя. Число выросло = дверь сохранения снова пускает разнобой либо
+    ночной проход не отработал."""
+    from backend.genitive_phrase_article import count_missing_genitive_articles
+    return int(count_missing_genitive_articles())
+
+
+def _genitive_phrase_screen() -> str:
+    """Экран «после»: те самые соседи по пачке, с которых началась жалоба."""
+    from backend.database import get_db_connection_context
+    строки = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, word_de, translation_ru FROM bt_3_webapp_dictionary_queries "
+                "WHERE word_de ILIKE %s ORDER BY id;", ("%Vollstrecker%",))
+            for row_id, слово, перевод in cur.fetchall() or []:
+                метка = "✅" if str(слово or "").split(" ")[0].casefold() in {
+                    "der", "die", "das"} else "⚠️"
+                строки.append(f"{метка} <b>{слово}</b> — {перевод or '—'} (карточка {row_id})")
+    return "\n".join(строки) or "карточек со словом Vollstrecker в базе нет"
 
 
 PROMISES: tuple[Promise, ...] = (
@@ -2448,6 +2481,22 @@ PROMISES: tuple[Promise, ...] = (
             "выглядело выбранным, и первый тап уходил впустую — владелец тапал дважды. "
             "Проверено на стенде: сенсорное устройство — поле не в фокусе, компьютер — в "
             "фокусе, как было. Число ВЫРОСЛО = автофокус снова безусловный",
+    ),
+    Promise(
+        key="genitive_phrases_carry_their_article",
+        title="Групп «сущ. + родительный» без артикля, хотя справочник его знает",
+        since="16.09.2026",
+        expected=0,
+        measure=_genitive_phrases_without_article,
+        screen=_genitive_phrase_screen,
+        how="/admin_promises — или backend.genitive_phrase_article."
+            "count_missing_genitive_articles(). До 16.09.2026 было 37 таких заголовков "
+            "(карточек 45, записей пула 37, слов справочника 52): «Vollstrecker einer "
+            "Anordnung» при соседних «der Vollstrecker der Strafe». Артикль берётся ТОЛЬКО "
+            "из bt_3_german_noun_declensions; отказ справочника считается отдельно и в это "
+            "число не входит. Выросло = либо дверь _apply_german_headword_normalization "
+            "снова пускает разнобой, либо ночной проход 03:20 не отработал (смотреть "
+            "bt_3_scheduler_run_guards, job_key=genitive_phrase_article_sweep)",
     ),
     Promise(
         key="starter_dictionary_doors_offer_both_sizes",
