@@ -59,3 +59,33 @@ def test_регистр_и_пробелы_не_решают():
 def test_не_строка_не_становится_языком():
     assert _я(None, "de", "ru") is None
     assert _я(5, "de", "ru") is None
+
+
+# ── вопрос поуже: без похода за профилем ─────────────────────────────────────────
+
+from backend.lang_of_word import немецкое_наверняка
+
+
+def _н(s, t):
+    return немецкое_наверняка(source_lang=s, target_lang=t)
+
+
+def test_пара_ровно_русский_немецкий_это_да():
+    assert _н("ru", "de") is True
+    assert _н("de", "ru") is True
+
+
+def test_английские_пары_это_нет():
+    assert _н("en", "ru") is False
+    assert _н("ru", "en") is False
+
+
+def test_пара_английский_немецкий_это_НЕТ_хотя_de_в_ней_есть():
+    """⚠ Главный случай: у en→de немецкий есть в паре, но слово английское."""
+    assert _н("en", "de") is False
+
+
+def test_прочие_языки_это_нет():
+    assert _н("ru", "it") is False
+    assert _н(None, "de") is False
+    assert _н("ru", None) is False
