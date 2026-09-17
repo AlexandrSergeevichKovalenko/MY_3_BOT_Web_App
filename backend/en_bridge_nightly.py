@@ -24,6 +24,8 @@
 from __future__ import annotations
 
 import asyncio
+
+from backend import llm_loop
 import json
 import logging
 import os
@@ -70,7 +72,7 @@ _СКОЛЬКО = f"SELECT count(*) FROM bt_3_lex_units u WHERE {_УСЛОВИЕ
 
 def _спросить(пачка: list[dict]) -> list[dict]:
     from backend.openai_manager import run_en_bridge
-    return asyncio.run(run_en_bridge(items=пачка))
+    return llm_loop.run(run_en_bridge(items=пачка))
 
 
 def sweep(limit: int | None = None) -> dict:

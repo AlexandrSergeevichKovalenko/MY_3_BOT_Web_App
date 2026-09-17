@@ -27,12 +27,14 @@ each LLM call runs through asyncio.run, the proven pattern in this codebase.
 from __future__ import annotations
 
 import asyncio
+
+from backend import llm_loop
 import logging
 import os
 
 
 def _run(coro):
-    return asyncio.run(coro)
+    return llm_loop.run(coro)
 
 
 # ── Deterministic German gender guard ─────────────────────────────────────────

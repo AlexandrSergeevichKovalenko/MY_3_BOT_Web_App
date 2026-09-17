@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import asyncio
+
+from backend import llm_loop
 import logging
 import re
 
@@ -74,7 +76,7 @@ def backfill_artikel_images(items: list[dict], limit: int = 15) -> dict:
     metas: list = []
     for i in range(0, len(batch), 20):
         chunk = batch[i:i + 20]
-        metas.extend(asyncio.run(run_article_image_meta(items=[
+        metas.extend(llm_loop.run(run_article_image_meta(items=[
             {"word": x.get("word"), "article": x.get("article"), "ru": x.get("meaning_ru", "")}
             for x in chunk])) or [])
     meta_by_word = {str(m.get("word") or "").lower(): m for m in (metas or [])}

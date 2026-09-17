@@ -15,6 +15,8 @@ can't see). Card context is persisted in bt_3_deepdive_cards.
 """
 
 import asyncio
+
+from backend import llm_loop
 import logging
 import re
 
@@ -76,11 +78,11 @@ def generate_feel(card: dict) -> str:
         raise ValueError("missing_source_text")
 
     if source_lang == "ru" and target_lang == "de":
-        feel = asyncio.run(run_feel_word(source_text, target_text))
+        feel = llm_loop.run(run_feel_word(source_text, target_text))
     elif source_lang == "de" and target_lang == "ru":
-        feel = asyncio.run(run_feel_word(target_text or source_text, source_text))
+        feel = llm_loop.run(run_feel_word(target_text or source_text, source_text))
     else:
-        feel = asyncio.run(
+        feel = llm_loop.run(
             run_feel_word_multilang(
                 source_text=source_text,
                 target_text=target_text,
@@ -122,9 +124,9 @@ def generate_phrase(card: dict) -> dict:
 
     direction = f"{source_lang}-{target_lang}"
     if (source_lang, target_lang) in _LEGACY_RU_DE:
-        generated = asyncio.run(run_dictionary_collocations(direction, source_text, target_text))
+        generated = llm_loop.run(run_dictionary_collocations(direction, source_text, target_text))
     else:
-        generated = asyncio.run(
+        generated = llm_loop.run(
             run_dictionary_collocations_multilang(
                 source_lang=source_lang,
                 target_lang=target_lang,

@@ -161,6 +161,7 @@ def _generate_and_cache_mnemonics(items: list[dict]) -> dict:
     if not items:
         return {}
     import asyncio
+    from backend import llm_loop
     from backend.openai_manager import run_article_mnemonics
     from backend.database import store_article_noun_mnemonic
     payload = [{"word": str(i.get("w") or ""), "article": str(i.get("a") or "").lower(),
@@ -168,7 +169,7 @@ def _generate_and_cache_mnemonics(items: list[dict]) -> dict:
     if not payload:
         return {}
     try:
-        results = asyncio.run(asyncio.wait_for(
+        results = llm_loop.run(asyncio.wait_for(
             run_article_mnemonics(items=payload), timeout=55))
     except Exception:
         logging.warning("learn mnemonic generation failed n=%s", len(payload), exc_info=True)

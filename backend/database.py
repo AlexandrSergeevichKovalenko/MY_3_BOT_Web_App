@@ -18,6 +18,8 @@ import hashlib as _hashlib
 import logging
 from contextlib import contextmanager
 import asyncio
+
+from backend import llm_loop
 import json
 import secrets
 import random
@@ -28662,7 +28664,7 @@ def rebuild_unit_breakdown(unit_id: int, text: str, *, owner_translation: str = 
         return False
     try:
         from backend.openai_manager import run_dictionary_lookup_multilang_core_fast
-        raw = asyncio.run(run_dictionary_lookup_multilang_core_fast(
+        raw = llm_loop.run(run_dictionary_lookup_multilang_core_fast(
             word=text, source_lang="de", target_lang="ru", explanation_lang="ru",
         ))
     except Exception as exc:

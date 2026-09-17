@@ -520,10 +520,11 @@ def _register_instructions() -> None:
 def _ask_once(task: str, word: str) -> dict:
     """Один спрос модели. {} — не ответила или ответ не разобрался."""
     import asyncio
+    from backend import llm_loop
     from backend.openai_manager import llm_execute, parse_llm_json_object
     _register_instructions()
     try:
-        text = asyncio.run(llm_execute(
+        text = llm_loop.run(llm_execute(
             task_name=task, system_instruction_key=task,
             user_message=str(word or "").strip(), poll_interval_seconds=1.0,
         ))

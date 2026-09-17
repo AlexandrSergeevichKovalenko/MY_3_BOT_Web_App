@@ -582,10 +582,11 @@ def _ask_paradigm_once(verb: str) -> dict | None:
     `{}` — ответила, но пусто. Словарь — разобранный ответ.
     """
     import asyncio
+    from backend import llm_loop
     from backend.openai_manager import llm_execute, parse_llm_json_object, system_message
     system_message.setdefault(_PARADIGM_TASK, _PARADIGM_INSTRUCTION)
     try:
-        text = asyncio.run(llm_execute(
+        text = llm_loop.run(llm_execute(
             task_name=_PARADIGM_TASK, system_instruction_key=_PARADIGM_TASK,
             user_message=str(verb or "").strip(), poll_interval_seconds=1.0,
         ))

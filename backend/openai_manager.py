@@ -2,6 +2,7 @@
 import os
 import logging
 import asyncio
+import threading
 import re
 import json
 import hashlib
@@ -6345,7 +6346,68 @@ logging.basicConfig(
 # SYNTHETIC_LOAD_MODE returns a deterministic in-process proxy instead of a real
 # AsyncOpenAI client (no network). Default OFF -> identical to AsyncOpenAI(...).
 from backend.synthetic_load import build_async_openai_client, is_synthetic_user
-client = build_async_openai_client(api_key=os.getenv("OPENAI_API_KEY"), timeout=60)
+
+
+class _LoopBoundOpenAI:
+    """Клиент OpenAI, привязанный к тому циклу событий, в котором его спросили.
+
+    ЗАЧЕМ (16.09.2026, найдено в логах прода). Клиент держит открытые TLS-соединения,
+    и каждое из них принадлежит ТОМУ циклу событий, в котором было открыто. Клиент у
+    нас один на процесс, а циклов было много: каждый веб-запрос открывал свой через
+    `asyncio.run(...)` и закрывал на выходе. Следующий запрос брал из пула соединение
+    от уже закрытого цикла и падал за 1–2 мс:
+
+        RuntimeError('Event loop is closed')   ← 17 раз за 5 часов
+
+    Падала при этом БЫСТРАЯ половина разбора (повтора у неё нет), и человек ждал
+    медленную: 9 запросов из 13 дольше 10 секунд, один 35. На экране это выглядело
+    как «словарь не работает».
+
+    Основную дорогу выпрямляет `backend/llm_loop.py` — один живой цикл на процесс.
+    Но цикл в процессе не всегда один: у бота свой собственный, его крутит telegram.
+    Поэтому клиент здесь не один на всех, а СВОЙ у каждого цикла: соединение не
+    может пережить свой цикл и попасть в чужой.
+
+    Заведений клиента ровно столько, сколько живых циклов: в веб-сервисе — один, в
+    боте — два. Записи об умерших циклах выбрасываются при следующем обращении.
+    """
+
+    def __init__(self, factory):
+        self._factory = factory
+        self._lock = threading.Lock()
+        self._by_loop: dict[int, tuple] = {}
+        self._loopless = None
+
+    def _resolve(self):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        with self._lock:
+            if loop is None:
+                # Синхронный код без цикла (например, разогрев на старте). Клиент
+                # соединений тут не открывает, пока его не позовут внутри цикла.
+                if self._loopless is None:
+                    self._loopless = self._factory()
+                return self._loopless
+            known = self._by_loop.get(id(loop))
+            # Сверяем сам объект цикла, а не только его номер: номера переиспользуются.
+            if known is not None and known[0] is loop and not loop.is_closed():
+                return known[1]
+            for key, (known_loop, _known_client) in list(self._by_loop.items()):
+                if known_loop.is_closed():
+                    self._by_loop.pop(key, None)
+            fresh = self._factory()
+            self._by_loop[id(loop)] = (loop, fresh)
+            return fresh
+
+    def __getattr__(self, name):
+        return getattr(self._resolve(), name)
+
+
+client = _LoopBoundOpenAI(
+    lambda: build_async_openai_client(api_key=os.getenv("OPENAI_API_KEY"), timeout=60)
+)
 logging.info("OpenAI SDK version detected: %s", getattr(openai, "__version__", "unknown"))
 _LAST_LLM_USAGE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("last_llm_usage", default=None)
 # User to attribute bot-tier OpenAI usage/cost to (set per Telegram update). The
