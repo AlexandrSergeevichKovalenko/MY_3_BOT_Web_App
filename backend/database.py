@@ -17136,10 +17136,14 @@ def pick_words_for_sentence_track(limit: int = 20) -> list[dict]:
     первый вариант не уложился в пять минут и был снят).
     """
     ensure_sentence_track_schema()
+    # Правило про язык живёт в ОДНОМ месте на всё приложение; сюда оно приходит
+    # куском SQL, а не переписывается заново.
+    from backend.lang_of_word import sql_немецкое_наверняка
+    НЕМЕЦКАЯ_ПАРА = sql_немецкое_наверняка("e")
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 WITH сколько_людей AS (
                     SELECT lower(word_de) w, count(DISTINCT user_id) c
                     FROM bt_3_webapp_dictionary_queries
@@ -17164,6 +17168,14 @@ def pick_words_for_sentence_track(limit: int = 20) -> list[dict]:
                       AND array_length(regexp_split_to_array(trim(e.target_text), '\\s+'), 1) >= 4
                       -- немецкая сторона без кириллицы
                       AND e.target_text !~ '[А-Яа-яЁё]'
+                      -- ⛔ И ЭТО ТОЧНО НЕМЕЦКИЙ. Дорожка ОДНА НА ВСЕХ: чужой язык здесь
+                      -- уедет не к одному человеку, а ко всем сразу. До 17.09.2026 язык
+                      -- не проверялся вовсе, и ноль английских записей проходил отбор
+                      -- по двум СЛУЧАЙНОСТЯМ, а не по правилу: у английских строк пуста
+                      -- колонка word_de, а «целевая сторона» у пары en→ru русская, то
+                      -- есть с кириллицей. Обе случайности исчезают в тот день, когда
+                      -- английский начнёт заполнять эти колонки.
+                      AND {НЕМЕЦКАЯ_ПАРА}
                       AND lower(e.word_de) NOT IN (SELECT lower(word_de) FROM bt_3_sentence_track)
                 )
                 SELECT word_de, предложение, id, у_скольких
