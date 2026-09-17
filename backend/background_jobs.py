@@ -1,4 +1,5 @@
 import asyncio
+from backend import llm_loop
 import hashlib
 import json
 import logging
@@ -2213,7 +2214,7 @@ def run_image_quiz_template_prepare_job(
     safe_requested_count = max(1, min(int(requested_count or 1), 10))
     started_at = time.perf_counter()
     try:
-        result = asyncio.run(
+        result = llm_loop.run(
             _run_image_quiz_template_prepare_job_async(
                 user_id=safe_user_id,
                 source_lang=normalized_source_lang,
@@ -2313,7 +2314,7 @@ def run_image_quiz_template_refresh_job(
     safe_requested_count = max(1, min(int(requested_count or 1), 10))
     started_at = time.perf_counter()
     try:
-        prepare_result = asyncio.run(
+        prepare_result = llm_loop.run(
             _run_image_quiz_template_prepare_job_async(
                 user_id=safe_user_id,
                 source_lang=normalized_source_lang,
@@ -2378,7 +2379,7 @@ def run_translation_result_side_effects_job(
     try:
         from backend.translation_workflow import apply_translation_result_side_effects
 
-        asyncio.run(
+        llm_loop.run(
             apply_translation_result_side_effects(
                 user_id=int(user_id),
                 original_text=str(original_text or ""),
@@ -3784,7 +3785,7 @@ def run_visual_riddle_template_prepare_job(
     try:
         for i in range(safe_count):
             seed = f"{int(time.time() * 1000)}:{i}:{request_id or ''}"
-            item = asyncio.run(_prepare_single_vr_template_async(seed=seed))
+            item = llm_loop.run(_prepare_single_vr_template_async(seed=seed))
             items.append(item)
             status = str(item.get("status") or "").strip()
             if status == "blueprint_ready":
@@ -3859,11 +3860,10 @@ def generate_and_prepare_single_visual_riddle(*, seed: int | None = None) -> dic
     Runs entirely in the calling thread — use asyncio.to_thread() from async callers.
     """
     import time as _time
-    import asyncio as _asyncio
     started_at = _time.perf_counter()
     effective_seed = int(seed) if seed is not None else int(_time.time() * 1000) % (2 ** 31)
     try:
-        blueprint_result = _asyncio.run(_prepare_single_vr_template_async(seed=effective_seed))
+        blueprint_result = llm_loop.run(_prepare_single_vr_template_async(seed=effective_seed))
     except Exception as exc:
         logging.warning("vr_manual_generate: blueprint phase failed seed=%s: %s", effective_seed, exc, exc_info=True)
         return {"status": "failed", "template_id": None, "error": str(exc)}

@@ -1296,8 +1296,9 @@ def _quiz_freeform_semantic_match(user_text: str, correct_text: str) -> bool:
         return False
     try:
         import asyncio
+        from backend import llm_loop
         from backend.openai_manager import run_check_synonym
-        result = asyncio.run(asyncio.wait_for(
+        result = llm_loop.run(asyncio.wait_for(
             run_check_synonym(target_word=canonical, candidate=guess, relation="synonym"),
             timeout=7.0,
         ))
@@ -2135,8 +2136,9 @@ def _synonym_judge_full(target: str, candidate: str, relation: str) -> dict:
         return {"match": False, "reason_ru": ""}
     try:
         import asyncio
+        from backend import llm_loop
         from backend.openai_manager import run_check_synonym
-        res = asyncio.run(asyncio.wait_for(
+        res = llm_loop.run(asyncio.wait_for(
             run_check_synonym(target_word=t, candidate=c, relation=str(relation or "synonym")),
             timeout=7.0,
         ))
@@ -2178,8 +2180,9 @@ def _satzbau_judge_full(reference: str, user: str) -> dict:
         return {"match": False, "reason_ru": ""}
     try:
         import asyncio
+        from backend import llm_loop
         from backend.openai_manager import run_check_satzbau
-        res = asyncio.run(asyncio.wait_for(
+        res = llm_loop.run(asyncio.wait_for(
             run_check_satzbau(reference=ref, user=u), timeout=7.0,
         ))
         return {
@@ -2200,8 +2203,9 @@ def _cloze_judge_full(satz: str, correct: str, user: str) -> dict:
         return {"match": False, "reason_ru": ""}
     try:
         import asyncio
+        from backend import llm_loop
         from backend.openai_manager import run_check_cloze
-        res = asyncio.run(asyncio.wait_for(
+        res = llm_loop.run(asyncio.wait_for(
             run_check_cloze(satz=s, correct=c, user=u), timeout=7.0,
         ))
         return {
@@ -2230,8 +2234,9 @@ def _error_judge_full(woerter: list, tapped_index: int, correction: str) -> dict
         return {"match": False, "reason_ru": ""}
     try:
         import asyncio
+        from backend import llm_loop
         from backend.openai_manager import run_check_error
-        res = asyncio.run(asyncio.wait_for(
+        res = llm_loop.run(asyncio.wait_for(
             run_check_error(woerter=[str(w) for w in woerter], index=idx, user=corr),
             timeout=7.0,
         ))
@@ -2254,8 +2259,9 @@ def _error_holistic_ok(original: str, corrected: str) -> dict:
         return {"correct": False, "reason_ru": ""}
     try:
         import asyncio
+        from backend import llm_loop
         from backend.openai_manager import run_check_error_full
-        res = asyncio.run(asyncio.wait_for(
+        res = llm_loop.run(asyncio.wait_for(
             run_check_error_full(original=o, corrected=c), timeout=7.0,
         ))
         return {
@@ -2288,8 +2294,9 @@ def _wortgruppe_judge_full(satz: str, correct: str, user: str) -> dict:
         return {"match": False, "reason_ru": ""}
     try:
         import asyncio
+        from backend import llm_loop
         from backend.openai_manager import run_check_cloze
-        res = asyncio.run(asyncio.wait_for(
+        res = llm_loop.run(asyncio.wait_for(
             run_check_cloze(satz=s, correct=c, user=u), timeout=7.0,
         ))
         return {
@@ -2870,8 +2877,9 @@ def evaluate_sprint(*, dispatch_id: int, user_id: int, words: list, time_ms: int
     if misses:
         try:
             import asyncio
+            from backend import llm_loop
             from backend.openai_manager import run_check_synonym_batch
-            valid = asyncio.run(asyncio.wait_for(
+            valid = llm_loop.run(asyncio.wait_for(
                 run_check_synonym_batch(target_word=str(item.get("wort") or ""),
                                         candidates=misses, relation=relation),
                 timeout=11.0,

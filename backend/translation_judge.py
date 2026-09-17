@@ -94,6 +94,7 @@ def ensure_translation_judge_schema() -> None:
 def _ask_once(word: str, pos: str, translations: list[str]) -> set[str] | None:
     """Один спрос. None — модель НЕ ОТВЕТИЛА (это не «чужих нет»)."""
     import asyncio
+    from backend import llm_loop
 
     from backend.openai_manager import llm_execute, parse_llm_json_object, system_message
 
@@ -108,7 +109,7 @@ def _ask_once(word: str, pos: str, translations: list[str]) -> set[str] | None:
         # прогон с опросом. Для ночной пачки в сорок слов это часы, а вопрос у нас
         # крошечный: слово и список строк. Не ответил быстрый путь — считаем, что
         # модель не ответила, и спросим завтра.
-        ответ = asyncio.run(llm_execute(
+        ответ = llm_loop.run(llm_execute(
             task_name=JUDGE_TASK, system_instruction_key=JUDGE_TASK,
             user_message=вопрос, responses_only=True,
             allow_assistants_fallback=False, responses_timeout_seconds=45.0,

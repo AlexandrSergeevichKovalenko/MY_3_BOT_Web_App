@@ -74,6 +74,8 @@ import hmac
 import hashlib
 import json
 import asyncio
+
+from backend import llm_loop
 import logging
 import requests
 import tempfile
@@ -11264,7 +11266,7 @@ def _rich_enrich_card_fields(
     if str(_native_side or "").strip() and str(_native_side or "").strip() != german_word:
         saved_meaning = str(_native_side).strip()
     try:
-        raw = asyncio.run(
+        raw = llm_loop.run(
             run_dictionary_lookup_multilang(
                 word=german_word,
                 source_lang="de",
@@ -11643,7 +11645,7 @@ def backfill_quick_dictionary_translations(
         if dry_run:
             continue
         try:
-            rich = asyncio.run(run_dictionary_lookup_multilang(german, "de", "ru"))
+            rich = llm_loop.run(run_dictionary_lookup_multilang(german, "de", "ru"))
             russian = _extract_target_translation_from_breakdown(rich)
             if not _text_has_cyrillic(russian):
                 report["errors"] += 1
@@ -11872,7 +11874,7 @@ def _run_synonym_backfill(*, limit: int, learning_lang: str = "de", native_lang:
         if not german:
             continue
         try:
-            data = asyncio.run(run_dictionary_synonyms_backfill(
+            data = llm_loop.run(run_dictionary_synonyms_backfill(
                 word=german,
                 translation=str(unit.get("translation") or ""),
                 source_lang=learning_lang,
@@ -13743,7 +13745,7 @@ def _build_video_search_queries(
         if source_guess == target:
             return cleaned
         try:
-            translated = asyncio.run(
+            translated = llm_loop.run(
                 run_translate_subtitles_multilang(
                     lines=[cleaned],
                     source_lang=source_guess,
@@ -23481,7 +23483,7 @@ def _force_translate_text(
 
     # Last resort: LLM translation (slower).
     try:
-        translated = asyncio.run(
+        translated = llm_loop.run(
             run_translate_subtitles_multilang(
                 lines=[cleaned],
                 source_lang=source_lang,
@@ -23505,7 +23507,7 @@ def _run_dictionary_core_lookup_sync(
     lookup_lang: str,
 ) -> dict[str, Any]:
     input_kind = _resolve_input_kind(word, query_source_lang)
-    raw = asyncio.run(
+    raw = llm_loop.run(
         run_dictionary_lookup_multilang_core_fast(
             word=word,
             source_lang=query_source_lang,
@@ -23600,7 +23602,7 @@ def _run_dictionary_full_lookup_sync(
     verified = _verified_entry_for_prompt(word, lookup_lang=lookup_lang)
 
     try:
-        raw = asyncio.run(
+        raw = llm_loop.run(
             run_dictionary_lookup_multilang(
                 word=word,
                 source_lang=query_source_lang,
@@ -23663,7 +23665,7 @@ def _run_dictionary_full_lookup_sync(
 
     if not source_value or source_value.casefold() == target_value.casefold():
         if DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK:
-            reverse_raw = asyncio.run(
+            reverse_raw = llm_loop.run(
                 run_dictionary_lookup_multilang(
                     word=word,
                     source_lang=query_target_lang,
@@ -23742,7 +23744,7 @@ def _run_dictionary_enrichment_job(lookup_id: str) -> None:
     started_at = time.perf_counter()
     try:
         core_raw = job.get("core_raw") if isinstance(job.get("core_raw"), dict) else {}
-        enrichment_raw = asyncio.run(
+        enrichment_raw = llm_loop.run(
             run_dictionary_enrichment_multilang(
                 word=str(job.get("word") or ""),
                 input_kind=_resolve_input_kind(str(job.get("word") or ""), str(job.get("query_source_lang") or job.get("source_lang") or "")),
@@ -25667,7 +25669,7 @@ def _generate_audio_grammar_explanation(
     if cached:
         return cached
     try:
-        content = asyncio.run(
+        content = llm_loop.run(
             run_audio_sentence_grammar_explain_multilang(
                 sentence=text,
                 language=_normalize_short_lang_code(target_lang, fallback="de"),
@@ -25844,7 +25846,7 @@ def _dispatch_private_grammar_explanation(
             error_result, grammar_result = await asyncio.gather(error_coro, grammar_coro)
             return str(error_result or "").strip(), str(grammar_result or "").strip()
 
-        error_analysis, grammar_text = asyncio.run(_gather())
+        error_analysis, grammar_text = llm_loop.run(_gather())
 
         if not error_analysis and not grammar_text:
             return
@@ -28504,7 +28506,7 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             ],
         )
         generation_started_perf = time.perf_counter()
-        focus_pool_result = asyncio.run(
+        focus_pool_result = llm_loop.run(
             prewarm_shared_translation_sentence_pool(
                 focuses=focus_candidates,
                 levels=TRANSLATION_FOCUS_POOL_PREWARM_LEVELS,
@@ -29901,7 +29903,7 @@ def chunk_sentence_llm_de(de_sentence: str) -> list[str]:
         return cached_chunks
 
     try:
-        result = asyncio.run(run_tts_chunk_de(cleaned))
+        result = llm_loop.run(run_tts_chunk_de(cleaned))
     except Exception as exc:
         logging.warning("Chunking failed: %s", exc)
         return _chunk_sentence_simple(cleaned)
@@ -35998,7 +36000,7 @@ def _process_translation_check_session_item(
                 max_attempts = 1 + _TRANSLATION_CHECK_ITEM_TIMEOUT_RETRIES
                 for attempt in range(1, max_attempts + 1):
                     try:
-                        result_item, deferred_store_payload = asyncio.run(
+                        result_item, deferred_store_payload = llm_loop.run(
                             asyncio.wait_for(
                                 check_user_translation_webapp_item(
                                     int(session["user_id"]),
@@ -36748,7 +36750,7 @@ def _run_translation_check_session(
                                 if can_enqueue_background_jobs():
                                     enqueue_translation_result_side_effects_job(**deferred_side_effect_payload)
                                 else:
-                                    asyncio.run(apply_translation_result_side_effects(**deferred_side_effect_payload))
+                                    llm_loop.run(apply_translation_result_side_effects(**deferred_side_effect_payload))
                             except Exception:
                                 logging.warning(
                                     "translation_result_side_effects enqueue failed; running inline user_id=%s sentence_id_for_mistake=%s",
@@ -36756,7 +36758,7 @@ def _run_translation_check_session(
                                     deferred_side_effect_payload["sentence_id_for_mistake"],
                                     exc_info=True,
                                 )
-                                asyncio.run(apply_translation_result_side_effects(**deferred_side_effect_payload))
+                                llm_loop.run(apply_translation_result_side_effects(**deferred_side_effect_payload))
                 finalize_started_perf = time.perf_counter()
                 finalized_session = _run_batch_db_op_with_retry(_finalize_batch_scoped, label="finalize")
                 finalize_duration_ms = _elapsed_ms_since(finalize_started_perf)
@@ -37297,9 +37299,9 @@ def process_webapp_message():
         set_llm_billing_user(int(user_id))
         try:
             if _is_legacy_ru_de_pair(source_lang, target_lang):
-                result = asyncio.run(run_check_translation(original_text, user_translation))
+                result = llm_loop.run(run_check_translation(original_text, user_translation))
             else:
-                result = asyncio.run(
+                result = llm_loop.run(
                     run_check_translation_multilang(
                         original_text=original_text,
                         user_translation=user_translation,
@@ -44052,7 +44054,7 @@ def get_webapp_dictionary_feel():
         from backend.openai_manager import set_llm_billing_user
         set_llm_billing_user(int(user_id))
         try:
-            feel_text = asyncio.run(
+            feel_text = llm_loop.run(
                 run_feel_word_multilang(
                     source_text=source_text or target_text,
                     target_text=target_text or source_text,
@@ -44472,7 +44474,7 @@ def _word_diff_readings(word: str, studied_lang: str, explain_lang: str) -> list
         logging.exception("word_diff: не смогли прочитать прочтения %r", text)
         return []
     try:
-        fresh = asyncio.run(run_word_readings(text, explain_language=explain_lang))
+        fresh = llm_loop.run(run_word_readings(text, explain_language=explain_lang))
     except Exception:
         logging.exception("word_diff: не смогли спросить прочтения %r", text)
         return []
@@ -45018,7 +45020,7 @@ def _word_diff_usage(word: str, card: dict, studied_lang: str, explain_lang: str
         ][:5],
     }
     try:
-        fresh = asyncio.run(
+        fresh = llm_loop.run(
             run_word_usage_enrichment(
                 text, known,
                 studied_language=studied_lang, explain_language=explain_lang,
@@ -45758,7 +45760,7 @@ def get_webapp_dictionary_word_diff():
         from backend.openai_manager import set_llm_billing_user
         set_llm_billing_user(ctx["user_id"])
         try:
-            raw_result = asyncio.run(
+            raw_result = llm_loop.run(
                 run_word_diff_multilang(
                     ctx["resolved"],
                     studied_language=ctx["studied_lang"],
@@ -46536,14 +46538,14 @@ def lookup_mobile_dictionary():
                             "language_pair": _build_language_pair_payload(source_lang, target_lang),
                         }
                     )
-                result = asyncio.run(run_dictionary_lookup(word))
+                result = llm_loop.run(run_dictionary_lookup(word))
             else:
-                result = asyncio.run(run_dictionary_lookup_de(word))
+                result = llm_loop.run(run_dictionary_lookup_de(word))
             if result and is_ru:
                 upsert_dictionary_cache(word, result)
             direction = "ru-de" if is_ru else "de-ru"
         else:
-            raw = asyncio.run(
+            raw = llm_loop.run(
                 run_dictionary_lookup_multilang(
                     word=word,
                     source_lang=source_lang,
@@ -46560,7 +46562,7 @@ def lookup_mobile_dictionary():
 
             if not source_value or source_value.casefold() == target_value.casefold():
                 if DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK:
-                    reverse_raw = asyncio.run(
+                    reverse_raw = llm_loop.run(
                         run_dictionary_lookup_multilang(
                             word=word,
                             source_lang=target_lang,
@@ -49788,7 +49790,7 @@ def start_today_translation_item(item_id: int):
 
     try:
         _refresh_subscription_before_translation_start(int(user_id))
-        session = asyncio.run(
+        session = llm_loop.run(
             start_translation_session_webapp(
                 user_id=int(user_id),
                 username=username,
@@ -50543,7 +50545,7 @@ def prepare_today_theory():
         }
         beginner_topic = {}
         try:
-            beginner_topic = asyncio.run(run_beginner_topic(beginner_payload))
+            beginner_topic = llm_loop.run(run_beginner_topic(beginner_payload))
         except Exception as exc:
             logging.warning("BEGINNER_TOPIC failed: %s", exc)
             beginner_topic = {}
@@ -50612,7 +50614,7 @@ def prepare_today_theory():
     try:
         set_llm_billing_user(int(user_id))
         try:
-            theory, practice_raw = asyncio.run(_generate_theory_and_practice())
+            theory, practice_raw = llm_loop.run(_generate_theory_and_practice())
         finally:
             set_llm_billing_user(None)
     except Exception as exc:
@@ -50634,7 +50636,7 @@ def prepare_today_theory():
         retry_payload["native_language"] = _get_llm_language_name(source_lang, emphasize_script=True)
         retry_payload["target_language"] = _get_llm_language_name(target_lang)
         try:
-            theory_retry = asyncio.run(run_theory_generation(retry_payload))
+            theory_retry = llm_loop.run(run_theory_generation(retry_payload))
             if isinstance(theory_retry, dict) and theory_retry:
                 theory = theory_retry
         except Exception as exc:
@@ -50657,7 +50659,7 @@ def prepare_today_theory():
             "Reject broken learner-like phrasing. Use natural finite verb forms."
         )
         try:
-            practice_retry_raw = asyncio.run(run_theory_practice_sentences(retry_payload))
+            practice_retry_raw = llm_loop.run(run_theory_practice_sentences(retry_payload))
             retry_sentences = _normalize_theory_sentences(practice_retry_raw, native_lang=source_lang)
             if len(retry_sentences) >= len(practice_sentences):
                 practice_sentences = retry_sentences
@@ -50808,7 +50810,7 @@ def check_today_theory():
         "pairs": paired,
     }
     try:
-        feedback = asyncio.run(run_theory_check_feedback(check_payload))
+        feedback = llm_loop.run(run_theory_check_feedback(check_payload))
     except Exception as exc:
         return jsonify({"error": f"Ошибка проверки теории: {exc}"}), 500
     usage_check = get_last_llm_usage(reset=True)
@@ -51266,7 +51268,7 @@ def complete_assistant_session():
         if resolved_session_id > 0:
             # Extraction runs first so assessment can aggregate from mistakes table.
             try:
-                asyncio.run(
+                llm_loop.run(
                     extract_and_store_voice_mistakes(session_id=resolved_session_id)
                 )
             except Exception as exc:
@@ -51276,7 +51278,7 @@ def complete_assistant_session():
                     exc,
                 )
             try:
-                assessment = asyncio.run(
+                assessment = llm_loop.run(
                     build_and_store_voice_assessment(session_id=resolved_session_id)
                 )
                 if assessment:
@@ -52367,7 +52369,7 @@ def start_skill_practice(skill_id: str):
 
     try:
         _refresh_subscription_before_translation_start(int(user_id))
-        session = asyncio.run(
+        session = llm_loop.run(
             start_translation_session_webapp(
                 user_id=int(user_id),
                 username=username,
@@ -52449,7 +52451,7 @@ def get_webapp_dictionary_collocations():
             if not direction:
                 is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word)
                 direction = "ru-de" if is_ru else "de-ru"
-            result = asyncio.run(run_dictionary_collocations(direction, word, translation))
+            result = llm_loop.run(run_dictionary_collocations(direction, word, translation))
         else:
             if not direction:
                 direction = f"{source_lang}-{target_lang}"
@@ -52461,7 +52463,7 @@ def get_webapp_dictionary_collocations():
             else:
                 word_source = word
                 word_target = translation
-            result = asyncio.run(
+            result = llm_loop.run(
                 run_dictionary_collocations_multilang(
                     source_lang=source_lang,
                     target_lang=target_lang,
@@ -54937,7 +54939,7 @@ def _shortcut_split_blocks(
     # Attempt 1: mini model — primary model
     try:
         started_at = time.perf_counter()
-        raw = asyncio.run(_call(primary_model, _SHORTCUT_SPLIT_PROMPT_PRIMARY, timeout=40))
+        raw = llm_loop.run(_call(primary_model, _SHORTCUT_SPLIT_PROMPT_PRIMARY, timeout=40))
         blocks = _shortcut_extract_blocks_from_json(raw, text, repairs)
         if blocks:
             blocks = _shortcut_gate_blocks(user_id, blocks, repairs)
@@ -54999,7 +55001,7 @@ def _shortcut_split_blocks(
     # Attempt 2: full gpt-4.1 fallback model
     try:
         started_at = time.perf_counter()
-        raw = asyncio.run(_call(fallback_model, _SHORTCUT_SPLIT_PROMPT_FALLBACK, timeout=45))
+        raw = llm_loop.run(_call(fallback_model, _SHORTCUT_SPLIT_PROMPT_FALLBACK, timeout=45))
         blocks = _shortcut_extract_blocks_from_json(raw, text, repairs)
         if blocks:
             duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -55904,7 +55906,7 @@ def _autosave_prepare_cards(terms: list[str], *, source_lang: str, target_lang: 
 
     pending = list(range(len(terms)))
     try:
-        _absorb(asyncio.run(_call()))
+        _absorb(llm_loop.run(_call()))
     except Exception:
         logging.exception("autosave: batch prepare-cards failed terms=%d", len(terms))
 
@@ -55919,7 +55921,7 @@ def _autosave_prepare_cards(terms: list[str], *, source_lang: str, target_lang: 
         retry_terms = [terms[i] for i in pending]
         user_payload = json.dumps({"items": retry_terms}, ensure_ascii=False)
         try:
-            _absorb(asyncio.run(_call()))
+            _absorb(llm_loop.run(_call()))
             logging.info("autosave: добор переводов, попытка=%d спрошено=%d осталось=%d",
                          attempt, len(retry_terms),
                          len([i for i in range(len(terms)) if i not in filled]))
@@ -59400,9 +59402,9 @@ def get_flashcard_feel():
 
     try:
         if _is_legacy_ru_de_pair(source_lang, target_lang):
-            feel_text = asyncio.run(run_feel_word(source_text, target_text))
+            feel_text = llm_loop.run(run_feel_word(source_text, target_text))
         else:
-            feel_text = asyncio.run(
+            feel_text = llm_loop.run(
                 run_feel_word_multilang(
                     source_text=source_text,
                     target_text=target_text,
@@ -59632,9 +59634,9 @@ def _dispatch_flashcard_feel_messages(
             if not feel_text:
                 try:
                     if _is_legacy_ru_de_pair(source_lang, target_lang):
-                        feel_text = asyncio.run(run_feel_word(source_text, target_text))
+                        feel_text = llm_loop.run(run_feel_word(source_text, target_text))
                     else:
-                        feel_text = asyncio.run(
+                        feel_text = llm_loop.run(
                             run_feel_word_multilang(
                                 source_text=source_text,
                                 target_text=target_text,
@@ -62454,7 +62456,7 @@ def translate_youtube_subtitle_rows():
     llm_started_perf = time.perf_counter()
     if pending:
         try:
-            translated = asyncio.run(
+            translated = llm_loop.run(
                 run_translate_subtitle_rows(
                     rows=[{"id": row["id"], "text": row["text"]} for row in pending],
                     source_lang=detected_source_lang,
@@ -62736,9 +62738,9 @@ def translate_youtube_subtitles():
             llm_started_perf = time.perf_counter()
             try:
                 if subtitle_target_lang == "ru" and detected_source_lang == "de":
-                    translated = asyncio.run(run_translate_subtitles_ru(missing_lines))
+                    translated = llm_loop.run(run_translate_subtitles_ru(missing_lines))
                 else:
-                    translated = asyncio.run(
+                    translated = llm_loop.run(
                         run_translate_subtitles_multilang(
                             lines=missing_lines,
                             source_lang=detected_source_lang,
@@ -66630,7 +66632,7 @@ def _run_translation_session_fill(
             max(0, int(time.time() * 1000) - int(launched_at_ms)),
         )
     try:
-        result = asyncio.run(
+        result = llm_loop.run(
             fill_translation_session_webapp(
                 user_id=int(user_id),
                 username=username,
@@ -66913,7 +66915,7 @@ def start_webapp_translation():
                     refresh_duration_ms=int((time.perf_counter() - refresh_started_perf) * 1000),
                 )
                 workflow_started_at = time.perf_counter()
-                result = asyncio.run(
+                result = llm_loop.run(
                     start_translation_session_webapp(
                         user_id=user_id,
                         username=username,
@@ -67244,7 +67246,7 @@ def start_webapp_story():
     from backend.openai_manager import set_llm_billing_user
     set_llm_billing_user(int(user_id))
     try:
-        result = asyncio.run(
+        result = llm_loop.run(
             start_story_session_webapp(
                 user_id=user_id,
                 username=username,
@@ -67333,7 +67335,7 @@ def submit_webapp_story():
     from backend.openai_manager import set_llm_billing_user
     set_llm_billing_user(int(user_id))
     try:
-        result = asyncio.run(
+        result = llm_loop.run(
             submit_story_translation_webapp(
                 user_id=user_id,
                 username=username,
@@ -67414,7 +67416,7 @@ def explain_webapp_story():
     from backend.openai_manager import set_llm_billing_user
     set_llm_billing_user(int(user_id))
     try:
-        result = asyncio.run(
+        result = llm_loop.run(
             explain_story_translation_webapp(
                 user_id=user_id,
                 session_id=session_id,
@@ -74557,7 +74559,7 @@ def prewarm_translation_bucket_now():
 
     bucket_key = (str((resolved_focus or {}).get("key") or "").strip(), level)
     try:
-        result = asyncio.run(
+        result = llm_loop.run(
             prewarm_shared_translation_sentence_pool(
                 focuses=[resolved_focus],
                 levels=[level],
@@ -75446,7 +75448,7 @@ def explain_webapp_translation():
         if mode == "grammar":
             # Progressive companion block: A1-A2 grammar walk-through of the CORRECT
             # sentence, fetched in parallel by the modal so the error breakdown paints first.
-            explanation_json = asyncio.run(
+            explanation_json = llm_loop.run(
                 run_correct_sentence_grammar_structured(
                     original_text=original_text,
                     user_translation=user_translation,
@@ -75458,7 +75460,7 @@ def explain_webapp_translation():
             explanation = ""
         else:
             # Teacher-grade structured breakdown (JSON) rendered in the explain modal.
-            explanation_json = asyncio.run(
+            explanation_json = llm_loop.run(
                 run_translation_explanation_structured(
                     original_text=original_text,
                     user_translation=user_translation,
@@ -75609,7 +75611,7 @@ def explain_webapp_translation_followup_question():
     )
 
     try:
-        followup_payload = asyncio.run(
+        followup_payload = llm_loop.run(
             run_language_learning_private_question_detailed(
                 {
                     "learner_question": learner_question,
