@@ -6786,16 +6786,31 @@ def _save_webapp_dictionary_query_returning_id_with_conn(
     # стояло выше по течению, в веб-слое, и обходилось: замер 16.08.2026 нашёл
     # «klarzukommen» и «die eine Pleite» в колонке translation_de при уже исправленной
     # word_de — а крупный заголовок на экране разбора берётся именно из translation_de.
-    from backend.german_grammar_tables import german_dictionary_headword
-    word_de = german_dictionary_headword(word_de) if word_de else word_de
-    translation_de = german_dictionary_headword(translation_de) if translation_de else translation_de
-    word_de = _fix_plural_article_on_headword(word_de)
-    translation_de = _fix_plural_article_on_headword(translation_de)
-    # ВТОРОЙ ГОЛОС: русский перевод решает, существительное ли это (владелец, 25.08.2026).
-    word_de = _lowercase_when_russian_says_not_a_noun(word_de, word_ru)
-    translation_de = _lowercase_when_russian_says_not_a_noun(translation_de, word_ru)
+    #
+    # ⛔ ЯЗЫК СПРАШИВАЕТСЯ ПЕРВЫМ, А НЕ ПОСЛЕ. До 17.09.2026 эти три немецких правила
+    # срабатывали ВЫШЕ строк, где вычисляется язык пары, и условием их запуска было
+    # «колонка не пуста», а не «пара немецкая». Пока база одноязычная, это незаметно.
+    # В день, когда сюда придёт английское слово, немецкое правило заглавной буквы
+    # сделает из «London» — «london», а приведение к словарной форме искалечит слово.
+    # И портится при этом не показ, а САМА ЗАПИСЬ: экран переделать можно, запись нет.
+    #
+    # Вопрос задаётся УЗКИЙ и без похода в базу: пара ровно {ru, de}. Скорость ответа
+    # человеку — условие владельца, лишний запрос за профилем сюда ставить нельзя.
+    # «Не уверены» трактуем как «правило не применять»: пропустить правило безопасно,
+    # применить его к чужому языку — нет.
     normalized_source_lang = _normalize_lang_code(source_lang)
     normalized_target_lang = _normalize_lang_code(target_lang)
+    from backend.lang_of_word import немецкое_наверняка
+    if немецкое_наверняка(source_lang=normalized_source_lang,
+                          target_lang=normalized_target_lang):
+        from backend.german_grammar_tables import german_dictionary_headword
+        word_de = german_dictionary_headword(word_de) if word_de else word_de
+        translation_de = german_dictionary_headword(translation_de) if translation_de else translation_de
+        word_de = _fix_plural_article_on_headword(word_de)
+        translation_de = _fix_plural_article_on_headword(translation_de)
+        # ВТОРОЙ ГОЛОС: русский перевод решает, существительное ли это (владелец, 25.08.2026).
+        word_de = _lowercase_when_russian_says_not_a_noun(word_de, word_ru)
+        translation_de = _lowercase_when_russian_says_not_a_noun(translation_de, word_ru)
     source_text, target_text = _resolve_dictionary_source_target_texts(
         source_lang=normalized_source_lang,
         target_lang=normalized_target_lang,
